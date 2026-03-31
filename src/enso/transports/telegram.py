@@ -11,9 +11,11 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from telegram import BotCommand, Update
+from telegram.constants import ChatAction, ParseMode
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from ..config import CONFIG_DIR
+from ..formatting import md_to_html
 from ..providers import PROVIDER_NAMES
 from . import BaseTransport, TransportContext
 
@@ -65,7 +67,13 @@ class TelegramContext(TransportContext):
         self._update = update
 
     async def reply(self, text: str) -> None:
-        await self._update.message.reply_text(text)
+        try:
+            await self._update.message.reply_text(
+                md_to_html(text), parse_mode=ParseMode.HTML,
+            )
+        except Exception:
+            # Fallback to plain text if HTML parsing fails
+            await self._update.message.reply_text(text)
 
     async def reply_status(self, text: str) -> Any:
         return await self._update.message.reply_text(text)
@@ -76,6 +84,9 @@ class TelegramContext(TransportContext):
     async def delete_status(self, handle: Any) -> None:
         with contextlib.suppress(Exception):
             await handle.delete()
+
+    async def send_typing(self) -> None:
+        await self._update.effective_chat.send_action(ChatAction.TYPING)
 
 
 class TelegramTransport(BaseTransport):
@@ -149,11 +160,17 @@ class TelegramTransport(BaseTransport):
         if not self._bot:
             log.warning("Cannot notify — bot not initialized yet")
             return
+        html = md_to_html(text[:4096])
         for user_id in self.allowed_user_ids:
             try:
-                await self._bot.send_message(chat_id=user_id, text=text[:4096])
+                await self._bot.send_message(
+                    chat_id=user_id, text=html, parse_mode=ParseMode.HTML,
+                )
             except Exception:
-                log.exception("Failed to notify user %s", user_id)
+                try:
+                    await self._bot.send_message(chat_id=user_id, text=text[:4096])
+                except Exception:
+                    log.exception("Failed to notify user %s", user_id)
 
     # -- Message handling --
 

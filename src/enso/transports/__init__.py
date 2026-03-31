@@ -29,6 +29,9 @@ class TransportContext(ABC):
     async def delete_status(self, handle: Any) -> None:
         """Delete a status message."""
 
+    async def send_typing(self) -> None:
+        """Send a typing indicator. No-op by default."""
+
 
 class BaseTransport(ABC):
     """Base class for message transports.

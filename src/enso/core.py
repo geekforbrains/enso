@@ -391,6 +391,7 @@ class Runtime:
 
         log.info("[%s] chat=%s model=%s: %.80s", provider_name, chat_id, model, prompt)
 
+        await ctx.send_typing()
         status_msg = await ctx.reply_status(f"({display} / 0s) Working…")
         state = {"status": "Working…", "elapsed": 0, "display": display}
         stop = asyncio.Event()
@@ -444,7 +445,7 @@ class Runtime:
     async def _run_ticker(
         self, ctx: TransportContext, status_msg: Any, state: dict, stop: asyncio.Event
     ) -> None:
-        """Background task that updates [Provider Xs] status every second."""
+        """Background task that updates status and typing indicator."""
         while not stop.is_set():
             await asyncio.sleep(1)
             if stop.is_set():
@@ -453,6 +454,10 @@ class Runtime:
             text = f"({state['display']} / {state['elapsed']}s) {state['status']}"
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(ctx.edit_status(status_msg, text), timeout=5.0)
+            # Refresh typing indicator every 4s (expires after 5s)
+            if state["elapsed"] % 4 == 0:
+                with contextlib.suppress(Exception):
+                    await ctx.send_typing()
 
     # -- Job scheduler --
 
