@@ -388,12 +388,11 @@ class Runtime:
         provider = self.make_provider(provider_name)
         model = self.get_active_model(chat_id, provider_name)
         display = provider_name.capitalize()
-        prefix_base = f"{display}/{model}"
 
         log.info("[%s] chat=%s model=%s: %.80s", provider_name, chat_id, model, prompt)
 
-        status_msg = await ctx.reply_status(f"[{prefix_base} 0s] Working...")
-        state = {"status": "Working...", "elapsed": 0, "provider": prefix_base}
+        status_msg = await ctx.reply_status(f"({display} / 0s) Working...")
+        state = {"status": "Working...", "elapsed": 0, "display": display}
         stop = asyncio.Event()
         ticker = asyncio.create_task(self._run_ticker(ctx, status_msg, state, stop))
 
@@ -414,7 +413,7 @@ class Runtime:
             await ctx.delete_status(status_msg)
 
             response_text = provider.format_response(response_parts)
-            prefix = f"[{prefix_base} {state['elapsed']}s]"
+            prefix = f"({display} / {state['elapsed']}s)"
 
             if response_text:
                 for chunk in split_text(f"{prefix} {response_text}"):
@@ -428,14 +427,14 @@ class Runtime:
             stop.set()
             ticker.cancel()
             with contextlib.suppress(Exception):
-                await ctx.edit_status(status_msg, f"[{prefix_base}] Stopped.")
+                await ctx.edit_status(status_msg, f"({display}) Stopped.")
             raise
 
         except Exception as exc:
             stop.set()
             ticker.cancel()
             log.error("Error processing %s request: %s", provider_name, exc, exc_info=True)
-            prefix = f"[{prefix_base} {state['elapsed']}s]"
+            prefix = f"({display} / {state['elapsed']}s)"
             try:
                 await ctx.edit_status(status_msg, f"{prefix} Error: {str(exc)[:4000]}")
             except Exception:
@@ -451,7 +450,7 @@ class Runtime:
             if stop.is_set():
                 break
             state["elapsed"] += 1
-            text = f"[{state['provider']} {state['elapsed']}s] {state['status']}"
+            text = f"({state['display']} / {state['elapsed']}s) {state['status']}"
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(ctx.edit_status(status_msg, text), timeout=5.0)
 
