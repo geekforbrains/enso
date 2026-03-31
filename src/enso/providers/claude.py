@@ -106,11 +106,12 @@ class ClaudeProvider(BaseProvider):
         return 10 * 1024 * 1024
 
     def clear_session(self, session_id: str | None, working_dir: str) -> str:
-        project_dir = Path(_get_project_dir(working_dir))
-        removed = 0
-        if project_dir.is_dir():
-            for f in project_dir.glob("*.jsonl"):
-                f.unlink()
-                removed += 1
-        return f"{removed} session file{'s' if removed != 1 else ''} deleted"
+        if not session_id:
+            return "no session"
+        clean_id = session_id.removeprefix("new:")
+        session_file = Path(_get_project_dir(working_dir)) / f"{clean_id}.jsonl"
+        if session_file.is_file():
+            session_file.unlink()
+            return f"deleted session {clean_id[:8]}"
+        return f"session {clean_id[:8]} (no file found)"
 
