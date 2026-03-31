@@ -391,8 +391,8 @@ class Runtime:
 
         log.info("[%s] chat=%s model=%s: %.80s", provider_name, chat_id, model, prompt)
 
-        status_msg = await ctx.reply_status(f"({display} / 0s) Working...")
-        state = {"status": "Working...", "elapsed": 0, "display": display}
+        status_msg = await ctx.reply_status(f"({display} / 0s) Working…")
+        state = {"status": "Working…", "elapsed": 0, "display": display}
         stop = asyncio.Event()
         ticker = asyncio.create_task(self._run_ticker(ctx, status_msg, state, stop))
 

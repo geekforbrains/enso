@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from . import BaseProvider, StreamEvent
+from . import BaseProvider, StreamEvent, truncate_status
 
 
 def _format_status(event: dict) -> str | None:
@@ -19,21 +19,18 @@ def _format_status(event: dict) -> str | None:
                 cmd = item.get("command", "")
                 if "-lc " in cmd:
                     cmd = cmd.split("-lc ", 1)[1].strip("'\"")
-                return f"Running {cmd[:50]}{'...' if len(cmd) > 50 else ''}"
-            case "reasoning":
-                return "Thinking..."
+                return f"Running `{cmd[:50]}{'…' if len(cmd) > 50 else ''}`"
             case "file_changes":
-                return "Editing files..."
+                return "Editing files…"
             case "web_searches":
-                return "Searching the web..."
+                return "Searching the web…"
             case "mcp_tool_calls":
-                return "Using tool..."
+                return "Using tool…"
 
     if event_type == "item.completed" and item_type == "reasoning":
         text = item.get("text", "")
         if text:
-            clean = text.strip("*").strip()
-            return clean[:40] + "..." if len(clean) > 40 else clean
+            return truncate_status(text)
 
     return None
 
@@ -81,18 +78,19 @@ class CodexProvider(BaseProvider):
             events.append(StreamEvent(kind="status", text=status))
 
         if event_type == "turn.started":
-            events.append(StreamEvent(kind="status", text="Working..."))
+            events.append(StreamEvent(kind="status", text="Working…"))
         elif event_type == "error":
             msg = event.get("message")
             if isinstance(msg, str) and msg:
                 events.append(StreamEvent(kind="error", text=msg))
                 if "reconnect" in msg.lower():
-                    events.append(StreamEvent(kind="status", text="Reconnecting..."))
+                    events.append(StreamEvent(kind="status", text="Reconnecting…"))
         elif event_type == "item.completed":
             item = event.get("item", {})
             if item.get("type") == "agent_message":
                 text_value = item.get("text")
                 if isinstance(text_value, str) and text_value:
+                    events.append(StreamEvent(kind="status", text=truncate_status(text_value)))
                     events.append(StreamEvent(kind="response", text=text_value))
         elif event_type == "turn.failed":
             msg = event.get("message", "")

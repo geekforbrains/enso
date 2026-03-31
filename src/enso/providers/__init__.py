@@ -11,6 +11,15 @@ from typing import Literal
 log = logging.getLogger(__name__)
 
 
+def truncate_status(text: str, limit: int = 60) -> str:
+    """Extract a short status line from thinking/narration text."""
+    # Take first line, strip markdown
+    line = text.strip().split("\n")[0].strip("*_#> ")
+    if len(line) > limit:
+        return line[:limit] + "…"
+    return line
+
+
 @dataclass
 class StreamEvent:
     """Unified event type emitted by all providers during streaming."""

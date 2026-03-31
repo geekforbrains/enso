@@ -17,26 +17,26 @@ def _format_status(event: dict) -> str | None:
 
     match tool_name:
         case "read_file":
-            return f"Reading {os.path.basename(params.get('file_path', 'file'))}..."
+            return f"Reading {os.path.basename(params.get('file_path', 'file'))}"
         case "read_many_files":
-            return "Reading files..."
+            return "Reading files…"
         case "write_file":
-            return f"Writing {os.path.basename(params.get('file_path', 'file'))}..."
+            return f"Writing {os.path.basename(params.get('file_path', 'file'))}"
         case "replace":
-            return f"Editing {os.path.basename(params.get('file_path', 'file'))}..."
+            return f"Editing {os.path.basename(params.get('file_path', 'file'))}"
         case "run_shell_command":
             cmd = params.get("command", "")
-            return f"Running {cmd[:50]}{'...' if len(cmd) > 50 else ''}"
+            return f"Running `{cmd[:50]}{'…' if len(cmd) > 50 else ''}`"
         case "list_directory":
-            return f"Listing {params.get('dir_path', '.')}..."
+            return f"Listing {params.get('dir_path', '.')}"
         case "glob" | "find_files":
-            return f"Finding {params.get('pattern', '')}..."
+            return f"Finding {params.get('pattern', '')}"
         case "web_fetch":
-            return f"Fetching {params.get('url', '')[:40]}..."
+            return f"Fetching {params.get('url', '')[:40]}"
         case "google_web_search":
-            return f"Searching: {params.get('query', '')}..."
+            return f"Searching: {params.get('query', '')}"
         case _:
-            return f"Using {tool_name}..."
+            return f"Using {tool_name}"
 
 
 class GeminiProvider(BaseProvider):
@@ -46,21 +46,19 @@ class GeminiProvider(BaseProvider):
         self, prompt: str, model: str, session_id: str | None = None
     ) -> list[str]:
         cmd = [
-            self.path, "-p",
+            self.path, "--prompt", prompt,
             "--output-format", "stream-json",
             "--yolo", "-m", model,
         ]
         if session_id:
             cmd.extend(["--resume", session_id])
-        cmd.extend(["--", prompt])
         return cmd
 
     def build_batch_command(self, prompt: str, model: str) -> list[str]:
         return [
-            self.path, "-p",
+            self.path, "--prompt", prompt,
             "--output-format", "text",
             "--yolo", "-m", model,
-            "--", prompt,
         ]
 
     def parse_event(self, event: dict) -> list[StreamEvent]:

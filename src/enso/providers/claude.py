@@ -5,33 +5,33 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from . import BaseProvider, StreamEvent
+from . import BaseProvider, StreamEvent, truncate_status
 
 
 def _format_tool_status(tool_name: str, tool_input: dict) -> str:
     """Format tool usage into human-readable status."""
     match tool_name:
         case "Read":
-            return f"Reading {os.path.basename(tool_input.get('file_path', 'file'))}..."
+            return f"Reading {os.path.basename(tool_input.get('file_path', 'file'))}"
         case "Write":
-            return f"Writing {os.path.basename(tool_input.get('file_path', 'file'))}..."
+            return f"Writing {os.path.basename(tool_input.get('file_path', 'file'))}"
         case "Edit":
-            return f"Editing {os.path.basename(tool_input.get('file_path', 'file'))}..."
+            return f"Editing {os.path.basename(tool_input.get('file_path', 'file'))}"
         case "Bash":
             cmd = tool_input.get("command", "")
-            return f"Running {cmd[:50]}{'...' if len(cmd) > 50 else ''}"
+            return f"Running `{cmd[:50]}{'…' if len(cmd) > 50 else ''}`"
         case "Glob":
-            return f"Finding {tool_input.get('pattern', '')}..."
+            return f"Finding {tool_input.get('pattern', '')}"
         case "Grep":
-            return f"Searching for {tool_input.get('pattern', '')}..."
+            return f"Searching for '{tool_input.get('pattern', '')}'"
         case "WebFetch":
-            return f"Fetching {tool_input.get('url', '')[:40]}..."
+            return f"Fetching {tool_input.get('url', '')[:40]}"
         case "WebSearch":
-            return f"Searching: {tool_input.get('query', '')}..."
-        case "Task":
-            return "Running subagent..."
+            return f"Searching: {tool_input.get('query', '')}"
+        case "Agent":
+            return "Running subagent…"
         case _:
-            return f"Using {tool_name}..."
+            return f"Using {tool_name}"
 
 
 def _get_project_dir(working_dir: str) -> str:
@@ -80,14 +80,21 @@ class ClaudeProvider(BaseProvider):
 
         if event_type == "assistant":
             for block in event.get("message", {}).get("content", []):
-                if block.get("type") == "tool_use":
+                block_type = block.get("type")
+                if block_type == "thinking":
+                    text = block.get("thinking", "")
+                    if text:
+                        events.append(StreamEvent(
+                            kind="status", text=truncate_status(text),
+                        ))
+                elif block_type == "tool_use":
                     events.append(StreamEvent(
                         kind="status",
                         text=_format_tool_status(
                             block.get("name", ""), block.get("input", {})
                         ),
                     ))
-                elif block.get("type") == "text" and block.get("text"):
+                elif block_type == "text" and block.get("text"):
                     events.append(StreamEvent(kind="response", text=block["text"]))
 
         elif event_type == "result":
@@ -95,7 +102,6 @@ class ClaudeProvider(BaseProvider):
             if isinstance(result_text, str) and result_text:
                 events.append(StreamEvent(kind="response", text=result_text))
 
-            # Capture session ID from result event for future --resume
             session_id = event.get("session_id")
             if isinstance(session_id, str) and session_id:
                 events.append(StreamEvent(kind="session", session_id=session_id))
