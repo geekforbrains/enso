@@ -113,7 +113,20 @@ def _tg_wait_for_message(token: str, timeout: int = 120) -> dict | None:
 
 
 def _tg_send_message(token: str, chat_id: int, text: str) -> bool:
-    """Send a message. Returns True on success."""
+    """Send a message with HTML formatting. Returns True on success."""
+    from .formatting import md_to_html
+
+    try:
+        html = md_to_html(text)
+        result = _tg_call(
+            token, "sendMessage",
+            chat_id=chat_id, text=html, parse_mode="HTML",
+        )
+        if result.get("ok"):
+            return True
+    except Exception:
+        pass
+    # Fallback to plain text
     try:
         result = _tg_call(token, "sendMessage", chat_id=chat_id, text=text)
         return result.get("ok", False)

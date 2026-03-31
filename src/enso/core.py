@@ -315,6 +315,13 @@ class Runtime:
         cmd = provider.build_command(prompt, model, session_id)
         log.info("[%s] Spawning: %s", provider.name, " ".join(cmd[:6]) + " ...")
 
+        # Strip new: prefix immediately so future calls use --resume
+        # even if this run crashes before emitting a result event.
+        key = (chat_id, provider.name)
+        if session_id and session_id.startswith("new:"):
+            self.session_by_chat_provider[key] = session_id.removeprefix("new:")
+            self.save_state()
+
         stderr = (
             asyncio.subprocess.STDOUT
             if provider.stderr_to_stdout()
@@ -417,7 +424,7 @@ class Runtime:
             prefix = f"({display} / {state['elapsed']}s)"
 
             if response_text:
-                for chunk in split_text(f"{prefix} {response_text}"):
+                for chunk in split_text(f"{prefix}\n{response_text}"):
                     await ctx.reply(chunk)
             elif error_text:
                 await ctx.reply(f"{prefix} Error: {error_text[:4000]}")
