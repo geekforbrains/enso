@@ -31,18 +31,21 @@ Or if you installed the background service, it's already running.
 
 ## Chat Commands
 
+Commands show up in Telegram's autocomplete menu when you type `/`.
+
 | Command | What it does |
 |---------|-------------|
-| `!claude` / `!codex` / `!gemini` | Switch agent |
-| `!status` | Active agent and model |
-| `!models` | List available models |
-| `!model <name>` | Switch model |
-| `!stop` | Kill whatever's running |
-| `!clear` | New session |
-| `!restart` | Restart the service |
-| `!help` | Show all commands |
+| `/use claude\|codex\|gemini` | Switch agent |
+| `/status` | Active agent and model |
+| `/models` | List available models |
+| `/model <name>` | Switch model |
+| `/stop` | Kill whatever's running |
+| `/clear` | New session |
+| `/restart` | Restart the service |
+| `/logs` | Last 25 log entries |
+| `/help` | Show all commands |
 
-You can also send files — they're downloaded and passed to the active agent.
+You can also send files — they're downloaded and passed to the active agent. Responses render with full Telegram formatting (bold, italic, code blocks, links, blockquotes).
 
 ## Background Jobs
 

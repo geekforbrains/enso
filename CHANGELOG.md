@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.0] - 2026-03-31
+
+### Added
+
+- Native Telegram slash commands with autocomplete menu (replaces `!` prefix commands)
+- Markdown → HTML rendering for agent responses, notifications, and CLI messages
+  - Bold, italic, underline, strikethrough, inline code, code blocks, links, headers, blockquotes
+  - Word-boundary guards prevent false positives on snake_case and math expressions
+  - Fallback to plain text if HTML parsing fails
+- Typing indicator while agents work (refreshed every 4s)
+- Thinking/narration surfaced in status updates (Claude thinking blocks, Codex agent messages)
+- `/logs` command to view recent log entries from Telegram
+
+### Changed
+
+- Status prefix format simplified to `(Provider / Xs)` — model name removed, parens instead of brackets
+- Response prefix on its own line so markdown headings render correctly
+- Session ID `new:` prefix stripped on spawn instead of on result, preventing "already in use" errors
+
+### Fixed
+
+- `clear_session` now only deletes the specific session file Enso owns, not all sessions in the project directory
+- Gemini CLI flag updated (`-p` → `--prompt`) for compatibility with recent Gemini CLI versions
+
 ## [0.7.0] - 2026-03-30
 
 ### Changed
