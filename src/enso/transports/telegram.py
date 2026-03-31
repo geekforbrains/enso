@@ -10,8 +10,8 @@ import sys
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from telegram import Update
-from telegram.ext import Application, MessageHandler, filters
+from telegram import BotCommand, Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from ..config import CONFIG_DIR
 from ..providers import PROVIDER_NAMES
@@ -23,6 +23,19 @@ if TYPE_CHECKING:
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB Telegram bot API limit
 
 log = logging.getLogger(__name__)
+
+# Commands registered with Telegram's menu UI.
+COMMANDS = [
+    BotCommand("stop", "Kill running process"),
+    BotCommand("use", "Switch provider"),
+    BotCommand("model", "Switch model"),
+    BotCommand("models", "List available models"),
+    BotCommand("status", "Provider & model info"),
+    BotCommand("clear", "Clear session"),
+    BotCommand("restart", "Restart the bot"),
+    BotCommand("logs", "Last 25 log entries"),
+    BotCommand("help", "Show commands"),
+]
 
 
 def _restart() -> None:
@@ -77,6 +90,15 @@ class TelegramTransport(BaseTransport):
         self.allowed_user_ids: set[int] = set(tg_cfg.get("allowed_user_ids", []))
         self._bot: Any = None
 
+    def _is_authorized(self, update: Update) -> bool:
+        user = update.effective_user
+        if user is None or update.message is None:
+            return False
+        if self.allowed_user_ids and user.id not in self.allowed_user_ids:
+            log.warning("Unauthorized user: %s", user.id)
+            return False
+        return True
+
     def start(self) -> None:
         """Start polling for Telegram messages (blocking)."""
         if not self.allowed_user_ids:
@@ -92,28 +114,32 @@ class TelegramTransport(BaseTransport):
             .concurrent_updates(True)
             .build()
         )
+
+        # Slash commands
+        for cmd in COMMANDS:
+            handler = getattr(self, f"_cmd_{cmd.command}", None)
+            if handler:
+                app.add_handler(CommandHandler(cmd.command, handler))
+
+        # Plain text → agent prompt
         app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message)
         )
+
+        # File uploads
         app.add_handler(
             MessageHandler(
-                (
-                    filters.Document.ALL
-                    | filters.PHOTO
-                    | filters.AUDIO
-                    | filters.VOICE
-                    | filters.VIDEO
-                    | filters.VIDEO_NOTE
-                )
-                & ~filters.COMMAND,
+                filters.Document.ALL | filters.PHOTO | filters.AUDIO
+                | filters.VOICE | filters.VIDEO | filters.VIDEO_NOTE,
                 self._handle_file_message,
             )
         )
         app.run_polling(allowed_updates=Update.ALL_TYPES)
 
     async def _post_init(self, app: Application) -> None:
-        """Called after the Application is initialized — start background tasks."""
+        """Register commands with Telegram and start background tasks."""
         self._bot = app.bot
+        await self._bot.set_my_commands(COMMANDS)
         self._scheduler_task = asyncio.create_task(
             self.runtime.run_job_scheduler()
         )
@@ -131,32 +157,14 @@ class TelegramTransport(BaseTransport):
 
     # -- Message handling --
 
-    async def _handle_message(self, update: Update, _context: Any) -> None:
-        """Handle incoming text messages."""
-        user = update.effective_user
-        if user is None or update.message is None:
+    async def _handle_message(self, update: Update, _ctx: Any) -> None:
+        if not self._is_authorized(update):
             return
-        if self.allowed_user_ids and user.id not in self.allowed_user_ids:
-            log.warning("Unauthorized user: %s", user.id)
-            return
-
-        chat_id = update.effective_chat.id
         text = (update.message.text or "").strip()
+        await self._dispatch(update, update.effective_chat.id, text)
 
-        # Command dispatch
-        if text.startswith("!"):
-            await self._handle_command(update, text, chat_id)
-            return
-
-        await self._dispatch(update, chat_id, text)
-
-    async def _handle_file_message(self, update: Update, _context: Any) -> None:
-        """Handle incoming file uploads — download and pass to agent as a prompt."""
-        user = update.effective_user
-        if user is None or update.message is None:
-            return
-        if self.allowed_user_ids and user.id not in self.allowed_user_ids:
-            log.warning("Unauthorized user: %s", user.id)
+    async def _handle_file_message(self, update: Update, _ctx: Any) -> None:
+        if not self._is_authorized(update):
             return
 
         msg = update.message
@@ -204,7 +212,7 @@ class TelegramTransport(BaseTransport):
         if lock.locked():
             log.info("Rejected (lock held) chat_id=%s provider=%s", chat_id, provider)
             await update.message.reply_text(
-                "A request is already running. Use !stop to cancel it."
+                "A request is already running. Use /stop to cancel it."
             )
             return
 
@@ -222,82 +230,49 @@ class TelegramTransport(BaseTransport):
                 if rt.running_task_by_chat.get(chat_id) is task:
                     rt.running_task_by_chat.pop(chat_id, None)
 
-    # -- Commands --
+    # -- Slash commands --
 
-    async def _handle_command(
-        self, update: Update, text: str, chat_id: int
-    ) -> None:
-        """Route ! commands to their handlers."""
+    async def _cmd_stop(self, update: Update, _ctx: Any) -> None:
+        if not self._is_authorized(update):
+            return
+        had, error = await self.runtime.stop_chat(update.effective_chat.id)
+        if not had:
+            await update.message.reply_text("No process running.")
+        elif error:
+            await update.message.reply_text(f"Error stopping: {error}")
+        else:
+            await update.message.reply_text("Process stopped.")
+
+    async def _cmd_use(self, update: Update, _ctx: Any) -> None:
+        if not self._is_authorized(update):
+            return
         rt = self.runtime
-
-        if text == "!stop":
-            had, error = await rt.stop_chat(chat_id)
-            if not had:
-                await update.message.reply_text("No process running.")
-            elif error:
-                await update.message.reply_text(f"Error stopping: {error}")
-            else:
-                await update.message.reply_text("Process stopped.")
-            return
-
-        # Provider shortcuts: !claude, !codex, !gemini
-        provider_shortcuts = {f"!{n}" for n in PROVIDER_NAMES}
-        if text.startswith("!use") or text in provider_shortcuts:
-            name = text.split()[-1].lstrip("!")
-            if name not in PROVIDER_NAMES:
-                await update.message.reply_text(
-                    f"Usage: !use {'|'.join(PROVIDER_NAMES)}"
-                )
-                return
-            rt.active_provider_by_chat[chat_id] = name
-            rt.save_state()
-            await update.message.reply_text(f"Provider set to {name}.")
-            return
-
-        if text == "!status":
-            provider = rt.get_active_provider(chat_id)
-            model = rt.get_active_model(chat_id, provider)
-            await update.message.reply_text(f"Provider: {provider}\nModel: {model}")
-            return
-
-        if text in ("!clear", "!clear all"):
-            await self._handle_clear(update, text, chat_id)
-            return
-
-        if text == "!models":
-            await self._handle_models(update, chat_id)
-            return
-
-        if text.startswith("!model"):
-            await self._handle_model(update, text, chat_id)
-            return
-
-        if text == "!help":
+        chat_id = update.effective_chat.id
+        args = (update.message.text or "").split()[1:]
+        name = args[0] if args else ""
+        if name not in PROVIDER_NAMES:
             await update.message.reply_text(
-                "!status — active provider & model\n"
-                "!use claude|codex|gemini — switch provider\n"
-                "!models — list models\n"
-                "!model <index|name> — switch model\n"
-                "!stop — kill running process\n"
-                "!clear [all] — clear session(s)\n"
-                "!restart — restart the bot\n"
-                "!logs — last 25 log entries"
+                f"Usage: /use {'|'.join(PROVIDER_NAMES)}"
             )
             return
+        rt.active_provider_by_chat[chat_id] = name
+        rt.save_state()
+        await update.message.reply_text(f"Provider set to {name}.")
 
-        if text == "!restart":
-            await update.message.reply_text("Restarting...")
-            asyncio.get_event_loop().call_later(1, _restart)
+    async def _cmd_status(self, update: Update, _ctx: Any) -> None:
+        if not self._is_authorized(update):
             return
-
-        if text == "!logs":
-            await self._handle_logs(update)
-            return
-
-        await update.message.reply_text("Unknown command. Try !help")
-
-    async def _handle_models(self, update: Update, chat_id: int) -> None:
         rt = self.runtime
+        chat_id = update.effective_chat.id
+        provider = rt.get_active_provider(chat_id)
+        model = rt.get_active_model(chat_id, provider)
+        await update.message.reply_text(f"Provider: {provider}\nModel: {model}")
+
+    async def _cmd_models(self, update: Update, _ctx: Any) -> None:
+        if not self._is_authorized(update):
+            return
+        rt = self.runtime
+        chat_id = update.effective_chat.id
         provider = rt.get_active_provider(chat_id)
         models = rt.models.get(provider, [])
         if not models:
@@ -310,24 +285,24 @@ class TelegramTransport(BaseTransport):
             lines.append(f"  {i}. {m}{marker}")
         await update.message.reply_text("\n".join(lines))
 
-    async def _handle_model(self, update: Update, text: str, chat_id: int) -> None:
+    async def _cmd_model(self, update: Update, _ctx: Any) -> None:
+        if not self._is_authorized(update):
+            return
         rt = self.runtime
+        chat_id = update.effective_chat.id
         provider = rt.get_active_provider(chat_id)
         models = rt.models.get(provider, [])
-        parts = text.split(maxsplit=1)
-        if len(parts) != 2 or not parts[1].strip():
+        args = (update.message.text or "").split()[1:]
+        if not args:
             await update.message.reply_text(
-                "Usage: !model <index|name>\nUse !models to see options."
+                "Usage: /model <index|name>\nUse /models to see options."
             )
             return
-
-        choice = parts[1].strip()
+        choice = args[0]
         if choice.isdigit():
             idx = int(choice) - 1
             if not (0 <= idx < len(models)):
-                await update.message.reply_text(
-                    f"Invalid index. Use 1-{len(models)}."
-                )
+                await update.message.reply_text(f"Invalid index. Use 1-{len(models)}.")
                 return
             selected = models[idx]
         elif choice in models:
@@ -335,14 +310,17 @@ class TelegramTransport(BaseTransport):
         else:
             await update.message.reply_text(f"Unknown model '{choice}'.")
             return
-
         rt.active_model_by_chat_provider[(chat_id, provider)] = selected
         rt.save_state()
         await update.message.reply_text(f"{provider} model set to {selected}.")
 
-    async def _handle_clear(self, update: Update, text: str, chat_id: int) -> None:
+    async def _cmd_clear(self, update: Update, _ctx: Any) -> None:
+        if not self._is_authorized(update):
+            return
         rt = self.runtime
-        clear_all = text.strip() == "!clear all"
+        chat_id = update.effective_chat.id
+        args = (update.message.text or "").split()[1:]
+        clear_all = args == ["all"]
         parts = []
         for prov_name in PROVIDER_NAMES:
             if clear_all or rt.get_active_provider(chat_id) == prov_name:
@@ -354,7 +332,15 @@ class TelegramTransport(BaseTransport):
         label = "all providers" if clear_all else "current provider"
         await update.message.reply_text(f"Cleared {label}!\n" + "\n".join(parts))
 
-    async def _handle_logs(self, update: Update) -> None:
+    async def _cmd_restart(self, update: Update, _ctx: Any) -> None:
+        if not self._is_authorized(update):
+            return
+        await update.message.reply_text("Restarting...")
+        asyncio.get_event_loop().call_later(1, _restart)
+
+    async def _cmd_logs(self, update: Update, _ctx: Any) -> None:
+        if not self._is_authorized(update):
+            return
         log_path = os.path.join(CONFIG_DIR, "enso.log")
         if not os.path.exists(log_path):
             await update.message.reply_text("No log file found.")
@@ -370,6 +356,12 @@ class TelegramTransport(BaseTransport):
             await update.message.reply_text(text[-4000:])
         except Exception as exc:
             await update.message.reply_text(f"Error reading logs: {exc}")
+
+    async def _cmd_help(self, update: Update, _ctx: Any) -> None:
+        if not self._is_authorized(update):
+            return
+        lines = [f"/{c.command} — {c.description}" for c in COMMANDS]
+        await update.message.reply_text("\n".join(lines))
 
 
 def _resolve_file(msg: Any) -> tuple[Any, str, str]:
