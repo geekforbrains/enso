@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.0] - 2026-03-31
+
+### Added
+
+- `enso message attach <file> [caption]` — send files (images, video, audio, documents) to Telegram
+  - Auto-selects Telegram API method based on file extension (sendPhoto, sendVideo, sendAudio, sendDocument)
+  - Captions rendered as HTML with markdown conversion
+- Both `send` and `attach` now queue a background message so the agent retains context of what was sent
+
+### Changed
+
+- Merged `enso message send` and `enso message notify` into a single `send` command — sends to Telegram immediately and queues as background context
+- Removed `enso message notify` (redundant)
+- Updated system prompt and bundled skills to document `attach` and simplified `send`
+
 ## [0.8.0] - 2026-03-31
 
 ### Added

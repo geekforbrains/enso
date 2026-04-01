@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import uuid
 from typing import Annotated
 
 import typer
@@ -30,7 +31,7 @@ log = logging.getLogger(__name__)
 
 app = typer.Typer(help="Enso — AI agents from your phone", no_args_is_help=True)
 job_app = typer.Typer(help="Manage background jobs")
-message_app = typer.Typer(help="Manage background messages")
+message_app = typer.Typer(help="Send messages and files to Telegram")
 service_app = typer.Typer(help="Manage the background service")
 app.add_typer(job_app, name="job")
 app.add_typer(message_app, name="message")
@@ -110,6 +111,73 @@ def _tg_wait_for_message(token: str, timeout: int = 120) -> dict | None:
             pass
         time.sleep(1)
     return None
+
+
+_PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+_VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
+_AUDIO_EXTENSIONS = {".mp3", ".ogg", ".wav", ".flac", ".m4a"}
+_VOICE_EXTENSIONS = {".oga"}
+
+
+def _tg_send_file(token: str, chat_id: int, file_path: str, caption: str = "") -> bool:
+    """Send a file to Telegram. Auto-selects method based on extension."""
+    import mimetypes
+    from email.mime.multipart import MIMEMultipart
+    from io import BytesIO
+
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext in _PHOTO_EXTENSIONS:
+        method, field = "sendPhoto", "photo"
+    elif ext in _VIDEO_EXTENSIONS:
+        method, field = "sendVideo", "video"
+    elif ext in _AUDIO_EXTENSIONS:
+        method, field = "sendAudio", "audio"
+    elif ext in _VOICE_EXTENSIONS:
+        method, field = "sendVoice", "voice"
+    else:
+        method, field = "sendDocument", "document"
+
+    url = TELEGRAM_API.format(token=token, method=method)
+    filename = os.path.basename(file_path)
+    content_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+
+    # Build multipart form data (stdlib only)
+    boundary = f"----enso{uuid.uuid4().hex}"
+    body = BytesIO()
+
+    def add_field(name: str, value: str) -> None:
+        body.write(f"--{boundary}\r\n".encode())
+        body.write(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode())
+        body.write(f"{value}\r\n".encode())
+
+    add_field("chat_id", str(chat_id))
+    if caption:
+        from .formatting import md_to_html
+        add_field("caption", md_to_html(caption))
+        add_field("parse_mode", "HTML")
+
+    # File part
+    body.write(f"--{boundary}\r\n".encode())
+    body.write(
+        f'Content-Disposition: form-data; name="{field}"; filename="{filename}"\r\n'
+        f"Content-Type: {content_type}\r\n\r\n".encode()
+    )
+    with open(file_path, "rb") as f:
+        body.write(f.read())
+    body.write(b"\r\n")
+    body.write(f"--{boundary}--\r\n".encode())
+
+    req = urllib.request.Request(
+        url,
+        data=body.getvalue(),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            result = json.loads(resp.read())
+            return result.get("ok", False)
+    except Exception:
+        return False
 
 
 def _tg_send_message(token: str, chat_id: int, text: str) -> bool:
@@ -753,12 +821,22 @@ def job_run(
 
 @message_app.command("send")
 def message_send(
-    text: Annotated[str, typer.Argument(help="Message text")],
-    source: Annotated[str, typer.Option("--source", help="Source label")] = "manual",
+    text: Annotated[str, typer.Argument(help="Message text to send")],
 ) -> None:
-    """Queue a background message for the next conversation."""
-    msg_send(text, source)
-    console.print("[green]\u2713[/] Message queued.")
+    """Send a message to Telegram and queue as background context."""
+    cfg = load_config()
+    tg_cfg = cfg.get("transports", {}).get("telegram", {})
+    token = tg_cfg.get("bot_token", "")
+    user_ids = tg_cfg.get("allowed_user_ids", [])
+    if not token or not user_ids:
+        console.print("[red]\u2717[/] Telegram not configured. Run [bold]enso setup[/].")
+        raise typer.Exit(1)
+    for uid in user_ids:
+        if not _tg_send_message(token, uid, text[:4096]):
+            console.print(f"[red]\u2717[/] Failed to send to user {uid}.")
+            raise typer.Exit(1)
+    msg_send(text, source="notify")
+    console.print("[green]\u2713[/] Message sent.")
 
 
 @message_app.command("list")
@@ -776,23 +854,33 @@ def message_list() -> None:
         console.print(f"  {text[:200]}{'...' if len(text) > 200 else ''}\n")
 
 
-@message_app.command("notify")
-def message_notify(
-    text: Annotated[str, typer.Argument(help="Message text to send immediately")],
+
+@message_app.command("attach")
+def message_attach(
+    file: Annotated[str, typer.Argument(help="Path to file to send")],
+    caption: Annotated[str, typer.Argument(help="Optional caption")] = "",
 ) -> None:
-    """Send a message directly to Telegram (real-time, not queued)."""
+    """Send a file (image, video, audio, document) to Telegram."""
+    if not os.path.isfile(file):
+        console.print(f"[red]✗[/] File not found: {file}")
+        raise typer.Exit(1)
     cfg = load_config()
     tg_cfg = cfg.get("transports", {}).get("telegram", {})
     token = tg_cfg.get("bot_token", "")
     user_ids = tg_cfg.get("allowed_user_ids", [])
     if not token or not user_ids:
-        console.print("[red]\u2717[/] Telegram not configured. Run [bold]enso setup[/].")
+        console.print("[red]✗[/] Telegram not configured. Run [bold]enso setup[/].")
         raise typer.Exit(1)
     for uid in user_ids:
-        if not _tg_send_message(token, uid, text[:4096]):
-            console.print(f"[red]\u2717[/] Failed to send to user {uid}.")
+        if not _tg_send_file(token, uid, file, caption):
+            console.print(f"[red]✗[/] Failed to send to user {uid}.")
             raise typer.Exit(1)
-    console.print("[green]\u2713[/] Message sent.")
+    filename = os.path.basename(file)
+    note = f"Sent attachment: {filename}"
+    if caption:
+        note += f" — {caption}"
+    msg_send(note, source="attach")
+    console.print("[green]✓[/] File sent.")
 
 
 @message_app.command("clear")

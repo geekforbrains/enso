@@ -23,9 +23,10 @@ You have access to the `enso` CLI for managing background tasks
 and messaging:
 
 ```bash
-# Messages — communicate outside the current conversation
-enso message send "text"             # queue for next conversation
-enso message notify "text"           # send to Telegram immediately
+# Messages — send to Telegram and queue as background context
+enso message send "text"             # send text message
+enso message attach /path/to/file    # send a file (image, video, doc)
+enso message attach /path "caption"  # send file with caption
 enso message list                    # show pending messages
 enso message clear                   # clear the queue
 
@@ -48,6 +49,6 @@ Schedules use the system's local timezone. Do not convert to UTC.
 ## Background Messages
 
 When background messages are present, they'll be injected at the start
-of your conversation. These come from background jobs or manual
-`enso message send` calls. Consider them when responding — they
+of your conversation. These come from background jobs, `enso message send`,
+or `enso message attach` calls. Consider them when responding — they
 may contain context from something that ran while the user was away.

@@ -8,9 +8,8 @@ description: Create and manage scheduled background jobs. Use when the user asks
 Background jobs are scheduled tasks that run autonomously via the
 Enso service. Each job spawns a CLI agent on a cron schedule.
 Jobs that fail notify the user automatically. Successful jobs are
-silent by default — use `enso message notify` in the prompt to
-send real-time alerts, or `enso message send` to queue output
-for the user's next conversation.
+silent by default — use `enso message send` in the prompt to
+send alerts to the user.
 
 ## Workflow
 
