@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.1] - 2026-03-31
+
+### Changed
+
+- Prerun exit code convention: `exit 1` = no work (silent skip at DEBUG), `exit 2+` = real error (WARNING with stderr)
+- "Running job" log now fires after the gate passes — idle gated jobs produce zero INFO output
+- Runner captures stderr from prerun scripts for error diagnostics
+
+### Fixed
+
+- harbour-poll: API failures (curl errors, empty claims) now exit 2 instead of being silently swallowed as "no work"
+- youtube-playlist-summaries: playlist fetch failure now exit 2 instead of exit 1
+
 ## [0.9.0] - 2026-03-31
 
 ### Added

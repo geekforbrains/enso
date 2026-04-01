@@ -496,7 +496,6 @@ class Runtime:
 
     async def _execute_job(self, job: Job) -> None:
         """Run a job: prerun gate, provider subprocess, notify, queue message."""
-        log.info("Running job: %s (%s/%s)", job.name, job.provider, job.model)
 
         # Prerun gate
         prerun_output = ""
@@ -509,13 +508,22 @@ class Runtime:
                     stderr=asyncio.subprocess.PIPE,
                     cwd=job.job_dir,
                 )
-                stdout, _ = await proc.communicate()
+                stdout, stderr = await proc.communicate()
                 if proc.returncode != 0:
-                    log.info("Job '%s' prerun failed, skipping", job.name)
+                    if proc.returncode == 1:
+                        log.debug("Job '%s' prerun: no work, skipping", job.name)
+                    else:
+                        err = stderr.decode(errors="replace").strip()
+                        log.warning(
+                            "Job '%s' prerun error (exit %s): %s",
+                            job.name, proc.returncode, err or "(no stderr)",
+                        )
                     self._job_last_run[job.dir_name] = datetime.now()
                     self.save_state()
                     return
                 prerun_output = stdout.decode(errors="replace").strip()
+
+        log.info("Running job: %s (%s/%s)", job.name, job.provider, job.model)
 
         # Build prompt with prerun output injection
         prompt = job.prompt
