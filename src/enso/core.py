@@ -26,6 +26,20 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+def _status_edit_due(elapsed: int) -> bool:
+    """Return True when the status message should be edited at this tick.
+
+    Progressive backoff: every 1s for the first 10s, every 2s until 60s,
+    then every 5s after that.  Keeps Telegram happy while still feeling
+    responsive at the start of a request.
+    """
+    if elapsed <= 10:
+        return True
+    if elapsed <= 60:
+        return elapsed % 2 == 0
+    return elapsed % 5 == 0
+
+
 def split_text(text: str, limit: int = 4096) -> list[str]:
     """Split text at line boundaries to fit message size limits."""
     if len(text) <= limit:
@@ -399,7 +413,11 @@ class Runtime:
         log.info("[%s] chat=%s model=%s: %.80s", provider_name, chat_id, model, prompt)
 
         await ctx.send_typing()
-        status_msg = await ctx.reply_status(f"({display} / 0s) Working…")
+        status_msg = None
+        try:
+            status_msg = await ctx.reply_status(f"({display} / 0s) Working…")
+        except Exception:
+            log.warning("Failed to send initial status message for chat %s", chat_id, exc_info=True)
         state = {"status": "Working…", "elapsed": 0, "display": display}
         stop = asyncio.Event()
         ticker = asyncio.create_task(self._run_ticker(ctx, status_msg, state, stop))
@@ -418,7 +436,8 @@ class Runtime:
 
             stop.set()
             ticker.cancel()
-            await ctx.delete_status(status_msg)
+            if status_msg is not None:
+                await ctx.delete_status(status_msg)
 
             response_text = provider.format_response(response_parts)
             prefix = f"({display} / {state['elapsed']}s)"
@@ -434,8 +453,9 @@ class Runtime:
         except asyncio.CancelledError:
             stop.set()
             ticker.cancel()
-            with contextlib.suppress(Exception):
-                await ctx.edit_status(status_msg, f"({display}) Stopped.")
+            if status_msg is not None:
+                with contextlib.suppress(Exception):
+                    await ctx.edit_status(status_msg, f"({display}) Stopped.")
             raise
 
         except Exception as exc:
@@ -444,23 +464,34 @@ class Runtime:
             log.error("Error processing %s request: %s", provider_name, exc, exc_info=True)
             prefix = f"({display} / {state['elapsed']}s)"
             try:
-                await ctx.edit_status(status_msg, f"{prefix} Error: {str(exc)[:4000]}")
+                if status_msg is not None:
+                    await ctx.edit_status(status_msg, f"{prefix} Error: {str(exc)[:4000]}")
+                    return
             except Exception:
-                for chunk in split_text(f"{prefix} Error: {exc}"):
-                    await ctx.reply(chunk)
+                pass
+            for chunk in split_text(f"{prefix} Error: {exc}"):
+                await ctx.reply(chunk)
 
     async def _run_ticker(
-        self, ctx: TransportContext, status_msg: Any, state: dict, stop: asyncio.Event
+        self, ctx: TransportContext, status_msg: Any | None, state: dict, stop: asyncio.Event
     ) -> None:
         """Background task that updates status and typing indicator."""
+        status_updates_enabled = status_msg is not None
         while not stop.is_set():
             await asyncio.sleep(1)
             if stop.is_set():
                 break
             state["elapsed"] += 1
-            text = f"({state['display']} / {state['elapsed']}s) {state['status']}"
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(ctx.edit_status(status_msg, text), timeout=5.0)
+            if status_updates_enabled and _status_edit_due(state["elapsed"]):
+                text = f"({state['display']} / {state['elapsed']}s) {state['status']}"
+                try:
+                    await asyncio.wait_for(ctx.edit_status(status_msg, text), timeout=5.0)
+                except Exception:
+                    status_updates_enabled = False
+                    log.warning(
+                        "Disabling status updates for current request after edit failure",
+                        exc_info=True,
+                    )
             # Refresh typing indicator every 4s (expires after 5s)
             if state["elapsed"] % 4 == 0:
                 with contextlib.suppress(Exception):

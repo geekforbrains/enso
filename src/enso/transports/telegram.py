@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from telegram import BotCommand, Update
 from telegram.constants import ChatAction, ParseMode
+from telegram.error import BadRequest
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from ..config import CONFIG_DIR
@@ -25,6 +26,12 @@ if TYPE_CHECKING:
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB Telegram bot API limit
 
 log = logging.getLogger(__name__)
+
+
+def _is_parse_error(exc: BadRequest) -> bool:
+    """Return True when Telegram rejected HTML formatting rather than delivery."""
+    return "parse entities" in str(exc).lower()
+
 
 # Commands registered with Telegram's menu UI.
 COMMANDS = [
@@ -71,7 +78,9 @@ class TelegramContext(TransportContext):
             await self._update.message.reply_text(
                 md_to_html(text), parse_mode=ParseMode.HTML,
             )
-        except Exception:
+        except BadRequest as exc:
+            if not _is_parse_error(exc):
+                raise
             # Fallback to plain text if HTML parsing fails
             await self._update.message.reply_text(text)
 
@@ -166,11 +175,16 @@ class TelegramTransport(BaseTransport):
                 await self._bot.send_message(
                     chat_id=user_id, text=html, parse_mode=ParseMode.HTML,
                 )
-            except Exception:
+            except BadRequest as exc:
+                if not _is_parse_error(exc):
+                    log.exception("Failed to notify user %s", user_id)
+                    continue
                 try:
                     await self._bot.send_message(chat_id=user_id, text=text[:4096])
                 except Exception:
                     log.exception("Failed to notify user %s", user_id)
+            except Exception:
+                log.exception("Failed to notify user %s", user_id)
 
     # -- Message handling --
 
