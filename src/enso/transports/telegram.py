@@ -10,10 +10,16 @@ import sys
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from telegram import BotCommand, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.error import BadRequest
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    MessageHandler,
+    filters,
+)
 
 from ..config import CONFIG_DIR
 from ..formatting import md_to_html
@@ -38,7 +44,6 @@ COMMANDS = [
     BotCommand("stop", "Kill running process"),
     BotCommand("use", "Switch provider"),
     BotCommand("model", "Switch model"),
-    BotCommand("models", "List available models"),
     BotCommand("status", "Provider & model info"),
     BotCommand("clear", "Clear session"),
     BotCommand("restart", "Restart the bot"),
@@ -112,7 +117,10 @@ class TelegramTransport(BaseTransport):
 
     def _is_authorized(self, update: Update) -> bool:
         user = update.effective_user
-        if user is None or update.message is None:
+        if user is None:
+            return False
+        # Allow callback queries (inline keyboard taps) — they have no .message
+        if update.message is None and update.callback_query is None:
             return False
         if self.allowed_user_ids and user.id not in self.allowed_user_ids:
             log.warning("Unauthorized user: %s", user.id)
@@ -140,6 +148,9 @@ class TelegramTransport(BaseTransport):
             handler = getattr(self, f"_cmd_{cmd.command}", None)
             if handler:
                 app.add_handler(CommandHandler(cmd.command, handler))
+
+        # Inline keyboard callbacks
+        app.add_handler(CallbackQueryHandler(self._handle_callback))
 
         # Plain text → agent prompt
         app.add_handler(
@@ -280,15 +291,27 @@ class TelegramTransport(BaseTransport):
         rt = self.runtime
         chat_id = update.effective_chat.id
         args = (update.message.text or "").split()[1:]
-        name = args[0] if args else ""
-        if name not in PROVIDER_NAMES:
-            await update.message.reply_text(
-                f"Usage: /use {'|'.join(PROVIDER_NAMES)}"
-            )
+
+        # Direct usage: /use claude
+        if args and args[0] in PROVIDER_NAMES:
+            rt.active_provider_by_chat[chat_id] = args[0]
+            rt.save_state()
+            await update.message.reply_text(f"Provider set to {args[0]}.")
             return
-        rt.active_provider_by_chat[chat_id] = name
-        rt.save_state()
-        await update.message.reply_text(f"Provider set to {name}.")
+
+        # No args → show inline keyboard
+        active = rt.get_active_provider(chat_id)
+        buttons = [
+            InlineKeyboardButton(
+                f"{'● ' if p == active else ''}{p}",
+                callback_data=f"use:{p}",
+            )
+            for p in PROVIDER_NAMES
+        ]
+        await update.message.reply_text(
+            "Switch provider:",
+            reply_markup=InlineKeyboardMarkup([buttons]),
+        )
 
     async def _cmd_status(self, update: Update, _ctx: Any) -> None:
         if not self._is_authorized(update):
@@ -299,23 +322,6 @@ class TelegramTransport(BaseTransport):
         model = rt.get_active_model(chat_id, provider)
         await update.message.reply_text(f"Provider: {provider}\nModel: {model}")
 
-    async def _cmd_models(self, update: Update, _ctx: Any) -> None:
-        if not self._is_authorized(update):
-            return
-        rt = self.runtime
-        chat_id = update.effective_chat.id
-        provider = rt.get_active_provider(chat_id)
-        models = rt.models.get(provider, [])
-        if not models:
-            await update.message.reply_text(f"No models configured for {provider}.")
-            return
-        active = rt.get_active_model(chat_id, provider)
-        lines = [f"Models for {provider}:"]
-        for i, m in enumerate(models, 1):
-            marker = " (active)" if m == active else ""
-            lines.append(f"  {i}. {m}{marker}")
-        await update.message.reply_text("\n".join(lines))
-
     async def _cmd_model(self, update: Update, _ctx: Any) -> None:
         if not self._is_authorized(update):
             return
@@ -324,26 +330,44 @@ class TelegramTransport(BaseTransport):
         provider = rt.get_active_provider(chat_id)
         models = rt.models.get(provider, [])
         args = (update.message.text or "").split()[1:]
-        if not args:
-            await update.message.reply_text(
-                "Usage: /model <index|name>\nUse /models to see options."
-            )
-            return
-        choice = args[0]
-        if choice.isdigit():
-            idx = int(choice) - 1
-            if not (0 <= idx < len(models)):
-                await update.message.reply_text(f"Invalid index. Use 1-{len(models)}.")
+
+        # Direct usage: /model sonnet
+        if args:
+            choice = args[0]
+            if choice.isdigit():
+                idx = int(choice) - 1
+                if not (0 <= idx < len(models)):
+                    await update.message.reply_text(f"Invalid index. Use 1-{len(models)}.")
+                    return
+                selected = models[idx]
+            elif choice in models:
+                selected = choice
+            else:
+                await update.message.reply_text(f"Unknown model '{choice}'.")
                 return
-            selected = models[idx]
-        elif choice in models:
-            selected = choice
-        else:
-            await update.message.reply_text(f"Unknown model '{choice}'.")
+            rt.active_model_by_chat_provider[(chat_id, provider)] = selected
+            rt.save_state()
+            await update.message.reply_text(f"{provider} model → {selected}")
             return
-        rt.active_model_by_chat_provider[(chat_id, provider)] = selected
-        rt.save_state()
-        await update.message.reply_text(f"{provider} model set to {selected}.")
+
+        # No args → show inline keyboard
+        if not models:
+            await update.message.reply_text(f"No models configured for {provider}.")
+            return
+        active = rt.get_active_model(chat_id, provider)
+        buttons = [
+            InlineKeyboardButton(
+                f"{'● ' if m == active else ''}{m}",
+                callback_data=f"model:{m}",
+            )
+            for m in models
+        ]
+        # Stack vertically — one model per row for readability
+        keyboard = [[b] for b in buttons]
+        await update.message.reply_text(
+            f"Switch model ({provider}):",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
 
     async def _cmd_clear(self, update: Update, _ctx: Any) -> None:
         if not self._is_authorized(update):
@@ -351,7 +375,26 @@ class TelegramTransport(BaseTransport):
         rt = self.runtime
         chat_id = update.effective_chat.id
         args = (update.message.text or "").split()[1:]
-        clear_all = args == ["all"]
+
+        # Direct usage: /clear all
+        if args == ["all"]:
+            self._do_clear(chat_id, clear_all=True)
+            await update.message.reply_text("Cleared all providers.")
+            return
+
+        # No args → show options
+        active = rt.get_active_provider(chat_id)
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(f"Clear {active}", callback_data="clear:current"),
+                InlineKeyboardButton("Clear all", callback_data="clear:all"),
+            ],
+        ])
+        await update.message.reply_text("Clear session:", reply_markup=keyboard)
+
+    def _do_clear(self, chat_id: int, *, clear_all: bool = False) -> list[str]:
+        """Execute session clear and return summary lines."""
+        rt = self.runtime
         parts = []
         for prov_name in PROVIDER_NAMES:
             if clear_all or rt.get_active_provider(chat_id) == prov_name:
@@ -360,8 +403,7 @@ class TelegramTransport(BaseTransport):
                 summary = provider.clear_session(sid, rt.working_dir)
                 parts.append(f"{prov_name.capitalize()}: {summary}")
         rt.save_state()
-        label = "all providers" if clear_all else "current provider"
-        await update.message.reply_text(f"Cleared {label}!\n" + "\n".join(parts))
+        return parts
 
     async def _cmd_restart(self, update: Update, _ctx: Any) -> None:
         if not self._is_authorized(update):
@@ -393,6 +435,42 @@ class TelegramTransport(BaseTransport):
             return
         lines = [f"/{c.command} — {c.description}" for c in COMMANDS]
         await update.message.reply_text("\n".join(lines))
+
+    # -- Inline keyboard callbacks --
+
+    async def _handle_callback(self, update: Update, _ctx: Any) -> None:
+        """Route inline keyboard button taps."""
+        if not self._is_authorized(update):
+            return
+        query = update.callback_query
+        await query.answer()  # Acknowledge the tap immediately
+
+        data = query.data or ""
+        chat_id = update.effective_chat.id
+        rt = self.runtime
+
+        if data.startswith("use:"):
+            name = data.split(":", 1)[1]
+            if name in PROVIDER_NAMES:
+                rt.active_provider_by_chat[chat_id] = name
+                rt.save_state()
+                await query.edit_message_text(f"Provider → {name}")
+
+        elif data.startswith("model:"):
+            model = data.split(":", 1)[1]
+            provider = rt.get_active_provider(chat_id)
+            models = rt.models.get(provider, [])
+            if model in models:
+                rt.active_model_by_chat_provider[(chat_id, provider)] = model
+                rt.save_state()
+                await query.edit_message_text(f"{provider} model → {model}")
+
+        elif data.startswith("clear:"):
+            scope = data.split(":", 1)[1]
+            clear_all = scope == "all"
+            parts = self._do_clear(chat_id, clear_all=clear_all)
+            label = "all providers" if clear_all else "current provider"
+            await query.edit_message_text(f"Cleared {label}.\n" + "\n".join(parts))
 
 
 def _resolve_file(msg: Any) -> tuple[Any, str, str]:
