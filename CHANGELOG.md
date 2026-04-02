@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10.0] - 2026-04-02
+
+### Added
+
+- Inline keyboard buttons for `/use`, `/model`, and `/clear` — tap to select instead of typing
+- `/model` now shows available models as tappable buttons (merged `/models` into `/model`)
+- `/clear` shows "Clear current" / "Clear all" buttons instead of requiring `/clear all`
+- Active provider/model marked with ● in button lists
+
+### Removed
+
+- `/models` command (folded into `/model`)
+
+### Fixed
+
+- Progressive backoff on status message edits to avoid Telegram flood control errors
+
 ## [0.9.1] - 2026-03-31
 
 ### Changed

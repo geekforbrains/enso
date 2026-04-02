@@ -35,12 +35,11 @@ Commands show up in Telegram's autocomplete menu when you type `/`.
 
 | Command | What it does |
 |---------|-------------|
-| `/use claude\|codex\|gemini` | Switch agent |
+| `/use` | Switch agent (shows buttons, or `/use claude`) |
+| `/model` | Switch model (shows buttons, or `/model sonnet`) |
 | `/status` | Active agent and model |
-| `/models` | List available models |
-| `/model <name>` | Switch model |
 | `/stop` | Kill whatever's running |
-| `/clear` | New session |
+| `/clear` | New session (shows current/all buttons) |
 | `/restart` | Restart the service |
 | `/logs` | Last 25 log entries |
 | `/help` | Show all commands |
@@ -57,7 +56,7 @@ enso job list
 enso job run daily-review    # test it manually
 ```
 
-Each job has a `JOB.md` with a cron schedule, provider, model, and prompt. Jobs can include a prerun script that gates execution — exit non-zero to skip, stdout gets injected into the prompt via `{{prerun_output}}`. The bundled `jobs` skill teaches your agents how to create and manage jobs themselves.
+Each job has a `JOB.md` with a cron schedule, provider, model, and prompt. Jobs can include a prerun script that gates execution — `exit 0` to proceed, `exit 1` to skip silently, `exit 2+` for errors. Prerun stdout gets injected into the prompt via `{{prerun_output}}`. The bundled `jobs` skill teaches your agents how to create and manage jobs themselves.
 
 ## Service Management
 
