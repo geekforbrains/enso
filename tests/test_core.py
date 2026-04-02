@@ -131,6 +131,7 @@ async def test_process_request_injects_messages(tmp_enso, sample_config):
         async def reply_status(self, text): return "handle"
         async def edit_status(self, handle, text): pass
         async def delete_status(self, handle): pass
+        async def send_typing(self): pass
 
     async def fake_run(provider, prompt, chat_id, model):
         prompts_received.append(prompt)
