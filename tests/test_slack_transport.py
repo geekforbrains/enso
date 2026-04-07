@@ -132,20 +132,38 @@ async def test_context_reply_splits_long_messages(mock_client):
 
 
 @pytest.mark.asyncio
-async def test_context_reply_status_posts_message(mock_client):
-    """reply_status posts a regular message and returns its ts."""
+async def test_context_reply_status_uses_thread_status(mock_client):
+    """When in a thread, reply_status uses assistant.threads.setStatus."""
     ctx = SlackContext(mock_client, "C_CHAN", "1234.5678")
+    handle = await ctx.reply_status("working...")
+    assert handle == "thread_status"
+    mock_client.api_call.assert_called_once()
+    call_args = mock_client.api_call.call_args
+    assert call_args[0][0] == "assistant.threads.setStatus"
+    assert call_args[1]["json"]["status"] == "working..."
+
+
+@pytest.mark.asyncio
+async def test_context_reply_status_falls_back_to_message(mock_client):
+    """Without a thread_ts, falls back to posting a regular message."""
+    ctx = SlackContext(mock_client, "C_CHAN")  # no thread_ts
     ts = await ctx.reply_status("working...")
     assert ts == "1234567890.000001"
     mock_client.chat_postMessage.assert_called_once()
-    call_kwargs = mock_client.chat_postMessage.call_args.kwargs
-    assert call_kwargs["text"] == "working..."
-    assert call_kwargs["thread_ts"] == "1234.5678"
+
+
+@pytest.mark.asyncio
+async def test_context_edit_status_thread(mock_client):
+    """edit_status with thread_status handle updates thread status."""
+    ctx = SlackContext(mock_client, "C_CHAN", "1234.5678")
+    await ctx.edit_status("thread_status", "still working...")
+    mock_client.api_call.assert_called_once()
+    assert mock_client.api_call.call_args[1]["json"]["status"] == "still working..."
 
 
 @pytest.mark.asyncio
 async def test_context_edit_status_message(mock_client):
-    """edit_status updates the message."""
+    """edit_status with a ts handle updates the message."""
     ctx = SlackContext(mock_client, "C_CHAN")
     await ctx.edit_status("1234.5678", "still working...")
     mock_client.chat_update.assert_called_once_with(
@@ -154,8 +172,17 @@ async def test_context_edit_status_message(mock_client):
 
 
 @pytest.mark.asyncio
+async def test_context_delete_status_thread(mock_client):
+    """delete_status with thread_status handle clears thread status."""
+    ctx = SlackContext(mock_client, "C_CHAN", "1234.5678")
+    await ctx.delete_status("thread_status")
+    mock_client.api_call.assert_called_once()
+    assert mock_client.api_call.call_args[1]["json"]["status"] == ""
+
+
+@pytest.mark.asyncio
 async def test_context_delete_status_message(mock_client):
-    """delete_status deletes the message."""
+    """delete_status with a ts handle deletes the message."""
     ctx = SlackContext(mock_client, "C_CHAN")
     await ctx.delete_status("1234.5678")
     mock_client.chat_delete.assert_called_once_with(
