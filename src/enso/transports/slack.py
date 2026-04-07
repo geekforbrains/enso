@@ -89,25 +89,6 @@ class SlackContext(TransportContext):
             )
 
     async def reply_status(self, text: str) -> Any:
-        # Use Slack's assistant thread status API for a native "thinking" indicator.
-        # Falls back to posting a regular message if the API isn't available.
-        if self._thread_ts:
-            try:
-                await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: self._client.api_call(
-                        "assistant.threads.setStatus",
-                        json={
-                            "channel_id": self._channel,
-                            "thread_ts": self._thread_ts,
-                            "status": text,
-                        },
-                    ),
-                )
-                return "thread_status"  # sentinel handle
-            except Exception:
-                pass  # fall through to regular message
-
         resp = await asyncio.get_event_loop().run_in_executor(
             None,
             lambda: self._client.chat_postMessage(
@@ -119,21 +100,6 @@ class SlackContext(TransportContext):
         return resp["ts"]
 
     async def edit_status(self, handle: Any, text: str) -> None:
-        if handle == "thread_status":
-            with contextlib.suppress(Exception):
-                await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: self._client.api_call(
-                        "assistant.threads.setStatus",
-                        json={
-                            "channel_id": self._channel,
-                            "thread_ts": self._thread_ts,
-                            "status": text,
-                        },
-                    ),
-                )
-            return
-
         await asyncio.get_event_loop().run_in_executor(
             None,
             lambda: self._client.chat_update(
@@ -144,21 +110,6 @@ class SlackContext(TransportContext):
         )
 
     async def delete_status(self, handle: Any) -> None:
-        if handle == "thread_status":
-            with contextlib.suppress(Exception):
-                await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: self._client.api_call(
-                        "assistant.threads.setStatus",
-                        json={
-                            "channel_id": self._channel,
-                            "thread_ts": self._thread_ts,
-                            "status": "",
-                        },
-                    ),
-                )
-            return
-
         with contextlib.suppress(Exception):
             await asyncio.get_event_loop().run_in_executor(
                 None,
@@ -214,6 +165,7 @@ class SlackTransport(BaseTransport):
         # Register event handlers.
         app.event("message")(self._handle_event)
         app.event("app_mention")(self._handle_mention_event)
+        # Absorb assistant lifecycle events so Bolt doesn't log warnings.
         app.event("assistant_thread_started")(lambda event, say: None)
         app.event("assistant_thread_context_changed")(lambda event, say: None)
 
