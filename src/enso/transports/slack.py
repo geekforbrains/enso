@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
 import logging
 import os
 import re
 import threading
+import time
 import urllib.request
 import uuid
 from typing import TYPE_CHECKING, Any
@@ -46,6 +48,20 @@ COMMANDS = {
     "clear": "Clear session",
     "help": "Show commands",
 }
+
+# Max threads to remember for participation tracking (bounded LRU).
+_MAX_PARTICIPATED_THREADS = 10_000
+
+
+def _chat_id(channel: str, thread_ts: str | None) -> ChatId:
+    """Derive a session-scoped chat ID.
+
+    Threaded messages get their own session so conversations in different
+    threads don't bleed into each other (mirrors openclaw behaviour).
+    """
+    if thread_ts:
+        return f"{channel}:{thread_ts}"
+    return channel
 
 
 class SlackContext(TransportContext):
@@ -167,6 +183,10 @@ class SlackTransport(BaseTransport):
         self._client: WebClient | None = None
         self._bot_user_id: str | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        # Threads the bot has replied in — auto-respond without @mention.
+        self._participated_threads: collections.OrderedDict[str, None] = (
+            collections.OrderedDict()
+        )
 
     def _is_authorized(self, user_id: str) -> bool:
         if self.allowed_user_ids and user_id not in self.allowed_user_ids:
@@ -209,9 +229,37 @@ class SlackTransport(BaseTransport):
             self.runtime.run_job_scheduler(), self._loop
         )
 
-        # Socket Mode blocks on the main thread (like Telegram polling).
-        handler = SocketModeHandler(app, self.app_token)
-        handler.start()
+        # Socket Mode blocks on the main thread with auto-reconnect.
+        backoff = 1
+        max_backoff = 300  # 5 minutes
+        while True:
+            try:
+                handler = SocketModeHandler(app, self.app_token)
+                connected_at = time.monotonic()
+                handler.start()  # blocks until disconnect
+                break  # clean exit
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:
+                # If we stayed connected for >60s, reset backoff — the
+                # disconnect was likely transient, not a config error.
+                if time.monotonic() - connected_at > 60:
+                    backoff = 1
+                # Non-recoverable auth errors — don't retry forever.
+                err_str = str(exc).lower()
+                if any(
+                    tok in err_str
+                    for tok in ("invalid_auth", "account_inactive", "token_revoked")
+                ):
+                    log.error("Non-recoverable Slack auth error: %s", exc)
+                    raise
+                log.error(
+                    "Socket Mode disconnected: %s — reconnecting in %ds",
+                    exc,
+                    backoff,
+                )
+                time.sleep(backoff)
+                backoff = min(backoff * 2, max_backoff)
 
     def _run_async_loop(self) -> None:
         """Run the asyncio event loop in a background thread."""
@@ -248,33 +296,48 @@ class SlackTransport(BaseTransport):
         if not self._is_authorized(user_id):
             return
 
-        # In channels, only respond if the bot is mentioned or in a thread
-        # the bot is already participating in.
+        # In channels, only respond if the bot is mentioned or if the bot
+        # is already participating in this thread (openclaw-style tracking).
         channel_type = event.get("channel_type", "")
         text = (event.get("text") or "").strip()
-
-        if channel_type != "im":
-            # Channel message — only respond to @mentions.
-            if self._bot_user_id and f"<@{self._bot_user_id}>" not in text:
-                return
-            # Strip the mention from the prompt.
-            text = re.sub(rf"<@{self._bot_user_id}>\s*", "", text).strip()
-
         channel = event.get("channel", "")
         thread_ts = event.get("thread_ts") or event.get("ts")
+        msg_ts = event.get("ts", "")
+
+        if channel_type != "im":
+            mentioned = (
+                self._bot_user_id and f"<@{self._bot_user_id}>" in text
+            )
+            in_participated_thread = (
+                thread_ts in self._participated_threads
+            )
+            if not mentioned and not in_participated_thread:
+                return
+            # Strip the mention from the prompt if present.
+            if mentioned:
+                text = re.sub(rf"<@{self._bot_user_id}>\s*", "", text).strip()
+
         files = event.get("files") or []
 
         if files:
-            self._handle_files(channel, thread_ts, text, files)
+            self._handle_files(channel, thread_ts, msg_ts, text, files)
             return
 
         if not text:
             return
 
-        self._dispatch_to_runtime(channel, thread_ts, text, user_id)
+        self._dispatch_to_runtime(channel, thread_ts, msg_ts, text, user_id)
 
     def _handle_mention_event(self, event: dict, say: Any) -> None:
-        """Handle @mention events in channels."""
+        """Handle @mention events in channels.
+
+        DMs are skipped here — they're already handled by ``_handle_event``
+        which prevents duplicate processing (matches openclaw behaviour).
+        """
+        # Skip DMs — already handled by the message event handler.
+        if event.get("channel_type") == "im":
+            return
+
         user_id = event.get("user", "")
         if not self._is_authorized(user_id):
             return
@@ -289,12 +352,14 @@ class SlackTransport(BaseTransport):
 
         channel = event.get("channel", "")
         thread_ts = event.get("thread_ts") or event.get("ts")
-        self._dispatch_to_runtime(channel, thread_ts, text, user_id)
+        msg_ts = event.get("ts", "")
+        self._dispatch_to_runtime(channel, thread_ts, msg_ts, text, user_id)
 
     def _handle_files(
         self,
         channel: str,
         thread_ts: str | None,
+        msg_ts: str,
         caption: str,
         files: list[dict],
     ) -> None:
@@ -354,13 +419,18 @@ class SlackTransport(BaseTransport):
         if caption:
             prompt += f"\n\n{caption}"
 
-        chat_id: ChatId = channel
+        chat_id = _chat_id(channel, thread_ts)
         asyncio.run_coroutine_threadsafe(
-            self._dispatch(channel, thread_ts, chat_id, prompt), self._loop
+            self._dispatch(channel, thread_ts, msg_ts, chat_id, prompt), self._loop
         )
 
     def _dispatch_to_runtime(
-        self, channel: str, thread_ts: str | None, text: str, user_id: str
+        self,
+        channel: str,
+        thread_ts: str | None,
+        msg_ts: str,
+        text: str,
+        user_id: str,
     ) -> None:
         """Parse commands or dispatch a prompt to the runtime."""
         if not self._loop:
@@ -379,13 +449,40 @@ class SlackTransport(BaseTransport):
                 return
 
         # Regular message — dispatch to agent.
-        chat_id: ChatId = channel
+        chat_id = _chat_id(channel, thread_ts)
         asyncio.run_coroutine_threadsafe(
-            self._dispatch(channel, thread_ts, chat_id, text), self._loop
+            self._dispatch(channel, thread_ts, msg_ts, chat_id, text), self._loop
         )
 
+    def _track_thread(self, thread_ts: str | None) -> None:
+        """Record that the bot participated in a thread (bounded LRU)."""
+        if not thread_ts:
+            return
+        # Move to end (most recent) if already present.
+        self._participated_threads.pop(thread_ts, None)
+        self._participated_threads[thread_ts] = None
+        while len(self._participated_threads) > _MAX_PARTICIPATED_THREADS:
+            self._participated_threads.popitem(last=False)
+
+    def _add_reaction(self, channel: str, ts: str, name: str = "eyes") -> None:
+        """Add an emoji reaction to a message (best-effort)."""
+        if self._client:
+            with contextlib.suppress(Exception):
+                self._client.reactions_add(channel=channel, timestamp=ts, name=name)
+
+    def _remove_reaction(self, channel: str, ts: str, name: str = "eyes") -> None:
+        """Remove an emoji reaction from a message (best-effort)."""
+        if self._client:
+            with contextlib.suppress(Exception):
+                self._client.reactions_remove(channel=channel, timestamp=ts, name=name)
+
     async def _dispatch(
-        self, channel: str, thread_ts: str | None, chat_id: ChatId, prompt: str
+        self,
+        channel: str,
+        thread_ts: str | None,
+        msg_ts: str,
+        chat_id: ChatId,
+        prompt: str,
     ) -> None:
         """Send a prompt to the active provider, guarding against concurrent requests."""
         rt = self.runtime
@@ -393,14 +490,13 @@ class SlackTransport(BaseTransport):
         lock = rt.get_chat_lock(chat_id)
 
         if lock.locked():
-            log.info("Rejected (lock held) chat_id=%s provider=%s", chat_id, provider)
-            if self._client:
-                self._client.chat_postMessage(
-                    channel=channel,
-                    text="A request is already running. Use `!stop` to cancel it.",
-                    thread_ts=thread_ts,
-                )
-            return
+            log.info("Waiting for lock chat_id=%s provider=%s", chat_id, provider)
+
+        # Ack reaction — immediate visual feedback that the message was received.
+        if msg_ts:
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: self._add_reaction(channel, msg_ts),
+            )
 
         ctx = SlackContext(self._client, channel, thread_ts)
         async with lock:
@@ -410,16 +506,24 @@ class SlackTransport(BaseTransport):
             rt.running_task_by_chat[chat_id] = task
             try:
                 await task
+                # Track thread participation on success so future messages
+                # in this thread don't require an @mention.
+                self._track_thread(thread_ts)
             except asyncio.CancelledError:
                 log.info("Task cancelled by user for chat_id=%s", chat_id)
             finally:
                 if rt.running_task_by_chat.get(chat_id) is task:
                     rt.running_task_by_chat.pop(chat_id, None)
+                # Remove the ack reaction now that we've replied.
+                if msg_ts:
+                    await asyncio.get_event_loop().run_in_executor(
+                        None, lambda: self._remove_reaction(channel, msg_ts),
+                    )
 
     # -- Commands --
 
     async def _cmd_stop(self, channel: str, thread_ts: str | None, args: str) -> None:
-        chat_id: ChatId = channel
+        chat_id = _chat_id(channel, thread_ts)
         had, error = await self.runtime.stop_chat(chat_id)
         msg = "Process stopped." if had and not error else (
             f"Error stopping: {error}" if error else "No process running."
@@ -430,7 +534,7 @@ class SlackTransport(BaseTransport):
             )
 
     async def _cmd_use(self, channel: str, thread_ts: str | None, args: str) -> None:
-        chat_id: ChatId = channel
+        chat_id = _chat_id(channel, thread_ts)
         rt = self.runtime
         if args and args in PROVIDER_NAMES:
             rt.active_provider_by_chat[chat_id] = args
@@ -446,7 +550,7 @@ class SlackTransport(BaseTransport):
             )
 
     async def _cmd_model(self, channel: str, thread_ts: str | None, args: str) -> None:
-        chat_id: ChatId = channel
+        chat_id = _chat_id(channel, thread_ts)
         rt = self.runtime
         provider = rt.get_active_provider(chat_id)
         models = rt.models.get(provider, [])
@@ -483,7 +587,7 @@ class SlackTransport(BaseTransport):
             )
 
     async def _cmd_status(self, channel: str, thread_ts: str | None, args: str) -> None:
-        chat_id: ChatId = channel
+        chat_id = _chat_id(channel, thread_ts)
         rt = self.runtime
         provider = rt.get_active_provider(chat_id)
         model = rt.get_active_model(chat_id, provider)
@@ -494,7 +598,7 @@ class SlackTransport(BaseTransport):
             )
 
     async def _cmd_clear(self, channel: str, thread_ts: str | None, args: str) -> None:
-        chat_id: ChatId = channel
+        chat_id = _chat_id(channel, thread_ts)
         rt = self.runtime
         clear_all = args == "all"
         parts = []

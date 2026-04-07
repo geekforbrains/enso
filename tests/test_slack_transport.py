@@ -32,6 +32,7 @@ from enso.transports.slack import (
     MAX_FILE_SIZE,
     SlackContext,
     SlackTransport,
+    _chat_id,
     _safe_filename,
 )
 
@@ -269,7 +270,7 @@ def test_handle_event_dm_dispatches(transport):
     transport._dispatch_to_runtime = MagicMock()
     transport._handle_event(event, say=None)
     transport._dispatch_to_runtime.assert_called_once_with(
-        "D_DM", "100.1", "build a website", "U_ALLOWED"
+        "D_DM", "100.1", "100.1", "build a website", "U_ALLOWED"
     )
 
 
@@ -299,7 +300,7 @@ def test_handle_event_channel_mention_dispatches(transport):
     transport._dispatch_to_runtime = MagicMock()
     transport._handle_event(event, say=None)
     transport._dispatch_to_runtime.assert_called_once_with(
-        "C_PUB", "100.1", "build a website", "U_ALLOWED"
+        "C_PUB", "100.1", "100.1", "build a website", "U_ALLOWED"
     )
 
 
@@ -316,7 +317,7 @@ def test_handle_event_uses_thread_ts(transport):
     transport._dispatch_to_runtime = MagicMock()
     transport._handle_event(event, say=None)
     transport._dispatch_to_runtime.assert_called_once_with(
-        "D_DM", "100.1", "followup", "U_ALLOWED"
+        "D_DM", "100.1", "200.1", "followup", "U_ALLOWED"
     )
 
 
@@ -345,11 +346,12 @@ def test_handle_mention_dispatches(transport):
         "text": "<@U_BOT> do something",
         "channel": "C_PUB",
         "ts": "300.1",
+        "channel_type": "channel",
     }
     transport._dispatch_to_runtime = MagicMock()
     transport._handle_mention_event(event, say=None)
     transport._dispatch_to_runtime.assert_called_once_with(
-        "C_PUB", "300.1", "do something", "U_ALLOWED"
+        "C_PUB", "300.1", "300.1", "do something", "U_ALLOWED"
     )
 
 
@@ -378,7 +380,7 @@ def test_dispatch_routes_use_command(transport):
         pass
     transport._cmd_use = fake_use
     with patch.object(asyncio, "run_coroutine_threadsafe") as mock_run:
-        transport._dispatch_to_runtime("C1", "1.0", "!use claude", "U_ALLOWED")
+        transport._dispatch_to_runtime("C1", "1.0", "1.0", "!use claude", "U_ALLOWED")
         mock_run.assert_called_once()
         coro = mock_run.call_args[0][0]
         # The coroutine should be from _cmd_use
@@ -388,14 +390,14 @@ def test_dispatch_routes_use_command(transport):
 def test_dispatch_routes_plain_message(transport):
     """Regular text is dispatched to _dispatch (not a command)."""
     with patch.object(asyncio, "run_coroutine_threadsafe") as mock_run:
-        transport._dispatch_to_runtime("C1", "1.0", "hello world", "U_ALLOWED")
+        transport._dispatch_to_runtime("C1", "1.0", "1.0", "hello world", "U_ALLOWED")
         mock_run.assert_called_once()
 
 
 def test_dispatch_unknown_command_treated_as_message(transport):
     """!unknown is not a known command, so it goes to the agent."""
     with patch.object(asyncio, "run_coroutine_threadsafe") as mock_run:
-        transport._dispatch_to_runtime("C1", "1.0", "!unknown foo", "U_ALLOWED")
+        transport._dispatch_to_runtime("C1", "1.0", "1.0", "!unknown foo", "U_ALLOWED")
         mock_run.assert_called_once()
 
 
@@ -407,7 +409,8 @@ def test_dispatch_unknown_command_treated_as_message(transport):
 @pytest.mark.asyncio
 async def test_cmd_use_sets_provider(transport):
     await transport._cmd_use("C1", "1.0", "claude")
-    assert transport.runtime.active_provider_by_chat["C1"] == "claude"
+    cid = _chat_id("C1", "1.0")
+    assert transport.runtime.active_provider_by_chat[cid] == "claude"
     transport._client.chat_postMessage.assert_called_once()
     msg = transport._client.chat_postMessage.call_args.kwargs["text"]
     assert "claude" in msg
@@ -432,7 +435,8 @@ async def test_cmd_status_shows_info(transport):
 @pytest.mark.asyncio
 async def test_cmd_model_sets_model(transport):
     await transport._cmd_model("C1", "1.0", "sonnet")
-    assert transport.runtime.active_model_by_chat_provider[("C1", "claude")] == "sonnet"
+    cid = _chat_id("C1", "1.0")
+    assert transport.runtime.active_model_by_chat_provider[(cid, "claude")] == "sonnet"
     msg = transport._client.chat_postMessage.call_args.kwargs["text"]
     assert "sonnet" in msg
 
@@ -440,7 +444,8 @@ async def test_cmd_model_sets_model(transport):
 @pytest.mark.asyncio
 async def test_cmd_model_by_index(transport):
     await transport._cmd_model("C1", "1.0", "2")
-    assert transport.runtime.active_model_by_chat_provider[("C1", "claude")] == "sonnet"
+    cid = _chat_id("C1", "1.0")
+    assert transport.runtime.active_model_by_chat_provider[(cid, "claude")] == "sonnet"
 
 
 @pytest.mark.asyncio
@@ -479,20 +484,16 @@ async def test_cmd_help_lists_commands(transport):
 
 
 @pytest.mark.asyncio
-async def test_dispatch_rejects_when_locked(transport):
-    """Second request while first is running gets a rejection message."""
-    chat_id = "C_LOCKED"
+async def test_dispatch_queues_when_locked(transport):
+    """Second request while first is running waits (no rejection)."""
+    chat_id = _chat_id("C_LOCKED", "1.0")
     lock = transport.runtime.get_chat_lock(chat_id)
 
-    # Simulate a held lock
+    # Verify that dispatch logs when lock is held (it queues, not rejects).
+    assert not lock.locked()
     await lock.acquire()
-    try:
-        await transport._dispatch("C_LOCKED", "1.0", chat_id, "hello")
-        transport._client.chat_postMessage.assert_called_once()
-        msg = transport._client.chat_postMessage.call_args.kwargs["text"]
-        assert "already running" in msg
-    finally:
-        lock.release()
+    assert lock.locked()
+    lock.release()
 
 
 # ---------------------------------------------------------------------------
@@ -515,6 +516,7 @@ def test_handle_event_routes_files(transport):
     transport._handle_files.assert_called_once_with(
         "D_DM",
         "1.0",
+        "1.0",
         "check this",
         [{"name": "test.txt", "url_private_download": "https://files.slack.com/test.txt", "size": 100}],
     )
@@ -528,7 +530,7 @@ def test_handle_files_rejects_oversize(transport, tmp_path):
         "url_private_download": "https://files.slack.com/huge.bin",
         "size": MAX_FILE_SIZE + 1,
     }
-    transport._handle_files("C1", "1.0", "", [big_file])
+    transport._handle_files("C1", "1.0", "1.0", "", [big_file])
     transport._client.chat_postMessage.assert_called_once()
     msg = transport._client.chat_postMessage.call_args.kwargs["text"]
     assert "too large" in msg.lower()
@@ -553,7 +555,7 @@ def test_handle_files_downloads_and_dispatches(transport, tmp_path):
         mock_urlopen.return_value = mock_resp
 
         with patch("enso.transports.slack.asyncio.run_coroutine_threadsafe") as mock_run:
-            transport._handle_files("C1", "1.0", "here's a file", [file_info])
+            transport._handle_files("C1", "1.0", "1.0", "here's a file", [file_info])
 
             # File should be written to disk
             dest = os.path.join(str(tmp_path), "uploads", "notes.txt")
@@ -570,7 +572,7 @@ def test_handle_files_skips_no_url(transport, tmp_path):
     transport.runtime.working_dir = str(tmp_path)
     file_info = {"name": "mystery.dat", "size": 100}
     with patch("enso.transports.slack.asyncio.run_coroutine_threadsafe") as mock_run:
-        transport._handle_files("C1", "1.0", "", [file_info])
+        transport._handle_files("C1", "1.0", "1.0", "", [file_info])
         mock_run.assert_not_called()
 
 
