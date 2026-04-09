@@ -424,6 +424,7 @@ class Runtime:
 
         response_parts: list[str] = []
         error_text = ""
+        usage_pct: int | None = None
 
         try:
             async for event in self.run_provider(provider, prompt, chat_id, model):
@@ -433,6 +434,8 @@ class Runtime:
                     response_parts.append(event.text)
                 elif event.kind == "error":
                     error_text = event.text
+                elif event.kind == "usage" and event.usage:
+                    usage_pct = event.usage.get("pct")
 
             stop.set()
             ticker.cancel()
@@ -440,7 +443,8 @@ class Runtime:
                 await ctx.delete_status(status_msg)
 
             response_text = provider.format_response(response_parts)
-            prefix = f"({display} / {state['elapsed']}s)"
+            usage_part = f" / {usage_pct}%" if usage_pct is not None else ""
+            prefix = f"({display}{usage_part} / {state['elapsed']}s)"
 
             if response_text:
                 for chunk in split_text(f"{prefix}\n{response_text}"):
@@ -571,7 +575,21 @@ class Runtime:
             stderr=asyncio.subprocess.STDOUT,
             cwd=self.working_dir,
         )
-        stdout, _ = await proc.communicate()
+        timeout_secs = 15 * 60  # 15 minute hard limit per job
+        try:
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout_secs,
+            )
+        except asyncio.TimeoutError:
+            log.warning("Job '%s' timed out after %ds, killing", job.name, timeout_secs)
+            proc.kill()
+            await proc.wait()
+            output = f"Job timed out after {timeout_secs}s"
+            if self.transport:
+                await self.transport.notify(f"\u26a0\ufe0f [{job.name}] {output}")
+            self._job_last_run[job.dir_name] = datetime.now()
+            self.save_state()
+            return
         output = stdout.decode(errors="replace").strip()
 
         # Only notify on failure — successful jobs handle their own messaging

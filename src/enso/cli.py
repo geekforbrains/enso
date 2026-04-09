@@ -315,6 +315,17 @@ def _install_launchd(config: dict, enso_bin: str) -> bool:
     working_dir = config.get("working_dir", os.getcwd())
     log_path = os.path.expanduser("~/.enso/enso.log")
 
+    # Snapshot API keys and essential env vars so provider CLIs work
+    # under launchd's minimal environment.
+    extra_env = ""
+    for key in (
+        "HOME", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
+        "GEMINI_API_KEY", "GOOGLE_API_KEY",
+    ):
+        val = os.environ.get(key)
+        if val:
+            extra_env += f"        <key>{key}</key>\n        <string>{val}</string>\n"
+
     plist = f"""\
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" \
@@ -336,7 +347,7 @@ def _install_launchd(config: dict, enso_bin: str) -> bool:
         <string>{path_str}</string>
         <key>PYTHONUNBUFFERED</key>
         <string>1</string>
-    </dict>
+{extra_env}    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>

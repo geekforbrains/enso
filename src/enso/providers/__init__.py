@@ -24,9 +24,10 @@ def truncate_status(text: str, limit: int = 60) -> str:
 class StreamEvent:
     """Unified event type emitted by all providers during streaming."""
 
-    kind: Literal["status", "response", "session", "error"]
+    kind: Literal["status", "response", "session", "error", "usage"]
     text: str = ""
     session_id: str | None = None
+    usage: dict | None = None
 
 
 class BaseProvider(ABC):
