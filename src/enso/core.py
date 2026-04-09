@@ -90,7 +90,7 @@ class Runtime:
     # -- Workspace setup --
 
     def install_system_prompts(self) -> None:
-        """Set up working directory, system prompts, skills, and config-level dirs.
+        """Set up working directory, system prompts, skills, hooks, and config dirs.
 
         Creates:
         - ~/.enso/jobs/ and ~/.enso/skills/
@@ -99,6 +99,7 @@ class Runtime:
         - AGENTS.md, GEMINI.md as symlinks to CLAUDE.md
         - .claude/skills and .agents/skills symlinked to ~/.enso/skills/
           (so Claude, Codex, and Gemini auto-discover skills)
+        - Auto-compact notification hooks for Claude and Gemini
         """
         from .config import JOBS_DIR
 
@@ -138,6 +139,28 @@ class Runtime:
                 os.path.join(parent, "skills"), skills_dir
             )
 
+        # Auto-compact notification hooks — lets the user know via Telegram
+        # when a provider is compacting context (which can be slow).
+        # Claude: PreCompact with "auto" matcher
+        # Gemini: PreCompress with "auto" matcher
+        # Codex: no compaction hooks available
+        notify_cmd = (
+            "enso message send"
+            " 'Autocompacting context, this might take a moment...'"
+        )
+        self._ensure_hook_entry(
+            os.path.join(self.working_dir, ".claude", "settings.json"),
+            event="PreCompact",
+            matcher="auto",
+            command=notify_cmd,
+        )
+        self._ensure_hook_entry(
+            os.path.join(self.working_dir, ".gemini", "settings.json"),
+            event="PreCompress",
+            matcher="auto",
+            command=notify_cmd,
+        )
+
     @staticmethod
     def _ensure_symlink(link_path: str, target: str) -> None:
         """Create a symlink if it doesn't already exist."""
@@ -148,6 +171,55 @@ class Runtime:
             log.info("Symlinked %s -> %s", link_path, target)
         except OSError:
             log.warning("Could not symlink %s", link_path, exc_info=True)
+
+    @staticmethod
+    def _ensure_hook_entry(
+        settings_path: str,
+        *,
+        event: str,
+        matcher: str,
+        command: str,
+    ) -> None:
+        """Ensure a specific hook exists in a CLI settings file.
+
+        Reads the file, checks whether the exact command is already
+        present under the given event, and appends a new entry only
+        if missing.  Other hooks and settings are left untouched.
+        """
+        settings: dict = {}
+        if os.path.exists(settings_path):
+            try:
+                with open(settings_path) as f:
+                    settings = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                log.warning(
+                    "Could not read %s, skipping hook install",
+                    settings_path,
+                )
+                return
+
+        hooks = settings.setdefault("hooks", {})
+        event_hooks = hooks.setdefault(event, [])
+
+        # Check if this exact hook command is already installed
+        for entry in event_hooks:
+            for h in entry.get("hooks", []):
+                if h.get("command") == command:
+                    return
+
+        event_hooks.append({
+            "matcher": matcher,
+            "hooks": [{"type": "command", "command": command, "async": True}],
+        })
+
+        os.makedirs(os.path.dirname(settings_path), exist_ok=True)
+        try:
+            with open(settings_path, "w") as f:
+                json.dump(settings, f, indent=2)
+                f.write("\n")
+            log.info("Installed %s hook in %s", event, settings_path)
+        except OSError:
+            log.warning("Could not write %s", settings_path, exc_info=True)
 
     @staticmethod
     def _install_bundled_skills(skills_dir: str) -> None:
