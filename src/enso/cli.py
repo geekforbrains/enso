@@ -1014,7 +1014,8 @@ def _main(
     ] = False,
 ) -> None:
     """Enso — Personal AI Agent."""
-    logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
+    fmt = "%(asctime)s [%(name)s] %(levelname)s - %(message)s"
+    logging.basicConfig(format=fmt, level=logging.INFO)
     for name in _NOISY_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
 

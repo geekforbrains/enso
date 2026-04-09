@@ -405,12 +405,17 @@ class Runtime:
         bg = messages.consume()
         if bg:
             prompt = f"{messages.format_for_injection(bg)}\n\n{prompt}"
+            log.info("[%s] Injected %d background message(s) into prompt", provider_name, len(bg))
 
         provider = self.make_provider(provider_name)
         model = self.get_active_model(chat_id, provider_name)
         display = provider_name.capitalize()
 
-        log.info("[%s] chat=%s model=%s: %.80s", provider_name, chat_id, model, prompt)
+        log.info(
+            "[%s] chat=%s model=%s prompt_len=%d: %.120s",
+            provider_name, chat_id, model, len(prompt), prompt,
+        )
+        log.debug("[%s] Full prompt:\n%s", provider_name, prompt)
 
         await ctx.send_typing()
         status_msg = None

@@ -75,19 +75,26 @@ def _safe_filename(name: str) -> str:
 class TelegramContext(TransportContext):
     """Sends replies back to a Telegram chat."""
 
-    def __init__(self, update: Update):
+    def __init__(self, update: Update, *, is_reply: bool = False):
         self._update = update
+        self._is_reply = is_reply
 
     async def reply(self, text: str) -> None:
+        # When the user sent a reply-message, visually thread the bot's
+        # response back to that message so the link is clear in chat.
+        kwargs: dict[str, Any] = {"parse_mode": ParseMode.HTML}
+        if self._is_reply:
+            kwargs["do_quote"] = True
         try:
-            await self._update.message.reply_text(
-                md_to_html(text), parse_mode=ParseMode.HTML,
-            )
+            await self._update.message.reply_text(md_to_html(text), **kwargs)
         except BadRequest as exc:
             if not _is_parse_error(exc):
                 raise
             # Fallback to plain text if HTML parsing fails
-            await self._update.message.reply_text(text)
+            plain_kwargs: dict[str, Any] = {}
+            if self._is_reply:
+                plain_kwargs["do_quote"] = True
+            await self._update.message.reply_text(text, **plain_kwargs)
 
     async def reply_status(self, text: str) -> Any:
         return await self._update.message.reply_text(text)
@@ -203,6 +210,13 @@ class TelegramTransport(BaseTransport):
         if not self._is_authorized(update):
             return
         text = (update.message.text or "").strip()
+        log.info(
+            "Incoming message: chat_id=%s msg_id=%s is_reply=%s len=%d",
+            update.effective_chat.id,
+            update.message.message_id,
+            update.message.reply_to_message is not None,
+            len(text),
+        )
         await self._dispatch(update, update.effective_chat.id, text)
 
     async def _handle_file_message(self, update: Update, _ctx: Any) -> None:
@@ -258,7 +272,19 @@ class TelegramTransport(BaseTransport):
             )
             return
 
-        ctx = TelegramContext(update)
+        # Extract reply context and prepend to prompt
+        reply_context = _build_reply_context(update.message)
+        is_reply = reply_context is not None
+        if reply_context:
+            prompt = f"{reply_context}\n\n{prompt}"
+
+        log.info(
+            "Dispatch: chat_id=%s provider=%s is_reply=%s prompt_len=%d",
+            chat_id, provider, is_reply, len(prompt),
+        )
+        log.debug("Dispatch prompt:\n%s", prompt)
+
+        ctx = TelegramContext(update, is_reply=is_reply)
         async with lock:
             task = asyncio.create_task(
                 rt.process_request(provider, prompt, chat_id, ctx)
@@ -471,6 +497,52 @@ class TelegramTransport(BaseTransport):
             parts = self._do_clear(chat_id, clear_all=clear_all)
             label = "all providers" if clear_all else "current provider"
             await query.edit_message_text(f"Cleared {label}.\n" + "\n".join(parts))
+
+
+def _build_reply_context(msg: Any) -> str | None:
+    """Build a reply-context prefix when the user replies to a specific message.
+
+    Returns a bracketed context string to prepend to the prompt, or None if
+    the message is not a reply.
+    """
+    reply = msg.reply_to_message
+    if reply is None:
+        return None
+
+    # Prefer the user's partial quote selection (highlighted text) over
+    # the full original message.
+    quote = getattr(msg, "quote", None)
+    if quote and getattr(quote, "text", None):
+        quoted_text = quote.text
+        quote_source = "partial_quote"
+    elif getattr(reply, "text", None):
+        quoted_text = reply.text
+        quote_source = "full_text"
+    elif getattr(reply, "caption", None):
+        quoted_text = reply.caption
+        quote_source = "caption"
+    else:
+        quoted_text = "(media or deleted message)"
+        quote_source = "fallback"
+
+    # Truncate very long quotes to keep the prompt manageable
+    if len(quoted_text) > 500:
+        quoted_text = quoted_text[:500] + "…"
+
+    # In a 1:1 chat the replied-to message is either from the bot or the user
+    from_user = getattr(reply, "from_user", None)
+    sender = "assistant" if from_user and from_user.is_bot else "user"
+
+    log.info(
+        "Reply context: replying_to_msg_id=%s sender=%s source=%s quoted_len=%d",
+        getattr(reply, "message_id", "?"),
+        sender,
+        quote_source,
+        len(quoted_text),
+    )
+    log.debug("Reply quoted text: %s", quoted_text)
+
+    return f"[Replying to {sender}: {quoted_text}]"
 
 
 def _resolve_file(msg: Any) -> tuple[Any, str, str]:
