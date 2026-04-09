@@ -38,7 +38,8 @@ Commands show up in Telegram's autocomplete menu when you type `/`.
 | `/use` | Switch agent (shows buttons, or `/use claude`) |
 | `/model` | Switch model (shows buttons, or `/model sonnet`) |
 | `/status` | Active agent and model |
-| `/stop` | Kill whatever's running |
+| `/stop` | Stop process & clear queue |
+| `/queue` | View & manage queued messages |
 | `/clear` | New session (shows current/all buttons) |
 | `/restart` | Restart the service |
 | `/logs` | Last 25 log entries |
