@@ -1,6 +1,6 @@
 [project]
 name = "enso"
-version = "0.10.0"
+version = "0.11.0.dev0"
 description = "Control your favourite AI agent CLIs from your phone via Telegram."
 readme = "README.md"
 license = "MIT"
