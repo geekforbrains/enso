@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Added
 
 - Telegram reply support — reply to any message in the chat and the quoted context is included in the prompt, with the bot's response visually threaded back
+- Auto-compact notification — when Claude or Gemini auto-compacts context, a Telegram message is sent immediately so you know why the next response is slow. Hooks are installed automatically on setup.
 - Context window usage percentage in Telegram response prefix — `(Claude / 11% / 23s)`
 - Launchd plist now snapshots API keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.) so provider CLIs work under launchd's minimal environment
 - 15-minute hard timeout for background jobs (previously could hang indefinitely)
