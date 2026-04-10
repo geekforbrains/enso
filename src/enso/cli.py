@@ -721,8 +721,8 @@ def _setup_slack(config: dict) -> None:
 
     # Allowed users
     console.print(
-        "\n  Enter Slack user IDs allowed to interact"
-        " (comma-separated), or * for everyone."
+        "\n\n  Enter Slack user IDs allowed to interact"
+        " (comma-separated), or * for everyone.\n"
     )
     raw_users = Prompt.ask("  Allowed users", default="*")
     if raw_users.strip() == "*":
@@ -733,8 +733,9 @@ def _setup_slack(config: dict) -> None:
         ]
 
     # Optional notify channel
+    console.print()
     notify = Prompt.ask(
-        "  Default notify channel (ID or name, optional)",
+        "  Default notify channel (ID or name, leave blank to skip)",
         default="",
     )
 
