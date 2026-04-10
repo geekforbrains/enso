@@ -129,6 +129,7 @@ class Runtime:
             os.makedirs(d, exist_ok=True)
 
         self._install_bundled_skills(skills_dir)
+        self._install_skill_tools(skills_dir)
 
         # System prompt
         source = importlib.resources.files("enso").joinpath("system_prompt.md")
@@ -266,6 +267,33 @@ class Runtime:
                 with open(dest_file, "w") as out:
                     out.write(content)
                 log.info("Updated bundled skill: %s/%s", skill_dir.name, f.name)
+
+    def _install_skill_tools(self, skills_dir: str) -> None:
+        """Copy executable tool scripts from skills into workspace/tools/."""
+        tools_dir = os.path.join(self.working_dir, "tools")
+        for entry in os.listdir(skills_dir):
+            skill_path = os.path.join(skills_dir, entry)
+            if not os.path.isdir(skill_path):
+                continue
+            for fname in os.listdir(skill_path):
+                if not fname.endswith(".py"):
+                    continue
+                src = os.path.join(skill_path, fname)
+                os.makedirs(tools_dir, exist_ok=True)
+                dest = os.path.join(tools_dir, fname)
+                try:
+                    with open(src) as f:
+                        content = f.read()
+                    if os.path.exists(dest):
+                        with open(dest) as f:
+                            if f.read() == content:
+                                continue
+                    with open(dest, "w") as f:
+                        f.write(content)
+                    os.chmod(dest, 0o755)
+                    log.info("Installed tool: %s", fname)
+                except OSError:
+                    log.warning("Could not install tool %s", fname, exc_info=True)
 
     # -- State persistence --
 

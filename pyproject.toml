@@ -42,7 +42,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-enso = ["system_prompt.md", "skills/**/*.md"]
+enso = ["system_prompt.md", "skills/**/*.md", "skills/**/*.py"]
 
 [tool.ruff]
 target-version = "py310"

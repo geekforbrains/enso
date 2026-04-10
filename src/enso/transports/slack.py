@@ -117,6 +117,9 @@ class SlackTransport(BaseTransport):
         self.allowed_users: list[str] = [str(u) for u in raw]
         self.bot_user_id: str = slack_cfg.get("bot_user_id", "")
         self.notify_channel: str = slack_cfg.get("notify_channel", "")
+        self.channel_context_messages: int = int(
+            slack_cfg.get("channel_context_messages", 20)
+        )
         self._client: AsyncWebClient | None = None
 
     def start(self) -> None:
@@ -184,14 +187,18 @@ class SlackTransport(BaseTransport):
                 await ctx.reply(response)
                 return
 
-        # Fetch thread history if mentioned in an existing thread
-        thread_context = ""
+        # Inject context: channel history for top-level, thread history for threads
+        context = ""
         if thread_ts:
-            thread_context = await self._fetch_thread_context(
+            context = await self._fetch_thread_context(
                 client, channel, thread_ts,
             )
+        else:
+            context = await self._fetch_channel_context(
+                client, channel, ts,
+            )
 
-        prompt = f"{thread_context}\n\n{text}".strip() if thread_context else text
+        prompt = f"{context}\n\n{text}".strip() if context else text
 
         preview = text[:50].replace("\n", " ")
         ctx = SlackContext(client, channel, reply_thread_ts)
@@ -221,14 +228,9 @@ class SlackTransport(BaseTransport):
             # Direct message — always respond
             conv_id = channel
             reply_thread_ts = thread_ts  # None for inline, set for threaded
-        elif thread_ts:
-            # Channel thread — only respond if bot is already participating
-            conv_id = f"{channel}:{thread_ts}"
-            if not self._is_bot_participating(conv_id):
-                return
-            reply_thread_ts = thread_ts
         else:
-            # Top-level channel message without mention — ignore
+            # Channel messages (top-level or thread) without mention — ignore.
+            # Bot only responds in channels via app_mention.
             return
 
         if not is_authorized(user, self.allowed_users):
@@ -272,22 +274,20 @@ class SlackTransport(BaseTransport):
 
     # -- Helpers --
 
-    def _is_bot_participating(self, conv_id: str) -> bool:
-        """Check if the bot has an active session for this conversation."""
-        return any(
-            key[0] == conv_id for key in self.runtime.session_by_chat_provider
-        )
-
     async def _fetch_thread_context(
         self,
         client: AsyncWebClient,
         channel: str,
         thread_ts: str,
     ) -> str:
-        """Fetch prior messages in a thread for context injection."""
+        """Fetch thread messages since the bot's last reply.
+
+        This gives the agent context for what the team discussed since
+        it last spoke, rather than the entire thread history.
+        """
         try:
             result = await client.conversations_replies(
-                channel=channel, ts=thread_ts, limit=20,
+                channel=channel, ts=thread_ts, limit=100,
             )
         except Exception:
             log.exception("Failed to fetch thread context")
@@ -297,14 +297,68 @@ class SlackTransport(BaseTransport):
         if len(messages) <= 1:
             return ""
 
+        # Find the bot's last message index
+        bot_last_idx = -1
+        for i, msg in enumerate(messages):
+            if msg.get("user") == self.bot_user_id:
+                bot_last_idx = i
+
+        # Messages after bot's last reply, excluding current message
+        context_msgs = (
+            messages[bot_last_idx + 1 : -1]
+            if bot_last_idx >= 0
+            else messages[:-1]
+        )
+
+        if not context_msgs:
+            return ""
+
         lines = []
-        for msg in messages[:-1]:  # skip current message
+        for msg in context_msgs:
             role = "assistant" if msg.get("user") == self.bot_user_id else "user"
             text = msg.get("text", "")
             if text:
                 lines.append(f"[{role}]: {text}")
 
         return "[Thread context]\n" + "\n".join(lines) if lines else ""
+
+    async def _fetch_channel_context(
+        self,
+        client: AsyncWebClient,
+        channel: str,
+        before_ts: str,
+    ) -> str:
+        """Fetch recent channel messages before a top-level mention.
+
+        Gives the agent awareness of what was said in the channel
+        leading up to the mention.
+        """
+        try:
+            result = await client.conversations_history(
+                channel=channel,
+                latest=before_ts,
+                limit=self.channel_context_messages,
+                inclusive=False,
+            )
+        except Exception:
+            log.exception("Failed to fetch channel context")
+            return ""
+
+        messages = result.get("messages", [])
+        if not messages:
+            return ""
+
+        # API returns newest-first, reverse for chronological
+        messages.reverse()
+
+        lines = []
+        for msg in messages:
+            role = "assistant" if msg.get("user") == self.bot_user_id else "user"
+            text = msg.get("text", "")
+            if text:
+                lines.append(f"[{role}]: {text}")
+
+        return "[Channel context]\n" + "\n".join(lines) if lines else ""
 
     async def _handle_command(self, text: str, conv_id: str) -> str | None:
         """Parse and execute a !command. Returns response text or None."""

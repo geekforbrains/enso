@@ -164,12 +164,14 @@ class TestFetchThreadContext:
     """Tests for _fetch_thread_context."""
 
     @pytest.mark.asyncio
-    async def test_builds_context_from_messages(self):
+    async def test_builds_context_since_last_bot_reply(self):
         client = _make_client()
         client.conversations_replies.return_value = {
             "messages": [
-                {"user": "U123", "text": "hello bot"},
-                {"user": "UBOT", "text": "hello human"},
+                {"user": "U123", "text": "first question"},
+                {"user": "UBOT", "text": "bot answer"},
+                {"user": "U123", "text": "follow up"},
+                {"user": "U456", "text": "me too"},
                 {"user": "U123", "text": "current message"},
             ],
         }
@@ -180,9 +182,12 @@ class TestFetchThreadContext:
         result = await transport._fetch_thread_context(client, "C123", "1234.5678")
 
         assert "[Thread context]" in result
-        assert "[user]: hello bot" in result
-        assert "[assistant]: hello human" in result
-        # Current message should be excluded
+        # Only messages after bot's last reply, excluding current
+        assert "[user]: follow up" in result
+        assert "[user]: me too" in result
+        # Bot's reply and messages before it should not be included
+        assert "first question" not in result
+        assert "bot answer" not in result
         assert "current message" not in result
 
     @pytest.mark.asyncio
@@ -455,12 +460,12 @@ class TestMessageRouting:
         rt.dispatch.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_thread_reply_with_active_session(self):
+    async def test_channel_thread_reply_ignored(self):
+        """Channel thread messages without mention are ignored (use @mention)."""
         rt = _make_runtime()
         rt.session_by_chat_provider = {("C123:1000.0000", "claude"): "sess-1"}
         transport = SlackTransport(rt)
         client = _make_client()
-        client.conversations_replies.return_value = {"messages": []}
 
         event = {
             "user": "U123",
@@ -468,16 +473,14 @@ class TestMessageRouting:
             "channel_type": "channel",
             "ts": "1234.5678",
             "thread_ts": "1000.0000",
-            "text": "follow up",
+            "text": "follow up without mention",
         }
         await transport._handle_message(event, client)
 
-        rt.dispatch.assert_called_once()
-        call_args = rt.dispatch.call_args
-        assert call_args[0][0] == "C123:1000.0000"
+        rt.dispatch.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_thread_reply_without_session_ignored(self):
+    async def test_channel_top_level_ignored(self):
         rt = _make_runtime()
         rt.session_by_chat_provider = {}
         transport = SlackTransport(rt)
@@ -529,7 +532,7 @@ class TestAppMention:
         rt = _make_runtime()
         transport = SlackTransport(rt)
         client = _make_client()
-        client.conversations_replies.return_value = {"messages": []}
+        client.conversations_history.return_value = {"messages": []}
 
         event = {
             "user": "U123",
@@ -680,31 +683,6 @@ class TestNotify:
 # ---------------------------------------------------------------------------
 # SlackTransport — bot participation check
 # ---------------------------------------------------------------------------
-
-
-class TestBotParticipation:
-    """Tests for _is_bot_participating."""
-
-    def test_participating(self):
-        rt = _make_runtime()
-        rt.session_by_chat_provider = {("C123:1000.0000", "claude"): "sess-1"}
-        transport = SlackTransport(rt)
-
-        assert transport._is_bot_participating("C123:1000.0000") is True
-
-    def test_not_participating(self):
-        rt = _make_runtime()
-        rt.session_by_chat_provider = {}
-        transport = SlackTransport(rt)
-
-        assert transport._is_bot_participating("C123:1000.0000") is False
-
-    def test_different_conversation(self):
-        rt = _make_runtime()
-        rt.session_by_chat_provider = {("C123:9999.0000", "claude"): "sess-1"}
-        transport = SlackTransport(rt)
-
-        assert transport._is_bot_participating("C123:1000.0000") is False
 
 
 # ---------------------------------------------------------------------------
