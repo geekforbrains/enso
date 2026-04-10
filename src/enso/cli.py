@@ -25,7 +25,7 @@ from .jobs import create_job, load_jobs
 from .messages import clear as msg_clear
 from .messages import pending as msg_pending
 from .messages import send as msg_send
-from .transports.telegram import TelegramTransport
+from .transports import BaseTransport
 
 log = logging.getLogger(__name__)
 
@@ -553,17 +553,30 @@ def _setup_providers(config: dict) -> None:
 
 
 def _setup_transport(config: dict) -> int | None:
-    """Step 2: configure Telegram. Returns chat_id or None."""
-    console.rule("[bold]Step 2 \u00b7 Telegram")
-    config["transport"] = "telegram"
-    return _setup_telegram(config)
+    """Step 2: configure transport."""
+    console.rule("[bold]Step 2 \u00b7 Transport")
+    choices = ["telegram", "slack"]
+    transport = Prompt.ask(
+        "  Transport",
+        choices=choices,
+        default=config.get("transport", "telegram"),
+    )
+    config["transport"] = transport
+    if transport == "telegram":
+        return _setup_telegram(config)
+    elif transport == "slack":
+        _setup_slack(config)
+        return None
+    return None
 
 
 def _setup_telegram(config: dict) -> int | None:
     """Configure Telegram bot and capture user. Returns chat_id or None."""
     tg_cfg = config.get("transports", {}).get("telegram", {})
     current_token = tg_cfg.get("bot_token", "")
-    current_users = tg_cfg.get("allowed_user_ids", [])
+    current_users = tg_cfg.get("allowed_users") or [
+        str(u) for u in tg_cfg.get("allowed_user_ids", [])
+    ]
     bot_info = None
 
     if current_token:
@@ -595,7 +608,7 @@ def _setup_telegram(config: dict) -> int | None:
             console.print(f"  [green]\u2713[/] Connected to @{bot_info.get('username', '?')}")
             config.setdefault("transports", {})["telegram"] = {
                 "bot_token": token,
-                "allowed_user_ids": current_users,
+                "allowed_users": current_users,
             }
             current_token = token
             break
@@ -615,8 +628,123 @@ def _setup_telegram(config: dict) -> int | None:
     user_id = user_info["user_id"]
     name = user_info.get("first_name") or user_info.get("username") or "?"
     console.print(f"  [green]\u2713[/] Got it! {name} (ID: {user_id})")
-    config["transports"]["telegram"]["allowed_user_ids"] = [user_id]
+    config["transports"]["telegram"]["allowed_users"] = [str(user_id)]
     return user_info.get("chat_id")
+
+
+# ---------------------------------------------------------------------------
+# Slack API helpers (stdlib only — no extra deps for setup)
+# ---------------------------------------------------------------------------
+
+def _slack_validate_token(token: str) -> dict | None:
+    """Validate a Slack bot token via auth.test.
+
+    Returns the response dict on success, or None on failure.
+    """
+    req = urllib.request.Request(
+        "https://slack.com/api/auth.test",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+            return data if data.get("ok") else None
+    except Exception:
+        return None
+
+
+def _slack_send_message(
+    token: str, channel: str, text: str,
+) -> bool:
+    """Send a message to Slack via chat.postMessage."""
+    data = json.dumps({"channel": channel, "text": text}).encode()
+    req = urllib.request.Request(
+        "https://slack.com/api/chat.postMessage",
+        data=data,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read())
+            return result.get("ok", False)
+    except Exception:
+        return False
+
+
+def _setup_slack(config: dict) -> None:
+    """Configure Slack bot tokens and allowed users."""
+    slack_cfg = config.get("transports", {}).get("slack", {})
+    current_bot = slack_cfg.get("bot_token", "")
+
+    if current_bot:
+        auth = _slack_validate_token(current_bot)
+        if auth:
+            console.print(
+                f"  Current bot: [bold]{auth.get('user', '?')}[/]"
+            )
+            users = slack_cfg.get("allowed_users", [])
+            if users:
+                console.print(f"  Allowed users: {users}")
+            if not Confirm.ask(
+                "\n  Reconfigure Slack?", default=False,
+            ):
+                return
+        else:
+            console.print("[yellow]  Existing token is invalid.[/]")
+
+    # Bot Token
+    console.print("  To connect Slack you need two tokens:\n")
+    console.print("  1. A Bot Token (xoxb-...)")
+    console.print("  2. An App-Level Token (xapp-...)\n")
+
+    while True:
+        bot_token = Prompt.ask("  Bot Token (xoxb-...)")
+        if not bot_token:
+            console.print("[red]  Token is required.[/]")
+            continue
+        with console.status("Validating bot token..."):
+            auth = _slack_validate_token(bot_token)
+        if auth:
+            bot_name = auth.get("user", "?")
+            bot_user_id = auth.get("user_id", "")
+            console.print(
+                f"  [green]\u2713[/] Authenticated as {bot_name}"
+            )
+            break
+        console.print("[red]  \u2717 Invalid token. Try again.[/]")
+
+    # App Token (for Socket Mode — no validation API)
+    app_token = Prompt.ask("  App Token (xapp-...)")
+
+    # Allowed users
+    console.print(
+        "\n  Enter Slack user IDs allowed to interact"
+        " (comma-separated), or * for everyone."
+    )
+    raw_users = Prompt.ask("  Allowed users", default="*")
+    if raw_users.strip() == "*":
+        allowed: list[str] = ["*"]
+    else:
+        allowed = [
+            u.strip() for u in raw_users.split(",") if u.strip()
+        ]
+
+    # Optional notify channel
+    notify = Prompt.ask(
+        "  Default notify channel (ID or name, optional)",
+        default="",
+    )
+
+    config.setdefault("transports", {})["slack"] = {
+        "bot_token": bot_token,
+        "app_token": app_token,
+        "bot_user_id": bot_user_id,
+        "allowed_users": allowed,
+        "notify_channel": notify,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -648,19 +776,46 @@ def setup() -> None:
         save_config(config)
     console.print(f"[green]\u2713[/] Config saved to {CONFIG_FILE}")
 
-    # Send test message if telegram
+    # Send test message
     if config.get("transport") == "telegram":
         tg = config.get("transports", {}).get("telegram", {})
         token = tg.get("bot_token", "")
-        users = tg.get("allowed_user_ids", [])
-        chat_id = captured_chat_id or (users[0] if users else None)
+        users = tg.get("allowed_users", [])
+        chat_id = captured_chat_id or (
+            users[0] if users else None
+        )
         if token and chat_id:
             with console.status("Sending test message..."):
-                sent = _tg_send_message(token, chat_id, f"Enso v{__version__} ready.")
+                sent = _tg_send_message(
+                    token, chat_id,
+                    f"Enso v{__version__} ready.",
+                )
             if sent:
                 console.print("[green]\u2713[/] Test message sent!")
             else:
-                console.print("[yellow]Failed to send test message.[/]")
+                console.print(
+                    "[yellow]Failed to send test message.[/]"
+                )
+    elif config.get("transport") == "slack":
+        slack_cfg = config.get("transports", {}).get("slack", {})
+        token = slack_cfg.get("bot_token", "")
+        channel = slack_cfg.get("notify_channel", "")
+        users = slack_cfg.get("allowed_users", [])
+        target = channel or (
+            users[0] if users and users[0] != "*" else ""
+        )
+        if token and target:
+            with console.status("Sending test message..."):
+                sent = _slack_send_message(
+                    token, target,
+                    f"Enso v{__version__} ready.",
+                )
+            if sent:
+                console.print("[green]\u2713[/] Test message sent!")
+            else:
+                console.print(
+                    "[yellow]Failed to send test message.[/]"
+                )
 
     # Step 4: Background service
     console.rule("[bold]Step 4 \u00b7 Background Service (optional)")
@@ -697,10 +852,27 @@ def setup() -> None:
     ))
 
 
+def _load_transport(name: str, runtime) -> BaseTransport:
+    """Lazily import and instantiate a transport by name."""
+    if name == "telegram":
+        from .transports.telegram import TelegramTransport
+
+        return TelegramTransport(runtime)
+    if name == "slack":
+        from .transports.slack import SlackTransport
+
+        return SlackTransport(runtime)
+    console.print(f"[red]Unknown transport: {name}[/]")
+    raise typer.Exit(1)
+
+
 @app.command()
 def serve(
     working_dir: Annotated[
         str | None, typer.Option("--working-dir", help="Override working directory")
+    ] = None,
+    transport: Annotated[
+        str | None, typer.Option("--transport", help="Override transport (telegram, slack)")
     ] = None,
 ) -> None:
     """Start the bot and job scheduler."""
@@ -716,9 +888,9 @@ def serve(
         raise typer.Exit(1)
     os.chdir(wd)
 
-    tg_cfg = config.get("transports", {}).get("telegram", {})
-    if not tg_cfg.get("bot_token"):
-        console.print("[red]Telegram not configured. Run 'enso setup' first.[/]")
+    transport_name = transport or config.get("transport", "")
+    if not transport_name:
+        console.print("[red]No transport configured. Run 'enso setup' first.[/]")
         raise typer.Exit(1)
 
     runtime = Runtime(config)
@@ -726,11 +898,11 @@ def serve(
     runtime.load_state()
 
     log.info("Starting Enso v%s", __version__)
-    log.info("  working_dir=%s", wd)
+    log.info("  working_dir=%s transport=%s", wd, transport_name)
 
-    transport = TelegramTransport(runtime)
-    runtime.transport = transport
-    transport.start()
+    tp = _load_transport(transport_name, runtime)
+    runtime.transport = tp
+    tp.start()
 
 
 # ---------------------------------------------------------------------------
@@ -834,18 +1006,56 @@ def job_run(
 def message_send(
     text: Annotated[str, typer.Argument(help="Message text to send")],
 ) -> None:
-    """Send a message to Telegram and queue as background context."""
+    """Send a message via the configured transport."""
     cfg = load_config()
-    tg_cfg = cfg.get("transports", {}).get("telegram", {})
-    token = tg_cfg.get("bot_token", "")
-    user_ids = tg_cfg.get("allowed_user_ids", [])
-    if not token or not user_ids:
-        console.print("[red]\u2717[/] Telegram not configured. Run [bold]enso setup[/].")
-        raise typer.Exit(1)
-    for uid in user_ids:
-        if not _tg_send_message(token, uid, text[:4096]):
-            console.print(f"[red]\u2717[/] Failed to send to user {uid}.")
+    transport = cfg.get("transport", "telegram")
+
+    if transport == "slack":
+        slack_cfg = cfg.get("transports", {}).get("slack", {})
+        token = slack_cfg.get("bot_token", "")
+        channel = slack_cfg.get("notify_channel", "")
+        users = slack_cfg.get("allowed_users", [])
+        if not token:
+            console.print(
+                "[red]\u2717[/] Slack not configured."
+                " Run [bold]enso setup[/]."
+            )
             raise typer.Exit(1)
+        target = channel or (
+            users[0] if users and users[0] != "*" else ""
+        )
+        if not target:
+            console.print(
+                "[red]\u2717[/] No notify_channel or"
+                " allowed_users configured."
+            )
+            raise typer.Exit(1)
+        if not _slack_send_message(token, target, text[:40000]):
+            console.print(
+                f"[red]\u2717[/] Failed to send to {target}."
+            )
+            raise typer.Exit(1)
+    else:
+        tg_cfg = cfg.get("transports", {}).get("telegram", {})
+        token = tg_cfg.get("bot_token", "")
+        users = tg_cfg.get("allowed_users") or [
+            str(u)
+            for u in tg_cfg.get("allowed_user_ids", [])
+        ]
+        if not token or not users:
+            console.print(
+                "[red]\u2717[/] Telegram not configured."
+                " Run [bold]enso setup[/]."
+            )
+            raise typer.Exit(1)
+        for uid in users:
+            if not _tg_send_message(token, uid, text[:4096]):
+                console.print(
+                    f"[red]\u2717[/] Failed to send to"
+                    f" user {uid}."
+                )
+                raise typer.Exit(1)
+
     msg_send(text, source="notify")
     console.print("[green]\u2713[/] Message sent.")
 
@@ -871,27 +1081,43 @@ def message_attach(
     file: Annotated[str, typer.Argument(help="Path to file to send")],
     caption: Annotated[str, typer.Argument(help="Optional caption")] = "",
 ) -> None:
-    """Send a file (image, video, audio, document) to Telegram."""
+    """Send a file via the configured transport."""
     if not os.path.isfile(file):
-        console.print(f"[red]✗[/] File not found: {file}")
+        console.print(f"[red]\u2717[/] File not found: {file}")
         raise typer.Exit(1)
     cfg = load_config()
+    transport = cfg.get("transport", "telegram")
+
+    if transport == "slack":
+        console.print(
+            "[yellow]File uploads not yet supported"
+            " for Slack. Use message send instead.[/]"
+        )
+        raise typer.Exit(1)
+
     tg_cfg = cfg.get("transports", {}).get("telegram", {})
     token = tg_cfg.get("bot_token", "")
-    user_ids = tg_cfg.get("allowed_user_ids", [])
-    if not token or not user_ids:
-        console.print("[red]✗[/] Telegram not configured. Run [bold]enso setup[/].")
+    users = tg_cfg.get("allowed_users") or [
+        str(u) for u in tg_cfg.get("allowed_user_ids", [])
+    ]
+    if not token or not users:
+        console.print(
+            "[red]\u2717[/] Telegram not configured."
+            " Run [bold]enso setup[/]."
+        )
         raise typer.Exit(1)
-    for uid in user_ids:
+    for uid in users:
         if not _tg_send_file(token, uid, file, caption):
-            console.print(f"[red]✗[/] Failed to send to user {uid}.")
+            console.print(
+                f"[red]\u2717[/] Failed to send to user {uid}."
+            )
             raise typer.Exit(1)
     filename = os.path.basename(file)
     note = f"Sent attachment: {filename}"
     if caption:
-        note += f" — {caption}"
+        note += f" \u2014 {caption}"
     msg_send(note, source="attach")
-    console.print("[green]✓[/] File sent.")
+    console.print("[green]\u2713[/] File sent.")
 
 
 @message_app.command("clear")
