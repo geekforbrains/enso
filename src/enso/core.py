@@ -10,7 +10,9 @@ import logging
 import os
 import tempfile
 from asyncio.subprocess import Process
-from datetime import datetime
+from collections import deque
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from croniter import croniter
@@ -63,6 +65,19 @@ def split_text(text: str, limit: int = 4096) -> list[str]:
     return chunks
 
 
+MAX_QUEUE_SIZE = 5
+SESSION_TTL_DAYS = int(os.environ.get("ENSO_SESSION_TTL_DAYS", "30"))
+
+
+@dataclass
+class _QueuedItem:
+    """A message waiting to be dispatched while another request is running."""
+
+    prompt: str
+    ctx: TransportContext
+    preview: str
+
+
 class Runtime:
     """Central runtime holding all state, process management, and job scheduling."""
 
@@ -76,13 +91,19 @@ class Runtime:
         }
         self.transport: BaseTransport | None = None
 
-        # Per-chat state
-        self.active_provider_by_chat: dict[int, str] = {}
-        self.active_model_by_chat_provider: dict[tuple[int, str], str] = {}
-        self.session_by_chat_provider: dict[tuple[int, str], str] = {}
-        self.running_process_by_chat: dict[int, Process] = {}
-        self.running_task_by_chat: dict[int, asyncio.Task] = {}
-        self.chat_lock_by_chat: dict[int, asyncio.Lock] = {}
+        # Per-chat state (keyed by conversation ID — str for all transports)
+        self.active_provider_by_chat: dict[str, str] = {}
+        self.active_model_by_chat_provider: dict[tuple[str, str], str] = {}
+        self.session_by_chat_provider: dict[tuple[str, str], str] = {}
+        self.running_process_by_chat: dict[str, Process] = {}
+        self.running_task_by_chat: dict[str, asyncio.Task] = {}
+        self.chat_lock_by_chat: dict[str, asyncio.Lock] = {}
+
+        # Dispatch queue (per-conversation)
+        self._queue_by_conversation: dict[str, deque[_QueuedItem]] = {}
+
+        # Activity tracking for session pruning
+        self._last_active: dict[str, datetime] = {}
 
         # Job scheduler state
         self._job_last_run: dict[str, datetime] = {}
@@ -266,6 +287,10 @@ class Runtime:
                 name: ts.isoformat()
                 for name, ts in self._job_last_run.items()
             },
+            "last_active": {
+                cid: ts.isoformat()
+                for cid, ts in self._last_active.items()
+            },
         }
         try:
             fd, tmp = tempfile.mkstemp(dir=CONFIG_DIR, suffix=".tmp")
@@ -285,30 +310,49 @@ class Runtime:
             with open(STATE_FILE) as f:
                 data = json.load(f)
             for k, v in data.get("active_provider_by_chat", {}).items():
-                self.active_provider_by_chat[int(k)] = v
+                self.active_provider_by_chat[k] = v
             for k, v in data.get("active_model_by_chat_provider", {}).items():
-                cid_str, provider = k.split(":", 1)
-                self.active_model_by_chat_provider[(int(cid_str), provider)] = v
+                cid, provider = k.split(":", 1)
+                self.active_model_by_chat_provider[(cid, provider)] = v
             for k, v in data.get("session_by_chat_provider", {}).items():
-                cid_str, provider = k.split(":", 1)
-                self.session_by_chat_provider[(int(cid_str), provider)] = v
+                cid, provider = k.split(":", 1)
+                self.session_by_chat_provider[(cid, provider)] = v
             for name, ts in data.get("job_last_run", {}).items():
                 self._job_last_run[name] = datetime.fromisoformat(ts)
+            for cid, ts in data.get("last_active", {}).items():
+                self._last_active[cid] = datetime.fromisoformat(ts)
             log.info(
                 "Loaded state: %d providers, %d sessions",
                 len(self.active_provider_by_chat),
                 len(self.session_by_chat_provider),
             )
+            self._prune_stale_sessions()
         except Exception:
             log.exception("Failed to load state, starting fresh")
 
+    def _prune_stale_sessions(self) -> None:
+        """Remove state entries for conversations inactive beyond SESSION_TTL_DAYS."""
+        cutoff = datetime.now() - timedelta(days=SESSION_TTL_DAYS)
+        stale = [cid for cid, ts in self._last_active.items() if ts < cutoff]
+        if not stale:
+            return
+        for cid in stale:
+            self.active_provider_by_chat.pop(cid, None)
+            for key in [k for k in self.session_by_chat_provider if k[0] == cid]:
+                self.session_by_chat_provider.pop(key)
+            for key in [k for k in self.active_model_by_chat_provider if k[0] == cid]:
+                self.active_model_by_chat_provider.pop(key)
+            self._last_active.pop(cid)
+        log.info("Pruned %d stale conversation(s) (>%dd)", len(stale), SESSION_TTL_DAYS)
+        self.save_state()
+
     # -- Accessors --
 
-    def get_active_provider(self, chat_id: int) -> str:
+    def get_active_provider(self, chat_id: str) -> str:
         """Return active provider for chat, defaulting to claude."""
         return self.active_provider_by_chat.get(chat_id, "claude")
 
-    def get_active_model(self, chat_id: int, provider: str) -> str:
+    def get_active_model(self, chat_id: str, provider: str) -> str:
         """Return active model for chat+provider, defaulting to first in list."""
         stored = self.active_model_by_chat_provider.get((chat_id, provider))
         if stored and stored in self.models.get(provider, []):
@@ -316,7 +360,7 @@ class Runtime:
         models = self.models.get(provider, [])
         return models[0] if models else "default"
 
-    def get_chat_lock(self, chat_id: int) -> asyncio.Lock:
+    def get_chat_lock(self, chat_id: str) -> asyncio.Lock:
         """Get or create a per-chat lock to serialize requests."""
         lock = self.chat_lock_by_chat.get(chat_id)
         if lock is None:
@@ -341,7 +385,7 @@ class Runtime:
     _SELF_MANAGED_SESSIONS: ClassVar[set[str]] = {"claude"}
 
     def _get_or_create_session(
-        self, chat_id: int, provider_name: str
+        self, chat_id: str, provider_name: str
     ) -> str | None:
         """Get existing session ID, or generate one for providers that support it.
 
@@ -367,9 +411,103 @@ class Runtime:
             return session_id
         return None
 
+    # -- Dispatch & queue --
+
+    async def dispatch(
+        self,
+        conversation_id: str,
+        prompt: str,
+        ctx: TransportContext,
+        *,
+        preview: str = "",
+    ) -> None:
+        """Dispatch a prompt, queuing if a request is already running."""
+        self._last_active[conversation_id] = datetime.now()
+        lock = self.get_chat_lock(conversation_id)
+
+        if lock.locked():
+            queue = self._queue_by_conversation.setdefault(
+                conversation_id, deque()
+            )
+            if len(queue) >= MAX_QUEUE_SIZE:
+                await ctx.reply(f"Queue full ({MAX_QUEUE_SIZE}).")
+                return
+            queue.append(_QueuedItem(prompt=prompt, ctx=ctx, preview=preview))
+            pos = len(queue)
+            label = f"{preview}\u2026" if len(preview) == 50 else preview
+            await ctx.reply(f"Queued (#{pos}): {label}")
+            log.info("Queued #%d for %s: %s", pos, conversation_id, preview)
+            return
+
+        provider = self.get_active_provider(conversation_id)
+        log.info(
+            "Dispatch: conv=%s provider=%s prompt_len=%d",
+            conversation_id, provider, len(prompt),
+        )
+        log.debug("Dispatch prompt:\n%s", prompt)
+
+        async with lock:
+            await self._run_request(provider, prompt, conversation_id, ctx)
+            await self._drain_queue(conversation_id)
+
+    async def _run_request(
+        self, provider: str, prompt: str, conv_id: str, ctx: TransportContext,
+    ) -> None:
+        """Run a single provider request, tracking the task for cancellation."""
+        task = asyncio.create_task(
+            self.process_request(provider, prompt, conv_id, ctx)
+        )
+        self.running_task_by_chat[conv_id] = task
+        try:
+            await task
+        except asyncio.CancelledError:
+            log.info("Task cancelled for conv=%s", conv_id)
+        finally:
+            if self.running_task_by_chat.get(conv_id) is task:
+                self.running_task_by_chat.pop(conv_id, None)
+
+    async def _drain_queue(self, conv_id: str) -> None:
+        """Process queued messages one by one until the queue is empty."""
+        queue = self._queue_by_conversation.get(conv_id)
+        if not queue:
+            return
+        while queue:
+            item = queue.popleft()
+            provider = self.get_active_provider(conv_id)
+            log.info(
+                "Dequeuing for conv=%s (%d remaining): %s",
+                conv_id, len(queue), item.preview,
+            )
+            await self._run_request(provider, item.prompt, conv_id, item.ctx)
+
+    def get_queue(self, conv_id: str) -> list[str]:
+        """Return preview strings for queued items."""
+        queue = self._queue_by_conversation.get(conv_id)
+        if not queue:
+            return []
+        return [item.preview for item in queue]
+
+    def clear_queue(self, conv_id: str) -> int:
+        """Clear the queue for a conversation. Returns count of items cleared."""
+        queue = self._queue_by_conversation.get(conv_id)
+        if not queue:
+            return 0
+        count = len(queue)
+        queue.clear()
+        return count
+
+    def remove_from_queue(self, conv_id: str, index: int) -> bool:
+        """Remove item at index from the queue. Returns True if removed."""
+        queue = self._queue_by_conversation.get(conv_id)
+        if queue and 0 <= index < len(queue):
+            del queue[index]
+            log.info("Removed queue item %d for conv=%s", index, conv_id)
+            return True
+        return False
+
     # -- Process control --
 
-    async def stop_chat(self, chat_id: int) -> tuple[bool, str | None]:
+    async def stop_chat(self, chat_id: str) -> tuple[bool, str | None]:
         """Stop running process/task for a chat. Returns (had_something, error_msg)."""
         process = self.running_process_by_chat.get(chat_id)
         task = self.running_task_by_chat.get(chat_id)
@@ -394,7 +532,7 @@ class Runtime:
     # -- Core streaming --
 
     async def run_provider(
-        self, provider: BaseProvider, prompt: str, chat_id: int, model: str
+        self, provider: BaseProvider, prompt: str, chat_id: str, model: str
     ):
         """Spawn a provider subprocess and yield StreamEvents."""
         session_id = self._get_or_create_session(chat_id, provider.name)
@@ -466,7 +604,7 @@ class Runtime:
         self,
         provider_name: str,
         prompt: str,
-        chat_id: int,
+        chat_id: str,
         ctx: TransportContext,
     ) -> None:
         """Run a full provider request with status ticker and response delivery.
@@ -523,8 +661,9 @@ class Runtime:
             usage_part = f" / {usage_pct}%" if usage_pct is not None else ""
             prefix = f"({display}{usage_part} / {state['elapsed']}s)"
 
+            msg_limit = self.transport.message_limit if self.transport else 4096
             if response_text:
-                for chunk in split_text(f"{prefix}\n{response_text}"):
+                for chunk in split_text(f"{prefix}\n{response_text}", limit=msg_limit):
                     await ctx.reply(chunk)
             elif error_text:
                 await ctx.reply(f"{prefix} Error: {error_text[:4000]}")
@@ -550,7 +689,8 @@ class Runtime:
                     return
             except Exception:
                 pass
-            for chunk in split_text(f"{prefix} Error: {exc}"):
+            msg_limit = self.transport.message_limit if self.transport else 4096
+            for chunk in split_text(f"{prefix} Error: {exc}", limit=msg_limit):
                 await ctx.reply(chunk)
 
     async def _run_ticker(
@@ -663,7 +803,10 @@ class Runtime:
             await proc.wait()
             output = f"Job timed out after {timeout_secs}s"
             if self.transport:
-                await self.transport.notify(f"\u26a0\ufe0f [{job.name}] {output}")
+                await self.transport.notify(
+                    f"\u26a0\ufe0f [{job.name}] {output}",
+                    destination=job.notify,
+                )
             self._job_last_run[job.dir_name] = datetime.now()
             self.save_state()
             return
@@ -673,7 +816,10 @@ class Runtime:
         if proc.returncode != 0:
             if self.transport:
                 label = f"{job.name} (exit {proc.returncode})"
-                await self.transport.notify(f"\u26a0\ufe0f [{label}]\n{output}"[:4096])
+                await self.transport.notify(
+                    f"\u26a0\ufe0f [{label}]\n{output}"[:4096],
+                    destination=job.notify,
+                )
             messages.send(output, source=f"job:{job.dir_name}")
 
         self._job_last_run[job.dir_name] = datetime.now()

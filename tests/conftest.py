@@ -43,7 +43,7 @@ def sample_config():
         "transports": {
             "telegram": {
                 "bot_token": "fake-token",
-                "allowed_user_ids": [12345],
+                "allowed_users": ["12345"],
             }
         },
         "providers": {
