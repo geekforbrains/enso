@@ -20,14 +20,16 @@ classifiers = [
 ]
 dependencies = ["typer>=0.12", "rich>=13.0", "croniter>=1.0", "python-telegram-bot>=22.6"]
 
+[project.optional-dependencies]
+slack = ["slack-bolt>=1.18", "slack-sdk>=3.27"]
+all = ["slack-bolt>=1.18", "slack-sdk>=3.27"]
+dev = ["ruff>=0.15.0", "pytest>=8.0", "pytest-asyncio>=0.23"]
+
 [project.urls]
 Homepage = "https://github.com/geekforbrains/enso"
 Repository = "https://github.com/geekforbrains/enso"
 Changelog = "https://github.com/geekforbrains/enso/blob/main/CHANGELOG.md"
 Issues = "https://github.com/geekforbrains/enso/issues"
-
-[project.optional-dependencies]
-dev = ["ruff>=0.15.0", "pytest>=8.0", "pytest-asyncio>=0.23"]
 
 [project.scripts]
 enso = "enso.cli:main"

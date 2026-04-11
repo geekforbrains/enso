@@ -25,7 +25,7 @@ from .jobs import create_job, load_jobs
 from .messages import clear as msg_clear
 from .messages import pending as msg_pending
 from .messages import send as msg_send
-from .transports.telegram import TelegramTransport
+from .transports import BaseTransport
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +38,26 @@ app.add_typer(message_app, name="message")
 app.add_typer(service_app, name="service")
 
 console = Console()
+
+
+def _create_transport(name: str, config: dict) -> type | None:
+    """Return the transport class for the given name, or None if not configured."""
+    if name == "telegram":
+        tg_cfg = config.get("transports", {}).get("telegram", {})
+        if not tg_cfg.get("bot_token"):
+            return None
+        from .transports.telegram import TelegramTransport
+        return TelegramTransport
+    elif name == "slack":
+        slack_cfg = config.get("transports", {}).get("slack", {})
+        if not slack_cfg.get("bot_token") or not slack_cfg.get("app_token"):
+            return None
+        from .transports.slack import SlackTransport
+        return SlackTransport
+    else:
+        console.print(f"[red]Unknown transport: {name}[/]")
+        return None
+
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 
@@ -553,9 +573,18 @@ def _setup_providers(config: dict) -> None:
 
 
 def _setup_transport(config: dict) -> int | None:
-    """Step 2: configure Telegram. Returns chat_id or None."""
-    console.rule("[bold]Step 2 \u00b7 Telegram")
-    config["transport"] = "telegram"
+    """Step 2: configure transport. Returns chat_id or None."""
+    console.rule("[bold]Step 2 · Transport")
+    current = config.get("transport", "telegram")
+    choice = Prompt.ask(
+        "  Which transport?",
+        choices=["telegram", "slack"],
+        default=current or "telegram",
+    )
+    config["transport"] = choice
+    if choice == "slack":
+        _setup_slack(config)
+        return None
     return _setup_telegram(config)
 
 
@@ -617,6 +646,53 @@ def _setup_telegram(config: dict) -> int | None:
     console.print(f"  [green]\u2713[/] Got it! {name} (ID: {user_id})")
     config["transports"]["telegram"]["allowed_user_ids"] = [user_id]
     return user_info.get("chat_id")
+
+
+def _setup_slack(config: dict) -> None:
+    """Configure Slack bot tokens and allowed users."""
+    slack_cfg = config.get("transports", {}).get("slack", {})
+    current_bot_token = slack_cfg.get("bot_token", "")
+    current_app_token = slack_cfg.get("app_token", "")
+    current_users = slack_cfg.get("allowed_user_ids", [])
+
+    if current_bot_token and current_app_token:
+        console.print(f"  Current bot token: {current_bot_token[:12]}...")
+        if current_users:
+            console.print(f"  Allowed users: {current_users}")
+        if not Confirm.ask("\n  Reconfigure Slack?", default=False):
+            return
+
+    console.print("  To connect, you need a Slack app with Socket Mode enabled.\n")
+    console.print("  1. Go to https://api.slack.com/apps and create a new app")
+    console.print("  2. Enable Socket Mode and generate an app-level token (xapp-...)")
+    console.print("  3. Add bot scopes: chat:write, channels:history, im:history,")
+    console.print("     groups:history, app_mentions:read, im:write")
+    console.print("  4. Subscribe to events: message.im, app_mention")
+    console.print("  5. Install the app to your workspace\n")
+
+    bot_token = Prompt.ask("  Bot token (xoxb-...)", default=current_bot_token or None)
+    if not bot_token:
+        console.print("[red]  Bot token is required.[/]")
+        return
+
+    app_token = Prompt.ask("  App-level token (xapp-...)", default=current_app_token or None)
+    if not app_token:
+        console.print("[red]  App-level token is required.[/]")
+        return
+
+    config.setdefault("transports", {})["slack"] = {
+        "bot_token": bot_token,
+        "app_token": app_token,
+        "allowed_user_ids": current_users,
+    }
+
+    user_id = Prompt.ask(
+        "  Your Slack user ID (optional, for access control)",
+        default=current_users[0] if current_users else "",
+    )
+    if user_id:
+        config["transports"]["slack"]["allowed_user_ids"] = [user_id]
+    console.print("[green]  ✓[/] Slack configured.")
 
 
 # ---------------------------------------------------------------------------
@@ -716,9 +792,12 @@ def serve(
         raise typer.Exit(1)
     os.chdir(wd)
 
-    tg_cfg = config.get("transports", {}).get("telegram", {})
-    if not tg_cfg.get("bot_token"):
-        console.print("[red]Telegram not configured. Run 'enso setup' first.[/]")
+    transport_name = config.get("transport", "telegram")
+    transport = _create_transport(transport_name, config)
+    if transport is None:
+        console.print(
+            f"[red]{transport_name.capitalize()} not configured. Run 'enso setup' first.[/]"
+        )
         raise typer.Exit(1)
 
     runtime = Runtime(config)
@@ -726,11 +805,11 @@ def serve(
     runtime.load_state()
 
     log.info("Starting Enso v%s", __version__)
-    log.info("  working_dir=%s", wd)
+    log.info("  working_dir=%s transport=%s", wd, transport_name)
 
-    transport = TelegramTransport(runtime)
-    runtime.transport = transport
-    transport.start()
+    transport_instance = transport(runtime)
+    runtime.transport = transport_instance
+    transport_instance.start()
 
 
 # ---------------------------------------------------------------------------

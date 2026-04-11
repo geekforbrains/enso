@@ -13,6 +13,10 @@ class TransportContext(ABC):
     uses it to deliver status updates and final responses.
     """
 
+    # Whether the runtime should prepend "(Provider / Ns)" to final replies.
+    # Transports can set this to False if the prefix is not desired.
+    include_prefix: bool = True
+
     @abstractmethod
     async def reply(self, text: str) -> None:
         """Send a final response message."""

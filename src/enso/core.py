@@ -11,7 +11,10 @@ import os
 import tempfile
 from asyncio.subprocess import Process
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Union
+
+# Chat IDs: Telegram uses int, Slack uses str (channel IDs like "C06ABCDEF").
+ChatId = Union[int, str]
 
 from croniter import croniter
 
@@ -24,6 +27,14 @@ if TYPE_CHECKING:
     from .transports import BaseTransport, TransportContext
 
 log = logging.getLogger(__name__)
+
+
+def _parse_chat_id(raw: str) -> ChatId:
+    """Parse a serialized chat ID, preserving int for Telegram, str for Slack."""
+    try:
+        return int(raw)
+    except ValueError:
+        return raw
 
 
 def _status_edit_due(elapsed: int) -> bool:
@@ -77,12 +88,12 @@ class Runtime:
         self.transport: BaseTransport | None = None
 
         # Per-chat state
-        self.active_provider_by_chat: dict[int, str] = {}
-        self.active_model_by_chat_provider: dict[tuple[int, str], str] = {}
-        self.session_by_chat_provider: dict[tuple[int, str], str] = {}
-        self.running_process_by_chat: dict[int, Process] = {}
-        self.running_task_by_chat: dict[int, asyncio.Task] = {}
-        self.chat_lock_by_chat: dict[int, asyncio.Lock] = {}
+        self.active_provider_by_chat: dict[ChatId, str] = {}
+        self.active_model_by_chat_provider: dict[tuple[ChatId, str], str] = {}
+        self.session_by_chat_provider: dict[tuple[ChatId, str], str] = {}
+        self.running_process_by_chat: dict[ChatId, Process] = {}
+        self.running_task_by_chat: dict[ChatId, asyncio.Task] = {}
+        self.chat_lock_by_chat: dict[ChatId, asyncio.Lock] = {}
 
         # Job scheduler state
         self._job_last_run: dict[str, datetime] = {}
@@ -285,13 +296,13 @@ class Runtime:
             with open(STATE_FILE) as f:
                 data = json.load(f)
             for k, v in data.get("active_provider_by_chat", {}).items():
-                self.active_provider_by_chat[int(k)] = v
+                self.active_provider_by_chat[_parse_chat_id(k)] = v
             for k, v in data.get("active_model_by_chat_provider", {}).items():
                 cid_str, provider = k.split(":", 1)
-                self.active_model_by_chat_provider[(int(cid_str), provider)] = v
+                self.active_model_by_chat_provider[(_parse_chat_id(cid_str), provider)] = v
             for k, v in data.get("session_by_chat_provider", {}).items():
                 cid_str, provider = k.split(":", 1)
-                self.session_by_chat_provider[(int(cid_str), provider)] = v
+                self.session_by_chat_provider[(_parse_chat_id(cid_str), provider)] = v
             for name, ts in data.get("job_last_run", {}).items():
                 self._job_last_run[name] = datetime.fromisoformat(ts)
             log.info(
@@ -304,11 +315,11 @@ class Runtime:
 
     # -- Accessors --
 
-    def get_active_provider(self, chat_id: int) -> str:
+    def get_active_provider(self, chat_id: ChatId) -> str:
         """Return active provider for chat, defaulting to claude."""
         return self.active_provider_by_chat.get(chat_id, "claude")
 
-    def get_active_model(self, chat_id: int, provider: str) -> str:
+    def get_active_model(self, chat_id: ChatId, provider: str) -> str:
         """Return active model for chat+provider, defaulting to first in list."""
         stored = self.active_model_by_chat_provider.get((chat_id, provider))
         if stored and stored in self.models.get(provider, []):
@@ -316,7 +327,7 @@ class Runtime:
         models = self.models.get(provider, [])
         return models[0] if models else "default"
 
-    def get_chat_lock(self, chat_id: int) -> asyncio.Lock:
+    def get_chat_lock(self, chat_id: ChatId) -> asyncio.Lock:
         """Get or create a per-chat lock to serialize requests."""
         lock = self.chat_lock_by_chat.get(chat_id)
         if lock is None:
@@ -341,7 +352,7 @@ class Runtime:
     _SELF_MANAGED_SESSIONS: ClassVar[set[str]] = {"claude"}
 
     def _get_or_create_session(
-        self, chat_id: int, provider_name: str
+        self, chat_id: ChatId, provider_name: str
     ) -> str | None:
         """Get existing session ID, or generate one for providers that support it.
 
@@ -369,7 +380,7 @@ class Runtime:
 
     # -- Process control --
 
-    async def stop_chat(self, chat_id: int) -> tuple[bool, str | None]:
+    async def stop_chat(self, chat_id: ChatId) -> tuple[bool, str | None]:
         """Stop running process/task for a chat. Returns (had_something, error_msg)."""
         process = self.running_process_by_chat.get(chat_id)
         task = self.running_task_by_chat.get(chat_id)
@@ -394,7 +405,7 @@ class Runtime:
     # -- Core streaming --
 
     async def run_provider(
-        self, provider: BaseProvider, prompt: str, chat_id: int, model: str
+        self, provider: BaseProvider, prompt: str, chat_id: ChatId, model: str
     ):
         """Spawn a provider subprocess and yield StreamEvents."""
         session_id = self._get_or_create_session(chat_id, provider.name)
@@ -466,7 +477,7 @@ class Runtime:
         self,
         provider_name: str,
         prompt: str,
-        chat_id: int,
+        chat_id: ChatId,
         ctx: TransportContext,
     ) -> None:
         """Run a full provider request with status ticker and response delivery.
@@ -524,7 +535,8 @@ class Runtime:
             prefix = f"({display}{usage_part} / {state['elapsed']}s)"
 
             if response_text:
-                for chunk in split_text(f"{prefix}\n{response_text}"):
+                body = f"{prefix}\n{response_text}" if ctx.include_prefix else response_text
+                for chunk in split_text(body):
                     await ctx.reply(chunk)
             elif error_text:
                 await ctx.reply(f"{prefix} Error: {error_text[:4000]}")
