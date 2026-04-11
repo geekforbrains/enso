@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.11.0] - 2026-04-09
+
+### Added
+
+- Telegram reply support — reply to any message in the chat and the quoted context is included in the prompt, with the bot's response visually threaded back
+- Auto-compact notification — when Claude or Gemini auto-compacts context, a Telegram message is sent immediately so you know why the next response is slow. Hooks are installed automatically on setup.
+- Message queue — messages sent while a request is running are queued (up to 5) and auto-dispatched when the current request finishes. `/queue` to view/remove items, `/stop` clears the queue.
+- Context window usage percentage in Telegram response prefix — `(Claude / 11% / 23s)`
+- Launchd plist now snapshots API keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.) so provider CLIs work under launchd's minimal environment
+- 15-minute hard timeout for background jobs (previously could hang indefinitely)
+
+### Fixed
+
+- Token usage percentage now uses last assistant turn's per-turn counts instead of cumulative modelUsage totals (was over-reporting by 3-4x)
+- Collapse excessive blank lines (3+) in formatted output
+
 ## [0.10.0] - 2026-04-02
 
 ### Added

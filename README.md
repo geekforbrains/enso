@@ -41,7 +41,8 @@ Commands show up in Telegram's autocomplete menu when you type `/`.
 | `/use` | Switch agent (shows buttons, or `/use claude`) |
 | `/model` | Switch model (shows buttons, or `/model sonnet`) |
 | `/status` | Active agent and model |
-| `/stop` | Kill whatever's running |
+| `/stop` | Stop process & clear queue |
+| `/queue` | View & manage queued messages |
 | `/clear` | New session (shows current/all buttons) |
 | `/restart` | Restart the service |
 | `/logs` | Last 25 log entries |
@@ -156,3 +157,31 @@ pip install -e ".[dev]"
 ruff check src/
 pytest
 ```
+
+### Branching & Releases
+
+| Branch | Purpose |
+|--------|---------|
+| `main` | Latest stable release. Tagged with version numbers (e.g. `v0.10.0`). |
+| `dev` | Pre-release work for the next version. All feature branches merge here first. |
+| `feat/*`, `fix/*` | Short-lived branches off `main` or `dev` for individual changes. |
+
+**Workflow:**
+
+1. Create a feature branch off `main` (or `dev` if building on unreleased work)
+2. Do the work, commit with [conventional commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, etc.)
+3. Merge into `dev` — this is where changes accumulate before release
+4. When ready to release: bump version in `pyproject.toml` (remove `.dev0`), finalize the `[Unreleased]` section in `CHANGELOG.md` with the date, merge `dev` → `main`, and tag
+
+### Versioning
+
+Version lives in `pyproject.toml`. The `dev` branch uses PEP 440 dev versions:
+
+- **Released:** `0.10.0` (on `main`)
+- **In development:** `0.11.0.dev0` (on `dev`)
+
+When cutting a release, update `pyproject.toml` to `0.11.0`, update `CHANGELOG.md` heading from `[Unreleased] (0.11.0)` to `[0.11.0] - YYYY-MM-DD`, merge to `main`, and tag `v0.11.0`.
+
+### Changelog
+
+`CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.com/). The `dev` branch always has an `[Unreleased]` section at the top. Add entries there as you merge features — don't wait until release time.

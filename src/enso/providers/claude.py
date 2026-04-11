@@ -79,7 +79,8 @@ class ClaudeProvider(BaseProvider):
         event_type = event.get("type", "")
 
         if event_type == "assistant":
-            for block in event.get("message", {}).get("content", []):
+            message = event.get("message", {})
+            for block in message.get("content", []):
                 block_type = block.get("type")
                 if block_type == "thinking":
                     text = block.get("thinking", "")
@@ -97,6 +98,13 @@ class ClaudeProvider(BaseProvider):
                 elif block_type == "text" and block.get("text"):
                     events.append(StreamEvent(kind="response", text=block["text"]))
 
+            # Track per-turn usage from each assistant event. The last
+            # one reflects the actual context window fill for the final
+            # API call (earlier turns re-count cached tokens).
+            usage = message.get("usage", {})
+            if usage:
+                self._last_usage = usage
+
         elif event_type == "result":
             result_text = event.get("result", "")
             if isinstance(result_text, str) and result_text:
@@ -105,6 +113,32 @@ class ClaudeProvider(BaseProvider):
             session_id = event.get("session_id")
             if isinstance(session_id, str) and session_id:
                 events.append(StreamEvent(kind="session", session_id=session_id))
+
+            # Emit context window usage from the last assistant turn.
+            # modelUsage provides the context window size; _last_usage
+            # (from the final assistant event) gives the actual token
+            # counts for the last API call — which reflects how full
+            # the context window really is.
+            model_usage = event.get("modelUsage", {})
+            last = getattr(self, "_last_usage", None)
+            if model_usage and last:
+                model_data = next(iter(model_usage.values()), {})
+                context_window = model_data.get("contextWindow", 0)
+                total_tokens = (
+                    last.get("input_tokens", 0)
+                    + last.get("cache_creation_input_tokens", 0)
+                    + last.get("cache_read_input_tokens", 0)
+                    + last.get("output_tokens", 0)
+                )
+                if context_window:
+                    events.append(StreamEvent(
+                        kind="usage",
+                        usage={
+                            "total_tokens": total_tokens,
+                            "context_window": context_window,
+                            "pct": round(total_tokens / context_window * 100),
+                        },
+                    ))
 
         return events
 

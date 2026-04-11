@@ -101,7 +101,7 @@ class Runtime:
     # -- Workspace setup --
 
     def install_system_prompts(self) -> None:
-        """Set up working directory, system prompts, skills, and config-level dirs.
+        """Set up working directory, system prompts, skills, hooks, and config dirs.
 
         Creates:
         - ~/.enso/jobs/ and ~/.enso/skills/
@@ -110,6 +110,7 @@ class Runtime:
         - AGENTS.md, GEMINI.md as symlinks to CLAUDE.md
         - .claude/skills and .agents/skills symlinked to ~/.enso/skills/
           (so Claude, Codex, and Gemini auto-discover skills)
+        - Auto-compact notification hooks for Claude and Gemini
         """
         from .config import JOBS_DIR
 
@@ -149,6 +150,28 @@ class Runtime:
                 os.path.join(parent, "skills"), skills_dir
             )
 
+        # Auto-compact notification hooks — lets the user know via Telegram
+        # when a provider is compacting context (which can be slow).
+        # Claude: PreCompact with "auto" matcher
+        # Gemini: PreCompress with "auto" matcher
+        # Codex: no compaction hooks available
+        notify_cmd = (
+            "enso message send"
+            " 'Autocompacting context, this might take a moment...'"
+        )
+        self._ensure_hook_entry(
+            os.path.join(self.working_dir, ".claude", "settings.json"),
+            event="PreCompact",
+            matcher="auto",
+            command=notify_cmd,
+        )
+        self._ensure_hook_entry(
+            os.path.join(self.working_dir, ".gemini", "settings.json"),
+            event="PreCompress",
+            matcher="auto",
+            command=notify_cmd,
+        )
+
     @staticmethod
     def _ensure_symlink(link_path: str, target: str) -> None:
         """Create a symlink if it doesn't already exist."""
@@ -159,6 +182,55 @@ class Runtime:
             log.info("Symlinked %s -> %s", link_path, target)
         except OSError:
             log.warning("Could not symlink %s", link_path, exc_info=True)
+
+    @staticmethod
+    def _ensure_hook_entry(
+        settings_path: str,
+        *,
+        event: str,
+        matcher: str,
+        command: str,
+    ) -> None:
+        """Ensure a specific hook exists in a CLI settings file.
+
+        Reads the file, checks whether the exact command is already
+        present under the given event, and appends a new entry only
+        if missing.  Other hooks and settings are left untouched.
+        """
+        settings: dict = {}
+        if os.path.exists(settings_path):
+            try:
+                with open(settings_path) as f:
+                    settings = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                log.warning(
+                    "Could not read %s, skipping hook install",
+                    settings_path,
+                )
+                return
+
+        hooks = settings.setdefault("hooks", {})
+        event_hooks = hooks.setdefault(event, [])
+
+        # Check if this exact hook command is already installed
+        for entry in event_hooks:
+            for h in entry.get("hooks", []):
+                if h.get("command") == command:
+                    return
+
+        event_hooks.append({
+            "matcher": matcher,
+            "hooks": [{"type": "command", "command": command, "async": True}],
+        })
+
+        os.makedirs(os.path.dirname(settings_path), exist_ok=True)
+        try:
+            with open(settings_path, "w") as f:
+                json.dump(settings, f, indent=2)
+                f.write("\n")
+            log.info("Installed %s hook in %s", event, settings_path)
+        except OSError:
+            log.warning("Could not write %s", settings_path, exc_info=True)
 
     @staticmethod
     def _install_bundled_skills(skills_dir: str) -> None:
@@ -416,12 +488,17 @@ class Runtime:
         bg = messages.consume()
         if bg:
             prompt = f"{messages.format_for_injection(bg)}\n\n{prompt}"
+            log.info("[%s] Injected %d background message(s) into prompt", provider_name, len(bg))
 
         provider = self.make_provider(provider_name)
         model = self.get_active_model(chat_id, provider_name)
         display = provider_name.capitalize()
 
-        log.info("[%s] chat=%s model=%s: %.80s", provider_name, chat_id, model, prompt)
+        log.info(
+            "[%s] chat=%s model=%s prompt_len=%d: %.120s",
+            provider_name, chat_id, model, len(prompt), prompt,
+        )
+        log.debug("[%s] Full prompt:\n%s", provider_name, prompt)
 
         await ctx.send_typing()
         status_msg = None
@@ -435,6 +512,7 @@ class Runtime:
 
         response_parts: list[str] = []
         error_text = ""
+        usage_pct: int | None = None
 
         try:
             async for event in self.run_provider(provider, prompt, chat_id, model):
@@ -444,6 +522,8 @@ class Runtime:
                     response_parts.append(event.text)
                 elif event.kind == "error":
                     error_text = event.text
+                elif event.kind == "usage" and event.usage:
+                    usage_pct = event.usage.get("pct")
 
             stop.set()
             ticker.cancel()
@@ -451,7 +531,8 @@ class Runtime:
                 await ctx.delete_status(status_msg)
 
             response_text = provider.format_response(response_parts)
-            prefix = f"({display} / {state['elapsed']}s)"
+            usage_part = f" / {usage_pct}%" if usage_pct is not None else ""
+            prefix = f"({display}{usage_part} / {state['elapsed']}s)"
 
             if response_text:
                 body = f"{prefix}\n{response_text}" if ctx.include_prefix else response_text
@@ -583,7 +664,21 @@ class Runtime:
             stderr=asyncio.subprocess.STDOUT,
             cwd=self.working_dir,
         )
-        stdout, _ = await proc.communicate()
+        timeout_secs = 15 * 60  # 15 minute hard limit per job
+        try:
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout_secs,
+            )
+        except asyncio.TimeoutError:
+            log.warning("Job '%s' timed out after %ds, killing", job.name, timeout_secs)
+            proc.kill()
+            await proc.wait()
+            output = f"Job timed out after {timeout_secs}s"
+            if self.transport:
+                await self.transport.notify(f"\u26a0\ufe0f [{job.name}] {output}")
+            self._job_last_run[job.dir_name] = datetime.now()
+            self.save_state()
+            return
         output = stdout.decode(errors="replace").strip()
 
         # Only notify on failure — successful jobs handle their own messaging

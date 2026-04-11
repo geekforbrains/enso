@@ -74,6 +74,9 @@ def md_to_html(text: str) -> str:
 
     text = _BLOCKQUOTE.sub(_fmt_blockquote, text)
 
+    # Collapse excessive blank lines (3+ newlines → 2)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
     # Restore stashed code
     for i, block in enumerate(blocks):
         text = text.replace(f"\x00B{i}\x00", block)

@@ -8,6 +8,8 @@ import logging
 import os
 import sys
 import uuid
+from collections import deque
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -30,8 +32,19 @@ if TYPE_CHECKING:
     from ..core import Runtime
 
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB Telegram bot API limit
+MAX_QUEUE_SIZE = 5
 
 log = logging.getLogger(__name__)
+
+
+@dataclass
+class _QueuedMessage:
+    """A message waiting to be dispatched while another request is running."""
+
+    update: Update
+    prompt: str  # with reply context already prepended
+    is_reply: bool
+    preview: str  # short preview of user's original text for display
 
 
 def _is_parse_error(exc: BadRequest) -> bool:
@@ -41,7 +54,8 @@ def _is_parse_error(exc: BadRequest) -> bool:
 
 # Commands registered with Telegram's menu UI.
 COMMANDS = [
-    BotCommand("stop", "Kill running process"),
+    BotCommand("stop", "Stop process & clear queue"),
+    BotCommand("queue", "View & manage queued messages"),
     BotCommand("use", "Switch provider"),
     BotCommand("model", "Switch model"),
     BotCommand("status", "Provider & model info"),
@@ -75,19 +89,26 @@ def _safe_filename(name: str) -> str:
 class TelegramContext(TransportContext):
     """Sends replies back to a Telegram chat."""
 
-    def __init__(self, update: Update):
+    def __init__(self, update: Update, *, is_reply: bool = False):
         self._update = update
+        self._is_reply = is_reply
 
     async def reply(self, text: str) -> None:
+        # When the user sent a reply-message, visually thread the bot's
+        # response back to that message so the link is clear in chat.
+        kwargs: dict[str, Any] = {"parse_mode": ParseMode.HTML}
+        if self._is_reply:
+            kwargs["do_quote"] = True
         try:
-            await self._update.message.reply_text(
-                md_to_html(text), parse_mode=ParseMode.HTML,
-            )
+            await self._update.message.reply_text(md_to_html(text), **kwargs)
         except BadRequest as exc:
             if not _is_parse_error(exc):
                 raise
             # Fallback to plain text if HTML parsing fails
-            await self._update.message.reply_text(text)
+            plain_kwargs: dict[str, Any] = {}
+            if self._is_reply:
+                plain_kwargs["do_quote"] = True
+            await self._update.message.reply_text(text, **plain_kwargs)
 
     async def reply_status(self, text: str) -> Any:
         return await self._update.message.reply_text(text)
@@ -114,6 +135,7 @@ class TelegramTransport(BaseTransport):
         self.bot_token: str = tg_cfg.get("bot_token", "")
         self.allowed_user_ids: set[int] = set(tg_cfg.get("allowed_user_ids", []))
         self._bot: Any = None
+        self._queue_by_chat: dict[int, deque[_QueuedMessage]] = {}
 
     def _is_authorized(self, update: Update) -> bool:
         user = update.effective_user
@@ -203,6 +225,13 @@ class TelegramTransport(BaseTransport):
         if not self._is_authorized(update):
             return
         text = (update.message.text or "").strip()
+        log.info(
+            "Incoming message: chat_id=%s msg_id=%s is_reply=%s len=%d",
+            update.effective_chat.id,
+            update.message.message_id,
+            update.message.reply_to_message is not None,
+            len(text),
+        )
         await self._dispatch(update, update.effective_chat.id, text)
 
     async def _handle_file_message(self, update: Update, _ctx: Any) -> None:
@@ -246,44 +275,157 @@ class TelegramTransport(BaseTransport):
     # -- Dispatch --
 
     async def _dispatch(self, update: Update, chat_id: int, prompt: str) -> None:
-        """Send a prompt to the active provider, guarding against concurrent requests."""
+        """Send a prompt to the active provider, or queue it if one is already running."""
         rt = self.runtime
-        provider = rt.get_active_provider(chat_id)
         lock = rt.get_chat_lock(chat_id)
 
+        # Build reply context early — needed whether we run now or queue
+        reply_context = _build_reply_context(update.message)
+        is_reply = reply_context is not None
+        preview = prompt[:50].replace("\n", " ")
+        if reply_context:
+            prompt = f"{reply_context}\n\n{prompt}"
+
         if lock.locked():
-            log.info("Rejected (lock held) chat_id=%s provider=%s", chat_id, provider)
-            await update.message.reply_text(
-                "A request is already running. Use /stop to cancel it."
-            )
+            queue = self._queue_by_chat.setdefault(chat_id, deque())
+            if len(queue) >= MAX_QUEUE_SIZE:
+                await update.message.reply_text(
+                    f"Queue full ({MAX_QUEUE_SIZE}). Use /queue to manage."
+                )
+                return
+            queue.append(_QueuedMessage(
+                update=update, prompt=prompt,
+                is_reply=is_reply, preview=preview,
+            ))
+            pos = len(queue)
+            label = f"{preview}…" if len(preview) == 50 else preview
+            await update.message.reply_text(f"Queued (#{pos}): {label}")
+            log.info("Queued #%d for chat_id=%s: %s", pos, chat_id, preview)
             return
 
-        ctx = TelegramContext(update)
+        provider = rt.get_active_provider(chat_id)
+        log.info(
+            "Dispatch: chat_id=%s provider=%s is_reply=%s prompt_len=%d",
+            chat_id, provider, is_reply, len(prompt),
+        )
+        log.debug("Dispatch prompt:\n%s", prompt)
+
+        ctx = TelegramContext(update, is_reply=is_reply)
         async with lock:
-            task = asyncio.create_task(
-                rt.process_request(provider, prompt, chat_id, ctx)
+            await self._run_request(provider, prompt, chat_id, ctx)
+            await self._drain_queue(chat_id)
+
+    async def _run_request(
+        self, provider: str, prompt: str, chat_id: int, ctx: TelegramContext,
+    ) -> None:
+        """Run a single provider request, tracking the task for cancellation."""
+        rt = self.runtime
+        task = asyncio.create_task(
+            rt.process_request(provider, prompt, chat_id, ctx)
+        )
+        rt.running_task_by_chat[chat_id] = task
+        try:
+            await task
+        except asyncio.CancelledError:
+            log.info("Task cancelled by user for chat_id=%s", chat_id)
+        finally:
+            if rt.running_task_by_chat.get(chat_id) is task:
+                rt.running_task_by_chat.pop(chat_id, None)
+
+    async def _drain_queue(self, chat_id: int) -> None:
+        """Process queued messages one by one until the queue is empty."""
+        queue = self._queue_by_chat.get(chat_id)
+        if not queue:
+            return
+        while queue:
+            queued = queue.popleft()
+            provider = self.runtime.get_active_provider(chat_id)
+            ctx = TelegramContext(queued.update, is_reply=queued.is_reply)
+            log.info(
+                "Dequeuing for chat_id=%s (%d remaining): %s",
+                chat_id, len(queue), queued.preview,
             )
-            rt.running_task_by_chat[chat_id] = task
-            try:
-                await task
-            except asyncio.CancelledError:
-                log.info("Task cancelled by user for chat_id=%s", chat_id)
-            finally:
-                if rt.running_task_by_chat.get(chat_id) is task:
-                    rt.running_task_by_chat.pop(chat_id, None)
+            await self._run_request(provider, queued.prompt, chat_id, ctx)
 
     # -- Slash commands --
 
     async def _cmd_stop(self, update: Update, _ctx: Any) -> None:
         if not self._is_authorized(update):
             return
-        had, error = await self.runtime.stop_chat(update.effective_chat.id)
-        if not had:
-            await update.message.reply_text("No process running.")
+        chat_id = update.effective_chat.id
+        queue = self._queue_by_chat.get(chat_id)
+        queued_count = len(queue) if queue else 0
+        if queue:
+            queue.clear()
+        had, error = await self.runtime.stop_chat(chat_id)
+        if not had and not queued_count:
+            await update.message.reply_text("Nothing running.")
         elif error:
             await update.message.reply_text(f"Error stopping: {error}")
         else:
-            await update.message.reply_text("Process stopped.")
+            parts = []
+            if had:
+                parts.append("Stopped.")
+            if queued_count:
+                parts.append(f"Cleared {queued_count} queued message(s).")
+            await update.message.reply_text(" ".join(parts))
+
+    async def _cmd_queue(self, update: Update, _ctx: Any) -> None:
+        if not self._is_authorized(update):
+            return
+        chat_id = update.effective_chat.id
+        args = (update.message.text or "").split()[1:]
+
+        # Direct: /queue clear
+        if args == ["clear"]:
+            queue = self._queue_by_chat.get(chat_id)
+            count = len(queue) if queue else 0
+            if queue:
+                queue.clear()
+            await update.message.reply_text(
+                f"Cleared {count} queued message(s)." if count else "Queue is empty."
+            )
+            return
+
+        await self._show_queue(update, chat_id)
+
+    async def _show_queue(
+        self, update_or_query: Any, chat_id: int,
+    ) -> None:
+        """Render the queue view (used by /queue command and callbacks)."""
+        queue = self._queue_by_chat.get(chat_id)
+        if not queue:
+            text = "No messages queued."
+            if hasattr(update_or_query, "edit_message_text"):
+                await update_or_query.edit_message_text(text)
+            else:
+                await update_or_query.message.reply_text(text)
+            return
+
+        lines = [f"Queued messages ({len(queue)}):"]
+        for i, item in enumerate(queue):
+            label = f"{item.preview}…" if len(item.preview) == 50 else item.preview
+            lines.append(f"{i + 1}. {label}")
+
+        remove_buttons = [
+            InlineKeyboardButton(
+                f"✕ {i + 1}", callback_data=f"queue:rm:{i}",
+            )
+            for i in range(len(queue))
+        ]
+        keyboard = InlineKeyboardMarkup([
+            remove_buttons,
+            [InlineKeyboardButton("Clear all", callback_data="queue:clear")],
+        ])
+
+        if hasattr(update_or_query, "edit_message_text"):
+            await update_or_query.edit_message_text(
+                "\n".join(lines), reply_markup=keyboard,
+            )
+        else:
+            await update_or_query.message.reply_text(
+                "\n".join(lines), reply_markup=keyboard,
+            )
 
     async def _cmd_use(self, update: Update, _ctx: Any) -> None:
         if not self._is_authorized(update):
@@ -471,6 +613,70 @@ class TelegramTransport(BaseTransport):
             parts = self._do_clear(chat_id, clear_all=clear_all)
             label = "all providers" if clear_all else "current provider"
             await query.edit_message_text(f"Cleared {label}.\n" + "\n".join(parts))
+
+        elif data.startswith("queue:"):
+            action = data.split(":", 1)[1]
+            queue = self._queue_by_chat.get(chat_id)
+            if action == "clear":
+                count = len(queue) if queue else 0
+                if queue:
+                    queue.clear()
+                await query.edit_message_text(
+                    f"Cleared {count} queued message(s)."
+                    if count else "Queue already empty."
+                )
+            elif action.startswith("rm:"):
+                idx = int(action.split(":")[1])
+                if queue and 0 <= idx < len(queue):
+                    del queue[idx]
+                    log.info("Removed queue item %d for chat_id=%s", idx, chat_id)
+                await self._show_queue(query, chat_id)
+
+
+def _build_reply_context(msg: Any) -> str | None:
+    """Build a reply-context prefix when the user replies to a specific message.
+
+    Returns a bracketed context string to prepend to the prompt, or None if
+    the message is not a reply.
+    """
+    reply = msg.reply_to_message
+    if reply is None:
+        return None
+
+    # Prefer the user's partial quote selection (highlighted text) over
+    # the full original message.
+    quote = getattr(msg, "quote", None)
+    if quote and getattr(quote, "text", None):
+        quoted_text = quote.text
+        quote_source = "partial_quote"
+    elif getattr(reply, "text", None):
+        quoted_text = reply.text
+        quote_source = "full_text"
+    elif getattr(reply, "caption", None):
+        quoted_text = reply.caption
+        quote_source = "caption"
+    else:
+        quoted_text = "(media or deleted message)"
+        quote_source = "fallback"
+
+    # Truncate very long quotes to keep the prompt manageable
+    if len(quoted_text) > 500:
+        quoted_text = quoted_text[:500] + "…"
+
+    # In a 1:1 chat the replied-to message is either from the bot or the user
+    from_user = getattr(reply, "from_user", None)
+    sender = "assistant" if from_user and from_user.is_bot else "user"
+
+    log.info(
+        "Reply context: replying_to_msg_id=%s sender=%s source=%s quoted_len=%d",
+        getattr(reply, "message_id", "?"),
+        sender,
+        quote_source,
+        len(quoted_text),
+    )
+    log.debug("Reply quoted text: %s", quoted_text)
+
+    return f"[Replying to {sender}: {quoted_text}]"
 
 
 def _resolve_file(msg: Any) -> tuple[Any, str, str]:
