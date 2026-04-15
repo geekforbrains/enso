@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.11.1] - 2026-04-15
+
+### Changed
+
+- Completed audit of `feat/multi-transport` branch for v0.12.0 readiness (#2)
+
 ## [0.11.0] - 2026-04-09
 
 ### Added
