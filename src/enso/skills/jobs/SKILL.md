@@ -89,8 +89,14 @@ tokens when there's nothing to do.
 
 - **stdout** is captured and injected into the prompt wherever
   `{{prerun_output}}` appears
-- **exit 0** = proceed with the job
-- **exit 1** (or any non-zero) = skip the job silently
+- **exit 0** = work found, proceed with the job
+- **exit 1** = no work, skip silently (DEBUG log — no noise)
+- **exit 2+** = real error, skip with a WARNING log that includes stderr
+
+Use `set -uo pipefail` (not `-e`) so you control exit codes explicitly —
+otherwise an unrelated command failure can exit non-zero before you
+reach the gate logic. Write diagnostics to stderr before `exit 2` so
+they surface in the warning log.
 
 ### When to use prerun
 
@@ -108,12 +114,16 @@ tokens when there's nothing to do.
 ```bash
 #!/usr/bin/env bash
 # prerun.sh — gate the job and gather data
-set -euo pipefail
+set -uo pipefail
 
 # 1. Check if there's work to do
 RESULT=$(some-command-here)
+if [[ $? -ne 0 ]]; then
+  echo "some-command-here failed" >&2
+  exit 2
+fi
 
-# 2. Exit non-zero to skip the job
+# 2. No work → exit 1 to skip silently
 if [[ -z "$RESULT" ]]; then
   exit 1
 fi
@@ -161,8 +171,12 @@ Summarise this video and create a note:
 `prerun.sh`:
 ```bash
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
 VIDEO=$(python3 check_playlist.py)
+if [[ $? -ne 0 ]]; then
+  echo "check_playlist.py failed" >&2
+  exit 2
+fi
 if [[ -z "$VIDEO" ]]; then
   exit 1
 fi
@@ -189,8 +203,12 @@ Research these meeting attendees and create notes:
 `prerun.sh`:
 ```bash
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
 NEW_PEOPLE=$(osascript get-new-attendees.js)
+if [[ $? -ne 0 ]]; then
+  echo "osascript failed to fetch attendees" >&2
+  exit 2
+fi
 if [[ -z "$NEW_PEOPLE" ]]; then
   exit 1
 fi
