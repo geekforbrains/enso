@@ -19,7 +19,7 @@ from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
-from . import __version__
+from . import __version__, slack_cache
 from .config import CONFIG_FILE, detect_providers, load_config, resolve_providers, save_config
 from .jobs import create_job, load_jobs
 from .messages import clear as msg_clear
@@ -33,9 +33,11 @@ app = typer.Typer(help="Enso — AI agents from your phone", no_args_is_help=Tru
 job_app = typer.Typer(help="Manage background jobs")
 message_app = typer.Typer(help="Send messages and files via the configured transport")
 service_app = typer.Typer(help="Manage the background service")
+slack_app = typer.Typer(help="Slack directory lookups and message search")
 app.add_typer(job_app, name="job")
 app.add_typer(message_app, name="message")
 app.add_typer(service_app, name="service")
+app.add_typer(slack_app, name="slack")
 
 console = Console()
 
@@ -122,7 +124,6 @@ _VOICE_EXTENSIONS = {".oga"}
 def _tg_send_file(token: str, chat_id: int, file_path: str, caption: str = "") -> bool:
     """Send a file to Telegram. Auto-selects method based on extension."""
     import mimetypes
-    from email.mime.multipart import MIMEMultipart
     from io import BytesIO
 
     ext = os.path.splitext(file_path)[1].lower()
@@ -1346,6 +1347,261 @@ def service_logs_cmd(
                 console.print(line)
         except Exception as exc:
             console.print(f"[red]Error reading logs: {exc}[/]")
+
+
+# ---------------------------------------------------------------------------
+# Slack subcommands (directory cache + message search)
+# ---------------------------------------------------------------------------
+
+def _slack_token_or_exit() -> str:
+    """Load the Slack bot token or exit with a clear error."""
+    cfg = load_config()
+    token = cfg.get("transports", {}).get("slack", {}).get("bot_token", "")
+    if not token:
+        console.print(
+            "[red]\u2717[/] Slack not configured. Run [bold]enso setup[/]."
+        )
+        raise typer.Exit(1)
+    return token
+
+
+def _fmt_user(u: dict) -> str:
+    parts = [u["id"]]
+    real = u.get("real_name") or u.get("display_name") or u.get("name") or "?"
+    parts.append(real)
+    if u.get("name") and u["name"] != real:
+        parts.append(f"(@{u['name']})")
+    if u.get("email"):
+        parts.append(u["email"])
+    tags = []
+    if u.get("is_bot"):
+        tags.append("bot")
+    if u.get("deleted"):
+        tags.append("deleted")
+    if tags:
+        parts.append(f"[{','.join(tags)}]")
+    return "  ".join(parts)
+
+
+def _fmt_channel(c: dict) -> str:
+    parts = [c["id"], f"#{c['name']}"]
+    if c.get("is_private"):
+        parts.append("[private]")
+    if not c.get("is_member"):
+        parts.append("[not-a-member]")
+    if c.get("num_members"):
+        parts.append(f"({c['num_members']} members)")
+    if c.get("topic"):
+        parts.append(f"\u2014 {c['topic']}")
+    return "  ".join(parts)
+
+
+@slack_app.command("lookup-user")
+def slack_lookup_user(
+    query: Annotated[str, typer.Argument(help="Name, display name, email, or U-ID")],
+) -> None:
+    """Find a Slack user. Searches the cache; refreshes on miss."""
+    token = _slack_token_or_exit()
+    matches = slack_cache.lookup_user(query, token=token)
+    if not matches:
+        console.print(f"No user found matching '{query}'.")
+        raise typer.Exit(1)
+    for u in matches:
+        console.print(_fmt_user(u))
+
+
+@slack_app.command("lookup-channel")
+def slack_lookup_channel(
+    query: Annotated[str, typer.Argument(help="Channel name (with or without #) or C-ID")],
+) -> None:
+    """Find a Slack channel. Searches the cache; refreshes on miss."""
+    token = _slack_token_or_exit()
+    matches = slack_cache.lookup_channel(query, token=token)
+    if not matches:
+        console.print(f"No channel found matching '{query}'.")
+        raise typer.Exit(1)
+    for c in matches:
+        console.print(_fmt_channel(c))
+
+
+@slack_app.command("whois")
+def slack_whois(
+    user_id: Annotated[str, typer.Argument(help="Slack user ID (e.g. U0AETSSDDEF)")],
+) -> None:
+    """Resolve a U-ID to a user record. Calls users.info on cache miss."""
+    token = _slack_token_or_exit()
+    entry = slack_cache.whois(user_id, token=token)
+    if not entry:
+        console.print(f"No user with ID {user_id}.")
+        raise typer.Exit(1)
+    console.print(_fmt_user(entry))
+
+
+@slack_app.command("open-dm")
+def slack_open_dm(
+    user: Annotated[str, typer.Argument(help="User ID (U…) or a name to look up")],
+) -> None:
+    """Open a DM channel with a user and print the resulting channel ID."""
+    token = _slack_token_or_exit()
+    user_id = user
+    if not user.startswith(("U", "W")):
+        matches = slack_cache.lookup_user(user, token=token)
+        if not matches:
+            console.print(f"No user found matching '{user}'.")
+            raise typer.Exit(1)
+        if len(matches) > 1:
+            console.print(
+                f"Ambiguous '{user}' \u2014 {len(matches)} matches. "
+                "Use --user with a specific ID:"
+            )
+            for u in matches:
+                console.print(_fmt_user(u))
+            raise typer.Exit(1)
+        user_id = matches[0]["id"]
+    try:
+        channel_id = slack_cache.open_dm(user_id, token)
+    except Exception as exc:
+        console.print(f"[red]\u2717[/] {exc}")
+        raise typer.Exit(1) from exc
+    console.print(channel_id)
+
+
+@slack_app.command("list")
+def slack_list(
+    what: Annotated[str, typer.Argument(help="users | channels")] = "users",
+) -> None:
+    """Dump the cached directory. Auto-refreshes if the cache is empty."""
+    token = _slack_token_or_exit()
+    cache = slack_cache.load()
+    if what == "users":
+        if not cache["users"]["items"]:
+            cache = slack_cache.refresh_users(token, cache)
+        for u in sorted(
+            cache["users"]["items"].values(),
+            key=lambda x: (x.get("real_name") or x.get("name") or "").lower(),
+        ):
+            console.print(_fmt_user(u))
+    elif what == "channels":
+        if not cache["channels"]["items"]:
+            cache = slack_cache.refresh_channels(token, cache)
+        for c in sorted(
+            cache["channels"]["items"].values(),
+            key=lambda x: x.get("name", "").lower(),
+        ):
+            console.print(_fmt_channel(c))
+    else:
+        console.print(f"[red]\u2717[/] Unknown target '{what}'. Use 'users' or 'channels'.")
+        raise typer.Exit(1)
+
+
+@slack_app.command("refresh")
+def slack_refresh(
+    users: Annotated[bool, typer.Option("--users", help="Refresh users only")] = False,
+    channels: Annotated[bool, typer.Option("--channels", help="Refresh channels only")] = False,
+) -> None:
+    """Force-refresh the Slack directory cache. Default is both."""
+    token = _slack_token_or_exit()
+    do_users = users or not channels
+    do_channels = channels or not users
+    if do_users:
+        slack_cache.refresh_users(token)
+        console.print("[green]\u2713[/] Users refreshed.")
+    if do_channels:
+        slack_cache.refresh_channels(token)
+        console.print("[green]\u2713[/] Channels refreshed.")
+
+
+@slack_app.command("search")
+def slack_search(
+    query: Annotated[str, typer.Argument(help="Search query (Slack search syntax allowed)")],
+    count: Annotated[int, typer.Option("--count", "-n", help="Max results")] = 10,
+) -> None:
+    """Search Slack messages across accessible channels."""
+    token = _slack_token_or_exit()
+    data = json.loads(urllib.request.urlopen(
+        urllib.request.Request(
+            "https://slack.com/api/search.messages",
+            data=json.dumps({
+                "query": query, "count": count,
+                "sort": "timestamp", "sort_dir": "desc",
+            }).encode(),
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+        ),
+        timeout=20,
+    ).read())
+    if not data.get("ok"):
+        console.print(f"[red]\u2717[/] search.messages: {data.get('error', '?')}")
+        raise typer.Exit(1)
+    matches = data.get("messages", {}).get("matches", [])
+    if not matches:
+        console.print("No results.")
+        return
+    for msg in matches:
+        channel = msg.get("channel", {}).get("name", "?")
+        user = msg.get("username", msg.get("user", "?"))
+        ts = msg.get("ts", "?")
+        text = msg.get("text", "")[:200]
+        console.print(f"#{channel}  {user}  {ts}")
+        console.print(f"  {text}")
+        permalink = msg.get("permalink", "")
+        if permalink:
+            console.print(f"  {permalink}")
+        console.print()
+
+
+@slack_app.command("history")
+def slack_history(
+    channel: Annotated[str, typer.Argument(help="Channel ID (C…, G…, D…)")],
+    count: Annotated[int, typer.Option("--count", "-n", help="Max messages")] = 10,
+) -> None:
+    """Fetch recent messages from a channel."""
+    token = _slack_token_or_exit()
+    url = (
+        "https://slack.com/api/conversations.history"
+        f"?channel={channel}&limit={count}"
+    )
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    data = json.loads(urllib.request.urlopen(req, timeout=20).read())
+    if not data.get("ok"):
+        console.print(f"[red]\u2717[/] conversations.history: {data.get('error', '?')}")
+        raise typer.Exit(1)
+    messages = list(reversed(data.get("messages", [])))
+    for msg in messages:
+        user = msg.get("user", "bot")
+        ts = msg.get("ts", "?")
+        thread = f" [thread: {msg['thread_ts']}]" if msg.get("thread_ts") else ""
+        text = msg.get("text", "")
+        console.print(f"{ts}  {user}{thread}")
+        console.print(f"  {text}")
+        console.print()
+
+
+@slack_app.command("thread")
+def slack_thread(
+    channel: Annotated[str, typer.Argument(help="Channel ID")],
+    thread_ts: Annotated[str, typer.Argument(help="Thread timestamp (parent ts)")],
+) -> None:
+    """Fetch every message in a thread."""
+    token = _slack_token_or_exit()
+    url = (
+        "https://slack.com/api/conversations.replies"
+        f"?channel={channel}&ts={thread_ts}&limit=100"
+    )
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    data = json.loads(urllib.request.urlopen(req, timeout=20).read())
+    if not data.get("ok"):
+        console.print(f"[red]\u2717[/] conversations.replies: {data.get('error', '?')}")
+        raise typer.Exit(1)
+    for msg in data.get("messages", []):
+        user = msg.get("user", "bot")
+        ts = msg.get("ts", "?")
+        text = msg.get("text", "")
+        console.print(f"{ts}  {user}")
+        console.print(f"  {text}")
+        console.print()
 
 
 # ---------------------------------------------------------------------------

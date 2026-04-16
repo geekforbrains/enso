@@ -51,6 +51,43 @@ You can also send files — they're downloaded and passed to the active agent. R
 
 **Slack specifics.** DMs work like Telegram — every message dispatches. In channels, Enso only responds when mentioned (`@bot help me`); once a thread starts, it stays attentive to that thread only if you keep mentioning it. The bot fetches the last few thread/channel messages as context so it knows what's going on.
 
+## Slack directory (`enso slack`)
+
+When an agent needs to mention a person or post to a channel, it has to
+speak in Slack IDs (`<@U…>`, `<#C…>`). The `enso slack` subcommand is a
+name↔ID directory backed by a local JSON cache at
+`~/.enso/cache/slack.json`.
+
+```bash
+enso slack lookup-user "gavin"            # name / email / display → user
+enso slack lookup-channel "daily"         # name → channel
+enso slack whois U0AETSSDDEF              # reverse: ID → user
+enso slack open-dm gavin                  # returns the DM channel ID
+enso slack list [users|channels]          # dump cache (auto-refresh if empty)
+enso slack refresh [--users|--channels]   # force refresh
+
+enso slack search "deploy failed"         # search.messages (needs user token)
+enso slack history C0AEWRPJ9LM            # channel history
+enso slack thread C0AEWRPJ9LM <ts>        # full thread
+```
+
+Lookups refresh automatically on a miss (guarded to at most once every 60
+seconds so a typo-happy agent can't hammer the API). The bundled `slack`
+skill teaches agents when and how to use these commands.
+
+### Keeping the cache live (optional)
+
+The cache also updates in real time from Socket Mode events while
+`enso serve` is running. To enable this, add these events to your Slack
+app's **Event Subscriptions → Bot Events**:
+
+`user_change`, `team_join`, `channel_created`, `channel_rename`,
+`channel_archive`, `channel_unarchive`, `channel_deleted`,
+`member_joined_channel`, `member_left_channel`
+
+Without these subscriptions the cache still works — it just stays fresh
+via refresh-on-miss instead of live events.
+
 ## Sending messages from the CLI
 
 Enso can send one-off messages or file attachments from the command line:

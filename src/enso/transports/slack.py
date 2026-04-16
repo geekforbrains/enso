@@ -20,6 +20,7 @@ except ImportError:
         "Install them with: pip install enso[slack]"
     ) from None
 
+from .. import slack_cache
 from ..auth import is_authorized
 from ..commands import (
     cmd_clear,
@@ -153,6 +154,89 @@ class SlackTransport(BaseTransport):
         @app.event("message")
         async def handle_message(event: dict, client: AsyncWebClient) -> None:
             await self._handle_message(event, client)
+
+        self._register_directory_listeners(app)
+
+    def _register_directory_listeners(self, app: AsyncApp) -> None:
+        """Register event handlers that keep the Slack directory cache fresh.
+
+        These only fire if the Slack app has the corresponding event
+        subscriptions enabled (see README). When they don't fire the cache
+        falls back to refresh-on-miss via the ``enso slack`` CLI, so missing
+        subscriptions just make the cache less immediate — not broken.
+        """
+
+        async def _apply_user(event: dict) -> None:
+            user = event.get("user") or {}
+            if user.get("id"):
+                await asyncio.to_thread(slack_cache.apply_user_change, user)
+
+        @app.event("user_change")
+        async def on_user_change(event: dict) -> None:
+            await _apply_user(event)
+
+        @app.event("team_join")
+        async def on_team_join(event: dict) -> None:
+            await _apply_user(event)
+
+        async def _apply_channel_upsert(event: dict) -> None:
+            channel = event.get("channel")
+            # Slack is inconsistent — channel_created sends a dict, but
+            # channel_rename / channel_archived send just the ID at the top
+            # level (or a minimal dict). Fetch fresh info to be safe.
+            if isinstance(channel, dict) and channel.get("id"):
+                await asyncio.to_thread(slack_cache.apply_channel_upsert, channel)
+                return
+            channel_id = channel if isinstance(channel, str) else event.get("channel", "")
+            if not channel_id or not self._client:
+                return
+            try:
+                info = await self._client.conversations_info(channel=channel_id)
+            except Exception:
+                log.exception("conversations.info failed for %s", channel_id)
+                return
+            ch = info.get("channel")
+            if ch:
+                await asyncio.to_thread(slack_cache.apply_channel_upsert, ch)
+
+        @app.event("channel_created")
+        async def on_channel_created(event: dict) -> None:
+            await _apply_channel_upsert(event)
+
+        @app.event("channel_rename")
+        async def on_channel_rename(event: dict) -> None:
+            await _apply_channel_upsert(event)
+
+        @app.event("channel_archive")
+        async def on_channel_archive(event: dict) -> None:
+            await _apply_channel_upsert(event)
+
+        @app.event("channel_unarchive")
+        async def on_channel_unarchive(event: dict) -> None:
+            await _apply_channel_upsert(event)
+
+        @app.event("channel_deleted")
+        async def on_channel_deleted(event: dict) -> None:
+            channel_id = event.get("channel", "")
+            if channel_id:
+                await asyncio.to_thread(slack_cache.apply_channel_delete, channel_id)
+
+        async def _on_membership(event: dict, *, joined: bool) -> None:
+            if event.get("user") != self.bot_user_id:
+                return  # Only care when the bot itself is the subject.
+            channel_id = event.get("channel", "")
+            if channel_id:
+                await asyncio.to_thread(
+                    slack_cache.set_channel_is_member, channel_id, joined,
+                )
+
+        @app.event("member_joined_channel")
+        async def on_member_joined(event: dict) -> None:
+            await _on_membership(event, joined=True)
+
+        @app.event("member_left_channel")
+        async def on_member_left(event: dict) -> None:
+            await _on_membership(event, joined=False)
 
     # -- Event handlers --
 
