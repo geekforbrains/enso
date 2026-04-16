@@ -17,7 +17,7 @@ Enso connects [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Co
 ```bash
 git clone https://github.com/geekforbrains/enso.git
 cd enso
-pip install -e .
+pip install -e ".[telegram]"    # or ".[slack]", or ".[telegram,slack]"
 enso setup
 ```
 
@@ -75,18 +75,24 @@ Lookups refresh automatically on a miss (guarded to at most once every 60
 seconds so a typo-happy agent can't hammer the API). The bundled `slack`
 skill teaches agents when and how to use these commands.
 
-### Keeping the cache live (optional)
+### Slack app setup
 
-The cache also updates in real time from Socket Mode events while
-`enso serve` is running. To enable this, add these events to your Slack
-app's **Event Subscriptions → Bot Events**:
+Enso ships a Slack app manifest with every scope and event subscription
+pre-configured. `enso setup` copies it to `~/.enso/slack-app-manifest.yaml`
+and walks you through the one-paste flow. To do it manually:
 
-`user_change`, `team_join`, `channel_created`, `channel_rename`,
-`channel_archive`, `channel_unarchive`, `channel_deleted`,
-`member_joined_channel`, `member_left_channel`
+1. Open https://api.slack.com/apps?new_app=1
+2. Choose **From an app manifest**
+3. Paste the contents of `~/.enso/slack-app-manifest.yaml` (or the
+   bundled `src/enso/slack_manifest.yaml`)
+4. **Install to workspace** — gives you the xoxb- bot token
+5. Under **Basic Information → App-Level Tokens**, generate a token
+   with scope `connections:write` — that's the xapp- token
+6. `enso setup` and paste both tokens when prompted
 
-Without these subscriptions the cache still works — it just stays fresh
-via refresh-on-miss instead of live events.
+The manifest is a reasonable default; prune scopes or events if you
+don't need a feature. Without the directory-cache events the cache
+still works, it just refreshes lazily instead of in real time.
 
 ## Sending messages from the CLI
 

@@ -14,6 +14,9 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- Slack setup wizard now copies a full app manifest to `~/.enso/slack-app-manifest.yaml` so users can paste it into Slack's "Create from manifest" flow instead of hand-configuring scopes and events
+- `enso setup` warns when Slack is chosen without a `notify_channel`, since background sends, job alerts, and autocompact hooks all need one
+- Setup test-send on Slack now uses the same `notify_channel`-only resolution as the runtime (previously fell back to the first allowed user, which hid the gotcha)
 - The bundled `slack_search` skill is now a lightweight `SKILL.md` that points the agent at the `enso slack` CLI — no more per-workspace Python tool script
 - Slack `notify` (and CLI sends) never auto-broadcast — a destination must come from `--to` or `notify_channel`
 - Telegram `notify` now honors the `destination` kwarg for single-target sends; omitting it still broadcasts to all `allowed_users`

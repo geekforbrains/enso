@@ -758,6 +758,22 @@ def _slack_upload_file(
     return (True, "")
 
 
+def _write_slack_manifest_copy() -> str:
+    """Copy the bundled Slack app manifest into ``~/.enso/`` and return path."""
+    import importlib.resources as resources
+
+    source = resources.files("enso").joinpath("slack_manifest.yaml")
+    dest = os.path.join(os.path.expanduser("~/.enso"), "slack-app-manifest.yaml")
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    try:
+        content = source.read_text(encoding="utf-8")
+        with open(dest, "w") as f:
+            f.write(content)
+    except OSError:
+        log.warning("Could not write Slack manifest to %s", dest, exc_info=True)
+    return dest
+
+
 def _setup_slack(config: dict) -> None:
     """Configure Slack bot tokens and allowed users."""
     slack_cfg = config.get("transports", {}).get("slack", {})
@@ -779,10 +795,30 @@ def _setup_slack(config: dict) -> None:
         else:
             console.print("[yellow]  Existing token is invalid.[/]")
 
-    # Bot Token
-    console.print("  To connect Slack you need two tokens:\n")
-    console.print("  1. A Bot Token (xoxb-...)")
-    console.print("  2. An App-Level Token (xapp-...)\n")
+    # Offer a one-paste app manifest to short-circuit the Slack app wizard.
+    manifest_path = _write_slack_manifest_copy()
+    console.print(
+        "  To create the Slack app, paste the bundled manifest:\n"
+    )
+    console.print("   1. Open [bold]https://api.slack.com/apps?new_app=1[/]")
+    console.print("   2. Choose [bold]From an app manifest[/]")
+    console.print("   3. Pick your workspace")
+    console.print(f"   4. Paste the contents of [bold]{manifest_path}[/]")
+    console.print("      (scopes, events, and Socket Mode are all pre-configured)")
+    console.print(
+        "   5. [bold]Install to workspace[/] — this gives you the Bot Token"
+    )
+    console.print(
+        "   6. Basic Information \u2192 [bold]App-Level Tokens[/]"
+        " \u2192 Generate, with scope [bold]connections:write[/]"
+    )
+    console.print(
+        "   7. Copy both tokens; paste them when prompted below.\n"
+    )
+    console.print(
+        "  [dim]If you already have an app, jump straight to copying"
+        " the tokens.[/]\n"
+    )
 
     while True:
         bot_token = Prompt.ask("  Bot Token (xoxb-...)")
@@ -816,12 +852,26 @@ def _setup_slack(config: dict) -> None:
             u.strip() for u in raw_users.split(",") if u.strip()
         ]
 
-    # Optional notify channel
+    # Notify channel — where `enso message send` (no --to), scheduled-job
+    # alerts, and the autocompact hook deliver. Without one they fail with
+    # "no destination" because Slack never auto-broadcasts.
     console.print()
+    console.print(
+        "  [bold]Default notify channel[/] \u2014 channel/DM ID where"
+        " background alerts go\n  (autocompact hooks, scheduled-job"
+        " failures, `enso message send` with no --to).\n"
+    )
     notify = Prompt.ask(
-        "  Default notify channel (ID or name, leave blank to skip)",
+        "  Notify channel (leave blank to configure later)",
         default="",
     )
+    if not notify:
+        console.print(
+            "  [yellow]\u26a0[/] Without a notify channel, background"
+            " Slack messages (hooks, job alerts, `enso message send`)"
+            " will be dropped.\n      Set it later by editing"
+            " ~/.enso/config.json or re-running `enso setup`."
+        )
 
     config.setdefault("transports", {})["slack"] = {
         "bot_token": bot_token,
@@ -884,22 +934,26 @@ def setup() -> None:
     elif config.get("transport") == "slack":
         slack_cfg = config.get("transports", {}).get("slack", {})
         token = slack_cfg.get("bot_token", "")
-        channel = slack_cfg.get("notify_channel", "")
-        users = slack_cfg.get("allowed_users", [])
-        target = channel or (
-            users[0] if users and users[0] != "*" else ""
-        )
-        if token and target:
+        target = slack_cfg.get("notify_channel", "")
+        if not target:
+            console.print(
+                "[yellow]Skipping test message \u2014 no notify_channel set.[/]"
+            )
+        elif token:
             with console.status("Sending test message..."):
                 sent = _slack_send_message(
                     token, target,
                     f"Enso v{__version__} ready.",
                 )
             if sent:
-                console.print("[green]\u2713[/] Test message sent!")
+                console.print(
+                    f"[green]\u2713[/] Test message sent to {target}."
+                )
             else:
                 console.print(
-                    "[yellow]Failed to send test message.[/]"
+                    f"[yellow]Failed to send test message to {target}."
+                    " If the bot isn't a member of that channel yet,"
+                    " invite it and try `enso message send 'hi'`.[/]"
                 )
 
     # Step 4: Background service
