@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased] (0.12.0)
 
+### Changed
+
+- Default system prompt gains two behavioural rules: flag uncertainty (don't invent names/dates/stats) and think independently (push back, weigh trade-offs)
+- `jobs` skill prerun docs now describe the real exit-code contract — `exit 0` proceed, `exit 1` silent skip (DEBUG), `exit 2+` error skip (WARNING with stderr). Templates switched from `set -euo pipefail` to `set -uo pipefail` so scripts can deliberately return exit 2 on failure instead of being killed by an earlier non-zero return.
+
 ## [0.11.0] - 2026-04-09
 
 ### Added
