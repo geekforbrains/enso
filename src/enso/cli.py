@@ -31,7 +31,7 @@ log = logging.getLogger(__name__)
 
 app = typer.Typer(help="Enso — AI agents from your phone", no_args_is_help=True)
 job_app = typer.Typer(help="Manage background jobs")
-message_app = typer.Typer(help="Send messages and files to Telegram")
+message_app = typer.Typer(help="Send messages and files via the configured transport")
 service_app = typer.Typer(help="Manage the background service")
 app.add_typer(job_app, name="job")
 app.add_typer(message_app, name="message")
@@ -674,6 +674,89 @@ def _slack_send_message(
         return False
 
 
+_SLACK_MAX_UPLOAD_BYTES = 1024 * 1024 * 1024  # 1 GB
+
+
+def _slack_upload_file(
+    token: str, channel: str, file_path: str, caption: str = "",
+) -> tuple[bool, str]:
+    """Upload a file to Slack using the external upload flow.
+
+    Returns (ok, error_message). error_message is empty on success.
+    """
+    from urllib.parse import urlencode
+
+    filename = os.path.basename(file_path)
+    filesize = os.path.getsize(file_path)
+    if filesize == 0:
+        return (False, "File is empty.")
+    if filesize > _SLACK_MAX_UPLOAD_BYTES:
+        mb = filesize / (1024 * 1024)
+        return (False, f"File is {mb:.1f} MB; Slack limit is 1024 MB.")
+
+    # Step 1: request an upload URL
+    body = urlencode({"filename": filename, "length": filesize}).encode()
+    req = urllib.request.Request(
+        "https://slack.com/api/files.getUploadURLExternal",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read())
+    except Exception as e:
+        return (False, f"getUploadURLExternal request failed: {e}")
+    if not result.get("ok"):
+        return (False, f"getUploadURLExternal: {result.get('error', 'unknown')}")
+    upload_url = result.get("upload_url")
+    file_id = result.get("file_id")
+    if not upload_url or not file_id:
+        return (False, "getUploadURLExternal: missing upload_url or file_id")
+
+    # Step 2: POST file bytes to the returned URL
+    try:
+        with open(file_path, "rb") as f:
+            file_bytes = f.read()
+        req = urllib.request.Request(
+            upload_url,
+            data=file_bytes,
+            headers={"Content-Type": "application/octet-stream"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            if resp.status not in (200, 201, 204):
+                return (False, f"Upload POST returned HTTP {resp.status}")
+    except Exception as e:
+        return (False, f"File upload failed: {e}")
+
+    # Step 3: complete the upload (shares file to channel with optional comment)
+    complete_payload: dict = {
+        "files": [{"id": file_id, "title": filename}],
+        "channel_id": channel,
+    }
+    if caption:
+        complete_payload["initial_comment"] = caption
+    req = urllib.request.Request(
+        "https://slack.com/api/files.completeUploadExternal",
+        data=json.dumps(complete_payload).encode(),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read())
+    except Exception as e:
+        return (False, f"completeUploadExternal request failed: {e}")
+    if not result.get("ok"):
+        return (False, f"completeUploadExternal: {result.get('error', 'unknown')}")
+    return (True, "")
+
+
 def _setup_slack(config: dict) -> None:
     """Configure Slack bot tokens and allowed users."""
     slack_cfg = config.get("transports", {}).get("slack", {})
@@ -1081,6 +1164,13 @@ def message_list() -> None:
 def message_attach(
     file: Annotated[str, typer.Argument(help="Path to file to send")],
     caption: Annotated[str, typer.Argument(help="Optional caption")] = "",
+    channel: Annotated[
+        str,
+        typer.Option(
+            "--channel", "-c",
+            help="Slack destination (channel/DM/user ID). Overrides notify_channel.",
+        ),
+    ] = "",
 ) -> None:
     """Send a file via the configured transport."""
     if not os.path.isfile(file):
@@ -1088,13 +1178,38 @@ def message_attach(
         raise typer.Exit(1)
     cfg = load_config()
     transport = cfg.get("transport", "telegram")
+    filename = os.path.basename(file)
 
     if transport == "slack":
-        console.print(
-            "[yellow]File uploads not yet supported"
-            " for Slack. Use message send instead.[/]"
+        slack_cfg = cfg.get("transports", {}).get("slack", {})
+        token = slack_cfg.get("bot_token", "")
+        users = slack_cfg.get("allowed_users", [])
+        if not token:
+            console.print(
+                "[red]\u2717[/] Slack not configured."
+                " Run [bold]enso setup[/]."
+            )
+            raise typer.Exit(1)
+        target = channel or slack_cfg.get("notify_channel", "") or (
+            users[0] if users and users[0] != "*" else ""
         )
-        raise typer.Exit(1)
+        if not target:
+            console.print(
+                "[red]\u2717[/] No destination. Pass --channel,"
+                " set notify_channel, or configure allowed_users."
+            )
+            raise typer.Exit(1)
+        with console.status(f"Uploading {filename} to {target}..."):
+            ok, err = _slack_upload_file(token, target, file, caption)
+        if not ok:
+            console.print(f"[red]\u2717[/] {err}")
+            raise typer.Exit(1)
+        note = f"Sent attachment: {filename} \u2192 {target}"
+        if caption:
+            note += f" \u2014 {caption}"
+        msg_send(note, source="attach")
+        console.print("[green]\u2713[/] File sent.")
+        return
 
     tg_cfg = cfg.get("transports", {}).get("telegram", {})
     token = tg_cfg.get("bot_token", "")
@@ -1113,7 +1228,6 @@ def message_attach(
                 f"[red]\u2717[/] Failed to send to user {uid}."
             )
             raise typer.Exit(1)
-    filename = os.path.basename(file)
     note = f"Sent attachment: {filename}"
     if caption:
         note += f" \u2014 {caption}"
