@@ -1,14 +1,16 @@
 # Enso
 
-Text your AI agents from Telegram. They run on your machine.
+Text your AI agents from Telegram or Slack. They run on your machine.
 
-Enso connects [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), and [Gemini CLI](https://github.com/google-gemini/gemini-cli) to a Telegram bot so you can chat with them from your phone. You get live status updates as they work, can switch between agents mid-conversation, and schedule background jobs on a cron.
+Enso connects [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), and [Gemini CLI](https://github.com/google-gemini/gemini-cli) to a Telegram bot or Slack workspace so you can chat with them from your phone. You get live status updates as they work, can switch between agents mid-conversation, and schedule background jobs on a cron.
 
 ## Requirements
 
 - Python 3.10+
 - At least one of: `claude`, `codex`, or `gemini` installed and on your PATH
-- A Telegram bot token ([create one with @BotFather](https://t.me/BotFather))
+- One of:
+  - A Telegram bot token ([create one with @BotFather](https://t.me/BotFather)), or
+  - A Slack app with a bot token + app-level token (Socket Mode)
 
 ## Quick Start
 
@@ -19,7 +21,7 @@ pip install -e .
 enso setup
 ```
 
-The setup wizard detects your agent CLIs, connects your Telegram bot, and optionally installs a background service (launchd on macOS, systemd on Linux) so Enso starts on boot.
+The setup wizard detects your agent CLIs, connects your chosen transport (Telegram or Slack), and optionally installs a background service (launchd on macOS, systemd on Linux) so Enso starts on boot.
 
 Once setup is done, start chatting:
 
@@ -31,7 +33,7 @@ Or if you installed the background service, it's already running.
 
 ## Chat Commands
 
-Commands show up in Telegram's autocomplete menu when you type `/`.
+Telegram autocompletes these when you type `/`. On Slack, use `!` instead (e.g. `!status`).
 
 | Command | What it does |
 |---------|-------------|
@@ -45,7 +47,27 @@ Commands show up in Telegram's autocomplete menu when you type `/`.
 | `/logs` | Last 25 log entries |
 | `/help` | Show all commands |
 
-You can also send files — they're downloaded and passed to the active agent. Responses render with full Telegram formatting (bold, italic, code blocks, links, blockquotes).
+You can also send files — they're downloaded and passed to the active agent. Responses render with per-transport formatting (Telegram HTML; Slack mrkdwn).
+
+**Slack specifics.** DMs work like Telegram — every message dispatches. In channels, Enso only responds when mentioned (`@bot help me`); once a thread starts, it stays attentive to that thread only if you keep mentioning it. The bot fetches the last few thread/channel messages as context so it knows what's going on.
+
+## Sending messages from the CLI
+
+Enso can send one-off messages or file attachments from the command line:
+
+```bash
+enso message send "Deploy finished"
+enso message attach report.pdf "Weekly summary"
+```
+
+Pass `--to` to target a single destination:
+
+| Transport | With `--to` | Without `--to` |
+|-----------|-------------|----------------|
+| Telegram  | send to that user ID | broadcast to all `allowed_users` |
+| Slack     | send to that channel/DM/user ID | use `notify_channel` from config; error if not set |
+
+Slack never auto-broadcasts — always pass `--to` or configure `notify_channel`. Slack file uploads accept any type up to 1 GB.
 
 ## Background Jobs
 

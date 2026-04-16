@@ -460,16 +460,21 @@ class SlackTransport(BaseTransport):
         await self.runtime.dispatch(conv_id, prompt, ctx, preview=preview)
 
     async def notify(self, text: str, *, destination: str | None = None) -> None:
-        """Send a one-way notification to a channel or user."""
+        """Send a one-way notification. Requires an explicit destination.
+
+        Resolves to ``destination`` or ``notify_channel``; never falls back to
+        the allowed_users list (Slack must always target a single, explicit
+        channel or DM to avoid accidental broadcast).
+        """
         channel = destination or self.notify_channel
-        if (
-            not channel
-            and self.allowed_users
-            and self.allowed_users[0] != "*"
-        ):
-            channel = self.allowed_users[0]
-        if not channel or not self._client:
-            log.warning("Cannot notify — no channel or client")
+        if not channel:
+            log.warning(
+                "Slack notify dropped — no destination passed and no"
+                " notify_channel set"
+            )
+            return
+        if not self._client:
+            log.warning("Cannot notify — client not initialized")
             return
         try:
             await self._client.chat_postMessage(

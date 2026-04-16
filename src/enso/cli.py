@@ -1089,6 +1089,17 @@ def job_run(
 @message_app.command("send")
 def message_send(
     text: Annotated[str, typer.Argument(help="Message text to send")],
+    to: Annotated[
+        str,
+        typer.Option(
+            "--to", "-t",
+            help=(
+                "Destination. Slack: channel/DM/user ID (required if no"
+                " notify_channel). Telegram: user ID; omit to broadcast to"
+                " all allowed_users."
+            ),
+        ),
+    ] = "",
 ) -> None:
     """Send a message via the configured transport."""
     cfg = load_config()
@@ -1097,21 +1108,17 @@ def message_send(
     if transport == "slack":
         slack_cfg = cfg.get("transports", {}).get("slack", {})
         token = slack_cfg.get("bot_token", "")
-        channel = slack_cfg.get("notify_channel", "")
-        users = slack_cfg.get("allowed_users", [])
         if not token:
             console.print(
                 "[red]\u2717[/] Slack not configured."
                 " Run [bold]enso setup[/]."
             )
             raise typer.Exit(1)
-        target = channel or (
-            users[0] if users and users[0] != "*" else ""
-        )
+        target = to or slack_cfg.get("notify_channel", "")
         if not target:
             console.print(
-                "[red]\u2717[/] No notify_channel or"
-                " allowed_users configured."
+                "[red]\u2717[/] No destination. Pass --to or"
+                " set notify_channel in config."
             )
             raise typer.Exit(1)
         if not _slack_send_message(token, target, text[:40000]):
@@ -1132,7 +1139,8 @@ def message_send(
                 " Run [bold]enso setup[/]."
             )
             raise typer.Exit(1)
-        for uid in users:
+        targets = [to] if to else users
+        for uid in targets:
             if not _tg_send_message(token, uid, text[:4096]):
                 console.print(
                     f"[red]\u2717[/] Failed to send to"
@@ -1164,11 +1172,15 @@ def message_list() -> None:
 def message_attach(
     file: Annotated[str, typer.Argument(help="Path to file to send")],
     caption: Annotated[str, typer.Argument(help="Optional caption")] = "",
-    channel: Annotated[
+    to: Annotated[
         str,
         typer.Option(
-            "--channel", "-c",
-            help="Slack destination (channel/DM/user ID). Overrides notify_channel.",
+            "--to", "-t",
+            help=(
+                "Destination. Slack: channel/DM/user ID (required if no"
+                " notify_channel). Telegram: user ID; omit to broadcast to"
+                " all allowed_users."
+            ),
         ),
     ] = "",
 ) -> None:
@@ -1183,20 +1195,17 @@ def message_attach(
     if transport == "slack":
         slack_cfg = cfg.get("transports", {}).get("slack", {})
         token = slack_cfg.get("bot_token", "")
-        users = slack_cfg.get("allowed_users", [])
         if not token:
             console.print(
                 "[red]\u2717[/] Slack not configured."
                 " Run [bold]enso setup[/]."
             )
             raise typer.Exit(1)
-        target = channel or slack_cfg.get("notify_channel", "") or (
-            users[0] if users and users[0] != "*" else ""
-        )
+        target = to or slack_cfg.get("notify_channel", "")
         if not target:
             console.print(
-                "[red]\u2717[/] No destination. Pass --channel,"
-                " set notify_channel, or configure allowed_users."
+                "[red]\u2717[/] No destination. Pass --to or"
+                " set notify_channel in config."
             )
             raise typer.Exit(1)
         with console.status(f"Uploading {filename} to {target}..."):
@@ -1222,7 +1231,8 @@ def message_attach(
             " Run [bold]enso setup[/]."
         )
         raise typer.Exit(1)
-    for uid in users:
+    targets = [to] if to else users
+    for uid in targets:
         if not _tg_send_file(token, uid, file, caption):
             console.print(
                 f"[red]\u2717[/] Failed to send to user {uid}."

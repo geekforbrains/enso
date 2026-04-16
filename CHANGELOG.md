@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased] (0.12.0)
 
+### Added
+
+- Slack transport (Socket Mode) alongside Telegram — DMs, channel mentions, threaded replies, thread/channel context injection, and a `slack_search` skill for searching messages
+- `enso message attach` now supports Slack via the external file upload API (up to 1 GB)
+- `--to` flag on `enso message send` and `enso message attach` for targeting a single destination (user ID on Telegram; channel/DM/user ID on Slack)
+
+### Changed
+
+- Slack `notify` (and CLI sends) never auto-broadcast — a destination must come from `--to` or `notify_channel`
+- Telegram `notify` now honors the `destination` kwarg for single-target sends; omitting it still broadcasts to all `allowed_users`
+
 ## [0.11.0] - 2026-04-09
 
 ### Added

@@ -193,12 +193,17 @@ class TelegramTransport(BaseTransport):
         )
 
     async def notify(self, text: str, *, destination: str | None = None) -> None:
-        """Send a one-way notification to all allowed users."""
+        """Send a one-way notification.
+
+        If ``destination`` is given, sends only to that user ID. Otherwise
+        broadcasts to every configured ``allowed_users`` entry.
+        """
         if not self._bot:
             log.warning("Cannot notify — bot not initialized yet")
             return
         html = md_to_html(text[:4096])
-        for user_id in self.allowed_users:
+        targets = [destination] if destination else list(self.allowed_users)
+        for user_id in targets:
             try:
                 await self._bot.send_message(
                     chat_id=user_id, text=html, parse_mode=ParseMode.HTML,

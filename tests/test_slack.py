@@ -658,7 +658,8 @@ class TestNotify:
         )
 
     @pytest.mark.asyncio
-    async def test_notify_fallback_to_first_user(self):
+    async def test_notify_dropped_without_destination(self):
+        """Slack never auto-broadcasts — no destination + no notify_channel = drop."""
         rt = _make_runtime()
         rt.config["transports"]["slack"]["notify_channel"] = ""
         transport = SlackTransport(rt)
@@ -666,9 +667,7 @@ class TestNotify:
 
         await transport.notify("hello")
 
-        transport._client.chat_postMessage.assert_called_once_with(
-            channel="U123", text="hello",
-        )
+        transport._client.chat_postMessage.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_notify_no_client_warns(self):
