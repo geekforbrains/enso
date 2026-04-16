@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.12.0] - 2026-04-16
+
+### Added
+
+- Slack transport (Socket Mode) alongside Telegram — DMs, channel mentions, threaded replies, thread/channel context injection
+- `enso slack` subcommand group — `lookup-user`, `lookup-channel`, `whois`, `open-dm`, `list`, `refresh`, `search`, `history`, `thread`. Backed by a local JSON cache at `~/.enso/cache/slack.json` with refresh-on-miss semantics (60-second rate guard)
+- Slack transport now listens for `user_change`, `team_join`, and `channel_*` / `member_*` events and keeps the directory cache live in real time (requires the matching event subscriptions in the Slack app)
+- Bundled Slack app manifest (`src/enso/slack_manifest.yaml`) pre-configures every scope and event Enso uses; `enso setup` copies it to `~/.enso/slack-app-manifest.yaml` for the "Create from manifest" flow
+- `enso message attach` now supports Slack via the external file upload API (up to 1 GB)
+- `--to` flag on `enso message send` and `enso message attach` for targeting a single destination (user ID on Telegram; channel/DM/user ID on Slack)
+
+### Changed
+
+- `enso setup` warns when Slack is chosen without a `notify_channel`, since background sends, job alerts, and autocompact hooks all need one
+- Setup test-send on Slack now uses the same `notify_channel`-only resolution as the runtime (previously fell back to the first allowed user, which hid the gotcha)
+- The bundled `slack_search` skill is now a lightweight `SKILL.md` that points the agent at the `enso slack` CLI — no more per-workspace Python tool script
+- Slack `notify` (and CLI sends) never auto-broadcast — a destination must come from `--to` or `notify_channel`
+- Telegram `notify` now honors the `destination` kwarg for single-target sends; omitting it still broadcasts to all `allowed_users`
+
 ## [0.11.1] - 2026-04-15
 
 ### Changed

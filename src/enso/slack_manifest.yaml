@@ -1,0 +1,82 @@
+# Enso — Slack app manifest
+#
+# Paste this into https://api.slack.com/apps?new_app=1 → "From an app
+# manifest" to create a Slack app with every scope and event subscription
+# Enso uses. Rename the bot and adjust permissions to taste before you
+# install to your workspace.
+
+display_information:
+  name: Enso
+  description: Talk to your AI agents from Slack.
+  background_color: "#1e1e2e"
+
+features:
+  bot_user:
+    display_name: Enso
+    always_online: true
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+
+oauth_config:
+  scopes:
+    bot:
+      # Messaging
+      - app_mentions:read
+      - chat:write
+      - chat:write.public      # post to channels without being invited
+      # Channel & DM access (history needed for context injection)
+      - channels:history
+      - channels:join          # bot can auto-join public channels on demand
+      - channels:read
+      - groups:history
+      - groups:read
+      - im:history
+      - im:read
+      - im:write
+      - mpim:history
+      - mpim:read
+      - mpim:write
+      # File transfer
+      - files:read
+      - files:write
+      # Message search (enso slack search)
+      - search:read.public
+      # Reactions and link extraction
+      - reactions:read
+      - reactions:write
+      - links:read
+      # Directory cache
+      - users:read
+      - users:read.email
+      - users.profile:read
+
+settings:
+  event_subscriptions:
+    bot_events:
+      # Messaging
+      - app_mention
+      - message.channels
+      - message.groups
+      - message.im
+      - message.mpim
+      # Reactions (not wired up yet; included so agents can opt in later
+      # without re-consenting scopes)
+      - reaction_added
+      - reaction_removed
+      # Directory cache — keeps ~/.enso/cache/slack.json live
+      - user_change
+      - team_join
+      - channel_created
+      - channel_rename
+      - channel_archive
+      - channel_unarchive
+      - channel_deleted
+      - member_joined_channel
+      - member_left_channel
+  interactivity:
+    is_enabled: false
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false

@@ -103,6 +103,43 @@ def test_load_jobs_empty(tmp_enso):
     assert load_jobs() == []
 
 
+def test_parse_job_with_notify(tmp_path):
+    """Jobs with a notify field parse correctly."""
+    job_file = tmp_path / "JOB.md"
+    job_file.write_text("""\
+---
+name: Notify Job
+schedule: "0 9 * * *"
+provider: claude
+model: sonnet
+notify: alerts
+---
+
+Check things.
+""")
+    job = parse_job("notify-job", str(job_file))
+    assert job is not None
+    assert job.notify == "alerts"
+
+
+def test_parse_job_without_notify(tmp_path):
+    """Jobs without a notify field default to None."""
+    job_file = tmp_path / "JOB.md"
+    job_file.write_text("""\
+---
+name: No Notify
+schedule: "0 9 * * *"
+provider: claude
+model: sonnet
+---
+
+Do stuff.
+""")
+    job = parse_job("no-notify", str(job_file))
+    assert job is not None
+    assert job.notify is None
+
+
 def test_job_dir_property():
     """Job.job_dir computes correctly."""
     job = Job(dir_name="foo", name="Foo", schedule="* * * * *", provider="claude", model="sonnet")

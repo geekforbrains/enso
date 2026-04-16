@@ -84,3 +84,75 @@ def md_to_html(text: str) -> str:
         text = text.replace(f"\x00I{i}\x00", inline)
 
     return text
+
+
+# ---------------------------------------------------------------------------
+# Slack mrkdwn
+# ---------------------------------------------------------------------------
+
+# Patterns for mrkdwn conversion (matched on raw markdown text)
+_MRKDWN_HEADER = re.compile(r"^#{1,6}\s+(.+)$", re.MULTILINE)
+_MRKDWN_BOLD = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
+_MRKDWN_ITALIC = re.compile(r"(?<!\*)\*(\S(?:[^*]*\S)?)\*(?!\*)")
+_MRKDWN_STRIKE = re.compile(r"~~(.+?)~~")
+_MRKDWN_LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+
+
+def md_to_mrkdwn(text: str) -> str:
+    """Best-effort Markdown → Slack mrkdwn conversion.
+
+    Stashes code blocks and inline code first so their contents aren't
+    touched, then applies formatting patterns. Falls back gracefully —
+    partially converted text is better than a parse error.
+    """
+    # Stash code blocks (pass through unchanged)
+    blocks: list[str] = []
+
+    def _stash_block(m: re.Match) -> str:
+        idx = len(blocks)
+        blocks.append(m.group(0))
+        return f"\x00B{idx}\x00"
+
+    text = _CODE_BLOCK.sub(_stash_block, text)
+
+    # Stash inline code (pass through unchanged)
+    inlines: list[str] = []
+
+    def _stash_inline(m: re.Match) -> str:
+        idx = len(inlines)
+        inlines.append(m.group(0))
+        return f"\x00I{idx}\x00"
+
+    text = _INLINE_CODE.sub(_stash_inline, text)
+
+    # Links first (before bold/italic touch asterisks)
+    text = _MRKDWN_LINK.sub(r"<\2|\1>", text)
+
+    # Bold and headers produce *text* in mrkdwn — stash them so the
+    # italic pass (which also looks for single *) doesn't clobber them.
+    bolds: list[str] = []
+
+    def _stash_bold(m: re.Match) -> str:
+        idx = len(bolds)
+        bolds.append(f"*{m.group(1)}*")
+        return f"\x00D{idx}\x00"
+
+    text = _MRKDWN_HEADER.sub(_stash_bold, text)
+    text = _MRKDWN_BOLD.sub(_stash_bold, text)
+
+    # Now italic is safe — no bold *…* left to confuse it
+    text = _MRKDWN_ITALIC.sub(r"_\1_", text)
+    text = _MRKDWN_STRIKE.sub(r"~\1~", text)
+
+    # Collapse excessive blank lines (3+ newlines → 2)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
+    # Restore stashed content (bolds, code blocks, inline code)
+    for i, bold in enumerate(bolds):
+        text = text.replace(f"\x00D{i}\x00", bold)
+    for i, block in enumerate(blocks):
+        text = text.replace(f"\x00B{i}\x00", block)
+    for i, inline in enumerate(inlines):
+        text = text.replace(f"\x00I{i}\x00", inline)
+
+    return text

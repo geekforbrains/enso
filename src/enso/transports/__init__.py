@@ -42,6 +42,7 @@ class BaseTransport(ABC):
     """
 
     name: str
+    message_limit: int = 4096
 
     @abstractmethod
     def start(self) -> None:
@@ -52,5 +53,5 @@ class BaseTransport(ABC):
         """
 
     @abstractmethod
-    async def notify(self, text: str) -> None:
+    async def notify(self, text: str, *, destination: str | None = None) -> None:
         """Send a one-way notification to the user (e.g. job output)."""

@@ -27,6 +27,8 @@ def tmp_enso(tmp_path, monkeypatch):
         "enso.core.STATE_FILE": os.path.join(d, "state.json"),
         "enso.messages.MESSAGES_FILE": os.path.join(d, "messages.json"),
         "enso.jobs.JOBS_DIR": os.path.join(d, "jobs"),
+        "enso.slack_cache.CACHE_DIR": os.path.join(d, "cache"),
+        "enso.slack_cache.CACHE_FILE": os.path.join(d, "cache", "slack.json"),
     }
     for attr, val in paths.items():
         monkeypatch.setattr(attr, val)
@@ -43,7 +45,7 @@ def sample_config():
         "transports": {
             "telegram": {
                 "bot_token": "fake-token",
-                "allowed_user_ids": [12345],
+                "allowed_users": ["12345"],
             }
         },
         "providers": {

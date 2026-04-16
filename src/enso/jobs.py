@@ -23,6 +23,7 @@ class Job:
     model: str
     enabled: bool = True
     prerun: str | None = None
+    notify: str | None = None
     prompt: str = ""
     path: str = ""
 
@@ -78,6 +79,7 @@ def parse_job(dir_name: str, path: str) -> Job | None:
         model=fields["model"],
         enabled=fields.get("enabled", "true").lower() == "true",
         prerun=fields.get("prerun"),
+        notify=fields.get("notify"),
         prompt=parts[2].strip(),
         path=path,
     )

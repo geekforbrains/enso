@@ -19,23 +19,25 @@ from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
-from . import __version__
+from . import __version__, slack_cache
 from .config import CONFIG_FILE, detect_providers, load_config, resolve_providers, save_config
 from .jobs import create_job, load_jobs
 from .messages import clear as msg_clear
 from .messages import pending as msg_pending
 from .messages import send as msg_send
-from .transports.telegram import TelegramTransport
+from .transports import BaseTransport
 
 log = logging.getLogger(__name__)
 
 app = typer.Typer(help="Enso — AI agents from your phone", no_args_is_help=True)
 job_app = typer.Typer(help="Manage background jobs")
-message_app = typer.Typer(help="Send messages and files to Telegram")
+message_app = typer.Typer(help="Send messages and files via the configured transport")
 service_app = typer.Typer(help="Manage the background service")
+slack_app = typer.Typer(help="Slack directory lookups and message search")
 app.add_typer(job_app, name="job")
 app.add_typer(message_app, name="message")
 app.add_typer(service_app, name="service")
+app.add_typer(slack_app, name="slack")
 
 console = Console()
 
@@ -122,7 +124,6 @@ _VOICE_EXTENSIONS = {".oga"}
 def _tg_send_file(token: str, chat_id: int, file_path: str, caption: str = "") -> bool:
     """Send a file to Telegram. Auto-selects method based on extension."""
     import mimetypes
-    from email.mime.multipart import MIMEMultipart
     from io import BytesIO
 
     ext = os.path.splitext(file_path)[1].lower()
@@ -553,17 +554,30 @@ def _setup_providers(config: dict) -> None:
 
 
 def _setup_transport(config: dict) -> int | None:
-    """Step 2: configure Telegram. Returns chat_id or None."""
-    console.rule("[bold]Step 2 \u00b7 Telegram")
-    config["transport"] = "telegram"
-    return _setup_telegram(config)
+    """Step 2: configure transport."""
+    console.rule("[bold]Step 2 \u00b7 Transport")
+    choices = ["telegram", "slack"]
+    transport = Prompt.ask(
+        "  Transport",
+        choices=choices,
+        default=config.get("transport", "telegram"),
+    )
+    config["transport"] = transport
+    if transport == "telegram":
+        return _setup_telegram(config)
+    elif transport == "slack":
+        _setup_slack(config)
+        return None
+    return None
 
 
 def _setup_telegram(config: dict) -> int | None:
     """Configure Telegram bot and capture user. Returns chat_id or None."""
     tg_cfg = config.get("transports", {}).get("telegram", {})
     current_token = tg_cfg.get("bot_token", "")
-    current_users = tg_cfg.get("allowed_user_ids", [])
+    current_users = tg_cfg.get("allowed_users") or [
+        str(u) for u in tg_cfg.get("allowed_user_ids", [])
+    ]
     bot_info = None
 
     if current_token:
@@ -595,7 +609,7 @@ def _setup_telegram(config: dict) -> int | None:
             console.print(f"  [green]\u2713[/] Connected to @{bot_info.get('username', '?')}")
             config.setdefault("transports", {})["telegram"] = {
                 "bot_token": token,
-                "allowed_user_ids": current_users,
+                "allowed_users": current_users,
             }
             current_token = token
             break
@@ -615,8 +629,257 @@ def _setup_telegram(config: dict) -> int | None:
     user_id = user_info["user_id"]
     name = user_info.get("first_name") or user_info.get("username") or "?"
     console.print(f"  [green]\u2713[/] Got it! {name} (ID: {user_id})")
-    config["transports"]["telegram"]["allowed_user_ids"] = [user_id]
+    config["transports"]["telegram"]["allowed_users"] = [str(user_id)]
     return user_info.get("chat_id")
+
+
+# ---------------------------------------------------------------------------
+# Slack API helpers (stdlib only — no extra deps for setup)
+# ---------------------------------------------------------------------------
+
+def _slack_validate_token(token: str) -> dict | None:
+    """Validate a Slack bot token via auth.test.
+
+    Returns the response dict on success, or None on failure.
+    """
+    req = urllib.request.Request(
+        "https://slack.com/api/auth.test",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+            return data if data.get("ok") else None
+    except Exception:
+        return None
+
+
+def _slack_send_message(
+    token: str, channel: str, text: str,
+) -> bool:
+    """Send a message to Slack via chat.postMessage."""
+    data = json.dumps({"channel": channel, "text": text}).encode()
+    req = urllib.request.Request(
+        "https://slack.com/api/chat.postMessage",
+        data=data,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read())
+            return result.get("ok", False)
+    except Exception:
+        return False
+
+
+_SLACK_MAX_UPLOAD_BYTES = 1024 * 1024 * 1024  # 1 GB
+
+
+def _slack_upload_file(
+    token: str, channel: str, file_path: str, caption: str = "",
+) -> tuple[bool, str]:
+    """Upload a file to Slack using the external upload flow.
+
+    Returns (ok, error_message). error_message is empty on success.
+    """
+    from urllib.parse import urlencode
+
+    filename = os.path.basename(file_path)
+    filesize = os.path.getsize(file_path)
+    if filesize == 0:
+        return (False, "File is empty.")
+    if filesize > _SLACK_MAX_UPLOAD_BYTES:
+        mb = filesize / (1024 * 1024)
+        return (False, f"File is {mb:.1f} MB; Slack limit is 1024 MB.")
+
+    # Step 1: request an upload URL
+    body = urlencode({"filename": filename, "length": filesize}).encode()
+    req = urllib.request.Request(
+        "https://slack.com/api/files.getUploadURLExternal",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read())
+    except Exception as e:
+        return (False, f"getUploadURLExternal request failed: {e}")
+    if not result.get("ok"):
+        return (False, f"getUploadURLExternal: {result.get('error', 'unknown')}")
+    upload_url = result.get("upload_url")
+    file_id = result.get("file_id")
+    if not upload_url or not file_id:
+        return (False, "getUploadURLExternal: missing upload_url or file_id")
+
+    # Step 2: POST file bytes to the returned URL
+    try:
+        with open(file_path, "rb") as f:
+            file_bytes = f.read()
+        req = urllib.request.Request(
+            upload_url,
+            data=file_bytes,
+            headers={"Content-Type": "application/octet-stream"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            if resp.status not in (200, 201, 204):
+                return (False, f"Upload POST returned HTTP {resp.status}")
+    except Exception as e:
+        return (False, f"File upload failed: {e}")
+
+    # Step 3: complete the upload (shares file to channel with optional comment)
+    complete_payload: dict = {
+        "files": [{"id": file_id, "title": filename}],
+        "channel_id": channel,
+    }
+    if caption:
+        complete_payload["initial_comment"] = caption
+    req = urllib.request.Request(
+        "https://slack.com/api/files.completeUploadExternal",
+        data=json.dumps(complete_payload).encode(),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read())
+    except Exception as e:
+        return (False, f"completeUploadExternal request failed: {e}")
+    if not result.get("ok"):
+        return (False, f"completeUploadExternal: {result.get('error', 'unknown')}")
+    return (True, "")
+
+
+def _write_slack_manifest_copy() -> str:
+    """Copy the bundled Slack app manifest into ``~/.enso/`` and return path."""
+    import importlib.resources as resources
+
+    source = resources.files("enso").joinpath("slack_manifest.yaml")
+    dest = os.path.join(os.path.expanduser("~/.enso"), "slack-app-manifest.yaml")
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    try:
+        content = source.read_text(encoding="utf-8")
+        with open(dest, "w") as f:
+            f.write(content)
+    except OSError:
+        log.warning("Could not write Slack manifest to %s", dest, exc_info=True)
+    return dest
+
+
+def _setup_slack(config: dict) -> None:
+    """Configure Slack bot tokens and allowed users."""
+    slack_cfg = config.get("transports", {}).get("slack", {})
+    current_bot = slack_cfg.get("bot_token", "")
+
+    if current_bot:
+        auth = _slack_validate_token(current_bot)
+        if auth:
+            console.print(
+                f"  Current bot: [bold]{auth.get('user', '?')}[/]"
+            )
+            users = slack_cfg.get("allowed_users", [])
+            if users:
+                console.print(f"  Allowed users: {users}")
+            if not Confirm.ask(
+                "\n  Reconfigure Slack?", default=False,
+            ):
+                return
+        else:
+            console.print("[yellow]  Existing token is invalid.[/]")
+
+    # Offer a one-paste app manifest to short-circuit the Slack app wizard.
+    manifest_path = _write_slack_manifest_copy()
+    console.print(
+        "  To create the Slack app, paste the bundled manifest:\n"
+    )
+    console.print("   1. Open [bold]https://api.slack.com/apps?new_app=1[/]")
+    console.print("   2. Choose [bold]From an app manifest[/]")
+    console.print("   3. Pick your workspace")
+    console.print(f"   4. Paste the contents of [bold]{manifest_path}[/]")
+    console.print("      (scopes, events, and Socket Mode are all pre-configured)")
+    console.print(
+        "   5. [bold]Install to workspace[/] — this gives you the Bot Token"
+    )
+    console.print(
+        "   6. Basic Information \u2192 [bold]App-Level Tokens[/]"
+        " \u2192 Generate, with scope [bold]connections:write[/]"
+    )
+    console.print(
+        "   7. Copy both tokens; paste them when prompted below.\n"
+    )
+    console.print(
+        "  [dim]If you already have an app, jump straight to copying"
+        " the tokens.[/]\n"
+    )
+
+    while True:
+        bot_token = Prompt.ask("  Bot Token (xoxb-...)")
+        if not bot_token:
+            console.print("[red]  Token is required.[/]")
+            continue
+        with console.status("Validating bot token..."):
+            auth = _slack_validate_token(bot_token)
+        if auth:
+            bot_name = auth.get("user", "?")
+            bot_user_id = auth.get("user_id", "")
+            console.print(
+                f"  [green]\u2713[/] Authenticated as {bot_name}"
+            )
+            break
+        console.print("[red]  \u2717 Invalid token. Try again.[/]")
+
+    # App Token (for Socket Mode — no validation API)
+    app_token = Prompt.ask("  App Token (xapp-...)")
+
+    # Allowed users
+    console.print(
+        "\n\n  Enter Slack user IDs allowed to interact"
+        " (comma-separated), or * for everyone.\n"
+    )
+    raw_users = Prompt.ask("  Allowed users", default="*")
+    if raw_users.strip() == "*":
+        allowed: list[str] = ["*"]
+    else:
+        allowed = [
+            u.strip() for u in raw_users.split(",") if u.strip()
+        ]
+
+    # Notify channel — where `enso message send` (no --to), scheduled-job
+    # alerts, and the autocompact hook deliver. Without one they fail with
+    # "no destination" because Slack never auto-broadcasts.
+    console.print()
+    console.print(
+        "  [bold]Default notify channel[/] \u2014 channel/DM ID where"
+        " background alerts go\n  (autocompact hooks, scheduled-job"
+        " failures, `enso message send` with no --to).\n"
+    )
+    notify = Prompt.ask(
+        "  Notify channel (leave blank to configure later)",
+        default="",
+    )
+    if not notify:
+        console.print(
+            "  [yellow]\u26a0[/] Without a notify channel, background"
+            " Slack messages (hooks, job alerts, `enso message send`)"
+            " will be dropped.\n      Set it later by editing"
+            " ~/.enso/config.json or re-running `enso setup`."
+        )
+
+    config.setdefault("transports", {})["slack"] = {
+        "bot_token": bot_token,
+        "app_token": app_token,
+        "bot_user_id": bot_user_id,
+        "allowed_users": allowed,
+        "notify_channel": notify,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -648,19 +911,50 @@ def setup() -> None:
         save_config(config)
     console.print(f"[green]\u2713[/] Config saved to {CONFIG_FILE}")
 
-    # Send test message if telegram
+    # Send test message
     if config.get("transport") == "telegram":
         tg = config.get("transports", {}).get("telegram", {})
         token = tg.get("bot_token", "")
-        users = tg.get("allowed_user_ids", [])
-        chat_id = captured_chat_id or (users[0] if users else None)
+        users = tg.get("allowed_users", [])
+        chat_id = captured_chat_id or (
+            users[0] if users else None
+        )
         if token and chat_id:
             with console.status("Sending test message..."):
-                sent = _tg_send_message(token, chat_id, f"Enso v{__version__} ready.")
+                sent = _tg_send_message(
+                    token, chat_id,
+                    f"Enso v{__version__} ready.",
+                )
             if sent:
                 console.print("[green]\u2713[/] Test message sent!")
             else:
-                console.print("[yellow]Failed to send test message.[/]")
+                console.print(
+                    "[yellow]Failed to send test message.[/]"
+                )
+    elif config.get("transport") == "slack":
+        slack_cfg = config.get("transports", {}).get("slack", {})
+        token = slack_cfg.get("bot_token", "")
+        target = slack_cfg.get("notify_channel", "")
+        if not target:
+            console.print(
+                "[yellow]Skipping test message \u2014 no notify_channel set.[/]"
+            )
+        elif token:
+            with console.status("Sending test message..."):
+                sent = _slack_send_message(
+                    token, target,
+                    f"Enso v{__version__} ready.",
+                )
+            if sent:
+                console.print(
+                    f"[green]\u2713[/] Test message sent to {target}."
+                )
+            else:
+                console.print(
+                    f"[yellow]Failed to send test message to {target}."
+                    " If the bot isn't a member of that channel yet,"
+                    " invite it and try `enso message send 'hi'`.[/]"
+                )
 
     # Step 4: Background service
     console.rule("[bold]Step 4 \u00b7 Background Service (optional)")
@@ -697,10 +991,27 @@ def setup() -> None:
     ))
 
 
+def _load_transport(name: str, runtime) -> BaseTransport:
+    """Lazily import and instantiate a transport by name."""
+    if name == "telegram":
+        from .transports.telegram import TelegramTransport
+
+        return TelegramTransport(runtime)
+    if name == "slack":
+        from .transports.slack import SlackTransport
+
+        return SlackTransport(runtime)
+    console.print(f"[red]Unknown transport: {name}[/]")
+    raise typer.Exit(1)
+
+
 @app.command()
 def serve(
     working_dir: Annotated[
         str | None, typer.Option("--working-dir", help="Override working directory")
+    ] = None,
+    transport: Annotated[
+        str | None, typer.Option("--transport", help="Override transport (telegram, slack)")
     ] = None,
 ) -> None:
     """Start the bot and job scheduler."""
@@ -716,9 +1027,9 @@ def serve(
         raise typer.Exit(1)
     os.chdir(wd)
 
-    tg_cfg = config.get("transports", {}).get("telegram", {})
-    if not tg_cfg.get("bot_token"):
-        console.print("[red]Telegram not configured. Run 'enso setup' first.[/]")
+    transport_name = transport or config.get("transport", "")
+    if not transport_name:
+        console.print("[red]No transport configured. Run 'enso setup' first.[/]")
         raise typer.Exit(1)
 
     runtime = Runtime(config)
@@ -726,11 +1037,11 @@ def serve(
     runtime.load_state()
 
     log.info("Starting Enso v%s", __version__)
-    log.info("  working_dir=%s", wd)
+    log.info("  working_dir=%s transport=%s", wd, transport_name)
 
-    transport = TelegramTransport(runtime)
-    runtime.transport = transport
-    transport.start()
+    tp = _load_transport(transport_name, runtime)
+    runtime.transport = tp
+    tp.start()
 
 
 # ---------------------------------------------------------------------------
@@ -833,19 +1144,65 @@ def job_run(
 @message_app.command("send")
 def message_send(
     text: Annotated[str, typer.Argument(help="Message text to send")],
+    to: Annotated[
+        str,
+        typer.Option(
+            "--to", "-t",
+            help=(
+                "Destination. Slack: channel/DM/user ID (required if no"
+                " notify_channel). Telegram: user ID; omit to broadcast to"
+                " all allowed_users."
+            ),
+        ),
+    ] = "",
 ) -> None:
-    """Send a message to Telegram and queue as background context."""
+    """Send a message via the configured transport."""
     cfg = load_config()
-    tg_cfg = cfg.get("transports", {}).get("telegram", {})
-    token = tg_cfg.get("bot_token", "")
-    user_ids = tg_cfg.get("allowed_user_ids", [])
-    if not token or not user_ids:
-        console.print("[red]\u2717[/] Telegram not configured. Run [bold]enso setup[/].")
-        raise typer.Exit(1)
-    for uid in user_ids:
-        if not _tg_send_message(token, uid, text[:4096]):
-            console.print(f"[red]\u2717[/] Failed to send to user {uid}.")
+    transport = cfg.get("transport", "telegram")
+
+    if transport == "slack":
+        slack_cfg = cfg.get("transports", {}).get("slack", {})
+        token = slack_cfg.get("bot_token", "")
+        if not token:
+            console.print(
+                "[red]\u2717[/] Slack not configured."
+                " Run [bold]enso setup[/]."
+            )
             raise typer.Exit(1)
+        target = to or slack_cfg.get("notify_channel", "")
+        if not target:
+            console.print(
+                "[red]\u2717[/] No destination. Pass --to or"
+                " set notify_channel in config."
+            )
+            raise typer.Exit(1)
+        if not _slack_send_message(token, target, text[:40000]):
+            console.print(
+                f"[red]\u2717[/] Failed to send to {target}."
+            )
+            raise typer.Exit(1)
+    else:
+        tg_cfg = cfg.get("transports", {}).get("telegram", {})
+        token = tg_cfg.get("bot_token", "")
+        users = tg_cfg.get("allowed_users") or [
+            str(u)
+            for u in tg_cfg.get("allowed_user_ids", [])
+        ]
+        if not token or not users:
+            console.print(
+                "[red]\u2717[/] Telegram not configured."
+                " Run [bold]enso setup[/]."
+            )
+            raise typer.Exit(1)
+        targets = [to] if to else users
+        for uid in targets:
+            if not _tg_send_message(token, uid, text[:4096]):
+                console.print(
+                    f"[red]\u2717[/] Failed to send to"
+                    f" user {uid}."
+                )
+                raise typer.Exit(1)
+
     msg_send(text, source="notify")
     console.print("[green]\u2713[/] Message sent.")
 
@@ -870,28 +1227,77 @@ def message_list() -> None:
 def message_attach(
     file: Annotated[str, typer.Argument(help="Path to file to send")],
     caption: Annotated[str, typer.Argument(help="Optional caption")] = "",
+    to: Annotated[
+        str,
+        typer.Option(
+            "--to", "-t",
+            help=(
+                "Destination. Slack: channel/DM/user ID (required if no"
+                " notify_channel). Telegram: user ID; omit to broadcast to"
+                " all allowed_users."
+            ),
+        ),
+    ] = "",
 ) -> None:
-    """Send a file (image, video, audio, document) to Telegram."""
+    """Send a file via the configured transport."""
     if not os.path.isfile(file):
-        console.print(f"[red]✗[/] File not found: {file}")
+        console.print(f"[red]\u2717[/] File not found: {file}")
         raise typer.Exit(1)
     cfg = load_config()
+    transport = cfg.get("transport", "telegram")
+    filename = os.path.basename(file)
+
+    if transport == "slack":
+        slack_cfg = cfg.get("transports", {}).get("slack", {})
+        token = slack_cfg.get("bot_token", "")
+        if not token:
+            console.print(
+                "[red]\u2717[/] Slack not configured."
+                " Run [bold]enso setup[/]."
+            )
+            raise typer.Exit(1)
+        target = to or slack_cfg.get("notify_channel", "")
+        if not target:
+            console.print(
+                "[red]\u2717[/] No destination. Pass --to or"
+                " set notify_channel in config."
+            )
+            raise typer.Exit(1)
+        with console.status(f"Uploading {filename} to {target}..."):
+            ok, err = _slack_upload_file(token, target, file, caption)
+        if not ok:
+            console.print(f"[red]\u2717[/] {err}")
+            raise typer.Exit(1)
+        note = f"Sent attachment: {filename} \u2192 {target}"
+        if caption:
+            note += f" \u2014 {caption}"
+        msg_send(note, source="attach")
+        console.print("[green]\u2713[/] File sent.")
+        return
+
     tg_cfg = cfg.get("transports", {}).get("telegram", {})
     token = tg_cfg.get("bot_token", "")
-    user_ids = tg_cfg.get("allowed_user_ids", [])
-    if not token or not user_ids:
-        console.print("[red]✗[/] Telegram not configured. Run [bold]enso setup[/].")
+    users = tg_cfg.get("allowed_users") or [
+        str(u) for u in tg_cfg.get("allowed_user_ids", [])
+    ]
+    if not token or not users:
+        console.print(
+            "[red]\u2717[/] Telegram not configured."
+            " Run [bold]enso setup[/]."
+        )
         raise typer.Exit(1)
-    for uid in user_ids:
+    targets = [to] if to else users
+    for uid in targets:
         if not _tg_send_file(token, uid, file, caption):
-            console.print(f"[red]✗[/] Failed to send to user {uid}.")
+            console.print(
+                f"[red]\u2717[/] Failed to send to user {uid}."
+            )
             raise typer.Exit(1)
-    filename = os.path.basename(file)
     note = f"Sent attachment: {filename}"
     if caption:
-        note += f" — {caption}"
+        note += f" \u2014 {caption}"
     msg_send(note, source="attach")
-    console.print("[green]✓[/] File sent.")
+    console.print("[green]\u2713[/] File sent.")
 
 
 @message_app.command("clear")
@@ -995,6 +1401,261 @@ def service_logs_cmd(
                 console.print(line)
         except Exception as exc:
             console.print(f"[red]Error reading logs: {exc}[/]")
+
+
+# ---------------------------------------------------------------------------
+# Slack subcommands (directory cache + message search)
+# ---------------------------------------------------------------------------
+
+def _slack_token_or_exit() -> str:
+    """Load the Slack bot token or exit with a clear error."""
+    cfg = load_config()
+    token = cfg.get("transports", {}).get("slack", {}).get("bot_token", "")
+    if not token:
+        console.print(
+            "[red]\u2717[/] Slack not configured. Run [bold]enso setup[/]."
+        )
+        raise typer.Exit(1)
+    return token
+
+
+def _fmt_user(u: dict) -> str:
+    parts = [u["id"]]
+    real = u.get("real_name") or u.get("display_name") or u.get("name") or "?"
+    parts.append(real)
+    if u.get("name") and u["name"] != real:
+        parts.append(f"(@{u['name']})")
+    if u.get("email"):
+        parts.append(u["email"])
+    tags = []
+    if u.get("is_bot"):
+        tags.append("bot")
+    if u.get("deleted"):
+        tags.append("deleted")
+    if tags:
+        parts.append(f"[{','.join(tags)}]")
+    return "  ".join(parts)
+
+
+def _fmt_channel(c: dict) -> str:
+    parts = [c["id"], f"#{c['name']}"]
+    if c.get("is_private"):
+        parts.append("[private]")
+    if not c.get("is_member"):
+        parts.append("[not-a-member]")
+    if c.get("num_members"):
+        parts.append(f"({c['num_members']} members)")
+    if c.get("topic"):
+        parts.append(f"\u2014 {c['topic']}")
+    return "  ".join(parts)
+
+
+@slack_app.command("lookup-user")
+def slack_lookup_user(
+    query: Annotated[str, typer.Argument(help="Name, display name, email, or U-ID")],
+) -> None:
+    """Find a Slack user. Searches the cache; refreshes on miss."""
+    token = _slack_token_or_exit()
+    matches = slack_cache.lookup_user(query, token=token)
+    if not matches:
+        console.print(f"No user found matching '{query}'.")
+        raise typer.Exit(1)
+    for u in matches:
+        console.print(_fmt_user(u))
+
+
+@slack_app.command("lookup-channel")
+def slack_lookup_channel(
+    query: Annotated[str, typer.Argument(help="Channel name (with or without #) or C-ID")],
+) -> None:
+    """Find a Slack channel. Searches the cache; refreshes on miss."""
+    token = _slack_token_or_exit()
+    matches = slack_cache.lookup_channel(query, token=token)
+    if not matches:
+        console.print(f"No channel found matching '{query}'.")
+        raise typer.Exit(1)
+    for c in matches:
+        console.print(_fmt_channel(c))
+
+
+@slack_app.command("whois")
+def slack_whois(
+    user_id: Annotated[str, typer.Argument(help="Slack user ID (e.g. U0AETSSDDEF)")],
+) -> None:
+    """Resolve a U-ID to a user record. Calls users.info on cache miss."""
+    token = _slack_token_or_exit()
+    entry = slack_cache.whois(user_id, token=token)
+    if not entry:
+        console.print(f"No user with ID {user_id}.")
+        raise typer.Exit(1)
+    console.print(_fmt_user(entry))
+
+
+@slack_app.command("open-dm")
+def slack_open_dm(
+    user: Annotated[str, typer.Argument(help="User ID (U…) or a name to look up")],
+) -> None:
+    """Open a DM channel with a user and print the resulting channel ID."""
+    token = _slack_token_or_exit()
+    user_id = user
+    if not user.startswith(("U", "W")):
+        matches = slack_cache.lookup_user(user, token=token)
+        if not matches:
+            console.print(f"No user found matching '{user}'.")
+            raise typer.Exit(1)
+        if len(matches) > 1:
+            console.print(
+                f"Ambiguous '{user}' \u2014 {len(matches)} matches. "
+                "Use --user with a specific ID:"
+            )
+            for u in matches:
+                console.print(_fmt_user(u))
+            raise typer.Exit(1)
+        user_id = matches[0]["id"]
+    try:
+        channel_id = slack_cache.open_dm(user_id, token)
+    except Exception as exc:
+        console.print(f"[red]\u2717[/] {exc}")
+        raise typer.Exit(1) from exc
+    console.print(channel_id)
+
+
+@slack_app.command("list")
+def slack_list(
+    what: Annotated[str, typer.Argument(help="users | channels")] = "users",
+) -> None:
+    """Dump the cached directory. Auto-refreshes if the cache is empty."""
+    token = _slack_token_or_exit()
+    cache = slack_cache.load()
+    if what == "users":
+        if not cache["users"]["items"]:
+            cache = slack_cache.refresh_users(token, cache)
+        for u in sorted(
+            cache["users"]["items"].values(),
+            key=lambda x: (x.get("real_name") or x.get("name") or "").lower(),
+        ):
+            console.print(_fmt_user(u))
+    elif what == "channels":
+        if not cache["channels"]["items"]:
+            cache = slack_cache.refresh_channels(token, cache)
+        for c in sorted(
+            cache["channels"]["items"].values(),
+            key=lambda x: x.get("name", "").lower(),
+        ):
+            console.print(_fmt_channel(c))
+    else:
+        console.print(f"[red]\u2717[/] Unknown target '{what}'. Use 'users' or 'channels'.")
+        raise typer.Exit(1)
+
+
+@slack_app.command("refresh")
+def slack_refresh(
+    users: Annotated[bool, typer.Option("--users", help="Refresh users only")] = False,
+    channels: Annotated[bool, typer.Option("--channels", help="Refresh channels only")] = False,
+) -> None:
+    """Force-refresh the Slack directory cache. Default is both."""
+    token = _slack_token_or_exit()
+    do_users = users or not channels
+    do_channels = channels or not users
+    if do_users:
+        slack_cache.refresh_users(token)
+        console.print("[green]\u2713[/] Users refreshed.")
+    if do_channels:
+        slack_cache.refresh_channels(token)
+        console.print("[green]\u2713[/] Channels refreshed.")
+
+
+@slack_app.command("search")
+def slack_search(
+    query: Annotated[str, typer.Argument(help="Search query (Slack search syntax allowed)")],
+    count: Annotated[int, typer.Option("--count", "-n", help="Max results")] = 10,
+) -> None:
+    """Search Slack messages across accessible channels."""
+    token = _slack_token_or_exit()
+    data = json.loads(urllib.request.urlopen(
+        urllib.request.Request(
+            "https://slack.com/api/search.messages",
+            data=json.dumps({
+                "query": query, "count": count,
+                "sort": "timestamp", "sort_dir": "desc",
+            }).encode(),
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+        ),
+        timeout=20,
+    ).read())
+    if not data.get("ok"):
+        console.print(f"[red]\u2717[/] search.messages: {data.get('error', '?')}")
+        raise typer.Exit(1)
+    matches = data.get("messages", {}).get("matches", [])
+    if not matches:
+        console.print("No results.")
+        return
+    for msg in matches:
+        channel = msg.get("channel", {}).get("name", "?")
+        user = msg.get("username", msg.get("user", "?"))
+        ts = msg.get("ts", "?")
+        text = msg.get("text", "")[:200]
+        console.print(f"#{channel}  {user}  {ts}")
+        console.print(f"  {text}")
+        permalink = msg.get("permalink", "")
+        if permalink:
+            console.print(f"  {permalink}")
+        console.print()
+
+
+@slack_app.command("history")
+def slack_history(
+    channel: Annotated[str, typer.Argument(help="Channel ID (C…, G…, D…)")],
+    count: Annotated[int, typer.Option("--count", "-n", help="Max messages")] = 10,
+) -> None:
+    """Fetch recent messages from a channel."""
+    token = _slack_token_or_exit()
+    url = (
+        "https://slack.com/api/conversations.history"
+        f"?channel={channel}&limit={count}"
+    )
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    data = json.loads(urllib.request.urlopen(req, timeout=20).read())
+    if not data.get("ok"):
+        console.print(f"[red]\u2717[/] conversations.history: {data.get('error', '?')}")
+        raise typer.Exit(1)
+    messages = list(reversed(data.get("messages", [])))
+    for msg in messages:
+        user = msg.get("user", "bot")
+        ts = msg.get("ts", "?")
+        thread = f" [thread: {msg['thread_ts']}]" if msg.get("thread_ts") else ""
+        text = msg.get("text", "")
+        console.print(f"{ts}  {user}{thread}")
+        console.print(f"  {text}")
+        console.print()
+
+
+@slack_app.command("thread")
+def slack_thread(
+    channel: Annotated[str, typer.Argument(help="Channel ID")],
+    thread_ts: Annotated[str, typer.Argument(help="Thread timestamp (parent ts)")],
+) -> None:
+    """Fetch every message in a thread."""
+    token = _slack_token_or_exit()
+    url = (
+        "https://slack.com/api/conversations.replies"
+        f"?channel={channel}&ts={thread_ts}&limit=100"
+    )
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    data = json.loads(urllib.request.urlopen(req, timeout=20).read())
+    if not data.get("ok"):
+        console.print(f"[red]\u2717[/] conversations.replies: {data.get('error', '?')}")
+        raise typer.Exit(1)
+    for msg in data.get("messages", []):
+        user = msg.get("user", "bot")
+        ts = msg.get("ts", "?")
+        text = msg.get("text", "")
+        console.print(f"{ts}  {user}")
+        console.print(f"  {text}")
+        console.print()
 
 
 # ---------------------------------------------------------------------------

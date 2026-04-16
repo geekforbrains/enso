@@ -1,12 +1,12 @@
 [project]
 name = "enso"
-version = "0.11.1"
-description = "Control your favourite AI agent CLIs from your phone via Telegram."
+version = "0.12.0"
+description = "Control your favourite AI agent CLIs from any chat platform."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [{ name = "Gavin Vickery", email = "gavin@geekforbrains.com" }]
-keywords = ["ai", "agent", "telegram", "claude", "codex", "gemini", "cli", "enso"]
+keywords = ["ai", "agent", "telegram", "slack", "claude", "codex", "gemini", "cli", "enso"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -18,7 +18,7 @@ classifiers = [
     "Topic :: Communications :: Chat",
     "Topic :: Software Development :: Libraries",
 ]
-dependencies = ["typer>=0.12", "rich>=13.0", "croniter>=1.0", "python-telegram-bot>=22.6"]
+dependencies = ["typer>=0.12", "rich>=13.0", "croniter>=1.0"]
 
 [project.urls]
 Homepage = "https://github.com/geekforbrains/enso"
@@ -27,6 +27,8 @@ Changelog = "https://github.com/geekforbrains/enso/blob/main/CHANGELOG.md"
 Issues = "https://github.com/geekforbrains/enso/issues"
 
 [project.optional-dependencies]
+telegram = ["python-telegram-bot>=22.6"]
+slack = ["slack-bolt>=1.28"]
 dev = ["ruff>=0.15.0", "pytest>=8.0", "pytest-asyncio>=0.23"]
 
 [project.scripts]
@@ -40,7 +42,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-enso = ["system_prompt.md", "skills/**/*.md"]
+enso = ["system_prompt.md", "slack_manifest.yaml", "skills/**/*.md", "skills/**/*.py"]
 
 [tool.ruff]
 target-version = "py310"
