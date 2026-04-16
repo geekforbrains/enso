@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.12.1] - 2026-04-16
+
+### Fixed
+
+- `pip install enso[slack]` now pulls in `aiohttp`, which is required by `slack_bolt`'s Socket Mode handler. Without it, a fresh `enso[slack]` install would crash on transport import with a misleading "slack-bolt and slack-sdk are required" error
+- Slack transport import error now reports the actual missing module and chains the original traceback instead of swallowing it
+
 ## [0.12.0] - 2026-04-16
 
 ### Added

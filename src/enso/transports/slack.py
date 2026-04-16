@@ -14,11 +14,11 @@ try:
     from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
     from slack_bolt.async_app import AsyncApp
     from slack_sdk.web.async_client import AsyncWebClient
-except ImportError:
+except ImportError as e:
     raise ImportError(
-        "slack-bolt and slack-sdk are required for the Slack transport. "
+        f"Slack transport dependencies are missing ({e.name}). "
         "Install them with: pip install enso[slack]"
-    ) from None
+    ) from e
 
 from .. import slack_cache
 from ..auth import is_authorized

@@ -1,6 +1,6 @@
 [project]
 name = "enso"
-version = "0.12.0"
+version = "0.12.1"
 description = "Control your favourite AI agent CLIs from any chat platform."
 readme = "README.md"
 license = "MIT"
@@ -28,7 +28,7 @@ Issues = "https://github.com/geekforbrains/enso/issues"
 
 [project.optional-dependencies]
 telegram = ["python-telegram-bot>=22.6"]
-slack = ["slack-bolt>=1.28"]
+slack = ["slack-bolt>=1.28", "aiohttp>=3.9"]
 dev = ["ruff>=0.15.0", "pytest>=8.0", "pytest-asyncio>=0.23"]
 
 [project.scripts]
