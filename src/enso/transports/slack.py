@@ -24,6 +24,7 @@ from .. import slack_cache
 from ..auth import is_authorized
 from ..commands import (
     cmd_clear,
+    cmd_effort,
     cmd_help,
     cmd_logs,
     cmd_model,
@@ -44,7 +45,8 @@ SLACK_COMMANDS: list[tuple[str, str]] = [
     ("stop", "Stop process & clear queue"),
     ("use", "Switch provider"),
     ("model", "Switch model"),
-    ("status", "Provider & model info"),
+    ("effort", "Set reasoning effort (Claude, or 'default' to clear)"),
+    ("status", "Provider, model & effort info"),
     ("clear", "Clear session (use !clear all for all providers)"),
     ("logs", "Last 25 log entries"),
     ("help", "Show commands"),
@@ -482,6 +484,17 @@ class SlackTransport(BaseTransport):
                 return response
             provider = rt.get_active_provider(conv_id)
             lines = [f"Switch model ({provider}):"]
+            for name, active in options:
+                prefix = "\u25cf " if active else "  "
+                lines.append(f"{prefix}{name}")
+            return "\n".join(lines)
+
+        if cmd_name == "effort":
+            response, options = cmd_effort(rt, conv_id, cmd_args)
+            if response:
+                return response
+            model = rt.get_active_model(conv_id, rt.get_active_provider(conv_id))
+            lines = [f"Set effort ({model}) — '!effort default' to clear:"]
             for name, active in options:
                 prefix = "\u25cf " if active else "  "
                 lines.append(f"{prefix}{name}")

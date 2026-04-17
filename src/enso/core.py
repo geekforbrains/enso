@@ -94,6 +94,7 @@ class Runtime:
         # Per-chat state (keyed by conversation ID — str for all transports)
         self.active_provider_by_chat: dict[str, str] = {}
         self.active_model_by_chat_provider: dict[tuple[str, str], str] = {}
+        self.effort_by_chat_provider_model: dict[tuple[str, str, str], str] = {}
         self.session_by_chat_provider: dict[tuple[str, str], str] = {}
         self.running_process_by_chat: dict[str, Process] = {}
         self.running_task_by_chat: dict[str, asyncio.Task] = {}
@@ -307,6 +308,10 @@ class Runtime:
                 f"{cid}:{prov}": model
                 for (cid, prov), model in self.active_model_by_chat_provider.items()
             },
+            "effort_by_chat_provider_model": {
+                f"{cid}:{prov}:{model}": eff
+                for (cid, prov, model), eff in self.effort_by_chat_provider_model.items()
+            },
             "session_by_chat_provider": {
                 f"{cid}:{prov}": sid
                 for (cid, prov), sid in self.session_by_chat_provider.items()
@@ -342,6 +347,11 @@ class Runtime:
             for k, v in data.get("active_model_by_chat_provider", {}).items():
                 cid, provider = k.split(":", 1)
                 self.active_model_by_chat_provider[(cid, provider)] = v
+            for k, v in data.get("effort_by_chat_provider_model", {}).items():
+                parts = k.split(":", 2)
+                if len(parts) == 3:
+                    cid, provider, model = parts
+                    self.effort_by_chat_provider_model[(cid, provider, model)] = v
             for k, v in data.get("session_by_chat_provider", {}).items():
                 cid, provider = k.split(":", 1)
                 self.session_by_chat_provider[(cid, provider)] = v
@@ -370,6 +380,8 @@ class Runtime:
                 self.session_by_chat_provider.pop(key)
             for key in [k for k in self.active_model_by_chat_provider if k[0] == cid]:
                 self.active_model_by_chat_provider.pop(key)
+            for key in [k for k in self.effort_by_chat_provider_model if k[0] == cid]:
+                self.effort_by_chat_provider_model.pop(key)
             self._last_active.pop(cid)
         log.info("Pruned %d stale conversation(s) (>%dd)", len(stale), SESSION_TTL_DAYS)
         self.save_state()
@@ -387,6 +399,23 @@ class Runtime:
             return stored
         models = self.models.get(provider, [])
         return models[0] if models else "default"
+
+    def get_active_effort(
+        self, chat_id: str, provider: str, model: str,
+    ) -> str | None:
+        """Return the effective effort level for chat+provider+model.
+
+        Returns ``None`` when the provider doesn't support effort or the user
+        hasn't picked a level. A stored level is clamped to whatever the model
+        actually accepts so callers always see the real value in use.
+        """
+        if provider != "claude":
+            return None
+        stored = self.effort_by_chat_provider_model.get((chat_id, provider, model))
+        if stored is None:
+            return None
+        from .providers.claude import clamp_effort
+        return clamp_effort(stored, model)
 
     def get_chat_lock(self, chat_id: str) -> asyncio.Lock:
         """Get or create a per-chat lock to serialize requests."""
@@ -560,11 +589,17 @@ class Runtime:
     # -- Core streaming --
 
     async def run_provider(
-        self, provider: BaseProvider, prompt: str, chat_id: str, model: str
+        self,
+        provider: BaseProvider,
+        prompt: str,
+        chat_id: str,
+        model: str,
+        *,
+        effort: str | None = None,
     ):
         """Spawn a provider subprocess and yield StreamEvents."""
         session_id = self._get_or_create_session(chat_id, provider.name)
-        cmd = provider.build_command(prompt, model, session_id)
+        cmd = provider.build_command(prompt, model, session_id, effort=effort)
         log.info("[%s] Spawning: %s", provider.name, " ".join(cmd[:6]) + " ...")
 
         # Strip new: prefix immediately so future calls use --resume
@@ -647,21 +682,30 @@ class Runtime:
 
         provider = self.make_provider(provider_name)
         model = self.get_active_model(chat_id, provider_name)
+        effort = self.get_active_effort(chat_id, provider_name, model)
         display = provider_name.capitalize()
+        effort_part = f" / {effort}" if effort else ""
 
         log.info(
-            "[%s] chat=%s model=%s prompt_len=%d: %.120s",
-            provider_name, chat_id, model, len(prompt), prompt,
+            "[%s] chat=%s model=%s effort=%s prompt_len=%d: %.120s",
+            provider_name, chat_id, model, effort or "-", len(prompt), prompt,
         )
         log.debug("[%s] Full prompt:\n%s", provider_name, prompt)
 
         await ctx.send_typing()
         status_msg = None
         try:
-            status_msg = await ctx.reply_status(f"({display} / 0s) Working…")
+            status_msg = await ctx.reply_status(
+                f"({display}{effort_part} / 0s) Working…"
+            )
         except Exception:
             log.warning("Failed to send initial status message for chat %s", chat_id, exc_info=True)
-        state = {"status": "Working…", "elapsed": 0, "display": display}
+        state = {
+            "status": "Working…",
+            "elapsed": 0,
+            "display": display,
+            "effort_part": effort_part,
+        }
         stop = asyncio.Event()
         ticker = asyncio.create_task(self._run_ticker(ctx, status_msg, state, stop))
 
@@ -670,7 +714,9 @@ class Runtime:
         usage_pct: int | None = None
 
         try:
-            async for event in self.run_provider(provider, prompt, chat_id, model):
+            async for event in self.run_provider(
+                provider, prompt, chat_id, model, effort=effort,
+            ):
                 if event.kind == "status":
                     state["status"] = event.text
                 elif event.kind == "response":
@@ -687,7 +733,7 @@ class Runtime:
 
             response_text = provider.format_response(response_parts)
             usage_part = f" / {usage_pct}%" if usage_pct is not None else ""
-            prefix = f"({display}{usage_part} / {state['elapsed']}s)"
+            prefix = f"({display}{effort_part}{usage_part} / {state['elapsed']}s)"
 
             msg_limit = self.transport.message_limit if self.transport else 4096
             if response_text:
@@ -703,14 +749,14 @@ class Runtime:
             ticker.cancel()
             if status_msg is not None:
                 with contextlib.suppress(Exception):
-                    await ctx.edit_status(status_msg, f"({display}) Stopped.")
+                    await ctx.edit_status(status_msg, f"({display}{effort_part}) Stopped.")
             raise
 
         except Exception as exc:
             stop.set()
             ticker.cancel()
             log.error("Error processing %s request: %s", provider_name, exc, exc_info=True)
-            prefix = f"({display} / {state['elapsed']}s)"
+            prefix = f"({display}{effort_part} / {state['elapsed']}s)"
             try:
                 if status_msg is not None:
                     await ctx.edit_status(status_msg, f"{prefix} Error: {str(exc)[:4000]}")
@@ -732,7 +778,10 @@ class Runtime:
                 break
             state["elapsed"] += 1
             if status_updates_enabled and _status_edit_due(state["elapsed"]):
-                text = f"({state['display']} / {state['elapsed']}s) {state['status']}"
+                text = (
+                    f"({state['display']}{state.get('effort_part', '')} / "
+                    f"{state['elapsed']}s) {state['status']}"
+                )
                 try:
                     await asyncio.wait_for(ctx.edit_status(status_msg, text), timeout=5.0)
                 except Exception:

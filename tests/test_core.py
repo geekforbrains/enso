@@ -68,6 +68,59 @@ def test_runtime_state_persistence(tmp_enso, sample_config):
     assert rt2.session_by_chat_provider[("42", "codex")] == "sess_123"
 
 
+# -- Effort --
+
+
+def test_get_active_effort_none_by_default(sample_config):
+    rt = Runtime(sample_config)
+    assert rt.get_active_effort("1", "claude", "opus") is None
+
+
+def test_get_active_effort_claude(sample_config):
+    rt = Runtime(sample_config)
+    rt.effort_by_chat_provider_model[("1", "claude", "opus")] = "xhigh"
+    assert rt.get_active_effort("1", "claude", "opus") == "xhigh"
+
+
+def test_get_active_effort_clamps_to_model_cap(sample_config):
+    """Requesting max on a model that caps at high returns high."""
+    rt = Runtime(sample_config)
+    rt.effort_by_chat_provider_model[("1", "claude", "sonnet")] = "max"
+    assert rt.get_active_effort("1", "claude", "sonnet") == "high"
+
+
+def test_get_active_effort_non_claude_returns_none(sample_config):
+    rt = Runtime(sample_config)
+    # Shouldn't happen in practice, but defends the invariant.
+    rt.effort_by_chat_provider_model[("1", "codex", "gpt-5.4")] = "high"
+    assert rt.get_active_effort("1", "codex", "gpt-5.4") is None
+
+
+def test_effort_state_persistence(tmp_enso, sample_config):
+    sample_config["working_dir"] = os.path.join(tmp_enso, "workspace")
+    rt = Runtime(sample_config)
+    rt.effort_by_chat_provider_model[("42", "claude", "opus")] = "xhigh"
+    rt.save_state()
+
+    rt2 = Runtime(sample_config)
+    rt2.load_state()
+    assert rt2.effort_by_chat_provider_model[("42", "claude", "opus")] == "xhigh"
+
+
+def test_prune_clears_effort(tmp_enso, sample_config):
+    """Stale conversations drop their effort settings too."""
+    sample_config["working_dir"] = os.path.join(tmp_enso, "workspace")
+    rt = Runtime(sample_config)
+    rt.active_provider_by_chat["old_chat"] = "claude"
+    rt.effort_by_chat_provider_model[("old_chat", "claude", "opus")] = "xhigh"
+    rt._last_active["old_chat"] = datetime.now() - timedelta(days=60)
+    rt.save_state()
+
+    rt2 = Runtime(sample_config)
+    rt2.load_state()
+    assert ("old_chat", "claude", "opus") not in rt2.effort_by_chat_provider_model
+
+
 # -- Job scheduling --
 
 
@@ -164,7 +217,7 @@ async def test_process_request_injects_messages(tmp_enso, sample_config):
         async def delete_status(self, handle): pass
         async def send_typing(self): pass
 
-    async def fake_run(provider, prompt, chat_id, model):
+    async def fake_run(provider, prompt, chat_id, model, *, effort=None):
         prompts_received.append(prompt)
         if False:
             yield  # make this an async generator

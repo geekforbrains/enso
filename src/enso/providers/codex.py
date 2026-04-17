@@ -39,7 +39,12 @@ class CodexProvider(BaseProvider):
     name = "codex"
 
     def build_command(
-        self, prompt: str, model: str, session_id: str | None = None
+        self,
+        prompt: str,
+        model: str,
+        session_id: str | None = None,
+        *,
+        effort: str | None = None,
     ) -> list[str]:
         if session_id:
             return [
@@ -53,7 +58,9 @@ class CodexProvider(BaseProvider):
             "-m", model, "--", prompt,
         ]
 
-    def build_batch_command(self, prompt: str, model: str) -> list[str]:
+    def build_batch_command(
+        self, prompt: str, model: str, *, effort: str | None = None,
+    ) -> list[str]:
         return [
             self.path, "exec",
             "--dangerously-bypass-approvals-and-sandbox",

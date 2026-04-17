@@ -7,6 +7,32 @@ from pathlib import Path
 
 from . import BaseProvider, StreamEvent, truncate_status
 
+# Reasoning-effort levels accepted by `claude --effort`, ordered least → most.
+EFFORT_LEVELS: list[str] = ["low", "medium", "high", "xhigh", "max"]
+
+# Maximum effort supported per model. Models not listed default to "high"
+# (safe floor that every supported Claude model accepts). Opus 4.7 is the
+# only family that currently exposes the full range up through "max".
+_MODEL_MAX_EFFORT: dict[str, str] = {
+    "opus": "max",
+    "claude-opus-4-7": "max",
+}
+
+
+def max_effort_for_model(model: str) -> str:
+    """Return the highest effort level the given model supports."""
+    return _MODEL_MAX_EFFORT.get(model, "high")
+
+
+def clamp_effort(effort: str, model: str) -> str:
+    """Degrade ``effort`` to the highest level the model actually supports."""
+    if effort not in EFFORT_LEVELS:
+        return effort
+    cap = max_effort_for_model(model)
+    req_idx = EFFORT_LEVELS.index(effort)
+    cap_idx = EFFORT_LEVELS.index(cap)
+    return EFFORT_LEVELS[min(req_idx, cap_idx)]
+
 
 def _format_tool_status(tool_name: str, tool_input: dict) -> str:
     """Format tool usage into human-readable status."""
@@ -45,7 +71,12 @@ class ClaudeProvider(BaseProvider):
     name = "claude"
 
     def build_command(
-        self, prompt: str, model: str, session_id: str | None = None
+        self,
+        prompt: str,
+        model: str,
+        session_id: str | None = None,
+        *,
+        effort: str | None = None,
     ) -> list[str]:
         """Build the Claude CLI command.
 
@@ -58,6 +89,8 @@ class ClaudeProvider(BaseProvider):
             "--verbose", "--dangerously-skip-permissions",
             "--model", model,
         ]
+        if effort:
+            cmd.extend(["--effort", effort])
         if session_id and session_id.startswith("new:"):
             cmd.extend(["--session-id", session_id.removeprefix("new:")])
         elif session_id:
@@ -65,14 +98,20 @@ class ClaudeProvider(BaseProvider):
         cmd.extend(["--", prompt])
         return cmd
 
-    def build_batch_command(self, prompt: str, model: str) -> list[str]:
+    def build_batch_command(
+        self, prompt: str, model: str, *, effort: str | None = None,
+    ) -> list[str]:
         """Build command for batch execution (jobs). No session continuity."""
-        return [
+        cmd = [
             self.path, "-p",
             "--output-format", "text",
             "--dangerously-skip-permissions",
-            "--model", model, "--", prompt,
+            "--model", model,
         ]
+        if effort:
+            cmd.extend(["--effort", effort])
+        cmd.extend(["--", prompt])
+        return cmd
 
     def parse_event(self, event: dict) -> list[StreamEvent]:
         events: list[StreamEvent] = []
