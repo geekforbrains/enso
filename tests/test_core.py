@@ -107,6 +107,85 @@ def test_effort_state_persistence(tmp_enso, sample_config):
     assert rt2.effort_by_chat_provider_model[("42", "claude", "opus")] == "xhigh"
 
 
+@pytest.mark.asyncio
+async def test_run_provider_injects_extra_env(tmp_enso, sample_config, monkeypatch):
+    """extra_env reaches create_subprocess_exec merged on top of os.environ."""
+    sample_config["working_dir"] = os.path.join(tmp_enso, "workspace")
+    rt = Runtime(sample_config)
+
+    captured: dict = {}
+
+    class FakeProcess:
+        pid = 42
+        returncode = 0
+        stdout = None
+        stderr = None
+
+        async def wait(self):
+            return 0
+
+    async def fake_spawn(*args, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return FakeProcess()
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_spawn)
+
+    provider = rt.make_provider("claude")
+    gen = rt.run_provider(
+        provider, "hi", "1", "opus",
+        extra_env={"ENSO_ORIGIN_CHANNEL": "C012345"},
+    )
+    # Drain — the fake stdout is None, so the loop exits immediately.
+    try:
+        async for _ in gen:
+            pass
+    except (TypeError, AssertionError):
+        # FakeProcess.stdout is None; the `async for` will blow up on the
+        # assert or the iteration. Either way we only care that env was
+        # captured before that happens.
+        pass
+
+    env = captured["env"]
+    assert env is not None, "env= must be passed when extra_env is set"
+    assert env["ENSO_ORIGIN_CHANNEL"] == "C012345"
+    # Parent env is preserved (PATH always exists on Unix / Windows).
+    assert "PATH" in env
+
+
+@pytest.mark.asyncio
+async def test_run_provider_omits_env_when_not_requested(tmp_enso, sample_config, monkeypatch):
+    """Without extra_env the child inherits the parent env implicitly."""
+    sample_config["working_dir"] = os.path.join(tmp_enso, "workspace")
+    rt = Runtime(sample_config)
+
+    captured: dict = {}
+
+    class FakeProcess:
+        pid = 42
+        returncode = 0
+        stdout = None
+        stderr = None
+
+        async def wait(self):
+            return 0
+
+    async def fake_spawn(*args, **kwargs):
+        captured["env"] = kwargs.get("env", "SENTINEL_UNSET")
+        return FakeProcess()
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_spawn)
+
+    provider = rt.make_provider("claude")
+    gen = rt.run_provider(provider, "hi", "1", "opus")
+    try:
+        async for _ in gen:
+            pass
+    except (TypeError, AssertionError):
+        pass
+
+    assert captured["env"] == "SENTINEL_UNSET"
+
+
 def test_prune_clears_effort(tmp_enso, sample_config):
     """Stale conversations drop their effort settings too."""
     sample_config["working_dir"] = os.path.join(tmp_enso, "workspace")
@@ -216,8 +295,11 @@ async def test_process_request_injects_messages(tmp_enso, sample_config):
         async def edit_status(self, handle, text): pass
         async def delete_status(self, handle): pass
         async def send_typing(self): pass
+        def get_origin_env(self): return {}
 
-    async def fake_run(provider, prompt, chat_id, model, *, effort=None):
+    async def fake_run(
+        provider, prompt, chat_id, model, *, effort=None, extra_env=None,
+    ):
         prompts_received.append(prompt)
         if False:
             yield  # make this an async generator

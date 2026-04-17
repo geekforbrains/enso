@@ -126,6 +126,24 @@ class TelegramContext(TransportContext):
     async def send_typing(self) -> None:
         await self._update.effective_chat.send_action(ChatAction.TYPING)
 
+    def get_origin_env(self) -> dict[str, str]:
+        chat = self._update.effective_chat
+        user = self._update.effective_user
+        name_parts: list[str] = []
+        if user is not None:
+            if getattr(user, "first_name", None):
+                name_parts.append(user.first_name)
+            if getattr(user, "last_name", None):
+                name_parts.append(user.last_name)
+        return {
+            "ENSO_ORIGIN_TRANSPORT": "telegram",
+            "ENSO_ORIGIN_CHANNEL": str(getattr(chat, "id", "")) if chat else "",
+            "ENSO_ORIGIN_THREAD_TS": "",
+            "ENSO_ORIGIN_USER_ID": str(getattr(user, "id", "")) if user else "",
+            "ENSO_ORIGIN_USER_NAME": " ".join(name_parts),
+            "ENSO_ORIGIN_CHANNEL_NAME": "dm",
+        }
+
 
 class TelegramTransport(BaseTransport):
     """Telegram bot transport."""

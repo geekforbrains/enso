@@ -655,10 +655,16 @@ def _slack_validate_token(token: str) -> dict | None:
 
 
 def _slack_send_message(
-    token: str, channel: str, text: str,
+    token: str, channel: str, text: str, thread_ts: str = "",
 ) -> bool:
-    """Send a message to Slack via chat.postMessage."""
-    data = json.dumps({"channel": channel, "text": text}).encode()
+    """Send a message to Slack via chat.postMessage.
+
+    When ``thread_ts`` is set the message lands in that thread.
+    """
+    payload: dict = {"channel": channel, "text": text}
+    if thread_ts:
+        payload["thread_ts"] = thread_ts
+    data = json.dumps(payload).encode()
     req = urllib.request.Request(
         "https://slack.com/api/chat.postMessage",
         data=data,
@@ -675,15 +681,42 @@ def _slack_send_message(
         return False
 
 
+def _resolve_slack_target(
+    explicit: str, notify_channel: str,
+) -> tuple[str, str]:
+    """Resolve the Slack channel + thread for ``message send``/``attach``.
+
+    Priority:
+
+    1. Explicit ``--to`` wins and clears thread context (cross-channel reply
+       shouldn't pretend to stay in the original thread).
+    2. Otherwise fall back to ``ENSO_ORIGIN_CHANNEL`` — the agent's own
+       conversation when spawned from a transport — and carry
+       ``ENSO_ORIGIN_THREAD_TS`` along.
+    3. Finally fall back to the configured ``notify_channel`` (no thread).
+
+    Returns ``(channel, thread_ts)``; an empty channel string means nothing
+    was resolved and the caller should report a usage error.
+    """
+    if explicit:
+        return explicit, ""
+    origin = os.environ.get("ENSO_ORIGIN_CHANNEL", "")
+    if origin:
+        return origin, os.environ.get("ENSO_ORIGIN_THREAD_TS", "")
+    return notify_channel, ""
+
+
 _SLACK_MAX_UPLOAD_BYTES = 1024 * 1024 * 1024  # 1 GB
 
 
 def _slack_upload_file(
     token: str, channel: str, file_path: str, caption: str = "",
+    thread_ts: str = "",
 ) -> tuple[bool, str]:
     """Upload a file to Slack using the external upload flow.
 
     Returns (ok, error_message). error_message is empty on success.
+    When ``thread_ts`` is set the file is shared into that thread.
     """
     from urllib.parse import urlencode
 
@@ -740,6 +773,8 @@ def _slack_upload_file(
     }
     if caption:
         complete_payload["initial_comment"] = caption
+    if thread_ts:
+        complete_payload["thread_ts"] = thread_ts
     req = urllib.request.Request(
         "https://slack.com/api/files.completeUploadExternal",
         data=json.dumps(complete_payload).encode(),
@@ -1169,14 +1204,16 @@ def message_send(
                 " Run [bold]enso setup[/]."
             )
             raise typer.Exit(1)
-        target = to or slack_cfg.get("notify_channel", "")
+        target, thread_ts = _resolve_slack_target(
+            to, slack_cfg.get("notify_channel", ""),
+        )
         if not target:
             console.print(
                 "[red]\u2717[/] No destination. Pass --to or"
                 " set notify_channel in config."
             )
             raise typer.Exit(1)
-        if not _slack_send_message(token, target, text[:40000]):
+        if not _slack_send_message(token, target, text[:40000], thread_ts):
             console.print(
                 f"[red]\u2717[/] Failed to send to {target}."
             )
@@ -1194,7 +1231,13 @@ def message_send(
                 " Run [bold]enso setup[/]."
             )
             raise typer.Exit(1)
-        targets = [to] if to else users
+        origin = os.environ.get("ENSO_ORIGIN_CHANNEL", "")
+        if to:
+            targets = [to]
+        elif origin:
+            targets = [origin]
+        else:
+            targets = users
         for uid in targets:
             if not _tg_send_message(token, uid, text[:4096]):
                 console.print(
@@ -1256,7 +1299,9 @@ def message_attach(
                 " Run [bold]enso setup[/]."
             )
             raise typer.Exit(1)
-        target = to or slack_cfg.get("notify_channel", "")
+        target, thread_ts = _resolve_slack_target(
+            to, slack_cfg.get("notify_channel", ""),
+        )
         if not target:
             console.print(
                 "[red]\u2717[/] No destination. Pass --to or"
@@ -1264,7 +1309,7 @@ def message_attach(
             )
             raise typer.Exit(1)
         with console.status(f"Uploading {filename} to {target}..."):
-            ok, err = _slack_upload_file(token, target, file, caption)
+            ok, err = _slack_upload_file(token, target, file, caption, thread_ts)
         if not ok:
             console.print(f"[red]\u2717[/] {err}")
             raise typer.Exit(1)
@@ -1286,7 +1331,13 @@ def message_attach(
             " Run [bold]enso setup[/]."
         )
         raise typer.Exit(1)
-    targets = [to] if to else users
+    origin = os.environ.get("ENSO_ORIGIN_CHANNEL", "")
+    if to:
+        targets = [to]
+    elif origin:
+        targets = [origin]
+    else:
+        targets = users
     for uid in targets:
         if not _tg_send_file(token, uid, file, caption):
             console.print(

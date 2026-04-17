@@ -596,8 +596,15 @@ class Runtime:
         model: str,
         *,
         effort: str | None = None,
+        extra_env: dict[str, str] | None = None,
     ):
-        """Spawn a provider subprocess and yield StreamEvents."""
+        """Spawn a provider subprocess and yield StreamEvents.
+
+        ``extra_env`` is merged on top of ``os.environ`` for the subprocess
+        only (parent env is never mutated). Typically carries
+        ``ENSO_ORIGIN_*`` so commands like ``enso message send`` can route
+        back to the triggering conversation without an explicit ``--to``.
+        """
         session_id = self._get_or_create_session(chat_id, provider.name)
         cmd = provider.build_command(prompt, model, session_id, effort=effort)
         log.info("[%s] Spawning: %s", provider.name, " ".join(cmd[:6]) + " ...")
@@ -622,6 +629,10 @@ class Runtime:
         limit = provider.stdout_limit()
         if limit:
             kwargs["limit"] = limit
+        if extra_env:
+            merged = os.environ.copy()
+            merged.update(extra_env)
+            kwargs["env"] = merged
 
         process = await asyncio.create_subprocess_exec(*cmd, **kwargs)
         log.info("[%s] pid=%s", provider.name, process.pid)
@@ -686,6 +697,12 @@ class Runtime:
         display = provider_name.capitalize()
         effort_part = f" / {effort}" if effort else ""
 
+        try:
+            origin_env = ctx.get_origin_env()
+        except Exception:
+            log.warning("get_origin_env failed for chat %s", chat_id, exc_info=True)
+            origin_env = {}
+
         log.info(
             "[%s] chat=%s model=%s effort=%s prompt_len=%d: %.120s",
             provider_name, chat_id, model, effort or "-", len(prompt), prompt,
@@ -715,7 +732,8 @@ class Runtime:
 
         try:
             async for event in self.run_provider(
-                provider, prompt, chat_id, model, effort=effort,
+                provider, prompt, chat_id, model,
+                effort=effort, extra_env=origin_env,
             ):
                 if event.kind == "status":
                     state["status"] = event.text
