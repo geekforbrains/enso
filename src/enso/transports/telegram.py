@@ -28,7 +28,15 @@ except ImportError:
     ) from None
 
 from ..auth import is_authorized
-from ..commands import cmd_clear, cmd_help, cmd_logs, cmd_model, cmd_status, cmd_use
+from ..commands import (
+    cmd_clear,
+    cmd_effort,
+    cmd_help,
+    cmd_logs,
+    cmd_model,
+    cmd_status,
+    cmd_use,
+)
 from ..formatting import md_to_html
 from ..providers import PROVIDER_NAMES
 from . import BaseTransport, TransportContext
@@ -52,7 +60,8 @@ COMMANDS = [
     BotCommand("queue", "View & manage queued messages"),
     BotCommand("use", "Switch provider"),
     BotCommand("model", "Switch model"),
-    BotCommand("status", "Provider & model info"),
+    BotCommand("effort", "Set reasoning effort (Claude)"),
+    BotCommand("status", "Provider, model & effort info"),
     BotCommand("clear", "Clear session"),
     BotCommand("restart", "Restart the bot"),
     BotCommand("logs", "Last 25 log entries"),
@@ -415,6 +424,37 @@ class TelegramTransport(BaseTransport):
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
 
+    async def _cmd_effort(self, update: Update, _ctx: Any) -> None:
+        if not self._is_authorized(update):
+            return
+        conv_id = str(update.effective_chat.id)
+        args = (update.message.text or "").split()[1:]
+        choice = args[0] if args else None
+
+        response, options = cmd_effort(self.runtime, conv_id, choice)
+        if response:
+            await update.message.reply_text(response)
+            return
+
+        model = self.runtime.get_active_model(
+            conv_id, self.runtime.get_active_provider(conv_id),
+        )
+        buttons = [
+            InlineKeyboardButton(
+                f"{'● ' if active else ''}{name}",
+                callback_data=f"effort:{name}",
+            )
+            for name, active in options
+        ]
+        keyboard = [[b] for b in buttons]
+        keyboard.append([
+            InlineKeyboardButton("Use default", callback_data="effort:default"),
+        ])
+        await update.message.reply_text(
+            f"Set effort ({model}):",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+
     async def _cmd_clear(self, update: Update, _ctx: Any) -> None:
         if not self._is_authorized(update):
             return
@@ -482,6 +522,12 @@ class TelegramTransport(BaseTransport):
                 rt.active_model_by_chat_provider[(conv_id, provider)] = model
                 rt.save_state()
                 await query.edit_message_text(f"{provider} model → {model}")
+
+        elif data.startswith("effort:"):
+            choice = data.split(":", 1)[1]
+            response, _ = cmd_effort(rt, conv_id, choice)
+            if response:
+                await query.edit_message_text(response)
 
         elif data.startswith("clear:"):
             scope = data.split(":", 1)[1]

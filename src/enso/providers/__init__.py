@@ -40,12 +40,23 @@ class BaseProvider(ABC):
 
     @abstractmethod
     def build_command(
-        self, prompt: str, model: str, session_id: str | None = None
+        self,
+        prompt: str,
+        model: str,
+        session_id: str | None = None,
+        *,
+        effort: str | None = None,
     ) -> list[str]:
-        """Build the CLI command for interactive streaming."""
+        """Build the CLI command for interactive streaming.
+
+        ``effort`` is an optional reasoning-effort level; providers that
+        don't support it ignore the argument.
+        """
 
     @abstractmethod
-    def build_batch_command(self, prompt: str, model: str) -> list[str]:
+    def build_batch_command(
+        self, prompt: str, model: str, *, effort: str | None = None,
+    ) -> list[str]:
         """Build the CLI command for batch execution (text output, no streaming).
 
         Used by the job runner to capture final output without parsing

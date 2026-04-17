@@ -43,7 +43,12 @@ class GeminiProvider(BaseProvider):
     name = "gemini"
 
     def build_command(
-        self, prompt: str, model: str, session_id: str | None = None
+        self,
+        prompt: str,
+        model: str,
+        session_id: str | None = None,
+        *,
+        effort: str | None = None,
     ) -> list[str]:
         cmd = [
             self.path, "--prompt", prompt,
@@ -54,7 +59,9 @@ class GeminiProvider(BaseProvider):
             cmd.extend(["--resume", session_id])
         return cmd
 
-    def build_batch_command(self, prompt: str, model: str) -> list[str]:
+    def build_batch_command(
+        self, prompt: str, model: str, *, effort: str | None = None,
+    ) -> list[str]:
         return [
             self.path, "--prompt", prompt,
             "--output-format", "text",

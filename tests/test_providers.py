@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from enso.providers import get_provider
-from enso.providers.claude import ClaudeProvider
+from enso.providers.claude import (
+    EFFORT_LEVELS,
+    ClaudeProvider,
+    clamp_effort,
+    max_effort_for_model,
+)
 from enso.providers.codex import CodexProvider
 from enso.providers.gemini import GeminiProvider
 
@@ -160,3 +165,76 @@ def test_get_provider_unknown():
     import pytest
     with pytest.raises(ValueError, match="Unknown provider"):
         get_provider("unknown", "path")
+
+
+# -- Effort: command building --
+
+
+def test_claude_build_command_with_effort():
+    p = ClaudeProvider("claude")
+    cmd = p.build_command("hi", "opus", effort="xhigh")
+    assert "--effort" in cmd
+    assert cmd[cmd.index("--effort") + 1] == "xhigh"
+
+
+def test_claude_build_command_without_effort():
+    p = ClaudeProvider("claude")
+    cmd = p.build_command("hi", "opus")
+    assert "--effort" not in cmd
+
+
+def test_claude_build_batch_command_with_effort():
+    p = ClaudeProvider("claude")
+    cmd = p.build_batch_command("hi", "opus", effort="max")
+    assert "--effort" in cmd
+    assert cmd[cmd.index("--effort") + 1] == "max"
+    # Prompt is still last and sentinel is preserved
+    assert cmd[-1] == "hi"
+    assert cmd[-2] == "--"
+
+
+def test_codex_and_gemini_ignore_effort():
+    """Non-Claude providers accept the kwarg but emit no flag."""
+    c = CodexProvider("codex")
+    g = GeminiProvider("gemini")
+    assert "--effort" not in c.build_command("hi", "gpt-5.4", effort="xhigh")
+    assert "--effort" not in c.build_batch_command("hi", "gpt-5.4", effort="xhigh")
+    assert "--effort" not in g.build_command("hi", "gemini-2.5-pro", effort="xhigh")
+    assert "--effort" not in g.build_batch_command("hi", "gemini-2.5-pro", effort="xhigh")
+
+
+# -- Effort: clamping --
+
+
+def test_effort_levels_ordered():
+    assert EFFORT_LEVELS == ["low", "medium", "high", "xhigh", "max"]
+
+
+def test_max_effort_opus_is_max():
+    assert max_effort_for_model("opus") == "max"
+    assert max_effort_for_model("claude-opus-4-7") == "max"
+
+
+def test_max_effort_other_models_capped_at_high():
+    assert max_effort_for_model("sonnet") == "high"
+    assert max_effort_for_model("haiku") == "high"
+    assert max_effort_for_model("unknown-model") == "high"
+
+
+def test_clamp_effort_within_cap():
+    # Opus supports everything — no clamping.
+    assert clamp_effort("max", "opus") == "max"
+    assert clamp_effort("xhigh", "opus") == "xhigh"
+    assert clamp_effort("low", "opus") == "low"
+
+
+def test_clamp_effort_degrades_to_cap():
+    # Sonnet caps at high — xhigh/max clamp down.
+    assert clamp_effort("max", "sonnet") == "high"
+    assert clamp_effort("xhigh", "sonnet") == "high"
+    assert clamp_effort("high", "sonnet") == "high"
+    assert clamp_effort("medium", "sonnet") == "medium"
+
+
+def test_clamp_effort_unknown_level_passthrough():
+    assert clamp_effort("bogus", "opus") == "bogus"
