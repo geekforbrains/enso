@@ -32,6 +32,16 @@ class TransportContext(ABC):
     async def send_typing(self) -> None:
         """Send a typing indicator. No-op by default."""
 
+    def get_origin_env(self) -> dict[str, str]:
+        """Return ``ENSO_ORIGIN_*`` env vars describing the triggering message.
+
+        Injected into the provider subprocess so commands like
+        ``enso message send`` can auto-route back to the origin. An empty
+        dict means no origin context (e.g. scheduled jobs, CLI triggers);
+        outbound commands then fall through to ``notify_channel``.
+        """
+        return {}
+
 
 class BaseTransport(ABC):
     """Base class for message transports.
