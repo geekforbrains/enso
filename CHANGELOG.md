@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.0] - 2026-04-17
+
+### Added
+
+- `/effort` (Telegram) / `!effort` (Slack) command to set Claude's reasoning effort level (`low`, `medium`, `high`, `xhigh`, `max`) per conversation and model. Uses Claude Code's `--effort` flag. The active level shows in the status line as `(Claude / xhigh / 25% / 30s)`
+- Effort is stored per `(chat, provider, model)` and persisted in `state.json`; raw intent is kept and clamped to each model's supported range at read time, so switching between models preserves your picks. `/effort default` clears the per-chat override
+- `ENSO_ORIGIN_*` environment variables injected into every provider subprocess — `ENSO_ORIGIN_TRANSPORT`, `ENSO_ORIGIN_CHANNEL`, `ENSO_ORIGIN_THREAD_TS`, `ENSO_ORIGIN_USER_ID`, `ENSO_ORIGIN_USER_NAME`, `ENSO_ORIGIN_CHANNEL_NAME`. The agent sees who triggered the current turn and where the reply should go
+- `enso message send` / `enso message attach` auto-route back to the origin when invoked without `--to`. Priority: `--to` > `ENSO_ORIGIN_CHANNEL` > `notify_channel`. `thread_ts` propagates only when routing to origin (not on cross-channel overrides)
+- Slack transport warms its directory cache (users + channels) on startup so origin-env name resolution works on the hot path without per-message API hits. Respects the cache's recency guard to avoid hammering the API on frequent restarts
+
+### Fixed
+
+- Slack `enso message attach` now includes `thread_ts` in `files.completeUploadExternal` so threaded uploads actually land in the thread. The misleading `completeUploadExternal: invalid_arguments` error from attaching with no destination is gone
+- Slack `enso message send` now includes `thread_ts` in `chat.postMessage` so agent-initiated sends stay threaded
+
+### Changed
+
+- `TransportContext` gained `get_origin_env()`; transports populate it with transport-specific identifiers. Base class returns an empty dict so jobs and CLI-triggered runs fall through to `notify_channel` as before
+- Telegram `enso message send` / `attach` honor `ENSO_ORIGIN_CHANNEL` — a bare send from inside an agent turn replies to the triggering user instead of broadcasting to all `allowed_users`. Broadcast still happens when no origin is set (e.g. jobs)
+
 ## [0.12.1] - 2026-04-16
 
 ### Fixed
