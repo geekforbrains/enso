@@ -32,10 +32,14 @@ async def cmd_stop_async(runtime: Runtime, conv_id: str) -> tuple[bool, str | No
 
 
 def cmd_status(runtime: Runtime, conv_id: str) -> str:
-    """Return provider and model info for a conversation."""
+    """Return provider, model, and effort info for a conversation."""
     provider = runtime.get_active_provider(conv_id)
     model = runtime.get_active_model(conv_id, provider)
-    return f"Provider: {provider}\nModel: {model}"
+    lines = [f"Provider: {provider}", f"Model: {model}"]
+    effort = runtime.get_active_effort(conv_id, provider, model)
+    if effort:
+        lines.append(f"Effort: {effort}")
+    return "\n".join(lines)
 
 
 def cmd_use(
@@ -89,6 +93,66 @@ def cmd_model(
 
     active = runtime.get_active_model(conv_id, provider)
     options = [(m, m == active) for m in models]
+    return None, options
+
+
+def cmd_effort(
+    runtime: Runtime, conv_id: str, choice: str | None,
+) -> tuple[str | None, list[tuple[str, bool]]]:
+    """Switch reasoning effort (Claude only) or list supported levels.
+
+    ``choice`` may be a level name, a 1-based index, or ``default`` to
+    clear the per-chat override and fall back to the CLI's own default.
+    When no choice is given, returns options for the transport to render
+    in its native picker UI — only levels the current model supports are
+    included.
+    """
+    from .providers.claude import EFFORT_LEVELS, clamp_effort, max_effort_for_model
+
+    provider = runtime.get_active_provider(conv_id)
+    if provider != "claude":
+        return f"Effort is only supported for Claude (current: {provider}).", []
+
+    model = runtime.get_active_model(conv_id, provider)
+    key = (conv_id, provider, model)
+
+    if choice:
+        normalized = choice.strip().lower()
+        if normalized == "default":
+            runtime.effort_by_chat_provider_model.pop(key, None)
+            runtime.save_state()
+            return f"Effort cleared (using {provider} default).", []
+
+        max_level = max_effort_for_model(model)
+        max_idx = EFFORT_LEVELS.index(max_level)
+        supported = EFFORT_LEVELS[: max_idx + 1]
+
+        if normalized.isdigit():
+            idx = int(normalized) - 1
+            if not (0 <= idx < len(supported)):
+                return f"Invalid index. Use 1-{len(supported)}.", []
+            selected = supported[idx]
+        elif normalized in EFFORT_LEVELS:
+            selected = normalized
+        else:
+            opts = ", ".join(EFFORT_LEVELS)
+            return f"Unknown effort '{choice}'. Choose: {opts}, or 'default'.", []
+
+        runtime.effort_by_chat_provider_model[key] = selected
+        runtime.save_state()
+        effective = clamp_effort(selected, model)
+        if effective != selected:
+            return (
+                f"Effort \u2192 {selected} "
+                f"(clamped to {effective} for {model}).",
+                [],
+            )
+        return f"Effort \u2192 {selected}", []
+
+    active = runtime.effort_by_chat_provider_model.get(key)
+    max_level = max_effort_for_model(model)
+    max_idx = EFFORT_LEVELS.index(max_level)
+    options = [(level, level == active) for level in EFFORT_LEVELS[: max_idx + 1]]
     return None, options
 
 

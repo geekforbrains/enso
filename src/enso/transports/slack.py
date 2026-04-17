@@ -24,6 +24,7 @@ from .. import slack_cache
 from ..auth import is_authorized
 from ..commands import (
     cmd_clear,
+    cmd_effort,
     cmd_help,
     cmd_logs,
     cmd_model,
@@ -44,7 +45,8 @@ SLACK_COMMANDS: list[tuple[str, str]] = [
     ("stop", "Stop process & clear queue"),
     ("use", "Switch provider"),
     ("model", "Switch model"),
-    ("status", "Provider & model info"),
+    ("effort", "Set reasoning effort (Claude, or 'default' to clear)"),
+    ("status", "Provider, model & effort info"),
     ("clear", "Clear session (use !clear all for all providers)"),
     ("logs", "Last 25 log entries"),
     ("help", "Show commands"),
@@ -64,10 +66,13 @@ class SlackContext(TransportContext):
         client: AsyncWebClient,
         channel: str,
         thread_ts: str | None = None,
+        *,
+        user_id: str = "",
     ):
         self._client = client
         self._channel = channel
         self._thread_ts = thread_ts
+        self._user_id = user_id
 
     async def reply(self, text: str) -> None:
         kwargs: dict[str, Any] = {
@@ -102,6 +107,40 @@ class SlackContext(TransportContext):
     async def send_typing(self) -> None:
         """No-op — Slack bots cannot send typing indicators."""
 
+    def get_origin_env(self) -> dict[str, str]:
+        env = {
+            "ENSO_ORIGIN_TRANSPORT": "slack",
+            "ENSO_ORIGIN_CHANNEL": self._channel,
+            "ENSO_ORIGIN_THREAD_TS": self._thread_ts or "",
+            "ENSO_ORIGIN_USER_ID": self._user_id,
+        }
+        # Best-effort name resolution via the on-disk cache — never hits the
+        # API here, since this runs on the hot path. Cache misses just leave
+        # the name blank and the agent can fall back to the ID.
+        try:
+            cache = slack_cache.load()
+            user = cache.get("users", {}).get("items", {}).get(self._user_id, {})
+            name = (
+                user.get("display_name")
+                or user.get("real_name")
+                or user.get("name")
+                or ""
+            )
+            env["ENSO_ORIGIN_USER_NAME"] = name
+            if self._channel.startswith("D"):
+                env["ENSO_ORIGIN_CHANNEL_NAME"] = "dm"
+            else:
+                channel = (
+                    cache.get("channels", {}).get("items", {}).get(self._channel, {})
+                )
+                cname = channel.get("name", "")
+                env["ENSO_ORIGIN_CHANNEL_NAME"] = f"#{cname}" if cname else ""
+        except Exception:
+            log.debug("Slack cache lookup failed for origin env", exc_info=True)
+            env.setdefault("ENSO_ORIGIN_USER_NAME", "")
+            env.setdefault("ENSO_ORIGIN_CHANNEL_NAME", "")
+        return env
+
 
 class SlackTransport(BaseTransport):
     """Slack bot transport using Socket Mode."""
@@ -131,6 +170,7 @@ class SlackTransport(BaseTransport):
                 "Run 'enso setup' or edit ~/.enso/config.json to add users."
             )
         log.info("Starting Slack transport")
+        self._warm_directory_cache()
         app = AsyncApp(token=self.bot_token)
         self._client = app.client
         self._register_listeners(app)
@@ -143,6 +183,25 @@ class SlackTransport(BaseTransport):
             await handler.start_async()
 
         asyncio.run(_run())
+
+    def _warm_directory_cache(self) -> None:
+        """Populate the user+channel cache on startup so origin-env lookups
+        resolve names without a per-message API hit.
+
+        Respects the cache's own recency guard, so frequent restarts don't
+        hammer the Slack API. Failures are swallowed — the transport still
+        starts; lookups just fall back to IDs until the next refresh.
+        """
+        if not self.bot_token:
+            return
+        cache = slack_cache.load()
+        try:
+            if not slack_cache._recently_refreshed(cache["users"]):
+                cache = slack_cache.refresh_users(self.bot_token, cache)
+            if not slack_cache._recently_refreshed(cache["channels"]):
+                slack_cache.refresh_channels(self.bot_token, cache)
+        except Exception:
+            log.warning("Slack directory cache warm failed", exc_info=True)
 
     def _register_listeners(self, app: AsyncApp) -> None:
         """Register event listeners on the Slack app."""
@@ -267,7 +326,7 @@ class SlackTransport(BaseTransport):
         if text.startswith("!"):
             response = await self._handle_command(text, conv_id)
             if response:
-                ctx = SlackContext(client, channel, reply_thread_ts)
+                ctx = SlackContext(client, channel, reply_thread_ts, user_id=user)
                 await ctx.reply(response)
                 return
 
@@ -285,7 +344,7 @@ class SlackTransport(BaseTransport):
         prompt = f"{context}\n\n{text}".strip() if context else text
 
         preview = text[:50].replace("\n", " ")
-        ctx = SlackContext(client, channel, reply_thread_ts)
+        ctx = SlackContext(client, channel, reply_thread_ts, user_id=user)
         log.info(
             "Incoming mention: channel=%s user=%s thread=%s len=%d",
             channel, user, thread_ts or ts, len(text),
@@ -329,14 +388,16 @@ class SlackTransport(BaseTransport):
         if text.startswith("!"):
             response = await self._handle_command(text, conv_id)
             if response:
-                ctx = SlackContext(client, channel, reply_thread_ts)
+                ctx = SlackContext(client, channel, reply_thread_ts, user_id=user)
                 await ctx.reply(response)
                 return
 
         # Handle file uploads
         files = event.get("files", [])
         if files:
-            await self._handle_files(files, text, conv_id, client, channel, reply_thread_ts)
+            await self._handle_files(
+                files, text, conv_id, client, channel, reply_thread_ts, user=user,
+            )
             return
 
         # Fetch thread context for DM threads
@@ -349,7 +410,7 @@ class SlackTransport(BaseTransport):
         prompt = f"{thread_context}\n\n{text}".strip() if thread_context else text
 
         preview = text[:50].replace("\n", " ")
-        ctx = SlackContext(client, channel, reply_thread_ts)
+        ctx = SlackContext(client, channel, reply_thread_ts, user_id=user)
         log.info(
             "Incoming message: channel=%s user=%s type=%s len=%d",
             channel, user, channel_type, len(text),
@@ -487,6 +548,17 @@ class SlackTransport(BaseTransport):
                 lines.append(f"{prefix}{name}")
             return "\n".join(lines)
 
+        if cmd_name == "effort":
+            response, options = cmd_effort(rt, conv_id, cmd_args)
+            if response:
+                return response
+            model = rt.get_active_model(conv_id, rt.get_active_provider(conv_id))
+            lines = [f"Set effort ({model}) — '!effort default' to clear:"]
+            for name, active in options:
+                prefix = "\u25cf " if active else "  "
+                lines.append(f"{prefix}{name}")
+            return "\n".join(lines)
+
         if cmd_name == "status":
             return cmd_status(rt, conv_id)
 
@@ -511,6 +583,8 @@ class SlackTransport(BaseTransport):
         client: AsyncWebClient,
         channel: str,
         reply_thread_ts: str | None,
+        *,
+        user: str = "",
     ) -> None:
         """Download uploaded files and dispatch prompt."""
         uploads_dir = os.path.join(self.runtime.working_dir, "uploads")
@@ -540,7 +614,7 @@ class SlackTransport(BaseTransport):
             prompt += f"\n\n{text}"
 
         preview = prompt[:50].replace("\n", " ")
-        ctx = SlackContext(client, channel, reply_thread_ts)
+        ctx = SlackContext(client, channel, reply_thread_ts, user_id=user)
         await self.runtime.dispatch(conv_id, prompt, ctx, preview=preview)
 
     async def notify(self, text: str, *, destination: str | None = None) -> None:

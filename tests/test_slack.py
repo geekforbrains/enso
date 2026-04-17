@@ -732,3 +732,67 @@ class TestTransportInit:
 
         assert transport.bot_token == ""
         assert transport.allowed_users == []
+
+
+# ---------------------------------------------------------------------------
+# SlackContext — origin env vars
+# ---------------------------------------------------------------------------
+
+
+class TestOriginEnv:
+    """Tests for SlackContext.get_origin_env — powers `enso message send`."""
+
+    def test_basic_fields(self, tmp_enso):
+        ctx = SlackContext(
+            _make_client(), "C012345", thread_ts=None, user_id="U987",
+        )
+        env = ctx.get_origin_env()
+        assert env["ENSO_ORIGIN_TRANSPORT"] == "slack"
+        assert env["ENSO_ORIGIN_CHANNEL"] == "C012345"
+        assert env["ENSO_ORIGIN_THREAD_TS"] == ""
+        assert env["ENSO_ORIGIN_USER_ID"] == "U987"
+
+    def test_thread_ts_propagated(self, tmp_enso):
+        ctx = SlackContext(
+            _make_client(), "C012345", thread_ts="1700000000.123", user_id="U987",
+        )
+        env = ctx.get_origin_env()
+        assert env["ENSO_ORIGIN_THREAD_TS"] == "1700000000.123"
+
+    def test_dm_channel_name(self, tmp_enso):
+        ctx = SlackContext(
+            _make_client(), "D012345", user_id="U987",
+        )
+        env = ctx.get_origin_env()
+        assert env["ENSO_ORIGIN_CHANNEL_NAME"] == "dm"
+
+    def test_channel_name_resolved_from_cache(self, tmp_enso):
+        import json
+
+        from enso import slack_cache
+        cache = slack_cache._empty_cache()
+        cache["channels"]["items"]["C012345"] = {
+            "id": "C012345", "name": "burger-bash",
+        }
+        cache["users"]["items"]["U987"] = {
+            "id": "U987",
+            "display_name": "Shawn",
+            "real_name": "Shawn Smith",
+            "name": "shawn",
+        }
+        import os
+        os.makedirs(slack_cache.CACHE_DIR, exist_ok=True)
+        with open(slack_cache.CACHE_FILE, "w") as f:
+            json.dump(cache, f)
+
+        ctx = SlackContext(_make_client(), "C012345", user_id="U987")
+        env = ctx.get_origin_env()
+        assert env["ENSO_ORIGIN_CHANNEL_NAME"] == "#burger-bash"
+        assert env["ENSO_ORIGIN_USER_NAME"] == "Shawn"
+
+    def test_missing_cache_falls_back_to_blank_name(self, tmp_enso):
+        ctx = SlackContext(_make_client(), "C777", user_id="U777")
+        env = ctx.get_origin_env()
+        # No cache file / no matching entry — name keys are present but empty.
+        assert env["ENSO_ORIGIN_USER_NAME"] == ""
+        assert env["ENSO_ORIGIN_CHANNEL_NAME"] == ""
