@@ -156,6 +156,42 @@ def cmd_effort(
     return None, options
 
 
+async def cmd_compact_async(runtime: Runtime, conv_id: str) -> str:
+    """Compact the active provider's session: summarise → clear → stash seed.
+
+    Hidden summarisation runs through the live session; the summary becomes
+    a seed prepended to the next user message in a fresh session. The user
+    never sees the summary itself — only a brief confirmation.
+
+    Refuses with guidance if a message is currently running for this chat;
+    we don't want to interleave a destructive compact with in-flight work.
+    """
+    lock = runtime.get_chat_lock(conv_id)
+    if lock.locked():
+        return (
+            "A message is currently running. Stop it (!stop) or wait for it "
+            "to finish, then try again."
+        )
+
+    provider = runtime.get_active_provider(conv_id)
+    if not runtime.session_by_chat_provider.get((conv_id, provider)):
+        return f"Nothing to compact — no active {provider} session for this chat."
+
+    summary = await runtime.run_compaction(conv_id, provider)
+    if not summary:
+        return "Compaction failed — no summary produced. Session left untouched."
+
+    # Clear only the active provider; cmd_clear without clear_all does that.
+    cmd_clear(runtime, conv_id)
+    runtime.compact_seed_by_chat[conv_id] = summary
+    runtime.save_state()
+    log.info(
+        "Compacted %s session for chat %s (%d-char summary stashed)",
+        provider, conv_id, len(summary),
+    )
+    return "Compacted. Continue the conversation — context will be preserved as a summary."
+
+
 def cmd_clear(runtime: Runtime, conv_id: str, *, clear_all: bool = False) -> list[str]:
     """Clear sessions and return summary lines per provider."""
     parts = []

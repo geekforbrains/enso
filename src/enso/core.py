@@ -103,6 +103,11 @@ class Runtime:
         # Dispatch queue (per-conversation)
         self._queue_by_conversation: dict[str, deque[_QueuedItem]] = {}
 
+        # Compact-command seeds: per-chat prior-session summaries waiting to
+        # be prepended to the next user prompt. Set by /compact; consumed in
+        # process_request the next time that chat dispatches a message.
+        self.compact_seed_by_chat: dict[str, str] = {}
+
         # Activity tracking for session pruning
         self._last_active: dict[str, datetime] = {}
 
@@ -316,6 +321,7 @@ class Runtime:
                 f"{cid}:{prov}": sid
                 for (cid, prov), sid in self.session_by_chat_provider.items()
             },
+            "compact_seed_by_chat": dict(self.compact_seed_by_chat),
             "job_last_run": {
                 name: ts.isoformat()
                 for name, ts in self._job_last_run.items()
@@ -355,6 +361,8 @@ class Runtime:
             for k, v in data.get("session_by_chat_provider", {}).items():
                 cid, provider = k.split(":", 1)
                 self.session_by_chat_provider[(cid, provider)] = v
+            for k, v in data.get("compact_seed_by_chat", {}).items():
+                self.compact_seed_by_chat[k] = v
             for name, ts in data.get("job_last_run", {}).items():
                 self._job_last_run[name] = datetime.fromisoformat(ts)
             for cid, ts in data.get("last_active", {}).items():
@@ -382,6 +390,7 @@ class Runtime:
                 self.active_model_by_chat_provider.pop(key)
             for key in [k for k in self.effort_by_chat_provider_model if k[0] == cid]:
                 self.effort_by_chat_provider_model.pop(key)
+            self.compact_seed_by_chat.pop(cid, None)
             self._last_active.pop(cid)
         log.info("Pruned %d stale conversation(s) (>%dd)", len(stale), SESSION_TTL_DAYS)
         self.save_state()
@@ -562,6 +571,93 @@ class Runtime:
             return True
         return False
 
+    # -- Compaction --
+
+    _COMPACTION_PROMPT: ClassVar[str] = (
+        "[System task — context compaction. This is not a user message; "
+        "the user has asked to compact this conversation.]\n\n"
+        "Produce a concise summary of our conversation so far for handoff "
+        "to a fresh session. Cover:\n"
+        "- Key decisions and conclusions reached\n"
+        "- In-progress work and its current state\n"
+        "- Important file paths, IDs, URLs, commands, or names referenced\n"
+        "- Open questions or pending follow-ups\n"
+        "- User preferences or constraints established\n\n"
+        "Skip the mechanics of tool calls — focus on outcomes. Aim for "
+        "300-600 words.\n\n"
+        "Respond with ONLY the summary text. No preamble, no sign-off, no "
+        "meta-commentary."
+    )
+
+    def _consume_compact_seed(
+        self, chat_id: str, prompt: str, provider_name: str,
+    ) -> str:
+        """Prepend any pending compact seed to ``prompt`` and consume it.
+
+        Seeds are stashed by /compact and primed onto the very next user
+        turn for the chat — one-shot consumption so they don't keep
+        re-injecting on every message. Returns the prompt unchanged when
+        no seed is pending.
+        """
+        seed = self.compact_seed_by_chat.pop(chat_id, None)
+        if not seed:
+            return prompt
+        self.save_state()
+        log.info(
+            "[%s] Injected compact seed (%d chars) for chat %s",
+            provider_name, len(seed), chat_id,
+        )
+        return (
+            "[Continuing from a previous session — that conversation was "
+            "compacted to save tokens. Summary of prior context:\n\n"
+            f"{seed}\n\n"
+            "---\n"
+            "End of prior-session summary. Below is the user's next message.]"
+            f"\n\n{prompt}"
+        )
+
+    async def run_compaction(self, chat_id: str, provider_name: str) -> str:
+        """Run a hidden summarisation pass and return the summary text.
+
+        Called by /compact. Drives ``run_provider`` directly so the user
+        sees nothing in chat — no status messages, no ticker, no replies.
+        The caller (cmd_compact_async) holds the chat lock for the duration
+        so no parallel dispatch races us. Returns an empty string on error.
+        """
+        lock = self.get_chat_lock(chat_id)
+        if lock.locked():
+            log.warning("run_compaction skipped — chat %s is busy", chat_id)
+            return ""
+
+        async with lock:
+            provider = self.make_provider(provider_name)
+            model = self.get_active_model(chat_id, provider_name)
+            effort = self.get_active_effort(chat_id, provider_name, model)
+
+            log.info(
+                "[%s] Compacting chat=%s model=%s effort=%s",
+                provider_name, chat_id, model, effort or "-",
+            )
+
+            response_parts: list[str] = []
+            try:
+                async for event in self.run_provider(
+                    provider, self._COMPACTION_PROMPT, chat_id, model,
+                    effort=effort,
+                ):
+                    if event.kind == "response":
+                        response_parts.append(event.text)
+                    elif event.kind == "error":
+                        log.warning(
+                            "Compaction error in chat %s: %s", chat_id, event.text,
+                        )
+                        return ""
+            except Exception:
+                log.exception("Compaction failed for chat %s", chat_id)
+                return ""
+
+            return provider.format_response(response_parts).strip()
+
     # -- Process control --
 
     async def stop_chat(self, chat_id: str) -> tuple[bool, str | None]:
@@ -690,6 +786,9 @@ class Runtime:
         if bg:
             prompt = f"{messages.format_for_injection(bg)}\n\n{prompt}"
             log.info("[%s] Injected %d background message(s) into prompt", provider_name, len(bg))
+
+        # Inject compact seed if one is pending for this chat.
+        prompt = self._consume_compact_seed(chat_id, prompt, provider_name)
 
         provider = self.make_provider(provider_name)
         model = self.get_active_model(chat_id, provider_name)

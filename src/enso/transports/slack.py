@@ -25,6 +25,7 @@ from .. import slack_cache
 from ..auth import is_authorized
 from ..commands import (
     cmd_clear,
+    cmd_compact_async,
     cmd_effort,
     cmd_help,
     cmd_logs,
@@ -77,6 +78,7 @@ SLACK_COMMANDS: list[tuple[str, str]] = [
     ("effort", "Set reasoning effort (Claude, or 'default' to clear)"),
     ("status", "Provider, model & effort info"),
     ("clear", "Clear session (use !clear all for all providers)"),
+    ("compact", "Summarise & compact the active session"),
     ("logs", "Last 25 log entries"),
     ("help", "Show commands"),
 ]
@@ -385,9 +387,9 @@ class SlackTransport(BaseTransport):
 
         # Check for !commands before dispatch
         if text.startswith("!"):
-            response = await self._handle_command(text, conv_id)
+            ctx = SlackContext(client, channel, reply_thread_ts, user_id=user)
+            response = await self._handle_command(text, conv_id, ctx=ctx)
             if response:
-                ctx = SlackContext(client, channel, reply_thread_ts, user_id=user)
                 await ctx.reply(response)
                 return
 
@@ -459,9 +461,9 @@ class SlackTransport(BaseTransport):
 
         # Check for !commands before dispatch
         if text.startswith("!"):
-            response = await self._handle_command(text, conv_id)
+            ctx = SlackContext(client, channel, reply_thread_ts, user_id=user)
+            response = await self._handle_command(text, conv_id, ctx=ctx)
             if response:
-                ctx = SlackContext(client, channel, reply_thread_ts, user_id=user)
                 await ctx.reply(response)
                 return
 
@@ -578,8 +580,14 @@ class SlackTransport(BaseTransport):
 
         return "[Channel context]\n" + "\n".join(lines) if lines else ""
 
-    async def _handle_command(self, text: str, conv_id: str) -> str | None:
-        """Parse and execute a !command. Returns response text or None."""
+    async def _handle_command(
+        self, text: str, conv_id: str, ctx: SlackContext | None = None,
+    ) -> str | None:
+        """Parse and execute a !command. Returns response text or None.
+
+        ``ctx`` is optional but commands that need to post a progress message
+        before doing slow work (e.g. ``!compact``) will use it when given.
+        """
         parts = text[1:].split(None, 1)
         cmd_name = parts[0].lower() if parts else ""
         cmd_args = parts[1] if len(parts) > 1 else None
@@ -639,6 +647,14 @@ class SlackTransport(BaseTransport):
             clear_all = cmd_args and cmd_args.strip().lower() == "all"
             parts_list = cmd_clear(rt, conv_id, clear_all=bool(clear_all))
             return "\n".join(parts_list)
+
+        if cmd_name == "compact":
+            if ctx is not None:
+                await ctx.reply(
+                    "Compacting context — this can take 10–30s while the "
+                    "agent summarises…"
+                )
+            return await cmd_compact_async(rt, conv_id)
 
         if cmd_name == "logs":
             return cmd_logs()[-40000:]
