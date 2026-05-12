@@ -48,8 +48,9 @@ log = logging.getLogger(__name__)
 # downstream text/files guard drops anything genuinely empty.
 #
 # `document_mention` (canvas body @-mention) is intentionally ignored. Slack
-# sends it as an app_mention subtype with a canvas file/section pointer, not as
-# a normal message thread. Threaded canvas comments arrive as regular
+# delivers it both as a message event and as an app_mention subtype (with a
+# canvas file/section pointer rather than a chat-thread anchor), so both
+# handlers consult this set. Threaded canvas comments arrive as regular
 # app_mention events and still fall through.
 IGNORED_SUBTYPES: frozenset[str] = frozenset({
     "bot_message",
@@ -414,8 +415,6 @@ class SlackTransport(BaseTransport):
         if text:
             parts.append(text)
         prompt = "\n\n".join(parts)
-        if not prompt:
-            return
 
         preview_src = text or (downloaded[0] if downloaded else file_prompt)
         preview = preview_src[:50].replace("\n", " ")
@@ -676,11 +675,10 @@ class SlackTransport(BaseTransport):
     async def _download_files(
         self, files: list[dict], client: AsyncWebClient,
     ) -> list[str]:
-        hydrated = [
-            await self._hydrate_file_info(file_info, client)
-            for file_info in files
-        ]
-        return await asyncio.to_thread(self._download_files_sync, hydrated)
+        hydrated = await asyncio.gather(
+            *(self._hydrate_file_info(file_info, client) for file_info in files)
+        )
+        return await asyncio.to_thread(self._download_files_sync, list(hydrated))
 
     def _download_files_sync(self, files: list[dict]) -> list[str]:
         """Download Slack file uploads into the workspace's uploads dir.
