@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.0] - 2026-05-12
+
+### Added
+
+- `/compact` (Telegram) / `!compact` (Slack) command summarises the active session and reseeds a fresh one — keeps the thread alive but trims token usage between turns. Cross-provider: works for Claude, Codex, and Gemini by driving the existing provider pipeline (headless Claude has no native `/compact`). The summary is never shown to the user; it's injected into the next user prompt inside a `[Continuing from a previous session…]` envelope so the LLM sees prior context without paying for the full transcript. The seed is one-shot and persists across `enso` restarts so the contract holds if the user takes a break between `/compact` and their next message
+- `/compact` posts an immediate ack ("Compacting context — this can take 10–30s…") before the summarisation pass starts, and refuses while a request is already running for that chat (asks the user to `!stop` or wait)
+
+### Fixed
+
+- Slack DMs with an image and caption are no longer silently dropped. The transport's `subtype` guard was rejecting every `message` event with a non-null subtype, including `subtype=file_share` (which is how Slack delivers an upload-with-caption). Replaced with an explicit denylist of lifecycle/noise subtypes so user-content subtypes fall through to the existing text/files handler
+- Slack channel @-mentions with attached files now download the file and include it in the prompt. The `_handle_app_mention` path was ignoring `event["files"]`, so the bot saw the caption but never the image
+- Slack canvas body @-mentions no longer trigger a duplicate dispatch with a failing `restricted_action` reply. Slack delivers both a `message`-with-`document_mention` and a real `app_mention` for the same user action; only the `app_mention` path can post into the canvas's auto-thread, so `document_mention` is in the ignore list for both handlers and the surviving `app_mention` handles the reply
+
+### Changed
+
+- Slack file downloads now run via `asyncio.to_thread`, so a slow `urlopen` no longer stalls the Bolt Socket Mode event loop while a large attachment fetches
+- Slack Connect file placeholders (`file_access: "check_file_info"`) are hydrated with a `files.info` call before download, so cross-workspace shares no longer arrive as URL-less stubs and get silently skipped
+- Slack attachment download filenames are now prefixed with the Slack file ID (`F123-image.png`). Two uploads with the same name in one message no longer collide on disk; a same-named upload from an earlier message no longer shadows the new one
+- Slack download failures degrade gracefully: the agent receives `"User uploaded a file, but it could not be downloaded: <name>"` plus the caption, instead of the previous silent drop
+- Multi-file Slack hydration runs in parallel via `asyncio.gather` rather than sequentially, so the cost of `files.info` lookups on a batch of placeholders no longer adds up
+
 ## [0.13.0] - 2026-04-17
 
 ### Added

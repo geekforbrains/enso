@@ -7,6 +7,7 @@ import contextlib
 import logging
 import os
 import re
+import uuid
 from typing import TYPE_CHECKING, Any
 from urllib.request import Request, urlopen
 
@@ -24,6 +25,7 @@ from .. import slack_cache
 from ..auth import is_authorized
 from ..commands import (
     cmd_clear,
+    cmd_compact_async,
     cmd_effort,
     cmd_help,
     cmd_logs,
@@ -40,6 +42,34 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# Slack message subtypes that aren't user-authored content — channel/group
+# lifecycle, message lifecycle, pin/reminder noise, etc. Anything not in this
+# set falls through, including the empty (plain message) case and content-
+# bearing subtypes like file_share, me_message, and thread_broadcast. The
+# downstream text/files guard drops anything genuinely empty.
+#
+# `document_mention` (canvas body @-mention) is intentionally ignored. Slack
+# delivers it both as a message event and as an app_mention subtype (with a
+# canvas file/section pointer rather than a chat-thread anchor), so both
+# handlers consult this set. Threaded canvas comments arrive as regular
+# app_mention events and still fall through.
+IGNORED_SUBTYPES: frozenset[str] = frozenset({
+    "bot_message",
+    "message_changed", "message_deleted", "message_replied",
+    "channel_join", "channel_leave",
+    "channel_archive", "channel_unarchive",
+    "channel_name", "channel_purpose", "channel_topic",
+    "channel_convert_to_private", "channel_convert_to_public",
+    "channel_posting_permissions",
+    "group_join", "group_leave",
+    "group_archive", "group_unarchive",
+    "group_name", "group_purpose", "group_topic",
+    "pinned_item", "unpinned_item",
+    "reminder_add", "ekm_access_denied",
+    "file_mention", "file_comment",
+    "document_mention",
+})
+
 # Commands available in Slack (name, description).
 SLACK_COMMANDS: list[tuple[str, str]] = [
     ("stop", "Stop process & clear queue"),
@@ -48,6 +78,7 @@ SLACK_COMMANDS: list[tuple[str, str]] = [
     ("effort", "Set reasoning effort (Claude, or 'default' to clear)"),
     ("status", "Provider, model & effort info"),
     ("clear", "Clear session (use !clear all for all providers)"),
+    ("compact", "Summarise & compact the active session"),
     ("logs", "Last 25 log entries"),
     ("help", "Show commands"),
 ]
@@ -56,6 +87,34 @@ SLACK_COMMANDS: list[tuple[str, str]] = [
 def _safe_filename(name: str) -> str:
     """Sanitise a filename to prevent path traversal."""
     return os.path.basename(name).lstrip(".")
+
+
+def _file_download_url(file_info: dict) -> str:
+    """Return the authenticated Slack download URL, if present."""
+    return file_info.get("url_private_download") or file_info.get("url_private") or ""
+
+
+def _download_filename(file_info: dict) -> str:
+    """Build a collision-resistant local filename for a Slack file."""
+    raw_name = file_info.get("name") or file_info.get("title") or "file"
+    name = _safe_filename(str(raw_name)) or "file"
+    prefix = _safe_filename(str(file_info.get("id") or "")) or uuid.uuid4().hex[:8]
+    return f"{prefix}-{name}"
+
+
+def _file_label(file_info: dict) -> str:
+    raw_name = file_info.get("name") or file_info.get("title") or file_info.get("id")
+    return _safe_filename(str(raw_name)) if raw_name else "file"
+
+
+def _file_prompt(downloaded: list[str], files: list[dict]) -> str:
+    if downloaded:
+        return "User uploaded a file: " + ", ".join(downloaded)
+    if not files:
+        return ""
+    labels = ", ".join(_file_label(file_info) for file_info in files)
+    suffix = f": {labels}" if labels else "."
+    return "User uploaded a file, but it could not be downloaded" + suffix
 
 
 class SlackContext(TransportContext):
@@ -303,18 +362,22 @@ class SlackTransport(BaseTransport):
         self, event: dict, client: AsyncWebClient,
     ) -> None:
         """Handle @bot mentions in channels."""
+        if event.get("subtype") in IGNORED_SUBTYPES:
+            return
+
         user = event.get("user", "")
         channel = event.get("channel", "")
         ts = event.get("ts", "")
         thread_ts = event.get("thread_ts")
         text = event.get("text", "")
+        files = event.get("files") or []
 
         if not is_authorized(user, self.allowed_users):
             return
 
         # Strip bot mention from text
         text = re.sub(r"<@\w+>\s*", "", text).strip()
-        if not text:
+        if not text and not files:
             return
 
         # Conversation scoped to channel + thread
@@ -324,9 +387,9 @@ class SlackTransport(BaseTransport):
 
         # Check for !commands before dispatch
         if text.startswith("!"):
-            response = await self._handle_command(text, conv_id)
+            ctx = SlackContext(client, channel, reply_thread_ts, user_id=user)
+            response = await self._handle_command(text, conv_id, ctx=ctx)
             if response:
-                ctx = SlackContext(client, channel, reply_thread_ts, user_id=user)
                 await ctx.reply(response)
                 return
 
@@ -341,13 +404,26 @@ class SlackTransport(BaseTransport):
                 client, channel, ts,
             )
 
-        prompt = f"{context}\n\n{text}".strip() if context else text
+        # Download any attachments — channel uploads with @-mention arrive
+        # here (as part of the app_mention event), not on the message path.
+        downloaded = await self._download_files(files, client) if files else []
 
-        preview = text[:50].replace("\n", " ")
+        parts: list[str] = []
+        if context:
+            parts.append(context)
+        file_prompt = _file_prompt(downloaded, files)
+        if file_prompt:
+            parts.append(file_prompt)
+        if text:
+            parts.append(text)
+        prompt = "\n\n".join(parts)
+
+        preview_src = text or (downloaded[0] if downloaded else file_prompt)
+        preview = preview_src[:50].replace("\n", " ")
         ctx = SlackContext(client, channel, reply_thread_ts, user_id=user)
         log.info(
-            "Incoming mention: channel=%s user=%s thread=%s len=%d",
-            channel, user, thread_ts or ts, len(text),
+            "Incoming mention: channel=%s user=%s thread=%s len=%d files=%d",
+            channel, user, thread_ts or ts, len(text), len(downloaded),
         )
         await self.runtime.dispatch(conv_id, prompt, ctx, preview=preview)
 
@@ -355,8 +431,7 @@ class SlackTransport(BaseTransport):
         self, event: dict, client: AsyncWebClient,
     ) -> None:
         """Handle DMs and thread continuations."""
-        # Skip bot messages, subtypes (joins, edits, etc.)
-        if event.get("subtype") is not None:
+        if event.get("subtype") in IGNORED_SUBTYPES:
             return
         if event.get("user") is None:
             return
@@ -386,9 +461,9 @@ class SlackTransport(BaseTransport):
 
         # Check for !commands before dispatch
         if text.startswith("!"):
-            response = await self._handle_command(text, conv_id)
+            ctx = SlackContext(client, channel, reply_thread_ts, user_id=user)
+            response = await self._handle_command(text, conv_id, ctx=ctx)
             if response:
-                ctx = SlackContext(client, channel, reply_thread_ts, user_id=user)
                 await ctx.reply(response)
                 return
 
@@ -505,8 +580,14 @@ class SlackTransport(BaseTransport):
 
         return "[Channel context]\n" + "\n".join(lines) if lines else ""
 
-    async def _handle_command(self, text: str, conv_id: str) -> str | None:
-        """Parse and execute a !command. Returns response text or None."""
+    async def _handle_command(
+        self, text: str, conv_id: str, ctx: SlackContext | None = None,
+    ) -> str | None:
+        """Parse and execute a !command. Returns response text or None.
+
+        ``ctx`` is optional but commands that need to post a progress message
+        before doing slow work (e.g. ``!compact``) will use it when given.
+        """
         parts = text[1:].split(None, 1)
         cmd_name = parts[0].lower() if parts else ""
         cmd_args = parts[1] if len(parts) > 1 else None
@@ -567,6 +648,14 @@ class SlackTransport(BaseTransport):
             parts_list = cmd_clear(rt, conv_id, clear_all=bool(clear_all))
             return "\n".join(parts_list)
 
+        if cmd_name == "compact":
+            if ctx is not None:
+                await ctx.reply(
+                    "Compacting context — this can take 10–30s while the "
+                    "agent summarises…"
+                )
+            return await cmd_compact_async(rt, conv_id)
+
         if cmd_name == "logs":
             return cmd_logs()[-40000:]
 
@@ -574,6 +663,65 @@ class SlackTransport(BaseTransport):
             return cmd_help(SLACK_COMMANDS, prefix="!")
 
         return f"Unknown command: !{cmd_name}. Use !help for available commands."
+
+    async def _hydrate_file_info(
+        self, file_info: dict, client: AsyncWebClient,
+    ) -> dict:
+        """Fetch full file metadata when Slack only sends a placeholder."""
+        if _file_download_url(file_info):
+            return file_info
+        if file_info.get("file_access") != "check_file_info":
+            return file_info
+
+        file_id = file_info.get("id")
+        if not file_id:
+            return file_info
+
+        try:
+            result = await client.files_info(file=file_id)
+        except Exception:
+            log.exception("files.info failed for Slack file %s", file_id)
+            return file_info
+
+        hydrated = result.get("file") or {}
+        if not isinstance(hydrated, dict):
+            return file_info
+        return {**file_info, **hydrated}
+
+    async def _download_files(
+        self, files: list[dict], client: AsyncWebClient,
+    ) -> list[str]:
+        hydrated = await asyncio.gather(
+            *(self._hydrate_file_info(file_info, client) for file_info in files)
+        )
+        return await asyncio.to_thread(self._download_files_sync, list(hydrated))
+
+    def _download_files_sync(self, files: list[dict]) -> list[str]:
+        """Download Slack file uploads into the workspace's uploads dir.
+
+        Returns the local paths of files that downloaded successfully; failed
+        downloads are logged and skipped so a single broken attachment doesn't
+        drop the whole message.
+        """
+        uploads_dir = os.path.join(self.runtime.working_dir, "uploads")
+        os.makedirs(uploads_dir, exist_ok=True)
+
+        downloaded: list[str] = []
+        for file_info in files:
+            url = _file_download_url(file_info)
+            if not url:
+                continue
+            name = _download_filename(file_info)
+            dest_path = os.path.join(uploads_dir, name)
+            try:
+                req = Request(url, headers={"Authorization": f"Bearer {self.bot_token}"})
+                with urlopen(req) as resp, open(dest_path, "wb") as f:
+                    f.write(resp.read())
+                downloaded.append(dest_path)
+                log.info("Downloaded file to %s", dest_path)
+            except Exception:
+                log.exception("Failed to download file %s", name)
+        return downloaded
 
     async def _handle_files(
         self,
@@ -586,32 +734,15 @@ class SlackTransport(BaseTransport):
         *,
         user: str = "",
     ) -> None:
-        """Download uploaded files and dispatch prompt."""
-        uploads_dir = os.path.join(self.runtime.working_dir, "uploads")
-        os.makedirs(uploads_dir, exist_ok=True)
-
-        downloaded: list[str] = []
-        for file_info in files:
-            url = file_info.get("url_private_download") or file_info.get("url_private")
-            if not url:
-                continue
-            name = _safe_filename(file_info.get("name", "file"))
-            dest_path = os.path.join(uploads_dir, name)
-            try:
-                req = Request(url, headers={"Authorization": f"Bearer {self.bot_token}"})
-                with urlopen(req) as resp, open(dest_path, "wb") as f:
-                    f.write(resp.read())
-                downloaded.append(dest_path)
-                log.info("Downloaded file to %s", dest_path)
-            except Exception:
-                log.exception("Failed to download file %s", name)
-
-        if not downloaded:
+        """Download uploaded files and dispatch prompt (DM path)."""
+        downloaded = await self._download_files(files, client)
+        file_prompt = _file_prompt(downloaded, files)
+        if not file_prompt and not text:
             return
 
-        prompt = "User uploaded a file: " + ", ".join(downloaded)
+        prompt = file_prompt
         if text:
-            prompt += f"\n\n{text}"
+            prompt = f"{prompt}\n\n{text}" if prompt else text
 
         preview = prompt[:50].replace("\n", " ")
         ctx = SlackContext(client, channel, reply_thread_ts, user_id=user)

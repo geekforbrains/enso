@@ -21,7 +21,7 @@ pip install -e ".[telegram]"    # or ".[slack]", or ".[telegram,slack]"
 enso setup
 ```
 
-The setup wizard detects your agent CLIs, connects your chosen transport (Telegram or Slack), and optionally installs a background service (launchd on macOS, systemd on Linux) so Enso starts on boot.
+The setup wizard detects your agent CLIs, connects your chosen transport (Telegram or Slack), prompts for the user IDs allowed to message the bot (the bot is locked down by default and only responds to listed IDs), and optionally installs a background service (launchd on macOS, systemd on Linux) so Enso starts on boot.
 
 Once setup is done, start chatting:
 
@@ -39,10 +39,12 @@ Telegram autocompletes these when you type `/`. On Slack, use `!` instead (e.g. 
 |---------|-------------|
 | `/use` | Switch agent (shows buttons, or `/use claude`) |
 | `/model` | Switch model (shows buttons, or `/model sonnet`) |
-| `/status` | Active agent and model |
+| `/effort` | Set Claude reasoning effort: `low` → `max` (or `default` to clear) |
+| `/status` | Active agent, model, and effort |
 | `/stop` | Stop process & clear queue |
 | `/queue` | View & manage queued messages |
 | `/clear` | New session (shows current/all buttons) |
+| `/compact` | Summarise the current session and reseed a fresh one — keeps the thread, trims tokens |
 | `/restart` | Restart the service |
 | `/logs` | Last 25 log entries |
 | `/help` | Show all commands |
@@ -135,7 +137,7 @@ enso service logs -f
 
 ## Config
 
-Everything lives under `~/.enso/`. Config is at `~/.enso/config.json` — the setup wizard writes it for you, but you can edit it directly to add models or change the working directory.
+Everything lives under `~/.enso/`. Config is at `~/.enso/config.json` — the setup wizard writes it for you, but you can edit it directly to add models or change the working directory. Set `notify_channel` to give `enso message send`, job alerts, and autocompact hooks a default destination (required for Slack; on Telegram it's optional — without it, sends broadcast to `allowed_users`).
 
 ## Development
 
@@ -162,12 +164,7 @@ pytest
 
 ### Versioning
 
-Version lives in `pyproject.toml`. The `dev` branch uses PEP 440 dev versions:
-
-- **Released:** `0.10.0` (on `main`)
-- **In development:** `0.11.0.dev0` (on `dev`)
-
-When cutting a release, update `pyproject.toml` to `0.11.0`, update `CHANGELOG.md` heading from `[Unreleased] (0.11.0)` to `[0.11.0] - YYYY-MM-DD`, merge to `main`, and tag `v0.11.0`.
+Version lives in `pyproject.toml`. When cutting a release: bump the version, change the `CHANGELOG.md` heading from `[Unreleased] (X.Y.Z)` to `[X.Y.Z] - YYYY-MM-DD`, commit as `chore: release vX.Y.Z`, merge `dev` → `main`, and tag `vX.Y.Z`.
 
 ### Changelog
 

@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from enso.commands import cmd_effort, cmd_status
+from unittest.mock import AsyncMock
+
+import pytest
+
+from enso.commands import cmd_compact_async, cmd_effort, cmd_status
 from enso.core import Runtime
 
 
@@ -91,3 +95,82 @@ def test_cmd_status_omits_effort_when_unset(sample_config):
     rt = Runtime(sample_config)
     out = cmd_status(rt, "1")
     assert "Effort" not in out
+
+
+# -- cmd_compact_async --
+
+
+@pytest.mark.asyncio
+async def test_compact_happy_path(tmp_enso, sample_config, monkeypatch):
+    """Successful compaction stashes summary as seed and clears the session."""
+    import os as _os
+
+    sample_config["working_dir"] = _os.path.join(tmp_enso, "workspace")
+    rt = Runtime(sample_config)
+    rt.session_by_chat_provider[("42", "claude")] = "sess_existing"
+    rt.run_compaction = AsyncMock(return_value="distilled context")
+
+    # Stub provider.clear_session so cmd_clear doesn't try to touch disk.
+    captured: dict = {}
+
+    class _FakeProvider:
+        def clear_session(self, sid, working_dir):
+            captured["cleared"] = (sid, working_dir)
+            return "deleted"
+
+    monkeypatch.setattr(rt, "make_provider", lambda _name: _FakeProvider())
+
+    reply = await cmd_compact_async(rt, "42")
+
+    assert "Compacted" in reply
+    rt.run_compaction.assert_awaited_once_with("42", "claude")
+    assert rt.compact_seed_by_chat["42"] == "distilled context"
+    # cmd_clear should have removed the active provider's session.
+    assert ("42", "claude") not in rt.session_by_chat_provider
+    assert captured["cleared"][0] == "sess_existing"
+
+
+@pytest.mark.asyncio
+async def test_compact_no_session_refuses(sample_config):
+    """No session for this chat → return a 'nothing to compact' message."""
+    rt = Runtime(sample_config)
+    rt.run_compaction = AsyncMock()  # should never run
+
+    reply = await cmd_compact_async(rt, "42")
+
+    assert "Nothing to compact" in reply
+    rt.run_compaction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_compact_refuses_while_busy(sample_config):
+    """A locked chat (request in flight) gets a 'wait or stop' message."""
+    rt = Runtime(sample_config)
+    rt.session_by_chat_provider[("42", "claude")] = "sess_existing"
+    rt.run_compaction = AsyncMock()
+    lock = rt.get_chat_lock("42")
+    await lock.acquire()
+    try:
+        reply = await cmd_compact_async(rt, "42")
+    finally:
+        lock.release()
+
+    assert "Stop it" in reply
+    rt.run_compaction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_compact_summary_empty_leaves_session(tmp_enso, sample_config):
+    """If run_compaction returns empty, we don't clear or stash."""
+    import os as _os
+
+    sample_config["working_dir"] = _os.path.join(tmp_enso, "workspace")
+    rt = Runtime(sample_config)
+    rt.session_by_chat_provider[("42", "claude")] = "sess_existing"
+    rt.run_compaction = AsyncMock(return_value="")
+
+    reply = await cmd_compact_async(rt, "42")
+
+    assert "failed" in reply.lower()
+    assert rt.session_by_chat_provider[("42", "claude")] == "sess_existing"
+    assert "42" not in rt.compact_seed_by_chat

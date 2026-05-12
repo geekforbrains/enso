@@ -30,6 +30,7 @@ except ImportError:
 from ..auth import is_authorized
 from ..commands import (
     cmd_clear,
+    cmd_compact_async,
     cmd_effort,
     cmd_help,
     cmd_logs,
@@ -63,6 +64,7 @@ COMMANDS = [
     BotCommand("effort", "Set reasoning effort (Claude)"),
     BotCommand("status", "Provider, model & effort info"),
     BotCommand("clear", "Clear session"),
+    BotCommand("compact", "Summarise & compact the active session"),
     BotCommand("restart", "Restart the bot"),
     BotCommand("logs", "Last 25 log entries"),
     BotCommand("help", "Show commands"),
@@ -494,6 +496,17 @@ class TelegramTransport(BaseTransport):
             ],
         ])
         await update.message.reply_text("Clear session:", reply_markup=keyboard)
+
+    async def _cmd_compact(self, update: Update, _ctx: Any) -> None:
+        if not self._is_authorized(update):
+            return
+        conv_id = str(update.effective_chat.id)
+        await update.message.reply_text(
+            "Compacting context — this can take 10–30s while the agent summarises…"
+        )
+        await update.effective_chat.send_action(ChatAction.TYPING)
+        reply = await cmd_compact_async(self.runtime, conv_id)
+        await update.message.reply_text(reply)
 
     async def _cmd_restart(self, update: Update, _ctx: Any) -> None:
         if not self._is_authorized(update):
