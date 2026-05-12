@@ -7,6 +7,7 @@ import contextlib
 import logging
 import os
 import re
+import uuid
 from typing import TYPE_CHECKING, Any
 from urllib.request import Request, urlopen
 
@@ -46,12 +47,10 @@ log = logging.getLogger(__name__)
 # bearing subtypes like file_share, me_message, and thread_broadcast. The
 # downstream text/files guard drops anything genuinely empty.
 #
-# `document_mention` (canvas @-mention) is intentionally ignored: Slack also
-# fires an `app_mention` event for the same user action, and *that* path can
-# actually reply (chat.postMessage to the canvas-as-channel rejects inline
-# posts with `restricted_action`, but the auto-created canvas thread accepts
-# threaded posts). Handling document_mention ourselves would just duplicate
-# work and produce a failing reply.
+# `document_mention` (canvas body @-mention) is intentionally ignored. Slack
+# sends it as an app_mention subtype with a canvas file/section pointer, not as
+# a normal message thread. Threaded canvas comments arrive as regular
+# app_mention events and still fall through.
 IGNORED_SUBTYPES: frozenset[str] = frozenset({
     "bot_message",
     "message_changed", "message_deleted", "message_replied",
@@ -85,6 +84,34 @@ SLACK_COMMANDS: list[tuple[str, str]] = [
 def _safe_filename(name: str) -> str:
     """Sanitise a filename to prevent path traversal."""
     return os.path.basename(name).lstrip(".")
+
+
+def _file_download_url(file_info: dict) -> str:
+    """Return the authenticated Slack download URL, if present."""
+    return file_info.get("url_private_download") or file_info.get("url_private") or ""
+
+
+def _download_filename(file_info: dict) -> str:
+    """Build a collision-resistant local filename for a Slack file."""
+    raw_name = file_info.get("name") or file_info.get("title") or "file"
+    name = _safe_filename(str(raw_name)) or "file"
+    prefix = _safe_filename(str(file_info.get("id") or "")) or uuid.uuid4().hex[:8]
+    return f"{prefix}-{name}"
+
+
+def _file_label(file_info: dict) -> str:
+    raw_name = file_info.get("name") or file_info.get("title") or file_info.get("id")
+    return _safe_filename(str(raw_name)) if raw_name else "file"
+
+
+def _file_prompt(downloaded: list[str], files: list[dict]) -> str:
+    if downloaded:
+        return "User uploaded a file: " + ", ".join(downloaded)
+    if not files:
+        return ""
+    labels = ", ".join(_file_label(file_info) for file_info in files)
+    suffix = f": {labels}" if labels else "."
+    return "User uploaded a file, but it could not be downloaded" + suffix
 
 
 class SlackContext(TransportContext):
@@ -332,6 +359,9 @@ class SlackTransport(BaseTransport):
         self, event: dict, client: AsyncWebClient,
     ) -> None:
         """Handle @bot mentions in channels."""
+        if event.get("subtype") in IGNORED_SUBTYPES:
+            return
+
         user = event.get("user", "")
         channel = event.get("channel", "")
         ts = event.get("ts", "")
@@ -373,18 +403,21 @@ class SlackTransport(BaseTransport):
 
         # Download any attachments — channel uploads with @-mention arrive
         # here (as part of the app_mention event), not on the message path.
-        downloaded = self._download_files(files) if files else []
+        downloaded = await self._download_files(files, client) if files else []
 
         parts: list[str] = []
         if context:
             parts.append(context)
-        if downloaded:
-            parts.append("User uploaded a file: " + ", ".join(downloaded))
+        file_prompt = _file_prompt(downloaded, files)
+        if file_prompt:
+            parts.append(file_prompt)
         if text:
             parts.append(text)
         prompt = "\n\n".join(parts)
+        if not prompt:
+            return
 
-        preview_src = text or (downloaded[0] if downloaded else "")
+        preview_src = text or (downloaded[0] if downloaded else file_prompt)
         preview = preview_src[:50].replace("\n", " ")
         ctx = SlackContext(client, channel, reply_thread_ts, user_id=user)
         log.info(
@@ -616,7 +649,40 @@ class SlackTransport(BaseTransport):
 
         return f"Unknown command: !{cmd_name}. Use !help for available commands."
 
-    def _download_files(self, files: list[dict]) -> list[str]:
+    async def _hydrate_file_info(
+        self, file_info: dict, client: AsyncWebClient,
+    ) -> dict:
+        """Fetch full file metadata when Slack only sends a placeholder."""
+        if _file_download_url(file_info):
+            return file_info
+        if file_info.get("file_access") != "check_file_info":
+            return file_info
+
+        file_id = file_info.get("id")
+        if not file_id:
+            return file_info
+
+        try:
+            result = await client.files_info(file=file_id)
+        except Exception:
+            log.exception("files.info failed for Slack file %s", file_id)
+            return file_info
+
+        hydrated = result.get("file") or {}
+        if not isinstance(hydrated, dict):
+            return file_info
+        return {**file_info, **hydrated}
+
+    async def _download_files(
+        self, files: list[dict], client: AsyncWebClient,
+    ) -> list[str]:
+        hydrated = [
+            await self._hydrate_file_info(file_info, client)
+            for file_info in files
+        ]
+        return await asyncio.to_thread(self._download_files_sync, hydrated)
+
+    def _download_files_sync(self, files: list[dict]) -> list[str]:
         """Download Slack file uploads into the workspace's uploads dir.
 
         Returns the local paths of files that downloaded successfully; failed
@@ -628,10 +694,10 @@ class SlackTransport(BaseTransport):
 
         downloaded: list[str] = []
         for file_info in files:
-            url = file_info.get("url_private_download") or file_info.get("url_private")
+            url = _file_download_url(file_info)
             if not url:
                 continue
-            name = _safe_filename(file_info.get("name", "file"))
+            name = _download_filename(file_info)
             dest_path = os.path.join(uploads_dir, name)
             try:
                 req = Request(url, headers={"Authorization": f"Bearer {self.bot_token}"})
@@ -655,13 +721,14 @@ class SlackTransport(BaseTransport):
         user: str = "",
     ) -> None:
         """Download uploaded files and dispatch prompt (DM path)."""
-        downloaded = self._download_files(files)
-        if not downloaded:
+        downloaded = await self._download_files(files, client)
+        file_prompt = _file_prompt(downloaded, files)
+        if not file_prompt and not text:
             return
 
-        prompt = "User uploaded a file: " + ", ".join(downloaded)
+        prompt = file_prompt
         if text:
-            prompt += f"\n\n{text}"
+            prompt = f"{prompt}\n\n{text}" if prompt else text
 
         preview = prompt[:50].replace("\n", " ")
         ctx = SlackContext(client, channel, reply_thread_ts, user_id=user)

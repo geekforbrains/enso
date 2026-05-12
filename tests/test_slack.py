@@ -62,6 +62,22 @@ def _make_runtime(**overrides: object) -> MagicMock:
     return rt
 
 
+class _FakeResponse:
+    """Minimal context-manager stand-in for urlopen's response object."""
+
+    def __init__(self, payload: bytes):
+        self._payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self) -> bytes:
+        return self._payload
+
+
 # ---------------------------------------------------------------------------
 # SlackContext
 # ---------------------------------------------------------------------------
@@ -434,10 +450,8 @@ class TestMessageRouting:
             "message_changed",
             "message_deleted",
             "pinned_item",
-            # Canvas @-mentions arrive twice: as document_mention here, and
-            # again as a real app_mention event with a usable thread_ts. We
-            # let the app_mention path handle it and ignore the document_
-            # mention duplicate.
+            # Canvas body mentions are not normal message threads; threaded
+            # canvas comments arrive separately as regular app_mention events.
             "document_mention",
         ],
     )
@@ -494,23 +508,125 @@ class TestMessageRouting:
         assert "screenshot.png" in prompt
         assert "what's in this image?" in prompt
 
+    @pytest.mark.asyncio
+    async def test_slack_connect_file_placeholder_uses_files_info(
+        self, tmp_path, monkeypatch,
+    ):
+        """Slack Connect placeholders need files.info before they have URLs."""
+        rt = _make_runtime()
+        rt.working_dir = str(tmp_path)
+        transport = SlackTransport(rt)
+        client = _make_client()
+        client.files_info.return_value = {
+            "file": {
+                "id": "FCONN",
+                "name": "shared.png",
+                "url_private_download": "https://files.slack.com/shared.png",
+            },
+        }
 
-class _FakeResponse:
-    """Minimal context-manager stand-in for urlopen's response object."""
+        monkeypatch.setattr(
+            "enso.transports.slack.urlopen",
+            lambda req, *a, **kw: _FakeResponse(b"fake-image-bytes"),
+        )
 
-    def __init__(self, payload: bytes):
-        self._payload = payload
+        event = {
+            "user": "U123",
+            "subtype": "file_share",
+            "channel": "D999",
+            "channel_type": "im",
+            "ts": "1234.5678",
+            "text": "please inspect this",
+            "files": [
+                {
+                    "id": "FCONN",
+                    "mode": "file_access",
+                    "file_access": "check_file_info",
+                },
+            ],
+        }
+        await transport._handle_message(event, client)
 
-    def __enter__(self):
-        return self
+        client.files_info.assert_awaited_once_with(file="FCONN")
+        rt.dispatch.assert_called_once()
+        prompt = rt.dispatch.call_args[0][1]
+        assert "shared.png" in prompt
+        assert "please inspect this" in prompt
 
-    def __exit__(self, *exc):
-        return False
+    @pytest.mark.asyncio
+    async def test_same_named_files_use_distinct_paths(self, tmp_path, monkeypatch):
+        rt = _make_runtime()
+        rt.working_dir = str(tmp_path)
+        transport = SlackTransport(rt)
+        client = _make_client()
 
-    def read(self) -> bytes:
-        return self._payload
+        monkeypatch.setattr(
+            "enso.transports.slack.urlopen",
+            lambda req, *a, **kw: _FakeResponse(b"fake-image-bytes"),
+        )
 
+        event = {
+            "user": "U123",
+            "subtype": "file_share",
+            "channel": "D999",
+            "channel_type": "im",
+            "ts": "1234.5678",
+            "text": "compare these",
+            "files": [
+                {
+                    "id": "F111",
+                    "name": "image.png",
+                    "url_private_download": "https://files.slack.com/one.png",
+                },
+                {
+                    "id": "F222",
+                    "name": "image.png",
+                    "url_private_download": "https://files.slack.com/two.png",
+                },
+            ],
+        }
+        await transport._handle_message(event, client)
 
+        names = sorted(path.name for path in (tmp_path / "uploads").iterdir())
+        assert names == ["F111-image.png", "F222-image.png"]
+        prompt = rt.dispatch.call_args[0][1]
+        assert "F111-image.png" in prompt
+        assert "F222-image.png" in prompt
+
+    @pytest.mark.asyncio
+    async def test_caption_survives_failed_file_download(self, tmp_path, monkeypatch):
+        rt = _make_runtime()
+        rt.working_dir = str(tmp_path)
+        transport = SlackTransport(rt)
+        client = _make_client()
+
+        def fail_urlopen(req, *args, **kwargs):
+            raise OSError("download failed")
+
+        monkeypatch.setattr("enso.transports.slack.urlopen", fail_urlopen)
+
+        event = {
+            "user": "U123",
+            "subtype": "file_share",
+            "channel": "D999",
+            "channel_type": "im",
+            "ts": "1234.5678",
+            "text": "still answer the caption",
+            "files": [
+                {
+                    "id": "F111",
+                    "name": "image.png",
+                    "url_private_download": "https://files.slack.com/image.png",
+                },
+            ],
+        }
+        await transport._handle_message(event, client)
+
+        rt.dispatch.assert_called_once()
+        prompt = rt.dispatch.call_args[0][1]
+        assert "could not be downloaded" in prompt
+        assert "image.png" in prompt
+        assert "still answer the caption" in prompt
 
     @pytest.mark.asyncio
     async def test_no_user_ignored(self):
@@ -664,6 +780,28 @@ class TestAppMention:
         await transport._handle_app_mention(event, client)
 
         rt.dispatch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_document_mention_ignored(self):
+        rt = _make_runtime()
+        transport = SlackTransport(rt)
+        client = _make_client()
+
+        event = {
+            "user": "U123",
+            "subtype": "document_mention",
+            "channel": "C123",
+            "ts": "1234.5678",
+            "text": "<@UBOT> was mentioned in a canvas",
+            "document_mention": {
+                "file_id": "F123",
+                "section_id": "temp:C:abc",
+            },
+        }
+        await transport._handle_app_mention(event, client)
+
+        rt.dispatch.assert_not_called()
+        client.conversations_history.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_mention_with_attachment_downloads_and_dispatches(
