@@ -68,6 +68,51 @@ def test_runtime_state_persistence(tmp_enso, sample_config):
     assert rt2.session_by_chat_provider[("42", "codex")] == "sess_123"
 
 
+def test_compact_seed_persistence(tmp_enso, sample_config):
+    """Compact seeds survive save/load roundtrip."""
+    sample_config["working_dir"] = os.path.join(tmp_enso, "workspace")
+    rt = Runtime(sample_config)
+    rt.compact_seed_by_chat["42"] = "summary text"
+    rt.save_state()
+
+    rt2 = Runtime(sample_config)
+    rt2.load_state()
+    assert rt2.compact_seed_by_chat["42"] == "summary text"
+
+
+def test_consume_compact_seed_wraps_and_clears(sample_config):
+    """Seed is prepended to prompt then removed from runtime state."""
+    rt = Runtime(sample_config)
+    rt.compact_seed_by_chat["42"] = "prior summary"
+
+    wrapped = rt._consume_compact_seed("42", "user message", "claude")
+
+    assert "prior summary" in wrapped
+    assert wrapped.endswith("user message")
+    assert "Continuing from a previous session" in wrapped
+    assert "42" not in rt.compact_seed_by_chat
+
+
+def test_consume_compact_seed_noop_when_absent(sample_config):
+    """With no seed, prompt is returned unchanged."""
+    rt = Runtime(sample_config)
+    out = rt._consume_compact_seed("42", "user message", "claude")
+    assert out == "user message"
+
+
+def test_prune_clears_compact_seed(tmp_enso, sample_config):
+    """Stale chats lose their compact seed too."""
+    sample_config["working_dir"] = os.path.join(tmp_enso, "workspace")
+    rt = Runtime(sample_config)
+    rt.compact_seed_by_chat["42"] = "old summary"
+    rt._last_active["42"] = datetime.now() - timedelta(days=999)
+    rt.save_state()
+
+    rt2 = Runtime(sample_config)
+    rt2.load_state()  # triggers prune
+    assert "42" not in rt2.compact_seed_by_chat
+
+
 # -- Effort --
 
 
