@@ -427,6 +427,92 @@ class TestMessageRouting:
         rt.dispatch.assert_not_called()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "subtype",
+        [
+            "channel_join",
+            "message_changed",
+            "message_deleted",
+            "pinned_item",
+            # Canvas @-mentions arrive twice: as document_mention here, and
+            # again as a real app_mention event with a usable thread_ts. We
+            # let the app_mention path handle it and ignore the document_
+            # mention duplicate.
+            "document_mention",
+        ],
+    )
+    async def test_noise_subtypes_ignored(self, subtype):
+        rt = _make_runtime()
+        transport = SlackTransport(rt)
+        client = _make_client()
+
+        event = {
+            "user": "U123",
+            "subtype": subtype,
+            "channel": "D999",
+            "channel_type": "im",
+            "ts": "1234.5678",
+            "text": "noise",
+        }
+        await transport._handle_message(event, client)
+
+        rt.dispatch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_file_share_with_caption_dispatches(self, tmp_path, monkeypatch):
+        """An image+caption upload (subtype=file_share) must reach _handle_files."""
+        rt = _make_runtime()
+        rt.working_dir = str(tmp_path)
+        transport = SlackTransport(rt)
+        client = _make_client()
+
+        # Stub the download path so we don't hit the network.
+        monkeypatch.setattr(
+            "enso.transports.slack.urlopen",
+            lambda req, *a, **kw: _FakeResponse(b"fake-image-bytes"),
+        )
+
+        event = {
+            "user": "U123",
+            "subtype": "file_share",
+            "channel": "D999",
+            "channel_type": "im",
+            "ts": "1234.5678",
+            "text": "what's in this image?",
+            "files": [
+                {
+                    "name": "screenshot.png",
+                    "url_private_download": "https://files.slack.com/x.png",
+                },
+            ],
+        }
+        await transport._handle_message(event, client)
+
+        rt.dispatch.assert_called_once()
+        prompt = rt.dispatch.call_args[0][1]
+        assert "User uploaded a file" in prompt
+        assert "screenshot.png" in prompt
+        assert "what's in this image?" in prompt
+
+
+class _FakeResponse:
+    """Minimal context-manager stand-in for urlopen's response object."""
+
+    def __init__(self, payload: bytes):
+        self._payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self) -> bytes:
+        return self._payload
+
+
+
+    @pytest.mark.asyncio
     async def test_no_user_ignored(self):
         rt = _make_runtime()
         transport = SlackTransport(rt)
@@ -578,6 +664,42 @@ class TestAppMention:
         await transport._handle_app_mention(event, client)
 
         rt.dispatch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_mention_with_attachment_downloads_and_dispatches(
+        self, tmp_path, monkeypatch,
+    ):
+        """Channel @-mentions with attached files must download + dispatch."""
+        rt = _make_runtime()
+        rt.working_dir = str(tmp_path)
+        transport = SlackTransport(rt)
+        client = _make_client()
+        client.conversations_history.return_value = {"messages": []}
+
+        monkeypatch.setattr(
+            "enso.transports.slack.urlopen",
+            lambda req, *a, **kw: _FakeResponse(b"fake-image-bytes"),
+        )
+
+        event = {
+            "user": "U123",
+            "channel": "C123",
+            "ts": "1234.5678",
+            "text": "<@UBOT> what's in this?",
+            "files": [
+                {
+                    "name": "diagram.png",
+                    "url_private_download": "https://files.slack.com/x.png",
+                },
+            ],
+        }
+        await transport._handle_app_mention(event, client)
+
+        rt.dispatch.assert_called_once()
+        prompt = rt.dispatch.call_args[0][1]
+        assert "User uploaded a file" in prompt
+        assert "diagram.png" in prompt
+        assert "what's in this?" in prompt
 
     @pytest.mark.asyncio
     async def test_mention_in_thread(self):

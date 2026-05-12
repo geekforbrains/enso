@@ -40,6 +40,35 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# Slack message subtypes that aren't user-authored content — channel/group
+# lifecycle, message lifecycle, pin/reminder noise, etc. Anything not in this
+# set falls through, including the empty (plain message) case and content-
+# bearing subtypes like file_share, me_message, and thread_broadcast. The
+# downstream text/files guard drops anything genuinely empty.
+#
+# `document_mention` (canvas @-mention) is intentionally ignored: Slack also
+# fires an `app_mention` event for the same user action, and *that* path can
+# actually reply (chat.postMessage to the canvas-as-channel rejects inline
+# posts with `restricted_action`, but the auto-created canvas thread accepts
+# threaded posts). Handling document_mention ourselves would just duplicate
+# work and produce a failing reply.
+IGNORED_SUBTYPES: frozenset[str] = frozenset({
+    "bot_message",
+    "message_changed", "message_deleted", "message_replied",
+    "channel_join", "channel_leave",
+    "channel_archive", "channel_unarchive",
+    "channel_name", "channel_purpose", "channel_topic",
+    "channel_convert_to_private", "channel_convert_to_public",
+    "channel_posting_permissions",
+    "group_join", "group_leave",
+    "group_archive", "group_unarchive",
+    "group_name", "group_purpose", "group_topic",
+    "pinned_item", "unpinned_item",
+    "reminder_add", "ekm_access_denied",
+    "file_mention", "file_comment",
+    "document_mention",
+})
+
 # Commands available in Slack (name, description).
 SLACK_COMMANDS: list[tuple[str, str]] = [
     ("stop", "Stop process & clear queue"),
@@ -308,13 +337,14 @@ class SlackTransport(BaseTransport):
         ts = event.get("ts", "")
         thread_ts = event.get("thread_ts")
         text = event.get("text", "")
+        files = event.get("files") or []
 
         if not is_authorized(user, self.allowed_users):
             return
 
         # Strip bot mention from text
         text = re.sub(r"<@\w+>\s*", "", text).strip()
-        if not text:
+        if not text and not files:
             return
 
         # Conversation scoped to channel + thread
@@ -341,13 +371,25 @@ class SlackTransport(BaseTransport):
                 client, channel, ts,
             )
 
-        prompt = f"{context}\n\n{text}".strip() if context else text
+        # Download any attachments — channel uploads with @-mention arrive
+        # here (as part of the app_mention event), not on the message path.
+        downloaded = self._download_files(files) if files else []
 
-        preview = text[:50].replace("\n", " ")
+        parts: list[str] = []
+        if context:
+            parts.append(context)
+        if downloaded:
+            parts.append("User uploaded a file: " + ", ".join(downloaded))
+        if text:
+            parts.append(text)
+        prompt = "\n\n".join(parts)
+
+        preview_src = text or (downloaded[0] if downloaded else "")
+        preview = preview_src[:50].replace("\n", " ")
         ctx = SlackContext(client, channel, reply_thread_ts, user_id=user)
         log.info(
-            "Incoming mention: channel=%s user=%s thread=%s len=%d",
-            channel, user, thread_ts or ts, len(text),
+            "Incoming mention: channel=%s user=%s thread=%s len=%d files=%d",
+            channel, user, thread_ts or ts, len(text), len(downloaded),
         )
         await self.runtime.dispatch(conv_id, prompt, ctx, preview=preview)
 
@@ -355,8 +397,7 @@ class SlackTransport(BaseTransport):
         self, event: dict, client: AsyncWebClient,
     ) -> None:
         """Handle DMs and thread continuations."""
-        # Skip bot messages, subtypes (joins, edits, etc.)
-        if event.get("subtype") is not None:
+        if event.get("subtype") in IGNORED_SUBTYPES:
             return
         if event.get("user") is None:
             return
@@ -575,18 +616,13 @@ class SlackTransport(BaseTransport):
 
         return f"Unknown command: !{cmd_name}. Use !help for available commands."
 
-    async def _handle_files(
-        self,
-        files: list[dict],
-        text: str,
-        conv_id: str,
-        client: AsyncWebClient,
-        channel: str,
-        reply_thread_ts: str | None,
-        *,
-        user: str = "",
-    ) -> None:
-        """Download uploaded files and dispatch prompt."""
+    def _download_files(self, files: list[dict]) -> list[str]:
+        """Download Slack file uploads into the workspace's uploads dir.
+
+        Returns the local paths of files that downloaded successfully; failed
+        downloads are logged and skipped so a single broken attachment doesn't
+        drop the whole message.
+        """
         uploads_dir = os.path.join(self.runtime.working_dir, "uploads")
         os.makedirs(uploads_dir, exist_ok=True)
 
@@ -605,7 +641,21 @@ class SlackTransport(BaseTransport):
                 log.info("Downloaded file to %s", dest_path)
             except Exception:
                 log.exception("Failed to download file %s", name)
+        return downloaded
 
+    async def _handle_files(
+        self,
+        files: list[dict],
+        text: str,
+        conv_id: str,
+        client: AsyncWebClient,
+        channel: str,
+        reply_thread_ts: str | None,
+        *,
+        user: str = "",
+    ) -> None:
+        """Download uploaded files and dispatch prompt (DM path)."""
+        downloaded = self._download_files(files)
         if not downloaded:
             return
 
