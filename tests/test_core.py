@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import datetime, timedelta
 
@@ -280,12 +281,89 @@ def test_should_run_job_due(sample_config):
     assert rt._should_run_job(job, datetime.now()) is True
 
 
+def test_should_run_job_skips_stale_misfire(sample_config):
+    """Missed daily jobs should not run hours late by default."""
+    rt = Runtime(sample_config)
+    job = Job(
+        dir_name="today",
+        name="Today",
+        schedule="30 6 * * *",
+        provider="claude",
+        model="opus",
+    )
+    now = datetime(2026, 5, 14, 21, 0)
+    rt._job_last_run["today"] = datetime(2026, 5, 13, 6, 30)
+
+    assert rt._should_run_job(job, now) is False
+    assert rt._job_last_run["today"] == now
+
+
+def test_should_run_job_allows_explicit_catch_up(sample_config):
+    """Jobs can opt into stale catch-up when that is intentional."""
+    rt = Runtime(sample_config)
+    job = Job(
+        dir_name="catch-up",
+        name="Catch Up",
+        schedule="30 6 * * *",
+        provider="claude",
+        model="opus",
+        catch_up=True,
+    )
+    now = datetime(2026, 5, 14, 21, 0)
+    rt._job_last_run["catch-up"] = datetime(2026, 5, 13, 6, 30)
+
+    assert rt._should_run_job(job, now) is True
+
+
 def test_should_run_job_not_due(sample_config):
     """Job should not run when it was just executed."""
     rt = Runtime(sample_config)
     job = Job(dir_name="test", name="Test", schedule="0 9 * * *", provider="claude", model="sonnet")
     rt._job_last_run["test"] = datetime.now()
     assert rt._should_run_job(job, datetime.now()) is False
+
+
+def _pid_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+@pytest.mark.asyncio
+async def test_communicate_timeout_kills_process_group(tmp_path, sample_config):
+    """Timeout cleanup kills child processes spawned by a CLI wrapper."""
+    if os.name == "nt":
+        pytest.skip("process group semantics differ on Windows")
+
+    rt = Runtime(sample_config)
+    child_pid_file = tmp_path / "child.pid"
+    proc = await rt._spawn_process(
+        "bash",
+        "-c",
+        f"sleep 30 & echo $! > {child_pid_file}; wait",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    for _ in range(20):
+        if child_pid_file.exists():
+            break
+        await asyncio.sleep(0.05)
+    assert child_pid_file.exists()
+    child_pid = int(child_pid_file.read_text().strip())
+    assert _pid_exists(child_pid)
+
+    _, _, timed_out = await rt._communicate_with_timeout(proc, "test job", 1)
+
+    assert timed_out is True
+    assert proc.returncode is not None
+    for _ in range(20):
+        if not _pid_exists(child_pid):
+            break
+        await asyncio.sleep(0.05)
+    assert not _pid_exists(child_pid)
 
 
 # -- Session pruning --

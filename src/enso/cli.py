@@ -1140,13 +1140,18 @@ def job_run(
         if job.prerun:
             script = os.path.join(job.job_dir, job.prerun)
             if os.path.isfile(script):
-                proc = await asyncio.create_subprocess_exec(
+                proc = await runtime._spawn_process(
                     "bash", script,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=job.job_dir,
                 )
-                stdout, _ = await proc.communicate()
+                stdout, _, timed_out = await runtime._communicate_with_timeout(
+                    proc, f"Job '{job.name}' prerun", job.prerun_timeout,
+                )
+                if timed_out:
+                    console.print(f"[red]Prerun timed out after {job.prerun_timeout}s.[/]")
+                    return
                 if proc.returncode != 0:
                     console.print("[yellow]Prerun check failed, skipping.[/]")
                     return
@@ -1160,13 +1165,18 @@ def job_run(
         cmd = provider.build_batch_command(prompt, job.model)
         console.print(f"[dim]Running {job.provider}/{job.model}...[/]")
 
-        proc = await asyncio.create_subprocess_exec(
+        proc = await runtime._spawn_process(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             cwd=runtime.working_dir,
         )
-        stdout, _ = await proc.communicate()
+        stdout, _, timed_out = await runtime._communicate_with_timeout(
+            proc, f"Job '{job.name}'", job.timeout,
+        )
+        if timed_out:
+            console.print(f"[red]Job timed out after {job.timeout}s.[/]")
+            return
         console.print(stdout.decode(errors="replace"))
 
     asyncio.run(_run())

@@ -8,6 +8,7 @@ import importlib.resources
 import json
 import logging
 import os
+import signal
 import tempfile
 from asyncio.subprocess import Process
 from collections import deque
@@ -67,6 +68,8 @@ def split_text(text: str, limit: int = 4096) -> list[str]:
 
 MAX_QUEUE_SIZE = 5
 SESSION_TTL_DAYS = int(os.environ.get("ENSO_SESSION_TTL_DAYS", "30"))
+JOB_CONCURRENCY = int(os.environ.get("ENSO_JOB_CONCURRENCY", "2"))
+PROCESS_TERMINATE_GRACE_SECS = float(os.environ.get("ENSO_PROCESS_TERMINATE_GRACE_SECS", "5"))
 
 
 @dataclass
@@ -113,6 +116,8 @@ class Runtime:
 
         # Job scheduler state
         self._job_last_run: dict[str, datetime] = {}
+        self._running_job_tasks: dict[str, asyncio.Task] = {}
+        self._job_semaphore = asyncio.Semaphore(JOB_CONCURRENCY)
 
     # -- Workspace setup --
 
@@ -660,6 +665,86 @@ class Runtime:
 
     # -- Process control --
 
+    async def _spawn_process(self, *cmd: str, **kwargs: Any) -> Process:
+        """Spawn a subprocess isolated in its own process group when possible."""
+        if os.name != "nt":
+            kwargs.setdefault("start_new_session", True)
+        return await asyncio.create_subprocess_exec(*cmd, **kwargs)
+
+    async def _terminate_process_tree(
+        self,
+        process: Process,
+        label: str,
+        *,
+        grace: float = PROCESS_TERMINATE_GRACE_SECS,
+    ) -> None:
+        """Terminate a subprocess and any children in its process group."""
+        if process.returncode is not None:
+            return
+
+        pgid: int | None = None
+        if os.name != "nt":
+            try:
+                pgid = os.getpgid(process.pid)
+            except ProcessLookupError:
+                pgid = None
+
+        def signal_process(sig: signal.Signals) -> None:
+            try:
+                if pgid is not None:
+                    os.killpg(pgid, sig)
+                elif sig == signal.SIGTERM:
+                    process.terminate()
+                else:
+                    process.kill()
+            except ProcessLookupError:
+                pass
+
+        log.info(
+            "Terminating process tree for %s pid=%s pgid=%s", label, process.pid, pgid,
+        )
+        signal_process(signal.SIGTERM)
+        try:
+            await asyncio.wait_for(process.wait(), timeout=grace)
+            return
+        except asyncio.TimeoutError:
+            pass
+
+        log.warning("Process tree for %s did not exit after %.1fs; killing", label, grace)
+        kill_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
+        signal_process(kill_signal)
+        try:
+            await asyncio.wait_for(process.wait(), timeout=grace)
+        except asyncio.TimeoutError:
+            log.error(
+                "Process tree for %s still did not exit after SIGKILL pid=%s pgid=%s",
+                label, process.pid, pgid,
+            )
+
+    async def _communicate_with_timeout(
+        self,
+        process: Process,
+        label: str,
+        timeout_secs: int,
+    ) -> tuple[bytes, bytes | None, bool]:
+        """Communicate with a child process and kill its tree on timeout."""
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(), timeout=timeout_secs,
+            )
+            return stdout, stderr, False
+        except asyncio.CancelledError:
+            log.warning("%s was cancelled; terminating process tree", label)
+            await self._terminate_process_tree(process, label)
+            raise
+        except asyncio.TimeoutError:
+            log.warning("%s timed out after %ds", label, timeout_secs)
+            await self._terminate_process_tree(process, label)
+            with contextlib.suppress(Exception):
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=1)
+                return stdout, stderr, True
+            return b"", b"", True
+
     async def stop_chat(self, chat_id: str) -> tuple[bool, str | None]:
         """Stop running process/task for a chat. Returns (had_something, error_msg)."""
         process = self.running_process_by_chat.get(chat_id)
@@ -670,12 +755,9 @@ class Runtime:
 
         try:
             if process and process.returncode is None:
-                process.terminate()
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=0.5)
-                except TimeoutError:
-                    if process.returncode is None:
-                        process.kill()
+                await self._terminate_process_tree(
+                    process, f"chat {chat_id}", grace=0.5,
+                )
             if task and not task.done():
                 task.cancel()
             return True, None
@@ -730,7 +812,7 @@ class Runtime:
             merged.update(extra_env)
             kwargs["env"] = merged
 
-        process = await asyncio.create_subprocess_exec(*cmd, **kwargs)
+        process = await self._spawn_process(*cmd, **kwargs)
         log.info("[%s] pid=%s", provider.name, process.pid)
         self.running_process_by_chat[chat_id] = process
 
@@ -763,6 +845,10 @@ class Runtime:
                     log.error("[%s] stderr: %s", provider.name, stderr_text)
                     yield StreamEvent(kind="error", text=stderr_text)
         finally:
+            if process.returncode is None:
+                await self._terminate_process_tree(
+                    process, f"{provider.name} chat {chat_id}", grace=1.0,
+                )
             rc = process.returncode
             log.info("[%s] pid=%s exit=%s events=%d", provider.name, process.pid, rc, event_count)
             if self.running_process_by_chat.get(chat_id) is process:
@@ -923,11 +1009,28 @@ class Runtime:
             for job in load_jobs():
                 if not job.enabled:
                     continue
+                if job.dir_name in self._running_job_tasks:
+                    continue
                 if self._should_run_job(job, now):
-                    try:
-                        await self._execute_job(job)
-                    except Exception:
-                        log.exception("Job '%s' failed", job.name)
+                    self._job_last_run[job.dir_name] = now
+                    self.save_state()
+                    task = asyncio.create_task(self._run_job_task(job))
+                    self._running_job_tasks[job.dir_name] = task
+                    task.add_done_callback(
+                        lambda _task, name=job.dir_name: self._running_job_tasks.pop(
+                            name, None,
+                        )
+                    )
+
+    async def _run_job_task(self, job: Job) -> None:
+        """Run one scheduled job without blocking the scheduler loop."""
+        async with self._job_semaphore:
+            try:
+                await self._execute_job(job)
+            except Exception:
+                log.exception("Job '%s' failed", job.name)
+                self._job_last_run[job.dir_name] = datetime.now()
+                self.save_state()
 
     def _should_run_job(self, job: Job, now: datetime) -> bool:
         """Check if a job should run based on its cron schedule."""
@@ -938,7 +1041,21 @@ class Runtime:
             self.save_state()
             return False
         cron = croniter(job.schedule, last_run)
-        return cron.get_next(datetime) <= now
+        next_run = cron.get_next(datetime)
+        if next_run > now:
+            return False
+        if (
+            not job.catch_up
+            and (now - next_run).total_seconds() > job.misfire_grace_seconds
+        ):
+            log.warning(
+                "Job '%s' missed scheduled run at %s by more than %ss; skipping catch-up",
+                job.name, next_run.isoformat(), job.misfire_grace_seconds,
+            )
+            self._job_last_run[job.dir_name] = now
+            self.save_state()
+            return False
+        return True
 
     async def _execute_job(self, job: Job) -> None:
         """Run a job: prerun gate, provider subprocess, notify, queue message."""
@@ -948,13 +1065,19 @@ class Runtime:
         if job.prerun:
             prerun_script = os.path.join(job.job_dir, job.prerun)
             if os.path.isfile(prerun_script):
-                proc = await asyncio.create_subprocess_exec(
+                proc = await self._spawn_process(
                     "bash", prerun_script,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=job.job_dir,
                 )
-                stdout, stderr = await proc.communicate()
+                stdout, stderr, timed_out = await self._communicate_with_timeout(
+                    proc, f"Job '{job.name}' prerun", job.prerun_timeout,
+                )
+                if timed_out:
+                    self._job_last_run[job.dir_name] = datetime.now()
+                    self.save_state()
+                    return
                 if proc.returncode != 0:
                     if proc.returncode == 1:
                         log.debug("Job '%s' prerun: no work, skipping", job.name)
@@ -980,22 +1103,17 @@ class Runtime:
         provider = self.make_provider(job.provider)
         cmd = provider.build_batch_command(prompt, job.model)
 
-        proc = await asyncio.create_subprocess_exec(
+        proc = await self._spawn_process(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             cwd=self.working_dir,
         )
-        timeout_secs = 15 * 60  # 15 minute hard limit per job
-        try:
-            stdout, _ = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout_secs,
-            )
-        except asyncio.TimeoutError:
-            log.warning("Job '%s' timed out after %ds, killing", job.name, timeout_secs)
-            proc.kill()
-            await proc.wait()
-            output = f"Job timed out after {timeout_secs}s"
+        stdout, _, timed_out = await self._communicate_with_timeout(
+            proc, f"Job '{job.name}'", job.timeout,
+        )
+        if timed_out:
+            output = f"Job timed out after {job.timeout}s; process tree was terminated"
             if self.transport:
                 await self.transport.notify(
                     f"\u26a0\ufe0f [{job.name}] {output}",
