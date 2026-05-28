@@ -22,6 +22,7 @@ from rich.table import Table
 from . import __version__, slack_cache
 from .config import CONFIG_FILE, detect_providers, load_config, resolve_providers, save_config
 from .jobs import create_job, load_jobs
+from .logging_config import configure_logging
 from .messages import clear as msg_clear
 from .messages import pending as msg_pending
 from .messages import send as msg_send
@@ -42,13 +43,6 @@ app.add_typer(slack_app, name="slack")
 console = Console()
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
-
-_NOISY_LOGGERS = (
-    "httpx", "httpcore", "telegram", "telegram.ext", "telegram.ext._application",
-    "telegram.ext._updater", "telegram.ext._base_update_handler", "telegram._bot",
-    "hpack", "urllib3", "h11", "h2",
-)
-
 
 # ---------------------------------------------------------------------------
 # Telegram API helpers (stdlib only — no extra deps for setup)
@@ -1053,6 +1047,8 @@ def serve(
     from .core import Runtime
 
     config = load_config()
+    logging_state = configure_logging(config, force=True)
+    log.debug("Logging configured: %s", logging_state)
     if working_dir:
         config["working_dir"] = working_dir
 
@@ -1723,6 +1719,17 @@ def slack_thread(
 # App setup
 # ---------------------------------------------------------------------------
 
+def _load_startup_config_for_logging() -> dict | None:
+    """Read config for early logging setup without creating config files."""
+    if not os.path.exists(CONFIG_FILE):
+        return None
+    try:
+        with open(CONFIG_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
 def _version_callback(value: bool) -> None:
     if value:
         console.print(f"enso {__version__}")
@@ -1736,10 +1743,7 @@ def _main(
     ] = False,
 ) -> None:
     """Enso — Personal AI Agent."""
-    fmt = "%(asctime)s [%(name)s] %(levelname)s - %(message)s"
-    logging.basicConfig(format=fmt, level=logging.INFO)
-    for name in _NOISY_LOGGERS:
-        logging.getLogger(name).setLevel(logging.WARNING)
+    configure_logging(_load_startup_config_for_logging())
 
 
 def main() -> None:

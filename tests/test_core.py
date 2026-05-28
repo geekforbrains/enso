@@ -11,6 +11,7 @@ import pytest
 from enso import messages
 from enso.core import Runtime, split_text
 from enso.jobs import Job
+from enso.providers.claude import KageClaudeProvider
 
 # -- split_text --
 
@@ -40,6 +41,15 @@ def test_runtime_defaults(sample_config):
     rt = Runtime(sample_config)
     assert rt.get_active_provider("1") == "claude"
     assert rt.get_active_model("1", "claude") == "opus"
+    assert rt.debug_prompts is False
+    assert rt.debug_events is False
+
+
+def test_runtime_reads_debug_logging_flags(sample_config):
+    sample_config["logging"] = {"debug_prompts": True, "debug_events": True}
+    rt = Runtime(sample_config)
+    assert rt.debug_prompts is True
+    assert rt.debug_events is True
 
 
 def test_runtime_provider_switch(sample_config):
@@ -52,6 +62,19 @@ def test_runtime_model_switch(sample_config):
     rt = Runtime(sample_config)
     rt.active_model_by_chat_provider[("1", "claude")] = "sonnet"
     assert rt.get_active_model("1", "claude") == "sonnet"
+
+
+def test_runtime_make_provider_uses_kage_runner(sample_config):
+    sample_config["providers"]["claude"].update({
+        "runner": "kage",
+        "kage_path": "kage",
+        "kage_timeout": 900,
+    })
+    rt = Runtime(sample_config)
+    provider = rt.make_provider("claude")
+    assert isinstance(provider, KageClaudeProvider)
+    assert provider.path == "kage"
+    assert provider.timeout == 900
 
 
 def test_runtime_state_persistence(tmp_enso, sample_config):

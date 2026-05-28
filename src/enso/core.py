@@ -8,6 +8,7 @@ import importlib.resources
 import json
 import logging
 import os
+import shlex
 import signal
 import tempfile
 from asyncio.subprocess import Process
@@ -21,6 +22,7 @@ from croniter import croniter
 from . import messages
 from .config import CONFIG_DIR, STATE_FILE
 from .jobs import Job, load_jobs
+from .logging_config import logging_flags
 from .providers import BaseProvider, StreamEvent, get_provider
 
 if TYPE_CHECKING:
@@ -72,6 +74,15 @@ JOB_CONCURRENCY = int(os.environ.get("ENSO_JOB_CONCURRENCY", "2"))
 PROCESS_TERMINATE_GRACE_SECS = float(os.environ.get("ENSO_PROCESS_TERMINATE_GRACE_SECS", "5"))
 
 
+def _redacted_command(cmd: list[str]) -> str:
+    """Return a shell-like command string with the prompt argument redacted."""
+    if "--" not in cmd:
+        return shlex.join(cmd)
+    sep = cmd.index("--")
+    prompt_chars = sum(len(part) for part in cmd[sep + 1 :])
+    return shlex.join([*cmd[: sep + 1], f"<prompt chars={prompt_chars}>"])
+
+
 @dataclass
 class _QueuedItem:
     """A message waiting to be dispatched while another request is running."""
@@ -86,6 +97,9 @@ class Runtime:
 
     def __init__(self, config: dict):
         self.config = config
+        flags = logging_flags(config)
+        self.debug_prompts: bool = flags["debug_prompts"]
+        self.debug_events: bool = flags["debug_events"]
         self.working_dir: str = config.get("working_dir", os.getcwd())
         os.makedirs(self.working_dir, exist_ok=True)
         self.models: dict[str, list[str]] = {
@@ -175,8 +189,10 @@ class Runtime:
         # Auto-compact notification hooks — lets the user know via Telegram
         # when a provider is compacting context (which can be slow).
         # Claude: PreCompact with "auto" matcher
-        # Gemini: PreCompress with "auto" matcher
         # Codex: no compaction hooks available
+        # Gemini: skipped — the CLI fires PreCompress unconditionally on
+        # every turn (before its own threshold check), so the hook is pure
+        # noise. Restore once upstream fixes the timing.
         notify_cmd = (
             "enso message send"
             " 'Autocompacting context, this might take a moment...'"
@@ -184,12 +200,6 @@ class Runtime:
         self._ensure_hook_entry(
             os.path.join(self.working_dir, ".claude", "settings.json"),
             event="PreCompact",
-            matcher="auto",
-            command=notify_cmd,
-        )
-        self._ensure_hook_entry(
-            os.path.join(self.working_dir, ".gemini", "settings.json"),
-            event="PreCompress",
             matcher="auto",
             command=notify_cmd,
         )
@@ -444,8 +454,17 @@ class Runtime:
     def make_provider(self, provider_name: str) -> BaseProvider:
         """Create a fresh provider instance."""
         providers_cfg = self.config.get("providers", {})
-        path = providers_cfg.get(provider_name, {}).get("path", provider_name)
-        return get_provider(provider_name, path)
+        provider_cfg = providers_cfg.get(provider_name, {})
+        path = provider_cfg.get("path", provider_name)
+        provider = get_provider(provider_name, path, provider_cfg)
+        log.debug(
+            "Resolved provider name=%s class=%s path=%s runner=%s",
+            provider_name,
+            provider.__class__.__name__,
+            provider.path,
+            provider_cfg.get("runner", "default"),
+        )
+        return provider
 
     # -- Session management --
 
@@ -785,7 +804,17 @@ class Runtime:
         """
         session_id = self._get_or_create_session(chat_id, provider.name)
         cmd = provider.build_command(prompt, model, session_id, effort=effort)
-        log.info("[%s] Spawning: %s", provider.name, " ".join(cmd[:6]) + " ...")
+        log.info(
+            "[%s] spawning class=%s chat=%s model=%s effort=%s session=%s prompt_len=%d",
+            provider.name,
+            provider.__class__.__name__,
+            chat_id,
+            model,
+            effort or "-",
+            session_id or "-",
+            len(prompt),
+        )
+        log.debug("[%s] command=%s", provider.name, _redacted_command(cmd))
 
         # Strip new: prefix immediately so future calls use --resume
         # even if this run crashes before emitting a result event.
@@ -811,6 +840,14 @@ class Runtime:
             merged = os.environ.copy()
             merged.update(extra_env)
             kwargs["env"] = merged
+            log.debug(
+                "[%s] subprocess cwd=%s extra_env_keys=%s",
+                provider.name,
+                self.working_dir,
+                sorted(extra_env),
+            )
+        else:
+            log.debug("[%s] subprocess cwd=%s extra_env_keys=[]", provider.name, self.working_dir)
 
         process = await self._spawn_process(*cmd, **kwargs)
         log.info("[%s] pid=%s", provider.name, process.pid)
@@ -827,7 +864,33 @@ class Runtime:
                 if raw is None:
                     continue
                 event_count += 1
-                for stream_event in provider.parse_event(raw):
+                if self.debug_events:
+                    log.debug(
+                        "[%s] raw_event=%d type=%s status=%s keys=%s",
+                        provider.name,
+                        event_count,
+                        raw.get("type", "-"),
+                        raw.get("status", "-"),
+                        sorted(raw),
+                    )
+                parsed_events = provider.parse_event(raw)
+                if self.debug_events and not parsed_events:
+                    log.debug(
+                        "[%s] raw_event=%d emitted no stream events",
+                        provider.name,
+                        event_count,
+                    )
+                for stream_event in parsed_events:
+                    if self.debug_events:
+                        log.debug(
+                            "[%s] stream_event raw=%d kind=%s text_len=%d session=%s usage=%s",
+                            provider.name,
+                            event_count,
+                            stream_event.kind,
+                            len(stream_event.text or ""),
+                            stream_event.session_id or "-",
+                            stream_event.usage or "-",
+                        )
                     if stream_event.kind == "session" and stream_event.session_id:
                         self.session_by_chat_provider[
                             (chat_id, provider.name)
@@ -889,10 +952,19 @@ class Runtime:
             origin_env = {}
 
         log.info(
-            "[%s] chat=%s model=%s effort=%s prompt_len=%d: %.120s",
-            provider_name, chat_id, model, effort or "-", len(prompt), prompt,
+            "[%s] request chat=%s provider_class=%s model=%s effort=%s "
+            "prompt_len=%d preview=%.120s",
+            provider_name,
+            chat_id,
+            provider.__class__.__name__,
+            model,
+            effort or "-",
+            len(prompt),
+            prompt,
         )
-        log.debug("[%s] Full prompt:\n%s", provider_name, prompt)
+        log.debug("[%s] origin_env_keys=%s", provider_name, sorted(origin_env))
+        if self.debug_prompts:
+            log.debug("[%s] full_prompt:\n%s", provider_name, prompt)
 
         await ctx.send_typing()
         status_msg = None
@@ -920,6 +992,15 @@ class Runtime:
                 provider, prompt, chat_id, model,
                 effort=effort, extra_env=origin_env,
             ):
+                if self.debug_events:
+                    log.debug(
+                        "[%s] handling_event kind=%s text_len=%d session=%s usage=%s",
+                        provider_name,
+                        event.kind,
+                        len(event.text or ""),
+                        event.session_id or "-",
+                        event.usage or "-",
+                    )
                 if event.kind == "status":
                     state["status"] = event.text
                 elif event.kind == "response":
@@ -935,6 +1016,17 @@ class Runtime:
                 await ctx.delete_status(status_msg)
 
             response_text = provider.format_response(response_parts)
+            log.info(
+                "[%s] request complete chat=%s response_parts=%d "
+                "response_len=%d error=%s usage_pct=%s elapsed=%s",
+                provider_name,
+                chat_id,
+                len(response_parts),
+                len(response_text),
+                bool(error_text),
+                usage_pct if usage_pct is not None else "-",
+                state["elapsed"],
+            )
             usage_part = f" / {usage_pct}%" if usage_pct is not None else ""
             prefix = f"({display}{effort_part}{usage_part} / {state['elapsed']}s)"
 
@@ -1102,6 +1194,13 @@ class Runtime:
         # Run provider in batch mode
         provider = self.make_provider(job.provider)
         cmd = provider.build_batch_command(prompt, job.model)
+        log.debug(
+            "Job '%s' command provider_class=%s cwd=%s cmd=%s",
+            job.name,
+            provider.__class__.__name__,
+            self.working_dir,
+            _redacted_command(cmd),
+        )
 
         proc = await self._spawn_process(
             *cmd,
