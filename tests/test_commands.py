@@ -6,7 +6,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from enso.commands import cmd_compact_async, cmd_effort, cmd_status
+from enso.commands import cmd_compact_async, cmd_effort, cmd_kage, cmd_status
+from enso.config import load_config
 from enso.core import Runtime
 
 
@@ -91,10 +92,75 @@ def test_cmd_status_includes_effort(sample_config):
     assert "Effort: xhigh" in out
 
 
+def test_cmd_status_includes_claude_runner(sample_config):
+    rt = Runtime(sample_config)
+    out = cmd_status(rt, "1")
+    assert "Runner: claude -p" in out
+
+
+def test_cmd_status_includes_kage_runner(sample_config):
+    sample_config["providers"]["claude"]["runner"] = "kage"
+    rt = Runtime(sample_config)
+    out = cmd_status(rt, "1")
+    assert "Runner: kage" in out
+
+
 def test_cmd_status_omits_effort_when_unset(sample_config):
     rt = Runtime(sample_config)
     out = cmd_status(rt, "1")
     assert "Effort" not in out
+
+
+def test_cmd_kage_lists_options(sample_config):
+    rt = Runtime(sample_config)
+    response, options = cmd_kage(rt, "1", None)
+    assert response is None
+    assert options == [("on", False), ("off", True)]
+
+
+def test_cmd_kage_enables_and_persists(tmp_enso, sample_config):
+    rt = Runtime(sample_config)
+    response, options = cmd_kage(rt, "1", "on")
+    assert options == []
+    assert response is not None
+    assert "kage" in response
+    assert rt.config["providers"]["claude"]["runner"] == "kage"
+
+    loaded = load_config()
+    assert loaded["providers"]["claude"]["runner"] == "kage"
+
+
+def test_cmd_kage_disables_without_clearing_session(tmp_enso, sample_config):
+    sample_config["providers"]["claude"]["runner"] = "kage"
+    rt = Runtime(sample_config)
+    rt.session_by_chat_provider[("1", "claude")] = "sid-existing"
+
+    response, options = cmd_kage(rt, "1", "off")
+
+    assert options == []
+    assert response is not None
+    assert "claude -p" in response
+    assert rt.config["providers"]["claude"]["runner"] == "print"
+    assert rt.session_by_chat_provider[("1", "claude")] == "sid-existing"
+
+
+def test_cmd_kage_toggle(tmp_enso, sample_config):
+    rt = Runtime(sample_config)
+    response, _ = cmd_kage(rt, "1", "toggle")
+    assert response is not None
+    assert rt.config["providers"]["claude"]["runner"] == "kage"
+
+    response, _ = cmd_kage(rt, "1", "toggle")
+    assert response is not None
+    assert rt.config["providers"]["claude"]["runner"] == "print"
+
+
+def test_cmd_kage_unknown_mode(sample_config):
+    rt = Runtime(sample_config)
+    response, options = cmd_kage(rt, "1", "maybe")
+    assert response == "Unknown kage mode. Use: on, off, toggle, or status."
+    assert options == []
+    assert "runner" not in rt.config["providers"]["claude"]
 
 
 # -- cmd_compact_async --

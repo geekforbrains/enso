@@ -6,13 +6,25 @@ import logging
 import os
 from typing import TYPE_CHECKING
 
-from .config import CONFIG_DIR
+from .config import CONFIG_DIR, save_config
 from .providers import PROVIDER_NAMES
 
 if TYPE_CHECKING:
     from .core import Runtime
 
 log = logging.getLogger(__name__)
+
+
+def _get_claude_runner(runtime: Runtime) -> str:
+    """Return the effective Claude runner."""
+    providers = runtime.config.get("providers", {})
+    claude_cfg = providers.get("claude", {}) if isinstance(providers, dict) else {}
+    return "kage" if claude_cfg.get("runner") == "kage" else "print"
+
+
+def _runner_label(runner: str) -> str:
+    """Return the user-facing label for a Claude runner value."""
+    return "kage" if runner == "kage" else "claude -p"
 
 
 def cmd_stop(runtime: Runtime, conv_id: str) -> tuple[bool, str | None]:
@@ -36,6 +48,8 @@ def cmd_status(runtime: Runtime, conv_id: str) -> str:
     provider = runtime.get_active_provider(conv_id)
     model = runtime.get_active_model(conv_id, provider)
     lines = [f"Provider: {provider}", f"Model: {model}"]
+    if provider == "claude":
+        lines.append(f"Runner: {_runner_label(_get_claude_runner(runtime))}")
     effort = runtime.get_active_effort(conv_id, provider, model)
     if effort:
         lines.append(f"Effort: {effort}")
@@ -154,6 +168,42 @@ def cmd_effort(
     max_idx = EFFORT_LEVELS.index(max_level)
     options = [(level, level == active) for level in EFFORT_LEVELS[: max_idx + 1]]
     return None, options
+
+
+def cmd_kage(
+    runtime: Runtime, conv_id: str, choice: str | None,
+) -> tuple[str | None, list[tuple[str, bool]]]:
+    """Toggle whether Claude requests run through kage or native claude -p."""
+    del conv_id  # Runner mode is global config, not per-chat state.
+
+    runner = _get_claude_runner(runtime)
+    normalized = choice.strip().lower() if choice else ""
+
+    if normalized in {"", "show"}:
+        return None, [("on", runner == "kage"), ("off", runner != "kage")]
+
+    if normalized == "status":
+        return f"Claude runner: {_runner_label(runner)}.", []
+
+    if normalized == "toggle":
+        target = "print" if runner == "kage" else "kage"
+    elif normalized in {"on", "kage", "enable", "enabled", "true"}:
+        target = "kage"
+    elif normalized in {"off", "print", "native", "claude", "disable", "disabled", "false"}:
+        target = "print"
+    else:
+        return "Unknown kage mode. Use: on, off, toggle, or status.", []
+
+    providers = runtime.config.setdefault("providers", {})
+    claude_cfg = providers.setdefault("claude", {})
+    claude_cfg["runner"] = target
+    save_config(runtime.config)
+
+    return (
+        f"Claude runner \u2192 {_runner_label(target)}. "
+        "Existing session state was left unchanged.",
+        [],
+    )
 
 
 async def cmd_compact_async(runtime: Runtime, conv_id: str) -> str:

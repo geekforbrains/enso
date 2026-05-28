@@ -28,6 +28,7 @@ from ..commands import (
     cmd_compact_async,
     cmd_effort,
     cmd_help,
+    cmd_kage,
     cmd_logs,
     cmd_model,
     cmd_status,
@@ -76,6 +77,7 @@ SLACK_COMMANDS: list[tuple[str, str]] = [
     ("use", "Switch provider"),
     ("model", "Switch model"),
     ("effort", "Set reasoning effort (Claude, or 'default' to clear)"),
+    ("kage", "Toggle Kage for Claude"),
     ("status", "Provider, model & effort info"),
     ("clear", "Clear session (use !clear all for all providers)"),
     ("compact", "Summarise & compact the active session"),
@@ -640,6 +642,16 @@ class SlackTransport(BaseTransport):
                 lines.append(f"{prefix}{name}")
             return "\n".join(lines)
 
+        if cmd_name == "kage":
+            response, options = cmd_kage(rt, conv_id, cmd_args)
+            if response:
+                return response
+            lines = ["Claude runner - '!kage on' or '!kage off':"]
+            for name, active in options:
+                prefix = "\u25cf " if active else "  "
+                lines.append(f"{prefix}kage {name}")
+            return "\n".join(lines)
+
         if cmd_name == "status":
             return cmd_status(rt, conv_id)
 
@@ -651,8 +663,8 @@ class SlackTransport(BaseTransport):
         if cmd_name == "compact":
             if ctx is not None:
                 await ctx.reply(
-                    "Compacting context — this can take 10–30s while the "
-                    "agent summarises…"
+                    "Compacting context - this can take 10-30s while the "
+                    "agent summarises..."
                 )
             return await cmd_compact_async(rt, conv_id)
 
