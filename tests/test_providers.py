@@ -79,6 +79,9 @@ def test_kage_claude_build_batch_command():
     assert cmd[:2] == ["kage", "claude"]
     assert "--stream" not in cmd
     assert "--session-id" not in cmd
+    # batch must request signal-based teardown so a killed job doesn't orphan
+    # its tmux pane.
+    assert "--stop-on-signal" in cmd
     assert cmd[cmd.index("--timeout") + 1] == "600"
     assert cmd[cmd.index("--effort") + 1] == "max"
     assert cmd[-2:] == ["--", "hello"]

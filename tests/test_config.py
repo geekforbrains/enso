@@ -58,6 +58,39 @@ def test_load_merges_missing_logging_defaults(tmp_enso):
     assert loaded["logging"]["loggers"] == {}
 
 
+def test_default_config_has_job_runner(tmp_enso):
+    """Fresh configs expose an independent job_runner, defaulting to print."""
+    config = load_config()
+    claude = config["providers"]["claude"]
+    assert claude["runner"] == "print"
+    assert claude["job_runner"] == "print"
+
+
+def test_load_backfills_job_runner_without_clobbering(tmp_enso):
+    """An existing claude provider gains job_runner but keeps custom values."""
+    config = {
+        "working_dir": "/tmp/test",
+        "transport": "telegram",
+        "transports": {},
+        "providers": {
+            "claude": {
+                "path": "/custom/claude",
+                "runner": "kage",
+                "models": ["opus"],
+            },
+        },
+    }
+    save_config(config)
+    loaded = load_config()
+    claude = loaded["providers"]["claude"]
+    # Backfilled default.
+    assert claude["job_runner"] == "print"
+    # User choices preserved.
+    assert claude["path"] == "/custom/claude"
+    assert claude["runner"] == "kage"
+    assert claude["models"] == ["opus"]
+
+
 def test_load_replaces_invalid_logging_with_defaults(tmp_enso):
     """Invalid logging config is normalized to defaults."""
     config = {

@@ -105,6 +105,15 @@ def test_cmd_status_includes_kage_runner(sample_config):
     assert "Runner: kage" in out
 
 
+def test_cmd_status_includes_job_runner(sample_config):
+    sample_config["providers"]["claude"]["job_runner"] = "kage"
+    rt = Runtime(sample_config)
+    out = cmd_status(rt, "1")
+    assert "Job runner: kage" in out
+    # Interactive runner is independent and stays at the default.
+    assert "Runner: claude -p" in out
+
+
 def test_cmd_status_omits_effort_when_unset(sample_config):
     rt = Runtime(sample_config)
     out = cmd_status(rt, "1")
@@ -115,7 +124,27 @@ def test_cmd_kage_lists_options(sample_config):
     rt = Runtime(sample_config)
     response, options = cmd_kage(rt, "1", None)
     assert response is None
-    assert options == [("on", False), ("off", True)]
+    # (callback_data, label, active) for interactive + jobs, both default print.
+    assert options == [
+        ("kage:on", "Interactive: kage", False),
+        ("kage:off", "Interactive: claude -p", True),
+        ("kage:jobs:on", "Jobs: kage", False),
+        ("kage:jobs:off", "Jobs: claude -p", True),
+    ]
+
+
+def test_cmd_kage_menu_reflects_mixed_state(sample_config):
+    sample_config["providers"]["claude"]["runner"] = "kage"
+    sample_config["providers"]["claude"]["job_runner"] = "print"
+    rt = Runtime(sample_config)
+    _, options = cmd_kage(rt, "1", "")
+    active = {cb: act for cb, _label, act in options}
+    assert active == {
+        "kage:on": True,
+        "kage:off": False,
+        "kage:jobs:on": False,
+        "kage:jobs:off": True,
+    }
 
 
 def test_cmd_kage_enables_and_persists(tmp_enso, sample_config):
@@ -158,9 +187,45 @@ def test_cmd_kage_toggle(tmp_enso, sample_config):
 def test_cmd_kage_unknown_mode(sample_config):
     rt = Runtime(sample_config)
     response, options = cmd_kage(rt, "1", "maybe")
-    assert response == "Unknown kage mode. Use: on, off, toggle, or status."
+    assert response is not None
+    assert response.startswith("Unknown kage mode")
     assert options == []
     assert "runner" not in rt.config["providers"]["claude"]
+
+
+def test_cmd_kage_jobs_toggle_is_independent(tmp_enso, sample_config):
+    """`!kage jobs on` flips only job_runner, leaving interactive untouched."""
+    rt = Runtime(sample_config)
+
+    response, options = cmd_kage(rt, "1", "jobs on")
+    assert options == []
+    assert response is not None
+    assert "Job runner" in response and "kage" in response
+    assert rt.config["providers"]["claude"]["job_runner"] == "kage"
+    # Interactive runner must be unchanged.
+    assert rt.config["providers"]["claude"].get("runner") != "kage"
+
+    loaded = load_config()
+    assert loaded["providers"]["claude"]["job_runner"] == "kage"
+
+
+def test_cmd_kage_jobs_status_and_toggle(tmp_enso, sample_config):
+    rt = Runtime(sample_config)
+    response, _ = cmd_kage(rt, "1", "jobs status")
+    assert response == "Job runner: claude -p."
+
+    response, _ = cmd_kage(rt, "1", "jobs toggle")
+    assert rt.config["providers"]["claude"]["job_runner"] == "kage"
+    response, _ = cmd_kage(rt, "1", "jobs toggle")
+    assert rt.config["providers"]["claude"]["job_runner"] == "print"
+
+
+def test_cmd_kage_interactive_does_not_touch_jobs(tmp_enso, sample_config):
+    rt = Runtime(sample_config)
+    cmd_kage(rt, "1", "on")
+    assert rt.config["providers"]["claude"]["runner"] == "kage"
+    # job_runner not implicitly set by the interactive toggle.
+    assert "job_runner" not in rt.config["providers"]["claude"]
 
 
 # -- cmd_compact_async --

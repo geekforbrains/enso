@@ -63,7 +63,7 @@ COMMANDS = [
     BotCommand("use", "Switch provider"),
     BotCommand("model", "Switch model"),
     BotCommand("effort", "Set reasoning effort (Claude)"),
-    BotCommand("kage", "Toggle Kage for Claude"),
+    BotCommand("kage", "Toggle Kage for Claude (add 'jobs' for jobs)"),
     BotCommand("status", "Provider, model & effort info"),
     BotCommand("clear", "Clear session"),
     BotCommand("compact", "Summarise & compact the active session"),
@@ -481,24 +481,27 @@ class TelegramTransport(BaseTransport):
         if not self._is_authorized(update):
             return
         conv_id = str(update.effective_chat.id)
-        args = (update.message.text or "").split()[1:]
-        choice = args[0] if args else None
+        parts = (update.message.text or "").split()
+        choice = " ".join(parts[1:]) if len(parts) > 1 else None
 
         response, options = cmd_kage(self.runtime, conv_id, choice)
         if response:
             await update.message.reply_text(response)
             return
 
+        # options are (callback_data, label, active). Two buttons per row:
+        # the interactive pair, then the jobs pair.
         buttons = [
             InlineKeyboardButton(
-                f"{'● ' if active else ''}Kage {name}",
-                callback_data=f"kage:{name}",
+                f"{'● ' if active else ''}{label}",
+                callback_data=cb,
             )
-            for name, active in options
+            for cb, label, active in options
         ]
+        rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
         await update.message.reply_text(
             "Claude runner:",
-            reply_markup=InlineKeyboardMarkup([buttons]),
+            reply_markup=InlineKeyboardMarkup(rows),
         )
 
     async def _cmd_clear(self, update: Update, _ctx: Any) -> None:
@@ -587,7 +590,8 @@ class TelegramTransport(BaseTransport):
                 await query.edit_message_text(response)
 
         elif data.startswith("kage:"):
-            choice = data.split(":", 1)[1]
+            # "kage:on" -> "on"; "kage:jobs:on" -> "jobs on"
+            choice = data.split(":", 1)[1].replace(":", " ")
             response, _ = cmd_kage(rt, conv_id, choice)
             if response:
                 await query.edit_message_text(response)

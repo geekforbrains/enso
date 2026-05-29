@@ -77,6 +77,130 @@ def test_runtime_make_provider_uses_kage_runner(sample_config):
     assert provider.timeout == 900
 
 
+def test_make_provider_overrides_runner(sample_config):
+    """overrides win over stored config without mutating it."""
+    sample_config["providers"]["claude"].update({"runner": "print", "kage_path": "kage"})
+    rt = Runtime(sample_config)
+    provider = rt.make_provider("claude", overrides={"runner": "kage"})
+    assert isinstance(provider, KageClaudeProvider)
+    # Stored config is untouched by the override.
+    assert rt.config["providers"]["claude"]["runner"] == "print"
+
+
+# -- Job runner resolution --
+
+
+def test_resolve_job_runner_defaults_to_print(sample_config):
+    rt = Runtime(sample_config)
+    assert rt.resolve_job_runner("claude") == "print"
+
+
+def test_resolve_job_runner_reads_job_runner_key(sample_config):
+    sample_config["providers"]["claude"]["job_runner"] = "kage"
+    rt = Runtime(sample_config)
+    assert rt.resolve_job_runner("claude") == "kage"
+
+
+def test_resolve_job_runner_independent_of_interactive(sample_config):
+    """Interactive runner=kage must NOT make jobs use kage."""
+    sample_config["providers"]["claude"]["runner"] = "kage"
+    rt = Runtime(sample_config)
+    assert rt.resolve_job_runner("claude") == "print"
+
+
+def test_resolve_job_runner_non_claude_is_none(sample_config):
+    rt = Runtime(sample_config)
+    assert rt.resolve_job_runner("codex") is None
+    assert rt.resolve_job_runner("gemini") is None
+
+
+def test_make_job_provider_selects_kage_and_threads_timeout(sample_config):
+    sample_config["providers"]["claude"].update({
+        "job_runner": "kage",
+        "kage_path": "kage",
+        "kage_timeout": 1800,
+    })
+    rt = Runtime(sample_config)
+    job = Job(
+        dir_name="j", name="J", schedule="* * * * *",
+        provider="claude", model="sonnet", timeout=300,
+    )
+    provider = rt.make_job_provider(job)
+    assert isinstance(provider, KageClaudeProvider)
+    # kage's --timeout is threaded from job.timeout, not the global kage_timeout.
+    assert provider.timeout == 300
+    cmd = provider.build_batch_command("hi", "sonnet")
+    assert cmd[cmd.index("--timeout") + 1] == "300"
+    assert "--stop-on-signal" in cmd
+
+
+def test_make_job_provider_uses_print_when_job_runner_unset(sample_config):
+    sample_config["providers"]["claude"]["runner"] = "kage"  # interactive only
+    rt = Runtime(sample_config)
+    job = Job(
+        dir_name="j", name="J", schedule="* * * * *",
+        provider="claude", model="sonnet",
+    )
+    provider = rt.make_job_provider(job)
+    assert not isinstance(provider, KageClaudeProvider)
+    cmd = provider.build_batch_command("hi", "sonnet")
+    assert cmd[:2] == [provider.path, "-p"]
+
+
+# -- Kage smart restart (warm-session reuse) --
+
+
+def test_interactive_overrides_empty_for_non_kage(sample_config):
+    rt = Runtime(sample_config)  # runner unset -> print
+    assert rt._interactive_overrides("claude", "1", "opus", None) == {}
+    assert rt._interactive_overrides("codex", "1", "gpt", None) == {}
+
+
+def test_interactive_overrides_first_turn_no_restart(sample_config):
+    sample_config["providers"]["claude"]["runner"] = "kage"
+    rt = Runtime(sample_config)
+    # First turn for the chat: kage starts fresh, no restart needed.
+    assert rt._interactive_overrides("claude", "1", "opus", None) == {"kage_restart": False}
+
+
+def test_interactive_overrides_reuses_warm_session(sample_config):
+    sample_config["providers"]["claude"]["runner"] = "kage"
+    rt = Runtime(sample_config)
+    rt._interactive_overrides("claude", "1", "opus", "high")
+    # Same model+effort -> warm reuse, still no restart.
+    assert rt._interactive_overrides("claude", "1", "opus", "high") == {"kage_restart": False}
+
+
+def test_interactive_overrides_restarts_on_model_change(sample_config):
+    sample_config["providers"]["claude"]["runner"] = "kage"
+    rt = Runtime(sample_config)
+    rt._interactive_overrides("claude", "1", "opus", None)
+    assert rt._interactive_overrides("claude", "1", "sonnet", None) == {"kage_restart": True}
+
+
+def test_interactive_overrides_restarts_on_effort_change(sample_config):
+    sample_config["providers"]["claude"]["runner"] = "kage"
+    rt = Runtime(sample_config)
+    rt._interactive_overrides("claude", "1", "opus", "high")
+    assert rt._interactive_overrides("claude", "1", "opus", "max") == {"kage_restart": True}
+
+
+def test_interactive_overrides_per_chat_isolation(sample_config):
+    sample_config["providers"]["claude"]["runner"] = "kage"
+    rt = Runtime(sample_config)
+    rt._interactive_overrides("claude", "chatA", "opus", None)
+    # A different chat is independent -> its first turn never restarts.
+    assert rt._interactive_overrides("claude", "chatB", "sonnet", None) == {"kage_restart": False}
+
+
+def test_interactive_overrides_respects_disabled_restart(sample_config):
+    sample_config["providers"]["claude"].update({"runner": "kage", "kage_restart": False})
+    rt = Runtime(sample_config)
+    rt._interactive_overrides("claude", "1", "opus", None)
+    # Even on a config change, an explicit kage_restart=False never restarts.
+    assert rt._interactive_overrides("claude", "1", "sonnet", None) == {"kage_restart": False}
+
+
 def test_runtime_state_persistence(tmp_enso, sample_config):
     """State survives save/load roundtrip."""
 

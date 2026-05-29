@@ -21,6 +21,7 @@ DEFAULT_PROVIDERS = {
     "claude": {
         "path": "claude",
         "runner": "print",
+        "job_runner": "print",
         "kage_path": "kage",
         "kage_timeout": 1800,
         "kage_restart": True,
@@ -85,6 +86,18 @@ def _with_config_defaults(config: dict) -> dict:
         merged["logging"] = merged_logging
     else:
         merged["logging"] = logging_defaults
+
+    # Backfill any provider keys added in newer versions (e.g. job_runner)
+    # without overwriting values the user has already set.
+    providers = merged.get("providers")
+    if isinstance(providers, dict):
+        backfilled = dict(providers)
+        for name, defaults in DEFAULT_PROVIDERS.items():
+            existing = backfilled.get(name)
+            if isinstance(existing, dict):
+                backfilled[name] = {**defaults, **existing}
+        merged["providers"] = backfilled
+
     return merged
 
 

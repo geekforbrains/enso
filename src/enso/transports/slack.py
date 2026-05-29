@@ -77,7 +77,7 @@ SLACK_COMMANDS: list[tuple[str, str]] = [
     ("use", "Switch provider"),
     ("model", "Switch model"),
     ("effort", "Set reasoning effort (Claude, or 'default' to clear)"),
-    ("kage", "Toggle Kage for Claude"),
+    ("kage", "Toggle Kage for Claude (add 'jobs' for jobs)"),
     ("status", "Provider, model & effort info"),
     ("clear", "Clear session (use !clear all for all providers)"),
     ("compact", "Summarise & compact the active session"),
@@ -646,10 +646,10 @@ class SlackTransport(BaseTransport):
             response, options = cmd_kage(rt, conv_id, cmd_args)
             if response:
                 return response
-            lines = ["Claude runner - '!kage on' or '!kage off':"]
-            for name, active in options:
+            lines = ["Claude runner - '!kage on/off' or '!kage jobs on/off':"]
+            for _cb, label, active in options:
                 prefix = "\u25cf " if active else "  "
-                lines.append(f"{prefix}kage {name}")
+                lines.append(f"{prefix}{label}")
             return "\n".join(lines)
 
         if cmd_name == "status":

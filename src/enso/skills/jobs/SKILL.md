@@ -62,6 +62,16 @@ The prompt goes here. Use {{prerun_output}} to inject prerun results.
 | `model`    | yes      | Model name (e.g. `sonnet`, `opus`, `gpt-5.4`) |
 | `enabled`  | yes      | `true` or `false` — disabled jobs are skipped |
 | `prerun`   | no       | Script filename in the job directory |
+| `timeout`  | no       | Max seconds for the run (default 900). For Claude jobs on the kage runner this also bounds kage's own `--timeout`. |
+
+### Claude runner for jobs
+
+Claude jobs run through whichever runner is set in
+`providers.claude.job_runner` (`print` for native `claude -p`, the default,
+or `kage`). This is **independent** of the interactive chat runner
+(`providers.claude.runner`): toggling `/kage` for chat never changes how
+background jobs run, and vice versa. Switch the job runner with
+`/kage jobs on` / `/kage jobs off`.
 
 ### Schedule (cron syntax)
 

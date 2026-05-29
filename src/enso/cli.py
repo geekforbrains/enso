@@ -1157,9 +1157,10 @@ def job_run(
         if prerun_output:
             prompt = prompt.replace("{{prerun_output}}", prerun_output)
 
-        provider = runtime.make_provider(job.provider)
+        provider = runtime.make_job_provider(job)
         cmd = provider.build_batch_command(prompt, job.model)
-        console.print(f"[dim]Running {job.provider}/{job.model}...[/]")
+        runner = runtime.resolve_job_runner(job.provider) or "n/a"
+        console.print(f"[dim]Running {job.provider}/{job.model} (runner: {runner})...[/]")
 
         proc = await runtime._spawn_process(
             *cmd,

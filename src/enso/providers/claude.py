@@ -240,8 +240,13 @@ class KageClaudeProvider(BaseProvider):
     def build_batch_command(
         self, prompt: str, model: str, *, effort: str | None = None,
     ) -> list[str]:
+        # --stop-on-signal lets kage tear down its tmux pane when the job
+        # runner terminates this process on timeout/cancel; without it the
+        # underlying Claude pane is orphaned (the pane lives in tmux's own
+        # session, outside our process group).
         cmd = [
             self.path, "claude",
+            "--stop-on-signal",
             "--timeout", str(self.timeout),
             "--model", model,
         ]

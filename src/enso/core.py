@@ -133,6 +133,11 @@ class Runtime:
         self._running_job_tasks: dict[str, asyncio.Task] = {}
         self._job_semaphore = asyncio.Semaphore(JOB_CONCURRENCY)
 
+        # Last (model, effort) a kage interactive turn ran with, per chat. Used
+        # to keep the warm tmux session alive across same-config turns and only
+        # restart it when the model or effort actually changes.
+        self._kage_last_config: dict[str, tuple[str, str | None]] = {}
+
     # -- Workspace setup --
 
     def install_system_prompts(self) -> None:
@@ -406,6 +411,7 @@ class Runtime:
             for key in [k for k in self.effort_by_chat_provider_model if k[0] == cid]:
                 self.effort_by_chat_provider_model.pop(key)
             self.compact_seed_by_chat.pop(cid, None)
+            self._kage_last_config.pop(cid, None)
             self._last_active.pop(cid)
         log.info("Pruned %d stale conversation(s) (>%dd)", len(stale), SESSION_TTL_DAYS)
         self.save_state()
@@ -451,10 +457,23 @@ class Runtime:
 
     # -- Provider management --
 
-    def make_provider(self, provider_name: str) -> BaseProvider:
-        """Create a fresh provider instance."""
+    def make_provider(
+        self,
+        provider_name: str,
+        *,
+        overrides: dict[str, Any] | None = None,
+    ) -> BaseProvider:
+        """Create a fresh provider instance.
+
+        ``overrides`` shallow-merges onto the provider's stored config before
+        construction. The job runner uses this to select its own ``runner``
+        (independent of interactive chat) and to thread the job's ``timeout``
+        into kage's ``--timeout`` — without mutating the persisted config.
+        """
         providers_cfg = self.config.get("providers", {})
-        provider_cfg = providers_cfg.get(provider_name, {})
+        provider_cfg = dict(providers_cfg.get(provider_name, {}))
+        if overrides:
+            provider_cfg.update(overrides)
         path = provider_cfg.get("path", provider_name)
         provider = get_provider(provider_name, path, provider_cfg)
         log.debug(
@@ -465,6 +484,54 @@ class Runtime:
             provider_cfg.get("runner", "default"),
         )
         return provider
+
+    def resolve_job_runner(self, provider_name: str) -> str | None:
+        """Return the configured runner for background jobs of this provider.
+
+        Only Claude has alternate runners; everything else returns ``None``
+        (no override). Jobs are decoupled from interactive chat: they read
+        ``providers.claude.job_runner`` (default ``"print"``), so toggling
+        ``/kage`` for chat never silently changes background jobs.
+        """
+        if provider_name != "claude":
+            return None
+        providers = self.config.get("providers", {})
+        claude_cfg = providers.get("claude", {}) if isinstance(providers, dict) else {}
+        return "kage" if claude_cfg.get("job_runner") == "kage" else "print"
+
+    def _interactive_overrides(
+        self, provider_name: str, chat_id: str, model: str, effort: str | None,
+    ) -> dict[str, Any]:
+        """Per-request provider overrides for interactive chat.
+
+        For the kage runner this decides whether to restart the underlying
+        tmux/Claude-Code session: restart only when the model or effort changed
+        since the last turn, so the warm session is reused otherwise. kage
+        always re-applies --model/--effort on a fresh start, so a restart is
+        only needed to re-apply config to an already-running session.
+        """
+        overrides: dict[str, Any] = {}
+        if provider_name != "claude":
+            return overrides
+        providers = self.config.get("providers", {})
+        claude_cfg = providers.get("claude", {}) if isinstance(providers, dict) else {}
+        if claude_cfg.get("runner") != "kage":
+            return overrides
+
+        key = chat_id
+        prev = self._kage_last_config.get(key)
+        current = (model, effort)
+        self._kage_last_config[key] = current
+        changed = prev is not None and prev != current
+        # ``kage_restart`` (default on) gates whether we restart at all; the
+        # diff decides whether a restart is warranted this turn.
+        enabled = bool(claude_cfg.get("kage_restart", True))
+        overrides["kage_restart"] = enabled and changed
+        log.debug(
+            "[claude] kage restart decision chat=%s prev=%s current=%s -> restart=%s",
+            chat_id, prev, current, overrides["kage_restart"],
+        )
+        return overrides
 
     # -- Session management --
 
@@ -654,9 +721,12 @@ class Runtime:
             return ""
 
         async with lock:
-            provider = self.make_provider(provider_name)
             model = self.get_active_model(chat_id, provider_name)
             effort = self.get_active_effort(chat_id, provider_name, model)
+            overrides = self._interactive_overrides(
+                provider_name, chat_id, model, effort,
+            )
+            provider = self.make_provider(provider_name, overrides=overrides)
 
             log.info(
                 "[%s] Compacting chat=%s model=%s effort=%s",
@@ -939,9 +1009,10 @@ class Runtime:
         # Inject compact seed if one is pending for this chat.
         prompt = self._consume_compact_seed(chat_id, prompt, provider_name)
 
-        provider = self.make_provider(provider_name)
         model = self.get_active_model(chat_id, provider_name)
         effort = self.get_active_effort(chat_id, provider_name, model)
+        overrides = self._interactive_overrides(provider_name, chat_id, model, effort)
+        provider = self.make_provider(provider_name, overrides=overrides)
         display = provider_name.capitalize()
         effort_part = f" / {effort}" if effort else ""
 
@@ -1104,6 +1175,10 @@ class Runtime:
                 if job.dir_name in self._running_job_tasks:
                     continue
                 if self._should_run_job(job, now):
+                    log.info(
+                        "[job:%s] scheduler dispatch (schedule=%r)",
+                        job.dir_name, job.schedule,
+                    )
                     self._job_last_run[job.dir_name] = now
                     self.save_state()
                     task = asyncio.create_task(self._run_job_task(job))
@@ -1149,14 +1224,44 @@ class Runtime:
             return False
         return True
 
+    def make_job_provider(self, job: Job) -> BaseProvider:
+        """Build the provider for a background job.
+
+        Jobs select their runner independently from interactive chat
+        (``resolve_job_runner``) and thread their own ``timeout`` into the
+        runner so a single value governs how long the job may run — fixing
+        the prior split where kage used its own ``kage_timeout`` while the
+        job runner enforced ``job.timeout`` separately.
+        """
+        overrides: dict[str, Any] = {}
+        runner = self.resolve_job_runner(job.provider)
+        if runner is not None:
+            overrides["runner"] = runner
+            # kage's internal --timeout should match the job budget so it can
+            # self-terminate (and clean up its tmux pane) before we do.
+            overrides["kage_timeout"] = job.timeout
+        return self.make_provider(job.provider, overrides=overrides)
+
     async def _execute_job(self, job: Job) -> None:
         """Run a job: prerun gate, provider subprocess, notify, queue message."""
+        tag = f"[job:{job.dir_name}]"
+        started = datetime.now()
+        runner = self.resolve_job_runner(job.provider) or "n/a"
+        log.info(
+            "%s start name=%r provider=%s model=%s runner=%s timeout=%ss prerun=%s",
+            tag, job.name, job.provider, job.model, runner, job.timeout,
+            job.prerun or "-",
+        )
 
         # Prerun gate
         prerun_output = ""
         if job.prerun:
             prerun_script = os.path.join(job.job_dir, job.prerun)
             if os.path.isfile(prerun_script):
+                log.info(
+                    "%s prerun start script=%s timeout=%ss",
+                    tag, job.prerun, job.prerun_timeout,
+                )
                 proc = await self._spawn_process(
                     "bash", prerun_script,
                     stdout=asyncio.subprocess.PIPE,
@@ -1167,24 +1272,29 @@ class Runtime:
                     proc, f"Job '{job.name}' prerun", job.prerun_timeout,
                 )
                 if timed_out:
+                    log.warning(
+                        "%s prerun timed out after %ss; skipping run",
+                        tag, job.prerun_timeout,
+                    )
                     self._job_last_run[job.dir_name] = datetime.now()
                     self.save_state()
                     return
                 if proc.returncode != 0:
                     if proc.returncode == 1:
-                        log.debug("Job '%s' prerun: no work, skipping", job.name)
+                        log.info("%s prerun gate closed (exit 1) — no work, skipping", tag)
                     else:
                         err = stderr.decode(errors="replace").strip()
                         log.warning(
-                            "Job '%s' prerun error (exit %s): %s",
-                            job.name, proc.returncode, err or "(no stderr)",
+                            "%s prerun error (exit %s): %s",
+                            tag, proc.returncode, err or "(no stderr)",
                         )
                     self._job_last_run[job.dir_name] = datetime.now()
                     self.save_state()
                     return
                 prerun_output = stdout.decode(errors="replace").strip()
-
-        log.info("Running job: %s (%s/%s)", job.name, job.provider, job.model)
+                log.info("%s prerun gate open (exit 0) output_len=%d", tag, len(prerun_output))
+            else:
+                log.warning("%s prerun script not found: %s", tag, prerun_script)
 
         # Build prompt with prerun output injection
         prompt = job.prompt
@@ -1192,15 +1302,13 @@ class Runtime:
             prompt = prompt.replace("{{prerun_output}}", prerun_output)
 
         # Run provider in batch mode
-        provider = self.make_provider(job.provider)
+        provider = self.make_job_provider(job)
         cmd = provider.build_batch_command(prompt, job.model)
-        log.debug(
-            "Job '%s' command provider_class=%s cwd=%s cmd=%s",
-            job.name,
-            provider.__class__.__name__,
-            self.working_dir,
-            _redacted_command(cmd),
+        log.info(
+            "%s spawning provider_class=%s runner=%s cwd=%s prompt_len=%d",
+            tag, provider.__class__.__name__, runner, self.working_dir, len(prompt),
         )
+        log.debug("%s command=%s", tag, _redacted_command(cmd))
 
         proc = await self._spawn_process(
             *cmd,
@@ -1208,11 +1316,17 @@ class Runtime:
             stderr=asyncio.subprocess.STDOUT,
             cwd=self.working_dir,
         )
+        log.info("%s pid=%s", tag, proc.pid)
         stdout, _, timed_out = await self._communicate_with_timeout(
             proc, f"Job '{job.name}'", job.timeout,
         )
+        elapsed = (datetime.now() - started).total_seconds()
         if timed_out:
             output = f"Job timed out after {job.timeout}s; process tree was terminated"
+            log.warning(
+                "%s timeout after %ss (elapsed=%.1fs); process tree terminated",
+                tag, job.timeout, elapsed,
+            )
             if self.transport:
                 await self.transport.notify(
                     f"\u26a0\ufe0f [{job.name}] {output}",
@@ -1224,7 +1338,13 @@ class Runtime:
         output = stdout.decode(errors="replace").strip()
 
         # Only notify on failure — successful jobs handle their own messaging
+        notified = False
         if proc.returncode != 0:
+            notified = True
+            log.warning(
+                "%s nonzero exit=%s output_len=%d notify=%s",
+                tag, proc.returncode, len(output), job.notify or "default",
+            )
             if self.transport:
                 label = f"{job.name} (exit {proc.returncode})"
                 await self.transport.notify(
@@ -1235,4 +1355,7 @@ class Runtime:
 
         self._job_last_run[job.dir_name] = datetime.now()
         self.save_state()
-        log.info("Job '%s' completed (exit %s)", job.name, proc.returncode)
+        log.info(
+            "%s complete exit=%s duration=%.1fs output_len=%d notified=%s",
+            tag, proc.returncode, elapsed, len(output), notified,
+        )
