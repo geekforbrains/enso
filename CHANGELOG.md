@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.0] - 2026-05-31
+
+### Added
+
+- Claude requests can be routed through [kage](https://github.com/geekforbrains/kage) instead of `claude -p`. kage drives Claude Code's interactive TUI in tmux, so you can run on your Claude subscription rather than `claude -p`'s API billing. kage must be installed and on `PATH`; native `claude -p` remains the default
+- `/kage` (Telegram) / `!kage` (Slack) command toggles the runner without clearing session state. Interactive chat and background jobs select their runner **independently**: `/kage on|off` controls chat, `/kage jobs on|off` controls jobs. `/status` now shows both the chat and job runner
+- Runner settings persist under `providers.claude` in `config.json` (`runner` for chat, `job_runner` for jobs); both default to `print` (i.e. `claude -p`). Existing configs are backfilled with `job_runner` without clobbering user values
+- Configurable logging: log level and request/provider-flow debug visibility are now driven by config, with sane defaults backfilled for setup and existing installs (`logging_config.py`)
+
+### Fixed
+
+- Background-job process cleanup is hardened so a job's whole process tree (including the underlying kage/tmux panes) is reliably torn down on completion, timeout, or cancel
+
+### Changed
+
+- `/kage` inline menu renders one button per row so longer labels like `claude -p` no longer truncate on mobile
+
 ## [0.14.0] - 2026-05-12
 
 ### Added

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 from . import BaseProvider, StreamEvent, truncate_status
@@ -194,3 +195,119 @@ class ClaudeProvider(BaseProvider):
             return f"deleted session {clean_id[:8]}"
         return f"session {clean_id[:8]} (no file found)"
 
+
+class KageClaudeProvider(BaseProvider):
+    """Claude provider that drives Claude Code through kage/tmux."""
+
+    name = "claude"
+
+    def __init__(
+        self,
+        path: str,
+        *,
+        timeout: int = 1800,
+        restart: bool = True,
+    ):
+        super().__init__(path)
+        self.timeout = timeout
+        self.restart = restart
+
+    def build_command(
+        self,
+        prompt: str,
+        model: str,
+        session_id: str | None = None,
+        *,
+        effort: str | None = None,
+    ) -> list[str]:
+        clean_id = session_id.removeprefix("new:") if session_id else None
+        cmd = [
+            self.path, "claude",
+            "--stream",
+            "--stop-on-signal",
+            "--timeout", str(self.timeout),
+            "--model", model,
+        ]
+        if self.restart:
+            cmd.append("--restart")
+        if effort:
+            cmd.extend(["--effort", effort])
+        if clean_id:
+            cmd.extend(["--session-id", clean_id])
+        cmd.extend(["--", prompt])
+        return cmd
+
+    def build_batch_command(
+        self, prompt: str, model: str, *, effort: str | None = None,
+    ) -> list[str]:
+        # --stop-on-signal lets kage tear down its tmux pane when the job
+        # runner terminates this process on timeout/cancel; without it the
+        # underlying Claude pane is orphaned (the pane lives in tmux's own
+        # session, outside our process group).
+        cmd = [
+            self.path, "claude",
+            "--stop-on-signal",
+            "--timeout", str(self.timeout),
+            "--model", model,
+        ]
+        if effort:
+            cmd.extend(["--effort", effort])
+        cmd.extend(["--", prompt])
+        return cmd
+
+    def parse_event(self, event: dict) -> list[StreamEvent]:
+        events: list[StreamEvent] = []
+        session_id = event.get("session_id")
+        if isinstance(session_id, str) and session_id:
+            events.append(StreamEvent(kind="session", session_id=session_id))
+
+        status = event.get("status")
+        if status == "progress":
+            text = (
+                event.get("summary")
+                or event.get("tool")
+                or event.get("event")
+                or "Working..."
+            )
+            events.append(StreamEvent(kind="status", text=truncate_status(str(text))))
+        elif status == "done":
+            response = event.get("response")
+            if isinstance(response, str) and response:
+                events.append(StreamEvent(kind="response", text=response))
+        elif status == "error":
+            message = event.get("message") or event.get("reason") or "kage error"
+            events.append(StreamEvent(kind="error", text=str(message)))
+
+        return events
+
+    def clear_session(self, session_id: str | None, working_dir: str) -> str:
+        if not session_id:
+            return "no session"
+
+        clean_id = session_id.removeprefix("new:")
+        parts: list[str] = []
+        try:
+            result = subprocess.run(
+                [self.path, "session", "kill", "--session-id", clean_id],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                cwd=working_dir,
+            )
+            if result.returncode == 0:
+                parts.append(f"stopped kage session {clean_id[:8]}")
+            else:
+                detail = (result.stderr or result.stdout).strip()
+                parts.append(f"kage stop failed: {detail[:120] or result.returncode}")
+        except FileNotFoundError:
+            parts.append(f"kage not found for session {clean_id[:8]}")
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            parts.append(f"kage stop failed: {exc}")
+
+        session_file = Path(_get_project_dir(working_dir)) / f"{clean_id}.jsonl"
+        if session_file.is_file():
+            session_file.unlink()
+            parts.append(f"deleted transcript {clean_id[:8]}")
+        else:
+            parts.append(f"transcript {clean_id[:8]} (no file found)")
+        return "; ".join(parts)

@@ -122,6 +122,31 @@ Check things.
     assert job.notify == "alerts"
 
 
+def test_parse_job_runtime_controls(tmp_path):
+    """Jobs can override timeout and catch-up controls."""
+    job_file = tmp_path / "JOB.md"
+    job_file.write_text("""\
+---
+name: Controlled Job
+schedule: "*/15 * * * *"
+provider: codex
+model: gpt-5.5
+timeout: 1800
+prerun_timeout: 45
+catch_up: true
+misfire_grace_seconds: 900
+---
+
+Check things.
+""")
+    job = parse_job("controlled-job", str(job_file))
+    assert job is not None
+    assert job.timeout == 1800
+    assert job.prerun_timeout == 45
+    assert job.catch_up is True
+    assert job.misfire_grace_seconds == 900
+
+
 def test_parse_job_without_notify(tmp_path):
     """Jobs without a notify field default to None."""
     job_file = tmp_path / "JOB.md"

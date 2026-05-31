@@ -97,15 +97,25 @@ class BaseProvider(ABC):
 PROVIDER_NAMES = ["claude", "codex", "gemini"]
 
 
-def get_provider(name: str, path: str) -> BaseProvider:
+def get_provider(name: str, path: str, config: dict | None = None) -> BaseProvider:
     """Create a provider instance by name.
 
     Uses lazy imports to avoid circular dependencies — provider
     subclasses import from this module.
     """
-    from .claude import ClaudeProvider
+    from .claude import ClaudeProvider, KageClaudeProvider
     from .codex import CodexProvider
     from .gemini import GeminiProvider
+
+    config = config or {}
+    if name == "claude" and config.get("runner") == "kage":
+        timeout = int(config.get("kage_timeout", 1800))
+        restart = bool(config.get("kage_restart", True))
+        return KageClaudeProvider(
+            config.get("kage_path", "kage"),
+            timeout=timeout,
+            restart=restart,
+        )
 
     classes: dict[str, type[BaseProvider]] = {
         "claude": ClaudeProvider,

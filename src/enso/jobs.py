@@ -24,6 +24,10 @@ class Job:
     enabled: bool = True
     prerun: str | None = None
     notify: str | None = None
+    timeout: int = 15 * 60
+    prerun_timeout: int = 120
+    catch_up: bool = False
+    misfire_grace_seconds: int = 5 * 60
     prompt: str = ""
     path: str = ""
 
@@ -80,6 +84,12 @@ def parse_job(dir_name: str, path: str) -> Job | None:
         enabled=fields.get("enabled", "true").lower() == "true",
         prerun=fields.get("prerun"),
         notify=fields.get("notify"),
+        timeout=_parse_int(fields.get("timeout"), 15 * 60),
+        prerun_timeout=_parse_int(fields.get("prerun_timeout"), 120),
+        catch_up=fields.get("catch_up", "false").lower() == "true",
+        misfire_grace_seconds=_parse_int(
+            fields.get("misfire_grace_seconds"), 5 * 60,
+        ),
         prompt=parts[2].strip(),
         path=path,
     )
@@ -135,3 +145,14 @@ def _parse_frontmatter(text: str) -> dict[str, str]:
             value = match.group(2).strip().strip("\"'")
             fields[key] = value
     return fields
+
+
+def _parse_int(value: str | None, default: int) -> int:
+    """Parse a positive integer field with a conservative fallback."""
+    if value is None:
+        return default
+    try:
+        parsed = int(value)
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default

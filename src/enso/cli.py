@@ -22,6 +22,7 @@ from rich.table import Table
 from . import __version__, slack_cache
 from .config import CONFIG_FILE, detect_providers, load_config, resolve_providers, save_config
 from .jobs import create_job, load_jobs
+from .logging_config import configure_logging
 from .messages import clear as msg_clear
 from .messages import pending as msg_pending
 from .messages import send as msg_send
@@ -42,13 +43,6 @@ app.add_typer(slack_app, name="slack")
 console = Console()
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
-
-_NOISY_LOGGERS = (
-    "httpx", "httpcore", "telegram", "telegram.ext", "telegram.ext._application",
-    "telegram.ext._updater", "telegram.ext._base_update_handler", "telegram._bot",
-    "hpack", "urllib3", "h11", "h2",
-)
-
 
 # ---------------------------------------------------------------------------
 # Telegram API helpers (stdlib only — no extra deps for setup)
@@ -1053,6 +1047,8 @@ def serve(
     from .core import Runtime
 
     config = load_config()
+    logging_state = configure_logging(config, force=True)
+    log.debug("Logging configured: %s", logging_state)
     if working_dir:
         config["working_dir"] = working_dir
 
@@ -1140,13 +1136,18 @@ def job_run(
         if job.prerun:
             script = os.path.join(job.job_dir, job.prerun)
             if os.path.isfile(script):
-                proc = await asyncio.create_subprocess_exec(
+                proc = await runtime._spawn_process(
                     "bash", script,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=job.job_dir,
                 )
-                stdout, _ = await proc.communicate()
+                stdout, _, timed_out = await runtime._communicate_with_timeout(
+                    proc, f"Job '{job.name}' prerun", job.prerun_timeout,
+                )
+                if timed_out:
+                    console.print(f"[red]Prerun timed out after {job.prerun_timeout}s.[/]")
+                    return
                 if proc.returncode != 0:
                     console.print("[yellow]Prerun check failed, skipping.[/]")
                     return
@@ -1156,17 +1157,23 @@ def job_run(
         if prerun_output:
             prompt = prompt.replace("{{prerun_output}}", prerun_output)
 
-        provider = runtime.make_provider(job.provider)
+        provider = runtime.make_job_provider(job)
         cmd = provider.build_batch_command(prompt, job.model)
-        console.print(f"[dim]Running {job.provider}/{job.model}...[/]")
+        runner = runtime.resolve_job_runner(job.provider) or "n/a"
+        console.print(f"[dim]Running {job.provider}/{job.model} (runner: {runner})...[/]")
 
-        proc = await asyncio.create_subprocess_exec(
+        proc = await runtime._spawn_process(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             cwd=runtime.working_dir,
         )
-        stdout, _ = await proc.communicate()
+        stdout, _, timed_out = await runtime._communicate_with_timeout(
+            proc, f"Job '{job.name}'", job.timeout,
+        )
+        if timed_out:
+            console.print(f"[red]Job timed out after {job.timeout}s.[/]")
+            return
         console.print(stdout.decode(errors="replace"))
 
     asyncio.run(_run())
@@ -1713,6 +1720,17 @@ def slack_thread(
 # App setup
 # ---------------------------------------------------------------------------
 
+def _load_startup_config_for_logging() -> dict | None:
+    """Read config for early logging setup without creating config files."""
+    if not os.path.exists(CONFIG_FILE):
+        return None
+    try:
+        with open(CONFIG_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
 def _version_callback(value: bool) -> None:
     if value:
         console.print(f"enso {__version__}")
@@ -1726,10 +1744,7 @@ def _main(
     ] = False,
 ) -> None:
     """Enso — Personal AI Agent."""
-    fmt = "%(asctime)s [%(name)s] %(levelname)s - %(message)s"
-    logging.basicConfig(format=fmt, level=logging.INFO)
-    for name in _NOISY_LOGGERS:
-        logging.getLogger(name).setLevel(logging.WARNING)
+    configure_logging(_load_startup_config_for_logging())
 
 
 def main() -> None:

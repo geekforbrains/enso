@@ -6,6 +6,7 @@ from enso.providers import get_provider
 from enso.providers.claude import (
     EFFORT_LEVELS,
     ClaudeProvider,
+    KageClaudeProvider,
     clamp_effort,
     max_effort_for_model,
 )
@@ -48,6 +49,42 @@ def test_claude_build_batch_command():
     assert "stream-json" not in cmd
     assert "--verbose" not in cmd
     assert "--continue" not in cmd
+
+
+def test_kage_claude_build_command_new_session():
+    p = KageClaudeProvider("kage", timeout=300)
+    cmd = p.build_command("hello", "sonnet", session_id="new:abc-123", effort="high")
+    assert cmd[:2] == ["kage", "claude"]
+    assert "--stream" in cmd
+    assert "--stop-on-signal" in cmd
+    assert "--restart" in cmd
+    assert "--timeout" in cmd
+    assert cmd[cmd.index("--timeout") + 1] == "300"
+    assert cmd[cmd.index("--session-id") + 1] == "abc-123"
+    assert cmd[cmd.index("--model") + 1] == "sonnet"
+    assert cmd[cmd.index("--effort") + 1] == "high"
+    assert "new:" not in " ".join(cmd)
+    assert cmd[-2:] == ["--", "hello"]
+
+
+def test_kage_claude_build_command_without_restart():
+    p = KageClaudeProvider("kage", restart=False)
+    cmd = p.build_command("hello", "opus", session_id="abc-123")
+    assert "--restart" not in cmd
+
+
+def test_kage_claude_build_batch_command():
+    p = KageClaudeProvider("kage", timeout=600)
+    cmd = p.build_batch_command("hello", "opus", effort="max")
+    assert cmd[:2] == ["kage", "claude"]
+    assert "--stream" not in cmd
+    assert "--session-id" not in cmd
+    # batch must request signal-based teardown so a killed job doesn't orphan
+    # its tmux pane.
+    assert "--stop-on-signal" in cmd
+    assert cmd[cmd.index("--timeout") + 1] == "600"
+    assert cmd[cmd.index("--effort") + 1] == "max"
+    assert cmd[-2:] == ["--", "hello"]
 
 
 def test_codex_build_command():
@@ -118,6 +155,44 @@ def test_claude_parse_tool_use():
     assert "Reading" in events[0].text
 
 
+def test_kage_claude_parse_progress():
+    p = KageClaudeProvider("kage")
+    events = p.parse_event({
+        "status": "progress",
+        "session_id": "sid-123",
+        "event": "PreToolUse",
+        "tool": "Bash",
+        "summary": "pytest",
+    })
+    assert events[0].kind == "session"
+    assert events[0].session_id == "sid-123"
+    assert events[1].kind == "status"
+    assert events[1].text == "pytest"
+
+
+def test_kage_claude_parse_done():
+    p = KageClaudeProvider("kage")
+    events = p.parse_event({
+        "status": "done",
+        "session_id": "sid-123",
+        "response": "Done!",
+    })
+    assert any(e.kind == "session" and e.session_id == "sid-123" for e in events)
+    assert any(e.kind == "response" and e.text == "Done!" for e in events)
+
+
+def test_kage_claude_parse_error():
+    p = KageClaudeProvider("kage")
+    events = p.parse_event({
+        "status": "error",
+        "reason": "timeout",
+        "message": "no done marker",
+    })
+    assert len(events) == 1
+    assert events[0].kind == "error"
+    assert events[0].text == "no done marker"
+
+
 def test_codex_parse_agent_message():
     p = CodexProvider("codex")
     events = p.parse_event({
@@ -159,6 +234,19 @@ def test_get_provider():
     p = get_provider("claude", "/usr/bin/claude")
     assert isinstance(p, ClaudeProvider)
     assert p.path == "/usr/bin/claude"
+
+
+def test_get_provider_kage_claude():
+    p = get_provider("claude", "claude", {
+        "runner": "kage",
+        "kage_path": "/usr/bin/kage",
+        "kage_timeout": 900,
+        "kage_restart": False,
+    })
+    assert isinstance(p, KageClaudeProvider)
+    assert p.path == "/usr/bin/kage"
+    assert p.timeout == 900
+    assert p.restart is False
 
 
 def test_get_provider_unknown():
