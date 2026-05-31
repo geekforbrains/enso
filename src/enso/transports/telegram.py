@@ -33,6 +33,7 @@ from ..commands import (
     cmd_compact_async,
     cmd_effort,
     cmd_help,
+    cmd_kage,
     cmd_logs,
     cmd_model,
     cmd_status,
@@ -62,6 +63,7 @@ COMMANDS = [
     BotCommand("use", "Switch provider"),
     BotCommand("model", "Switch model"),
     BotCommand("effort", "Set reasoning effort (Claude)"),
+    BotCommand("kage", "Toggle Kage for Claude (add 'jobs' for jobs)"),
     BotCommand("status", "Provider, model & effort info"),
     BotCommand("clear", "Clear session"),
     BotCommand("compact", "Summarise & compact the active session"),
@@ -475,6 +477,34 @@ class TelegramTransport(BaseTransport):
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
 
+    async def _cmd_kage(self, update: Update, _ctx: Any) -> None:
+        if not self._is_authorized(update):
+            return
+        conv_id = str(update.effective_chat.id)
+        parts = (update.message.text or "").split()
+        choice = " ".join(parts[1:]) if len(parts) > 1 else None
+
+        response, options = cmd_kage(self.runtime, conv_id, choice)
+        if response:
+            await update.message.reply_text(response)
+            return
+
+        # options are (callback_data, label, active). One button per row so
+        # longer labels (e.g. "claude -p") aren't truncated on mobile.
+        rows = [
+            [
+                InlineKeyboardButton(
+                    f"{'● ' if active else ''}{label}",
+                    callback_data=cb,
+                )
+            ]
+            for cb, label, active in options
+        ]
+        await update.message.reply_text(
+            "Claude runner:",
+            reply_markup=InlineKeyboardMarkup(rows),
+        )
+
     async def _cmd_clear(self, update: Update, _ctx: Any) -> None:
         if not self._is_authorized(update):
             return
@@ -502,7 +532,7 @@ class TelegramTransport(BaseTransport):
             return
         conv_id = str(update.effective_chat.id)
         await update.message.reply_text(
-            "Compacting context — this can take 10–30s while the agent summarises…"
+            "Compacting context - this can take 10-30s while the agent summarises..."
         )
         await update.effective_chat.send_action(ChatAction.TYPING)
         reply = await cmd_compact_async(self.runtime, conv_id)
@@ -557,6 +587,13 @@ class TelegramTransport(BaseTransport):
         elif data.startswith("effort:"):
             choice = data.split(":", 1)[1]
             response, _ = cmd_effort(rt, conv_id, choice)
+            if response:
+                await query.edit_message_text(response)
+
+        elif data.startswith("kage:"):
+            # "kage:on" -> "on"; "kage:jobs:on" -> "jobs on"
+            choice = data.split(":", 1)[1].replace(":", " ")
+            response, _ = cmd_kage(rt, conv_id, choice)
             if response:
                 await query.edit_message_text(response)
 

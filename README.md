@@ -40,7 +40,8 @@ Telegram autocompletes these when you type `/`. On Slack, use `!` instead (e.g. 
 | `/use` | Switch agent (shows buttons, or `/use claude`) |
 | `/model` | Switch model (shows buttons, or `/model sonnet`) |
 | `/effort` | Set Claude reasoning effort: `low` → `max` (or `default` to clear) |
-| `/status` | Active agent, model, and effort |
+| `/kage` | Route Claude through kage instead of `claude -p` (`/kage jobs on` for background jobs) |
+| `/status` | Active agent, model, runner, and effort |
 | `/stop` | Stop process & clear queue |
 | `/queue` | View & manage queued messages |
 | `/clear` | New session (shows current/all buttons) |
@@ -52,6 +53,19 @@ Telegram autocompletes these when you type `/`. On Slack, use `!` instead (e.g. 
 You can also send files — they're downloaded and passed to the active agent. Responses render with per-transport formatting (Telegram HTML; Slack mrkdwn).
 
 **Slack specifics.** DMs work like Telegram — every message dispatches. In channels, Enso only responds when mentioned (`@bot help me`); once a thread starts, it stays attentive to that thread only if you keep mentioning it. The bot fetches the last few thread/channel messages as context so it knows what's going on.
+
+## Claude runner (kage)
+
+Claude requests default to `claude -p`. You can instead route them through [kage](https://github.com/geekforbrains/kage), which drives Claude Code's interactive TUI in tmux — useful when you'd rather use your Claude subscription than `claude -p`'s API billing. kage must be installed and on your PATH.
+
+Interactive chat and background jobs choose their runner **independently**:
+
+| Toggle | Affects |
+|--------|---------|
+| `/kage on` · `/kage off` | Your interactive chat messages |
+| `/kage jobs on` · `/kage jobs off` | Background jobs |
+
+So chat can run through kage while jobs stay on `claude -p`, or any other mix. `/status` shows both. The settings live under `providers.claude` in `config.json` (`runner` for chat, `job_runner` for jobs); both default to `print` (i.e. `claude -p`).
 
 ## Slack directory (`enso slack`)
 
@@ -125,6 +139,8 @@ enso job run daily-review    # test it manually
 ```
 
 Each job has a `JOB.md` with a cron schedule, provider, model, and prompt. Jobs can include a prerun script that gates execution — `exit 0` to proceed, `exit 1` to skip silently, `exit 2+` for errors. Prerun stdout gets injected into the prompt via `{{prerun_output}}`. The bundled `jobs` skill teaches your agents how to create and manage jobs themselves.
+
+Claude jobs run via `claude -p` by default; `/kage jobs on` routes them through kage independently of your chat runner (see [Claude runner](#claude-runner-kage)). Each job's whole lifecycle — dispatch, prerun gate, spawn, completion or timeout — is logged under a `[job:<name>]` tag for easy tracing.
 
 ## Service Management
 

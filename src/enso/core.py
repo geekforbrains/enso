@@ -8,6 +8,8 @@ import importlib.resources
 import json
 import logging
 import os
+import shlex
+import signal
 import tempfile
 from asyncio.subprocess import Process
 from collections import deque
@@ -20,6 +22,7 @@ from croniter import croniter
 from . import messages
 from .config import CONFIG_DIR, STATE_FILE
 from .jobs import Job, load_jobs
+from .logging_config import logging_flags
 from .providers import BaseProvider, StreamEvent, get_provider
 
 if TYPE_CHECKING:
@@ -67,6 +70,17 @@ def split_text(text: str, limit: int = 4096) -> list[str]:
 
 MAX_QUEUE_SIZE = 5
 SESSION_TTL_DAYS = int(os.environ.get("ENSO_SESSION_TTL_DAYS", "30"))
+JOB_CONCURRENCY = int(os.environ.get("ENSO_JOB_CONCURRENCY", "2"))
+PROCESS_TERMINATE_GRACE_SECS = float(os.environ.get("ENSO_PROCESS_TERMINATE_GRACE_SECS", "5"))
+
+
+def _redacted_command(cmd: list[str]) -> str:
+    """Return a shell-like command string with the prompt argument redacted."""
+    if "--" not in cmd:
+        return shlex.join(cmd)
+    sep = cmd.index("--")
+    prompt_chars = sum(len(part) for part in cmd[sep + 1 :])
+    return shlex.join([*cmd[: sep + 1], f"<prompt chars={prompt_chars}>"])
 
 
 @dataclass
@@ -83,6 +97,9 @@ class Runtime:
 
     def __init__(self, config: dict):
         self.config = config
+        flags = logging_flags(config)
+        self.debug_prompts: bool = flags["debug_prompts"]
+        self.debug_events: bool = flags["debug_events"]
         self.working_dir: str = config.get("working_dir", os.getcwd())
         os.makedirs(self.working_dir, exist_ok=True)
         self.models: dict[str, list[str]] = {
@@ -113,6 +130,13 @@ class Runtime:
 
         # Job scheduler state
         self._job_last_run: dict[str, datetime] = {}
+        self._running_job_tasks: dict[str, asyncio.Task] = {}
+        self._job_semaphore = asyncio.Semaphore(JOB_CONCURRENCY)
+
+        # Last (model, effort) a kage interactive turn ran with, per chat. Used
+        # to keep the warm tmux session alive across same-config turns and only
+        # restart it when the model or effort actually changes.
+        self._kage_last_config: dict[str, tuple[str, str | None]] = {}
 
     # -- Workspace setup --
 
@@ -170,8 +194,10 @@ class Runtime:
         # Auto-compact notification hooks — lets the user know via Telegram
         # when a provider is compacting context (which can be slow).
         # Claude: PreCompact with "auto" matcher
-        # Gemini: PreCompress with "auto" matcher
         # Codex: no compaction hooks available
+        # Gemini: skipped — the CLI fires PreCompress unconditionally on
+        # every turn (before its own threshold check), so the hook is pure
+        # noise. Restore once upstream fixes the timing.
         notify_cmd = (
             "enso message send"
             " 'Autocompacting context, this might take a moment...'"
@@ -179,12 +205,6 @@ class Runtime:
         self._ensure_hook_entry(
             os.path.join(self.working_dir, ".claude", "settings.json"),
             event="PreCompact",
-            matcher="auto",
-            command=notify_cmd,
-        )
-        self._ensure_hook_entry(
-            os.path.join(self.working_dir, ".gemini", "settings.json"),
-            event="PreCompress",
             matcher="auto",
             command=notify_cmd,
         )
@@ -391,6 +411,7 @@ class Runtime:
             for key in [k for k in self.effort_by_chat_provider_model if k[0] == cid]:
                 self.effort_by_chat_provider_model.pop(key)
             self.compact_seed_by_chat.pop(cid, None)
+            self._kage_last_config.pop(cid, None)
             self._last_active.pop(cid)
         log.info("Pruned %d stale conversation(s) (>%dd)", len(stale), SESSION_TTL_DAYS)
         self.save_state()
@@ -436,11 +457,81 @@ class Runtime:
 
     # -- Provider management --
 
-    def make_provider(self, provider_name: str) -> BaseProvider:
-        """Create a fresh provider instance."""
+    def make_provider(
+        self,
+        provider_name: str,
+        *,
+        overrides: dict[str, Any] | None = None,
+    ) -> BaseProvider:
+        """Create a fresh provider instance.
+
+        ``overrides`` shallow-merges onto the provider's stored config before
+        construction. The job runner uses this to select its own ``runner``
+        (independent of interactive chat) and to thread the job's ``timeout``
+        into kage's ``--timeout`` — without mutating the persisted config.
+        """
         providers_cfg = self.config.get("providers", {})
-        path = providers_cfg.get(provider_name, {}).get("path", provider_name)
-        return get_provider(provider_name, path)
+        provider_cfg = dict(providers_cfg.get(provider_name, {}))
+        if overrides:
+            provider_cfg.update(overrides)
+        path = provider_cfg.get("path", provider_name)
+        provider = get_provider(provider_name, path, provider_cfg)
+        log.debug(
+            "Resolved provider name=%s class=%s path=%s runner=%s",
+            provider_name,
+            provider.__class__.__name__,
+            provider.path,
+            provider_cfg.get("runner", "default"),
+        )
+        return provider
+
+    def resolve_job_runner(self, provider_name: str) -> str | None:
+        """Return the configured runner for background jobs of this provider.
+
+        Only Claude has alternate runners; everything else returns ``None``
+        (no override). Jobs are decoupled from interactive chat: they read
+        ``providers.claude.job_runner`` (default ``"print"``), so toggling
+        ``/kage`` for chat never silently changes background jobs.
+        """
+        if provider_name != "claude":
+            return None
+        providers = self.config.get("providers", {})
+        claude_cfg = providers.get("claude", {}) if isinstance(providers, dict) else {}
+        return "kage" if claude_cfg.get("job_runner") == "kage" else "print"
+
+    def _interactive_overrides(
+        self, provider_name: str, chat_id: str, model: str, effort: str | None,
+    ) -> dict[str, Any]:
+        """Per-request provider overrides for interactive chat.
+
+        For the kage runner this decides whether to restart the underlying
+        tmux/Claude-Code session: restart only when the model or effort changed
+        since the last turn, so the warm session is reused otherwise. kage
+        always re-applies --model/--effort on a fresh start, so a restart is
+        only needed to re-apply config to an already-running session.
+        """
+        overrides: dict[str, Any] = {}
+        if provider_name != "claude":
+            return overrides
+        providers = self.config.get("providers", {})
+        claude_cfg = providers.get("claude", {}) if isinstance(providers, dict) else {}
+        if claude_cfg.get("runner") != "kage":
+            return overrides
+
+        key = chat_id
+        prev = self._kage_last_config.get(key)
+        current = (model, effort)
+        self._kage_last_config[key] = current
+        changed = prev is not None and prev != current
+        # ``kage_restart`` (default on) gates whether we restart at all; the
+        # diff decides whether a restart is warranted this turn.
+        enabled = bool(claude_cfg.get("kage_restart", True))
+        overrides["kage_restart"] = enabled and changed
+        log.debug(
+            "[claude] kage restart decision chat=%s prev=%s current=%s -> restart=%s",
+            chat_id, prev, current, overrides["kage_restart"],
+        )
+        return overrides
 
     # -- Session management --
 
@@ -630,9 +721,12 @@ class Runtime:
             return ""
 
         async with lock:
-            provider = self.make_provider(provider_name)
             model = self.get_active_model(chat_id, provider_name)
             effort = self.get_active_effort(chat_id, provider_name, model)
+            overrides = self._interactive_overrides(
+                provider_name, chat_id, model, effort,
+            )
+            provider = self.make_provider(provider_name, overrides=overrides)
 
             log.info(
                 "[%s] Compacting chat=%s model=%s effort=%s",
@@ -660,6 +754,86 @@ class Runtime:
 
     # -- Process control --
 
+    async def _spawn_process(self, *cmd: str, **kwargs: Any) -> Process:
+        """Spawn a subprocess isolated in its own process group when possible."""
+        if os.name != "nt":
+            kwargs.setdefault("start_new_session", True)
+        return await asyncio.create_subprocess_exec(*cmd, **kwargs)
+
+    async def _terminate_process_tree(
+        self,
+        process: Process,
+        label: str,
+        *,
+        grace: float = PROCESS_TERMINATE_GRACE_SECS,
+    ) -> None:
+        """Terminate a subprocess and any children in its process group."""
+        if process.returncode is not None:
+            return
+
+        pgid: int | None = None
+        if os.name != "nt":
+            try:
+                pgid = os.getpgid(process.pid)
+            except ProcessLookupError:
+                pgid = None
+
+        def signal_process(sig: signal.Signals) -> None:
+            try:
+                if pgid is not None:
+                    os.killpg(pgid, sig)
+                elif sig == signal.SIGTERM:
+                    process.terminate()
+                else:
+                    process.kill()
+            except ProcessLookupError:
+                pass
+
+        log.info(
+            "Terminating process tree for %s pid=%s pgid=%s", label, process.pid, pgid,
+        )
+        signal_process(signal.SIGTERM)
+        try:
+            await asyncio.wait_for(process.wait(), timeout=grace)
+            return
+        except asyncio.TimeoutError:
+            pass
+
+        log.warning("Process tree for %s did not exit after %.1fs; killing", label, grace)
+        kill_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
+        signal_process(kill_signal)
+        try:
+            await asyncio.wait_for(process.wait(), timeout=grace)
+        except asyncio.TimeoutError:
+            log.error(
+                "Process tree for %s still did not exit after SIGKILL pid=%s pgid=%s",
+                label, process.pid, pgid,
+            )
+
+    async def _communicate_with_timeout(
+        self,
+        process: Process,
+        label: str,
+        timeout_secs: int,
+    ) -> tuple[bytes, bytes | None, bool]:
+        """Communicate with a child process and kill its tree on timeout."""
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(), timeout=timeout_secs,
+            )
+            return stdout, stderr, False
+        except asyncio.CancelledError:
+            log.warning("%s was cancelled; terminating process tree", label)
+            await self._terminate_process_tree(process, label)
+            raise
+        except asyncio.TimeoutError:
+            log.warning("%s timed out after %ds", label, timeout_secs)
+            await self._terminate_process_tree(process, label)
+            with contextlib.suppress(Exception):
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=1)
+                return stdout, stderr, True
+            return b"", b"", True
+
     async def stop_chat(self, chat_id: str) -> tuple[bool, str | None]:
         """Stop running process/task for a chat. Returns (had_something, error_msg)."""
         process = self.running_process_by_chat.get(chat_id)
@@ -670,12 +844,9 @@ class Runtime:
 
         try:
             if process and process.returncode is None:
-                process.terminate()
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=0.5)
-                except TimeoutError:
-                    if process.returncode is None:
-                        process.kill()
+                await self._terminate_process_tree(
+                    process, f"chat {chat_id}", grace=0.5,
+                )
             if task and not task.done():
                 task.cancel()
             return True, None
@@ -703,7 +874,17 @@ class Runtime:
         """
         session_id = self._get_or_create_session(chat_id, provider.name)
         cmd = provider.build_command(prompt, model, session_id, effort=effort)
-        log.info("[%s] Spawning: %s", provider.name, " ".join(cmd[:6]) + " ...")
+        log.info(
+            "[%s] spawning class=%s chat=%s model=%s effort=%s session=%s prompt_len=%d",
+            provider.name,
+            provider.__class__.__name__,
+            chat_id,
+            model,
+            effort or "-",
+            session_id or "-",
+            len(prompt),
+        )
+        log.debug("[%s] command=%s", provider.name, _redacted_command(cmd))
 
         # Strip new: prefix immediately so future calls use --resume
         # even if this run crashes before emitting a result event.
@@ -729,8 +910,16 @@ class Runtime:
             merged = os.environ.copy()
             merged.update(extra_env)
             kwargs["env"] = merged
+            log.debug(
+                "[%s] subprocess cwd=%s extra_env_keys=%s",
+                provider.name,
+                self.working_dir,
+                sorted(extra_env),
+            )
+        else:
+            log.debug("[%s] subprocess cwd=%s extra_env_keys=[]", provider.name, self.working_dir)
 
-        process = await asyncio.create_subprocess_exec(*cmd, **kwargs)
+        process = await self._spawn_process(*cmd, **kwargs)
         log.info("[%s] pid=%s", provider.name, process.pid)
         self.running_process_by_chat[chat_id] = process
 
@@ -745,7 +934,33 @@ class Runtime:
                 if raw is None:
                     continue
                 event_count += 1
-                for stream_event in provider.parse_event(raw):
+                if self.debug_events:
+                    log.debug(
+                        "[%s] raw_event=%d type=%s status=%s keys=%s",
+                        provider.name,
+                        event_count,
+                        raw.get("type", "-"),
+                        raw.get("status", "-"),
+                        sorted(raw),
+                    )
+                parsed_events = provider.parse_event(raw)
+                if self.debug_events and not parsed_events:
+                    log.debug(
+                        "[%s] raw_event=%d emitted no stream events",
+                        provider.name,
+                        event_count,
+                    )
+                for stream_event in parsed_events:
+                    if self.debug_events:
+                        log.debug(
+                            "[%s] stream_event raw=%d kind=%s text_len=%d session=%s usage=%s",
+                            provider.name,
+                            event_count,
+                            stream_event.kind,
+                            len(stream_event.text or ""),
+                            stream_event.session_id or "-",
+                            stream_event.usage or "-",
+                        )
                     if stream_event.kind == "session" and stream_event.session_id:
                         self.session_by_chat_provider[
                             (chat_id, provider.name)
@@ -763,6 +978,10 @@ class Runtime:
                     log.error("[%s] stderr: %s", provider.name, stderr_text)
                     yield StreamEvent(kind="error", text=stderr_text)
         finally:
+            if process.returncode is None:
+                await self._terminate_process_tree(
+                    process, f"{provider.name} chat {chat_id}", grace=1.0,
+                )
             rc = process.returncode
             log.info("[%s] pid=%s exit=%s events=%d", provider.name, process.pid, rc, event_count)
             if self.running_process_by_chat.get(chat_id) is process:
@@ -790,9 +1009,10 @@ class Runtime:
         # Inject compact seed if one is pending for this chat.
         prompt = self._consume_compact_seed(chat_id, prompt, provider_name)
 
-        provider = self.make_provider(provider_name)
         model = self.get_active_model(chat_id, provider_name)
         effort = self.get_active_effort(chat_id, provider_name, model)
+        overrides = self._interactive_overrides(provider_name, chat_id, model, effort)
+        provider = self.make_provider(provider_name, overrides=overrides)
         display = provider_name.capitalize()
         effort_part = f" / {effort}" if effort else ""
 
@@ -803,10 +1023,19 @@ class Runtime:
             origin_env = {}
 
         log.info(
-            "[%s] chat=%s model=%s effort=%s prompt_len=%d: %.120s",
-            provider_name, chat_id, model, effort or "-", len(prompt), prompt,
+            "[%s] request chat=%s provider_class=%s model=%s effort=%s "
+            "prompt_len=%d preview=%.120s",
+            provider_name,
+            chat_id,
+            provider.__class__.__name__,
+            model,
+            effort or "-",
+            len(prompt),
+            prompt,
         )
-        log.debug("[%s] Full prompt:\n%s", provider_name, prompt)
+        log.debug("[%s] origin_env_keys=%s", provider_name, sorted(origin_env))
+        if self.debug_prompts:
+            log.debug("[%s] full_prompt:\n%s", provider_name, prompt)
 
         await ctx.send_typing()
         status_msg = None
@@ -834,6 +1063,15 @@ class Runtime:
                 provider, prompt, chat_id, model,
                 effort=effort, extra_env=origin_env,
             ):
+                if self.debug_events:
+                    log.debug(
+                        "[%s] handling_event kind=%s text_len=%d session=%s usage=%s",
+                        provider_name,
+                        event.kind,
+                        len(event.text or ""),
+                        event.session_id or "-",
+                        event.usage or "-",
+                    )
                 if event.kind == "status":
                     state["status"] = event.text
                 elif event.kind == "response":
@@ -849,6 +1087,17 @@ class Runtime:
                 await ctx.delete_status(status_msg)
 
             response_text = provider.format_response(response_parts)
+            log.info(
+                "[%s] request complete chat=%s response_parts=%d "
+                "response_len=%d error=%s usage_pct=%s elapsed=%s",
+                provider_name,
+                chat_id,
+                len(response_parts),
+                len(response_text),
+                bool(error_text),
+                usage_pct if usage_pct is not None else "-",
+                state["elapsed"],
+            )
             usage_part = f" / {usage_pct}%" if usage_pct is not None else ""
             prefix = f"({display}{effort_part}{usage_part} / {state['elapsed']}s)"
 
@@ -923,11 +1172,32 @@ class Runtime:
             for job in load_jobs():
                 if not job.enabled:
                     continue
+                if job.dir_name in self._running_job_tasks:
+                    continue
                 if self._should_run_job(job, now):
-                    try:
-                        await self._execute_job(job)
-                    except Exception:
-                        log.exception("Job '%s' failed", job.name)
+                    log.info(
+                        "[job:%s] scheduler dispatch (schedule=%r)",
+                        job.dir_name, job.schedule,
+                    )
+                    self._job_last_run[job.dir_name] = now
+                    self.save_state()
+                    task = asyncio.create_task(self._run_job_task(job))
+                    self._running_job_tasks[job.dir_name] = task
+                    task.add_done_callback(
+                        lambda _task, name=job.dir_name: self._running_job_tasks.pop(
+                            name, None,
+                        )
+                    )
+
+    async def _run_job_task(self, job: Job) -> None:
+        """Run one scheduled job without blocking the scheduler loop."""
+        async with self._job_semaphore:
+            try:
+                await self._execute_job(job)
+            except Exception:
+                log.exception("Job '%s' failed", job.name)
+                self._job_last_run[job.dir_name] = datetime.now()
+                self.save_state()
 
     def _should_run_job(self, job: Job, now: datetime) -> bool:
         """Check if a job should run based on its cron schedule."""
@@ -938,38 +1208,93 @@ class Runtime:
             self.save_state()
             return False
         cron = croniter(job.schedule, last_run)
-        return cron.get_next(datetime) <= now
+        next_run = cron.get_next(datetime)
+        if next_run > now:
+            return False
+        if (
+            not job.catch_up
+            and (now - next_run).total_seconds() > job.misfire_grace_seconds
+        ):
+            log.warning(
+                "Job '%s' missed scheduled run at %s by more than %ss; skipping catch-up",
+                job.name, next_run.isoformat(), job.misfire_grace_seconds,
+            )
+            self._job_last_run[job.dir_name] = now
+            self.save_state()
+            return False
+        return True
+
+    def make_job_provider(self, job: Job) -> BaseProvider:
+        """Build the provider for a background job.
+
+        Jobs select their runner independently from interactive chat
+        (``resolve_job_runner``) and thread their own ``timeout`` into the
+        runner so a single value governs how long the job may run — fixing
+        the prior split where kage used its own ``kage_timeout`` while the
+        job runner enforced ``job.timeout`` separately.
+        """
+        overrides: dict[str, Any] = {}
+        runner = self.resolve_job_runner(job.provider)
+        if runner is not None:
+            overrides["runner"] = runner
+            # kage's internal --timeout should match the job budget so it can
+            # self-terminate (and clean up its tmux pane) before we do.
+            overrides["kage_timeout"] = job.timeout
+        return self.make_provider(job.provider, overrides=overrides)
 
     async def _execute_job(self, job: Job) -> None:
         """Run a job: prerun gate, provider subprocess, notify, queue message."""
+        tag = f"[job:{job.dir_name}]"
+        started = datetime.now()
+        runner = self.resolve_job_runner(job.provider) or "n/a"
+        log.info(
+            "%s start name=%r provider=%s model=%s runner=%s timeout=%ss prerun=%s",
+            tag, job.name, job.provider, job.model, runner, job.timeout,
+            job.prerun or "-",
+        )
 
         # Prerun gate
         prerun_output = ""
         if job.prerun:
             prerun_script = os.path.join(job.job_dir, job.prerun)
             if os.path.isfile(prerun_script):
-                proc = await asyncio.create_subprocess_exec(
+                log.info(
+                    "%s prerun start script=%s timeout=%ss",
+                    tag, job.prerun, job.prerun_timeout,
+                )
+                proc = await self._spawn_process(
                     "bash", prerun_script,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=job.job_dir,
                 )
-                stdout, stderr = await proc.communicate()
+                stdout, stderr, timed_out = await self._communicate_with_timeout(
+                    proc, f"Job '{job.name}' prerun", job.prerun_timeout,
+                )
+                if timed_out:
+                    log.warning(
+                        "%s prerun timed out after %ss; skipping run",
+                        tag, job.prerun_timeout,
+                    )
+                    self._job_last_run[job.dir_name] = datetime.now()
+                    self.save_state()
+                    return
                 if proc.returncode != 0:
                     if proc.returncode == 1:
-                        log.debug("Job '%s' prerun: no work, skipping", job.name)
+                        log.info("%s prerun gate closed (exit 1) — no work, skipping", tag)
                     else:
                         err = stderr.decode(errors="replace").strip()
                         log.warning(
-                            "Job '%s' prerun error (exit %s): %s",
-                            job.name, proc.returncode, err or "(no stderr)",
+                            "%s prerun error (exit %s): %s",
+                            tag, proc.returncode, err or "(no stderr)",
                         )
                     self._job_last_run[job.dir_name] = datetime.now()
                     self.save_state()
                     return
                 prerun_output = stdout.decode(errors="replace").strip()
-
-        log.info("Running job: %s (%s/%s)", job.name, job.provider, job.model)
+                log.info("%s prerun gate open (exit 0) output_len=%d", tag, len(prerun_output))
+            else:
+                log.warning("%s prerun script not found: %s", tag, prerun_script)
 
         # Build prompt with prerun output injection
         prompt = job.prompt
@@ -977,25 +1302,31 @@ class Runtime:
             prompt = prompt.replace("{{prerun_output}}", prerun_output)
 
         # Run provider in batch mode
-        provider = self.make_provider(job.provider)
+        provider = self.make_job_provider(job)
         cmd = provider.build_batch_command(prompt, job.model)
+        log.info(
+            "%s spawning provider_class=%s runner=%s cwd=%s prompt_len=%d",
+            tag, provider.__class__.__name__, runner, self.working_dir, len(prompt),
+        )
+        log.debug("%s command=%s", tag, _redacted_command(cmd))
 
-        proc = await asyncio.create_subprocess_exec(
+        proc = await self._spawn_process(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             cwd=self.working_dir,
         )
-        timeout_secs = 15 * 60  # 15 minute hard limit per job
-        try:
-            stdout, _ = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout_secs,
+        log.info("%s pid=%s", tag, proc.pid)
+        stdout, _, timed_out = await self._communicate_with_timeout(
+            proc, f"Job '{job.name}'", job.timeout,
+        )
+        elapsed = (datetime.now() - started).total_seconds()
+        if timed_out:
+            output = f"Job timed out after {job.timeout}s; process tree was terminated"
+            log.warning(
+                "%s timeout after %ss (elapsed=%.1fs); process tree terminated",
+                tag, job.timeout, elapsed,
             )
-        except asyncio.TimeoutError:
-            log.warning("Job '%s' timed out after %ds, killing", job.name, timeout_secs)
-            proc.kill()
-            await proc.wait()
-            output = f"Job timed out after {timeout_secs}s"
             if self.transport:
                 await self.transport.notify(
                     f"\u26a0\ufe0f [{job.name}] {output}",
@@ -1007,7 +1338,13 @@ class Runtime:
         output = stdout.decode(errors="replace").strip()
 
         # Only notify on failure — successful jobs handle their own messaging
+        notified = False
         if proc.returncode != 0:
+            notified = True
+            log.warning(
+                "%s nonzero exit=%s output_len=%d notify=%s",
+                tag, proc.returncode, len(output), job.notify or "default",
+            )
             if self.transport:
                 label = f"{job.name} (exit {proc.returncode})"
                 await self.transport.notify(
@@ -1018,4 +1355,7 @@ class Runtime:
 
         self._job_last_run[job.dir_name] = datetime.now()
         self.save_state()
-        log.info("Job '%s' completed (exit %s)", job.name, proc.returncode)
+        log.info(
+            "%s complete exit=%s duration=%.1fs output_len=%d notified=%s",
+            tag, proc.returncode, elapsed, len(output), notified,
+        )
