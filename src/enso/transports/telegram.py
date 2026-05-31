@@ -489,16 +489,17 @@ class TelegramTransport(BaseTransport):
             await update.message.reply_text(response)
             return
 
-        # options are (callback_data, label, active). Two buttons per row:
-        # the interactive pair, then the jobs pair.
-        buttons = [
-            InlineKeyboardButton(
-                f"{'● ' if active else ''}{label}",
-                callback_data=cb,
-            )
+        # options are (callback_data, label, active). One button per row so
+        # longer labels (e.g. "claude -p") aren't truncated on mobile.
+        rows = [
+            [
+                InlineKeyboardButton(
+                    f"{'● ' if active else ''}{label}",
+                    callback_data=cb,
+                )
+            ]
             for cb, label, active in options
         ]
-        rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
         await update.message.reply_text(
             "Claude runner:",
             reply_markup=InlineKeyboardMarkup(rows),
