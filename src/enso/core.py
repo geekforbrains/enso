@@ -1335,7 +1335,7 @@ class Runtime:
             self._job_last_run[job.dir_name] = datetime.now()
             self.save_state()
             return
-        output = stdout.decode(errors="replace").strip()
+        output = provider.parse_batch_output(stdout.decode(errors="replace"))
 
         # Only notify on failure — successful jobs handle their own messaging
         notified = False

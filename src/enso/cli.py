@@ -1174,7 +1174,7 @@ def job_run(
         if timed_out:
             console.print(f"[red]Job timed out after {job.timeout}s.[/]")
             return
-        console.print(stdout.decode(errors="replace"))
+        console.print(provider.parse_batch_output(stdout.decode(errors="replace")))
 
     asyncio.run(_run())
 

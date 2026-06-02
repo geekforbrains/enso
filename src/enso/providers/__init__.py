@@ -89,6 +89,15 @@ class BaseProvider(ABC):
         """Combine response parts into final text. Default: last part wins."""
         return parts[-1] if parts else ""
 
+    def parse_batch_output(self, stdout: str) -> str:
+        """Extract the final answer from a finished batch (job) run's stdout.
+
+        Default: the batch command emits plain text, so return it stripped.
+        Providers whose batch command streams JSON override this to pull the
+        final response/error out of the event stream.
+        """
+        return stdout.strip()
+
     def clear_session(self, session_id: str | None, working_dir: str) -> str:
         """Clear session data. Returns human-readable summary."""
         return "session cleared" if session_id else "no session"

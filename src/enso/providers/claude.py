@@ -240,12 +240,19 @@ class KageClaudeProvider(BaseProvider):
     def build_batch_command(
         self, prompt: str, model: str, *, effort: str | None = None,
     ) -> list[str]:
-        # --stop-on-signal lets kage tear down its tmux pane when the job
-        # runner terminates this process on timeout/cancel; without it the
-        # underlying Claude pane is orphaned (the pane lives in tmux's own
-        # session, outside our process group).
+        # --stream makes job completion ride kage's Stop hook instead of its
+        # TUI done-marker scrape. The scrape only recognises sub-minute markers
+        # (`✻ Verb for 5s`); any job whose turn runs past 60s renders the marker
+        # in minutes and is missed, so the job hangs to the wall-clock timeout.
+        # The Stop hook is format-independent. Stays ephemeral (no --session-id):
+        # kage assigns its own uuid, giving an isolated transcript + events file.
+        # --stop-on-signal lets kage tear down its tmux pane when the job runner
+        # terminates this process on timeout/cancel; without it the underlying
+        # Claude pane is orphaned (the pane lives in tmux's own session, outside
+        # our process group).
         cmd = [
             self.path, "claude",
+            "--stream",
             "--stop-on-signal",
             "--timeout", str(self.timeout),
             "--model", model,
@@ -254,6 +261,34 @@ class KageClaudeProvider(BaseProvider):
             cmd.extend(["--effort", effort])
         cmd.extend(["--", prompt])
         return cmd
+
+    def parse_batch_output(self, stdout: str) -> str:
+        """Pull the final response (or error) out of kage's --stream JSONL.
+
+        Batch jobs now stream, so stdout is newline-delimited JSON event
+        envelopes. Collect the terminal `done` response, falling back to an
+        `error` message. If nothing parses as an event (e.g. an unexpected
+        plain-text emission), return the raw stripped stdout so a job's output
+        is never silently dropped.
+        """
+        response_parts: list[str] = []
+        error_text: str | None = None
+        saw_event = False
+        for line in stdout.splitlines():
+            raw = self.parse_line(line)
+            if raw is None:
+                continue
+            saw_event = True
+            for ev in self.parse_event(raw):
+                if ev.kind == "response":
+                    response_parts.append(ev.text)
+                elif ev.kind == "error":
+                    error_text = ev.text
+        if not saw_event:
+            return stdout.strip()
+        if response_parts:
+            return self.format_response(response_parts).strip()
+        return error_text or ""
 
     def parse_event(self, event: dict) -> list[StreamEvent]:
         events: list[StreamEvent] = []

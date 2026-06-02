@@ -77,7 +77,11 @@ def test_kage_claude_build_batch_command():
     p = KageClaudeProvider("kage", timeout=600)
     cmd = p.build_batch_command("hello", "opus", effort="max")
     assert cmd[:2] == ["kage", "claude"]
-    assert "--stream" not in cmd
+    # Jobs stream so completion rides the Stop hook (format-independent) instead
+    # of kage's TUI done-marker scrape, which silently misses turns over 60s.
+    assert "--stream" in cmd
+    # Still ephemeral — no caller-managed session id; kage assigns its own uuid
+    # and tears the pane down on exit.
     assert "--session-id" not in cmd
     # batch must request signal-based teardown so a killed job doesn't orphan
     # its tmux pane.
@@ -191,6 +195,49 @@ def test_kage_claude_parse_error():
     assert len(events) == 1
     assert events[0].kind == "error"
     assert events[0].text == "no done marker"
+
+
+# -- Batch (job) output parsing --
+#
+# Jobs now run with --stream, so their stdout is newline-delimited JSON. The
+# job runner must extract the final response (or error) from that stream rather
+# than treating the raw JSONL blob as the answer.
+
+
+def _jsonl(*objs):
+    import json as _json
+    return "\n".join(_json.dumps(o) for o in objs)
+
+
+def test_kage_parse_batch_output_extracts_done_response():
+    p = KageClaudeProvider("kage")
+    out = _jsonl(
+        {"status": "progress", "session_id": "sid", "event": "PreToolUse",
+         "tool": "Bash", "summary": "rg"},
+        {"status": "done", "session_id": "sid", "response": "All clear. 1 note filed."},
+    )
+    assert p.parse_batch_output(out) == "All clear. 1 note filed."
+
+
+def test_kage_parse_batch_output_surfaces_error():
+    p = KageClaudeProvider("kage")
+    out = _jsonl(
+        {"status": "progress", "event": "PreToolUse", "tool": "Bash"},
+        {"status": "error", "reason": "timeout", "message": "no done marker"},
+    )
+    assert p.parse_batch_output(out) == "no done marker"
+
+
+def test_kage_parse_batch_output_non_stream_fallback():
+    """Defensive: plain (non-JSON) stdout is returned stripped, unchanged."""
+    p = KageClaudeProvider("kage")
+    assert p.parse_batch_output("  just text, not a stream\n") == "just text, not a stream"
+
+
+def test_base_provider_parse_batch_output_passthrough():
+    """Non-streaming providers (gemini/codex) keep raw batch stdout."""
+    g = GeminiProvider("gemini")
+    assert g.parse_batch_output("  hello world \n") == "hello world"
 
 
 def test_codex_parse_agent_message():
