@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.16.0] - 2026-06-02
+
+### Fixed
+
+- Background jobs whose Claude turn ran longer than 60 seconds would hang until the wall-clock timeout and be force-killed, even though the work had finished. Jobs run through kage in non-stream mode, where completion was detected by scraping kage's TUI done-marker, which only recognised sub-minute elapsed times; past a minute the marker renders in compound units and was missed (fixed in kage 0.2.1, and hardened here)
+
+### Changed
+
+- Background jobs now run with kage's `--stream`, so completion rides kage's Stop hook instead of the TUI done-marker scrape. This is independent of the rendered marker format, so it survives the >60s case and any future TUI drift. Jobs stay ephemeral (kage assigns its own session UUID, giving each run an isolated transcript and event log). Job stdout is now a stream of JSON envelopes; the job runner extracts the final response (or error) from it via `parse_batch_output`. Other providers (Codex, Gemini, native `claude -p`) are unaffected
+
 ## [0.15.0] - 2026-05-31
 
 ### Added
