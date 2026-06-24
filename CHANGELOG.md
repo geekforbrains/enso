@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Slack forwarded/shared messages are now read by the agent. When someone shares (forwards) another message to the bot — with or without an accompanying caption — Slack delivers the original content in the event's `attachments` array rather than `text`, so the bot previously saw only the caption (or nothing) and couldn't act on a request like "make a GitHub issue for this". The transport now renders each shared message (author, source channel, body, permalink) into the prompt, downloads any file the forwarded message carried (which hangs off the attachment, not the top-level `files`), and no longer drops a caption-less forward. This works on both the DM and channel @-mention paths
+
+### Changed
+
+- Forwarded/shared messages that appear in fetched Slack channel or thread history are now surfaced in the injected context instead of rendering as a blank line, so the agent sees shared content from earlier in the conversation too
+
 ## [0.16.0] - 2026-06-02
 
 ### Fixed

@@ -9,6 +9,8 @@ import pytest
 from enso.transports.slack import (
     SlackContext,
     SlackTransport,
+    _attachment_files,
+    _attachments_prompt,
     _safe_filename,
 )
 
@@ -76,6 +78,37 @@ class _FakeResponse:
 
     def read(self) -> bytes:
         return self._payload
+
+
+def _forwarded_attachment(*, with_file: bool = False) -> dict:
+    """A shared/forwarded message as Slack delivers it in `attachments`.
+
+    Mirrors the real "share message" unfurl payload: the original content
+    lives here, not in the event's `text`. Optionally carries the original
+    message's own file under an attachment-level `files` array.
+    """
+    att: dict = {
+        "id": 1,
+        "is_msg_unfurl": True,
+        "fallback": "[Today] Farah: trending reels missing",
+        "text": "some reason the trending reels aren't showing in the derm vault",
+        "author_id": "UFARAH",
+        "author_name": "Farah",
+        "channel_id": "CTAVTEAM",
+        "channel_name": "tav-team",
+        "from_url": "https://example.slack.com/archives/CTAVTEAM/p1750000000000200",
+        "footer": "Posted in #tav-team",
+        "mrkdwn_in": ["text"],
+    }
+    if with_file:
+        att["files"] = [
+            {
+                "id": "FSHOT",
+                "name": "screenshot.png",
+                "url_private_download": "https://files.slack.com/shot.png",
+            },
+        ]
+    return att
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +279,25 @@ class TestFetchThreadContext:
 
         result = await transport._fetch_thread_context(client, "C123", "1234.5678")
         assert "[user]:" not in result or "[assistant]: response" in result
+
+    @pytest.mark.asyncio
+    async def test_surfaces_forwarded_message_in_history(self):
+        """A forwarded message in thread history must not render as a blank."""
+        client = _make_client()
+        client.conversations_replies.return_value = {
+            "messages": [
+                {"user": "UBOT", "text": "earlier reply"},
+                {"user": "U123", "text": "", "attachments": [_forwarded_attachment()]},
+                {"user": "U123", "text": "current"},
+            ],
+        }
+
+        rt = _make_runtime()
+        transport = SlackTransport(rt)
+
+        result = await transport._fetch_thread_context(client, "C123", "1234.5678")
+        assert "trending reels aren't showing" in result
+        assert "Farah" in result
 
 
 # ---------------------------------------------------------------------------
@@ -886,6 +938,144 @@ class TestAppMention:
 
 
 # ---------------------------------------------------------------------------
+# SlackTransport — forwarded / shared messages
+# ---------------------------------------------------------------------------
+
+
+class TestForwardedMessages:
+    """Forwarded/shared messages arrive in `attachments`, not `text`."""
+
+    @pytest.mark.asyncio
+    async def test_mention_with_forwarded_message(self):
+        rt = _make_runtime()
+        transport = SlackTransport(rt)
+        client = _make_client()
+        client.conversations_history.return_value = {"messages": []}
+
+        event = {
+            "user": "U123",
+            "channel": "C123",
+            "ts": "1234.5678",
+            "text": "<@UBOT> please make a github issue for this",
+            "attachments": [_forwarded_attachment()],
+        }
+        await transport._handle_app_mention(event, client)
+
+        rt.dispatch.assert_called_once()
+        prompt = rt.dispatch.call_args[0][1]
+        assert "please make a github issue for this" in prompt
+        assert "trending reels aren't showing" in prompt
+        assert "Farah" in prompt
+
+    @pytest.mark.asyncio
+    async def test_mention_forwarded_message_with_file_downloads(
+        self, tmp_path, monkeypatch,
+    ):
+        rt = _make_runtime()
+        rt.working_dir = str(tmp_path)
+        transport = SlackTransport(rt)
+        client = _make_client()
+        client.conversations_history.return_value = {"messages": []}
+
+        monkeypatch.setattr(
+            "enso.transports.slack.urlopen",
+            lambda req, *a, **kw: _FakeResponse(b"fake-image-bytes"),
+        )
+
+        event = {
+            "user": "U123",
+            "channel": "C123",
+            "ts": "1234.5678",
+            "text": "<@UBOT> file this",
+            "attachments": [_forwarded_attachment(with_file=True)],
+        }
+        await transport._handle_app_mention(event, client)
+
+        rt.dispatch.assert_called_once()
+        prompt = rt.dispatch.call_args[0][1]
+        assert "trending reels aren't showing" in prompt
+        assert "screenshot.png" in prompt
+        # The forwarded image landed in the uploads dir.
+        names = [p.name for p in (tmp_path / "uploads").iterdir()]
+        assert any("screenshot.png" in n for n in names)
+
+    @pytest.mark.asyncio
+    async def test_dm_with_forwarded_message(self):
+        rt = _make_runtime()
+        transport = SlackTransport(rt)
+        client = _make_client()
+
+        event = {
+            "user": "U123",
+            "channel": "D999",
+            "channel_type": "im",
+            "ts": "1234.5678",
+            "text": "please make a github issue for this",
+            "attachments": [_forwarded_attachment()],
+        }
+        await transport._handle_message(event, client)
+
+        rt.dispatch.assert_called_once()
+        prompt = rt.dispatch.call_args[0][1]
+        assert "please make a github issue for this" in prompt
+        assert "trending reels aren't showing" in prompt
+        assert "Farah" in prompt
+
+    @pytest.mark.asyncio
+    async def test_forwarded_message_without_caption_dispatches(self):
+        """A caption-less forward must still reach the agent (not dropped)."""
+        rt = _make_runtime()
+        transport = SlackTransport(rt)
+        client = _make_client()
+
+        event = {
+            "user": "U123",
+            "channel": "D999",
+            "channel_type": "im",
+            "ts": "1234.5678",
+            "text": "",
+            "attachments": [_forwarded_attachment()],
+        }
+        await transport._handle_message(event, client)
+
+        rt.dispatch.assert_called_once()
+        prompt = rt.dispatch.call_args[0][1]
+        assert "trending reels aren't showing" in prompt
+
+    @pytest.mark.asyncio
+    async def test_dm_forwarded_message_with_file_downloads(
+        self, tmp_path, monkeypatch,
+    ):
+        rt = _make_runtime()
+        rt.working_dir = str(tmp_path)
+        transport = SlackTransport(rt)
+        client = _make_client()
+
+        monkeypatch.setattr(
+            "enso.transports.slack.urlopen",
+            lambda req, *a, **kw: _FakeResponse(b"fake-image-bytes"),
+        )
+
+        event = {
+            "user": "U123",
+            "channel": "D999",
+            "channel_type": "im",
+            "ts": "1234.5678",
+            "text": "look at this",
+            "attachments": [_forwarded_attachment(with_file=True)],
+        }
+        await transport._handle_message(event, client)
+
+        rt.dispatch.assert_called_once()
+        prompt = rt.dispatch.call_args[0][1]
+        assert "look at this" in prompt
+        assert "trending reels aren't showing" in prompt
+        assert "screenshot.png" in prompt
+        names = [p.name for p in (tmp_path / "uploads").iterdir()]
+        assert any("screenshot.png" in n for n in names)
+
+
+# ---------------------------------------------------------------------------
 # SlackTransport — notify
 # ---------------------------------------------------------------------------
 
@@ -963,6 +1153,51 @@ class TestSafeFilename:
 
     def test_nested_path(self):
         assert _safe_filename("/home/user/file.txt") == "file.txt"
+
+
+# ---------------------------------------------------------------------------
+# Forwarded / shared message attachments
+# ---------------------------------------------------------------------------
+
+
+class TestAttachmentsPrompt:
+    """Tests for rendering forwarded messages out of `attachments`."""
+
+    def test_renders_author_channel_text_and_link(self):
+        prompt = _attachments_prompt([_forwarded_attachment()])
+
+        assert "Shared message" in prompt
+        assert "Farah" in prompt
+        assert "#tav-team" in prompt
+        assert "trending reels aren't showing" in prompt
+        assert "p1750000000000200" in prompt  # permalink
+
+    def test_multiple_attachments_each_rendered(self):
+        second = _forwarded_attachment()
+        second["text"] = "second forwarded note"
+        prompt = _attachments_prompt([_forwarded_attachment(), second])
+
+        assert "trending reels aren't showing" in prompt
+        assert "second forwarded note" in prompt
+
+    def test_empty_attachments_returns_empty(self):
+        assert _attachments_prompt([]) == ""
+
+    def test_attachment_without_content_skipped(self):
+        # A bare attachment with no author/text isn't a shared message.
+        assert _attachments_prompt([{"id": 1, "color": "E8E8E8"}]) == ""
+
+    def test_falls_back_to_fallback_text(self):
+        att = {"is_msg_unfurl": True, "fallback": "only fallback here"}
+        assert "only fallback here" in _attachments_prompt([att])
+
+    def test_attachment_files_collected(self):
+        files = _attachment_files([_forwarded_attachment(with_file=True)])
+        assert len(files) == 1
+        assert files[0]["name"] == "screenshot.png"
+
+    def test_attachment_files_empty_when_none(self):
+        assert _attachment_files([_forwarded_attachment()]) == []
 
 
 # ---------------------------------------------------------------------------

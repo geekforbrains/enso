@@ -119,6 +119,88 @@ def _file_prompt(downloaded: list[str], files: list[dict]) -> str:
     return "User uploaded a file, but it could not be downloaded" + suffix
 
 
+def _is_shared_message(att: dict) -> bool:
+    """True when an attachment carries a forwarded/shared message.
+
+    Slack flags shares with ``is_msg_unfurl`` (the older ``is_share`` field is
+    no longer in the schema), but we also accept any attachment carrying author
+    or text content so we degrade gracefully if the flag is ever absent.
+    """
+    if att.get("is_msg_unfurl"):
+        return True
+    return bool(
+        att.get("author_name") or att.get("author_id") or att.get("text")
+    )
+
+
+def _render_attachment(att: dict) -> str:
+    """Render one shared-message attachment as prompt text."""
+    author = (
+        att.get("author_name")
+        or att.get("author_subname")
+        or att.get("author_id")
+        or ""
+    )
+    channel = att.get("channel_name") or ""
+    label_parts = [p for p in (author, f"in #{channel}" if channel else "") if p]
+    label = " ".join(label_parts)
+    header = f"[Shared message — {label}]" if label else "[Shared message]"
+
+    lines = [header]
+    body = (att.get("text") or att.get("fallback") or "").strip()
+    if body:
+        lines.append(body)
+    link = att.get("from_url") or ""
+    if link:
+        lines.append(f"(link: {link})")
+    return "\n".join(lines)
+
+
+def _attachments_prompt(attachments: list[dict]) -> str:
+    """Render forwarded/shared Slack messages into prompt text.
+
+    When a user shares (forwards) a message, Slack delivers the original
+    content in the event's ``attachments`` array — not in ``text``, which holds
+    only the forwarder's own typed words. Each shared message arrives as an
+    unfurl object carrying the author, source channel, body, and a permalink.
+    """
+    rendered = [
+        _render_attachment(att)
+        for att in attachments
+        if isinstance(att, dict) and _is_shared_message(att)
+    ]
+    return "\n\n".join(r for r in rendered if r)
+
+
+def _message_context_text(msg: dict) -> str:
+    """Combine a history message's text with any forwarded-message content.
+
+    Forwarded messages in fetched channel/thread history carry their content in
+    ``attachments`` just like live events, so context rendering must surface it
+    too — otherwise the agent sees a blank line where a shared message was.
+    """
+    text = msg.get("text", "")
+    shared = _attachments_prompt(msg.get("attachments") or [])
+    return "\n".join(part for part in (text, shared) if part)
+
+
+def _attachment_files(attachments: list[dict]) -> list[dict]:
+    """Collect files carried by shared-message attachments.
+
+    A forwarded message's own images/files live under the attachment's
+    ``files`` array, not the event's top-level ``files``, so they need
+    gathering separately before download.
+    """
+    files: list[dict] = []
+    for att in attachments:
+        if not isinstance(att, dict):
+            continue
+        for file_info in att.get("files") or []:
+            if isinstance(file_info, dict):
+                files.append(file_info)
+    return files
+
+
 class SlackContext(TransportContext):
     """Sends replies back to a Slack channel or DM."""
 
@@ -372,14 +454,19 @@ class SlackTransport(BaseTransport):
         ts = event.get("ts", "")
         thread_ts = event.get("thread_ts")
         text = event.get("text", "")
-        files = event.get("files") or []
+        attachments = event.get("attachments") or []
+        # Forwarded/shared messages bring their own files under the attachment,
+        # alongside any files uploaded directly with the mention.
+        files = (event.get("files") or []) + _attachment_files(attachments)
 
         if not is_authorized(user, self.allowed_users):
             return
 
         # Strip bot mention from text
         text = re.sub(r"<@\w+>\s*", "", text).strip()
-        if not text and not files:
+        # Forwarded message content lives in `attachments`, not `text`.
+        shared_prompt = _attachments_prompt(attachments)
+        if not text and not files and not shared_prompt:
             return
 
         # Conversation scoped to channel + thread
@@ -406,13 +493,15 @@ class SlackTransport(BaseTransport):
                 client, channel, ts,
             )
 
-        # Download any attachments — channel uploads with @-mention arrive
-        # here (as part of the app_mention event), not on the message path.
+        # Download attachments — direct uploads and files carried by a
+        # forwarded message both arrive on the app_mention event.
         downloaded = await self._download_files(files, client) if files else []
 
         parts: list[str] = []
         if context:
             parts.append(context)
+        if shared_prompt:
+            parts.append(shared_prompt)
         file_prompt = _file_prompt(downloaded, files)
         if file_prompt:
             parts.append(file_prompt)
@@ -420,7 +509,9 @@ class SlackTransport(BaseTransport):
             parts.append(text)
         prompt = "\n\n".join(parts)
 
-        preview_src = text or (downloaded[0] if downloaded else file_prompt)
+        preview_src = (
+            text or shared_prompt or (downloaded[0] if downloaded else file_prompt)
+        )
         preview = preview_src[:50].replace("\n", " ")
         ctx = SlackContext(client, channel, reply_thread_ts, user_id=user)
         log.info(
@@ -458,7 +549,12 @@ class SlackTransport(BaseTransport):
 
         # Strip bot mention if present (can happen in DMs too)
         text = re.sub(r"<@\w+>\s*", "", text).strip()
-        if not text and not event.get("files"):
+        # Forwarded message content lives in `attachments`, not `text`, and the
+        # forwarded message's own files hang off the attachment too.
+        attachments = event.get("attachments") or []
+        shared_prompt = _attachments_prompt(attachments)
+        files = (event.get("files") or []) + _attachment_files(attachments)
+        if not text and not files and not shared_prompt:
             return
 
         # Check for !commands before dispatch
@@ -469,11 +565,11 @@ class SlackTransport(BaseTransport):
                 await ctx.reply(response)
                 return
 
-        # Handle file uploads
-        files = event.get("files", [])
+        # Handle files — direct uploads or those carried by a forwarded message.
         if files:
             await self._handle_files(
-                files, text, conv_id, client, channel, reply_thread_ts, user=user,
+                files, text, conv_id, client, channel, reply_thread_ts,
+                user=user, shared_prompt=shared_prompt,
             )
             return
 
@@ -484,9 +580,10 @@ class SlackTransport(BaseTransport):
                 client, channel, thread_ts,
             )
 
-        prompt = f"{thread_context}\n\n{text}".strip() if thread_context else text
+        parts = [p for p in (thread_context, shared_prompt, text) if p]
+        prompt = "\n\n".join(parts)
 
-        preview = text[:50].replace("\n", " ")
+        preview = (text or shared_prompt)[:50].replace("\n", " ")
         ctx = SlackContext(client, channel, reply_thread_ts, user_id=user)
         log.info(
             "Incoming message: channel=%s user=%s type=%s len=%d",
@@ -538,9 +635,9 @@ class SlackTransport(BaseTransport):
         lines = []
         for msg in context_msgs:
             role = "assistant" if msg.get("user") == self.bot_user_id else "user"
-            text = msg.get("text", "")
-            if text:
-                lines.append(f"[{role}]: {text}")
+            body = _message_context_text(msg)
+            if body:
+                lines.append(f"[{role}]: {body}")
 
         return "[Thread context]\n" + "\n".join(lines) if lines else ""
 
@@ -576,9 +673,9 @@ class SlackTransport(BaseTransport):
         lines = []
         for msg in messages:
             role = "assistant" if msg.get("user") == self.bot_user_id else "user"
-            text = msg.get("text", "")
-            if text:
-                lines.append(f"[{role}]: {text}")
+            body = _message_context_text(msg)
+            if body:
+                lines.append(f"[{role}]: {body}")
 
         return "[Channel context]\n" + "\n".join(lines) if lines else ""
 
@@ -745,16 +842,20 @@ class SlackTransport(BaseTransport):
         reply_thread_ts: str | None,
         *,
         user: str = "",
+        shared_prompt: str = "",
     ) -> None:
-        """Download uploaded files and dispatch prompt (DM path)."""
+        """Download uploaded files and dispatch prompt (DM path).
+
+        ``shared_prompt`` carries any forwarded-message text when the files
+        came in on a shared message rather than a direct upload.
+        """
         downloaded = await self._download_files(files, client)
         file_prompt = _file_prompt(downloaded, files)
-        if not file_prompt and not text:
+        if not file_prompt and not text and not shared_prompt:
             return
 
-        prompt = file_prompt
-        if text:
-            prompt = f"{prompt}\n\n{text}" if prompt else text
+        parts = [p for p in (shared_prompt, file_prompt, text) if p]
+        prompt = "\n\n".join(parts)
 
         preview = prompt[:50].replace("\n", " ")
         ctx = SlackContext(client, channel, reply_thread_ts, user_id=user)
