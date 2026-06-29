@@ -162,17 +162,38 @@ def _tg_send_file(token: str, chat_id: int, file_path: str, caption: str = "") -
     body.write(b"\r\n")
     body.write(f"--{boundary}--\r\n".encode())
 
-    req = urllib.request.Request(
-        url,
-        data=body.getvalue(),
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    data = body.getvalue()
+    last_err = "unknown error"
+    for attempt in range(1, 4):
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                result = json.loads(resp.read())
+            if result.get("ok"):
+                return True
+            last_err = result.get("description", "Telegram returned ok=false")
+        except Exception as exc:
+            last_err = str(exc)
+            # HTTPError carries Telegram's JSON error body — surface it.
+            try:
+                last_err = exc.read().decode("utf-8", "replace")  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        log.warning(
+            "telegram %s failed (attempt %d/3) file=%s chat=%s: %s",
+            method, attempt, filename, chat_id, last_err,
+        )
+        if attempt < 3:
+            time.sleep(2 * attempt)
+    log.error(
+        "telegram %s gave up after 3 attempts file=%s chat=%s: %s",
+        method, filename, chat_id, last_err,
     )
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            result = json.loads(resp.read())
-            return result.get("ok", False)
-    except Exception:
-        return False
+    return False
 
 
 def _tg_send_message(token: str, chat_id: int, text: str) -> bool:
@@ -1345,12 +1366,25 @@ def message_attach(
         targets = [origin]
     else:
         targets = users
-    for uid in targets:
-        if not _tg_send_file(token, uid, file, caption):
-            console.print(
-                f"[red]\u2717[/] Failed to send to user {uid}."
-            )
-            raise typer.Exit(1)
+    failures = [uid for uid in targets if not _tg_send_file(token, uid, file, caption)]
+    if failures:
+        # File delivery failed (after retries). Fall back to a lightweight
+        # text alert on the same channel \u2014 a small sendMessage usually gets
+        # through even when a large upload times out \u2014 so a dropped
+        # attachment is never silent. See ~/.enso/enso.log for the cause.
+        alert = f"\u26a0\ufe0f Couldn't deliver attachment: {filename}"
+        if caption:
+            alert += f" ({caption})"
+        alert += ". The error is in ~/.enso/enso.log."
+        for uid in failures:
+            _tg_send_message(token, uid, alert)
+        log.error("attach delivery failed file=%s users=%s", filename, failures)
+        console.print(
+            "[red]\u2717[/] Failed to send to user(s): "
+            + ", ".join(str(u) for u in failures)
+            + " (text alert sent)."
+        )
+        raise typer.Exit(1)
     note = f"Sent attachment: {filename}"
     if caption:
         note += f" \u2014 {caption}"
