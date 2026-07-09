@@ -18,7 +18,7 @@ import logging
 import os
 import tempfile
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from starlette.applications import Starlette
@@ -68,7 +68,13 @@ templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 
 
 def _fmt_ts(value: object) -> str:
-    """Render an ISO-8601 UTC timestamp as ``YYYY-MM-DD HH:MM`` (UTC)."""
+    """Render an ISO-8601 UTC timestamp as a friendly *local* time.
+
+    Within 12 hours it reads as relative — ``4s ago`` · ``12m ago`` · ``11h
+    ago`` — then falls back to the local calendar form ``Today, 5:30am`` ·
+    ``Yesterday, 1:22pm`` · ``Jul 7th, 8:00pm`` (the year is appended when it
+    differs from the current one). Falls back to the raw string if unparseable.
+    """
     if not value:
         return ""
     text = str(value)
@@ -76,7 +82,35 @@ def _fmt_ts(value: object) -> str:
         dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
         return text
-    return dt.strftime("%Y-%m-%d %H:%M")
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    dt = dt.astimezone()  # convert UTC -> the server's local timezone
+    now = datetime.now().astimezone()
+
+    # Recent timestamps read as relative ("4s ago", "12m ago", "11h ago") up to
+    # 12 hours; older ones use the local calendar format below.
+    total = (now - dt).total_seconds()
+    if total >= 0:
+        if total < 60:
+            return f"{int(total)}s ago"
+        if total < 3600:
+            return f"{int(total // 60)}m ago"
+        if total < 12 * 3600:
+            return f"{int(total // 3600)}h ago"
+
+    hour12 = dt.hour % 12 or 12
+    meridiem = "am" if dt.hour < 12 else "pm"
+    clock = f"{hour12}:{dt.minute:02d}{meridiem}"
+
+    day = dt.date()
+    if day == now.date():
+        return f"Today, {clock}"
+    if day == now.date() - timedelta(days=1):
+        return f"Yesterday, {clock}"
+    stamp = f"{dt.strftime('%b')} {_ordinal(dt.day)}"
+    if dt.year != now.year:
+        stamp += f" {dt.year}"
+    return f"{stamp}, {clock}"
 
 
 def _fmt_duration(ms: object) -> str:
