@@ -5,14 +5,84 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}enso{% endblock %}</title>
   <script>
-    // Apply saved/system theme before paint to avoid a flash.
+    // Apply the saved/system theme before paint, then keep every theme control in sync.
     (function () {
-      try {
-        var saved = localStorage.getItem("theme");
-        var dark = saved ? saved === "dark"
-          : window.matchMedia("(prefers-color-scheme: dark)").matches;
-        if (dark) document.documentElement.classList.add("dark");
-      } catch (e) {}
+      var media = window.matchMedia("(prefers-color-scheme: dark)");
+      var desktop = window.matchMedia("(min-width: 768px)");
+
+      function savedTheme() {
+        try {
+          var saved = localStorage.getItem("theme");
+          return saved === "light" || saved === "dark" || saved === "system"
+            ? saved : "system";
+        } catch (e) {
+          return "system";
+        }
+      }
+
+      function syncThemeControls(theme) {
+        document.querySelectorAll("[data-theme-option]").forEach(function (button) {
+          button.setAttribute("aria-pressed", String(button.dataset.themeOption === theme));
+        });
+      }
+
+      function applyTheme(theme) {
+        var dark = theme === "dark" || (theme === "system" && media.matches);
+        document.documentElement.classList.toggle("dark", dark);
+        document.documentElement.dataset.theme = theme;
+        syncThemeControls(theme);
+      }
+
+      window.setTheme = function (theme) {
+        if (theme !== "light" && theme !== "dark" && theme !== "system") return;
+        try {
+          localStorage.setItem("theme", theme);
+        } catch (e) {}
+        applyTheme(theme);
+      };
+
+      window.setMobileNav = function (open, returnFocus) {
+        var drawer = document.getElementById("mobile-nav");
+        var backdrop = document.getElementById("mobile-nav-backdrop");
+        var trigger = document.getElementById("mobile-nav-trigger");
+        if (!drawer || !backdrop || !trigger) return;
+        if (typeof open !== "boolean") open = drawer.classList.contains("hidden");
+        drawer.classList.toggle("hidden", !open);
+        backdrop.classList.toggle("hidden", !open);
+        drawer.setAttribute("aria-hidden", String(!open));
+        trigger.setAttribute("aria-expanded", String(open));
+        trigger.setAttribute("aria-label", open ? "Close navigation" : "Open navigation");
+        document.body.classList.toggle("overflow-hidden", open);
+        if (open) {
+          window.setTimeout(function () {
+            var firstLink = drawer.querySelector("a[href]");
+            if (firstLink) firstLink.focus();
+          }, 0);
+        } else if (returnFocus) {
+          trigger.focus();
+        }
+      };
+
+      applyTheme(savedTheme());
+      media.addEventListener("change", function () {
+        if (savedTheme() === "system") applyTheme("system");
+      });
+      document.addEventListener("DOMContentLoaded", function () {
+        syncThemeControls(savedTheme());
+      });
+      document.addEventListener("htmx:afterSwap", function () {
+        syncThemeControls(savedTheme());
+        window.setMobileNav(false);
+      });
+      document.addEventListener("keydown", function (event) {
+        var drawer = document.getElementById("mobile-nav");
+        if (event.key === "Escape" && drawer && !drawer.classList.contains("hidden")) {
+          window.setMobileNav(false, true);
+        }
+      });
+      desktop.addEventListener("change", function () {
+        if (desktop.matches) window.setMobileNav(false);
+      });
     })();
   </script>
   <script src="https://cdn.tailwindcss.com"></script>
@@ -21,7 +91,7 @@
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body hx-boost="true"
-      class="h-full bg-gray-50 text-gray-900 dark:bg-neutral-900 dark:text-gray-100">
+      class="min-h-full bg-gray-50 text-gray-900 dark:bg-neutral-900 dark:text-gray-100">
   {% set nav = [
     ("/", "Dashboard"),
     ("/tasks", "Tasks"),
@@ -30,47 +100,109 @@
     ("/skills", "Skills"),
     ("/agents", "AGENTS.md"),
   ] %}
-  <nav class="sticky top-0 z-20 border-b border-gray-200 bg-white/90 backdrop-blur
-              dark:border-neutral-700 dark:bg-neutral-800">
-    <div class="mx-auto flex max-w-5xl flex-wrap items-center gap-x-1 gap-y-1 px-4 py-2">
-      <a href="/" class="mr-3 text-lg font-semibold tracking-tight">enso</a>
+
+  {% macro nav_links(mobile=false) %}
+    <nav aria-label="Primary" class="space-y-1">
       {% for href, label in nav %}
         {% set active = (href == "/" and current_path == "/")
              or (href != "/" and current_path.startswith(href)) %}
         <a href="{{ href }}"
-           class="rounded-md px-3 py-2 text-sm font-medium
-                  {% if active %}bg-indigo-50 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300
-                  {% else %}text-gray-600 hover:bg-gray-100 dark:text-neutral-300 dark:hover:bg-neutral-700{% endif %}">
+           {% if mobile %}onclick="setMobileNav(false)"{% endif %}
+           {% if active %}aria-current="page"{% endif %}
+           class="block rounded-lg px-3 py-2.5 text-sm font-medium transition
+                  {% if active %}bg-indigo-50 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300
+                  {% else %}text-gray-600 hover:bg-gray-100 hover:text-gray-900
+                             dark:text-neutral-300 dark:hover:bg-neutral-800 dark:hover:text-white{% endif %}">
           {{ label }}
         </a>
       {% endfor %}
-      <button type="button" onclick="toggleTheme()" aria-label="Toggle dark mode"
-              class="ml-auto rounded-md px-3 py-2 text-sm
-                     text-gray-600 hover:bg-gray-100 dark:text-neutral-300 dark:hover:bg-neutral-700">
-        <span class="dark:hidden">&#9789; Dark</span>
-        <span class="hidden dark:inline">&#9788; Light</span>
-      </button>
-    </div>
-  </nav>
+    </nav>
+  {% endmacro %}
 
-  <main class="mx-auto max-w-5xl px-4 py-6">
-    {% if flash %}
-      <div class="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm
-                  text-amber-800 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-300">
-        {{ flash }}
+  {% macro theme_picker() %}
+    <div>
+      <p class="mb-2 px-1 text-xs font-medium uppercase tracking-wider
+                text-gray-400 dark:text-neutral-500">Appearance</p>
+      <div role="group" aria-label="Color theme"
+           class="grid grid-cols-3 gap-1 rounded-lg bg-gray-100 p-1 dark:bg-neutral-800">
+        {% for value, label in [("system", "System"), ("light", "Light"), ("dark", "Dark")] %}
+          <button type="button" data-theme-option="{{ value }}" aria-pressed="false"
+                  onclick="setTheme('{{ value }}')"
+                  class="theme-option rounded-md px-2 py-1.5 text-xs font-medium
+                         text-gray-500 transition dark:text-neutral-400">
+            {{ label }}
+          </button>
+        {% endfor %}
       </div>
-    {% endif %}
-    {% block content %}{% endblock %}
-  </main>
+    </div>
+  {% endmacro %}
 
-  <script>
-    function toggleTheme() {
-      var el = document.documentElement;
-      el.classList.toggle("dark");
-      try {
-        localStorage.setItem("theme", el.classList.contains("dark") ? "dark" : "light");
-      } catch (e) {}
-    }
-  </script>
+  <header class="sticky top-0 z-30 flex h-14 items-center border-b border-gray-200
+                 bg-white/95 px-4 backdrop-blur dark:border-neutral-800 dark:bg-neutral-900/95 md:hidden">
+    <button id="mobile-nav-trigger" type="button" aria-label="Open navigation"
+            aria-controls="mobile-nav" aria-expanded="false" onclick="setMobileNav()"
+            class="-ml-2 rounded-lg p-2 text-gray-600 hover:bg-gray-100 hover:text-gray-900
+                   focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500
+                   dark:text-neutral-300 dark:hover:bg-neutral-800 dark:hover:text-white">
+      <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" class="h-5 w-5">
+        <path d="M4 6h16M4 12h16M4 18h16"></path>
+      </svg>
+    </button>
+    <a href="/" class="ml-3 text-lg font-semibold tracking-tight">enso</a>
+  </header>
+
+  <div id="mobile-nav-backdrop" class="fixed inset-0 z-40 hidden bg-gray-950/50 backdrop-blur-sm md:hidden"
+       aria-hidden="true" onclick="setMobileNav(false, true)"></div>
+  <aside id="mobile-nav" aria-label="Mobile navigation" aria-hidden="true"
+         class="fixed inset-y-0 left-0 z-50 hidden w-72 max-w-[85vw] border-r border-gray-200
+                bg-white p-4 shadow-xl dark:border-neutral-800 dark:bg-neutral-900 md:hidden">
+    <div class="flex h-full flex-col">
+      <div class="mb-6 flex h-10 items-center justify-between px-2">
+        <a href="/" onclick="setMobileNav(false)" class="text-lg font-semibold tracking-tight">enso</a>
+        <button type="button" aria-label="Close navigation" onclick="setMobileNav(false, true)"
+                class="rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-900
+                       focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500
+                       dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-white">
+          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" class="h-5 w-5">
+            <path d="M6 6l12 12M18 6L6 18"></path>
+          </svg>
+        </button>
+      </div>
+      {{ nav_links(true) }}
+      <div class="mt-auto border-t border-gray-200 pt-4 dark:border-neutral-800">
+        {{ theme_picker() }}
+      </div>
+    </div>
+  </aside>
+
+  <aside class="fixed inset-y-0 left-0 z-30 hidden w-64 border-r border-gray-200 bg-white
+                dark:border-neutral-800 dark:bg-neutral-900 md:flex md:flex-col">
+    <div class="flex h-20 items-center border-b border-gray-100 px-6 dark:border-neutral-800">
+      <div>
+        <a href="/" class="text-xl font-semibold tracking-tight">enso</a>
+        <p class="mt-0.5 text-xs text-gray-400 dark:text-neutral-500">Control center</p>
+      </div>
+    </div>
+    <div class="flex min-h-0 flex-1 flex-col px-4 py-5">
+      {{ nav_links() }}
+      <div class="mt-auto border-t border-gray-200 pt-4 dark:border-neutral-800">
+        {{ theme_picker() }}
+      </div>
+    </div>
+  </aside>
+
+  <div class="min-h-screen md:pl-64">
+    <main class="mx-auto max-w-5xl px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+      {% if flash %}
+        <div class="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm
+                    text-amber-800 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-300">
+          {{ flash }}
+        </div>
+      {% endif %}
+      {% block content %}{% endblock %}
+    </main>
+  </div>
 </body>
 </html>

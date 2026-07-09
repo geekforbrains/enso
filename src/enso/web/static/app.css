@@ -1,5 +1,32 @@
 /* Supplemental styles — Tailwind (Play CDN) handles the rest. */
 
+/* Keep native controls aligned with the effective color scheme. */
+html {
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
+}
+
+/* The active theme state is driven by aria-pressed so the selector remains
+   visually and semantically in sync after HTMX navigation. */
+.theme-option[aria-pressed="true"] {
+  background: #fff;
+  color: #4338ca;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.08);
+}
+
+.dark .theme-option[aria-pressed="true"] {
+  background: #404040;
+  color: #c7d2fe;
+}
+
+.theme-option:focus-visible {
+  outline: 2px solid #6366f1;
+  outline-offset: 1px;
+}
+
 /* Smooth the HTMX fragment swaps used for inline status/toggle actions. */
 .htmx-swapping {
   opacity: 0.5;
