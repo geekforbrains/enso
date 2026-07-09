@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from croniter import croniter
 
-from . import messages
+from . import messages, runs
 from .config import CONFIG_DIR, STATE_FILE
 from .jobs import Job, load_jobs
 from .logging_config import logging_flags
@@ -70,6 +70,7 @@ def split_text(text: str, limit: int = 4096) -> list[str]:
 
 MAX_QUEUE_SIZE = 5
 SESSION_TTL_DAYS = int(os.environ.get("ENSO_SESSION_TTL_DAYS", "30"))
+TASK_TIMEOUT = int(os.environ.get("ENSO_TASK_TIMEOUT_SECS", str(15 * 60)))
 JOB_CONCURRENCY = int(os.environ.get("ENSO_JOB_CONCURRENCY", "2"))
 PROCESS_TERMINATE_GRACE_SECS = float(os.environ.get("ENSO_PROCESS_TERMINATE_GRACE_SECS", "5"))
 
@@ -1166,6 +1167,11 @@ class Runtime:
 
     async def run_job_scheduler(self) -> None:
         """Check for jobs to run every 60 seconds. Runs as a background task."""
+        # TODO(tasks): gated on config ``tasks.enabled``, register a built-in
+        # task-runner here that claim_next_todo() and runs it via
+        # run_task_now on the ``tasks.schedule`` cadence. Left out of the
+        # prototype to avoid perturbing the live scheduler; tasks are driven
+        # manually through ``enso web`` + run-now for now.
         log.info("Job scheduler started")
         while True:
             await asyncio.sleep(60)
@@ -1311,6 +1317,21 @@ class Runtime:
         )
         log.debug("%s command=%s", tag, _redacted_command(cmd))
 
+        # Record this scheduled run in the run history. Instrumentation is
+        # best-effort: a failure to record must never abort the job itself.
+        run_id: str | None = None
+        try:
+            run_id = runs.create(
+                kind="job",
+                name=job.dir_name,
+                title=job.name,
+                trigger="schedule",
+                provider=job.provider,
+                model=job.model,
+            )
+        except Exception:
+            log.warning("%s could not create run record", tag, exc_info=True)
+
         proc = await self._spawn_process(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -1328,6 +1349,7 @@ class Runtime:
                 "%s timeout after %ss (elapsed=%.1fs); process tree terminated",
                 tag, job.timeout, elapsed,
             )
+            self._record_run_finish(run_id, output, proc.returncode, "timeout", tag)
             if self.transport:
                 await self.transport.notify(
                     f"\u26a0\ufe0f [{job.name}] {output}",
@@ -1337,6 +1359,10 @@ class Runtime:
             self.save_state()
             return
         output = provider.parse_batch_output(stdout.decode(errors="replace"))
+        self._record_run_finish(
+            run_id, output, proc.returncode,
+            "ok" if proc.returncode == 0 else "error", tag,
+        )
 
         # Only notify on failure — successful jobs handle their own messaging
         notified = False
@@ -1360,3 +1386,173 @@ class Runtime:
             "%s complete exit=%s duration=%.1fs output_len=%d notified=%s",
             tag, proc.returncode, elapsed, len(output), notified,
         )
+
+    # -- Run history instrumentation --
+
+    def _record_run_finish(
+        self,
+        run_id: str | None,
+        output: str,
+        exit_code: int | None,
+        status: str,
+        tag: str,
+    ) -> None:
+        """Write captured output and mark a run terminal (best-effort).
+
+        Never raises: run instrumentation must not break the job/task it is
+        observing. ``exit_code`` of ``None`` (e.g. a killed process) is stored
+        as ``-1`` so the column is always populated.
+        """
+        if run_id is None:
+            return
+        try:
+            if output:
+                runs.append_output(run_id, output)
+            runs.finish(run_id, exit_code if exit_code is not None else -1, status)
+        except Exception:
+            log.warning("%s could not finish run record id=%s", tag, run_id, exc_info=True)
+
+    # -- Run-now (manual triggers from CLI / web) --
+
+    async def run_job_now(self, name: str) -> str:
+        """Execute a job's batch command now, recording a manual run.
+
+        Mirrors the batch half of :meth:`_execute_job` (no prerun gate — a
+        manual trigger means "run it now") and records the run under
+        ``trigger="manual"``. Raises ``ValueError`` when no job matches.
+        """
+        job = next((j for j in load_jobs() if j.dir_name == name), None)
+        if job is None:
+            raise ValueError(f"No such job: {name}")
+
+        tag = f"[job:{job.dir_name}]"
+        prompt = job.prompt
+        provider = self.make_job_provider(job)
+        cmd = provider.build_batch_command(prompt, job.model)
+        log.info(
+            "%s manual run provider_class=%s cwd=%s prompt_len=%d",
+            tag, provider.__class__.__name__, self.working_dir, len(prompt),
+        )
+        log.debug("%s command=%s", tag, _redacted_command(cmd))
+
+        run_id = runs.create(
+            kind="job",
+            name=job.dir_name,
+            title=job.name,
+            trigger="manual",
+            provider=job.provider,
+            model=job.model,
+        )
+
+        proc = await self._spawn_process(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=self.working_dir,
+        )
+        log.info("%s pid=%s", tag, proc.pid)
+        stdout, _, timed_out = await self._communicate_with_timeout(
+            proc, f"Job '{job.name}' (manual)", job.timeout,
+        )
+        if timed_out:
+            output = f"Job timed out after {job.timeout}s; process tree was terminated"
+            self._record_run_finish(run_id, output, proc.returncode, "timeout", tag)
+            return run_id
+        output = provider.parse_batch_output(stdout.decode(errors="replace"))
+        self._record_run_finish(
+            run_id, output, proc.returncode,
+            "ok" if proc.returncode == 0 else "error", tag,
+        )
+        return run_id
+
+    @staticmethod
+    def _build_task_prompt(task: Any) -> str:
+        """Compose the batch prompt handed to the agent for a one-off task.
+
+        Includes the title, description, and absolute attachment paths, then
+        instructs the agent to finish the work and record the outcome by
+        flipping the task's status via the CLI when done.
+        """
+        parts = [f"# Task: {task.title}", ""]
+        if task.description:
+            parts += [task.description, ""]
+        attachments = task.attachment_names()
+        if attachments:
+            parts.append("Attachments:")
+            parts += [
+                f"- {os.path.join(task.attachments_dir, name)}"
+                for name in attachments
+            ]
+            parts.append("")
+        parts += [
+            "Complete this task. When finished, record the outcome by running:",
+            f"    enso task status {task.slug} done",
+            "If you cannot proceed, run instead:",
+            f'    enso task status {task.slug} blocked --reason "<why>"',
+        ]
+        return "\n".join(parts)
+
+    async def run_task_now(self, slug: str) -> str:
+        """Claim and run a one-off task now, recording a manual run.
+
+        Loads the task, flips it to ``in_progress`` (claim), builds a prompt
+        from its title/description/attachments, and runs it in batch mode
+        through the task provider/model (task overrides win over the
+        ``tasks`` config block). Records the run under ``kind="task"``,
+        ``trigger="manual"``. Raises ``ValueError`` when no task matches.
+        """
+        from . import tasks
+
+        task = tasks.get_task(slug)
+        if task is None:
+            raise ValueError(f"No such task: {slug}")
+
+        # Claim it: flip to in_progress before spawning the agent.
+        if task.status != "in_progress":
+            task = tasks.set_status(slug, "in_progress")
+
+        tasks_cfg = self.config.get("tasks")
+        if not isinstance(tasks_cfg, dict):
+            tasks_cfg = {}
+        provider_name = task.provider or tasks_cfg.get("provider", "claude")
+        model = task.model or tasks_cfg.get("model", "sonnet")
+
+        tag = f"[task:{slug}]"
+        prompt = self._build_task_prompt(task)
+        provider = self.make_provider(provider_name)
+        cmd = provider.build_batch_command(prompt, model)
+        log.info(
+            "%s manual run provider=%s model=%s cwd=%s prompt_len=%d",
+            tag, provider_name, model, self.working_dir, len(prompt),
+        )
+        log.debug("%s command=%s", tag, _redacted_command(cmd))
+
+        run_id = runs.create(
+            kind="task",
+            name=slug,
+            title=task.title,
+            trigger="manual",
+            provider=provider_name,
+            model=model,
+        )
+
+        proc = await self._spawn_process(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=self.working_dir,
+        )
+        log.info("%s pid=%s", tag, proc.pid)
+        stdout, _, timed_out = await self._communicate_with_timeout(
+            proc, f"Task '{slug}'", TASK_TIMEOUT,
+        )
+        if timed_out:
+            output = f"Task timed out after {TASK_TIMEOUT}s; process tree was terminated"
+            self._record_run_finish(run_id, output, proc.returncode, "timeout", tag)
+            return run_id
+        output = provider.parse_batch_output(stdout.decode(errors="replace"))
+        self._record_run_finish(
+            run_id, output, proc.returncode,
+            "ok" if proc.returncode == 0 else "error", tag,
+        )
+        return run_id

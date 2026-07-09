@@ -1,0 +1,17 @@
+<div id="job-toggle" class="flex items-center gap-3">
+  {% if job.enabled %}
+    <span class="inline-block rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium
+                 text-green-800 dark:bg-green-900/40 dark:text-green-300">enabled</span>
+  {% else %}
+    <span class="inline-block rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium
+                 text-gray-500 dark:bg-neutral-700 dark:text-neutral-400">disabled</span>
+  {% endif %}
+  <form method="post" action="/jobs/{{ job.dir_name }}/toggle"
+        hx-post="/jobs/{{ job.dir_name }}/toggle" hx-target="#job-toggle" hx-swap="outerHTML">
+    <button type="submit"
+            class="rounded-md border border-gray-300 px-3 py-1.5 text-sm font-medium
+                   hover:bg-gray-50 dark:border-neutral-600 dark:hover:bg-neutral-700">
+      {{ "Disable" if job.enabled else "Enable" }}
+    </button>
+  </form>
+</div>

@@ -25,7 +25,7 @@ DEFAULT_PROVIDERS = {
         "kage_path": "kage",
         "kage_timeout": 1800,
         "kage_restart": True,
-        "models": ["opus", "sonnet", "haiku"],
+        "models": ["opus", "sonnet", "haiku", "fable"],
     },
     "codex": {"path": "codex", "models": ["gpt-5.4", "gpt-5.3-codex"]},
     "gemini": {
@@ -36,6 +36,25 @@ DEFAULT_PROVIDERS = {
             "gemini-pro-latest",
         ],
     },
+}
+
+DEFAULT_WEB = {
+    "enabled": True,
+    "host": "127.0.0.1",
+    "port": 1337,
+    "token": "",
+    "external_skill_roots": ["~/.claude/skills"],
+}
+
+DEFAULT_TASKS = {
+    "enabled": True,
+    "schedule": "*/5 * * * *",
+    "provider": "claude",
+    "model": "sonnet",
+    "batch": 1,
+    "notify_default": False,
+    "runs_keep": 500,
+    "runs_max_age_days": 30,
 }
 
 
@@ -71,6 +90,8 @@ def _build_default_config() -> dict:
         "transports": {},
         "logging": default_logging_config(),
         "providers": resolve_providers(),
+        "web": dict(DEFAULT_WEB),
+        "tasks": dict(DEFAULT_TASKS),
     }
 
 
@@ -97,6 +118,15 @@ def _with_config_defaults(config: dict) -> dict:
             if isinstance(existing, dict):
                 backfilled[name] = {**defaults, **existing}
         merged["providers"] = backfilled
+
+    # Backfill web/tasks blocks added in newer versions without overwriting
+    # values the user has already set.
+    for key, defaults in (("web", DEFAULT_WEB), ("tasks", DEFAULT_TASKS)):
+        existing = merged.get(key)
+        if isinstance(existing, dict):
+            merged[key] = {**defaults, **existing}
+        elif key not in merged:
+            merged[key] = dict(defaults)
 
     return merged
 

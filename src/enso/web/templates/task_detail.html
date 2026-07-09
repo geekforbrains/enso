@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% from "macros.html" import tag_pill, run_row %}
+{% block title %}{{ task.title }} · enso{% endblock %}
+
+{% set input_cls = "w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm
+   focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500
+   dark:border-neutral-600 dark:bg-neutral-900 dark:text-gray-100" %}
+
+{% block content %}
+<div class="mb-4 flex items-center gap-3">
+  <a href="/tasks" class="text-sm text-indigo-600 hover:underline dark:text-indigo-400">&larr; Tasks</a>
+</div>
+
+<div class="mb-4 flex flex-wrap items-start justify-between gap-3">
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight">{{ task.title }}</h1>
+    <div class="mt-1 text-xs text-gray-500 dark:text-neutral-400">
+      <span class="font-mono">{{ task.slug }}</span>
+      · created {{ task.created | fmt_ts }} · updated {{ task.updated | fmt_ts }}
+      {% if task.provider %} · {{ task.provider }}{% if task.model %}/{{ task.model }}{% endif %}{% endif %}
+      {% if task.notify %} · notify{% endif %}
+    </div>
+    {% if task.tags %}
+      <div class="mt-2 flex flex-wrap gap-1">{% for t in task.tags %}{{ tag_pill(t) }}{% endfor %}</div>
+    {% endif %}
+  </div>
+  <div class="flex gap-2">
+    <form method="post" action="/tasks/{{ task.slug }}/run">
+      <button type="submit"
+              class="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500">
+        Run now
+      </button>
+    </form>
+    <form method="post" action="/tasks/{{ task.slug }}/delete"
+          onsubmit="return confirm('Delete this task and all its files?');">
+      <button type="submit"
+              class="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-red-600
+                     hover:bg-red-50 dark:border-neutral-600 dark:hover:bg-neutral-700">
+        Delete
+      </button>
+    </form>
+  </div>
+</div>
+
+<div class="mb-6">{% include "_task_status.html" %}</div>
+
+<div class="mb-6 rounded-lg border border-gray-200 bg-white p-4 shadow-sm
+            dark:border-neutral-700 dark:bg-neutral-800">
+  <h2 class="mb-3 text-lg font-semibold">Description</h2>
+  {% if task.description %}
+    <pre class="whitespace-pre-wrap break-words font-mono text-sm">{{ task.description }}</pre>
+  {% else %}
+    <p class="text-sm text-gray-500 dark:text-neutral-400">No description.</p>
+  {% endif %}
+</div>
+
+<div class="mb-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
+  <div class="rounded-lg border border-gray-200 bg-white p-4 shadow-sm
+              dark:border-neutral-700 dark:bg-neutral-800">
+    <h2 class="mb-3 text-lg font-semibold">Attachments</h2>
+    {% include "_attachments.html" %}
+    <form method="post" action="/tasks/{{ task.slug }}/attachments" enctype="multipart/form-data"
+          class="mt-3 flex items-center gap-2">
+      <input type="file" name="file" required class="block flex-1 text-sm text-gray-600 dark:text-neutral-300">
+      <button type="submit"
+              class="rounded-md border border-gray-300 px-3 py-1.5 text-sm font-medium
+                     hover:bg-gray-50 dark:border-neutral-600 dark:hover:bg-neutral-700">Upload</button>
+    </form>
+  </div>
+
+  <div class="rounded-lg border border-gray-200 bg-white p-4 shadow-sm
+              dark:border-neutral-700 dark:bg-neutral-800">
+    <div class="mb-3 flex items-center justify-between">
+      <h2 class="text-lg font-semibold">Runs</h2>
+      <a href="/runs?kind=task&name={{ task.slug }}"
+         class="text-sm text-indigo-600 hover:underline dark:text-indigo-400">All &rarr;</a>
+    </div>
+    {% if task_runs %}
+      <div class="overflow-x-auto">
+        <table class="w-full text-left">
+          <tbody>{% for r in task_runs %}{{ run_row(r) }}{% endfor %}</tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="text-sm text-gray-500 dark:text-neutral-400">No runs yet.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="rounded-lg border border-gray-200 bg-white p-5 shadow-sm
+            dark:border-neutral-700 dark:bg-neutral-800">
+  <h2 class="mb-4 text-lg font-semibold">Edit</h2>
+  <form method="post" action="/tasks/{{ task.slug }}/edit" class="space-y-4">
+    <div>
+      <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-neutral-300">Title</label>
+      <input name="title" value="{{ task.title }}" class="{{ input_cls }}">
+    </div>
+    <div>
+      <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-neutral-300">Description</label>
+      <textarea name="description" rows="8" class="{{ input_cls }} font-mono">{{ task.description }}</textarea>
+    </div>
+    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <div>
+        <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-neutral-300">Tags</label>
+        <input name="tags" value="{{ task.tags | join(', ') }}" class="{{ input_cls }}">
+      </div>
+      <div class="flex items-end">
+        <label class="flex items-center gap-2 text-sm">
+          <input type="checkbox" name="notify" class="h-4 w-4 rounded border-gray-300"
+                 {% if task.notify %}checked{% endif %}>
+          Notify on completion
+        </label>
+      </div>
+    </div>
+    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <div>
+        <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-neutral-300">Provider</label>
+        <select name="provider" class="{{ input_cls }}">
+          <option value="">— task-runner default —</option>
+          {% for name in providers.keys() %}
+            <option value="{{ name }}" {% if task.provider == name %}selected{% endif %}>{{ name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-neutral-300">Model</label>
+        <input name="model" list="models" value="{{ task.model or '' }}" class="{{ input_cls }}">
+        <datalist id="models">{% for m in models %}<option value="{{ m }}">{% endfor %}</datalist>
+      </div>
+    </div>
+    <div class="pt-2">
+      <button type="submit"
+              class="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500">
+        Save changes
+      </button>
+    </div>
+  </form>
+</div>
+{% endblock %}

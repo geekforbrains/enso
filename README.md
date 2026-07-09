@@ -4,6 +4,21 @@ Text your AI agents from Telegram or Slack. They run on your machine.
 
 Enso connects [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), and [Gemini CLI](https://github.com/google-gemini/gemini-cli) to a Telegram bot or Slack workspace so you can chat with them from your phone. You get live status updates as they work, can switch between agents mid-conversation, and schedule background jobs on a cron.
 
+## Documentation
+
+Design docs live in [`docs/`](docs/) and are the source of truth for planned and in-progress work — read the one that owns what you're changing, and update it in the same commit.
+
+| Doc | Owns |
+|---|---|
+| [`docs/PRD.md`](docs/PRD.md) | **Web UI & Tasks** (proposed) — product requirements: what & why, key decisions, scope |
+| [`docs/specs/architecture.md`](docs/specs/architecture.md) | How the web server, run recording, and task runner fit into `enso serve` |
+| [`docs/specs/data-model.md`](docs/specs/data-model.md) | Task file format, the runs SQLite schema, config, `~/.enso/` layout |
+| [`docs/specs/tasks.md`](docs/specs/tasks.md) | Tasks: lifecycle, the built-in task runner, notifications, agent authoring |
+| [`docs/specs/web.md`](docs/specs/web.md) | The web UI: routes, pages, read/write flows |
+| [`CHANGELOG.md`](CHANGELOG.md) | What has actually shipped, per version |
+
+> The Web UI & Tasks docs describe a **proposed** feature that is not yet built. Everything below this section reflects Enso as it ships today.
+
 ## Requirements
 
 - Python 3.10+

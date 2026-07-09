@@ -1,0 +1,42 @@
+{# Reusable UI fragments. #}
+
+{% macro task_badge(status) %}
+  <span class="inline-block rounded-full px-2 py-0.5 text-xs font-medium
+               {{ task_badges.get(status, task_badges['todo']) }}">
+    {{ status.replace('_', ' ') }}
+  </span>
+{% endmacro %}
+
+{% macro run_badge(status) %}
+  <span class="inline-block rounded-full px-2 py-0.5 text-xs font-medium
+               {{ run_badges.get(status, run_badges['running']) }}">
+    {{ status }}
+  </span>
+{% endmacro %}
+
+{% macro tag_pill(tag) %}
+  <span class="inline-block rounded-full bg-gray-100 px-2 py-0.5 text-xs
+               text-gray-600 dark:bg-neutral-700 dark:text-neutral-300">{{ tag }}</span>
+{% endmacro %}
+
+{% macro card(extra="") %}
+  <div class="rounded-lg border border-gray-200 bg-white p-4 shadow-sm
+              dark:border-neutral-700 dark:bg-neutral-800 {{ extra }}">
+    {{ caller() }}
+  </div>
+{% endmacro %}
+
+{% macro run_row(r) %}
+  <tr class="border-t border-gray-100 dark:border-neutral-700">
+    <td class="py-2 pr-3">
+      <a href="/runs/{{ r.id }}" class="font-mono text-xs text-indigo-600 hover:underline
+                                         dark:text-indigo-400">{{ r.id[:8] }}</a>
+    </td>
+    <td class="py-2 pr-3 text-sm">{{ r.kind }}</td>
+    <td class="py-2 pr-3 text-sm">{{ r.title or r.name }}</td>
+    <td class="py-2 pr-3">{{ run_badge(r.status) }}</td>
+    <td class="py-2 pr-3 text-sm text-gray-500 dark:text-neutral-400">{{ r.trigger }}</td>
+    <td class="py-2 pr-3 text-sm text-gray-500 dark:text-neutral-400">{{ r.started_at | fmt_ts }}</td>
+    <td class="py-2 pr-3 text-sm text-gray-500 dark:text-neutral-400">{{ r.duration_ms | fmt_duration }}</td>
+  </tr>
+{% endmacro %}
