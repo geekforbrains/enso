@@ -28,6 +28,18 @@
 {% block content %}
 <h1 class="mb-6 text-2xl font-semibold tracking-tight">Skills</h1>
 
+<div class="mb-6 flex flex-wrap items-center gap-2">
+  {% for key, label in [('all', 'All'), ('enso', 'Enso'), ('system', 'System')] %}
+    <a href="/skills{% if key != 'all' %}?show={{ key }}{% endif %}"
+       class="rounded-full px-3 py-1 text-xs font-medium
+              {% if active_show == key %}bg-indigo-600 text-white
+              {% else %}bg-gray-100 text-gray-600 dark:bg-neutral-700 dark:text-neutral-300{% endif %}">
+      {{ label }} <span class="opacity-70">{{ counts[key] }}</span>
+    </a>
+  {% endfor %}
+</div>
+
+{% if active_show in ('all', 'enso') %}
 <section class="mb-8">
   <h2 class="mb-3 text-lg font-semibold">Enso skills</h2>
   {% if enso_skills %}
@@ -36,14 +48,17 @@
     <p class="text-sm text-gray-500 dark:text-neutral-400">No Enso-owned skills.</p>
   {% endif %}
 </section>
+{% endif %}
 
+{% if active_show in ('all', 'system') %}
 <section>
-  <h2 class="mb-3 text-lg font-semibold">External skills
+  <h2 class="mb-3 text-lg font-semibold">System skills
     <span class="text-sm font-normal text-gray-500 dark:text-neutral-400">(read-only)</span></h2>
   {% if external_skills %}
     <div class="space-y-3">{% for s in external_skills %}{{ skill_card(s) }}{% endfor %}</div>
   {% else %}
-    <p class="text-sm text-gray-500 dark:text-neutral-400">No external skill roots configured.</p>
+    <p class="text-sm text-gray-500 dark:text-neutral-400">No system skill roots configured.</p>
   {% endif %}
 </section>
+{% endif %}
 {% endblock %}

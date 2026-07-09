@@ -720,11 +720,23 @@ async def run_detail(request):
 
 
 async def skills_list(request):
+    show = request.query_params.get("show") or "all"
+    if show not in ("all", "enso", "system"):
+        show = "all"
+    enso_skills = _enso_skills()
+    external_skills = _external_skills(request)
+    counts = {
+        "all": len(enso_skills) + len(external_skills),
+        "enso": len(enso_skills),
+        "system": len(external_skills),
+    }
     return _render(
         request,
         "skills.html",
-        enso_skills=_enso_skills(),
-        external_skills=_external_skills(request),
+        enso_skills=enso_skills,
+        external_skills=external_skills,
+        active_show=show,
+        counts=counts,
     )
 
 
