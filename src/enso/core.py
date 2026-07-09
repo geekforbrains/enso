@@ -146,8 +146,9 @@ class Runtime:
         Creates:
         - ~/.enso/jobs/ and ~/.enso/skills/
         - Bundled skills copied to ~/.enso/skills/
-        - CLAUDE.md in working_dir (from bundled template, only if missing)
-        - AGENTS.md, GEMINI.md as symlinks to CLAUDE.md
+        - AGENTS.md in working_dir (from bundled template, only if missing)
+        - CLAUDE.md as a symlink to AGENTS.md (Claude reads CLAUDE.md;
+          Codex and Gemini read AGENTS.md natively)
         - .claude/skills and .agents/skills symlinked to ~/.enso/skills/
           (so Claude, Codex, and Gemini auto-discover skills)
         - Auto-compact notification hooks for Claude and Gemini
@@ -161,25 +162,25 @@ class Runtime:
         self._install_bundled_skills(skills_dir)
         self._install_skill_tools(skills_dir)
 
-        # System prompt
-        source = importlib.resources.files("enso").joinpath("system_prompt.md")
+        # System prompt. AGENTS.md is canonical; Claude reads CLAUDE.md, so
+        # it's symlinked to AGENTS.md. Codex and Gemini read AGENTS.md
+        # natively, so no further symlinks are needed.
+        source = importlib.resources.files("enso").joinpath("prompts", "AGENTS.md")
         content = source.read_text(encoding="utf-8")
 
-        canonical = os.path.join(self.working_dir, "CLAUDE.md")
+        canonical = os.path.join(self.working_dir, "AGENTS.md")
         if not os.path.exists(canonical):
             try:
                 with open(canonical, "w") as f:
                     f.write(content)
-                log.info("Wrote CLAUDE.md to %s", self.working_dir)
+                log.info("Wrote AGENTS.md to %s", self.working_dir)
             except OSError:
-                log.warning("Could not write CLAUDE.md", exc_info=True)
+                log.warning("Could not write AGENTS.md", exc_info=True)
                 return
 
-        # Symlink agent instruction files to CLAUDE.md
-        for name in ("AGENTS.md", "GEMINI.md"):
-            self._ensure_symlink(
-                os.path.join(self.working_dir, name), "CLAUDE.md"
-            )
+        self._ensure_symlink(
+            os.path.join(self.working_dir, "CLAUDE.md"), "AGENTS.md"
+        )
 
         # Symlink skills into CLI-specific discovery paths
         # .claude/skills -> ~/.enso/skills (Claude Code)

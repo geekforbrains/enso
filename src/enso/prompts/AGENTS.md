@@ -46,6 +46,16 @@ the full format reference, prerun script guide, and examples.
 
 Schedules use the system's local timezone. Do not convert to UTC.
 
+## Deferred updates — use `enso message send`
+
+Each turn relays exactly one response back to the user, and the turn ends
+when your process exits — there is no second reply. So if work will finish
+*after* your final message (a long background task, something you said
+you'd report back on), deliver that update with `enso message send`, which
+pushes to the chat out of band. Never end a turn promising a follow-up that
+depends on a reply you can't send — either finish the work first, or push
+the update through `enso message send`.
+
 ## Background Messages
 
 When background messages are present, they'll be injected at the start
