@@ -1563,18 +1563,17 @@ class Runtime:
             ]
             parts.append("")
         parts += [
-            "Complete this task. When finished, record the outcome by running:",
-            f"    enso task status {task.slug} done",
-            "If you cannot proceed, run instead:",
-            f'    enso task status {task.slug} blocked --reason "<why>"',
+            "Complete this task now. When you finish, record the outcome:",
+            f'    enso task status {task.slug} done --result "<concise summary of'
+            ' what you did or the answer>"',
+            "If you cannot complete it (missing information, needs a decision, or"
+            " otherwise blocked), run instead:",
+            f'    enso task status {task.slug} blocked --reason "<what is blocking'
+            ' you>"',
+            "The --result / --reason text is exactly what the operator sees as the"
+            " outcome, so make it self-contained. Do not send any chat message"
+            " yourself — Enso notifies the operator based on the final status.",
         ]
-        if getattr(task, "notify", False):
-            parts += [
-                "",
-                "This task requests notification: after finishing, run"
-                " `enso message send` with a short summary so the operator"
-                " hears about it in their chat.",
-            ]
         return "\n".join(parts)
 
     async def run_task_now(self, slug: str, *, trigger: str = "manual") -> str:
@@ -1635,10 +1634,104 @@ class Runtime:
         if timed_out:
             output = f"Task timed out after {TASK_TIMEOUT}s; process tree was terminated"
             self._record_run_finish(run_id, output, proc.returncode, "timeout", tag)
+            await self._reconcile_task_outcome(
+                slug, output, exit_code=None, timed_out=True,
+            )
             return run_id
         output = provider.parse_batch_output(stdout.decode(errors="replace"))
         self._record_run_finish(
             run_id, output, proc.returncode,
             "ok" if proc.returncode == 0 else "error", tag,
         )
+        await self._reconcile_task_outcome(
+            slug, output, exit_code=proc.returncode, timed_out=False,
+        )
         return run_id
+
+    # -- Task outcome reconciliation + notification --
+
+    @staticmethod
+    def _result_snippet(output: str, limit: int = 2000) -> str:
+        """Trim captured agent output to a compact result string."""
+        text = (output or "").strip()
+        if len(text) <= limit:
+            return text
+        return "…" + text[-limit:].strip()
+
+    async def _reconcile_task_outcome(
+        self,
+        slug: str,
+        output: str,
+        *,
+        exit_code: int | None,
+        timed_out: bool,
+    ) -> None:
+        """Guarantee a terminal status + stored result, then notify.
+
+        Respects a status the agent set for itself (done / blocked / cancelled)
+        and only backfills the result when the agent left one out. If the agent
+        never reported (still ``in_progress``), the outcome is inferred: a clean
+        exit becomes ``done``, anything else ``blocked``. Notification is sent
+        last — ``blocked`` always pings the operator, ``done`` only when the
+        task opted into ``notify``.
+        """
+        from . import tasks
+
+        task = tasks.get_task(slug)
+        if task is None:
+            return  # deleted mid-run
+        snippet = self._result_snippet(output)
+
+        if task.status == "in_progress":
+            if timed_out:
+                task = tasks.set_status(
+                    slug, "blocked",
+                    reason=f"Timed out after {TASK_TIMEOUT}s.",
+                    result=snippet or None,
+                )
+            elif exit_code == 0:
+                task = tasks.set_status(
+                    slug, "done",
+                    result=snippet or "(completed; no result reported)",
+                )
+            else:
+                task = tasks.set_status(
+                    slug, "blocked",
+                    reason=f"Agent exited with code {exit_code}.",
+                    result=snippet or None,
+                )
+        elif task.status == "done" and not task.result:
+            task.result = snippet or "(completed; no result reported)"
+            tasks.save_task(task)
+
+        log.info(
+            "[task:%s] outcome status=%s notify=%s", slug, task.status, task.notify,
+        )
+        await self._notify_task_outcome(task)
+
+    async def _notify_task_outcome(self, task: Any) -> None:
+        """Message the operator about a finished task via the transport.
+
+        ``blocked`` always notifies; ``done`` notifies only when the task set
+        ``notify``. No-op without a transport (e.g. standalone ``enso web`` or a
+        one-off ``enso task run``).
+        """
+        if self.transport is None:
+            return
+        body = ""
+        if task.status == "blocked":
+            body = f"\U0001f6ab Task blocked: {task.title}"
+            if task.blocked_reason:
+                body += f"\n{task.blocked_reason}"
+        elif task.status == "done" and task.notify:
+            body = f"✅ Task done: {task.title}"
+            if task.result:
+                body += f"\n\n{task.result}"
+        if not body:
+            return
+        try:
+            await self.transport.notify(body[:4000])
+        except Exception:
+            log.warning(
+                "Could not notify task outcome for %s", task.slug, exc_info=True,
+            )

@@ -64,8 +64,12 @@ minutes).
 4. **Run.** Spawn the provider (the task's `provider`/`model` override, else the
    `tasks` config default) through `_execute_job`. A **run** is recorded with
    `kind='task'`, `name=<slug>`, `trigger='task-runner'`.
-5. **Complete.** The agent sets `status: done` (or `blocked` + `blocked_reason`) by
-   editing `TASK.md`, and — if `notify` is true — calls `enso message send` to ping chat.
+5. **Complete & reconcile.** The agent reports the outcome via
+   `enso task status <slug> done --result "…"` (or `blocked --reason "…"`). After the agent
+   exits, the runner **reconciles**: it re-reads the task and, if the agent left it
+   `in_progress`, infers the terminal state from the run (clean exit → `done`, otherwise
+   `blocked`) and backfills a `result` from the captured output. The runner — not the
+   agent — then messages the operator (see Notification).
 
 `batch` (default 1) controls how many tasks a single tick claims. One-per-tick keeps each
 run mapped to exactly one task (clean history, bounded runtime); raise it to drain a
@@ -77,29 +81,23 @@ overlapping itself, so a long task simply defers the next drain to the following
 The runner injects something like:
 
 ```
-You are completing a one-off task. When finished, set its status.
+# Task: {title}
+{description}
 
-Task: {title}
-Slug: {slug}
-Tags: {tags}
 Attachments:
 {attachment_paths}
 
---- Description ---
-{description}
---- End description ---
-
-When done, edit ~/.enso/tasks/{slug}/TASK.md frontmatter: set `status: done`
-(or `status: blocked` with a `blocked_reason:` if you need input), and bump
-`updated`. {notify_clause}
+Complete this task now. When you finish, record the outcome:
+    enso task status {slug} done --result "<concise summary / the answer>"
+If you cannot complete it (missing info, needs a decision, blocked):
+    enso task status {slug} blocked --reason "<what is blocking you>"
+The --result / --reason text is exactly what the operator sees. Do not send any
+chat message yourself — Enso notifies the operator based on the final status.
 ```
 
-`{notify_clause}` is present only when `notify: true`:
-_"This task requests notification — when finished, run `enso message send` with a short
-summary (and `enso message attach` for any files) so the operator hears about it in chat."_
-
-The agent already knows how to edit files and call `enso message send`; the task runner
-adds no new tool surface, only an instruction.
+The agent records the outcome through the `enso task` CLI it already has; the runner owns
+all messaging, so the prompt never tells the agent to notify. If the agent forgets to set
+a terminal status, reconciliation (step 5) backfills one from the run's exit code.
 
 ### Claiming & safety
 
@@ -112,24 +110,27 @@ adds no new tool surface, only an instruction.
   visible signal in the UI, not a silent loss. The operator moves it back to `todo` to
   retry. (A future enhancement could auto-reap `in_progress` tasks with no active run and
   a stale `updated`, but v1 keeps it manual and honest.)
-- **Failure.** If the agent process exits nonzero or times out, the run is recorded
-  `error`/`timeout` and the task is left `in_progress` (not auto-`blocked`) — the run log
-  holds the detail; the operator decides. Job-style failure notification still fires.
+- **Failure.** If the agent exits nonzero or times out without reporting a terminal status,
+  reconciliation marks the task `blocked` (with a reason naming the exit code or timeout)
+  and the operator is always notified. The run is also recorded `error`/`timeout` with the
+  full output in the run log. (A hard crash that kills the process *before* reconciliation
+  runs leaves the task `in_progress` — see Crash visibility.)
 
 ## Notification
 
-`notify` reuses the existing chat delivery path — no new channel:
+The **runner** sends outcome notifications through the transport (`transport.notify`), so
+the rule is centralised rather than left to the agent:
 
-- `notify: true` → on completion the agent runs `enso message send` (and optionally
-  `enso message attach`), which posts to the operator's Telegram/Slack via the configured
-  transport and `notify_channel`, and queues the text as background context for the next
-  chat turn.
-- `notify: false` (default, or `tasks.notify_default`) → the task completes silently; the
-  operator sees it in the web UI on their next visit.
+- **`blocked` → always notify.** A task that needs the operator's attention always pings
+  chat, regardless of the `notify` flag.
+- **`done` → notify only when `notify: true`** (or `tasks.notify_default`). The message
+  carries the task's `result`. Otherwise the task completes silently and the operator sees
+  it in the web UI.
+- **`cancelled` is manual** — the operator sets it (and may move a task to any state by
+  hand); the runner never sets or notifies it.
 
-This is intentionally the same mechanism jobs use for their own messaging, so "notify me
-when this task is done" needs no special infrastructure — the completion ping travels the
-road that already exists.
+Messaging happens only in the serve process, which holds a transport; a standalone
+`enso web` or a one-off `enso task run` records the outcome but sends nothing.
 
 ## Agent-authored tasks
 

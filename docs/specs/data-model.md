@@ -71,7 +71,8 @@ recommend one. The current draft is attached.
 | `created` | auto | ISO 8601 UTC | Set on create, never changed |
 | `updated` | auto | ISO 8601 UTC | Bumped on every write (drives ordering, staleness) |
 | `attachments` | no | list | Optional per-file metadata (caption). The **folder is authoritative** for existence |
-| `blocked_reason` | no | string | Set by the agent when `status: blocked`; shown in the UI |
+| `blocked_reason` | no | string | Set when a task is `blocked`; the reason, shown in the UI |
+| `result` | no | string | Outcome summary recorded when the task finishes (`done`); shown on the task and in `done` notifications |
 
 The body after the frontmatter is the **description** (Markdown), the primary instruction
 to the agent.

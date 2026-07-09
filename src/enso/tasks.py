@@ -69,6 +69,7 @@ class Task:
     created: str = ""
     updated: str = ""
     blocked_reason: str | None = None
+    result: str | None = None
     description: str = ""
     path: str = ""
 
@@ -100,6 +101,7 @@ def _task_from_meta(slug: str, meta: dict, body: str, path: str) -> Task:
     if isinstance(tags, str):
         tags = [tags]
     reason = meta.get("blocked_reason")
+    result = meta.get("result")
     return Task(
         slug=slug,
         title=str(meta.get("title") or slug),
@@ -111,6 +113,7 @@ def _task_from_meta(slug: str, meta: dict, body: str, path: str) -> Task:
         created=_fmt_ts(meta.get("created")),
         updated=_fmt_ts(meta.get("updated")),
         blocked_reason=None if reason is None else str(reason),
+        result=None if result is None else str(result),
         description=body.strip(),
         path=path,
     )
@@ -132,6 +135,8 @@ def _meta_from_task(task: Task) -> dict:
     meta["updated"] = task.updated
     if task.blocked_reason is not None:
         meta["blocked_reason"] = task.blocked_reason
+    if task.result is not None:
+        meta["result"] = task.result
     return meta
 
 
@@ -235,8 +240,18 @@ def save_task(task: Task) -> None:
     log.info("Saved task %s (status=%s)", task.slug, task.status)
 
 
-def set_status(slug: str, status: str, reason: str | None = None) -> Task:
-    """Transition a task to ``status``; clears ``blocked_reason`` unless blocked."""
+def set_status(
+    slug: str,
+    status: str,
+    reason: str | None = None,
+    result: str | None = None,
+) -> Task:
+    """Transition a task to ``status``.
+
+    ``blocked_reason`` is set only when moving to ``blocked`` (cleared
+    otherwise). ``result`` — the outcome message shown on the task — is stored
+    whenever provided and left untouched otherwise.
+    """
     if status not in STATUSES:
         raise ValueError(f"Invalid status: {status!r}")
     task = get_task(slug)
@@ -244,6 +259,8 @@ def set_status(slug: str, status: str, reason: str | None = None) -> Task:
         raise FileNotFoundError(f"No such task: {slug}")
     task.status = status
     task.blocked_reason = reason if status == "blocked" else None
+    if result is not None:
+        task.result = result
     save_task(task)
     return task
 

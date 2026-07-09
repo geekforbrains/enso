@@ -1247,6 +1247,13 @@ def job_run(
 @task_app.command("create")
 def task_create(
     title: Annotated[str, typer.Option("--title", help="Task title")],
+    description: Annotated[
+        str,
+        typer.Option(
+            "--description", "-d",
+            help="Task description / instructions for the agent",
+        ),
+    ] = "",
     tags: Annotated[
         str, typer.Option("--tags", help="Comma-separated tags")
     ] = "",
@@ -1260,19 +1267,21 @@ def task_create(
         str | None, typer.Option("--model", help="Model override")
     ] = None,
 ) -> None:
-    """Create a new one-off task. Edit the TASK.md to fill in the description."""
+    """Create a new one-off task. The task-runner picks it up while ``todo``."""
     from . import tasks
 
     tag_list = [t.strip() for t in tags.split(",") if t.strip()]
     task = tasks.create_task(
         title=title,
+        description=description,
         tags=tag_list,
         notify=notify,
         provider=provider,
         model=model,
     )
     console.print(f"[green]✓[/] Task created: {task.slug}")
-    console.print(f"  Edit the description in {task.path}")
+    if not description:
+        console.print(f"  Add a description in {task.path}")
 
 
 @task_app.command("list")
@@ -1331,6 +1340,8 @@ def task_show(
     table.add_row("Updated", task.updated or "-")
     if task.blocked_reason:
         table.add_row("Blocked", task.blocked_reason)
+    if task.result:
+        table.add_row("Result", task.result)
     attachments = task.attachment_names()
     if attachments:
         table.add_row("Attachments", ", ".join(attachments))
@@ -1369,12 +1380,15 @@ def task_status(
     reason: Annotated[
         str | None, typer.Option("--reason", help="Reason (recorded when blocked)")
     ] = None,
+    result: Annotated[
+        str | None, typer.Option("--result", help="Outcome summary (recorded when done)")
+    ] = None,
 ) -> None:
     """Set a task's status (todo, in_progress, blocked, done, cancelled)."""
     from . import tasks
 
     try:
-        task = tasks.set_status(slug, status, reason=reason)
+        task = tasks.set_status(slug, status, reason=reason, result=result)
     except ValueError as exc:
         console.print(f"[red]{exc}[/] Valid: {', '.join(tasks.STATUSES)}")
         raise typer.Exit(1) from exc

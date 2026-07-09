@@ -30,10 +30,15 @@ enso message attach /path "caption"  # send file with caption
 enso message list                    # show pending messages
 enso message clear                   # clear the queue
 
-# Jobs — scheduled background tasks
+# Jobs — scheduled, recurring background tasks
 enso job list                        # show all jobs with status
 enso job run <name>                  # manual test run
 enso job create --name "Name" --provider claude --model sonnet --schedule "0 9 * * *"
+
+# Tasks — one-off work Enso completes on its own
+enso task create --title "…" --description "…"   # create a one-off task (--notify to be pinged)
+enso task list                       # show tasks and status
+enso task show <slug>                # task detail + result
 
 # For full usage:
 enso --help
@@ -45,6 +50,14 @@ When creating or editing jobs, **always** use the `jobs` skill — it has
 the full format reference, prerun script guide, and examples.
 
 Schedules use the system's local timezone. Do not convert to UTC.
+
+## Tasks
+
+For one-off work the user wants done *later* or in the background (not
+recurring, and not something to do right now), use the `tasks` skill. It
+covers when to make a task vs a job, and how to write a self-contained
+description the background task-runner can act on without this conversation's
+context — e.g. when the user says "let's make that a task."
 
 ## Deferred updates — use `enso message send`
 
