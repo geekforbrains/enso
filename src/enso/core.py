@@ -1166,16 +1166,37 @@ class Runtime:
     # -- Job scheduler --
 
     async def run_job_scheduler(self) -> None:
-        """Check for jobs to run every 60 seconds. Runs as a background task."""
-        # TODO(tasks): gated on config ``tasks.enabled``, register a built-in
-        # task-runner here that claim_next_todo() and runs it via
-        # run_task_now on the ``tasks.schedule`` cadence. Left out of the
-        # prototype to avoid perturbing the live scheduler; tasks are driven
-        # manually through ``enso web`` + run-now for now.
+        """Check for jobs and tasks to run every 60 seconds.
+
+        Runs as a background task inside ``enso serve``. Each tick fires any
+        due cron jobs and, when ``tasks.enabled`` is set, runs the built-in
+        task-runner on the ``tasks.schedule`` cadence to drain open tasks.
+        """
         log.info("Job scheduler started")
         while True:
             await asyncio.sleep(60)
             now = datetime.now()
+
+            # Built-in task-runner: drain todo tasks on the tasks.schedule
+            # cron. Guarded so a task-runner fault can never kill the loop
+            # that also drives cron jobs.
+            try:
+                if (
+                    self._TASK_RUNNER_KEY not in self._running_job_tasks
+                    and self._should_run_task_runner(now)
+                ):
+                    self._job_last_run[self._TASK_RUNNER_KEY] = now
+                    self.save_state()
+                    tr_task = asyncio.create_task(self._run_task_runner_tick())
+                    self._running_job_tasks[self._TASK_RUNNER_KEY] = tr_task
+                    tr_task.add_done_callback(
+                        lambda _t: self._running_job_tasks.pop(
+                            self._TASK_RUNNER_KEY, None
+                        )
+                    )
+            except Exception:
+                log.exception("[task-runner] scheduler tick failed")
+
             for job in load_jobs():
                 if not job.enabled:
                     continue
@@ -1195,6 +1216,63 @@ class Runtime:
                             name, None,
                         )
                     )
+
+    _TASK_RUNNER_KEY: ClassVar[str] = "__task_runner__"
+
+    def _tasks_cfg(self) -> dict:
+        """Return the ``tasks`` config block (defensive against bad shapes)."""
+        cfg = self.config.get("tasks")
+        return cfg if isinstance(cfg, dict) else {}
+
+    def _should_run_task_runner(self, now: datetime) -> bool:
+        """True when the task-runner is due per ``tasks.schedule``.
+
+        Mirrors :meth:`_should_run_job`: the first sighting seeds the last-run
+        clock without firing, so a restart never triggers an immediate drain.
+        """
+        tcfg = self._tasks_cfg()
+        if not tcfg.get("enabled", True):
+            return False
+        schedule = tcfg.get("schedule", "*/5 * * * *")
+        last_run = self._job_last_run.get(self._TASK_RUNNER_KEY)
+        if last_run is None:
+            self._job_last_run[self._TASK_RUNNER_KEY] = now
+            self.save_state()
+            return False
+        try:
+            next_run = croniter(schedule, last_run).get_next(datetime)
+        except (ValueError, KeyError):
+            log.warning("[task-runner] invalid schedule %r; skipping", schedule)
+            return False
+        return next_run <= now
+
+    async def _run_task_runner_tick(self) -> None:
+        """Claim and run up to ``tasks.batch`` open tasks (oldest todo first).
+
+        Each task is claimed (flipped to ``in_progress``) before its agent is
+        spawned, so a crash mid-run leaves a visible ``in_progress`` task
+        rather than silently re-running it. Reuses the job semaphore so tasks
+        and jobs share one concurrency budget.
+        """
+        from . import tasks as tasks_mod
+
+        try:
+            batch = int(self._tasks_cfg().get("batch", 1))
+        except (TypeError, ValueError):
+            batch = 1
+        batch = max(1, batch)
+
+        for _ in range(batch):
+            task = tasks_mod.claim_next_todo()
+            if task is None:
+                break
+            log.info("[task-runner] claimed task=%s title=%r", task.slug, task.title)
+            async with self._job_semaphore:
+                try:
+                    run_id = await self.run_task_now(task.slug, trigger="task-runner")
+                    log.info("[task-runner] task=%s run=%s complete", task.slug, run_id)
+                except Exception:
+                    log.exception("[task-runner] task '%s' failed", task.slug)
 
     async def _run_job_task(self, job: Job) -> None:
         """Run one scheduled job without blocking the scheduler loop."""
@@ -1490,16 +1568,24 @@ class Runtime:
             "If you cannot proceed, run instead:",
             f'    enso task status {task.slug} blocked --reason "<why>"',
         ]
+        if getattr(task, "notify", False):
+            parts += [
+                "",
+                "This task requests notification: after finishing, run"
+                " `enso message send` with a short summary so the operator"
+                " hears about it in their chat.",
+            ]
         return "\n".join(parts)
 
-    async def run_task_now(self, slug: str) -> str:
-        """Claim and run a one-off task now, recording a manual run.
+    async def run_task_now(self, slug: str, *, trigger: str = "manual") -> str:
+        """Claim and run a one-off task now, recording a run.
 
         Loads the task, flips it to ``in_progress`` (claim), builds a prompt
         from its title/description/attachments, and runs it in batch mode
         through the task provider/model (task overrides win over the
-        ``tasks`` config block). Records the run under ``kind="task"``,
-        ``trigger="manual"``. Raises ``ValueError`` when no task matches.
+        ``tasks`` config block). Records the run under ``kind="task"`` with the
+        given ``trigger`` (``"manual"`` for run-now, ``"task-runner"`` for the
+        scheduler). Raises ``ValueError`` when no task matches.
         """
         from . import tasks
 
@@ -1531,7 +1617,7 @@ class Runtime:
             kind="task",
             name=slug,
             title=task.title,
-            trigger="manual",
+            trigger=trigger,
             provider=provider_name,
             model=model,
         )
