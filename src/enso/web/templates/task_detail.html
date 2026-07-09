@@ -74,7 +74,7 @@
     <h2 class="mb-3 text-lg font-semibold">Attachments</h2>
     {% include "_attachments.html" %}
     <form method="post" action="/tasks/{{ task.slug }}/attachments" enctype="multipart/form-data"
-          class="mt-3 flex items-center gap-2">
+          hx-boost="false" class="mt-3 flex items-center gap-2">
       <input type="file" name="file" required class="block flex-1 text-sm text-gray-600 dark:text-neutral-300">
       <button type="submit"
               class="rounded-md border border-gray-300 px-3 py-1.5 text-sm font-medium

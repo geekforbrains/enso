@@ -20,7 +20,8 @@
   <script src="https://unpkg.com/htmx.org@2"></script>
   <link rel="stylesheet" href="/static/app.css">
 </head>
-<body class="h-full bg-gray-50 text-gray-900 dark:bg-neutral-900 dark:text-gray-100">
+<body hx-boost="true"
+      class="h-full bg-gray-50 text-gray-900 dark:bg-neutral-900 dark:text-gray-100">
   {% set nav = [
     ("/", "Dashboard"),
     ("/tasks", "Tasks"),

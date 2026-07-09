@@ -3,7 +3,7 @@
     <ul class="divide-y divide-gray-100 dark:divide-neutral-700">
       {% for name in attachments %}
         <li class="flex items-center justify-between gap-3 py-2">
-          <a href="/tasks/{{ task.slug }}/attachments/{{ name }}"
+          <a href="/tasks/{{ task.slug }}/attachments/{{ name }}" hx-boost="false"
              class="truncate font-mono text-sm text-indigo-600 hover:underline dark:text-indigo-400">
             {{ name }}
           </a>
