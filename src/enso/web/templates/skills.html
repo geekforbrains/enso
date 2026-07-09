@@ -10,7 +10,7 @@
       <div class="min-w-0">
         <div class="font-medium">{{ s.name }}</div>
         {% if s.description %}
-          <div class="mt-1 text-sm text-gray-500 line-clamp-2 sm:line-clamp-1 dark:text-neutral-400">{{ s.description }}</div>
+          <div class="mt-1 text-sm text-gray-500 line-clamp-2 sm:line-clamp-1 dark:text-neutral-400">{{ s.description | truncate(90, False, '…') }}</div>
         {% endif %}
         <div class="mt-2 truncate font-mono text-xs text-gray-400 dark:text-neutral-500">{{ s.path }}</div>
       </div>
