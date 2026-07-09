@@ -23,6 +23,7 @@ Design docs live in [`docs/`](docs/) and are the source of truth for planned and
 
 - Python 3.10+
 - At least one of: `claude`, `codex`, or `gemini` installed and on your PATH
+  - Codex CLI 0.144.0 or newer is required for the Sol, Terra, and Luna models
 - One of:
   - A Telegram bot token ([create one with @BotFather](https://t.me/BotFather)), or
   - A Slack app with a bot token + app-level token (Socket Mode)
@@ -53,8 +54,8 @@ Telegram autocompletes these when you type `/`. On Slack, use `!` instead (e.g. 
 | Command | What it does |
 |---------|-------------|
 | `/use` | Switch agent (shows buttons, or `/use claude`) |
-| `/model` | Switch model (shows buttons, or `/model sonnet`) |
-| `/effort` | Set Claude reasoning effort: `low` → `max` (or `default` to clear) |
+| `/model` | Switch model (shows buttons, or `/model sonnet` / `/model sol`) |
+| `/effort` | Set Claude/Codex reasoning effort (or `default` to clear) |
 | `/kage` | Route Claude through kage instead of `claude -p` (`/kage jobs on` for background jobs) |
 | `/status` | Active agent, model, runner, and effort |
 | `/stop` | Stop process & clear queue |
@@ -66,6 +67,8 @@ Telegram autocompletes these when you type `/`. On Slack, use `!` instead (e.g. 
 | `/help` | Show all commands |
 
 You can also send files — they're downloaded and passed to the active agent. Responses render with per-transport formatting (Telegram HTML; Slack mrkdwn).
+
+Effort is stored separately for each conversation, provider, and model. Claude supports its existing model-dependent range through `max`. Codex Sol and Terra support `low` through `ultra`; Luna supports `low` through `max`. Enso clamps an unsupported higher choice to the active model's maximum and reports the effective level.
 
 **Slack specifics.** DMs work like Telegram — every message dispatches. In channels, Enso only responds when mentioned (`@bot help me`); once a thread starts, it stays attentive to that thread only if you keep mentioning it. The bot fetches the last few thread/channel messages as context so it knows what's going on.
 
@@ -149,11 +152,14 @@ Enso can run agents on a schedule. Jobs live in `~/.enso/jobs/` and run inside `
 
 ```bash
 enso job create --name "Daily Review" --provider claude --model sonnet --schedule "0 9 * * *"
+enso job create --name "Fast Triage" --provider codex --model luna --schedule "*/30 * * * *"
 enso job list
 enso job run daily-review    # test it manually
 ```
 
 Each job has a `JOB.md` with a cron schedule, provider, model, and prompt. Jobs can include a prerun script that gates execution — `exit 0` to proceed, `exit 1` to skip silently, `exit 2+` for errors. Prerun stdout gets injected into the prompt via `{{prerun_output}}`. The bundled `jobs` skill teaches your agents how to create and manage jobs themselves.
+
+Codex models use the short names `sol`, `terra`, and `luna` in chat commands and job files. Enso translates them to the CLI model IDs `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` when spawning Codex. Full or custom model IDs remain supported.
 
 Claude jobs run via `claude -p` by default; `/kage jobs on` routes them through kage independently of your chat runner (see [Claude runner](#claude-runner-kage)). Each job's whole lifecycle — dispatch, prerun gate, spawn, completion or timeout — is logged under a `[job:<name>]` tag for easy tracing.
 

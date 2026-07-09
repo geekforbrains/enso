@@ -37,10 +37,10 @@ def tmp_enso(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def sample_config():
+def sample_config(tmp_enso):
     """Return a minimal config dict for testing."""
     return {
-        "working_dir": "/tmp/enso-test",
+        "working_dir": os.path.join(tmp_enso, "workspace"),
         "transport": "telegram",
         "transports": {
             "telegram": {

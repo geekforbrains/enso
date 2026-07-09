@@ -6,17 +6,29 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from enso.commands import cmd_compact_async, cmd_effort, cmd_kage, cmd_status
+from enso.commands import cmd_compact_async, cmd_effort, cmd_kage, cmd_model, cmd_status
 from enso.config import load_config
 from enso.core import Runtime
 
 
-def test_cmd_effort_non_claude_rejects(sample_config):
+def test_cmd_model_selects_codex_alias(sample_config):
+    sample_config["providers"]["codex"]["models"] = ["sol", "terra", "luna"]
+    rt = Runtime(sample_config)
+    rt.active_provider_by_chat["1"] = "codex"
+
+    response, options = cmd_model(rt, "1", "terra")
+
+    assert response == "codex model → terra"
+    assert options == []
+    assert rt.get_active_model("1", "codex") == "terra"
+
+
+def test_cmd_effort_unsupported_provider_rejects(sample_config):
     rt = Runtime(sample_config)
     rt.active_provider_by_chat["1"] = "gemini"
     response, options = cmd_effort(rt, "1", "high")
     assert response is not None
-    assert "only supported for Claude" in response
+    assert "only supported for Claude and Codex" in response
     assert options == []
 
 
@@ -85,11 +97,60 @@ def test_cmd_effort_clamp_warning_on_set(sample_config):
     assert rt.effort_by_chat_provider_model[("1", "claude", "sonnet")] == "max"
 
 
+def test_cmd_effort_codex_set_ultra(sample_config):
+    sample_config["providers"]["codex"]["models"] = ["sol", "terra", "luna"]
+    rt = Runtime(sample_config)
+    rt.active_provider_by_chat["1"] = "codex"
+
+    response, options = cmd_effort(rt, "1", "ultra")
+
+    assert response == "Effort → ultra"
+    assert options == []
+    assert rt.effort_by_chat_provider_model[("1", "codex", "sol")] == "ultra"
+
+
+def test_cmd_effort_codex_lists_model_specific_levels(sample_config):
+    sample_config["providers"]["codex"]["models"] = ["sol", "terra", "luna"]
+    rt = Runtime(sample_config)
+    rt.active_provider_by_chat["1"] = "codex"
+
+    _, sol_options = cmd_effort(rt, "1", None)
+    rt.active_model_by_chat_provider[("1", "codex")] = "luna"
+    _, luna_options = cmd_effort(rt, "1", None)
+
+    assert [level for level, _ in sol_options] == [
+        "low", "medium", "high", "xhigh", "max", "ultra",
+    ]
+    assert [level for level, _ in luna_options] == [
+        "low", "medium", "high", "xhigh", "max",
+    ]
+
+
+def test_cmd_effort_codex_clamps_ultra_for_luna(sample_config):
+    sample_config["providers"]["codex"]["models"] = ["luna"]
+    rt = Runtime(sample_config)
+    rt.active_provider_by_chat["1"] = "codex"
+
+    response, _ = cmd_effort(rt, "1", "ultra")
+
+    assert response is not None
+    assert "clamped to max" in response
+    assert rt.effort_by_chat_provider_model[("1", "codex", "luna")] == "ultra"
+
+
 def test_cmd_status_includes_effort(sample_config):
     rt = Runtime(sample_config)
     rt.effort_by_chat_provider_model[("1", "claude", "opus")] = "xhigh"
     out = cmd_status(rt, "1")
     assert "Effort: xhigh" in out
+
+
+def test_cmd_status_includes_codex_effort(sample_config):
+    sample_config["providers"]["codex"]["models"] = ["terra"]
+    rt = Runtime(sample_config)
+    rt.active_provider_by_chat["1"] = "codex"
+    rt.effort_by_chat_provider_model[("1", "codex", "terra")] = "max"
+    assert "Effort: max" in cmd_status(rt, "1")
 
 
 def test_cmd_status_includes_claude_runner(sample_config):

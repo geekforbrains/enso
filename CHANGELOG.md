@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Codex model aliases `sol`, `terra`, and `luna` are available in Telegram/Slack model selection and background jobs. Enso translates them to the Codex CLI's `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` IDs while preserving older and custom configured models. These models require Codex CLI 0.144.0 or newer
+- `/effort` and `!effort` now support Codex as well as Claude. Sol and Terra expose levels through `ultra`; Luna exposes levels through `max`. Per-chat overrides are passed to Codex as `model_reasoning_effort` while `default` falls back to the Codex CLI configuration
+
 ### Changed
 
 - The bundled agent-instruction template moved from `enso/system_prompt.md` to `enso/prompts/AGENTS.md`, making it easier to find and review separately from the code

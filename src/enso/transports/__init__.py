@@ -31,6 +31,7 @@ class TransportContext(ABC):
 
     async def send_typing(self) -> None:
         """Send a typing indicator. No-op by default."""
+        return None
 
     def get_origin_env(self) -> dict[str, str]:
         """Return ``ENSO_ORIGIN_*`` env vars describing the triggering message.

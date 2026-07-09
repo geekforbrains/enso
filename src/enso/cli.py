@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -181,10 +182,8 @@ def _tg_send_file(token: str, chat_id: int, file_path: str, caption: str = "") -
         except Exception as exc:
             last_err = str(exc)
             # HTTPError carries Telegram's JSON error body — surface it.
-            try:
+            with contextlib.suppress(Exception):
                 last_err = exc.read().decode("utf-8", "replace")  # type: ignore[attr-defined]
-            except Exception:
-                pass
         log.warning(
             "telegram %s failed (attempt %d/3) file=%s chat=%s: %s",
             method, attempt, filename, chat_id, last_err,
@@ -1163,7 +1162,9 @@ def job_list() -> None:
 def job_create(
     name: Annotated[str, typer.Option("--name", help="Display name for the job")],
     provider: Annotated[str, typer.Option("--provider", help="claude, codex, or gemini")],
-    model: Annotated[str, typer.Option("--model", help="Model name")],
+    model: Annotated[
+        str, typer.Option("--model", help="Model name (e.g. sonnet, sol, terra, luna)")
+    ],
     schedule: Annotated[str, typer.Option("--schedule", help="Cron expression (e.g. '0 9 * * *')")],
 ) -> None:
     """Create a new background job. Edit the JOB.md to add the prompt and optional prerun."""

@@ -62,7 +62,7 @@ COMMANDS = [
     BotCommand("queue", "View & manage queued messages"),
     BotCommand("use", "Switch provider"),
     BotCommand("model", "Switch model"),
-    BotCommand("effort", "Set reasoning effort (Claude)"),
+    BotCommand("effort", "Set reasoning effort (Claude/Codex)"),
     BotCommand("kage", "Toggle Kage for Claude (add 'jobs' for jobs)"),
     BotCommand("status", "Provider, model & effort info"),
     BotCommand("clear", "Clear session"),

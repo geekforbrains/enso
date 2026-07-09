@@ -132,7 +132,7 @@ def cmd_model(
 def cmd_effort(
     runtime: Runtime, conv_id: str, choice: str | None,
 ) -> tuple[str | None, list[tuple[str, bool]]]:
-    """Switch reasoning effort (Claude only) or list supported levels.
+    """Switch reasoning effort or list levels supported by the active model.
 
     ``choice`` may be a level name, a 1-based index, or ``default`` to
     clear the per-chat override and fall back to the CLI's own default.
@@ -140,11 +140,13 @@ def cmd_effort(
     in its native picker UI — only levels the current model supports are
     included.
     """
-    from .providers.claude import EFFORT_LEVELS, clamp_effort, max_effort_for_model
-
     provider = runtime.get_active_provider(conv_id)
-    if provider != "claude":
-        return f"Effort is only supported for Claude (current: {provider}).", []
+    if provider == "claude":
+        from .providers.claude import EFFORT_LEVELS, clamp_effort, max_effort_for_model
+    elif provider == "codex":
+        from .providers.codex import EFFORT_LEVELS, clamp_effort, max_effort_for_model
+    else:
+        return f"Effort is only supported for Claude and Codex (current: {provider}).", []
 
     model = runtime.get_active_model(conv_id, provider)
     key = (conv_id, provider, model)
@@ -154,7 +156,7 @@ def cmd_effort(
         if normalized == "default":
             runtime.effort_by_chat_provider_model.pop(key, None)
             runtime.save_state()
-            return f"Effort cleared (using {provider} default).", []
+            return f"Effort cleared (using {provider} CLI config/default).", []
 
         max_level = max_effort_for_model(model)
         max_idx = EFFORT_LEVELS.index(max_level)

@@ -441,12 +441,15 @@ class Runtime:
         hasn't picked a level. A stored level is clamped to whatever the model
         actually accepts so callers always see the real value in use.
         """
-        if provider != "claude":
-            return None
         stored = self.effort_by_chat_provider_model.get((chat_id, provider, model))
         if stored is None:
             return None
-        from .providers.claude import clamp_effort
+        if provider == "claude":
+            from .providers.claude import clamp_effort
+        elif provider == "codex":
+            from .providers.codex import clamp_effort
+        else:
+            return None
         return clamp_effort(stored, model)
 
     def get_chat_lock(self, chat_id: str) -> asyncio.Lock:

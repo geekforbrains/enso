@@ -66,6 +66,11 @@ def test_default_config_has_job_runner(tmp_enso):
     assert claude["job_runner"] == "print"
 
 
+def test_default_config_has_codex_model_aliases(tmp_enso):
+    config = load_config()
+    assert config["providers"]["codex"]["models"] == ["sol", "terra", "luna"]
+
+
 def test_load_backfills_job_runner_without_clobbering(tmp_enso):
     """An existing claude provider gains job_runner but keeps custom values."""
     config = {
@@ -89,6 +94,27 @@ def test_load_backfills_job_runner_without_clobbering(tmp_enso):
     assert claude["path"] == "/custom/claude"
     assert claude["runner"] == "kage"
     assert claude["models"] == ["opus"]
+
+
+def test_load_backfills_codex_aliases_and_preserves_custom_models(tmp_enso):
+    config = {
+        "working_dir": "/tmp/test",
+        "transport": "telegram",
+        "transports": {},
+        "providers": {
+            "codex": {
+                "path": "/custom/codex",
+                "models": ["gpt-5.6-sol", "gpt-5.5", "custom-codex-model"],
+            },
+        },
+    }
+    save_config(config)
+    loaded = load_config()
+    codex = loaded["providers"]["codex"]
+    assert codex["path"] == "/custom/codex"
+    assert codex["models"] == [
+        "sol", "terra", "luna", "gpt-5.6-sol", "gpt-5.5", "custom-codex-model",
+    ]
 
 
 def test_load_replaces_invalid_logging_with_defaults(tmp_enso):

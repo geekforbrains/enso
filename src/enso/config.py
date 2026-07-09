@@ -8,6 +8,7 @@ import os
 import shutil
 
 from .logging_config import default_logging_config
+from .providers.codex import CODEX_MODEL_ALIASES
 
 log = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ DEFAULT_PROVIDERS = {
         "kage_restart": True,
         "models": ["opus", "sonnet", "haiku", "fable"],
     },
-    "codex": {"path": "codex", "models": ["gpt-5.4", "gpt-5.3-codex"]},
+    "codex": {"path": "codex", "models": list(CODEX_MODEL_ALIASES)},
     "gemini": {
         "path": "gemini",
         "models": [
@@ -116,7 +117,17 @@ def _with_config_defaults(config: dict) -> dict:
         for name, defaults in DEFAULT_PROVIDERS.items():
             existing = backfilled.get(name)
             if isinstance(existing, dict):
-                backfilled[name] = {**defaults, **existing}
+                provider = {**defaults, **existing}
+                if name == "codex" and isinstance(existing.get("models"), list):
+                    # Make new aliases available to existing installs while
+                    # retaining full, older, or custom model IDs.
+                    aliases = list(CODEX_MODEL_ALIASES)
+                    existing_models = [
+                        model for model in existing["models"]
+                        if model not in CODEX_MODEL_ALIASES
+                    ]
+                    provider["models"] = [*aliases, *existing_models]
+                backfilled[name] = provider
         merged["providers"] = backfilled
 
     # Backfill web/tasks blocks added in newer versions without overwriting

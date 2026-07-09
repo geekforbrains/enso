@@ -34,6 +34,7 @@ enso message clear                   # clear the queue
 enso job list                        # show all jobs with status
 enso job run <name>                  # manual test run
 enso job create --name "Name" --provider claude --model sonnet --schedule "0 9 * * *"
+enso job create --name "Name" --provider codex --model terra --schedule "0 9 * * *"
 
 # Tasks — one-off work Enso completes on its own
 enso task create --title "…" --description "…"   # create a one-off task (--notify to be pinged)

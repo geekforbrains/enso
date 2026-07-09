@@ -26,6 +26,7 @@ send alerts to the user.
 enso job list                    # show all jobs with status
 enso job run <name>              # manual run (output to stdout)
 enso job create --name "Name" --provider claude --model sonnet --schedule "0 9 * * *"
+enso job create --name "Name" --provider codex --model terra --schedule "0 9 * * *"
 ```
 
 ## Directory structure
@@ -59,7 +60,7 @@ The prompt goes here. Use {{prerun_output}} to inject prerun results.
 | `name`     | yes      | Display name (shown in notifications) |
 | `schedule` | yes      | Cron: `minute hour dom month dow` |
 | `provider` | yes      | `claude`, `codex`, or `gemini` |
-| `model`    | yes      | Model name (e.g. `sonnet`, `opus`, `gpt-5.4`) |
+| `model`    | yes      | Model name (e.g. `sonnet`; Codex: `sol`, `terra`, or `luna`) |
 | `enabled`  | yes      | `true` or `false` — disabled jobs are skipped |
 | `prerun`   | no       | Script filename in the job directory |
 | `timeout`  | no       | Max seconds for the run (default 900). For Claude jobs on the kage runner this also bounds kage's own `--timeout`. |
@@ -211,6 +212,7 @@ echo "$NEW_PEOPLE"
 
 - Use `haiku` or `sonnet` for frequent/simple jobs to save cost
 - Use `opus` for jobs that need deep reasoning or complex output
+- For Codex, use `sol` for frontier work, `terra` for balanced everyday work, or `luna` for fast, affordable runs
 - Test with `enso job run <name>` before relying on the schedule
 - Check logs with `enso service logs` if a job isn't firing
 - Set `enabled: false` to pause a job without deleting it

@@ -147,6 +147,17 @@ def test_make_job_provider_uses_print_when_job_runner_unset(sample_config):
     assert cmd[:2] == [provider.path, "-p"]
 
 
+def test_make_job_provider_resolves_codex_model_alias(sample_config):
+    rt = Runtime(sample_config)
+    job = Job(
+        dir_name="j", name="J", schedule="* * * * *",
+        provider="codex", model="luna",
+    )
+    provider = rt.make_job_provider(job)
+    cmd = provider.build_batch_command("hi", job.model)
+    assert cmd[cmd.index("-m") + 1] == "gpt-5.6-luna"
+
+
 # -- Kage smart restart (warm-session reuse) --
 
 
@@ -282,11 +293,16 @@ def test_get_active_effort_clamps_to_model_cap(sample_config):
     assert rt.get_active_effort("1", "claude", "sonnet") == "high"
 
 
-def test_get_active_effort_non_claude_returns_none(sample_config):
+def test_get_active_effort_codex_clamps_to_model_cap(sample_config):
     rt = Runtime(sample_config)
-    # Shouldn't happen in practice, but defends the invariant.
-    rt.effort_by_chat_provider_model[("1", "codex", "gpt-5.4")] = "high"
-    assert rt.get_active_effort("1", "codex", "gpt-5.4") is None
+    rt.effort_by_chat_provider_model[("1", "codex", "luna")] = "ultra"
+    assert rt.get_active_effort("1", "codex", "luna") == "max"
+
+
+def test_get_active_effort_unsupported_provider_returns_none(sample_config):
+    rt = Runtime(sample_config)
+    rt.effort_by_chat_provider_model[("1", "gemini", "gemini-2.5-pro")] = "high"
+    assert rt.get_active_effort("1", "gemini", "gemini-2.5-pro") is None
 
 
 def test_effort_state_persistence(tmp_enso, sample_config):

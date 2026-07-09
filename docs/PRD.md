@@ -82,8 +82,8 @@ overview, organisation, and one-off task management.
 
 ## Personas
 
-One persona: the operator (Gavin). Runs Enso as a personal service on his own machine,
-talks to it from his phone via Telegram/Slack, and wants a laptop/desktop (or
+One persona: the operator. Runs Enso as a personal service on their own machine, talks
+to it from their phone via Telegram/Slack, and wants a laptop/desktop (or
 phone-over-Tailscale) surface to organise one-off work and audit what the agents have
 been doing — without turning Enso into a hosted product.
 

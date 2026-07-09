@@ -6,6 +6,44 @@ import json
 
 from . import BaseProvider, StreamEvent, truncate_status
 
+CODEX_MODEL_ALIASES = {
+    "sol": "gpt-5.6-sol",
+    "terra": "gpt-5.6-terra",
+    "luna": "gpt-5.6-luna",
+}
+
+# Reasoning-effort levels in the Codex 0.144 model catalog, least to most.
+EFFORT_LEVELS: list[str] = ["low", "medium", "high", "xhigh", "max", "ultra"]
+
+_MODEL_MAX_EFFORT = {
+    "gpt-5.6-sol": "ultra",
+    "gpt-5.6-terra": "ultra",
+    "gpt-5.6-luna": "max",
+}
+
+
+def resolve_codex_model(model: str) -> str:
+    """Translate Enso's short Codex model names to CLI model IDs."""
+    return CODEX_MODEL_ALIASES.get(model, model)
+
+
+def max_effort_for_model(model: str) -> str:
+    """Return the highest effort level advertised for a Codex model."""
+    return _MODEL_MAX_EFFORT.get(resolve_codex_model(model), "xhigh")
+
+
+def clamp_effort(effort: str, model: str) -> str:
+    """Degrade ``effort`` to the highest level the model accepts."""
+    if effort not in EFFORT_LEVELS:
+        return effort
+    cap = max_effort_for_model(model)
+    return EFFORT_LEVELS[min(EFFORT_LEVELS.index(effort), EFFORT_LEVELS.index(cap))]
+
+
+def _reasoning_override(effort: str) -> str:
+    """Return the TOML config override expected by Codex CLI."""
+    return f'model_reasoning_effort="{effort}"'
+
 
 def _format_status(event: dict) -> str | None:
     """Extract human-readable status from a Codex JSON event."""
@@ -46,26 +84,35 @@ class CodexProvider(BaseProvider):
         *,
         effort: str | None = None,
     ) -> list[str]:
+        cli_model = resolve_codex_model(model)
+        cmd = [self.path, "exec"]
         if session_id:
-            return [
-                self.path, "exec", "resume",
-                "--dangerously-bypass-approvals-and-sandbox", "--json",
-                "-m", model, "--", session_id, prompt,
-            ]
-        return [
-            self.path, "exec",
+            cmd.append("resume")
+        cmd.extend([
             "--dangerously-bypass-approvals-and-sandbox", "--json",
-            "-m", model, "--", prompt,
-        ]
+            "-m", cli_model,
+        ])
+        if effort:
+            cmd.extend(["-c", _reasoning_override(effort)])
+        cmd.append("--")
+        if session_id:
+            cmd.append(session_id)
+        cmd.append(prompt)
+        return cmd
 
     def build_batch_command(
         self, prompt: str, model: str, *, effort: str | None = None,
     ) -> list[str]:
-        return [
+        cli_model = resolve_codex_model(model)
+        cmd = [
             self.path, "exec",
             "--dangerously-bypass-approvals-and-sandbox",
-            "-m", model, "--", prompt,
+            "-m", cli_model,
         ]
+        if effort:
+            cmd.extend(["-c", _reasoning_override(effort)])
+        cmd.extend(["--", prompt])
+        return cmd
 
     def parse_line(self, line: str) -> dict | None:
         stripped = line.strip()

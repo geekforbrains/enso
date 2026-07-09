@@ -161,7 +161,7 @@ internet and the PRD makes that a non-goal.
   unless the operator opts in.
 - **Remote = Tailscale.** To reach it from a phone, bind the tailnet interface (or front
   it with `tailscale serve`); traffic is WireGuard-encrypted, so plain HTTP on the
-  tailnet is fine — the same model Gavin's other projects use for dev access.
+  tailnet is fine for local development access.
 - **Optional bearer token** (`web.token`): when set, every request must present it (query
   param to bootstrap a cookie, then a session cookie). When unset, localhost-only is the
   security boundary. There is **no user/login system** — that would be over-engineering a

@@ -10,7 +10,19 @@ from enso.providers.claude import (
     clamp_effort,
     max_effort_for_model,
 )
-from enso.providers.codex import CodexProvider
+from enso.providers.codex import (
+    CODEX_MODEL_ALIASES,
+    CodexProvider,
+)
+from enso.providers.codex import (
+    EFFORT_LEVELS as CODEX_EFFORT_LEVELS,
+)
+from enso.providers.codex import (
+    clamp_effort as clamp_codex_effort,
+)
+from enso.providers.codex import (
+    max_effort_for_model as max_codex_effort_for_model,
+)
 from enso.providers.gemini import GeminiProvider
 
 # -- Command building --
@@ -110,6 +122,24 @@ def test_codex_build_batch_command():
     p = CodexProvider("codex")
     cmd = p.build_batch_command("hello", "gpt-5.3-codex")
     assert "--json" not in cmd
+
+
+def test_codex_model_aliases_apply_to_all_command_modes():
+    p = CodexProvider("codex")
+    for alias, model_id in CODEX_MODEL_ALIASES.items():
+        commands = [
+            p.build_command("hello", alias),
+            p.build_command("hello", alias, session_id="thread_123"),
+            p.build_batch_command("hello", alias),
+        ]
+        for cmd in commands:
+            assert cmd[cmd.index("-m") + 1] == model_id
+
+
+def test_codex_unknown_model_passes_through():
+    p = CodexProvider("codex")
+    cmd = p.build_batch_command("hello", "gpt-5.5")
+    assert cmd[cmd.index("-m") + 1] == "gpt-5.5"
 
 
 def test_gemini_build_command():
@@ -328,12 +358,28 @@ def test_claude_build_batch_command_with_effort():
     assert cmd[-2] == "--"
 
 
-def test_codex_and_gemini_ignore_effort():
-    """Non-Claude providers accept the kwarg but emit no flag."""
+def test_codex_build_commands_with_effort():
     c = CodexProvider("codex")
+    commands = [
+        c.build_command("hi", "sol", effort="ultra"),
+        c.build_command("hi", "terra", session_id="thread_123", effort="ultra"),
+        c.build_batch_command("hi", "luna", effort="max"),
+    ]
+    for cmd in commands[:2]:
+        assert cmd[cmd.index("-c") + 1] == 'model_reasoning_effort="ultra"'
+    assert commands[2][commands[2].index("-c") + 1] == 'model_reasoning_effort="max"'
+    assert all("--effort" not in cmd for cmd in commands)
+
+
+def test_codex_build_command_without_effort_has_no_override():
+    c = CodexProvider("codex")
+    assert "model_reasoning_effort" not in " ".join(c.build_command("hi", "sol"))
+    assert "model_reasoning_effort" not in " ".join(c.build_batch_command("hi", "sol"))
+
+
+def test_gemini_ignores_effort():
+    """Gemini accepts the shared kwarg but emits no effort flag."""
     g = GeminiProvider("gemini")
-    assert "--effort" not in c.build_command("hi", "gpt-5.4", effort="xhigh")
-    assert "--effort" not in c.build_batch_command("hi", "gpt-5.4", effort="xhigh")
     assert "--effort" not in g.build_command("hi", "gemini-2.5-pro", effort="xhigh")
     assert "--effort" not in g.build_batch_command("hi", "gemini-2.5-pro", effort="xhigh")
 
@@ -373,3 +419,21 @@ def test_clamp_effort_degrades_to_cap():
 
 def test_clamp_effort_unknown_level_passthrough():
     assert clamp_effort("bogus", "opus") == "bogus"
+
+
+def test_codex_effort_levels_ordered():
+    assert CODEX_EFFORT_LEVELS == ["low", "medium", "high", "xhigh", "max", "ultra"]
+
+
+def test_codex_model_effort_caps():
+    assert max_codex_effort_for_model("sol") == "ultra"
+    assert max_codex_effort_for_model("gpt-5.6-terra") == "ultra"
+    assert max_codex_effort_for_model("luna") == "max"
+    assert max_codex_effort_for_model("gpt-5.5") == "xhigh"
+
+
+def test_codex_clamp_effort():
+    assert clamp_codex_effort("ultra", "sol") == "ultra"
+    assert clamp_codex_effort("ultra", "luna") == "max"
+    assert clamp_codex_effort("max", "gpt-5.5") == "xhigh"
+    assert clamp_codex_effort("high", "luna") == "high"
