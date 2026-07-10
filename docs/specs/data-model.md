@@ -124,7 +124,7 @@ CREATE TABLE IF NOT EXISTS runs (
     name         TEXT NOT NULL,         -- job dir_name or task slug
     title        TEXT,                  -- display name at run time (job.name / task.title)
     trigger      TEXT NOT NULL,         -- 'schedule' | 'manual' | 'task-runner'
-    status       TEXT NOT NULL,         -- 'running' | 'ok' | 'error' | 'timeout'
+    status       TEXT NOT NULL,         -- also 'prerun_error' | 'prerun_timeout' for jobs
     exit_code    INTEGER,               -- NULL while running
     provider     TEXT,                  -- e.g. 'claude'
     model        TEXT,                  -- e.g. 'sonnet'
@@ -150,22 +150,28 @@ makes retention a matter of deleting a row and unlinking a file. The row carries
 
 ### Lifecycle
 
-1. **create** (`runs.create`) at spawn: insert a row with a fresh `id`, `status='running'`,
-   `started_at=now`, `trigger`, `provider`, `model`. Returns the `id`; the pipeline opens
-   `runs/<id>.log` for the captured output.
+1. **create** (`runs.create`) before provider spawn: insert a row with a fresh `id`,
+   `status='running'`, pipeline `started_at`, `trigger`, `provider`, and `model`. Failed
+   preruns create the row when classified while preserving the earlier gate start time;
+   intentional no-work creates no row. Returns the `id`; output uses `runs/<id>.log`.
 2. **finish** (`runs.finish`) at exit: set `ended_at`, `duration_ms`, `exit_code`, and a
-   terminal `status` — `ok` (exit 0), `error` (nonzero), or `timeout` (killed by the job
-   budget). Set `output_bytes` from the log size.
+   terminal `status` — `ok` (exit 0), `error` (nonzero), `timeout` (killed by the job
+   budget), `prerun_error`, or `prerun_timeout`. Intentional prerun no-work (`exit 1`)
+   creates no row. Set `output_bytes` from the log size.
 3. A row left in `running` after a service restart is a **crash marker** — surfaced in the
    UI as "interrupted", reconciled lazily (a `running` row whose `started_at` predates
    process start and isn't in `_running_job_tasks` is stale).
 
 ### Retention
 
-`runs.prune()` runs opportunistically (e.g. after each finish, throttled) and enforces
+`runs.prune()` runs after each terminal finish and enforces
 `tasks`/global caps from config: keep at most `runs_keep` rows **and** drop rows older
 than `runs_max_age_days`, deleting the associated `.log` files. Defaults chosen so an
 every-15-minutes job doesn't accumulate forever. Pruning never deletes a `running` row.
+
+Prerun notification suppression lives in `state.json` under
+`job_failure_alerts`. It stores only a fingerprint, transport/destination metadata,
+timestamps, and a suppression count — never the diagnostic or prerun source output.
 
 ## Config additions
 

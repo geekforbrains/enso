@@ -23,7 +23,7 @@
     <select name="status" class="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm
                                  dark:border-neutral-600 dark:bg-neutral-900 dark:text-gray-100">
       <option value="">any</option>
-      {% for s in ["running", "ok", "error", "timeout"] %}
+      {% for s in ["running", "ok", "error", "timeout", "prerun_error", "prerun_timeout"] %}
         <option value="{{ s }}" {% if active_status == s %}selected{% endif %}>{{ s }}</option>
       {% endfor %}
     </select>

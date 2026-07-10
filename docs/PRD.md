@@ -91,9 +91,11 @@ been doing — without turning Enso into a hosted product.
 
 ### F1 — Run history
 
-- Every job and task execution records a **run** row in SQLite: kind (`job`/`task`),
-  name, trigger (`schedule`/`manual`/`task-runner`), start/end times, exit code,
-  status (`running`/`ok`/`error`/`timeout`), and a pointer to its output log on disk.
+- Every provider execution and failed job prerun records a **run** row in SQLite;
+  intentional prerun no-work does not. Rows include kind (`job`/`task`), name, trigger
+  (`schedule`/`manual`/`task-runner`), start/end times, exit code,
+  status (`running`/`ok`/`error`/`timeout`, plus `prerun_error`/`prerun_timeout` for
+  failed job gates), and a pointer to its output log on disk.
 - Captured output is written to `~/.enso/runs/<run_id>.log`; the row stays lean.
 - A run is created at **spawn** (status `running`) and finalised at exit, so a crash
   mid-run leaves a visible `running` row rather than nothing.

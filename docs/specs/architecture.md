@@ -99,12 +99,16 @@ belong to the transport, not the run log.
 
 The recording seam (see [data-model.md](data-model.md) for the schema):
 
-1. Before spawn: `runs.create(kind, name, trigger)` → a row with `status='running'`,
-   `started_at=now`, and an allocated `run_id`; open `~/.enso/runs/<run_id>.log`.
-2. During: the subprocess's captured stdout/stderr is written to the log file (the job
-   pipeline already collects this output for notification; it now also persists it).
+1. Before provider spawn: `runs.create(kind, name, trigger)` → a row with
+   `status='running'`, the pipeline start time, and an allocated `run_id`. A failed job
+   prerun creates the same row when the failure is classified, backdated to gate start;
+   intentional no-work creates no row.
+2. During: provider output is captured for the run log. Failed preruns store only their
+   bounded safe diagnostic; raw prerun stdout/stderr is never copied into history or a
+   transport notification.
 3. After: `runs.finish(run_id, exit_code, status)` sets `ended_at`, `exit_code`, and a
-   terminal `status` (`ok` / `error` / `timeout`).
+   terminal `status` (`ok` / `error` / `timeout`; job gates may instead finish as
+   `prerun_error` / `prerun_timeout`). Intentional no-work (`exit 1`) creates no row.
 
 A small `runs.py` module owns the SQLite connection and these calls, mirroring how
 `messages.py` owns the messages file. The DB is opened lazily and created on first use

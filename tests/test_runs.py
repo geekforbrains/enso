@@ -5,18 +5,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timedelta, timezone
 
-import pytest
-
 from enso import runs
-
-
-@pytest.fixture(autouse=True)
-def _reset_connections():
-    """Close and clear cached DB connections around each test."""
-    yield
-    for conn in runs._connections.values():
-        conn.close()
-    runs._connections.clear()
 
 
 def _backdate(run_id: str, days: int) -> None:
@@ -83,6 +72,18 @@ def test_finish_defaults_provider_model_none(tmp_enso):
     # No output was written, so output stays unrecorded.
     assert row["output_bytes"] is None
     assert row["output_path"] is None
+
+
+def test_create_accepts_original_start_time(tmp_enso):
+    """Callers can include work that happened before the run row was created."""
+    started_at = (datetime.now(timezone.utc) - timedelta(seconds=2)).isoformat()
+    run_id = runs.create("job", "gated", started_at=started_at)
+
+    runs.finish(run_id, exit_code=2, status="prerun_error")
+
+    row = runs.get(run_id)
+    assert row["started_at"] == started_at
+    assert row["duration_ms"] >= 1900
 
 
 def test_list_filters_and_ordering(tmp_enso):

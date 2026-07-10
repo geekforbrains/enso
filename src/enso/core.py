@@ -4,18 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import importlib.resources
 import json
 import logging
 import os
+import re
 import shlex
 import signal
 import tempfile
 from asyncio.subprocess import Process
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, ClassVar
+from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from croniter import croniter
 
@@ -73,6 +75,42 @@ SESSION_TTL_DAYS = int(os.environ.get("ENSO_SESSION_TTL_DAYS", "30"))
 TASK_TIMEOUT = int(os.environ.get("ENSO_TASK_TIMEOUT_SECS", str(15 * 60)))
 JOB_CONCURRENCY = int(os.environ.get("ENSO_JOB_CONCURRENCY", "2"))
 PROCESS_TERMINATE_GRACE_SECS = float(os.environ.get("ENSO_PROCESS_TERMINATE_GRACE_SECS", "5"))
+JOB_FAILURE_RENOTIFY_SECS = int(
+    os.environ.get("ENSO_JOB_FAILURE_RENOTIFY_SECS", str(24 * 60 * 60))
+)
+PRERUN_DIAGNOSTIC_LIMIT = 500
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_BEARER_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+")
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)([A-Za-z0-9_-]*(?:api[_-]?key|token|secret|password|authorization)"
+    r"[A-Za-z0-9_-]*)"
+    r"(\s*[:=]\s*)([^\s,;]+)"
+)
+_URL_CREDENTIAL_RE = re.compile(r"(?i)(https?://)([^/@\s]+)@")
+_SENSITIVE_KEY_RE = re.compile(r"(?i)(api[_-]?key|token|secret|password|authorization)")
+
+
+@dataclass(frozen=True)
+class PrerunResult:
+    """Structured result from the deterministic gate before a job provider."""
+
+    outcome: Literal["open", "no_work", "error", "timeout"]
+    output: str = ""
+    diagnostic: str = ""
+    exit_code: int | None = None
+
+
+@dataclass(frozen=True)
+class JobRunResult:
+    """Terminal result shared by scheduled, CLI, and web job execution."""
+
+    status: Literal[
+        "ok", "error", "timeout", "no_work", "prerun_error", "prerun_timeout"
+    ]
+    run_id: str | None = None
+    output: str = ""
+    exit_code: int | None = None
 
 
 def _redacted_command(cmd: list[str]) -> str:
@@ -131,6 +169,7 @@ class Runtime:
 
         # Job scheduler state
         self._job_last_run: dict[str, datetime] = {}
+        self._job_failure_alerts: dict[str, dict[str, Any]] = {}
         self._running_job_tasks: dict[str, asyncio.Task] = {}
         self._job_semaphore = asyncio.Semaphore(JOB_CONCURRENCY)
 
@@ -352,6 +391,7 @@ class Runtime:
                 name: ts.isoformat()
                 for name, ts in self._job_last_run.items()
             },
+            "job_failure_alerts": dict(self._job_failure_alerts),
             "last_active": {
                 cid: ts.isoformat()
                 for cid, ts in self._last_active.items()
@@ -391,6 +431,11 @@ class Runtime:
                 self.compact_seed_by_chat[k] = v
             for name, ts in data.get("job_last_run", {}).items():
                 self._job_last_run[name] = datetime.fromisoformat(ts)
+            failure_alerts = data.get("job_failure_alerts", {})
+            if isinstance(failure_alerts, dict):
+                for name, alert in failure_alerts.items():
+                    if isinstance(alert, dict):
+                        self._job_failure_alerts[name] = alert
             for cid, ts in data.get("last_active", {}).items():
                 self._last_active[cid] = datetime.fromisoformat(ts)
             log.info(
@@ -1295,8 +1340,6 @@ class Runtime:
                 await self._execute_job(job)
             except Exception:
                 log.exception("Job '%s' failed", job.name)
-                self._job_last_run[job.dir_name] = datetime.now()
-                self.save_state()
 
     def _should_run_job(self, job: Job, now: datetime) -> bool:
         """Check if a job should run based on its cron schedule."""
@@ -1341,143 +1384,374 @@ class Runtime:
             overrides["kage_timeout"] = job.timeout
         return self.make_provider(job.provider, overrides=overrides)
 
-    async def _execute_job(self, job: Job) -> None:
-        """Run a job: prerun gate, provider subprocess, notify, queue message."""
+    def _sensitive_values(self) -> set[str]:
+        """Return configured/environment secret values that diagnostics must redact."""
+        values: set[str] = set()
+
+        def visit(value: Any, key: str = "") -> None:
+            if isinstance(value, dict):
+                for child_key, child_value in value.items():
+                    visit(child_value, str(child_key))
+            elif (
+                _SENSITIVE_KEY_RE.search(key)
+                and isinstance(value, (str, int))
+                and len(str(value)) >= 4
+            ):
+                values.add(str(value))
+
+        visit(self.config)
+        for key, value in os.environ.items():
+            if _SENSITIVE_KEY_RE.search(key) and len(value) >= 4:
+                values.add(value)
+        return values
+
+    def _sanitize_job_diagnostic(self, text: str) -> str:
+        """Redact and bound a one-line diagnostic intended for notifications."""
+        cleaned = _ANSI_ESCAPE_RE.sub("", text)
+        for secret in sorted(self._sensitive_values(), key=len, reverse=True):
+            cleaned = cleaned.replace(secret, "<redacted>")
+        cleaned = _BEARER_RE.sub("Bearer <redacted>", cleaned)
+        cleaned = _SECRET_ASSIGNMENT_RE.sub(r"\1\2<redacted>", cleaned)
+        cleaned = _URL_CREDENTIAL_RE.sub(r"\1<redacted>@", cleaned)
+        cleaned = "".join(ch if ch.isprintable() or ch.isspace() else " " for ch in cleaned)
+        cleaned = " ".join(cleaned.split())
+        if len(cleaned) > PRERUN_DIAGNOSTIC_LIMIT:
+            cleaned = cleaned[: PRERUN_DIAGNOSTIC_LIMIT - 1].rstrip() + "…"
+        return cleaned
+
+    def _safe_prerun_diagnostic(self, stderr: bytes, fallback: str) -> str:
+        """Extract only an explicitly safe ``ENSO_ERROR:`` stderr summary.
+
+        Arbitrary stderr can contain source records or credentials, so it is never
+        copied into a notification or run record. Preruns may opt into a useful
+        one-line summary by prefixing it with ``ENSO_ERROR:``.
+        """
+        decoded = stderr.decode(errors="replace")
+        for line in decoded.splitlines():
+            stripped = line.lstrip()
+            if stripped.startswith("ENSO_ERROR:"):
+                detail = stripped.removeprefix("ENSO_ERROR:").strip()
+                return self._sanitize_job_diagnostic(detail) or fallback
+        return fallback
+
+    async def _run_job_prerun(self, job: Job, tag: str) -> PrerunResult:
+        """Run a job's deterministic gate and classify its documented outcomes."""
+        if not job.prerun:
+            return PrerunResult("open")
+
+        script = os.path.join(job.job_dir, job.prerun)
+        if not os.path.isfile(script):
+            diagnostic = f"Configured prerun script not found: {job.prerun}"
+            log.warning("%s prerun error: %s", tag, diagnostic)
+            return PrerunResult("error", diagnostic=diagnostic)
+
+        log.info(
+            "%s prerun start script=%s timeout=%ss",
+            tag, job.prerun, job.prerun_timeout,
+        )
+        try:
+            proc = await self._spawn_process(
+                "bash", script,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=job.job_dir,
+            )
+            stdout, stderr, timed_out = await self._communicate_with_timeout(
+                proc, f"Job '{job.name}' prerun", job.prerun_timeout,
+            )
+        except Exception as exc:
+            detail = self._sanitize_job_diagnostic(f"{type(exc).__name__}: {exc}")
+            diagnostic = f"Could not start prerun{f': {detail}' if detail else ''}"
+            log.warning("%s prerun error: %s", tag, diagnostic, exc_info=True)
+            return PrerunResult("error", diagnostic=diagnostic)
+
+        if timed_out:
+            diagnostic = f"Prerun timed out after {job.prerun_timeout}s"
+            log.warning("%s %s", tag, diagnostic.lower())
+            return PrerunResult("timeout", diagnostic=diagnostic)
+
+        exit_code = proc.returncode if proc.returncode is not None else -1
+        if exit_code == 0:
+            output = stdout.decode(errors="replace").strip()
+            log.info("%s prerun gate open (exit 0) output_len=%d", tag, len(output))
+            return PrerunResult("open", output=output, exit_code=0)
+        if exit_code == 1:
+            log.info("%s prerun gate closed (exit 1) — no work, skipping", tag)
+            return PrerunResult("no_work", exit_code=1)
+
+        fallback = f"Prerun exited with status {exit_code}"
+        diagnostic = self._safe_prerun_diagnostic(stderr, fallback)
+        log.warning("%s prerun error (exit %s): %s", tag, exit_code, diagnostic)
+        return PrerunResult("error", diagnostic=diagnostic, exit_code=exit_code)
+
+    def _create_job_run(
+        self,
+        job: Job,
+        trigger: str,
+        tag: str,
+        started_at: str,
+    ) -> str | None:
+        """Create a run-history row without allowing telemetry to abort the job."""
+        try:
+            return runs.create(
+                kind="job",
+                name=job.dir_name,
+                title=job.name,
+                trigger=trigger,
+                provider=job.provider,
+                model=job.model,
+                started_at=started_at,
+            )
+        except Exception:
+            log.warning("%s could not create run record", tag, exc_info=True)
+            return None
+
+    async def _send_job_notification(self, job: Job, text: str, tag: str) -> bool:
+        """Send a job notification without allowing transport faults to abort work."""
+        if self.transport is None:
+            return False
+        try:
+            await self.transport.notify(text[:4096], destination=job.notify)
+        except Exception:
+            log.warning("%s could not send job notification", tag, exc_info=True)
+            return False
+        return True
+
+    def _failure_alert_fingerprint(
+        self,
+        job: Job,
+        status: str,
+        diagnostic: str,
+        exit_code: int | None,
+    ) -> str:
+        transport = self.transport.name if self.transport is not None else ""
+        material = "\0".join(
+            (
+                job.dir_name,
+                transport,
+                job.notify or "",
+                status,
+                str(exit_code),
+                diagnostic,
+            )
+        )
+        return hashlib.sha256(material.encode()).hexdigest()
+
+    async def _notify_prerun_failure(
+        self,
+        job: Job,
+        status: Literal["prerun_error", "prerun_timeout"],
+        diagnostic: str,
+        exit_code: int | None,
+        tag: str,
+    ) -> bool:
+        """Notify once per failure fingerprint and re-notify after the cooldown."""
+        if self.transport is None:
+            return False
+
+        now = datetime.now(timezone.utc)
+        fingerprint = self._failure_alert_fingerprint(
+            job, status, diagnostic, exit_code,
+        )
+        previous = self._job_failure_alerts.get(job.dir_name, {})
+        last_notified: datetime | None = None
+        try:
+            if previous.get("last_notified_at"):
+                last_notified = datetime.fromisoformat(previous["last_notified_at"])
+                if last_notified.tzinfo is None:
+                    last_notified = last_notified.replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            last_notified = None
+
+        same_failure = previous.get("fingerprint") == fingerprint
+        within_cooldown = bool(
+            last_notified
+            and (now - last_notified).total_seconds() < JOB_FAILURE_RENOTIFY_SECS
+        )
+        if same_failure and within_cooldown:
+            previous["last_seen_at"] = now.isoformat()
+            try:
+                suppressed = int(previous.get("suppressed", 0)) + 1
+            except (TypeError, ValueError):
+                suppressed = 1
+            previous["suppressed"] = suppressed
+            self._job_failure_alerts[job.dir_name] = previous
+            self.save_state()
+            log.info(
+                "%s duplicate prerun alert suppressed count=%s",
+                tag, previous["suppressed"],
+            )
+            return False
+
+        headline = "prerun timed out" if status == "prerun_timeout" else "prerun failed"
+        sent = await self._send_job_notification(
+            job,
+            f"⚠️ [{job.name}] {headline}\n{diagnostic}",
+            tag,
+        )
+        if not sent:
+            return False
+
+        self._job_failure_alerts[job.dir_name] = {
+            "fingerprint": fingerprint,
+            "status": status,
+            "destination": job.notify or "",
+            "last_notified_at": now.isoformat(),
+            "last_seen_at": now.isoformat(),
+            "suppressed": 0,
+        }
+        self.save_state()
+        return True
+
+    async def _notify_prerun_recovery(self, job: Job, tag: str) -> bool:
+        """Send one recovery after a previously reported prerun failure."""
+        if job.dir_name not in self._job_failure_alerts:
+            return False
+        sent = await self._send_job_notification(
+            job,
+            f"✅ [{job.name}] prerun recovered",
+            tag,
+        )
+        self._job_failure_alerts.pop(job.dir_name, None)
+        self.save_state()
+        return sent
+
+    async def _execute_job(
+        self,
+        job: Job,
+        *,
+        trigger: Literal["schedule", "manual"] = "schedule",
+        notify_failures: bool = True,
+    ) -> JobRunResult:
+        """Run the shared prerun/provider pipeline and return a terminal result."""
         tag = f"[job:{job.dir_name}]"
         started = datetime.now()
+        started_at = datetime.now(timezone.utc).isoformat()
         runner = self.resolve_job_runner(job.provider) or "n/a"
         log.info(
             "%s start name=%r provider=%s model=%s runner=%s timeout=%ss prerun=%s",
             tag, job.name, job.provider, job.model, runner, job.timeout,
             job.prerun or "-",
         )
-
-        # Prerun gate
-        prerun_output = ""
-        if job.prerun:
-            prerun_script = os.path.join(job.job_dir, job.prerun)
-            if os.path.isfile(prerun_script):
-                log.info(
-                    "%s prerun start script=%s timeout=%ss",
-                    tag, job.prerun, job.prerun_timeout,
-                )
-                proc = await self._spawn_process(
-                    "bash", prerun_script,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=job.job_dir,
-                )
-                stdout, stderr, timed_out = await self._communicate_with_timeout(
-                    proc, f"Job '{job.name}' prerun", job.prerun_timeout,
-                )
-                if timed_out:
-                    log.warning(
-                        "%s prerun timed out after %ss; skipping run",
-                        tag, job.prerun_timeout,
-                    )
-                    self._job_last_run[job.dir_name] = datetime.now()
-                    self.save_state()
-                    return
-                if proc.returncode != 0:
-                    if proc.returncode == 1:
-                        log.info("%s prerun gate closed (exit 1) — no work, skipping", tag)
-                    else:
-                        err = stderr.decode(errors="replace").strip()
-                        log.warning(
-                            "%s prerun error (exit %s): %s",
-                            tag, proc.returncode, err or "(no stderr)",
-                        )
-                    self._job_last_run[job.dir_name] = datetime.now()
-                    self.save_state()
-                    return
-                prerun_output = stdout.decode(errors="replace").strip()
-                log.info("%s prerun gate open (exit 0) output_len=%d", tag, len(prerun_output))
-            else:
-                log.warning("%s prerun script not found: %s", tag, prerun_script)
-
-        # Build prompt with prerun output injection
-        prompt = job.prompt
-        if prerun_output:
-            prompt = prompt.replace("{{prerun_output}}", prerun_output)
-
-        # Run provider in batch mode
-        provider = self.make_job_provider(job)
-        cmd = provider.build_batch_command(prompt, job.model)
-        log.info(
-            "%s spawning provider_class=%s runner=%s cwd=%s prompt_len=%d",
-            tag, provider.__class__.__name__, runner, self.working_dir, len(prompt),
-        )
-        log.debug("%s command=%s", tag, _redacted_command(cmd))
-
-        # Record this scheduled run in the run history. Instrumentation is
-        # best-effort: a failure to record must never abort the job itself.
-        run_id: str | None = None
         try:
-            run_id = runs.create(
-                kind="job",
-                name=job.dir_name,
-                title=job.name,
-                trigger="schedule",
-                provider=job.provider,
-                model=job.model,
-            )
-        except Exception:
-            log.warning("%s could not create run record", tag, exc_info=True)
+            prerun = await self._run_job_prerun(job, tag)
+            if prerun.outcome == "no_work":
+                if notify_failures:
+                    await self._notify_prerun_recovery(job, tag)
+                return JobRunResult("no_work", exit_code=1)
 
-        proc = await self._spawn_process(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            cwd=self.working_dir,
-        )
-        log.info("%s pid=%s", tag, proc.pid)
-        stdout, _, timed_out = await self._communicate_with_timeout(
-            proc, f"Job '{job.name}'", job.timeout,
-        )
-        elapsed = (datetime.now() - started).total_seconds()
-        if timed_out:
-            output = f"Job timed out after {job.timeout}s; process tree was terminated"
-            log.warning(
-                "%s timeout after %ss (elapsed=%.1fs); process tree terminated",
-                tag, job.timeout, elapsed,
-            )
-            self._record_run_finish(run_id, output, proc.returncode, "timeout", tag)
-            if self.transport:
-                await self.transport.notify(
-                    f"\u26a0\ufe0f [{job.name}] {output}",
-                    destination=job.notify,
+            if prerun.outcome in {"error", "timeout"}:
+                status: Literal["prerun_error", "prerun_timeout"] = (
+                    "prerun_timeout" if prerun.outcome == "timeout" else "prerun_error"
                 )
-            self._job_last_run[job.dir_name] = datetime.now()
-            self.save_state()
-            return
-        output = provider.parse_batch_output(stdout.decode(errors="replace"))
-        self._record_run_finish(
-            run_id, output, proc.returncode,
-            "ok" if proc.returncode == 0 else "error", tag,
-        )
-
-        # Only notify on failure — successful jobs handle their own messaging
-        notified = False
-        if proc.returncode != 0:
-            notified = True
-            log.warning(
-                "%s nonzero exit=%s output_len=%d notify=%s",
-                tag, proc.returncode, len(output), job.notify or "default",
-            )
-            if self.transport:
-                label = f"{job.name} (exit {proc.returncode})"
-                await self.transport.notify(
-                    f"\u26a0\ufe0f [{label}]\n{output}"[:4096],
-                    destination=job.notify,
+                run_id = self._create_job_run(job, trigger, tag, started_at)
+                output = f"{status.replace('_', ' ').title()}: {prerun.diagnostic}"
+                self._record_run_finish(
+                    run_id, output, prerun.exit_code, status, tag,
                 )
-            messages.send(output, source=f"job:{job.dir_name}")
+                if notify_failures:
+                    await self._notify_prerun_failure(
+                        job, status, prerun.diagnostic, prerun.exit_code, tag,
+                    )
+                return JobRunResult(
+                    status,
+                    run_id=run_id,
+                    output=output,
+                    exit_code=prerun.exit_code,
+                )
 
-        self._job_last_run[job.dir_name] = datetime.now()
-        self.save_state()
-        log.info(
-            "%s complete exit=%s duration=%.1fs output_len=%d notified=%s",
-            tag, proc.returncode, elapsed, len(output), notified,
-        )
+            if notify_failures:
+                await self._notify_prerun_recovery(job, tag)
+
+            prompt = job.prompt.replace("{{prerun_output}}", prerun.output)
+
+            run_id = self._create_job_run(job, trigger, tag, started_at)
+            proc: Process | None = None
+            try:
+                provider = self.make_job_provider(job)
+                cmd = provider.build_batch_command(prompt, job.model)
+                log.info(
+                    "%s spawning provider_class=%s runner=%s cwd=%s prompt_len=%d",
+                    tag, provider.__class__.__name__, runner,
+                    self.working_dir, len(prompt),
+                )
+                log.debug("%s command=%s", tag, _redacted_command(cmd))
+                proc = await self._spawn_process(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                    cwd=self.working_dir,
+                )
+                log.info("%s pid=%s", tag, proc.pid)
+                stdout, _, timed_out = await self._communicate_with_timeout(
+                    proc, f"Job '{job.name}'", job.timeout,
+                )
+                elapsed = (datetime.now() - started).total_seconds()
+                if timed_out:
+                    output = (
+                        f"Job timed out after {job.timeout}s; "
+                        "process tree was terminated"
+                    )
+                    log.warning(
+                        "%s timeout after %ss (elapsed=%.1fs); process tree terminated",
+                        tag, job.timeout, elapsed,
+                    )
+                    self._record_run_finish(
+                        run_id, output, proc.returncode, "timeout", tag,
+                    )
+                    if notify_failures:
+                        await self._send_job_notification(
+                            job, f"⚠️ [{job.name}] {output}", tag,
+                        )
+                    return JobRunResult(
+                        "timeout",
+                        run_id=run_id,
+                        output=output,
+                        exit_code=proc.returncode,
+                    )
+                output = provider.parse_batch_output(stdout.decode(errors="replace"))
+            except Exception as exc:
+                detail = self._sanitize_job_diagnostic(f"{type(exc).__name__}: {exc}")
+                output = f"Job could not start or complete{f': {detail}' if detail else ''}"
+                exit_code = proc.returncode if proc and proc.returncode is not None else -1
+                log.warning("%s %s", tag, output, exc_info=True)
+                self._record_run_finish(run_id, output, exit_code, "error", tag)
+                if notify_failures:
+                    await self._send_job_notification(
+                        job, f"⚠️ [{job.name}] {output}", tag,
+                    )
+                    messages.send(output, source=f"job:{job.dir_name}")
+                return JobRunResult(
+                    "error", run_id=run_id, output=output, exit_code=exit_code,
+                )
+
+            exit_code = proc.returncode if proc.returncode is not None else -1
+            status = "ok" if exit_code == 0 else "error"
+            self._record_run_finish(run_id, output, exit_code, status, tag)
+            notified = False
+            if exit_code != 0 and notify_failures:
+                log.warning(
+                    "%s nonzero exit=%s output_len=%d notify=%s",
+                    tag, exit_code, len(output), job.notify or "default",
+                )
+                label = f"{job.name} (exit {exit_code})"
+                notified = await self._send_job_notification(
+                    job, f"⚠️ [{label}]\n{output}", tag,
+                )
+                messages.send(output, source=f"job:{job.dir_name}")
+
+            elapsed = (datetime.now() - started).total_seconds()
+            log.info(
+                "%s complete exit=%s duration=%.1fs output_len=%d notified=%s",
+                tag, exit_code, elapsed, len(output), notified,
+            )
+            return JobRunResult(
+                status, run_id=run_id, output=output, exit_code=exit_code,
+            )
+        finally:
+            if trigger == "schedule":
+                self._job_last_run[job.dir_name] = datetime.now()
+                self.save_state()
 
     # -- Run history instrumentation --
 
@@ -1503,59 +1777,30 @@ class Runtime:
             runs.finish(run_id, exit_code if exit_code is not None else -1, status)
         except Exception:
             log.warning("%s could not finish run record id=%s", tag, run_id, exc_info=True)
+            return
+
+        task_cfg = self._tasks_cfg()
+        try:
+            keep = max(0, int(task_cfg.get("runs_keep", 500)))
+            max_age_days = max(0, int(task_cfg.get("runs_max_age_days", 30)))
+        except (TypeError, ValueError):
+            log.warning("%s invalid run-retention config; using defaults", tag)
+            keep, max_age_days = 500, 30
+        try:
+            runs.prune(keep=keep, max_age_days=max_age_days)
+        except Exception:
+            log.warning("%s could not prune run history", tag, exc_info=True)
 
     # -- Run-now (manual triggers from CLI / web) --
 
-    async def run_job_now(self, name: str) -> str:
-        """Execute a job's batch command now, recording a manual run.
-
-        Mirrors the batch half of :meth:`_execute_job` (no prerun gate — a
-        manual trigger means "run it now") and records the run under
-        ``trigger="manual"``. Raises ``ValueError`` when no job matches.
-        """
+    async def run_job_now(self, name: str) -> JobRunResult:
+        """Run a job's full pipeline manually without sending notifications."""
         job = next((j for j in load_jobs() if j.dir_name == name), None)
         if job is None:
             raise ValueError(f"No such job: {name}")
-
-        tag = f"[job:{job.dir_name}]"
-        prompt = job.prompt
-        provider = self.make_job_provider(job)
-        cmd = provider.build_batch_command(prompt, job.model)
-        log.info(
-            "%s manual run provider_class=%s cwd=%s prompt_len=%d",
-            tag, provider.__class__.__name__, self.working_dir, len(prompt),
+        return await self._execute_job(
+            job, trigger="manual", notify_failures=False,
         )
-        log.debug("%s command=%s", tag, _redacted_command(cmd))
-
-        run_id = runs.create(
-            kind="job",
-            name=job.dir_name,
-            title=job.name,
-            trigger="manual",
-            provider=job.provider,
-            model=job.model,
-        )
-
-        proc = await self._spawn_process(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            cwd=self.working_dir,
-        )
-        log.info("%s pid=%s", tag, proc.pid)
-        stdout, _, timed_out = await self._communicate_with_timeout(
-            proc, f"Job '{job.name}' (manual)", job.timeout,
-        )
-        if timed_out:
-            output = f"Job timed out after {job.timeout}s; process tree was terminated"
-            self._record_run_finish(run_id, output, proc.returncode, "timeout", tag)
-            return run_id
-        output = provider.parse_batch_output(stdout.decode(errors="replace"))
-        self._record_run_finish(
-            run_id, output, proc.returncode,
-            "ok" if proc.returncode == 0 else "error", tag,
-        )
-        return run_id
 
     @staticmethod
     def _build_task_prompt(task: Any) -> str:

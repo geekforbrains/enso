@@ -104,11 +104,13 @@ def create(
     trigger: str = "manual",
     provider: str | None = None,
     model: str | None = None,
+    started_at: str | None = None,
 ) -> str:
     """Insert a ``running`` run row and return its id (uuid4 hex).
 
-    ``started_at`` is stamped now (ISO-8601 UTC). The caller opens
-    ``log_path(run_id)`` for the captured output and later calls ``finish``.
+    ``started_at`` defaults to now (ISO-8601 UTC); callers that begin useful
+    work before creating the row may pass the original timestamp. The caller
+    opens ``log_path(run_id)`` for captured output and later calls ``finish``.
     """
     run_id = uuid.uuid4().hex
     conn = _connect()
@@ -117,7 +119,10 @@ def create(
             "INSERT INTO runs "
             "(id, kind, name, title, trigger, status, provider, model, started_at) "
             "VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?)",
-            (run_id, kind, name, title, trigger, provider, model, _utc_now()),
+            (
+                run_id, kind, name, title, trigger, provider, model,
+                started_at or _utc_now(),
+            ),
         )
         conn.commit()
     log.info("run created id=%s kind=%s name=%s trigger=%s", run_id, kind, name, trigger)
@@ -146,9 +151,10 @@ def append_output(run_id: str, text: str) -> None:
 def finish(run_id: str, exit_code: int, status: str) -> None:
     """Mark a run terminal: set ended_at, duration_ms, exit_code, status, bytes.
 
-    ``status`` is one of ``ok`` | ``error`` | ``timeout``. ``duration_ms`` is
-    derived from the stored ``started_at``; ``output_bytes`` from the log file
-    size (``output_path`` is backfilled if output exists but wasn't recorded).
+    Job statuses include ``ok`` | ``error`` | ``timeout`` plus
+    ``prerun_error`` | ``prerun_timeout``. ``duration_ms`` is derived from the
+    stored ``started_at``; ``output_bytes`` from the log file size
+    (``output_path`` is backfilled if output exists but wasn't recorded).
     """
     conn = _connect()
     row = get(run_id)

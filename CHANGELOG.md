@@ -6,12 +6,14 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Job prerun failures and timeouts are now recorded in run history and notify through the configured Telegram or Slack destination. Identical alerts are suppressed for 24 hours, changed failures alert immediately, and healthy preruns send one recovery notification
 - Codex model aliases `sol`, `terra`, and `luna` are available in Telegram/Slack model selection and background jobs. Enso translates them to the Codex CLI's `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` IDs while preserving older and custom configured models. These models require Codex CLI 0.144.0 or newer
 - `/effort` and `!effort` now support Codex as well as Claude. Sol and Terra expose levels through `ultra`; Luna exposes levels through `max`. Per-chat overrides are passed to Codex as `model_reasoning_effort` while `default` falls back to the Codex CLI configuration
 - `/update` (Telegram) / `!update` (Slack) deterministically updates Enso from the exact current commit on the stable `main` branch. It builds a wheel, validates it in an isolated environment, runs the upstream test suite, installs that same wheel, restarts the bot and dashboard services, and confirms health after restart. Already-current installs are left untouched, and editable development checkouts ahead of stable are never downgraded. Revision metadata is stored separately in `~/.enso/update.json`; the active model is never involved
 
 ### Changed
 
+- Scheduled, CLI, and web job runs now share one prerun/provider pipeline. Exit `1` is reserved for intentional no-work; missing scripts, timeouts, and all other nonzero exits are failures. Manual runs report distinct outcomes and return a nonzero shell status for real failures
 - The bundled agent-instruction template moved from `enso/system_prompt.md` to `enso/prompts/AGENTS.md`, making it easier to find and review separately from the code
 - On setup, `AGENTS.md` is now the canonical instruction file in the workspace and `CLAUDE.md` is symlinked to it (previously reversed). The `GEMINI.md` symlink is no longer created — Gemini reads `AGENTS.md` natively, as does Codex
 

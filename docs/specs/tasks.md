@@ -55,7 +55,7 @@ minutes).
 ### One tick
 
 1. **Gate.** Scan `~/.enso/tasks/` for tasks with `status: todo`. None → the run is a
-   no-op (nothing spawned, no run row), exactly like a job prerun exiting non-zero.
+   no-op (nothing spawned, no run row), exactly like a job prerun exiting `1`.
 2. **Claim.** Take the oldest `todo` (by `created`), rewrite its frontmatter to
    `status: in_progress`, bump `updated`. This write happens **before** any agent
    spawns, so a crash or an overlapping tick can never double-claim it.

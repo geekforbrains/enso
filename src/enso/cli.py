@@ -1183,62 +1183,25 @@ def job_run(
 
     from .core import Runtime
 
-    jobs = load_jobs()
-    job = next((j for j in jobs if j.dir_name == name), None)
-    if not job:
-        console.print(f"[red]Job '{name}' not found.[/]")
-        raise typer.Exit(1)
-
     config = load_config()
     runtime = Runtime(config)
+    try:
+        result = asyncio.run(runtime.run_job_now(name))
+    except ValueError:
+        console.print(f"[red]Job '{name}' not found.[/]")
+        raise typer.Exit(1) from None
 
-    async def _run() -> None:
-        # Prerun
-        prerun_output = ""
-        if job.prerun:
-            script = os.path.join(job.job_dir, job.prerun)
-            if os.path.isfile(script):
-                proc = await runtime._spawn_process(
-                    "bash", script,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=job.job_dir,
-                )
-                stdout, _, timed_out = await runtime._communicate_with_timeout(
-                    proc, f"Job '{job.name}' prerun", job.prerun_timeout,
-                )
-                if timed_out:
-                    console.print(f"[red]Prerun timed out after {job.prerun_timeout}s.[/]")
-                    return
-                if proc.returncode != 0:
-                    console.print("[yellow]Prerun check failed, skipping.[/]")
-                    return
-                prerun_output = stdout.decode(errors="replace").strip()
+    if result.status == "no_work":
+        console.print("[yellow]No work (prerun exit 1); provider was not run.[/]")
+        return
+    if result.status in {"prerun_error", "prerun_timeout"}:
+        console.print(result.output, style="red", markup=False)
+        raise typer.Exit(1)
 
-        prompt = job.prompt
-        if prerun_output:
-            prompt = prompt.replace("{{prerun_output}}", prerun_output)
-
-        provider = runtime.make_job_provider(job)
-        cmd = provider.build_batch_command(prompt, job.model)
-        runner = runtime.resolve_job_runner(job.provider) or "n/a"
-        console.print(f"[dim]Running {job.provider}/{job.model} (runner: {runner})...[/]")
-
-        proc = await runtime._spawn_process(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            cwd=runtime.working_dir,
-        )
-        stdout, _, timed_out = await runtime._communicate_with_timeout(
-            proc, f"Job '{job.name}'", job.timeout,
-        )
-        if timed_out:
-            console.print(f"[red]Job timed out after {job.timeout}s.[/]")
-            return
-        console.print(provider.parse_batch_output(stdout.decode(errors="replace")))
-
-    asyncio.run(_run())
+    if result.output:
+        console.print(result.output, markup=False)
+    if result.status in {"error", "timeout"}:
+        raise typer.Exit(1)
 
 
 # ---------------------------------------------------------------------------

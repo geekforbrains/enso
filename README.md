@@ -158,7 +158,9 @@ enso job list
 enso job run daily-review    # test it manually
 ```
 
-Each job has a `JOB.md` with a cron schedule, provider, model, and prompt. Jobs can include a prerun script that gates execution — `exit 0` to proceed, `exit 1` to skip silently, `exit 2+` for errors. Prerun stdout gets injected into the prompt via `{{prerun_output}}`. The bundled `jobs` skill teaches your agents how to create and manage jobs themselves.
+Each job has a `JOB.md` with a cron schedule, provider, model, and prompt. Jobs can include a prerun script that gates execution — `exit 0` to proceed, `exit 1` to skip silently, and any other exit to fail. Prerun timeouts, missing scripts, and exit `2+` are recorded in run history and notify through the job's configured destination. Identical alerts are suppressed for 24 hours and one recovery is sent when the prerun becomes healthy. Prerun stdout gets injected into the prompt via `{{prerun_output}}`; only an explicit, sanitized `ENSO_ERROR:` stderr summary can appear in an alert. The bundled `jobs` skill teaches your agents how to create and manage jobs themselves.
+
+`enso job run <name>` exercises the same prerun and provider pipeline without sending chat notifications. Intentional no-work exits successfully with a clear message; prerun and provider failures return a nonzero CLI status.
 
 Codex models use the short names `sol`, `terra`, and `luna` in chat commands and job files. Enso translates them to the CLI model IDs `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` when spawning Codex. Full or custom model IDs remain supported.
 

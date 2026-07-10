@@ -275,6 +275,10 @@ RUN_BADGES = {
     "ok": "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300",
     "error": "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300",
     "timeout": "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300",
+    "prerun_error": "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300",
+    "prerun_timeout": (
+        "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+    ),
 }
 templates.env.globals["task_badges"] = TASK_BADGES
 templates.env.globals["run_badges"] = RUN_BADGES
@@ -701,12 +705,14 @@ async def job_run(request):
     if runtime is None or not hasattr(runtime, "run_job_now"):
         return _redirect(f"/jobs/{name}?msg=Run+now+is+unavailable")
     try:
-        run_id = await runtime.run_job_now(name)
+        result = await runtime.run_job_now(name)
     except Exception as exc:
         log.warning("run_job_now failed for %s", name, exc_info=True)
         return _redirect(f"/jobs/{name}?msg=Run+failed:+{exc}")
-    if run_id:
-        return _redirect(f"/runs/{run_id}")
+    if result.run_id:
+        return _redirect(f"/runs/{result.run_id}")
+    if result.status == "no_work":
+        return _redirect(f"/jobs/{name}?msg=No+work;+provider+was+not+run")
     return _redirect(f"/jobs/{name}")
 
 

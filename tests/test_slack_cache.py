@@ -11,7 +11,6 @@ import pytest
 
 from enso import slack_cache
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -374,9 +373,14 @@ class TestOpenDm:
 
     def test_raises_on_api_error(self, tmp_enso):
         payload = {"ok": False, "error": "user_not_found"}
-        with patch("enso.slack_cache.urllib.request.urlopen", return_value=FakeResponse(payload)):
-            with pytest.raises(RuntimeError, match="user_not_found"):
-                slack_cache.open_dm("U42", "xoxb-fake")
+        with (
+            patch(
+                "enso.slack_cache.urllib.request.urlopen",
+                return_value=FakeResponse(payload),
+            ),
+            pytest.raises(RuntimeError, match="user_not_found"),
+        ):
+            slack_cache.open_dm("U42", "xoxb-fake")
 
 
 # ---------------------------------------------------------------------------

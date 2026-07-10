@@ -64,7 +64,8 @@ on success, or redirect back to the page for no-JS clients.
 Three at-a-glance panels:
 
 - **Recent runs** — the last N rows from `runs` (all kinds), newest first: kind, name,
-  status pill (running/ok/error/timeout), trigger, duration, relative time; each links to
+  status pill (running/ok/error/timeout/prerun error/prerun timeout), trigger, duration,
+  relative time; each links to
   `/runs/{id}`.
 - **Tasks** — counts per status (todo / in_progress / blocked), linking into `/tasks`
   filtered; a "New task" button.

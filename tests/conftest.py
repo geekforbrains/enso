@@ -6,6 +6,17 @@ import os
 
 import pytest
 
+from enso import runs
+
+
+@pytest.fixture(autouse=True)
+def reset_run_connections():
+    """Keep the lazily cached run-history database isolated between tests."""
+    yield
+    for conn in runs._connections.values():
+        conn.close()
+    runs._connections.clear()
+
 
 @pytest.fixture
 def tmp_enso(tmp_path, monkeypatch):

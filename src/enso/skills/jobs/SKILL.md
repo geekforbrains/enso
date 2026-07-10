@@ -63,6 +63,8 @@ The prompt goes here. Use {{prerun_output}} to inject prerun results.
 | `model`    | yes      | Model name (e.g. `sonnet`; Codex: `sol`, `terra`, or `luna`) |
 | `enabled`  | yes      | `true` or `false` — disabled jobs are skipped |
 | `prerun`   | no       | Script filename in the job directory |
+| `prerun_timeout` | no | Max seconds for the prerun (default 120) |
+| `notify`   | no       | Telegram user ID or Slack channel/DM for failure alerts |
 | `timeout`  | no       | Max seconds for the run (default 900). For Claude jobs on the kage runner this also bounds kage's own `--timeout`. |
 
 ### Claude runner for jobs
@@ -95,13 +97,24 @@ Examples:
 ## Prerun scripts
 
 **Most jobs should have a prerun script.** It runs before the LLM is
-invoked. If it exits non-zero, the job is skipped — avoiding wasted
-tokens when there's nothing to do.
+invoked, avoiding wasted tokens when there is nothing to do while keeping
+real failures visible.
 
 - **stdout** is captured and injected into the prompt wherever
   `{{prerun_output}}` appears
 - **exit 0** = proceed with the job
-- **exit 1** (or any non-zero) = skip the job silently
+- **exit 1** = intentional no-work result; skip silently
+- **exit 2 or greater** = failure; skip the provider, record the error, and notify
+- **timeout, missing script, or launch failure** = failure with the same behavior
+
+Only use exit `1` deliberately. Shell wrappers must map command failures to exit
+`2`, and Python entrypoints must catch unexpected exceptions rather than allowing
+Python's default exit `1` to collide with the no-work sentinel.
+
+For a useful alert without leaking source data, write one safe summary line to
+stderr as `ENSO_ERROR: <summary>`. Enso never copies prerun stdout or arbitrary
+stderr into notifications. Repeated identical failures are suppressed for 24 hours;
+a changed failure alerts immediately, and the next healthy prerun sends one recovery.
 
 ### When to use prerun
 
@@ -119,12 +132,15 @@ tokens when there's nothing to do.
 ```bash
 #!/usr/bin/env bash
 # prerun.sh — gate the job and gather data
-set -euo pipefail
+set -uo pipefail
 
 # 1. Check if there's work to do
-RESULT=$(some-command-here)
+if ! RESULT=$(some-command-here); then
+  echo "ENSO_ERROR: data check failed" >&2
+  exit 2
+fi
 
-# 2. Exit non-zero to skip the job
+# 2. Exit exactly 1 when the command succeeded but found no work
 if [[ -z "$RESULT" ]]; then
   exit 1
 fi
@@ -133,7 +149,7 @@ fi
 echo "$RESULT"
 ```
 
-Make it executable: `chmod +x prerun.sh`
+Enso invokes the file through `bash`, so it does not require an executable bit.
 
 ## Examples
 
@@ -172,8 +188,11 @@ Summarise this video and create a note:
 `prerun.sh`:
 ```bash
 #!/usr/bin/env bash
-set -euo pipefail
-VIDEO=$(python3 check_playlist.py)
+set -uo pipefail
+if ! VIDEO=$(python3 check_playlist.py); then
+  echo "ENSO_ERROR: playlist check failed" >&2
+  exit 2
+fi
 if [[ -z "$VIDEO" ]]; then
   exit 1
 fi
@@ -200,8 +219,11 @@ Research these meeting attendees and create notes:
 `prerun.sh`:
 ```bash
 #!/usr/bin/env bash
-set -euo pipefail
-NEW_PEOPLE=$(osascript get-new-attendees.js)
+set -uo pipefail
+if ! NEW_PEOPLE=$(osascript get-new-attendees.js); then
+  echo "ENSO_ERROR: attendee lookup failed" >&2
+  exit 2
+fi
 if [[ -z "$NEW_PEOPLE" ]]; then
   exit 1
 fi
