@@ -415,6 +415,49 @@ class TestCommandHandling:
         assert "line1" in result
 
     @pytest.mark.asyncio
+    async def test_update_current_command(self):
+        from enso.updater import UpdateResult
+
+        rt = _make_runtime()
+        transport = SlackTransport(rt)
+
+        with patch(
+            "enso.transports.slack.cmd_update_async",
+            new=AsyncMock(return_value=UpdateResult("current", "Already up to date.")),
+        ):
+            result = await transport._handle_command("!update", "D123")
+
+        assert result == "Already up to date."
+
+    @pytest.mark.asyncio
+    async def test_update_schedules_restart_with_origin(self):
+        from enso.updater import UpdateResult
+
+        rt = _make_runtime()
+        transport = SlackTransport(rt)
+        ctx = SlackContext(_make_client(), "C123", "1234.5", user_id="U123")
+        installed = UpdateResult("updated", "Restarting.", "a" * 40, "9.1.0")
+
+        with (
+            patch(
+                "enso.transports.slack.cmd_update_async",
+                new=AsyncMock(return_value=installed),
+            ),
+            patch("enso.updater.queue_update_confirmation") as queue,
+            patch("enso.updater.schedule_service_restart") as restart,
+        ):
+            result = await transport._handle_command("!update", "C123:1234.5", ctx=ctx)
+
+        assert result == "Restarting."
+        queue.assert_called_once_with(
+            installed,
+            transport="slack",
+            channel="C123",
+            thread="1234.5",
+        )
+        restart.assert_called_once_with()
+
+    @pytest.mark.asyncio
     async def test_help_command(self):
         rt = _make_runtime()
         transport = SlackTransport(rt)

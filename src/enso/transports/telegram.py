@@ -37,6 +37,7 @@ from ..commands import (
     cmd_logs,
     cmd_model,
     cmd_status,
+    cmd_update_async,
     cmd_use,
 )
 from ..formatting import md_to_html
@@ -67,6 +68,7 @@ COMMANDS = [
     BotCommand("status", "Provider, model & effort info"),
     BotCommand("clear", "Clear session"),
     BotCommand("compact", "Summarise & compact the active session"),
+    BotCommand("update", "Install the latest stable Enso"),
     BotCommand("restart", "Restart the bot"),
     BotCommand("logs", "Last 25 log entries"),
     BotCommand("help", "Show commands"),
@@ -222,6 +224,32 @@ class TelegramTransport(BaseTransport):
         self._scheduler_task = asyncio.create_task(
             self.runtime.run_job_scheduler()
         )
+        self._update_confirmation_task = asyncio.create_task(
+            self._confirm_pending_update()
+        )
+
+    async def _confirm_pending_update(self) -> None:
+        """Confirm that the newly installed process and services came up."""
+        from ..updater import (
+            clear_update_confirmation,
+            pending_update_confirmation,
+            update_confirmation_message,
+            wait_for_service_settle,
+        )
+
+        pending = pending_update_confirmation(self.name)
+        if not pending:
+            return
+        await wait_for_service_settle()
+        try:
+            await self._bot.send_message(
+                chat_id=pending.get("channel", ""),
+                text=update_confirmation_message(pending),
+            )
+        except Exception:
+            log.exception("Failed to send Telegram update confirmation")
+            return
+        clear_update_confirmation(str(pending.get("id", "")))
 
     async def notify(self, text: str, *, destination: str | None = None) -> None:
         """Send a one-way notification.
@@ -537,6 +565,24 @@ class TelegramTransport(BaseTransport):
         await update.effective_chat.send_action(ChatAction.TYPING)
         reply = await cmd_compact_async(self.runtime, conv_id)
         await update.message.reply_text(reply)
+
+    async def _cmd_update(self, update: Update, _ctx: Any) -> None:
+        if not self._is_authorized(update):
+            return
+        status = await update.message.reply_text(
+            "Checking the latest stable Enso release…"
+        )
+        result = await cmd_update_async(self.runtime)
+        await status.edit_text(result.message)
+        if result.restart_required:
+            from ..updater import queue_update_confirmation, schedule_service_restart
+
+            queue_update_confirmation(
+                result,
+                transport=self.name,
+                channel=str(update.effective_chat.id),
+            )
+            schedule_service_restart()
 
     async def _cmd_restart(self, update: Update, _ctx: Any) -> None:
         if not self._is_authorized(update):

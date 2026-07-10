@@ -11,6 +11,7 @@ from .providers import PROVIDER_NAMES
 
 if TYPE_CHECKING:
     from .core import Runtime
+    from .updater import UpdateResult
 
 log = logging.getLogger(__name__)
 
@@ -281,6 +282,40 @@ async def cmd_compact_async(runtime: Runtime, conv_id: str) -> str:
         provider, conv_id, len(summary),
     )
     return "Compacted. Continue the conversation — context will be preserved as a summary."
+
+
+async def cmd_update_async(runtime: Runtime) -> UpdateResult:
+    """Run the deterministic stable updater when no agent work is active."""
+    import asyncio
+
+    from .updater import UpdateResult, update_enso
+
+    if runtime._update_in_progress:
+        return UpdateResult("blocked", "Another Enso update is already running.")
+
+    runtime._update_in_progress = True
+    restart_pending = False
+    try:
+        active_chats = [
+            task for task in runtime.running_task_by_chat.values()
+            if not task.done()
+        ]
+        active_jobs = [
+            task for task in runtime._running_job_tasks.values()
+            if not task.done()
+        ]
+        if active_chats or active_jobs:
+            return UpdateResult(
+                "blocked",
+                "Enso is busy with active agent work. Wait for it to finish "
+                "or stop it, then update.",
+            )
+        result = await asyncio.to_thread(update_enso, runtime.config)
+        restart_pending = result.restart_required
+        return result
+    finally:
+        if not restart_pending:
+            runtime._update_in_progress = False
 
 
 def cmd_clear(runtime: Runtime, conv_id: str, *, clear_all: bool = False) -> list[str]:

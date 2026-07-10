@@ -62,6 +62,7 @@ Telegram autocompletes these when you type `/`. On Slack, use `!` instead (e.g. 
 | `/queue` | View & manage queued messages |
 | `/clear` | New session (shows current/all buttons) |
 | `/compact` | Summarise the current session and reseed a fresh one — keeps the thread, trims tokens |
+| `/update` | Validate and install the latest stable Enso source, then restart services |
 | `/restart` | Restart the service |
 | `/logs` | Last 25 log entries |
 | `/help` | Show all commands |
@@ -171,6 +172,21 @@ enso service install       # launchd on macOS, systemd on Linux
 enso service uninstall
 enso service logs -f
 ```
+
+`/update` (or `!update` on Slack) is deterministic and never asks the active
+model to modify the installation. It checks the fixed
+`geekforbrains/enso` `main` branch, pins its exact Git commit, builds a wheel,
+installs it in an isolated environment, runs that revision's test suite, and
+only then installs the same wheel and restarts Enso. If the installed commit
+already matches, it reports that there is nothing to update. Successful
+updates are confirmed after the bot (and the dashboard service, when
+installed) have restarted. Editable development checkouts that already
+contain stable `main` are recognized as ahead and are never downgraded.
+
+Update metadata lives in `~/.enso/update.json`, separate from user settings in
+`config.json`. Enso tracks the commit SHA as well as the package version,
+because multiple source revisions can legitimately share a version while
+development is in progress.
 
 ## Config
 

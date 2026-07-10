@@ -134,6 +134,10 @@ class Runtime:
         self._running_job_tasks: dict[str, asyncio.Task] = {}
         self._job_semaphore = asyncio.Semaphore(JOB_CONCURRENCY)
 
+        # Set while the self-updater validates and installs a release. New
+        # agent turns and scheduler ticks pause until the operation finishes.
+        self._update_in_progress = False
+
         # Last (model, effort) a kage interactive turn ran with, per chat. Used
         # to keep the warm tmux session alive across same-config turns and only
         # restart it when the model or effort actually changes.
@@ -584,6 +588,9 @@ class Runtime:
         preview: str = "",
     ) -> None:
         """Dispatch a prompt, queuing if a request is already running."""
+        if self._update_in_progress:
+            await ctx.reply("Enso is updating. Please try again after it restarts.")
+            return
         self._last_active[conversation_id] = datetime.now()
         lock = self.get_chat_lock(conversation_id)
 
@@ -1179,6 +1186,10 @@ class Runtime:
         while True:
             await asyncio.sleep(60)
             now = datetime.now()
+
+            if self._update_in_progress:
+                log.info("Job scheduler paused while Enso updates")
+                continue
 
             # Built-in task-runner: drain todo tasks on the tasks.schedule
             # cron. Guarded so a task-runner fault can never kill the loop

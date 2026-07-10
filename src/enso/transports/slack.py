@@ -33,6 +33,7 @@ from ..commands import (
     cmd_model,
     cmd_status,
     cmd_stop_async,
+    cmd_update_async,
     cmd_use,
 )
 from ..formatting import md_to_mrkdwn
@@ -81,6 +82,7 @@ SLACK_COMMANDS: list[tuple[str, str]] = [
     ("status", "Provider, model & effort info"),
     ("clear", "Clear session (use !clear all for all providers)"),
     ("compact", "Summarise & compact the active session"),
+    ("update", "Install the latest stable Enso"),
     ("logs", "Last 25 log entries"),
     ("help", "Show commands"),
 ]
@@ -323,9 +325,38 @@ class SlackTransport(BaseTransport):
             self._scheduler_task = asyncio.create_task(
                 self.runtime.run_job_scheduler()
             )
+            self._update_confirmation_task = asyncio.create_task(
+                self._confirm_pending_update()
+            )
             await handler.start_async()
 
         asyncio.run(_run())
+
+    async def _confirm_pending_update(self) -> None:
+        """Confirm that the newly installed process and services came up."""
+        from ..updater import (
+            clear_update_confirmation,
+            pending_update_confirmation,
+            update_confirmation_message,
+            wait_for_service_settle,
+        )
+
+        pending = pending_update_confirmation(self.name)
+        if not pending or not self._client:
+            return
+        await wait_for_service_settle()
+        payload: dict[str, str] = {
+            "channel": str(pending.get("channel", "")),
+            "text": update_confirmation_message(pending),
+        }
+        if pending.get("thread"):
+            payload["thread_ts"] = str(pending["thread"])
+        try:
+            await self._client.chat_postMessage(**payload)
+        except Exception:
+            log.exception("Failed to send Slack update confirmation")
+            return
+        clear_update_confirmation(str(pending.get("id", "")))
 
     def _warm_directory_cache(self) -> None:
         """Populate the user+channel cache on startup so origin-env lookups
@@ -764,6 +795,28 @@ class SlackTransport(BaseTransport):
                     "agent summarises..."
                 )
             return await cmd_compact_async(rt, conv_id)
+
+        if cmd_name == "update":
+            if ctx is not None:
+                await ctx.reply("Checking the latest stable Enso release…")
+            result = await cmd_update_async(rt)
+            if result.restart_required:
+                from ..updater import queue_update_confirmation, schedule_service_restart
+
+                origin = ctx.get_origin_env() if ctx is not None else {}
+                channel = origin.get("ENSO_ORIGIN_CHANNEL", "")
+                thread = origin.get("ENSO_ORIGIN_THREAD_TS", "")
+                if not channel:
+                    channel, _, fallback_thread = conv_id.partition(":")
+                    thread = thread or fallback_thread
+                queue_update_confirmation(
+                    result,
+                    transport=self.name,
+                    channel=channel,
+                    thread=thread,
+                )
+                schedule_service_restart()
+            return result.message
 
         if cmd_name == "logs":
             return cmd_logs()[-40000:]
