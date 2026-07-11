@@ -403,12 +403,19 @@ def _external_skill_roots(request) -> list[str]:
 
 def _external_skills(request) -> list[dict]:
     out: list[dict] = []
+    # Skill detail routes identify a skill by name alone. Mirror _resolve_skill's
+    # precedence here so every listed card resolves back to the source it shows:
+    # Enso-owned skills win, followed by the first configured external root.
+    seen = {skill["name"] for skill in _enso_skills()}
     for root in _external_skill_roots(request):
         if not os.path.isdir(root):
             continue
         for name in sorted(os.listdir(root)):
+            if name in seen:
+                continue
             skill_md = os.path.join(root, name, "SKILL.md")
             if os.path.isfile(skill_md):
+                seen.add(name)
                 out.append(
                     {
                         "name": name,
@@ -450,7 +457,7 @@ async def dashboard(request):
     status_counts = [(s, counts.get(s, 0)) for s in STATUSES]
     jobs = load_jobs()
     jobs_enabled = sum(1 for j in jobs if j.enabled)
-    latest = runs.list_runs(limit=10)
+    latest = runs.list_runs(limit=6)
     return _render(
         request,
         "index.html",

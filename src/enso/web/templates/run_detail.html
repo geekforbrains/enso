@@ -8,7 +8,7 @@
 </div>
 
 <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
-  <h1 class="text-2xl font-semibold tracking-tight">{{ run.title or run.name }}</h1>
+  <h1 class="min-w-0 break-words text-2xl font-semibold tracking-tight">{{ run.title or run.name }}</h1>
   {{ run_badge(run.status) }}
 </div>
 
@@ -16,30 +16,30 @@
             dark:border-neutral-700 dark:bg-neutral-800">
   <dl class="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
     {% set fields = [
-      ("ID", run.id), ("Kind", run.kind), ("Name", run.name), ("Trigger", run.trigger),
+      ("ID", run.id), ("Kind", run.kind), ("Trigger", run.trigger),
       ("Provider", run.provider), ("Model", run.model), ("Exit code", run.exit_code),
     ] %}
     {% for label, value in fields %}
-      <div class="flex gap-2">
-        <dt class="w-28 shrink-0 font-medium text-gray-500 dark:text-neutral-400">{{ label }}</dt>
-        <dd class="break-words font-mono">{{ value if value is not none else "—" }}</dd>
+      <div class="grid min-w-0 grid-cols-[6rem_minmax(0,1fr)] gap-2">
+        <dt class="font-medium text-gray-500 dark:text-neutral-400">{{ label }}</dt>
+        <dd class="break-anywhere min-w-0 font-mono">{{ value if value is not none else "—" }}</dd>
       </div>
     {% endfor %}
-    <div class="flex gap-2">
-      <dt class="w-28 shrink-0 font-medium text-gray-500 dark:text-neutral-400">Started</dt>
-      <dd class="font-mono">{{ run.started_at | fmt_ts }}</dd>
+    <div class="grid min-w-0 grid-cols-[6rem_minmax(0,1fr)] gap-2">
+      <dt class="font-medium text-gray-500 dark:text-neutral-400">Started</dt>
+      <dd class="min-w-0 font-mono">{{ run.started_at | fmt_ts }}</dd>
     </div>
-    <div class="flex gap-2">
-      <dt class="w-28 shrink-0 font-medium text-gray-500 dark:text-neutral-400">Ended</dt>
-      <dd class="font-mono">{{ (run.ended_at | fmt_ts) or "—" }}</dd>
+    <div class="grid min-w-0 grid-cols-[6rem_minmax(0,1fr)] gap-2">
+      <dt class="font-medium text-gray-500 dark:text-neutral-400">Ended</dt>
+      <dd class="min-w-0 font-mono">{{ (run.ended_at | fmt_ts) or "—" }}</dd>
     </div>
-    <div class="flex gap-2">
-      <dt class="w-28 shrink-0 font-medium text-gray-500 dark:text-neutral-400">Duration</dt>
-      <dd class="font-mono">{{ (run.duration_ms | fmt_duration) or "—" }}</dd>
+    <div class="grid min-w-0 grid-cols-[6rem_minmax(0,1fr)] gap-2">
+      <dt class="font-medium text-gray-500 dark:text-neutral-400">Duration</dt>
+      <dd class="min-w-0 font-mono">{{ (run.duration_ms | fmt_duration) or "—" }}</dd>
     </div>
-    <div class="flex gap-2">
-      <dt class="w-28 shrink-0 font-medium text-gray-500 dark:text-neutral-400">Output</dt>
-      <dd class="font-mono">{{ (run.output_bytes | fmt_bytes) or "—" }}</dd>
+    <div class="grid min-w-0 grid-cols-[6rem_minmax(0,1fr)] gap-2">
+      <dt class="font-medium text-gray-500 dark:text-neutral-400">Output</dt>
+      <dd class="min-w-0 font-mono">{{ (run.output_bytes | fmt_bytes) or "—" }}</dd>
     </div>
   </dl>
 </div>
@@ -51,12 +51,12 @@
     <p class="mb-3 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800
               dark:bg-amber-900/20 dark:text-amber-300">
       Showing the first {{ output | length }} bytes of {{ run.output_bytes | fmt_bytes }}.
-      Full log on disk at <span class="font-mono">{{ run.output_path }}</span>.
+      Full log on disk at <span class="break-anywhere font-mono">{{ run.output_path }}</span>.
     </p>
   {% endif %}
   {% if output %}
-    <div class="overflow-x-auto">
-      <pre class="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed">{{ output }}</pre>
+    <div class="min-w-0 overflow-x-auto">
+      <pre class="break-anywhere whitespace-pre-wrap font-mono text-xs leading-relaxed">{{ output }}</pre>
     </div>
   {% else %}
     <p class="text-sm text-gray-500 dark:text-neutral-400">No output captured.</p>

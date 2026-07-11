@@ -3,12 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111827" media="(prefers-color-scheme: dark)">
   <title>{% block title %}enso{% endblock %}</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234f46e5'/%3E%3Ccircle cx='16' cy='16' r='8' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-dasharray='43 8'/%3E%3C/svg%3E">
   <script>
     // Apply the saved/system theme before paint, then keep every theme control in sync.
     (function () {
       var media = window.matchMedia("(prefers-color-scheme: dark)");
-      var desktop = window.matchMedia("(min-width: 768px)");
+      var desktop = window.matchMedia("(min-width: 1024px)");
 
       function savedTheme() {
         try {
@@ -85,13 +87,17 @@
       });
     })();
   </script>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>tailwind.config = { darkMode: "class" };</script>
-  <script src="https://unpkg.com/htmx.org@2"></script>
+  <link rel="stylesheet" href="/static/tailwind.css">
+  <script defer src="/static/htmx.min.js"></script>
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body hx-boost="true"
-      class="min-h-full bg-gray-50 text-gray-900 dark:bg-neutral-900 dark:text-gray-100">
+      class="min-h-full bg-gray-50 text-gray-900 antialiased dark:bg-neutral-900 dark:text-gray-100">
+  <a href="#main-content"
+     class="fixed left-4 top-3 z-[60] -translate-y-20 rounded-md bg-indigo-600 px-3 py-2
+            text-sm font-medium text-white transition focus:translate-y-0">
+    Skip to content
+  </a>
   {% set nav = [
     ("/", "Dashboard"),
     ("/tasks", "Tasks"),
@@ -110,6 +116,7 @@
            {% if mobile %}onclick="setMobileNav(false)"{% endif %}
            {% if active %}aria-current="page"{% endif %}
            class="block rounded-lg px-3 py-2.5 text-sm font-medium transition
+                  focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500
                   {% if active %}bg-indigo-50 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300
                   {% else %}text-gray-600 hover:bg-gray-100 hover:text-gray-900
                              dark:text-neutral-300 dark:hover:bg-neutral-800 dark:hover:text-white{% endif %}">
@@ -128,7 +135,7 @@
         {% for value, label in [("system", "System"), ("light", "Light"), ("dark", "Dark")] %}
           <button type="button" data-theme-option="{{ value }}" aria-pressed="false"
                   onclick="setTheme('{{ value }}')"
-                  class="theme-option rounded-md px-2 py-1.5 text-xs font-medium
+                  class="theme-option rounded-md px-2 py-2 text-xs font-medium
                          text-gray-500 transition dark:text-neutral-400">
             {{ label }}
           </button>
@@ -138,7 +145,7 @@
   {% endmacro %}
 
   <header class="sticky top-0 z-30 flex h-14 items-center border-b border-gray-200
-                 bg-white/95 px-4 backdrop-blur dark:border-neutral-800 dark:bg-neutral-900/95 md:hidden">
+                 bg-white/95 px-4 backdrop-blur dark:border-neutral-800 dark:bg-neutral-900/95 lg:hidden">
     <button id="mobile-nav-trigger" type="button" aria-label="Open navigation"
             aria-controls="mobile-nav" aria-expanded="false" onclick="setMobileNav()"
             class="-ml-2 rounded-lg p-2 text-gray-600 hover:bg-gray-100 hover:text-gray-900
@@ -152,11 +159,11 @@
     <a href="/" class="ml-3 text-lg font-semibold tracking-tight">enso</a>
   </header>
 
-  <div id="mobile-nav-backdrop" class="fixed inset-0 z-40 hidden bg-gray-950/50 backdrop-blur-sm md:hidden"
+  <div id="mobile-nav-backdrop" class="fixed inset-0 z-40 hidden bg-gray-950/50 backdrop-blur-sm lg:hidden"
        aria-hidden="true" onclick="setMobileNav(false, true)"></div>
   <aside id="mobile-nav" aria-label="Mobile navigation" aria-hidden="true"
          class="fixed inset-y-0 left-0 z-50 hidden w-72 max-w-[85vw] border-r border-gray-200
-                bg-white p-4 shadow-xl dark:border-neutral-800 dark:bg-neutral-900 md:hidden">
+                bg-white p-4 shadow-xl dark:border-neutral-800 dark:bg-neutral-900 lg:hidden">
     <div class="flex h-full flex-col">
       <div class="mb-6 flex h-10 items-center justify-between px-2">
         <a href="/" onclick="setMobileNav(false)" class="text-lg font-semibold tracking-tight">enso</a>
@@ -178,7 +185,7 @@
   </aside>
 
   <aside class="fixed inset-y-0 left-0 z-30 hidden w-64 border-r border-gray-200 bg-white
-                dark:border-neutral-800 dark:bg-neutral-900 md:flex md:flex-col">
+                dark:border-neutral-800 dark:bg-neutral-900 lg:flex lg:flex-col">
     <div class="flex h-20 items-center border-b border-gray-100 px-6 dark:border-neutral-800">
       <div>
         <a href="/" class="text-xl font-semibold tracking-tight">enso</a>
@@ -193,10 +200,10 @@
     </div>
   </aside>
 
-  <div class="min-h-screen md:pl-64">
-    <main class="mx-auto max-w-5xl px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+  <div class="lg:pl-64">
+    <main id="main-content" class="mx-auto max-w-6xl px-4 py-7 sm:px-6 lg:px-8 lg:py-9">
       {% if flash %}
-        <div class="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm
+        <div role="status" class="mb-5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm
                     text-amber-800 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-300">
           {{ flash }}
         </div>

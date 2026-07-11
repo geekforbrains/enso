@@ -4,14 +4,17 @@
       {% for name in attachments %}
         <li class="flex items-center justify-between gap-3 py-2">
           <a href="/tasks/{{ task.slug }}/attachments/{{ name }}" hx-boost="false"
-             class="truncate font-mono text-sm text-indigo-600 hover:underline dark:text-indigo-400">
+             class="min-w-0 flex-1 truncate font-mono text-sm text-indigo-600 hover:underline dark:text-indigo-400">
             {{ name }}
           </a>
           <form method="post" action="/tasks/{{ task.slug }}/attachments/{{ name }}/delete"
                 hx-post="/tasks/{{ task.slug }}/attachments/{{ name }}/delete"
-                hx-target="#attachments" hx-swap="outerHTML">
+                hx-target="#attachments" hx-swap="outerHTML"
+                hx-confirm="Delete this attachment?"
+                onsubmit="if (!window.htmx) return confirm('Delete this attachment?');"
+                class="shrink-0">
             <button type="submit"
-                    class="rounded-md border border-gray-300 px-2 py-1 text-xs text-red-600
+                    class="touch-target rounded-md border border-gray-300 px-3 py-1 text-xs text-red-600
                            hover:bg-red-50 dark:border-neutral-600 dark:hover:bg-neutral-700">
               Delete
             </button>

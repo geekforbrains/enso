@@ -27,6 +27,11 @@ html.dark {
   outline-offset: 1px;
 }
 
+:where(a, button, summary):focus-visible {
+  outline: 2px solid #6366f1;
+  outline-offset: 2px;
+}
+
 /* Smooth the HTMX fragment swaps used for inline status/toggle actions. */
 .htmx-swapping {
   opacity: 0.5;
@@ -37,4 +42,46 @@ html.dark {
    the surrounding container owns horizontal overflow instead. */
 pre {
   tab-size: 2;
+}
+
+/* Long IDs, paths and command fragments should wrap without widening the page. */
+.break-anywhere {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.prose-copy {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.7;
+}
+
+/* Compact horizontal filters remain usable on a phone without awkward orphan rows. */
+.filter-strip {
+  scrollbar-width: none;
+}
+
+.filter-strip::-webkit-scrollbar {
+  display: none;
+}
+
+details > summary::-webkit-details-marker {
+  display: none;
+}
+
+details[open] .details-chevron {
+  transform: rotate(180deg);
+}
+
+@media (max-width: 639px) {
+  /* Prevent iOS from zooming the viewport when a form control receives focus. */
+  input:not([type="checkbox"]):not([type="radio"]),
+  select,
+  textarea {
+    font-size: 16px;
+  }
+
+  .touch-target {
+    min-height: 44px;
+  }
 }

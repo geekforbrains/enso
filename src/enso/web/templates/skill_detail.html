@@ -8,7 +8,7 @@
 
 <div class="mb-4">
   <div class="flex flex-wrap items-center gap-3">
-    <h1 class="text-2xl font-semibold tracking-tight">{{ name }}</h1>
+    <h1 class="break-words text-2xl font-semibold tracking-tight">{{ name }}</h1>
     {% if editable %}
       <span class="rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium
                    text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300">editable</span>
@@ -17,31 +17,31 @@
                    text-gray-500 dark:bg-neutral-700 dark:text-neutral-400">read-only</span>
     {% endif %}
   </div>
-  {% if description %}
-    <p class="mt-1 text-sm text-gray-500 dark:text-neutral-400">{{ description }}</p>
-  {% endif %}
-  <div class="mt-1 truncate font-mono text-xs text-gray-400 dark:text-neutral-500">{{ path }}</div>
+  <div class="break-anywhere mt-2 font-mono text-xs text-gray-400 dark:text-neutral-500">{{ path }}</div>
 </div>
 
 {% if editable %}
   <form method="post" action="/skills/{{ name }}/edit"
         class="rounded-lg border border-gray-200 bg-white p-4 shadow-sm
                dark:border-neutral-700 dark:bg-neutral-800">
-    <textarea name="content" rows="24"
+    <label for="skill-content" class="sr-only">SKILL.md content</label>
+    <textarea id="skill-content" name="content" rows="24" spellcheck="false"
               class="w-full rounded-md border border-gray-300 bg-white px-3 py-2 font-mono text-sm
                      focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500
                      dark:border-neutral-600 dark:bg-neutral-900 dark:text-gray-100">{{ content }}</textarea>
     <div class="mt-3">
       <button type="submit"
-              class="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500">
+              class="touch-target rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white
+                     hover:bg-indigo-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500
+                     focus-visible:ring-offset-2">
         Save SKILL.md
       </button>
     </div>
   </form>
 {% else %}
-  <div class="overflow-x-auto rounded-lg border border-gray-200 bg-white p-4 shadow-sm
+  <div class="min-w-0 overflow-x-auto rounded-lg border border-gray-200 bg-white p-4 shadow-sm
               dark:border-neutral-700 dark:bg-neutral-800">
-    <pre class="whitespace-pre-wrap break-words font-mono text-sm">{{ content }}</pre>
+    <pre class="break-anywhere whitespace-pre-wrap font-mono text-sm">{{ content }}</pre>
   </div>
 {% endif %}
 {% endblock %}

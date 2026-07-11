@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "macros.html" import tag_pill, run_row %}
+{% from "macros.html" import related_run, tag_pill %}
 {% block title %}{{ task.title }} · enso{% endblock %}
 
 {% set input_cls = "w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm
@@ -12,30 +12,37 @@
 </div>
 
 <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
-  <div>
-    <h1 class="text-2xl font-semibold tracking-tight">{{ task.title }}</h1>
-    <div class="mt-1 text-xs text-gray-500 dark:text-neutral-400">
-      <span class="font-mono">{{ task.slug }}</span>
-      · created {{ task.created | fmt_ts }} · updated {{ task.updated | fmt_ts }}
-      {% if task.provider %} · {{ task.provider }}{% if task.model %}/{{ task.model }}{% endif %}{% endif %}
-      {% if task.notify %} · notify{% endif %}
+  <div class="min-w-0 flex-1">
+    <h1 class="break-words text-2xl font-semibold tracking-tight">{{ task.title }}</h1>
+    <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500 dark:text-neutral-400">
+      <span class="break-anywhere font-mono">{{ task.slug }}</span>
+      <span>Created {{ task.created | fmt_ts }}</span>
+      <span>Updated {{ task.updated | fmt_ts }}</span>
+      {% if task.provider %}
+        <span class="break-anywhere">{{ task.provider }}{% if task.model %}/{{ task.model }}{% endif %}</span>
+      {% endif %}
+      {% if task.notify %}<span>Notifications on</span>{% endif %}
     </div>
     {% if task.tags %}
       <div class="mt-2 flex flex-wrap gap-1">{% for t in task.tags %}{{ tag_pill(t) }}{% endfor %}</div>
     {% endif %}
   </div>
-  <div class="flex gap-2">
+  <div class="flex w-full flex-wrap gap-2 sm:w-auto sm:shrink-0">
     <form method="post" action="/tasks/{{ task.slug }}/run">
       <button type="submit"
-              class="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500">
+              class="touch-target rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white
+                     hover:bg-indigo-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500
+                     focus-visible:ring-offset-2">
         Run now
       </button>
     </form>
     <form method="post" action="/tasks/{{ task.slug }}/delete"
-          onsubmit="return confirm('Delete this task and all its files?');">
+          hx-confirm="Delete this task and all its files?"
+          onsubmit="if (!window.htmx) return confirm('Delete this task and all its files?');">
       <button type="submit"
-              class="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-red-600
-                     hover:bg-red-50 dark:border-neutral-600 dark:hover:bg-neutral-700">
+              class="touch-target rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-red-600
+                     hover:bg-red-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500
+                     dark:border-neutral-600 dark:hover:bg-neutral-700">
         Delete
       </button>
     </form>
@@ -44,17 +51,11 @@
 
 <div class="mb-6">{% include "_task_status.html" %}</div>
 
-{% if task.status == 'blocked' and task.blocked_reason %}
-<div class="mb-6 rounded-lg border border-amber-300 bg-amber-50 p-4 shadow-sm
-            dark:border-amber-800/60 dark:bg-amber-900/20">
-  <h2 class="mb-2 text-lg font-semibold text-amber-800 dark:text-amber-300">Blocked</h2>
-  <pre class="whitespace-pre-wrap break-words text-sm">{{ task.blocked_reason }}</pre>
-</div>
-{% elif task.result %}
+{% if task.status != 'blocked' and task.result %}
 <div class="mb-6 rounded-lg border border-green-300 bg-green-50 p-4 shadow-sm
             dark:border-green-800/60 dark:bg-green-900/20">
   <h2 class="mb-2 text-lg font-semibold text-green-800 dark:text-green-300">Result</h2>
-  <pre class="whitespace-pre-wrap break-words text-sm">{{ task.result }}</pre>
+  <div class="prose-copy text-sm">{{ task.result }}</div>
 </div>
 {% endif %}
 
@@ -62,23 +63,29 @@
             dark:border-neutral-700 dark:bg-neutral-800">
   <h2 class="mb-3 text-lg font-semibold">Description</h2>
   {% if task.description %}
-    <pre class="whitespace-pre-wrap break-words font-mono text-sm">{{ task.description }}</pre>
+    <div class="prose-copy text-sm text-gray-700 dark:text-neutral-300">{{ task.description }}</div>
   {% else %}
     <p class="text-sm text-gray-500 dark:text-neutral-400">No description.</p>
   {% endif %}
 </div>
 
-<div class="mb-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
+<div class="mb-6 grid grid-cols-1 gap-6 xl:grid-cols-2">
   <div class="rounded-lg border border-gray-200 bg-white p-4 shadow-sm
               dark:border-neutral-700 dark:bg-neutral-800">
     <h2 class="mb-3 text-lg font-semibold">Attachments</h2>
     {% include "_attachments.html" %}
     <form method="post" action="/tasks/{{ task.slug }}/attachments" enctype="multipart/form-data"
-          hx-boost="false" class="mt-3 flex items-center gap-2">
-      <input type="file" name="file" required class="block flex-1 text-sm text-gray-600 dark:text-neutral-300">
+          hx-boost="false" class="mt-4 flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center">
+      <label for="task-attachment" class="sr-only">Choose an attachment</label>
+      <input id="task-attachment" type="file" name="file" required
+             class="block min-w-0 w-full text-sm text-gray-600
+                    file:mr-3 file:rounded-md file:border-0 file:bg-gray-100 file:px-3 file:py-2
+                    file:text-sm file:font-medium file:text-gray-700 hover:file:bg-gray-200
+                    dark:text-neutral-300 dark:file:bg-neutral-700 dark:file:text-neutral-200">
       <button type="submit"
-              class="rounded-md border border-gray-300 px-3 py-1.5 text-sm font-medium
-                     hover:bg-gray-50 dark:border-neutral-600 dark:hover:bg-neutral-700">Upload</button>
+              class="touch-target shrink-0 rounded-md border border-gray-300 px-4 py-2 text-sm font-medium
+                     hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500
+                     dark:border-neutral-600 dark:hover:bg-neutral-700">Upload</button>
     </form>
   </div>
 
@@ -90,10 +97,8 @@
          class="text-sm text-indigo-600 hover:underline dark:text-indigo-400">All &rarr;</a>
     </div>
     {% if task_runs %}
-      <div class="overflow-x-auto">
-        <table class="w-full text-left">
-          <tbody>{% for r in task_runs %}{{ run_row(r) }}{% endfor %}</tbody>
-        </table>
+      <div class="divide-y divide-gray-100 dark:divide-neutral-700">
+        {% for r in task_runs %}{{ related_run(r) }}{% endfor %}
       </div>
     {% else %}
       <p class="text-sm text-gray-500 dark:text-neutral-400">No runs yet.</p>
@@ -101,26 +106,37 @@
   </div>
 </div>
 
-<div class="rounded-lg border border-gray-200 bg-white p-5 shadow-sm
-            dark:border-neutral-700 dark:bg-neutral-800">
-  <h2 class="mb-4 text-lg font-semibold">Edit</h2>
-  <form method="post" action="/tasks/{{ task.slug }}/edit" class="space-y-4">
+<details class="group rounded-lg border border-gray-200 bg-white p-5 shadow-sm
+                dark:border-neutral-700 dark:bg-neutral-800">
+  <summary class="flex cursor-pointer list-none items-center justify-between gap-4 rounded-md
+                  focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">
     <div>
-      <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-neutral-300">Title</label>
-      <input name="title" value="{{ task.title }}" class="{{ input_cls }}">
+      <h2 class="text-lg font-semibold">Edit task</h2>
+      <p class="mt-0.5 text-sm text-gray-500 dark:text-neutral-400">Update the details and agent settings.</p>
+    </div>
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="2" class="details-chevron h-5 w-5 shrink-0 text-gray-400 transition">
+      <path d="m6 9 6 6 6-6"></path>
+    </svg>
+  </summary>
+  <form method="post" action="/tasks/{{ task.slug }}/edit"
+        class="mt-5 space-y-4 border-t border-gray-100 pt-5 dark:border-neutral-700">
+    <div>
+      <label for="task-title" class="mb-1 block text-sm font-medium text-gray-700 dark:text-neutral-300">Title</label>
+      <input id="task-title" name="title" value="{{ task.title }}" class="{{ input_cls }}">
     </div>
     <div>
-      <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-neutral-300">Description</label>
-      <textarea name="description" rows="8" class="{{ input_cls }} font-mono">{{ task.description }}</textarea>
+      <label for="task-description" class="mb-1 block text-sm font-medium text-gray-700 dark:text-neutral-300">Description</label>
+      <textarea id="task-description" name="description" rows="8" class="{{ input_cls }}">{{ task.description }}</textarea>
     </div>
     <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
       <div>
-        <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-neutral-300">Tags</label>
-        <input name="tags" value="{{ task.tags | join(', ') }}" class="{{ input_cls }}">
+        <label for="task-tags" class="mb-1 block text-sm font-medium text-gray-700 dark:text-neutral-300">Tags</label>
+        <input id="task-tags" name="tags" value="{{ task.tags | join(', ') }}" class="{{ input_cls }}">
       </div>
       <div class="flex items-end">
-        <label class="flex items-center gap-2 text-sm">
-          <input type="checkbox" name="notify" class="h-4 w-4 rounded border-gray-300"
+        <label for="task-notify" class="flex items-center gap-2 text-sm">
+          <input id="task-notify" type="checkbox" name="notify" class="h-4 w-4 rounded border-gray-300"
                  {% if task.notify %}checked{% endif %}>
           Notify on completion
         </label>
@@ -128,8 +144,8 @@
     </div>
     <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
       <div>
-        <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-neutral-300">Provider</label>
-        <select name="provider" class="{{ input_cls }}">
+        <label for="task-provider" class="mb-1 block text-sm font-medium text-gray-700 dark:text-neutral-300">Provider</label>
+        <select id="task-provider" name="provider" class="{{ input_cls }}">
           <option value="">— task-runner default —</option>
           {% for name in providers.keys() %}
             <option value="{{ name }}" {% if task.provider == name %}selected{% endif %}>{{ name }}</option>
@@ -137,17 +153,19 @@
         </select>
       </div>
       <div>
-        <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-neutral-300">Model</label>
-        <input name="model" list="models" value="{{ task.model or '' }}" class="{{ input_cls }}">
+        <label for="task-model" class="mb-1 block text-sm font-medium text-gray-700 dark:text-neutral-300">Model</label>
+        <input id="task-model" name="model" list="models" value="{{ task.model or '' }}" class="{{ input_cls }}">
         <datalist id="models">{% for m in models %}<option value="{{ m }}">{% endfor %}</datalist>
       </div>
     </div>
     <div class="pt-2">
       <button type="submit"
-              class="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500">
+              class="touch-target rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white
+                     hover:bg-indigo-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500
+                     focus-visible:ring-offset-2">
         Save changes
       </button>
     </div>
   </form>
-</div>
+</details>
 {% endblock %}

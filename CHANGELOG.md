@@ -13,6 +13,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- The web dashboard now uses sidebar-aware breakpoints, readable mobile run cards, compact desktop grids, accessible form controls, simplified task/job detail views, and searchable deduplicated Skills. Long IDs and upload controls no longer widen phone layouts, and compiled Tailwind plus pinned HTMX assets are vendored for fast offline rendering without CDN requests
 - Scheduled, CLI, and web job runs now share one prerun/provider pipeline. Exit `1` is reserved for intentional no-work; missing scripts, timeouts, and all other nonzero exits are failures. Manual runs report distinct outcomes and return a nonzero shell status for real failures
 - The bundled agent-instruction template moved from `enso/system_prompt.md` to `enso/prompts/AGENTS.md`, making it easier to find and review separately from the code
 - On setup, `AGENTS.md` is now the canonical instruction file in the workspace and `CLAUDE.md` is symlinked to it (previously reversed). The `GEMINI.md` symlink is no longer created — Gemini reads `AGENTS.md` natively, as does Codex

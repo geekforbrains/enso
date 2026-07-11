@@ -48,6 +48,8 @@ enso = [
     "slack_manifest.yaml",
     "skills/**/*.md",
     "skills/**/*.py",
+    "web/tailwind.config.js",
+    "web/tailwind.input.css",
     "web/templates/**/*",
     "web/static/**/*",
 ]

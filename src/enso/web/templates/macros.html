@@ -1,21 +1,21 @@
 {# Reusable UI fragments. #}
 
 {% macro task_badge(status) %}
-  <span class="inline-block rounded-full px-2 py-0.5 text-xs font-medium
+  <span class="inline-flex shrink-0 items-center whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium
                {{ task_badges.get(status, task_badges['todo']) }}">
     {{ status.replace('_', ' ') }}
   </span>
 {% endmacro %}
 
 {% macro run_badge(status) %}
-  <span class="inline-block rounded-full px-2 py-0.5 text-xs font-medium
+  <span class="inline-flex shrink-0 items-center whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium
                {{ run_badges.get(status, run_badges['error']) }}">
     {{ status.replace('_', ' ') }}
   </span>
 {% endmacro %}
 
 {% macro tag_pill(tag) %}
-  <span class="inline-block rounded-full bg-gray-100 px-2 py-0.5 text-xs
+  <span class="inline-flex items-center whitespace-nowrap rounded-full bg-gray-100 px-2 py-0.5 text-xs
                text-gray-600 dark:bg-neutral-700 dark:text-neutral-300">{{ tag }}</span>
 {% endmacro %}
 
@@ -26,17 +26,79 @@
   </div>
 {% endmacro %}
 
-{% macro run_row(r) %}
+{% macro run_row(r, show_id=true) %}
   <tr class="border-t border-gray-100 dark:border-neutral-700">
-    <td class="py-2 pr-3">
-      <a href="/runs/{{ r.id }}" class="font-mono text-xs text-indigo-600 hover:underline
-                                         dark:text-indigo-400">{{ r.id[:8] }}</a>
+    {% if show_id %}
+      <td class="py-3 pr-4">
+        <a href="/runs/{{ r.id }}" class="font-mono text-xs text-indigo-600 hover:underline
+                                           dark:text-indigo-400">{{ r.id[:8] }}</a>
+      </td>
+    {% endif %}
+    <td class="whitespace-nowrap py-3 pr-4 text-sm">{{ r.kind }}</td>
+    <td class="min-w-48 py-3 pr-4 text-sm font-medium">
+      <a href="/runs/{{ r.id }}" class="hover:text-indigo-600 dark:hover:text-indigo-400">
+        {{ r.title or r.name }}
+      </a>
     </td>
-    <td class="py-2 pr-3 text-sm">{{ r.kind }}</td>
-    <td class="py-2 pr-3 text-sm">{{ r.title or r.name }}</td>
-    <td class="py-2 pr-3">{{ run_badge(r.status) }}</td>
-    <td class="py-2 pr-3 text-sm text-gray-500 dark:text-neutral-400">{{ r.trigger }}</td>
-    <td class="py-2 pr-3 text-sm text-gray-500 dark:text-neutral-400">{{ r.started_at | fmt_ts }}</td>
-    <td class="py-2 pr-3 text-sm text-gray-500 dark:text-neutral-400">{{ r.duration_ms | fmt_duration }}</td>
+    <td class="whitespace-nowrap py-3 pr-4">{{ run_badge(r.status) }}</td>
+    <td class="whitespace-nowrap py-3 pr-4 text-sm text-gray-500 dark:text-neutral-400">{{ r.trigger }}</td>
+    <td class="whitespace-nowrap py-3 pr-4 text-sm text-gray-500 dark:text-neutral-400">{{ r.started_at | fmt_ts }}</td>
+    <td class="whitespace-nowrap py-3 text-sm text-gray-500 dark:text-neutral-400">{{ r.duration_ms | fmt_duration }}</td>
   </tr>
+{% endmacro %}
+
+{% macro run_card(r, show_provider=false) %}
+  <a href="/runs/{{ r.id }}"
+     class="block py-4 transition first:pt-0 last:pb-0 hover:text-indigo-700
+            dark:hover:text-indigo-300">
+    <div class="flex min-w-0 items-start justify-between gap-3">
+      <div class="min-w-0">
+        <p class="break-words text-sm font-semibold text-gray-900 dark:text-gray-100">
+          {{ r.title or r.name }}
+        </p>
+        <div class="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs
+                    text-gray-500 dark:text-neutral-400">
+          <span>{{ r.kind }}</span><span aria-hidden="true">·</span><span>{{ r.trigger }}</span>
+          {% if show_provider and r.provider %}
+            <span aria-hidden="true">·</span>
+            <span class="break-anywhere">{{ r.provider }}{% if r.model %}/{{ r.model }}{% endif %}</span>
+          {% endif %}
+        </div>
+      </div>
+      {{ run_badge(r.status) }}
+    </div>
+    <div class="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs
+                text-gray-500 dark:text-neutral-400">
+      <span class="font-mono text-indigo-600 dark:text-indigo-400">{{ r.id[:8] }}</span>
+      <span aria-hidden="true">·</span><span>{{ r.started_at | fmt_ts }}</span>
+      {% if r.duration_ms is not none %}
+        <span aria-hidden="true">·</span><span>{{ r.duration_ms | fmt_duration }}</span>
+      {% endif %}
+      {% if show_provider and r.output_bytes is not none %}
+        <span aria-hidden="true">·</span><span>{{ r.output_bytes | fmt_bytes }}</span>
+      {% endif %}
+    </div>
+  </a>
+{% endmacro %}
+
+{% macro related_run(r) %}
+  <a href="/runs/{{ r.id }}"
+     class="flex min-w-0 items-center justify-between gap-3 py-3 first:pt-0 last:pb-0
+            hover:text-indigo-700 dark:hover:text-indigo-300">
+    <div class="min-w-0">
+      <div class="flex flex-wrap items-center gap-2">
+        {{ run_badge(r.status) }}
+        <span class="text-sm text-gray-700 dark:text-neutral-300">{{ r.started_at | fmt_ts }}</span>
+      </div>
+      <div class="mt-1 flex flex-wrap items-center gap-x-1.5 text-xs text-gray-500 dark:text-neutral-400">
+        <span>{{ r.trigger }}</span><span aria-hidden="true">·</span>
+        <span class="font-mono">{{ r.id[:8] }}</span>
+      </div>
+    </div>
+    {% if r.duration_ms is not none %}
+      <span class="shrink-0 text-xs text-gray-500 dark:text-neutral-400">
+        {{ r.duration_ms | fmt_duration }}
+      </span>
+    {% endif %}
+  </a>
 {% endmacro %}

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "macros.html" import run_row %}
+{% from "macros.html" import related_run %}
 {% block title %}{{ job.name }} · enso{% endblock %}
 
 {% block content %}
@@ -8,45 +8,69 @@
 </div>
 
 <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
-  <div>
-    <h1 class="text-2xl font-semibold tracking-tight">{{ job.name }}</h1>
-    <div class="mt-1 text-xs text-gray-500 dark:text-neutral-400">
-      <span class="font-mono">{{ job.dir_name }}</span> · schedule
-      <span class="font-mono">{{ job.schedule }}</span> · {{ job.provider }}/{{ job.model }}
+  <div class="min-w-0 flex-1">
+    <h1 class="break-words text-2xl font-semibold tracking-tight">{{ job.name }}</h1>
+    <div class="break-anywhere mt-1 font-mono text-xs text-gray-500 dark:text-neutral-400">
+      {{ job.dir_name }}
     </div>
   </div>
-  <div class="flex items-center gap-3">
+  <div class="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:shrink-0">
     {% include "_job_toggle.html" %}
     <form method="post" action="/jobs/{{ job.dir_name }}/run">
       <button type="submit"
-              class="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500">
+              class="touch-target rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white
+                     hover:bg-indigo-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500
+                     focus-visible:ring-offset-2">
         Run now
       </button>
     </form>
   </div>
 </div>
 
-<div class="mb-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
+<div class="mb-6 grid grid-cols-1 gap-6 xl:grid-cols-2">
   <div class="rounded-lg border border-gray-200 bg-white p-4 shadow-sm
               dark:border-neutral-700 dark:bg-neutral-800">
-    <h2 class="mb-3 text-lg font-semibold">Frontmatter</h2>
-    <dl class="space-y-1 text-sm">
-      {% for key, value in meta.items() %}
-        <div class="flex gap-2">
-          <dt class="w-40 shrink-0 font-medium text-gray-500 dark:text-neutral-400">{{ key }}</dt>
-          <dd class="break-words font-mono">{{ value }}</dd>
-        </div>
-      {% endfor %}
+    <h2 class="mb-4 text-lg font-semibold">Configuration</h2>
+    <dl class="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
+      <div>
+        <dt class="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-neutral-400">Schedule</dt>
+        <dd class="mt-1 font-medium">{{ job.schedule | humanize_cron }}</dd>
+        <dd class="break-anywhere mt-0.5 font-mono text-xs text-gray-500 dark:text-neutral-400">{{ job.schedule }}</dd>
+      </div>
+      <div>
+        <dt class="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-neutral-400">Agent</dt>
+        <dd class="break-anywhere mt-1 font-medium">{{ job.provider }}/{{ job.model }}</dd>
+      </div>
+      <div>
+        <dt class="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-neutral-400">Timeout</dt>
+        <dd class="mt-1">
+          {% if job.timeout and job.timeout % 60 == 0 %}
+            {% set timeout_minutes = job.timeout // 60 %}
+            {{ timeout_minutes }} minute{% if timeout_minutes != 1 %}s{% endif %}
+          {% elif job.timeout %}
+            {{ job.timeout }} seconds
+          {% else %}
+            Default
+          {% endif %}
+        </dd>
+      </div>
+      <div>
+        <dt class="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-neutral-400">Notifications</dt>
+        <dd class="break-anywhere mt-1">{{ job.notify or "Off" }}</dd>
+      </div>
+      <div class="sm:col-span-2">
+        <dt class="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-neutral-400">Pre-run check</dt>
+        <dd class="break-anywhere mt-1">
+          {% if job.prerun %}
+            <span class="font-mono">{{ job.prerun }}</span>
+            {% if prerun_exists %}<span class="ml-1 text-green-600 dark:text-green-400">Ready</span>
+            {% else %}<span class="ml-1 text-red-600 dark:text-red-400">File missing</span>{% endif %}
+          {% else %}
+            None
+          {% endif %}
+        </dd>
+      </div>
     </dl>
-    <div class="mt-3 text-xs text-gray-500 dark:text-neutral-400">
-      {% if job.prerun %}
-        prerun: <span class="font-mono">{{ job.prerun }}</span>
-        {% if prerun_exists %}<span class="text-green-600 dark:text-green-400">(present)</span>
-        {% else %}<span class="text-red-600 dark:text-red-400">(missing)</span>{% endif %}
-      {% else %}
-        no prerun
-      {% endif %}
-    </div>
   </div>
 
   <div class="rounded-lg border border-gray-200 bg-white p-4 shadow-sm
@@ -57,10 +81,8 @@
          class="text-sm text-indigo-600 hover:underline dark:text-indigo-400">All &rarr;</a>
     </div>
     {% if job_runs %}
-      <div class="overflow-x-auto">
-        <table class="w-full text-left"><tbody>
-          {% for r in job_runs %}{{ run_row(r) }}{% endfor %}
-        </tbody></table>
+      <div class="divide-y divide-gray-100 dark:divide-neutral-700">
+        {% for r in job_runs %}{{ related_run(r) }}{% endfor %}
       </div>
     {% else %}
       <p class="text-sm text-gray-500 dark:text-neutral-400">No runs yet.</p>
@@ -71,6 +93,6 @@
 <div class="rounded-lg border border-gray-200 bg-white p-4 shadow-sm
             dark:border-neutral-700 dark:bg-neutral-800">
   <h2 class="mb-3 text-lg font-semibold">Prompt</h2>
-  <pre class="whitespace-pre-wrap break-words font-mono text-sm">{{ job.prompt }}</pre>
+  <div class="prose-copy text-sm text-gray-700 dark:text-neutral-300">{{ job.prompt }}</div>
 </div>
 {% endblock %}

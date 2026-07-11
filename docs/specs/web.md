@@ -66,7 +66,7 @@ Three at-a-glance panels:
 - **Recent runs** — the last N rows from `runs` (all kinds), newest first: kind, name,
   status pill (running/ok/error/timeout/prerun error/prerun timeout), trigger, duration,
   relative time; each links to
-  `/runs/{id}`.
+  `/runs/{id}`. The dashboard keeps this to six entries so it remains an overview.
 - **Tasks** — counts per status (todo / in_progress / blocked), linking into `/tasks`
   filtered; a "New task" button.
 - **Jobs** — each job with its next-fire time and last run status; disabled jobs dimmed.
@@ -143,6 +143,9 @@ Two tiers, split by the `~/.enso/` write boundary:
   see [data-model.md](data-model.md) § Config). Listed **read-only** with their absolute
   **source path** and owning CLI, so the operator sees everything available to the agent
   without the UI reaching outside `~/.enso/`. Detail renders read-only; no edit or delete.
+- The list has a client-side search across names and descriptions. Names are deduplicated
+  using the same precedence as detail routing: Enso-owned skills first, then the first
+  configured external root.
 
 ### AGENTS.md (`/agents`)
 
@@ -169,14 +172,21 @@ event loop, so a direct call — no IPC) to execute immediately:
 
 ## Rendering & assets
 
+- **Responsive layout**: the sidebar appears only when the viewport has room for it
+  (1024px+). Run history becomes readable cards below wide desktop sizes instead of
+  relying on hidden horizontal scrolling, and long IDs, paths, upload controls, and
+  metadata must never widen the document.
 - **Markdown** (descriptions, SKILL.md, AGENTS.md) is rendered server-side. Enso already
   converts Markdown for Telegram/Slack (`formatting.py`); the web renderer is a separate,
   HTML-targeted path (a small dependency or a minimal renderer — decided at build time,
   kept out of the base install).
-- **Styling**: one hand-written stylesheet under `web/static/`; no framework. Dark-mode by
-  default is nice-to-have.
-- **No external requests**: all CSS/JS is vendored, so the UI works offline and over a
-  locked-down tailnet, and there is no CDN to trust.
+- **Styling**: compiled Tailwind utilities are vendored as `web/static/tailwind.css`, with
+  the small hand-written layer in `web/static/app.css`. Rebuild the generated file with
+  `cd src/enso/web && npx tailwindcss@3.4.17 -c tailwind.config.js -i tailwind.input.css
+  -o static/tailwind.css --minify`. Light, dark, and system themes are user-selectable.
+- **No external requests**: compiled CSS and the pinned HTMX runtime are vendored under
+  `web/static/`, so the UI works offline and over a locked-down tailnet with no CDN trust
+  or flash of unstyled content.
 
 ## Non-goals (recap)
 
