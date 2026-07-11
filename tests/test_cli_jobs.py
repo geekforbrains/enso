@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from typer.testing import CliRunner
 
@@ -63,3 +65,53 @@ def test_job_run_reports_missing_job(monkeypatch):
 
     assert result.exit_code == 1
     assert "Job 'absent' not found" in result.output
+
+
+def test_job_create_uses_safe_slug_and_refuses_duplicate(tmp_enso):
+    args = [
+        "job",
+        "create",
+        "--name",
+        "../../Daily: Review",
+        "--provider",
+        "claude",
+        "--model",
+        "sonnet",
+        "--schedule",
+        "0 9 * * *",
+    ]
+
+    first = runner.invoke(cli_mod.app, args)
+
+    assert first.exit_code == 0
+    job_file = Path(tmp_enso) / "jobs" / "daily-review" / "JOB.md"
+    assert job_file.is_file()
+    original = job_file.read_bytes()
+
+    second = runner.invoke(cli_mod.app, args)
+
+    assert second.exit_code == 1
+    assert "already exists" in second.output
+    assert job_file.read_bytes() == original
+
+
+def test_job_create_rejects_name_without_slug_characters(tmp_enso):
+    result = runner.invoke(
+        cli_mod.app,
+        [
+            "job",
+            "create",
+            "--name",
+            "../..",
+            "--provider",
+            "claude",
+            "--model",
+            "sonnet",
+            "--schedule",
+            "0 9 * * *",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "must contain at least one letter or number" in result.output
+    assert not (Path(tmp_enso) / "jobs").exists()

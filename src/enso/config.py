@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
 import shutil
+import tempfile
 
 from .logging_config import default_logging_config
 from .providers.codex import CODEX_MODEL_ALIASES
@@ -44,6 +46,7 @@ DEFAULT_WEB = {
     "host": "127.0.0.1",
     "port": 1337,
     "token": "",
+    "allowed_hosts": [],
     "external_skill_roots": ["~/.claude/skills"],
 }
 
@@ -56,7 +59,18 @@ def load_config() -> dict:
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE) as f:
-                return _with_config_defaults(json.load(f))
+                raw = json.load(f)
+            config = _with_config_defaults(raw)
+            if isinstance(raw, dict) and "tasks" in raw:
+                try:
+                    save_config(config)
+                except OSError:
+                    log.exception(
+                        "Could not persist tasks config migration; using it in memory"
+                    )
+                else:
+                    log.info("Migrated legacy tasks config to runs")
+            return config
         except Exception:
             log.exception("Failed to load config.json, using defaults")
     config = _build_default_config()
@@ -65,13 +79,22 @@ def load_config() -> dict:
 
 
 def save_config(config: dict) -> None:
-    """Save config to ~/.enso/config.json with restricted permissions."""
+    """Atomically save config.json with restricted permissions."""
     config = _with_config_defaults(config)
     os.makedirs(CONFIG_DIR, exist_ok=True)
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(config, f, indent=2)
-        f.write("\n")
-    os.chmod(CONFIG_FILE, 0o600)
+    fd, tmp = tempfile.mkstemp(dir=CONFIG_DIR, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(config, f, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, CONFIG_FILE)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        raise
 
 
 def _build_default_config() -> dict:
@@ -90,6 +113,18 @@ def _build_default_config() -> dict:
 def _with_config_defaults(config: dict) -> dict:
     """Merge non-interactive defaults into an existing config."""
     merged = dict(config)
+
+    # Tasks were removed in favor of scheduled jobs. Preserve the two
+    # retention settings that used to live in that block, while allowing the
+    # replacement ``runs`` block to take precedence during an upgrade.
+    legacy_tasks = merged.pop("tasks", None)
+    legacy_runs: dict = {}
+    if isinstance(legacy_tasks, dict):
+        if "runs_keep" in legacy_tasks:
+            legacy_runs["keep"] = legacy_tasks["runs_keep"]
+        if "runs_max_age_days" in legacy_tasks:
+            legacy_runs["max_age_days"] = legacy_tasks["runs_max_age_days"]
+
     logging_defaults = default_logging_config()
     logging_cfg = merged.get("logging")
     if isinstance(logging_cfg, dict):
@@ -126,9 +161,11 @@ def _with_config_defaults(config: dict) -> dict:
     for key, defaults in (("web", DEFAULT_WEB), ("runs", DEFAULT_RUNS)):
         existing = merged.get(key)
         if isinstance(existing, dict):
-            merged[key] = {**defaults, **existing}
+            migrated = legacy_runs if key == "runs" else {}
+            merged[key] = {**defaults, **migrated, **existing}
         elif key not in merged:
-            merged[key] = dict(defaults)
+            migrated = legacy_runs if key == "runs" else {}
+            merged[key] = {**defaults, **migrated}
 
     return merged
 

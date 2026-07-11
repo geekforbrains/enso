@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
 from dataclasses import dataclass
 
+import yaml
+
+from . import frontmatter
 from .config import JOBS_DIR
 
 log = logging.getLogger(__name__)
+
+_DEFAULT_PROMPT = "Your prompt here."
 
 
 @dataclass
@@ -58,18 +64,19 @@ def parse_job(dir_name: str, path: str) -> Job | None:
     followed by the prompt body.
     """
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             content = f.read()
-    except OSError:
+    except (OSError, UnicodeError):
         log.warning("Could not read %s", path)
         return None
 
-    parts = content.split("---", 2)
-    if len(parts) < 3:
+    parts = frontmatter.split_raw(content)
+    if parts is None:
         log.warning("Invalid frontmatter in %s", path)
         return None
 
-    fields = _parse_frontmatter(parts[1])
+    raw_meta, prompt = parts
+    fields = _parse_frontmatter(raw_meta)
     required = ("name", "schedule", "provider", "model")
     if not all(k in fields for k in required):
         log.warning("Missing required fields in %s", path)
@@ -81,16 +88,17 @@ def parse_job(dir_name: str, path: str) -> Job | None:
         schedule=fields["schedule"],
         provider=fields["provider"],
         model=fields["model"],
-        enabled=fields.get("enabled", "true").lower() == "true",
+        enabled=_parse_bool(fields.get("enabled"), True),
         prerun=fields.get("prerun"),
         notify=fields.get("notify"),
         timeout=_parse_int(fields.get("timeout"), 15 * 60),
         prerun_timeout=_parse_int(fields.get("prerun_timeout"), 120),
-        catch_up=fields.get("catch_up", "false").lower() == "true",
+        catch_up=_parse_bool(fields.get("catch_up"), False),
         misfire_grace_seconds=_parse_int(
-            fields.get("misfire_grace_seconds"), 5 * 60,
+            fields.get("misfire_grace_seconds"),
+            5 * 60,
         ),
-        prompt=parts[2].strip(),
+        prompt=prompt.strip(),
         path=path,
     )
 
@@ -106,23 +114,31 @@ def create_job(
 
     The prompt body is left as a placeholder for the caller to fill in.
     """
+    _validate_dir_name(dir_name)
+    os.makedirs(JOBS_DIR, exist_ok=True)
     job_dir = os.path.join(JOBS_DIR, dir_name)
-    os.makedirs(job_dir, exist_ok=True)
+    try:
+        os.mkdir(job_dir)
+    except FileExistsError:
+        raise FileExistsError(f"Job '{dir_name}' already exists") from None
 
     job_file = os.path.join(job_dir, "JOB.md")
-    content = f"""\
----
-name: {name}
-schedule: "{schedule}"
-provider: {provider}
-model: {model}
-enabled: false
----
-
-Your prompt here.
-"""
-    with open(job_file, "w") as f:
-        f.write(content)
+    try:
+        frontmatter.write(
+            job_file,
+            {
+                "name": name,
+                "schedule": schedule,
+                "provider": provider,
+                "model": model,
+                "enabled": False,
+            },
+            _DEFAULT_PROMPT,
+        )
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.rmdir(job_dir)
+        raise
 
     return Job(
         dir_name=dir_name,
@@ -130,21 +146,56 @@ Your prompt here.
         schedule=schedule,
         provider=provider,
         model=model,
-        prompt="",
+        enabled=False,
+        prompt=_DEFAULT_PROMPT,
         path=job_file,
     )
 
 
 def _parse_frontmatter(text: str) -> dict[str, str]:
-    """Parse simple YAML-like key: value pairs from frontmatter text."""
+    """Parse YAML scalars as strings, falling back to the legacy parser."""
+    try:
+        loaded = yaml.load(text, Loader=yaml.BaseLoader)
+    except yaml.YAMLError:
+        loaded = None
+    if isinstance(loaded, dict):
+        return {
+            key: value
+            for key, value in loaded.items()
+            if isinstance(key, str) and isinstance(value, str) and value
+        }
+
+    # Older Enso versions emitted unquoted values such as
+    # ``name: Daily: Review``. They are not valid YAML, but remain supported.
     fields: dict[str, str] = {}
     for line in text.strip().splitlines():
-        match = re.match(r"^(\w+):\s*(.+)$", line)
+        match = re.match(r"^(\w+)\s*:\s*(.+)$", line)
         if match:
             key = match.group(1)
             value = match.group(2).strip().strip("\"'")
             fields[key] = value
     return fields
+
+
+def _validate_dir_name(dir_name: str) -> None:
+    """Require a portable slug-like directory name, never a path."""
+    if (
+        not isinstance(dir_name, str)
+        or re.fullmatch(r"[\w.-]+", dir_name) is None
+        or dir_name in {os.curdir, os.pardir}
+    ):
+        raise ValueError(
+            "Job directory name must be a non-empty slug containing only "
+            "letters, numbers, dots, underscores, or hyphens"
+        )
+
+
+def _parse_bool(value: str | None, default: bool) -> bool:
+    """Parse a YAML-like boolean, tolerating a trailing inline comment."""
+    if value is None:
+        return default
+    token = value.partition("#")[0].strip().strip("\"'")
+    return token.lower() == "true"
 
 
 def _parse_int(value: str | None, default: int) -> int:

@@ -1,4 +1,4 @@
-/* Supplemental styles — Tailwind (Play CDN) handles the rest. */
+/* Supplemental styles for behaviour outside the vendored Tailwind utilities. */
 
 /* Keep native controls aligned with the effective color scheme. */
 html {
@@ -50,12 +50,6 @@ pre {
   word-break: break-word;
 }
 
-.prose-copy {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  line-height: 1.7;
-}
-
 /* Compact horizontal filters remain usable on a phone without awkward orphan rows. */
 .filter-strip {
   scrollbar-width: none;
@@ -63,14 +57,6 @@ pre {
 
 .filter-strip::-webkit-scrollbar {
   display: none;
-}
-
-details > summary::-webkit-details-marker {
-  display: none;
-}
-
-details[open] .details-chevron {
-  transform: rotate(180deg);
 }
 
 @media (max-width: 639px) {

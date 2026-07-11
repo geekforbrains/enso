@@ -7,9 +7,8 @@ See [architecture.md](architecture.md) for how the server runs and is secured, a
 ## Shape
 
 A small **server-rendered** app (Starlette + Jinja2), sprinkled with **HTMX** for inline
-updates (change a status, add a tag, trigger a run, without a full reload). No SPA, no
-build step, no external CDN — HTMX is vendored under `web/static/`. Every page works with
-plain form posts if JS is off; HTMX is progressive enhancement.
+updates. There is no SPA, runtime build, or external CDN: compiled CSS and HTMX are
+vendored under `web/static/`. Forms and links remain usable when JavaScript is off.
 
 The whole UI is a thin skin over the file model and the runs DB: pages read `JOB.md` /
 `SKILL.md` / `AGENTS.md` and the `runs` table, and writes go straight back to
@@ -22,90 +21,91 @@ external "parent" skills discovered from the CLIs' own roots (e.g. `~/.claude/sk
 are strictly read-only. This is both the safety boundary and the ownership model: Enso
 manages what lives in its own dir and only observes the rest.
 
+**Request protection.** Host headers must match loopback, the concrete bind host, or a
+name/IP in `web.allowed_hosts`; wildcard binds do not disable this check. All POST routes
+also require a random, process-scoped CSRF token supplied by the rendered form or an
+`X-CSRF-Token` header. Responses deny framing, disable MIME sniffing, use a no-referrer
+policy, and prevent HTML caching. Host filtering is not authentication: an empty
+`web.token` accepts every reachable client.
+
 ## Routes
 
-| Route | Method | Purpose |
-| --- | --- | --- |
-| `/` | GET | Dashboard — recent runs, jobs at a glance |
-| `/jobs` | GET | Job list — schedule, provider/model, enabled state |
-| `/jobs/new` | GET, POST | Create-job form; POST scaffolds `~/.enso/jobs/<name>/JOB.md` |
-| `/jobs/{name}` | GET | Job detail: frontmatter, prompt, prerun, recent runs |
-| `/jobs/{name}/edit` | POST | Edit frontmatter (schedule/provider/model/timeout/notify), prompt body, prerun script |
-| `/jobs/{name}/prompt` | POST | Edit just the prompt body (`JOB.md` body), mirroring skill editing |
-| `/jobs/{name}/toggle` | POST | Enable/disable — edits `JOB.md` frontmatter |
-| `/jobs/{name}/delete` | POST | Delete the job dir (confirmed; destructive) |
-| `/jobs/{name}/run` | POST | Run-now (records a `manual` run) |
-| `/runs` | GET | Global run feed; filter by `?kind=`, `?name=`, `?status=` |
-| `/runs/{id}` | GET | One run: metadata + the captured `runs/{id}.log` body |
-| `/skills` | GET | List skills in tiers: custom, bundled, external (read-only) |
-| `/skills/new` | GET, POST | Create-skill form; POST scaffolds `~/.enso/skills/<name>/SKILL.md` |
-| `/skills/{name}` | GET | Render a skill's `SKILL.md`; editable if under `~/.enso/skills/` |
-| `/skills/{name}/edit` | POST | Edit an Enso-owned skill's `SKILL.md` (+ tool scripts) |
-| `/skills/{name}/delete` | POST | Delete a **custom** skill (confirmed; destructive) |
-| `/agents` | GET | Render `AGENTS.md` (the system prompt) |
-| `/agents/edit` | POST | Save edits back to `AGENTS.md` in the working dir |
-| `/static/*` | GET | Vendored assets (HTMX, CSS) |
+| Route | Method | Status | Purpose |
+| --- | --- | --- | --- |
+| `/` | GET | Implemented | Dashboard — recent runs and enabled/total job counts |
+| `/health` | GET | Implemented | Unauthenticated process-health probe |
+| `/jobs` | GET | Implemented | Job list — schedule, provider/model, enabled state |
+| `/jobs/new` | GET, POST | **Planned** | Create-job form and `JOB.md` scaffold |
+| `/jobs/{name}` | GET | Implemented | Job configuration, prompt, prerun state, and recent runs |
+| `/jobs/{name}/edit` | POST | **Planned** | Edit job metadata and prerun configuration |
+| `/jobs/{name}/prompt` | POST | Implemented | Edit only the prompt body while preserving raw frontmatter |
+| `/jobs/{name}/toggle` | POST | Implemented | Enable or disable a job |
+| `/jobs/{name}/delete` | POST | **Planned** | Delete a job after confirmation |
+| `/jobs/{name}/run` | POST | Implemented | Run now and record a `manual` run |
+| `/runs` | GET | Implemented | Run feed; filter by `?kind=`, `?name=`, `?status=` |
+| `/runs/{id}` | GET | Implemented | Run metadata and captured log output |
+| `/skills` | GET | Implemented | Enso-owned and external read-only skill tiers |
+| `/skills/new` | GET, POST | **Planned** | Create an Enso-owned skill |
+| `/skills/{name}` | GET | Implemented | View `SKILL.md`; edit controls appear for Enso-owned skills |
+| `/skills/{name}/edit` | POST | Implemented | Replace an Enso-owned skill's `SKILL.md` |
+| `/skills/{name}/delete` | POST | **Planned** | Delete an Enso-owned skill after confirmation |
+| `/agents` | GET | Implemented | View the working-directory `AGENTS.md` |
+| `/agents/edit` | POST | Implemented | Save `AGENTS.md` atomically |
+| `/static/*` | GET | Implemented | Vendored HTMX and CSS assets |
 
-`run` and `toggle` endpoints return an HTMX fragment (the updated card/row)
-on success, or redirect back to the page for no-JS clients.
+The toggle endpoint returns an updated HTMX fragment when requested that way; other
+writes redirect to their resulting detail page.
 
 ## Pages
 
 ### Dashboard (`/`)
 
-Two at-a-glance panels:
+The dashboard shows:
 
-- **Recent runs** — the last N rows from `runs`, newest first: kind, name,
+- **Recent runs** — the last six rows from `runs`, newest first: kind, name,
   status pill (running/ok/error/timeout/prerun error/prerun timeout), trigger, duration,
-  relative time; each links to
-  `/runs/{id}`. The dashboard keeps this to six entries so it remains an overview.
-- **Jobs** — each job with its next-fire time and last run status; disabled jobs dimmed.
+  relative time; each links to `/runs/{id}`.
+- **Jobs enabled** — the enabled and total job counts, linking to the job list.
 
-### Jobs create/edit (`/jobs/new`, `/jobs/{name}`)
+### Jobs (`/jobs`, `/jobs/{name}`)
 
-- Read: frontmatter (schedule, provider, model, timeout, notify), the prompt body, and the
-  prerun script if present.
-- **Full edit** (`/jobs/{name}/edit`): change the frontmatter, the prompt body, and the
-  prerun script — atomic rewrite of the files under `~/.enso/jobs/{name}/`. A dedicated
-  **enable/disable** toggle (`/jobs/{name}/toggle`) flips just `enabled:` for one-click
-  pause, and **Run now** executes immediately.
+- Read: schedule, provider/model, timeout, notify destination, prompt body, and whether
+  the configured prerun script exists.
+- A dedicated **enable/disable** toggle flips `enabled:` for one-click pause, and
+  **Run now** executes the job immediately.
 - **Edit the prompt** (`/jobs/{name}/prompt`): save just the `JOB.md` body from the job
   detail page — the same edit-in-place affordance skills have (`/skills/{name}/edit`),
-  scoped to the prompt so a quick wording tweak doesn't require the full-edit form.
-- **Create** (`/jobs/new`): the same form with blank fields; POST scaffolds
-  `~/.enso/jobs/<name>/JOB.md` (the `enso job create` result) and lands in the edit view.
-- **Delete** (`/jobs/{name}/delete`): removes the job directory, behind a confirm
-  (destructive).
+  preserving the original frontmatter text byte-for-byte.
 - Recent runs for this job, linking to `/runs/{id}`.
+- **Planned:** browser forms for create, full metadata/prerun edit, and delete. Until
+  then use `enso job create` or edit/remove the job files directly.
 
 ### Run detail (`/runs/{id}`)
 
 - Metadata: kind, name/title, trigger, provider/model, status, exit code, start/end,
   duration.
-- Output: the `runs/{id}.log` body, lazy-loaded (it can be large; `output_bytes` gates a
-  "load full output" affordance). Monospace, wrapped, downloadable.
-- A `running` run shows a "still running / interrupted" banner rather than empty output.
+- Output: up to the first 200,000 bytes of `runs/{id}.log`, monospace and wrapped. If
+  truncated, the page shows the full byte count and on-disk path.
+- A run with no captured output displays an empty-state message.
 
-### Skills (`/skills`, `/skills/new`, `/skills/{name}`)
+### Skills (`/skills`, `/skills/{name}`)
 
 Two tiers, split by the `~/.enso/` write boundary:
 
 - **Enso skills** — everything under `~/.enso/skills/`, whether created here or seeded from
   Enso's starter set at install. Listed with name + description (from SKILL.md
-  frontmatter), **fully editable and deletable**: `/skills/{name}` renders the `SKILL.md`
-  and — being inside `~/.enso/` — offers edit (frontmatter + body + any tool scripts) and
-  delete; `/skills/new` scaffolds a new one. Seeded starter skills are ordinary files here:
-  Enso seeds them once and never re-syncs or resurrects them (depends on
-  [issue #7](https://github.com/geekforbrains/enso/issues/7)); a "shipped with Enso" badge
-  is cosmetic only.
+  frontmatter). `/skills/{name}` offers whole-file `SKILL.md` editing. Missing bundled
+  files are seeded, known pristine prior versions may be upgraded, and customized files
+  or symlinks are preserved.
 - **External / "parent" skills** — auto-discovered from the underlying CLIs' own skill
   roots *outside* `~/.enso/` (e.g. `~/.claude/skills/`; the set of roots is configurable,
   see [data-model.md](data-model.md) § Config). Listed **read-only** with their absolute
-  **source path** and owning CLI, so the operator sees everything available to the agent
-  without the UI reaching outside `~/.enso/`. Detail renders read-only; no edit or delete.
+  **source path**, so the operator sees what is available without the UI reaching outside
+  `~/.enso/`. Detail renders read-only.
 - The list has a client-side search across names and descriptions. Names are deduplicated
   using the same precedence as detail routing: Enso-owned skills first, then the first
   configured external root.
+- **Planned:** create/delete controls and tool-script editing for Enso-owned skills.
 
 ### AGENTS.md (`/agents`)
 
@@ -117,15 +117,12 @@ Two tiers, split by the `~/.enso/` write boundary:
 
 ## Run-now
 
-"Run now" on a job is the web UI reaching into the **shared `Runtime`** (same
-event loop, so a direct call — no IPC) to execute immediately:
+"Run now" executes through the dashboard process's `Runtime`:
 
-- **Job run-now** → the same path `enso job run` uses, but recorded with `trigger='manual'`
-  so it shows in history (the CLI `job run` today prints to stdout and records nothing; it
-  gains run recording too).
-- The endpoint returns quickly with a "started" fragment; the run appears in the feed with
-  `status='running'` and updates to its terminal status when done (HTMX poll or manual
-  refresh — live streaming is a future idea, not v1).
+- It uses the same prerun/provider pipeline as `enso job run` and records
+  `trigger='manual'` in run history.
+- The POST waits for the run to finish, then redirects to its run detail page. Live
+  progress polling and output streaming are future work.
 
 ## Rendering & assets
 
@@ -133,10 +130,9 @@ event loop, so a direct call — no IPC) to execute immediately:
   (1024px+). Run history becomes readable cards below wide desktop sizes instead of
   relying on hidden horizontal scrolling, and long IDs, paths, upload controls, and
   metadata must never widen the document.
-- **Markdown** (descriptions, SKILL.md, AGENTS.md) is rendered server-side. Enso already
-  converts Markdown for Telegram/Slack (`formatting.py`); the web renderer is a separate,
-  HTML-targeted path (a small dependency or a minimal renderer — decided at build time,
-  kept out of the base install).
+- **Text editing**: Enso-owned `SKILL.md`, job prompts, and `AGENTS.md` use plain
+  textareas; read-only external skills use escaped preformatted text. Rich Markdown
+  rendering is not implemented.
 - **Styling**: compiled Tailwind utilities are vendored as `web/static/tailwind.css`, with
   the small hand-written layer in `web/static/app.css`. Rebuild the generated file with
   `cd src/enso/web && npx tailwindcss@3.4.17 -c tailwind.config.js -i tailwind.input.css
@@ -147,6 +143,6 @@ event loop, so a direct call — no IPC) to execute immediately:
 
 ## Non-goals (recap)
 
-No chat, no login/accounts, no writing outside `~/.enso/` (external "parent" skills are
-read-only), no live output streaming (v1), no public exposure. See
+No chat, no login/accounts, no writes outside Enso-owned paths (`~/.enso/` plus the
+working-directory `AGENTS.md`), no live output streaming, and no public exposure. See
 [PRD.md](../PRD.md) § Non-goals.

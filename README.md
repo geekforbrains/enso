@@ -10,13 +10,14 @@ Design docs live in [`docs/`](docs/) and are the source of truth for planned and
 
 | Doc | Owns |
 |---|---|
-| [`docs/PRD.md`](docs/PRD.md) | **Web UI** (proposed) — product requirements: what & why, key decisions, scope |
-| [`docs/specs/architecture.md`](docs/specs/architecture.md) | How the web server and run recording fit into `enso serve` |
+| [`docs/PRD.md`](docs/PRD.md) | **Web UI** — product requirements, shipped scope, and planned extensions |
+| [`docs/specs/architecture.md`](docs/specs/architecture.md) | Dashboard/bot process boundaries and shared run storage |
 | [`docs/specs/data-model.md`](docs/specs/data-model.md) | The runs SQLite schema, config, `~/.enso/` layout |
 | [`docs/specs/web.md`](docs/specs/web.md) | The web UI: routes, pages, read/write flows |
 | [`CHANGELOG.md`](CHANGELOG.md) | What has actually shipped, per version |
 
-> The Web UI docs describe a **proposed** feature that is not yet built. Everything below this section reflects Enso as it ships today.
+> The dashboard and run history ship today. The Web UI docs distinguish current
+> behaviour from planned CRUD extensions.
 
 ## Requirements
 
@@ -45,6 +46,33 @@ enso serve
 ```
 
 Or if you installed the background service, it's already running.
+
+The optional local dashboard runs as a separate process. Install the web extra and
+start it at `http://127.0.0.1:1337`:
+
+```bash
+pip install -e ".[web]"
+enso web
+```
+
+For remote or Tailscale access, bind the dashboard to the required interface. A
+concrete `web.host` is allowed automatically. If you bind `0.0.0.0` or `::`, list each
+hostname or IP that clients will use in `web.allowed_hosts`; a wildcard listen address
+does not accept arbitrary `Host` headers. For example:
+
+```json
+{
+  "web": {
+    "host": "0.0.0.0",
+    "allowed_hosts": ["enso.example.ts.net", "100.64.0.10"],
+    "token": "replace-with-a-long-random-secret"
+  }
+}
+```
+
+The host allowlist prevents DNS-rebinding requests; it is not authentication. An empty
+`web.token` disables authentication entirely. Any remotely reachable dashboard should
+use a strong token or sit behind trusted tailnet/reverse-proxy access controls.
 
 ## Chat Commands
 

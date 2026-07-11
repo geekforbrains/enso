@@ -4,94 +4,70 @@ How the web UI and run recording fit into Enso as it exists today.
 Read [PRD.md](../PRD.md) first for the what & why. Sibling specs:
 [data-model.md](data-model.md), [web.md](web.md).
 
-## Where things run today
+## Runtime and process layout
 
-`enso serve` builds one `Runtime` (`core.py`) and starts a transport (Telegram or
-Slack). Inside a single asyncio event loop it runs two long-lived concerns:
+`enso serve` builds a `Runtime` (`core.py`) and starts a Telegram or Slack transport.
+The transport starts `Runtime.run_job_scheduler` alongside its chat loop; the scheduler
+loads `JOB.md` files every 60 seconds and fires due jobs through `_execute_job`.
 
-- the **transport** — receives chat messages, dispatches them to a provider CLI
-  subprocess, streams status back;
-- the **job scheduler** (`Runtime.run_job_scheduler`) — a 60-second tick that loads
-  `JOB.md` files and fires due jobs through `_execute_job`.
-
-State is files under `~/.enso/`: `config.json`, `state.json`, `messages.json`,
-`jobs/<name>/JOB.md`, `skills/<name>/`, and the `workspace/` working dir. There is no
-database and **no run history** — a job execution leaves only a `job_last_run`
-timestamp in `state.json`.
-
-This feature adds a third concern to the same loop (the web server) and a new persisted
-dataset (runs, in SQLite). None of it changes the transport or the interactive-chat path.
-
-## The three concerns in one loop
+`enso web` builds its own `Runtime` and runs Starlette/Uvicorn as a separate process.
+The dashboard and bot therefore do not share memory or an event loop. They coordinate
+through the same files under `~/.enso/`, the configured workspace, and the runs SQLite
+database. Starting `enso serve` does not start the dashboard.
 
 ```
-                     enso serve
-                         │
-        ┌────────────────┼────────────────────┐
-        ▼                ▼                     ▼
-  transport         job scheduler          web server
-  (TG / Slack)      (60s tick)             (Starlette/Uvicorn
-        │                │                  as a coroutine)
-        │                │                     │
-        └──────── shared Runtime + ~/.enso/ ───┘
-                         │
-             ┌───────────┴───────────┐
-             ▼                       ▼
-     files (jobs, skills,       SQLite (runs)
-     AGENTS.md)                 + runs/<id>.log
+       enso serve process                 enso web process
+  ┌────────────────────────┐        ┌──────────────────────┐
+  │ transport + scheduler  │        │ Starlette / Uvicorn  │
+  │ bot Runtime            │        │ dashboard Runtime    │
+  └───────────┬────────────┘        └──────────┬───────────┘
+              └──────────────┬─────────────────┘
+                             ▼
+                 files under ~/.enso/ and
+                 the configured workspace
+                             +
+                 SQLite (enso.db, WAL mode)
 ```
 
-The web server runs **in-process**, as another coroutine on the same event loop, not as
-a separate service. This is the key architectural choice and it buys a lot:
-
-- **No IPC, no second process to supervise.** The launchd/systemd unit still runs one
-  thing: `enso serve`.
-- **Shared `Runtime`.** The web app holds a reference to the same `Runtime` the
-  scheduler uses, so "Run now" from a job page calls the same `_execute_job`, and reads
-  of in-memory state (`_running_job_tasks`, job last-run) are consistent.
-- **No locking.** Because it is one event loop, a web request handler and the scheduler
-  never run truly concurrently — there is no shared-memory data race to guard. The only
-  cross-process contention is on the **files** (the agent subprocess and the CLI also
-  write them) and on **SQLite**, both handled below.
-
-Implemented as: `uvicorn.Server(config).serve()` awaited as one of the tasks in
-`serve`'s `asyncio.gather`, alongside the transport and `run_job_scheduler`. A
-standalone `enso web` command runs the same app without the transport, for development.
+The dashboard's **Run now** action calls the same `Runtime.run_job_now` execution path
+as the CLI, but on the dashboard's Runtime instance. Its in-memory scheduler state is
+not shared with the bot process. File writes are atomic and SQLite uses WAL mode to
+handle this cross-process boundary.
 
 ## Stack
 
 Enso's runtime deps are deliberately tiny (`typer`, `rich`, `croniter`), with transport
-libraries behind extras. The web UI follows the same rule — a new `web` extra, nothing
+libraries behind extras. The web UI follows the same rule — a `web` extra, nothing
 pulled into the base install.
 
 | Concern | Choice | Why |
 | --- | --- | --- |
-| ASGI framework | **Starlette** | Minimal, async-native, no ORM/opinions; composes as a coroutine in the existing loop. FastAPI would work but its pydantic/OpenAPI weight buys nothing for server-rendered pages |
-| Server | **Uvicorn** | Runs as `Server.serve()` inside our loop; no separate process |
+| ASGI framework | **Starlette** | Minimal, async-native, and well suited to server-rendered pages |
+| Server | **Uvicorn** | Serves the standalone dashboard process |
 | Templates | **Jinja2** | Server-rendered HTML; the UI is views + forms, not an SPA |
-| Interactivity | **HTMX** (vendored, no build step) | Inline status/tag/run-now updates without a JS toolchain — matches "no chat, just views" |
-| Uploads/forms | **python-multipart** | Attachment upload + form posts |
+| Interactivity | **HTMX** (vendored; no runtime build) | Inline toggle/run actions without a client application bundle |
+| Forms | **python-multipart** | Parse form posts |
 | Run store | **`sqlite3`** (stdlib) | No dependency; WAL mode for concurrent readers; see [data-model.md](data-model.md) |
-| Frontmatter | **`pyyaml`** | Real YAML for job frontmatter (lists, quoting); replaces the regex parser |
+| Job frontmatter | **PyYAML `BaseLoader` + legacy fallback** | Valid YAML scalars stay strings; malformed older headers remain loadable; raw web edits avoid reserialization |
 
-`pyproject.toml` gains:
+`pyproject.toml` defines:
 
 ```toml
 [project.optional-dependencies]
 web = ["starlette>=0.37", "uvicorn>=0.30", "jinja2>=3.1", "python-multipart>=0.0.9"]
 ```
 
-`pyyaml` moves into base `dependencies` (jobs need it, independent of the
-web UI). HTMX is vendored as a static asset so the UI has **no external CDN dependency**
-and works offline. Package data grows to include `web/templates/**` and `web/static/**`.
+`pyyaml` is a base dependency (jobs need it independently of the web UI). HTMX and the
+compiled Tailwind stylesheet are vendored, so the UI has **no external CDN dependency**
+and works offline. Package data includes `web/templates/**` and `web/static/**`.
 
 ## Run recording
 
-Run history is captured by the `Runtime`, around the two places a provider subprocess is
-spawned for background work:
+Run history is captured by the `Runtime` around the shared job-execution pipeline used
+for background work:
 
 - `_execute_job` — scheduled jobs.
-- `job_run` CLI — manual runs (recorded with trigger `manual`).
+- `run_job_now` — CLI and dashboard manual runs (recorded with trigger `manual`).
 
 Interactive **chat** requests are *not* runs — they are session-based and ephemeral, and
 belong to the transport, not the run log.
@@ -115,18 +91,15 @@ A small `runs.py` module owns the SQLite connection and these calls, mirroring h
 
 ## Concurrency & consistency
 
-Two writers touch the file layer: the **web request handler** and, occasionally, the
-**operator by hand** (the agent subprocess may also write via Edit). At personal scale
-the model is deliberately simple:
+The bot, dashboard, CLI, agent subprocesses, and operator can all touch the file layer.
+At personal scale the model is deliberately simple:
 
-- **File writes are atomic** — temp file in the same dir + `os.replace`, exactly as
-  `save_state`/`save_config` already do. A reader never sees a half-written
-  `JOB.md`, `SKILL.md`, or `AGENTS.md`.
-- **Last write wins.** Two writers racing on the same job is rare (single operator) and
-  not worth optimistic-locking machinery. The web edit form can carry the file's mtime
-  and warn on a stale save, but conflict *resolution* is out of scope for v1.
-- **SQLite in WAL mode** handles the one genuinely concurrent-write path — the scheduler
-  finalising a run while a web request reads the runs feed — without blocking readers.
+- **Dashboard writes are atomic** — a temp file in the same directory plus `os.replace`.
+  A reader never sees a half-written `JOB.md`, `SKILL.md`, or `AGENTS.md` from a web edit.
+- **Last write wins.** Optimistic locking and conflict resolution are out of scope for
+  this single-operator tool.
+- **SQLite in WAL mode** allows the bot, dashboard, and CLI processes to read and write
+  run history without blocking readers.
 
 ## Access & security
 
@@ -135,36 +108,46 @@ internet and the PRD makes that a non-goal.
 
 - **Bind localhost by default** (`web.host = 127.0.0.1`). Nothing is exposed off-machine
   unless the operator opts in.
+- **Host-header allowlist:** loopback names and a concrete bind address are accepted
+  automatically; remote names/IPs must be listed in `web.allowed_hosts`. Wildcard binds
+  (`0.0.0.0` / `::`) widen the listen interface only and never trust arbitrary hosts.
 - **Remote = Tailscale.** To reach it from a phone, bind the tailnet interface (or front
-  it with `tailscale serve`); traffic is WireGuard-encrypted, so plain HTTP on the
-  tailnet is fine for local development access.
-- **Optional bearer token** (`web.token`): when set, every request must present it (query
-  param to bootstrap a cookie, then a session cookie). When unset, localhost-only is the
-  security boundary. There is **no user/login system** — that would be over-engineering a
-  personal tool.
+  it with `tailscale serve`) and allow the hostname/IP clients use; traffic is
+  WireGuard-encrypted, so plain HTTP on the tailnet is fine for local development access.
+- **Optional shared token** (`web.token`): a matching query parameter bootstraps an
+  HTTP-only, SameSite cookie. When unset, authentication is disabled entirely; the safe
+  default then relies on the loopback bind. Remote access needs a strong token or trusted
+  tailnet/reverse-proxy controls. The Host allowlist is not authentication. There is no
+  user/account system.
+- **Cross-site write protection:** every state-changing form carries a random,
+  process-scoped CSRF token (custom clients may send `X-CSRF-Token`). Missing or invalid
+  tokens fail before the handler runs.
+- **Browser hardening:** responses deny framing, disable MIME sniffing, use a
+  no-referrer policy, and mark HTML as `no-store`.
 - The web app can trigger real work (run-now, edit a job's prompt, edit AGENTS.md). That
   is acceptable precisely because access is already restricted to the operator; it is
   *not* a capability to expose broadly.
-- **Writes never leave `~/.enso/`.** The UI creates/edits/deletes jobs and
-  Enso-owned skills under `~/.enso/`, plus the working-dir `AGENTS.md`. External/"parent"
-  skills discovered from the CLIs' own roots (e.g. `~/.claude/skills/`) are surfaced
-  read-only — Enso manages its own dir and only observes the rest. This is the ownership
-  model as much as a safety boundary.
+- **Write boundary:** job prompts and Enso-owned skills are edited under `~/.enso/`;
+  `AGENTS.md` is edited at its fixed path in the configured working directory.
+  External/"parent" skills discovered from other CLI roots are read-only. User-selected
+  job and skill paths are resolved and checked against their owning root before writes.
 
-## What this touches in the codebase
+## Implementation map
 
 | Area | Change |
 | --- | --- |
-| `core.py` | Record runs around `_execute_job`; hold the web server task in `serve` |
-| `cli.py` | `enso web`; `enso runs` subcommands; web task wired into `serve` |
-| `config.py` | `web` (incl. `external_skill_roots`) and `runs` config blocks, backfilled with defaults (same pattern as provider backfill) |
-| `jobs.py` | Frontmatter parsing moves to a shared `frontmatter.py` (pyyaml); `Job` unchanged otherwise |
-| new `runs.py` | SQLite connection + `create`/`finish`/`list`/`get`/`prune` |
-| new `frontmatter.py` | Shared YAML frontmatter read/write used by jobs |
-| new `web/` | Starlette app; routes + templates for job/skill CRUD, runs, and AGENTS.md; external-skill discovery (read-only); vendored static assets |
-| `pyproject.toml` | `web` extra; `pyyaml` into base deps; new package data |
+| `core.py` | Records scheduled runs around `_execute_job` and enforces retention |
+| `cli.py` | Provides standalone `enso web` and manual job-run commands |
+| `config.py` | Backfills `web` (including `allowed_hosts` / `external_skill_roots`) and `runs` defaults |
+| `jobs.py` | Loads YAML scalars with `BaseLoader`, then falls back for malformed legacy headers |
+| `frontmatter.py` | Provides fence-aware raw edits plus YAML serialization and atomic writes |
+| `runs.py` | Owns SQLite `create`/`finish`/`list`/`get`/`prune` operations |
+| `web/` | Contains the Starlette app, current routes/templates, discovery, and vendored assets |
+| `pyproject.toml` | Defines the `web` extra, base `pyyaml` dependency, and package data |
 
-> The skill create/edit/delete surface assumes seeded starter skills are ordinary,
-> user-owned files — it depends on the seed-once fix tracked in
-> [issue #7](https://github.com/geekforbrains/enso/issues/7). Until that lands, edits to a
-> seeded skill are reverted on the next `serve`.
+Missing bundled skill files are seeded. Existing copies update only when their hash
+matches a known pristine prior version; customized files and symlinks remain untouched.
+
+The task-system removal migrates only artifacts that exactly match the former bundled
+files: the pristine `tasks` skill is removed and the pristine task-era `AGENTS.md` is
+replaced. Customized copies are preserved and logged with a manual-cleanup warning.

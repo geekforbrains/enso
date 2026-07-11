@@ -103,7 +103,9 @@ def _job_web_app(tmp_path, monkeypatch):
     for mod in (cfg, jobs_mod, web_app):
         monkeypatch.setattr(mod, "JOBS_DIR", str(jobs_dir))
     runtime = SimpleNamespace(config={"web": {}})
-    return jobs_dir, TestClient(web_app.create_app(runtime))
+    return jobs_dir, TestClient(
+        web_app.create_app(runtime), base_url="http://127.0.0.1"
+    )
 
 
 def test_job_prompt_edit_round_trips_and_preserves_frontmatter(tmp_path, monkeypatch):
@@ -121,7 +123,10 @@ def test_job_prompt_edit_round_trips_and_preserves_frontmatter(tmp_path, monkeyp
     # Saving swaps only the body and redirects back to the job.
     resp = client.post(
         "/jobs/demo/prompt",
-        data={"content": "Edited prompt body.\r\n"},
+        data={
+            "content": "Edited prompt body.\r\n",
+            "_csrf": client.app.state.csrf_token,
+        },
         follow_redirects=False,
     )
     assert resp.status_code == 303
@@ -141,6 +146,133 @@ def test_job_prompt_edit_round_trips_and_preserves_frontmatter(tmp_path, monkeyp
 def test_job_prompt_edit_unknown_job_404s(tmp_path, monkeypatch):
     _, client = _job_web_app(tmp_path, monkeypatch)
     resp = client.post(
-        "/jobs/nope/prompt", data={"content": "x"}, follow_redirects=False
+        "/jobs/nope/prompt",
+        data={"content": "x", "_csrf": client.app.state.csrf_token},
+        follow_redirects=False,
     )
     assert resp.status_code == 404
+
+
+def test_job_prompt_edit_preserves_legacy_frontmatter_bytes(tmp_path, monkeypatch):
+    jobs_dir, client = _job_web_app(tmp_path, monkeypatch)
+    job_dir = jobs_dir / "daily-review"
+    job_dir.mkdir()
+    job_md = job_dir / "JOB.md"
+    prefix = (
+        b"---\r\n"
+        b"# User formatting stays intact.\r\n"
+        b"name: Daily: Review\r\n"
+        b'schedule: "0 9 * * *"\r\n'
+        b"provider: claude\r\n"
+        b"model: opus\r\n"
+        b"notify:\r\n"
+        b"enabled: false\r\n"
+        b"---\r\n"
+        b"\r\n"
+    )
+    job_md.write_bytes(prefix + b"Original prompt.\r\n")
+
+    response = client.post(
+        "/jobs/daily-review/prompt",
+        data={
+            "content": "Edited prompt.\r\n",
+            "_csrf": client.app.state.csrf_token,
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert job_md.read_bytes() == prefix + b"Edited prompt.\n"
+
+
+def test_job_prompt_edit_rejects_job_file_symlink_escape(tmp_path, monkeypatch):
+    jobs_dir, client = _job_web_app(tmp_path, monkeypatch)
+    outside = tmp_path / "outside-job.md"
+    outside.write_text(
+        "---\n"
+        "name: Outside\n"
+        'schedule: "0 9 * * *"\n'
+        "provider: claude\n"
+        "model: opus\n"
+        "enabled: false\n"
+        "---\n\n"
+        "Prompt.\n",
+        encoding="utf-8",
+    )
+    job_dir = jobs_dir / "escaped"
+    job_dir.mkdir()
+    (job_dir / "JOB.md").symlink_to(outside)
+    original = outside.read_bytes()
+
+    response = client.post(
+        "/jobs/escaped/prompt",
+        data={
+            "content": "Malicious replacement.",
+            "_csrf": client.app.state.csrf_token,
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 403
+    assert outside.read_bytes() == original
+
+
+def test_job_toggle_preserves_legacy_frontmatter_and_htmx_csrf(tmp_path, monkeypatch):
+    jobs_dir, client = _job_web_app(tmp_path, monkeypatch)
+    job_dir = jobs_dir / "daily-review"
+    job_dir.mkdir()
+    job_md = job_dir / "JOB.md"
+    original = (
+        "---\n"
+        "# Keep this comment.\n"
+        "name: Daily: Review\n"
+        'schedule: "0 9 * * *"\n'
+        "provider: claude\n"
+        "model: opus\n"
+        "notify:\n"
+        "enabled : false  # keep this too\n"
+        "---\n\n"
+        "Prompt.\n"
+    )
+    job_md.write_text(original, encoding="utf-8")
+
+    response = client.post(
+        "/jobs/daily-review/toggle",
+        data={"_csrf": client.app.state.csrf_token},
+        headers={"HX-Request": "true"},
+    )
+
+    assert response.status_code == 200
+    assert client.app.state.csrf_token in response.text
+    assert job_md.read_text(encoding="utf-8") == original.replace(
+        "enabled : false  #", "enabled : true  #"
+    )
+
+
+def test_job_toggle_rejects_job_file_symlink_escape(tmp_path, monkeypatch):
+    jobs_dir, client = _job_web_app(tmp_path, monkeypatch)
+    outside = tmp_path / "outside-job.md"
+    outside.write_text(
+        "---\n"
+        "name: Outside\n"
+        'schedule: "0 9 * * *"\n'
+        "provider: claude\n"
+        "model: opus\n"
+        "enabled: false\n"
+        "---\n\n"
+        "Prompt.\n",
+        encoding="utf-8",
+    )
+    job_dir = jobs_dir / "escaped"
+    job_dir.mkdir()
+    (job_dir / "JOB.md").symlink_to(outside)
+    original = outside.read_bytes()
+
+    response = client.post(
+        "/jobs/escaped/toggle",
+        data={"_csrf": client.app.state.csrf_token},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 403
+    assert outside.read_bytes() == original

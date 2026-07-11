@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
+
+import pytest
 
 from enso.config import load_config, save_config
 
@@ -20,6 +24,8 @@ def test_load_creates_default(tmp_enso):
     assert config["logging"]["debug_prompts"] is False
     assert config["logging"]["debug_events"] is False
     assert "providers" in config
+    assert config["runs"] == {"keep": 500, "max_age_days": 30}
+    assert "tasks" not in config
 
 
 def test_save_and_load_roundtrip(tmp_enso):
@@ -139,3 +145,90 @@ def test_config_file_permissions(tmp_enso):
     config_file = os.path.join(tmp_enso, "config.json")
     stat = os.stat(config_file)
     assert stat.st_mode & 0o777 == 0o600
+
+
+def test_load_migrates_legacy_task_retention_and_drops_tasks(tmp_enso):
+    """Task retention survives the task-system removal."""
+    config_file = os.path.join(tmp_enso, "config.json")
+    with open(config_file, "w") as f:
+        json.dump({
+            "tasks": {
+                "enabled": False,
+                "runs_keep": 123,
+                "runs_max_age_days": 45,
+            },
+        }, f)
+
+    loaded = load_config()
+
+    assert loaded["runs"] == {"keep": 123, "max_age_days": 45}
+    assert "tasks" not in loaded
+    with open(config_file) as f:
+        persisted = json.load(f)
+    assert persisted["runs"] == {"keep": 123, "max_age_days": 45}
+    assert "tasks" not in persisted
+
+
+def test_explicit_runs_config_wins_over_legacy_task_retention(tmp_enso):
+    """New retention choices win while missing values still migrate."""
+    config_file = os.path.join(tmp_enso, "config.json")
+    with open(config_file, "w") as f:
+        json.dump({
+            "tasks": {
+                "runs_keep": 123,
+                "runs_max_age_days": 45,
+            },
+            "runs": {"keep": 7},
+        }, f)
+
+    loaded = load_config()
+
+    assert loaded["runs"] == {"keep": 7, "max_age_days": 45}
+    assert "tasks" not in loaded
+
+
+def test_save_removes_obsolete_tasks_block(tmp_enso):
+    save_config({
+        "tasks": {"enabled": True, "runs_keep": 12},
+        "runs": {"keep": 8, "max_age_days": 3},
+    })
+
+    with open(os.path.join(tmp_enso, "config.json")) as f:
+        persisted = json.load(f)
+
+    assert persisted["runs"] == {"keep": 8, "max_age_days": 3}
+    assert "tasks" not in persisted
+
+
+def test_save_failure_preserves_existing_config(tmp_enso, monkeypatch):
+    config_file = Path(tmp_enso, "config.json")
+    original = b'{"working_dir": "/keep/me"}\n'
+    config_file.write_bytes(original)
+
+    def fail_replace(_source, _target):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr("enso.config.os.replace", fail_replace)
+
+    with pytest.raises(OSError, match="replace failed"):
+        save_config({"working_dir": "/new/value"})
+
+    assert config_file.read_bytes() == original
+    assert list(Path(tmp_enso).glob("*.tmp")) == []
+
+
+def test_load_uses_migrated_config_when_persistence_fails(tmp_enso, monkeypatch):
+    config_file = Path(tmp_enso, "config.json")
+    config_file.write_text(json.dumps({
+        "tasks": {"runs_keep": 17, "runs_max_age_days": 4},
+    }))
+
+    def fail_save(_config):
+        raise OSError("read-only config")
+
+    monkeypatch.setattr("enso.config.save_config", fail_save)
+
+    loaded = load_config()
+
+    assert loaded["runs"] == {"keep": 17, "max_age_days": 4}
+    assert "tasks" not in loaded

@@ -12,6 +12,13 @@ All notable changes to this project will be documented in this file.
 - `/update` (Telegram) / `!update` (Slack) deterministically updates Enso from the exact current commit on the stable `main` branch. It builds a wheel, validates it in an isolated environment, runs the upstream test suite, installs that same wheel, restarts the bot and dashboard services, and confirms health after restart. Already-current installs are left untouched, and editable development checkouts ahead of stable are never downgraded. Revision metadata is stored separately in `~/.enso/update.json`; the active model is never involved
 - Edit a job's prompt (the `JOB.md` body) directly from the web dashboard, mirroring in-place skill editing
 
+### Fixed
+
+- Dashboard requests now reject unlisted Host headers; wildcard binds require explicit `web.allowed_hosts`. Writes require a process-scoped CSRF token, and responses send browser-hardening headers
+- Job metadata now loads through PyYAML's string-preserving `BaseLoader` with a fallback for malformed legacy headers. Prompt and enable/disable edits preserve the raw frontmatter text
+- Upgrades migrate legacy task run-retention settings, remove only pristine retired task artifacts, and preserve customized copies with a cleanup warning
+- Known pristine bundled skills advance to the current version during upgrades, while customized files and symlinks remain untouched
+
 ### Changed
 
 - The web dashboard now uses sidebar-aware breakpoints, readable mobile run cards, compact desktop grids, accessible form controls, simplified job detail views, and searchable deduplicated Skills. Long IDs and upload controls no longer widen phone layouts, and compiled Tailwind plus pinned HTMX assets are vendored for fast offline rendering without CDN requests

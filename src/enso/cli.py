@@ -6,6 +6,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1113,6 +1114,8 @@ def web(
         web_cfg = {}
     bind_host = host or web_cfg.get("host", "127.0.0.1")
     bind_port = int(port if port is not None else web_cfg.get("port", 1337))
+    # Keep request-host validation aligned with a one-off CLI bind override.
+    config["web"] = {**web_cfg, "host": bind_host, "port": bind_port}
 
     runtime = Runtime(config)
     runtime.load_state()
@@ -1166,8 +1169,15 @@ def job_create(
     schedule: Annotated[str, typer.Option("--schedule", help="Cron expression (e.g. '0 9 * * *')")],
 ) -> None:
     """Create a new background job. Edit the JOB.md to add the prompt and optional prerun."""
-    dir_name = name.lower().replace(" ", "-")
-    job = create_job(dir_name, name, provider, model, schedule)
+    dir_name = re.sub(r"[^\w]+", "-", name.casefold()).strip("-_")
+    if not dir_name:
+        console.print("[red]Job name must contain at least one letter or number.[/]")
+        raise typer.Exit(1)
+    try:
+        job = create_job(dir_name, name, provider, model, schedule)
+    except (FileExistsError, ValueError) as exc:
+        console.print(f"[red]Could not create job:[/] {exc}")
+        raise typer.Exit(1) from None
     console.print(f"[green]\u2713[/] Job created: {job.path}")
     console.print("  Edit the JOB.md to add your prompt and optional prerun script.")
 

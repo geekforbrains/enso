@@ -8,6 +8,7 @@
   {% endif %}
   <form method="post" action="/jobs/{{ job.dir_name }}/toggle"
         hx-post="/jobs/{{ job.dir_name }}/toggle" hx-target="#job-toggle" hx-swap="outerHTML">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
     <button type="submit"
             class="touch-target rounded-md border border-gray-300 px-3 py-2 text-sm font-medium
                    hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500

@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import importlib.resources
+import json
 import os
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 
+from enso import core as core_module
 from enso import messages
 from enso.core import Runtime, split_text
 from enso.jobs import Job
@@ -32,6 +37,192 @@ def test_split_text_long_line():
     chunks = split_text(text, limit=50)
     assert all(len(c) <= 50 for c in chunks)
     assert "".join(chunks) == text
+
+
+# -- Workspace setup --
+
+
+def _legacy_agents_prompt() -> tuple[str, str]:
+    """Return the current and exact pre-task-removal prompt templates."""
+    current = (
+        importlib.resources.files("enso")
+        .joinpath("prompts", "AGENTS.md")
+        .read_text(encoding="utf-8")
+    )
+    legacy = current.replace(
+        "# For full usage:\n",
+        "# Tasks — one-off work Enso completes on its own\n"
+        'enso task create --title "…" --description "…"   '
+        "# create a one-off task (--notify to be pinged)\n"
+        "enso task list                       # show tasks and status\n"
+        "enso task show <slug>                # task detail + result\n\n"
+        "# For full usage:\n",
+        1,
+    ).replace(
+        "## Deferred updates — use `enso message send`\n",
+        "## Tasks\n\n"
+        "For one-off work the user wants done *later* or in the background (not\n"
+        "recurring, and not something to do right now), use the `tasks` skill. It\n"
+        "covers when to make a task vs a job, and how to write a self-contained\n"
+        "description the background task-runner can act on without this conversation's\n"
+        'context — e.g. when the user says "let\'s make that a task."\n\n'
+        "## Deferred updates — use `enso message send`\n",
+        1,
+    )
+    assert hashlib.sha256(legacy.encode()).hexdigest() == (
+        core_module._LEGACY_TASKS_AGENTS_SHA256
+    )
+    return current, legacy
+
+
+def test_install_system_prompts_migrates_exact_legacy_template(sample_config):
+    current, legacy = _legacy_agents_prompt()
+    agents_file = Path(sample_config["working_dir"], "AGENTS.md")
+    agents_file.write_text(legacy)
+
+    Runtime(sample_config).install_system_prompts()
+
+    assert agents_file.read_text() == current
+
+
+def test_legacy_prompt_migration_failure_preserves_original(
+    sample_config, monkeypatch
+):
+    _, legacy = _legacy_agents_prompt()
+    agents_file = Path(sample_config["working_dir"], "AGENTS.md")
+    agents_file.write_text(legacy)
+
+    def fail_replace(_source, _target):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr("enso.core.os.replace", fail_replace)
+
+    Runtime(sample_config).install_system_prompts()
+
+    assert agents_file.read_text() == legacy
+    assert list(agents_file.parent.glob("*.tmp")) == []
+
+
+def test_install_system_prompts_preserves_customized_template(sample_config, caplog):
+    _, legacy = _legacy_agents_prompt()
+    agents_file = Path(sample_config["working_dir"], "AGENTS.md")
+    customized = legacy + "\n## Local instructions\nKeep this customization.\n"
+    agents_file.write_text(customized)
+
+    Runtime(sample_config).install_system_prompts()
+
+    assert agents_file.read_text() == customized
+    assert "contains retired task instructions" in caplog.text
+
+
+def test_bundled_skills_are_seeded_once(tmp_path):
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    Runtime._install_bundled_skills(str(skills_dir))
+    skill_file = skills_dir / "jobs" / "SKILL.md"
+    assert skill_file.is_file()
+
+    skill_file.write_text("locally edited through the dashboard\n")
+    Runtime._install_bundled_skills(str(skills_dir))
+
+    assert skill_file.read_text() == "locally edited through the dashboard\n"
+
+
+def test_bundled_skills_update_only_known_pristine_files(tmp_path, monkeypatch):
+    skills_dir = tmp_path / "skills"
+    skill_dir = skills_dir / "jobs"
+    skill_dir.mkdir(parents=True)
+    skill_file = skill_dir / "SKILL.md"
+    previous = "former pristine bundled jobs skill\n"
+    skill_file.write_text(previous)
+    monkeypatch.setattr(
+        core_module,
+        "_BUNDLED_SKILL_PRISTINE_HASHES",
+        {
+            ("jobs", "SKILL.md"): frozenset({
+                hashlib.sha256(previous.encode()).hexdigest()
+            })
+        },
+    )
+
+    Runtime._install_bundled_skills(str(skills_dir))
+
+    current = (
+        importlib.resources.files("enso")
+        .joinpath("skills", "jobs", "SKILL.md")
+        .read_text(encoding="utf-8")
+    )
+    assert skill_file.read_text() == current
+
+
+def test_bundled_skills_preserve_symlink_even_when_target_hash_is_known(
+    tmp_path, monkeypatch
+):
+    skills_dir = tmp_path / "skills"
+    skill_dir = skills_dir / "jobs"
+    skill_dir.mkdir(parents=True)
+    target = tmp_path / "custom-jobs-skill.md"
+    previous = "former pristine bundled jobs skill\n"
+    target.write_text(previous)
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.symlink_to(target)
+    monkeypatch.setattr(
+        core_module,
+        "_BUNDLED_SKILL_PRISTINE_HASHES",
+        {
+            ("jobs", "SKILL.md"): frozenset({
+                hashlib.sha256(previous.encode()).hexdigest()
+            })
+        },
+    )
+
+    Runtime._install_bundled_skills(str(skills_dir))
+
+    assert skill_file.is_symlink()
+    assert target.read_text() == previous
+
+
+def test_retire_legacy_tasks_skill_only_when_pristine(tmp_path, monkeypatch):
+    skills_dir = tmp_path / "skills"
+    task_dir = skills_dir / "tasks"
+    task_dir.mkdir(parents=True)
+    pristine = "former bundled task skill\n"
+    monkeypatch.setattr(
+        core_module,
+        "_LEGACY_TASKS_SKILL_SHA256",
+        hashlib.sha256(pristine.encode()).hexdigest(),
+    )
+
+    (task_dir / "SKILL.md").write_text(pristine)
+    Runtime._retire_legacy_tasks_skill(str(skills_dir))
+    assert not task_dir.exists()
+
+    task_dir.mkdir()
+    (task_dir / "SKILL.md").write_text(pristine + "customized\n")
+    Runtime._retire_legacy_tasks_skill(str(skills_dir))
+    assert task_dir.is_dir()
+
+    (task_dir / "SKILL.md").write_text(pristine)
+    (task_dir / "notes.md").write_text("user-owned companion file\n")
+    Runtime._retire_legacy_tasks_skill(str(skills_dir))
+    assert task_dir.is_dir()
+
+
+def test_retire_legacy_tasks_skill_preserves_directory_symlink(tmp_path, caplog):
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    target = tmp_path / "custom-task-skill"
+    target.mkdir()
+    skill_file = target / "SKILL.md"
+    skill_file.write_text("custom task skill\n")
+    task_link = skills_dir / "tasks"
+    task_link.symlink_to(target, target_is_directory=True)
+
+    Runtime._retire_legacy_tasks_skill(str(skills_dir))
+
+    assert task_link.is_symlink()
+    assert skill_file.read_text() == "custom task skill\n"
+    assert "Preserving customized retired tasks skill" in caplog.text
 
 
 # -- Runtime state --
@@ -225,6 +416,47 @@ def test_runtime_state_persistence(tmp_enso, sample_config):
     rt2.load_state()
     assert rt2.active_provider_by_chat["42"] == "codex"
     assert rt2.session_by_chat_provider[("42", "codex")] == "sess_123"
+
+
+def test_save_state_failure_preserves_existing_file_and_removes_temp(
+    tmp_enso, sample_config, monkeypatch, caplog
+):
+    state_file = Path(tmp_enso, "state.json")
+    original = b'{"existing": "state"}\n'
+    state_file.write_bytes(original)
+    rt = Runtime(sample_config)
+
+    def fail_replace(_source, _target):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr("enso.core.os.replace", fail_replace)
+
+    rt.save_state()
+
+    assert state_file.read_bytes() == original
+    assert list(Path(tmp_enso).glob("*.tmp")) == []
+    assert "Failed to save state" in caplog.text
+
+
+def test_load_state_retires_legacy_task_runner_key(tmp_enso, sample_config):
+    """The removed scheduler's reserved state does not linger after upgrade."""
+    timestamp = datetime.now().isoformat()
+    state_file = Path(tmp_enso, "state.json")
+    state_file.write_text(json.dumps({
+        "job_last_run": {
+            "__task_runner__": "obsolete-value-need-not-be-a-timestamp",
+            "real-job": timestamp,
+        },
+    }))
+
+    rt = Runtime(sample_config)
+    rt.load_state()
+
+    assert "__task_runner__" not in rt._job_last_run
+    assert rt._job_last_run["real-job"] == datetime.fromisoformat(timestamp)
+    persisted = json.loads(state_file.read_text())
+    assert "__task_runner__" not in persisted["job_last_run"]
+    assert persisted["job_last_run"]["real-job"] == timestamp
 
 
 def test_compact_seed_persistence(tmp_enso, sample_config):

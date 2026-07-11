@@ -89,6 +89,29 @@ _SECRET_ASSIGNMENT_RE = re.compile(
 _URL_CREDENTIAL_RE = re.compile(r"(?i)(https?://)([^/@\s]+)@")
 _SENSITIVE_KEY_RE = re.compile(r"(?i)(api[_-]?key|token|secret|password|authorization)")
 
+# Upgrade markers for artifacts bundled immediately before the built-in task
+# system was removed. Hashes let us recognize pristine installer-owned files
+# without retaining obsolete task instructions in the package.
+_LEGACY_TASKS_SKILL_SHA256 = (
+    "661ffca9a360cc40521c274a295a97c7735123a7c8a44e1d307da046f07735cc"
+)
+_LEGACY_TASKS_AGENTS_SHA256 = (
+    "ec67ee973a15c38e23451cfc65317643debe0e6e8659589bf0c30433f60a2e4a"
+)
+_LEGACY_TASK_RUNNER_STATE_KEY = "__task_runner__"
+
+# Known hashes of pristine bundled skills from prior releases. Exact matches
+# can follow the bundled copy forward without overwriting user-customized files.
+_BUNDLED_SKILL_PRISTINE_HASHES: dict[tuple[str, str], frozenset[str]] = {
+    ("jobs", "SKILL.md"): frozenset({
+        "f52f890e467bd212534474b1d0ee913edbf6cc968e010686153044aac13bcd77",
+        "8824886bd76e476672395bfcef6d34655b7eeedb40c89cf0fc459706e9ad4cff",
+        "cc8d7abc0e550b901644d7c7feee2e3363608adf794a2f885c7421a5cb7fa08b",
+        "256ce5a5609551246927c9e19ef0be13f68f630fb343815f303e6f90ab8cb51c",
+        "608c4a5d9f34d76ae9143f749fa7b028a4fce413d260e1a5f58d361288730bd8",
+    }),
+}
+
 
 @dataclass(frozen=True)
 class PrerunResult:
@@ -188,8 +211,8 @@ class Runtime:
 
         Creates:
         - ~/.enso/jobs/ and ~/.enso/skills/
-        - Bundled skills copied to ~/.enso/skills/
-        - AGENTS.md in working_dir (from bundled template, only if missing)
+        - Bundled skills seeded into ~/.enso/skills/
+        - AGENTS.md in working_dir (from bundled template on first install)
         - CLAUDE.md as a symlink to AGENTS.md (Claude reads CLAUDE.md;
           Codex and Gemini read AGENTS.md natively)
         - .claude/skills and .agents/skills symlinked to ~/.enso/skills/
@@ -202,6 +225,7 @@ class Runtime:
         for d in (JOBS_DIR, skills_dir):
             os.makedirs(d, exist_ok=True)
 
+        self._retire_legacy_tasks_skill(skills_dir)
         self._install_bundled_skills(skills_dir)
         self._install_skill_tools(skills_dir)
 
@@ -212,14 +236,23 @@ class Runtime:
         content = source.read_text(encoding="utf-8")
 
         canonical = os.path.join(self.working_dir, "AGENTS.md")
-        if not os.path.exists(canonical):
+        is_legacy_template = (
+            self._regular_file_sha256(canonical) == _LEGACY_TASKS_AGENTS_SHA256
+        )
+        if not os.path.lexists(canonical) or is_legacy_template:
             try:
-                with open(canonical, "w") as f:
-                    f.write(content)
-                log.info("Wrote AGENTS.md to %s", self.working_dir)
+                self._atomic_write_text(canonical, content)
+                action = "Updated" if is_legacy_template else "Wrote"
+                log.info("%s AGENTS.md in %s", action, self.working_dir)
             except OSError:
                 log.warning("Could not write AGENTS.md", exc_info=True)
                 return
+        elif self._contains_legacy_task_instructions(canonical):
+            log.warning(
+                "Preserving customized AGENTS.md at %s, but it contains retired task "
+                "instructions; update or remove those instructions manually",
+                canonical,
+            )
 
         self._ensure_symlink(
             os.path.join(self.working_dir, "CLAUDE.md"), "AGENTS.md"
@@ -314,8 +347,89 @@ class Runtime:
             log.warning("Could not write %s", settings_path, exc_info=True)
 
     @staticmethod
-    def _install_bundled_skills(skills_dir: str) -> None:
-        """Copy bundled skills to the skills directory, updating stale files."""
+    def _atomic_write_text(path: str, content: str) -> None:
+        """Fsync a temporary UTF-8 file, then atomically replace ``path``."""
+        directory = os.path.dirname(os.path.abspath(path))
+        fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(content)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.remove(tmp)
+            raise
+
+    @staticmethod
+    def _regular_file_sha256(path: str) -> str | None:
+        """Hash a regular, non-symlink file, or return ``None`` safely."""
+        if os.path.islink(path) or not os.path.isfile(path):
+            return None
+        try:
+            with open(path, "rb") as f:
+                return hashlib.sha256(f.read()).hexdigest()
+        except OSError:
+            return None
+
+    @staticmethod
+    def _contains_legacy_task_instructions(path: str) -> bool:
+        """Recognize strong task-era markers in a customized prompt."""
+        if not os.path.isfile(path):
+            return False
+        try:
+            with open(path, encoding="utf-8") as f:
+                content = f.read()
+        except (OSError, UnicodeError):
+            return False
+        return any(marker in content for marker in (
+            "enso task create",
+            "enso task list",
+            "enso task show",
+            "use the `tasks` skill",
+        ))
+
+    @classmethod
+    def _retire_legacy_tasks_skill(cls, skills_dir: str) -> None:
+        """Remove the pristine task skill left by the previous release.
+
+        Any changed file, symlink, or additional directory entry makes the
+        artifact user-owned and leaves it untouched.
+        """
+        skill_dir = os.path.join(skills_dir, "tasks")
+        if not os.path.lexists(skill_dir):
+            return
+        warning = (
+            "Preserving customized retired tasks skill at %s; update or remove it "
+            "manually because the enso task commands no longer exist"
+        )
+        if os.path.islink(skill_dir) or not os.path.isdir(skill_dir):
+            log.warning(warning, skill_dir)
+            return
+        try:
+            entries = os.listdir(skill_dir)
+        except OSError:
+            log.warning(warning, skill_dir)
+            return
+        if entries != ["SKILL.md"]:
+            log.warning(warning, skill_dir)
+            return
+
+        skill_file = os.path.join(skill_dir, "SKILL.md")
+        if cls._regular_file_sha256(skill_file) != _LEGACY_TASKS_SKILL_SHA256:
+            log.warning(warning, skill_dir)
+            return
+        try:
+            os.remove(skill_file)
+            os.rmdir(skill_dir)
+            log.info("Removed retired bundled skill: tasks")
+        except OSError:
+            log.warning("Could not remove retired bundled tasks skill", exc_info=True)
+
+    @classmethod
+    def _install_bundled_skills(cls, skills_dir: str) -> None:
+        """Seed missing skills and update only known-pristine older copies."""
         bundled = importlib.resources.files("enso").joinpath("skills")
         if not bundled.is_dir():
             return
@@ -323,20 +437,40 @@ class Runtime:
             if not skill_dir.is_dir():
                 continue
             dest = os.path.join(skills_dir, skill_dir.name)
-            os.makedirs(dest, exist_ok=True)
+            if os.path.lexists(dest):
+                if os.path.islink(dest) or not os.path.isdir(dest):
+                    continue
+            else:
+                os.makedirs(dest)
             for f in skill_dir.iterdir():
                 if not f.is_file():
                     continue
                 dest_file = os.path.join(dest, f.name)
-                content = f.read_text(encoding="utf-8")
-                # Skip if unchanged
-                if os.path.exists(dest_file):
-                    with open(dest_file) as existing:
-                        if existing.read() == content:
-                            continue
-                with open(dest_file, "w") as out:
-                    out.write(content)
-                log.info("Updated bundled skill: %s/%s", skill_dir.name, f.name)
+                action = "Installed"
+                if os.path.lexists(dest_file):
+                    existing_hash = cls._regular_file_sha256(dest_file)
+                    known_pristine = _BUNDLED_SKILL_PRISTINE_HASHES.get(
+                        (skill_dir.name, f.name), frozenset()
+                    )
+                    if existing_hash not in known_pristine:
+                        continue
+                    action = "Updated pristine"
+                try:
+                    content = f.read_text(encoding="utf-8")
+                    cls._atomic_write_text(dest_file, content)
+                    log.info(
+                        "%s bundled skill: %s/%s",
+                        action,
+                        skill_dir.name,
+                        f.name,
+                    )
+                except OSError:
+                    log.warning(
+                        "Could not install/update bundled skill %s/%s",
+                        skill_dir.name,
+                        f.name,
+                        exc_info=True,
+                    )
 
     def _install_skill_tools(self, skills_dir: str) -> None:
         """Copy executable tool scripts from skills into workspace/tools/."""
@@ -396,6 +530,7 @@ class Runtime:
                 for cid, ts in self._last_active.items()
             },
         }
+        tmp: str | None = None
         try:
             fd, tmp = tempfile.mkstemp(dir=CONFIG_DIR, suffix=".tmp")
             with os.fdopen(fd, "w") as f:
@@ -405,6 +540,10 @@ class Runtime:
             os.replace(tmp, STATE_FILE)
         except Exception:
             log.exception("Failed to save state")
+        finally:
+            if tmp is not None:
+                with contextlib.suppress(OSError):
+                    os.remove(tmp)
 
     def load_state(self) -> None:
         """Load persisted state from disk."""
@@ -413,6 +552,7 @@ class Runtime:
         try:
             with open(STATE_FILE) as f:
                 data = json.load(f)
+            removed_legacy_runner_state = False
             for k, v in data.get("active_provider_by_chat", {}).items():
                 self.active_provider_by_chat[k] = v
             for k, v in data.get("active_model_by_chat_provider", {}).items():
@@ -429,6 +569,9 @@ class Runtime:
             for k, v in data.get("compact_seed_by_chat", {}).items():
                 self.compact_seed_by_chat[k] = v
             for name, ts in data.get("job_last_run", {}).items():
+                if name == _LEGACY_TASK_RUNNER_STATE_KEY:
+                    removed_legacy_runner_state = True
+                    continue
                 self._job_last_run[name] = datetime.fromisoformat(ts)
             failure_alerts = data.get("job_failure_alerts", {})
             if isinstance(failure_alerts, dict):
@@ -443,6 +586,8 @@ class Runtime:
                 len(self.session_by_chat_provider),
             )
             self._prune_stale_sessions()
+            if removed_legacy_runner_state:
+                self.save_state()
         except Exception:
             log.exception("Failed to load state, starting fresh")
 
@@ -1691,7 +1836,7 @@ class Runtime:
     ) -> None:
         """Write captured output and mark a run terminal (best-effort).
 
-        Never raises: run instrumentation must not break the job/task it is
+        Never raises: run instrumentation must not break the job it is
         observing. ``exit_code`` of ``None`` (e.g. a killed process) is stored
         as ``-1`` so the column is always populated.
         """

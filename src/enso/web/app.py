@@ -14,8 +14,10 @@ directory.
 from __future__ import annotations
 
 import contextlib
+import functools
 import logging
 import os
+import secrets
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -269,6 +271,7 @@ def _render(request, template: str, **ctx) -> Response:
     """Render a template with the request bound (Jinja2Templates convention)."""
     ctx["current_path"] = request.url.path
     ctx["flash"] = request.query_params.get("msg")
+    ctx["csrf_token"] = request.app.state.csrf_token
     return templates.TemplateResponse(request, template, ctx)
 
 
@@ -280,6 +283,51 @@ def _is_hx(request) -> bool:
 def _redirect(url: str) -> RedirectResponse:
     """303 redirect (so a POST turns into a GET)."""
     return RedirectResponse(url, status_code=303)
+
+
+def _csrf_protected(handler):
+    """Require the process-scoped CSRF token before a write handler runs."""
+
+    @functools.wraps(handler)
+    async def protected(request):
+        form = await request.form()
+        supplied = request.headers.get("X-CSRF-Token") or form.get("_csrf")
+        expected = request.app.state.csrf_token
+        if not isinstance(supplied, str) or not secrets.compare_digest(
+            supplied, expected
+        ):
+            return PlainTextResponse("Forbidden", status_code=403)
+        return await handler(request)
+
+    protected._csrf_protected = True
+    return protected
+
+
+def _normalize_host(value: object) -> str:
+    """Normalize a Host header/config value to a canonical hostname or IP."""
+    text = str(value or "").strip().lower()
+    if text.startswith("["):
+        closing = text.find("]")
+        return text[1:closing] if closing > 0 else ""
+    if text.count(":") == 1:
+        text = text.split(":", 1)[0]
+    return text.rstrip(".")
+
+
+def _allowed_web_hosts(web_cfg: dict) -> frozenset[str]:
+    """Return explicit request hosts, always including loopback spellings."""
+    allowed = {"localhost", "127.0.0.1", "::1"}
+    bind_host = _normalize_host(web_cfg.get("host", "127.0.0.1"))
+    if bind_host not in {"", "0.0.0.0", "::"}:
+        allowed.add(bind_host)
+    configured = web_cfg.get("allowed_hosts", [])
+    if isinstance(configured, list):
+        allowed.update(
+            host
+            for value in configured
+            if (host := _normalize_host(value)) and host != "*"
+        )
+    return frozenset(allowed)
 
 
 def _within(base: str, target: str) -> bool:
@@ -472,12 +520,20 @@ async def job_toggle(request):
     job = _find_job(name)
     if job is None:
         return PlainTextResponse("Job not found", status_code=404)
-    meta, body = frontmatter.read(job.path)
-    meta["enabled"] = not job.enabled
-    frontmatter.write(job.path, meta, body)
+    # Defence in depth: a JOB.md symlink must not escape the jobs directory.
+    if not _within(JOBS_DIR, job.path):
+        return PlainTextResponse("Forbidden", status_code=403)
+    # Change only the scalar. Re-serializing the whole block would erase
+    # comments and would corrupt legacy jobs whose YAML-like values contain an
+    # unquoted colon (which the job loader intentionally still accepts).
+    frontmatter.write_scalar(job.path, "enabled", str(not job.enabled).lower())
     if _is_hx(request):
         fresh = _find_job(name)
-        return templates.TemplateResponse(request, "_job_toggle.html", {"job": fresh})
+        return templates.TemplateResponse(
+            request,
+            "_job_toggle.html",
+            {"job": fresh, "csrf_token": request.app.state.csrf_token},
+        )
     return _redirect(f"/jobs/{name}")
 
 
@@ -508,9 +564,9 @@ async def job_edit_prompt(request):
         return PlainTextResponse("Forbidden", status_code=403)
     form = await request.form()
     content = (form.get("content") or "").replace("\r\n", "\n")
-    # Mirror job_toggle's round-trip: keep the frontmatter, swap only the body.
-    meta, _ = frontmatter.read(job.path)
-    frontmatter.write(job.path, meta, content)
+    # Keep the fenced prefix byte-for-byte and swap only the prompt body. This
+    # remains safe for legacy YAML-like frontmatter accepted by the job loader.
+    frontmatter.write_body(job.path, content)
     return _redirect(f"/jobs/{name}")
 
 
@@ -658,12 +714,41 @@ async def health(request):
 # ---------------------------------------------------------------------------
 
 
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Block framing and keep token-bearing HTML out of browser caches."""
+
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        if response.headers.get("content-type", "").startswith("text/html"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
+
+class HostGuardMiddleware(BaseHTTPMiddleware):
+    """Reject arbitrary Host headers so DNS rebinding cannot read local pages."""
+
+    def __init__(self, app, allowed_hosts: frozenset[str]):
+        super().__init__(app)
+        self.allowed_hosts = allowed_hosts
+
+    async def dispatch(self, request, call_next):
+        host = _normalize_host(request.headers.get("host"))
+        if not host or host not in self.allowed_hosts:
+            return PlainTextResponse("Invalid host header", status_code=400)
+        return await call_next(request)
+
+
 class TokenAuthMiddleware(BaseHTTPMiddleware):
     """Gate every request behind ``web.token`` when one is configured.
 
-    An empty token disables auth entirely (localhost trust). A matching
-    ``?token=`` sets a cookie so subsequent navigation needs no query string.
-    ``/health`` and ``/static`` are always open.
+    An empty token disables auth entirely, so non-loopback deployments need a
+    trusted external access boundary. A matching ``?token=`` sets a cookie so
+    subsequent navigation needs no query string. ``/health`` and ``/static``
+    are token-exempt (the Host guard still applies).
     """
 
     def __init__(self, app, token: str):
@@ -696,27 +781,41 @@ def create_app(runtime) -> Starlette:
     """Build the Starlette app, stashing ``runtime`` on ``app.state``."""
     cfg = getattr(runtime, "config", {}) or {}
     web_cfg = cfg.get("web", {}) if isinstance(cfg, dict) else {}
-    token = web_cfg.get("token", "") if isinstance(web_cfg, dict) else ""
+    if not isinstance(web_cfg, dict):
+        web_cfg = {}
+    token = web_cfg.get("token", "")
+    allowed_hosts = _allowed_web_hosts(web_cfg)
 
     routes = [
         Route("/", dashboard),
         Route("/health", health),
         Route("/jobs", jobs_list),
         Route("/jobs/{name}", job_detail),
-        Route("/jobs/{name}/toggle", job_toggle, methods=["POST"]),
-        Route("/jobs/{name}/run", job_run, methods=["POST"]),
-        Route("/jobs/{name}/prompt", job_edit_prompt, methods=["POST"]),
+        Route(
+            "/jobs/{name}/toggle", _csrf_protected(job_toggle), methods=["POST"]
+        ),
+        Route("/jobs/{name}/run", _csrf_protected(job_run), methods=["POST"]),
+        Route(
+            "/jobs/{name}/prompt",
+            _csrf_protected(job_edit_prompt),
+            methods=["POST"],
+        ),
         Route("/runs", runs_list),
         Route("/runs/{id}", run_detail),
         Route("/skills", skills_list),
         Route("/skills/{name}", skill_detail),
-        Route("/skills/{name}/edit", skill_edit, methods=["POST"]),
+        Route("/skills/{name}/edit", _csrf_protected(skill_edit), methods=["POST"]),
         Route("/agents", agents_view),
-        Route("/agents/edit", agents_edit, methods=["POST"]),
+        Route("/agents/edit", _csrf_protected(agents_edit), methods=["POST"]),
         Mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static"),
     ]
 
-    middleware = [Middleware(TokenAuthMiddleware, token=token)]
+    middleware = [
+        Middleware(SecurityHeadersMiddleware),
+        Middleware(HostGuardMiddleware, allowed_hosts=allowed_hosts),
+        Middleware(TokenAuthMiddleware, token=token),
+    ]
     app = Starlette(routes=routes, middleware=middleware)
     app.state.runtime = runtime
+    app.state.csrf_token = secrets.token_urlsafe(32)
     return app

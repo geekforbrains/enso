@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
+import pytest
+
+from enso import frontmatter
 from enso.jobs import Job, create_job, load_jobs, parse_job
 
 
@@ -52,6 +56,29 @@ Nope.
     assert job.enabled is False
 
 
+def test_parse_job_boolean_formatting_and_inline_comments(tmp_path):
+    """Legacy parsing accepts harmless YAML whitespace and comments."""
+    job_file = tmp_path / "JOB.md"
+    job_file.write_text("""\
+---
+name: Formatted
+schedule: "0 0 * * *"
+provider: claude
+model: sonnet
+enabled : false  # temporarily paused
+catch_up: true  # run a missed invocation
+---
+
+Prompt.
+""")
+
+    job = parse_job("formatted", str(job_file))
+
+    assert job is not None
+    assert job.enabled is False
+    assert job.catch_up is True
+
+
 def test_parse_job_missing_fields(tmp_path):
     """Missing required fields returns None."""
     job_file = tmp_path / "JOB.md"
@@ -79,6 +106,8 @@ def test_create_job(tmp_enso):
     assert job.dir_name == "my-job"
     assert job.name == "My Job"
     assert job.schedule == "30 6 * * *"
+    assert job.enabled is False
+    assert job.prompt == "Your prompt here."
 
     # Verify it round-trips through parse
     parsed = parse_job("my-job", job.path)
@@ -86,6 +115,130 @@ def test_create_job(tmp_enso):
     assert parsed.name == "My Job"
     assert parsed.provider == "claude"
     assert parsed.enabled is False
+    assert parsed.prompt == job.prompt
+
+
+def test_create_job_quotes_yaml_sensitive_values(tmp_enso):
+    """New scaffolds are valid YAML and remain compatible with the loader."""
+    job = create_job(
+        "daily-review",
+        "Daily: Review",
+        "on",
+        "null",
+        "* * * * *",
+    )
+
+    meta, body = frontmatter.read(job.path)
+    assert meta == {
+        "name": "Daily: Review",
+        "schedule": "* * * * *",
+        "provider": "on",
+        "model": "null",
+        "enabled": False,
+    }
+    assert body == "Your prompt here.\n"
+
+    parsed = parse_job("daily-review", job.path)
+    assert parsed is not None
+    assert parsed.name == "Daily: Review"
+    assert parsed.schedule == "* * * * *"
+    assert parsed.provider == "on"
+    assert parsed.model == "null"
+
+
+def test_create_job_and_loader_handle_safe_dump_edge_values(tmp_enso):
+    """Quoted apostrophes, colons, and fence-like lines round-trip exactly."""
+    name = "Bob's: Review\n---\ncontinued"
+    job = create_job(
+        "yaml-edge",
+        name,
+        "on",
+        "null",
+        "* * * * *",
+    )
+
+    parsed = parse_job("yaml-edge", job.path)
+
+    assert parsed is not None
+    assert parsed.name == name
+    assert parsed.schedule == "* * * * *"
+    assert parsed.provider == "on"
+    assert parsed.model == "null"
+    assert parsed.enabled is False
+
+
+def test_parse_job_falls_back_for_legacy_non_yaml_frontmatter(tmp_path):
+    job_file = tmp_path / "JOB.md"
+    job_file.write_text("""\
+---
+name: Daily: Review
+schedule: "0 9 * * *"
+provider: claude
+model: sonnet
+enabled: true  # legacy comment
+---
+
+Prompt.
+""")
+
+    parsed = parse_job("legacy", str(job_file))
+
+    assert parsed is not None
+    assert parsed.name == "Daily: Review"
+    assert parsed.enabled is True
+
+
+@pytest.mark.parametrize(
+    "dir_name",
+    [
+        "",
+        ".",
+        "..",
+        "../escape",
+        "nested/job",
+        r"nested\job",
+        " padded ",
+        "line\nbreak",
+        "drive:name",
+    ],
+)
+def test_create_job_rejects_unsafe_directory_names(tmp_enso, dir_name):
+    with pytest.raises(ValueError, match="non-empty slug"):
+        create_job(dir_name, "Unsafe", "claude", "sonnet", "0 9 * * *")
+
+    assert not os.path.exists(os.path.join(tmp_enso, "jobs"))
+
+
+def test_create_job_refuses_to_overwrite_existing_job(tmp_enso):
+    job = create_job("daily", "Daily", "claude", "sonnet", "0 9 * * *")
+    with open(job.path, "a", encoding="utf-8") as file:
+        file.write("User customization.\n")
+    original = Path(job.path).read_bytes()
+
+    with pytest.raises(FileExistsError, match="Job 'daily' already exists"):
+        create_job("daily", "Replacement", "gemini", "pro", "0 0 * * *")
+
+    assert Path(job.path).read_bytes() == original
+
+
+def test_create_job_refuses_existing_symlink_directory(tmp_enso, tmp_path):
+    jobs_dir = Path(tmp_enso) / "jobs"
+    jobs_dir.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (jobs_dir / "linked").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(FileExistsError, match="Job 'linked' already exists"):
+        create_job("linked", "Linked", "claude", "sonnet", "0 9 * * *")
+
+    assert list(outside.iterdir()) == []
+
+
+def test_parse_job_skips_non_utf8_file(tmp_path):
+    job_file = tmp_path / "JOB.md"
+    job_file.write_bytes(b"---\nname: invalid\n---\n\xff")
+
+    assert parse_job("invalid", str(job_file)) is None
 
 
 def test_load_jobs(tmp_enso):

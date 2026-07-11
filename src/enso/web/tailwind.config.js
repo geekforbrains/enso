@@ -1,5 +1,8 @@
 module.exports = {
-  content: ["./templates/**/*.html", "./app.py"],
+  content: {
+    relative: true,
+    files: ["./templates/**/*.html", "./app.py"],
+  },
   darkMode: "class",
   theme: {
     extend: {},
