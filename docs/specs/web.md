@@ -1,9 +1,8 @@
 # Web UI
 
 The local dashboard: pages, routes, and read/write behaviour. Server-rendered, no chat.
-See [architecture.md](architecture.md) for how the server runs and is secured,
-[data-model.md](data-model.md) for what it reads/writes, and [tasks.md](tasks.md) for
-task semantics.
+See [architecture.md](architecture.md) for how the server runs and is secured, and
+[data-model.md](data-model.md) for what it reads/writes.
 
 ## Shape
 
@@ -12,12 +11,12 @@ updates (change a status, add a tag, trigger a run, without a full reload). No S
 build step, no external CDN — HTMX is vendored under `web/static/`. Every page works with
 plain form posts if JS is off; HTMX is progressive enhancement.
 
-The whole UI is a thin skin over the file model and the runs DB: pages read `TASK.md` /
-`JOB.md` / `SKILL.md` / `AGENTS.md` and the `runs` table, and writes go straight back to
+The whole UI is a thin skin over the file model and the runs DB: pages read `JOB.md` /
+`SKILL.md` / `AGENTS.md` and the `runs` table, and writes go straight back to
 those files (atomic replace) and to SQLite. There is no separate web database or cache —
 the files are the model (see [data-model.md](data-model.md)).
 
-**Write boundary.** Every write the UI makes lands inside `~/.enso/` (tasks, jobs,
+**Write boundary.** Every write the UI makes lands inside `~/.enso/` (jobs,
 Enso-owned skills) or the working-dir `AGENTS.md`. It never writes outside that tree —
 external "parent" skills discovered from the CLIs' own roots (e.g. `~/.claude/skills/`)
 are strictly read-only. This is both the safety boundary and the ownership model: Enso
@@ -27,19 +26,12 @@ manages what lives in its own dir and only observes the rest.
 
 | Route | Method | Purpose |
 | --- | --- | --- |
-| `/` | GET | Dashboard — recent runs, open-task counts, jobs at a glance |
-| `/tasks` | GET | Task board/list; filter by `?status=` and `?tag=` |
-| `/tasks/new` | GET, POST | Create-task form; POST writes a new `TASK.md` |
-| `/tasks/{slug}` | GET | Task detail: description, status, tags, attachments, its runs |
-| `/tasks/{slug}/edit` | POST | Update title/description/tags/notify/provider/model |
-| `/tasks/{slug}/status` | POST | Move through the lifecycle (`todo`…`cancelled`) |
-| `/tasks/{slug}/attachments` | POST | Upload a file into `attachments/` |
-| `/tasks/{slug}/attachments/{name}` | GET, DELETE | Download / remove an attachment |
-| `/tasks/{slug}/run` | POST | Run-now (records a `manual` run) |
+| `/` | GET | Dashboard — recent runs, jobs at a glance |
 | `/jobs` | GET | Job list — schedule, provider/model, enabled state |
 | `/jobs/new` | GET, POST | Create-job form; POST scaffolds `~/.enso/jobs/<name>/JOB.md` |
 | `/jobs/{name}` | GET | Job detail: frontmatter, prompt, prerun, recent runs |
 | `/jobs/{name}/edit` | POST | Edit frontmatter (schedule/provider/model/timeout/notify), prompt body, prerun script |
+| `/jobs/{name}/prompt` | POST | Edit just the prompt body (`JOB.md` body), mirroring skill editing |
 | `/jobs/{name}/toggle` | POST | Enable/disable — edits `JOB.md` frontmatter |
 | `/jobs/{name}/delete` | POST | Delete the job dir (confirmed; destructive) |
 | `/jobs/{name}/run` | POST | Run-now (records a `manual` run) |
@@ -54,55 +46,20 @@ manages what lives in its own dir and only observes the rest.
 | `/agents/edit` | POST | Save edits back to `AGENTS.md` in the working dir |
 | `/static/*` | GET | Vendored assets (HTMX, CSS) |
 
-`run` and `toggle` and `status` endpoints return an HTMX fragment (the updated card/row)
+`run` and `toggle` endpoints return an HTMX fragment (the updated card/row)
 on success, or redirect back to the page for no-JS clients.
 
 ## Pages
 
 ### Dashboard (`/`)
 
-Three at-a-glance panels:
+Two at-a-glance panels:
 
-- **Recent runs** — the last N rows from `runs` (all kinds), newest first: kind, name,
+- **Recent runs** — the last N rows from `runs`, newest first: kind, name,
   status pill (running/ok/error/timeout/prerun error/prerun timeout), trigger, duration,
   relative time; each links to
   `/runs/{id}`. The dashboard keeps this to six entries so it remains an overview.
-- **Tasks** — counts per status (todo / in_progress / blocked), linking into `/tasks`
-  filtered; a "New task" button.
 - **Jobs** — each job with its next-fire time and last run status; disabled jobs dimmed.
-
-### Tasks board (`/tasks`)
-
-- Lanes or a list grouped by **status**; a tag filter (`?tag=`) narrows to a project.
-  Because tags are freeform and double as projects, filtering by tag *is* the project view.
-- Each card: title, tags, notify indicator, `updated` relative time, last-run status if
-  any. Card actions (HTMX): change status, run now.
-- "New task" → `/tasks/new`.
-
-### Task detail (`/tasks/{slug}`)
-
-- Rendered description (Markdown), status control, tag editor, notify toggle, optional
-  provider/model override.
-- **Attachments**: thumbnails/links for files in `attachments/`, an upload control, and
-  per-file delete. Uploads are multipart, written into `attachments/` (filename
-  sanitised; collisions suffixed).
-- **Run now** — claims and runs this task immediately (see below), independent of the
-  scheduler tick.
-- **Runs** — this task's run history (`runs` where `kind='task' AND name=slug`), each
-  linking to `/runs/{id}`.
-- **Edit** — title/description/tags/notify/overrides, POST to `/tasks/{slug}/edit`,
-  writing `TASK.md` atomically and bumping `updated`. The form carries the file's `updated`
-  value; if it changed underneath (agent/CLI wrote concurrently) the save warns rather than
-  silently clobbering — conflict *resolution* is out of scope (last-write-wins), but the
-  operator is told.
-
-### Create task (`/tasks/new`)
-
-Form: title (required), description (Markdown textarea), tags (comma/chip input), notify
-(checkbox), optional provider/model, and an initial attachment upload. POST scaffolds
-`tasks/<slug>/TASK.md` with `status: todo` and any uploaded files — the same result as
-`enso task create` followed by writing the body. The new task is immediately visible to
-the task runner on its next tick.
 
 ### Jobs create/edit (`/jobs/new`, `/jobs/{name}`)
 
@@ -112,6 +69,9 @@ the task runner on its next tick.
   prerun script — atomic rewrite of the files under `~/.enso/jobs/{name}/`. A dedicated
   **enable/disable** toggle (`/jobs/{name}/toggle`) flips just `enabled:` for one-click
   pause, and **Run now** executes immediately.
+- **Edit the prompt** (`/jobs/{name}/prompt`): save just the `JOB.md` body from the job
+  detail page — the same edit-in-place affordance skills have (`/skills/{name}/edit`),
+  scoped to the prompt so a quick wording tweak doesn't require the full-edit form.
 - **Create** (`/jobs/new`): the same form with blank fields; POST scaffolds
   `~/.enso/jobs/<name>/JOB.md` (the `enso job create` result) and lands in the edit view.
 - **Delete** (`/jobs/{name}/delete`): removes the job directory, behind a confirm
@@ -157,15 +117,12 @@ Two tiers, split by the `~/.enso/` write boundary:
 
 ## Run-now
 
-"Run now" on a task or job is the web UI reaching into the **shared `Runtime`** (same
+"Run now" on a job is the web UI reaching into the **shared `Runtime`** (same
 event loop, so a direct call — no IPC) to execute immediately:
 
 - **Job run-now** → the same path `enso job run` uses, but recorded with `trigger='manual'`
   so it shows in history (the CLI `job run` today prints to stdout and records nothing; it
   gains run recording too).
-- **Task run-now** → claim this specific task (`todo`/`blocked`/`in_progress` re-run
-  allowed from the UI with a confirm), then run it through the task pipeline with
-  `trigger='manual'`.
 - The endpoint returns quickly with a "started" fragment; the run appears in the feed with
   `status='running'` and updates to its terminal status when done (HTMX poll or manual
   refresh — live streaming is a future idea, not v1).

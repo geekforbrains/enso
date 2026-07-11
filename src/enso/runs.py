@@ -1,4 +1,4 @@
-"""SQLite-backed run history for jobs and tasks.
+"""SQLite-backed run history for jobs.
 
 Machine-generated run telemetry lives in a single ``runs`` table at
 ``CONFIG_DIR/enso.db`` (WAL mode so concurrent readers never block the

@@ -33,12 +33,10 @@ log = logging.getLogger(__name__)
 
 app = typer.Typer(help="Enso — AI agents from your phone", no_args_is_help=True)
 job_app = typer.Typer(help="Manage background jobs")
-task_app = typer.Typer(help="Manage one-off tasks")
 message_app = typer.Typer(help="Send messages and files via the configured transport")
 service_app = typer.Typer(help="Manage the background service")
 slack_app = typer.Typer(help="Slack directory lookups and message search")
 app.add_typer(job_app, name="job")
-app.add_typer(task_app, name="task")
 app.add_typer(message_app, name="message")
 app.add_typer(service_app, name="service")
 app.add_typer(slack_app, name="slack")
@@ -1106,7 +1104,7 @@ def web(
         int | None, typer.Option("--port", help="Bind port (default from web.port)")
     ] = None,
 ) -> None:
-    """Serve the Enso web dashboard (tasks, jobs, and run history)."""
+    """Serve the Enso web dashboard (jobs and run history)."""
     from .core import Runtime
 
     config = load_config()
@@ -1202,164 +1200,6 @@ def job_run(
         console.print(result.output, markup=False)
     if result.status in {"error", "timeout"}:
         raise typer.Exit(1)
-
-
-# ---------------------------------------------------------------------------
-# Task subcommands
-# ---------------------------------------------------------------------------
-
-@task_app.command("create")
-def task_create(
-    title: Annotated[str, typer.Option("--title", help="Task title")],
-    description: Annotated[
-        str,
-        typer.Option(
-            "--description", "-d",
-            help="Task description / instructions for the agent",
-        ),
-    ] = "",
-    tags: Annotated[
-        str, typer.Option("--tags", help="Comma-separated tags")
-    ] = "",
-    notify: Annotated[
-        bool, typer.Option("--notify", help="Notify when the task completes")
-    ] = False,
-    provider: Annotated[
-        str | None, typer.Option("--provider", help="Provider override (claude, codex, gemini)")
-    ] = None,
-    model: Annotated[
-        str | None, typer.Option("--model", help="Model override")
-    ] = None,
-) -> None:
-    """Create a new one-off task. The task-runner picks it up while ``todo``."""
-    from . import tasks
-
-    tag_list = [t.strip() for t in tags.split(",") if t.strip()]
-    task = tasks.create_task(
-        title=title,
-        description=description,
-        tags=tag_list,
-        notify=notify,
-        provider=provider,
-        model=model,
-    )
-    console.print(f"[green]✓[/] Task created: {task.slug}")
-    if not description:
-        console.print(f"  Add a description in {task.path}")
-
-
-@task_app.command("list")
-def task_list(
-    status: Annotated[
-        str | None, typer.Option("--status", help="Filter by status")
-    ] = None,
-    tag: Annotated[
-        str | None, typer.Option("--tag", help="Filter by tag")
-    ] = None,
-) -> None:
-    """List tasks, optionally filtered by status or tag."""
-    from . import tasks
-
-    items = tasks.load_tasks()
-    if status:
-        items = [t for t in items if t.status == status]
-    if tag:
-        items = [t for t in items if tag in t.tags]
-    if not items:
-        console.print("No tasks found. Create one with: enso task create --title ...")
-        return
-    table = Table(box=None, padding=(0, 2))
-    table.add_column("Slug")
-    table.add_column("Title")
-    table.add_column("Status")
-    table.add_column("Tags")
-    table.add_column("Updated")
-    for t in items:
-        table.add_row(t.slug, t.title, t.status, ", ".join(t.tags), t.updated)
-    console.print(table)
-
-
-@task_app.command("show")
-def task_show(
-    slug: Annotated[str, typer.Argument(help="Task slug")],
-) -> None:
-    """Show a task's metadata and description."""
-    from . import tasks
-
-    task = tasks.get_task(slug)
-    if task is None:
-        console.print(f"[red]Task '{slug}' not found.[/]")
-        raise typer.Exit(1)
-    table = Table(show_header=False, box=None, padding=(0, 2))
-    table.add_column("key", style="bold")
-    table.add_column("value")
-    table.add_row("Slug", task.slug)
-    table.add_row("Title", task.title)
-    table.add_row("Status", task.status)
-    table.add_row("Tags", ", ".join(task.tags) or "-")
-    table.add_row("Notify", "yes" if task.notify else "no")
-    table.add_row("Provider", task.provider or "-")
-    table.add_row("Model", task.model or "-")
-    table.add_row("Created", task.created or "-")
-    table.add_row("Updated", task.updated or "-")
-    if task.blocked_reason:
-        table.add_row("Blocked", task.blocked_reason)
-    if task.result:
-        table.add_row("Result", task.result)
-    attachments = task.attachment_names()
-    if attachments:
-        table.add_row("Attachments", ", ".join(attachments))
-    console.print(table)
-    if task.description:
-        console.print()
-        console.print(task.description)
-
-
-@task_app.command("run")
-def task_run(
-    slug: Annotated[str, typer.Argument(help="Task slug")],
-) -> None:
-    """Claim and run a task now (spawns the agent, records a run)."""
-    import asyncio
-
-    from . import tasks
-    from .core import Runtime
-
-    if tasks.get_task(slug) is None:
-        console.print(f"[red]Task '{slug}' not found.[/]")
-        raise typer.Exit(1)
-
-    config = load_config()
-    runtime = Runtime(config)
-    runtime.load_state()
-
-    run_id = asyncio.run(runtime.run_task_now(slug))
-    console.print(f"[green]✓[/] Task run complete: {run_id}")
-
-
-@task_app.command("status")
-def task_status(
-    slug: Annotated[str, typer.Argument(help="Task slug")],
-    status: Annotated[str, typer.Argument(help="New status")],
-    reason: Annotated[
-        str | None, typer.Option("--reason", help="Reason (recorded when blocked)")
-    ] = None,
-    result: Annotated[
-        str | None, typer.Option("--result", help="Outcome summary (recorded when done)")
-    ] = None,
-) -> None:
-    """Set a task's status (todo, in_progress, blocked, done, cancelled)."""
-    from . import tasks
-
-    try:
-        task = tasks.set_status(slug, status, reason=reason, result=result)
-    except ValueError as exc:
-        console.print(f"[red]{exc}[/] Valid: {', '.join(tasks.STATUSES)}")
-        raise typer.Exit(1) from exc
-    except FileNotFoundError as exc:
-        console.print(f"[red]Task '{slug}' not found.[/]")
-        raise typer.Exit(1) from exc
-    console.print(f"[green]✓[/] {task.slug} → {task.status}")
 
 
 # ---------------------------------------------------------------------------

@@ -58,7 +58,7 @@ def test_get_unknown_returns_none(tmp_enso):
 
 def test_finish_defaults_provider_model_none(tmp_enso):
     """Optional provider/model default to NULL and status flows to error."""
-    run_id = runs.create("task", "research-ofx")
+    run_id = runs.create("job", "research-ofx")
     row = runs.get(run_id)
     assert row["trigger"] == "manual"
     assert row["provider"] is None
@@ -90,7 +90,7 @@ def test_list_filters_and_ordering(tmp_enso):
     """list_runs filters by kind/name/status and returns newest first."""
     a = runs.create("job", "alpha", trigger="schedule")
     b = runs.create("job", "beta", trigger="schedule")
-    c = runs.create("task", "alpha", trigger="task-runner")
+    c = runs.create("chat", "alpha", trigger="manual")
     runs.finish(b, exit_code=0, status="ok")
 
     # Newest first: c, b, a (insertion order).
@@ -107,7 +107,7 @@ def test_list_filters_and_ordering(tmp_enso):
     assert ok_ids == [b]
 
     # Combined filter + limit.
-    combined = runs.list_runs(kind="task", name="alpha")
+    combined = runs.list_runs(kind="chat", name="alpha")
     assert [r["id"] for r in combined] == [c]
 
     limited = runs.list_runs(limit=1)
@@ -116,7 +116,7 @@ def test_list_filters_and_ordering(tmp_enso):
 
 def test_output_append_and_read(tmp_enso):
     """Output appends accumulate; read honours max_bytes."""
-    run_id = runs.create("task", "notes")
+    run_id = runs.create("job", "notes")
     assert runs.read_output(run_id) == ""  # no log yet
 
     runs.append_output(run_id, "line one\n")

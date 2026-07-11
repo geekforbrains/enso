@@ -1,4 +1,4 @@
-"""Enso web UI — a Starlette app for browsing and editing tasks, jobs, runs, skills."""
+"""Enso web UI — a Starlette app for browsing and editing jobs, runs, skills."""
 
 from __future__ import annotations
 

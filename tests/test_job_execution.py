@@ -406,7 +406,7 @@ async def test_failure_realerts_after_cooldown(tmp_enso, sample_config):
 
 
 async def test_terminal_job_runs_apply_retention_config(tmp_enso, sample_config):
-    sample_config["tasks"] = {"runs_keep": 1, "runs_max_age_days": 30}
+    sample_config["runs"] = {"keep": 1, "max_age_days": 30}
     runtime = Runtime(sample_config)
     job = make_job(tmp_enso)
     runtime._run_job_prerun = AsyncMock(

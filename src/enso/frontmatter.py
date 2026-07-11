@@ -1,4 +1,4 @@
-"""Shared YAML frontmatter parsing and writing for jobs and tasks.
+"""Shared YAML frontmatter parsing and writing for jobs.
 
 A frontmatter document is a leading ``---`` fenced YAML block followed by a
 free-form Markdown body::

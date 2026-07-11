@@ -1,22 +1,10 @@
 {# Reusable UI fragments. #}
 
-{% macro task_badge(status) %}
-  <span class="inline-flex shrink-0 items-center whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium
-               {{ task_badges.get(status, task_badges['todo']) }}">
-    {{ status.replace('_', ' ') }}
-  </span>
-{% endmacro %}
-
 {% macro run_badge(status) %}
   <span class="inline-flex shrink-0 items-center whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium
                {{ run_badges.get(status, run_badges['error']) }}">
     {{ status.replace('_', ' ') }}
   </span>
-{% endmacro %}
-
-{% macro tag_pill(tag) %}
-  <span class="inline-flex items-center whitespace-nowrap rounded-full bg-gray-100 px-2 py-0.5 text-xs
-               text-gray-600 dark:bg-neutral-700 dark:text-neutral-300">{{ tag }}</span>
 {% endmacro %}
 
 {% macro card(extra="") %}

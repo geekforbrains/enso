@@ -4,9 +4,9 @@ Exposes ``create_app(runtime) -> Starlette``. The runtime is stashed on
 ``app.state.runtime`` and every handler reads configuration via
 ``runtime.config`` and the working directory via ``runtime.working_dir``.
 
-Data comes from the file/DB-backed modules (``enso.tasks``, ``enso.jobs``,
-``enso.runs``, ``enso.frontmatter``); this module only renders and mutates —
-it never owns any storage of its own. All file writes that target skills or
+Data comes from the file/DB-backed modules (``enso.jobs``, ``enso.runs``,
+``enso.frontmatter``); this module only renders and mutates — it never owns
+any storage of its own. All file writes that target skills, jobs, or
 AGENTS.md are path-guarded so a crafted name can never escape the allowed
 directory.
 """
@@ -17,7 +17,6 @@ import contextlib
 import logging
 import os
 import tempfile
-from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -25,7 +24,6 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import (
-    FileResponse,
     PlainTextResponse,
     RedirectResponse,
     Response,
@@ -35,19 +33,8 @@ from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
 from .. import frontmatter, runs
-from ..config import CONFIG_DIR
+from ..config import CONFIG_DIR, JOBS_DIR
 from ..jobs import Job, load_jobs
-from ..tasks import (
-    STATUSES,
-    add_attachment,
-    create_task,
-    delete_attachment,
-    delete_task,
-    get_task,
-    load_tasks,
-    save_task,
-    set_status,
-)
 
 log = logging.getLogger(__name__)
 
@@ -257,16 +244,6 @@ templates.env.filters["fmt_bytes"] = _fmt_bytes
 templates.env.filters["humanize_cron"] = _humanize_cron
 
 # Tailwind class pairs for status badges, shared with templates.
-TASK_BADGES = {
-    "todo": "bg-gray-100 text-gray-700 dark:bg-neutral-700 dark:text-neutral-300",
-    "in_progress": "bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300",
-    "blocked": "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300",
-    "done": "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300",
-    "cancelled": (
-        "bg-gray-100 text-gray-500 line-through "
-        "dark:bg-neutral-700 dark:text-neutral-400"
-    ),
-}
 RUN_BADGES = {
     "running": (
         "bg-indigo-100 text-indigo-800 animate-pulse "
@@ -280,9 +257,7 @@ RUN_BADGES = {
         "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
     ),
 }
-templates.env.globals["task_badges"] = TASK_BADGES
 templates.env.globals["run_badges"] = RUN_BADGES
-templates.env.globals["statuses"] = STATUSES
 
 
 # ---------------------------------------------------------------------------
@@ -329,24 +304,6 @@ def _atomic_write_text(path: str, text: str) -> None:
         with contextlib.suppress(OSError):
             os.remove(tmp)
         raise
-
-
-def _providers(request) -> dict:
-    """Return the configured providers mapping (name -> cfg)."""
-    runtime = request.app.state.runtime
-    cfg = getattr(runtime, "config", {}) or {}
-    providers = cfg.get("providers", {})
-    return providers if isinstance(providers, dict) else {}
-
-
-def _all_models(providers: dict) -> list[str]:
-    """Flat sorted list of every model across providers (for datalists)."""
-    seen: list[str] = []
-    for pcfg in providers.values():
-        for m in (pcfg or {}).get("models", []) or []:
-            if m not in seen:
-                seen.append(m)
-    return seen
 
 
 def _find_job(name: str) -> Job | None:
@@ -452,198 +409,16 @@ def _resolve_skill(request, name: str) -> tuple[str | None, bool]:
 
 
 async def dashboard(request):
-    tasks = load_tasks()
-    counts = Counter(t.status for t in tasks)
-    status_counts = [(s, counts.get(s, 0)) for s in STATUSES]
     jobs = load_jobs()
     jobs_enabled = sum(1 for j in jobs if j.enabled)
     latest = runs.list_runs(limit=6)
     return _render(
         request,
         "index.html",
-        total_tasks=len(tasks),
-        status_counts=status_counts,
         jobs_enabled=jobs_enabled,
         jobs_total=len(jobs),
         latest_runs=latest,
     )
-
-
-# ---------------------------------------------------------------------------
-# Routes — tasks
-# ---------------------------------------------------------------------------
-
-
-async def tasks_list(request):
-    status = request.query_params.get("status") or ""
-    tag = request.query_params.get("tag") or ""
-    tasks = load_tasks()
-    all_tags = sorted({t for task in tasks for t in task.tags})
-    if status:
-        tasks = [t for t in tasks if t.status == status]
-    if tag:
-        tasks = [t for t in tasks if tag in t.tags]
-    return _render(
-        request,
-        "tasks.html",
-        tasks=tasks,
-        all_tags=all_tags,
-        active_status=status,
-        active_tag=tag,
-    )
-
-
-async def task_new_form(request):
-    providers = _providers(request)
-    return _render(
-        request,
-        "task_new.html",
-        providers=providers,
-        models=_all_models(providers),
-    )
-
-
-async def task_new_submit(request):
-    form = await request.form()
-    title = (form.get("title") or "").strip()
-    if not title:
-        return _redirect("/tasks/new?msg=Title+is+required")
-    description = (form.get("description") or "").replace("\r\n", "\n")
-    tags = [t.strip() for t in (form.get("tags") or "").split(",") if t.strip()]
-    notify = form.get("notify") is not None
-    provider = (form.get("provider") or "").strip() or None
-    model = (form.get("model") or "").strip() or None
-    task = create_task(
-        title=title,
-        description=description,
-        tags=tags,
-        notify=notify,
-        provider=provider,
-        model=model,
-    )
-    upload = form.get("file")
-    if upload is not None and getattr(upload, "filename", ""):
-        data = await upload.read()
-        if data:
-            add_attachment(task.slug, upload.filename, data)
-    return _redirect(f"/tasks/{task.slug}")
-
-
-async def task_detail(request):
-    slug = request.path_params["slug"]
-    task = get_task(slug)
-    if task is None:
-        return PlainTextResponse("Task not found", status_code=404)
-    providers = _providers(request)
-    task_runs = runs.list_runs(kind="task", name=slug, limit=50)
-    return _render(
-        request,
-        "task_detail.html",
-        task=task,
-        attachments=task.attachment_names(),
-        task_runs=task_runs,
-        providers=providers,
-        models=_all_models(providers),
-    )
-
-
-async def task_edit(request):
-    slug = request.path_params["slug"]
-    task = get_task(slug)
-    if task is None:
-        return PlainTextResponse("Task not found", status_code=404)
-    form = await request.form()
-    title = (form.get("title") or "").strip()
-    if title:
-        task.title = title
-    task.description = (form.get("description") or "").replace("\r\n", "\n")
-    task.tags = [t.strip() for t in (form.get("tags") or "").split(",") if t.strip()]
-    task.notify = form.get("notify") is not None
-    task.provider = (form.get("provider") or "").strip() or None
-    task.model = (form.get("model") or "").strip() or None
-    save_task(task)
-    return _redirect(f"/tasks/{slug}")
-
-
-async def task_status(request):
-    slug = request.path_params["slug"]
-    form = await request.form()
-    status = (form.get("status") or "").strip()
-    reason = (form.get("reason") or "").strip() or None
-    if status not in STATUSES:
-        return _redirect(f"/tasks/{slug}?msg=Invalid+status")
-    try:
-        set_status(slug, status, reason)
-    except (FileNotFoundError, ValueError) as exc:
-        return _redirect(f"/tasks/{slug}?msg={exc}")
-    if _is_hx(request):
-        task = get_task(slug)
-        return templates.TemplateResponse(request, "_task_status.html", {"task": task})
-    return _redirect(f"/tasks/{slug}")
-
-
-async def task_attachment_upload(request):
-    slug = request.path_params["slug"]
-    if get_task(slug) is None:
-        return PlainTextResponse("Task not found", status_code=404)
-    form = await request.form()
-    upload = form.get("file")
-    if upload is not None and getattr(upload, "filename", ""):
-        data = await upload.read()
-        if data:
-            add_attachment(slug, upload.filename, data)
-    return _redirect(f"/tasks/{slug}")
-
-
-async def task_attachment_download(request):
-    slug = request.path_params["slug"]
-    name = request.path_params["name"]
-    task = get_task(slug)
-    if task is None or not _safe_name(name):
-        return PlainTextResponse("Not found", status_code=404)
-    path = os.path.join(task.attachments_dir, os.path.basename(name))
-    if not os.path.isfile(path) or not _within(task.attachments_dir, path):
-        return PlainTextResponse("Not found", status_code=404)
-    return FileResponse(path, filename=os.path.basename(name))
-
-
-async def task_attachment_delete(request):
-    slug = request.path_params["slug"]
-    name = request.path_params["name"]
-    task = get_task(slug)
-    if task is None:
-        return PlainTextResponse("Task not found", status_code=404)
-    if _safe_name(name):
-        delete_attachment(slug, name)
-    if _is_hx(request):
-        task = get_task(slug)
-        return templates.TemplateResponse(
-            request,
-            "_attachments.html",
-            {"task": task, "attachments": task.attachment_names()},
-        )
-    return _redirect(f"/tasks/{slug}")
-
-
-async def task_run(request):
-    slug = request.path_params["slug"]
-    runtime = request.app.state.runtime
-    if runtime is None or not hasattr(runtime, "run_task_now"):
-        return _redirect(f"/tasks/{slug}?msg=Run+now+is+unavailable")
-    try:
-        run_id = await runtime.run_task_now(slug)
-    except Exception as exc:
-        log.warning("run_task_now failed for %s", slug, exc_info=True)
-        return _redirect(f"/tasks/{slug}?msg=Run+failed:+{exc}")
-    if run_id:
-        return _redirect(f"/runs/{run_id}")
-    return _redirect(f"/tasks/{slug}")
-
-
-async def task_delete(request):
-    slug = request.path_params["slug"]
-    delete_task(slug)
-    return _redirect("/tasks")
 
 
 # ---------------------------------------------------------------------------
@@ -720,6 +495,22 @@ async def job_run(request):
         return _redirect(f"/runs/{result.run_id}")
     if result.status == "no_work":
         return _redirect(f"/jobs/{name}?msg=No+work;+provider+was+not+run")
+    return _redirect(f"/jobs/{name}")
+
+
+async def job_edit_prompt(request):
+    name = request.path_params["name"]
+    job = _find_job(name)
+    if job is None:
+        return PlainTextResponse("Job not found", status_code=404)
+    # Defence in depth: the resolved JOB.md must live under JOBS_DIR.
+    if not _within(JOBS_DIR, job.path):
+        return PlainTextResponse("Forbidden", status_code=403)
+    form = await request.form()
+    content = (form.get("content") or "").replace("\r\n", "\n")
+    # Mirror job_toggle's round-trip: keep the frontmatter, swap only the body.
+    meta, _ = frontmatter.read(job.path)
+    frontmatter.write(job.path, meta, content)
     return _redirect(f"/jobs/{name}")
 
 
@@ -910,32 +701,11 @@ def create_app(runtime) -> Starlette:
     routes = [
         Route("/", dashboard),
         Route("/health", health),
-        Route("/tasks", tasks_list),
-        Route("/tasks/new", task_new_form),
-        Route("/tasks/new", task_new_submit, methods=["POST"]),
-        Route("/tasks/{slug}", task_detail),
-        Route("/tasks/{slug}/edit", task_edit, methods=["POST"]),
-        Route("/tasks/{slug}/status", task_status, methods=["POST"]),
-        Route(
-            "/tasks/{slug}/attachments",
-            task_attachment_upload,
-            methods=["POST"],
-        ),
-        Route(
-            "/tasks/{slug}/attachments/{name}",
-            task_attachment_download,
-        ),
-        Route(
-            "/tasks/{slug}/attachments/{name}/delete",
-            task_attachment_delete,
-            methods=["POST"],
-        ),
-        Route("/tasks/{slug}/run", task_run, methods=["POST"]),
-        Route("/tasks/{slug}/delete", task_delete, methods=["POST"]),
         Route("/jobs", jobs_list),
         Route("/jobs/{name}", job_detail),
         Route("/jobs/{name}/toggle", job_toggle, methods=["POST"]),
         Route("/jobs/{name}/run", job_run, methods=["POST"]),
+        Route("/jobs/{name}/prompt", job_edit_prompt, methods=["POST"]),
         Route("/runs", runs_list),
         Route("/runs/{id}", run_detail),
         Route("/skills", skills_list),

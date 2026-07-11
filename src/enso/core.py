@@ -72,7 +72,6 @@ def split_text(text: str, limit: int = 4096) -> list[str]:
 
 MAX_QUEUE_SIZE = 5
 SESSION_TTL_DAYS = int(os.environ.get("ENSO_SESSION_TTL_DAYS", "30"))
-TASK_TIMEOUT = int(os.environ.get("ENSO_TASK_TIMEOUT_SECS", str(15 * 60)))
 JOB_CONCURRENCY = int(os.environ.get("ENSO_JOB_CONCURRENCY", "2"))
 PROCESS_TERMINATE_GRACE_SECS = float(os.environ.get("ENSO_PROCESS_TERMINATE_GRACE_SECS", "5"))
 JOB_FAILURE_RENOTIFY_SECS = int(
@@ -1221,11 +1220,10 @@ class Runtime:
     # -- Job scheduler --
 
     async def run_job_scheduler(self) -> None:
-        """Check for jobs and tasks to run every 60 seconds.
+        """Check for jobs to run every 60 seconds.
 
         Runs as a background task inside ``enso serve``. Each tick fires any
-        due cron jobs and, when ``tasks.enabled`` is set, runs the built-in
-        task-runner on the ``tasks.schedule`` cadence to drain open tasks.
+        due cron jobs.
         """
         log.info("Job scheduler started")
         while True:
@@ -1235,26 +1233,6 @@ class Runtime:
             if self._update_in_progress:
                 log.info("Job scheduler paused while Enso updates")
                 continue
-
-            # Built-in task-runner: drain todo tasks on the tasks.schedule
-            # cron. Guarded so a task-runner fault can never kill the loop
-            # that also drives cron jobs.
-            try:
-                if (
-                    self._TASK_RUNNER_KEY not in self._running_job_tasks
-                    and self._should_run_task_runner(now)
-                ):
-                    self._job_last_run[self._TASK_RUNNER_KEY] = now
-                    self.save_state()
-                    tr_task = asyncio.create_task(self._run_task_runner_tick())
-                    self._running_job_tasks[self._TASK_RUNNER_KEY] = tr_task
-                    tr_task.add_done_callback(
-                        lambda _t: self._running_job_tasks.pop(
-                            self._TASK_RUNNER_KEY, None
-                        )
-                    )
-            except Exception:
-                log.exception("[task-runner] scheduler tick failed")
 
             for job in load_jobs():
                 if not job.enabled:
@@ -1276,62 +1254,10 @@ class Runtime:
                         )
                     )
 
-    _TASK_RUNNER_KEY: ClassVar[str] = "__task_runner__"
-
-    def _tasks_cfg(self) -> dict:
-        """Return the ``tasks`` config block (defensive against bad shapes)."""
-        cfg = self.config.get("tasks")
+    def _runs_cfg(self) -> dict:
+        """Return the ``runs`` config block (defensive against bad shapes)."""
+        cfg = self.config.get("runs")
         return cfg if isinstance(cfg, dict) else {}
-
-    def _should_run_task_runner(self, now: datetime) -> bool:
-        """True when the task-runner is due per ``tasks.schedule``.
-
-        Mirrors :meth:`_should_run_job`: the first sighting seeds the last-run
-        clock without firing, so a restart never triggers an immediate drain.
-        """
-        tcfg = self._tasks_cfg()
-        if not tcfg.get("enabled", True):
-            return False
-        schedule = tcfg.get("schedule", "*/5 * * * *")
-        last_run = self._job_last_run.get(self._TASK_RUNNER_KEY)
-        if last_run is None:
-            self._job_last_run[self._TASK_RUNNER_KEY] = now
-            self.save_state()
-            return False
-        try:
-            next_run = croniter(schedule, last_run).get_next(datetime)
-        except (ValueError, KeyError):
-            log.warning("[task-runner] invalid schedule %r; skipping", schedule)
-            return False
-        return next_run <= now
-
-    async def _run_task_runner_tick(self) -> None:
-        """Claim and run up to ``tasks.batch`` open tasks (oldest todo first).
-
-        Each task is claimed (flipped to ``in_progress``) before its agent is
-        spawned, so a crash mid-run leaves a visible ``in_progress`` task
-        rather than silently re-running it. Reuses the job semaphore so tasks
-        and jobs share one concurrency budget.
-        """
-        from . import tasks as tasks_mod
-
-        try:
-            batch = int(self._tasks_cfg().get("batch", 1))
-        except (TypeError, ValueError):
-            batch = 1
-        batch = max(1, batch)
-
-        for _ in range(batch):
-            task = tasks_mod.claim_next_todo()
-            if task is None:
-                break
-            log.info("[task-runner] claimed task=%s title=%r", task.slug, task.title)
-            async with self._job_semaphore:
-                try:
-                    run_id = await self.run_task_now(task.slug, trigger="task-runner")
-                    log.info("[task-runner] task=%s run=%s complete", task.slug, run_id)
-                except Exception:
-                    log.exception("[task-runner] task '%s' failed", task.slug)
 
     async def _run_job_task(self, job: Job) -> None:
         """Run one scheduled job without blocking the scheduler loop."""
@@ -1779,10 +1705,10 @@ class Runtime:
             log.warning("%s could not finish run record id=%s", tag, run_id, exc_info=True)
             return
 
-        task_cfg = self._tasks_cfg()
+        runs_cfg = self._runs_cfg()
         try:
-            keep = max(0, int(task_cfg.get("runs_keep", 500)))
-            max_age_days = max(0, int(task_cfg.get("runs_max_age_days", 30)))
+            keep = max(0, int(runs_cfg.get("keep", 500)))
+            max_age_days = max(0, int(runs_cfg.get("max_age_days", 30)))
         except (TypeError, ValueError):
             log.warning("%s invalid run-retention config; using defaults", tag)
             keep, max_age_days = 500, 30
@@ -1801,196 +1727,3 @@ class Runtime:
         return await self._execute_job(
             job, trigger="manual", notify_failures=False,
         )
-
-    @staticmethod
-    def _build_task_prompt(task: Any) -> str:
-        """Compose the batch prompt handed to the agent for a one-off task.
-
-        Includes the title, description, and absolute attachment paths, then
-        instructs the agent to finish the work and record the outcome by
-        flipping the task's status via the CLI when done.
-        """
-        parts = [f"# Task: {task.title}", ""]
-        if task.description:
-            parts += [task.description, ""]
-        attachments = task.attachment_names()
-        if attachments:
-            parts.append("Attachments:")
-            parts += [
-                f"- {os.path.join(task.attachments_dir, name)}"
-                for name in attachments
-            ]
-            parts.append("")
-        parts += [
-            "Complete this task now. When you finish, record the outcome:",
-            f'    enso task status {task.slug} done --result "<concise summary of'
-            ' what you did or the answer>"',
-            "If you cannot complete it (missing information, needs a decision, or"
-            " otherwise blocked), run instead:",
-            f'    enso task status {task.slug} blocked --reason "<what is blocking'
-            ' you>"',
-            "The --result / --reason text is exactly what the operator sees as the"
-            " outcome, so make it self-contained. Do not send any chat message"
-            " yourself — Enso notifies the operator based on the final status.",
-        ]
-        return "\n".join(parts)
-
-    async def run_task_now(self, slug: str, *, trigger: str = "manual") -> str:
-        """Claim and run a one-off task now, recording a run.
-
-        Loads the task, flips it to ``in_progress`` (claim), builds a prompt
-        from its title/description/attachments, and runs it in batch mode
-        through the task provider/model (task overrides win over the
-        ``tasks`` config block). Records the run under ``kind="task"`` with the
-        given ``trigger`` (``"manual"`` for run-now, ``"task-runner"`` for the
-        scheduler). Raises ``ValueError`` when no task matches.
-        """
-        from . import tasks
-
-        task = tasks.get_task(slug)
-        if task is None:
-            raise ValueError(f"No such task: {slug}")
-
-        # Claim it: flip to in_progress before spawning the agent.
-        if task.status != "in_progress":
-            task = tasks.set_status(slug, "in_progress")
-
-        tasks_cfg = self.config.get("tasks")
-        if not isinstance(tasks_cfg, dict):
-            tasks_cfg = {}
-        provider_name = task.provider or tasks_cfg.get("provider", "claude")
-        model = task.model or tasks_cfg.get("model", "sonnet")
-
-        tag = f"[task:{slug}]"
-        prompt = self._build_task_prompt(task)
-        provider = self.make_provider(provider_name)
-        cmd = provider.build_batch_command(prompt, model)
-        log.info(
-            "%s manual run provider=%s model=%s cwd=%s prompt_len=%d",
-            tag, provider_name, model, self.working_dir, len(prompt),
-        )
-        log.debug("%s command=%s", tag, _redacted_command(cmd))
-
-        run_id = runs.create(
-            kind="task",
-            name=slug,
-            title=task.title,
-            trigger=trigger,
-            provider=provider_name,
-            model=model,
-        )
-
-        proc = await self._spawn_process(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            cwd=self.working_dir,
-        )
-        log.info("%s pid=%s", tag, proc.pid)
-        stdout, _, timed_out = await self._communicate_with_timeout(
-            proc, f"Task '{slug}'", TASK_TIMEOUT,
-        )
-        if timed_out:
-            output = f"Task timed out after {TASK_TIMEOUT}s; process tree was terminated"
-            self._record_run_finish(run_id, output, proc.returncode, "timeout", tag)
-            await self._reconcile_task_outcome(
-                slug, output, exit_code=None, timed_out=True,
-            )
-            return run_id
-        output = provider.parse_batch_output(stdout.decode(errors="replace"))
-        self._record_run_finish(
-            run_id, output, proc.returncode,
-            "ok" if proc.returncode == 0 else "error", tag,
-        )
-        await self._reconcile_task_outcome(
-            slug, output, exit_code=proc.returncode, timed_out=False,
-        )
-        return run_id
-
-    # -- Task outcome reconciliation + notification --
-
-    @staticmethod
-    def _result_snippet(output: str, limit: int = 2000) -> str:
-        """Trim captured agent output to a compact result string."""
-        text = (output or "").strip()
-        if len(text) <= limit:
-            return text
-        return "…" + text[-limit:].strip()
-
-    async def _reconcile_task_outcome(
-        self,
-        slug: str,
-        output: str,
-        *,
-        exit_code: int | None,
-        timed_out: bool,
-    ) -> None:
-        """Guarantee a terminal status + stored result, then notify.
-
-        Respects a status the agent set for itself (done / blocked / cancelled)
-        and only backfills the result when the agent left one out. If the agent
-        never reported (still ``in_progress``), the outcome is inferred: a clean
-        exit becomes ``done``, anything else ``blocked``. Notification is sent
-        last — ``blocked`` always pings the operator, ``done`` only when the
-        task opted into ``notify``.
-        """
-        from . import tasks
-
-        task = tasks.get_task(slug)
-        if task is None:
-            return  # deleted mid-run
-        snippet = self._result_snippet(output)
-
-        if task.status == "in_progress":
-            if timed_out:
-                task = tasks.set_status(
-                    slug, "blocked",
-                    reason=f"Timed out after {TASK_TIMEOUT}s.",
-                    result=snippet or None,
-                )
-            elif exit_code == 0:
-                task = tasks.set_status(
-                    slug, "done",
-                    result=snippet or "(completed; no result reported)",
-                )
-            else:
-                task = tasks.set_status(
-                    slug, "blocked",
-                    reason=f"Agent exited with code {exit_code}.",
-                    result=snippet or None,
-                )
-        elif task.status == "done" and not task.result:
-            task.result = snippet or "(completed; no result reported)"
-            tasks.save_task(task)
-
-        log.info(
-            "[task:%s] outcome status=%s notify=%s", slug, task.status, task.notify,
-        )
-        await self._notify_task_outcome(task)
-
-    async def _notify_task_outcome(self, task: Any) -> None:
-        """Message the operator about a finished task via the transport.
-
-        ``blocked`` always notifies; ``done`` notifies only when the task set
-        ``notify``. No-op without a transport (e.g. standalone ``enso web`` or a
-        one-off ``enso task run``).
-        """
-        if self.transport is None:
-            return
-        body = ""
-        if task.status == "blocked":
-            body = f"\U0001f6ab Task blocked: {task.title}"
-            if task.blocked_reason:
-                body += f"\n{task.blocked_reason}"
-        elif task.status == "done" and task.notify:
-            body = f"✅ Task done: {task.title}"
-            if task.result:
-                body += f"\n\n{task.result}"
-        if not body:
-            return
-        try:
-            await self.transport.notify(body[:4000])
-        except Exception:
-            log.warning(
-                "Could not notify task outcome for %s", task.slug, exc_info=True,
-            )

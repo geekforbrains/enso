@@ -1,8 +1,8 @@
 # Architecture
 
-How the web UI, run recording, and the task runner fit into Enso as it exists today.
+How the web UI and run recording fit into Enso as it exists today.
 Read [PRD.md](../PRD.md) first for the what & why. Sibling specs:
-[data-model.md](data-model.md), [tasks.md](tasks.md), [web.md](web.md).
+[data-model.md](data-model.md), [web.md](web.md).
 
 ## Where things run today
 
@@ -19,11 +19,10 @@ State is files under `~/.enso/`: `config.json`, `state.json`, `messages.json`,
 database and **no run history** — a job execution leaves only a `job_last_run`
 timestamp in `state.json`.
 
-This feature adds a third concern to the same loop (the web server), a new persisted
-dataset (runs, in SQLite), and a built-in job (the task runner). None of it changes the
-transport or the interactive-chat path.
+This feature adds a third concern to the same loop (the web server) and a new persisted
+dataset (runs, in SQLite). None of it changes the transport or the interactive-chat path.
 
-## The three tasks in one loop
+## The three concerns in one loop
 
 ```
                      enso serve
@@ -38,8 +37,8 @@ transport or the interactive-chat path.
                          │
              ┌───────────┴───────────┐
              ▼                       ▼
-     files (jobs, tasks,        SQLite (runs)
-     skills, AGENTS.md)         + runs/<id>.log
+     files (jobs, skills,       SQLite (runs)
+     AGENTS.md)                 + runs/<id>.log
 ```
 
 The web server runs **in-process**, as another coroutine on the same event loop, not as
@@ -73,7 +72,7 @@ pulled into the base install.
 | Interactivity | **HTMX** (vendored, no build step) | Inline status/tag/run-now updates without a JS toolchain — matches "no chat, just views" |
 | Uploads/forms | **python-multipart** | Attachment upload + form posts |
 | Run store | **`sqlite3`** (stdlib) | No dependency; WAL mode for concurrent readers; see [data-model.md](data-model.md) |
-| Frontmatter | **`pyyaml`** | Real YAML for job/task frontmatter (lists, quoting); replaces the regex parser |
+| Frontmatter | **`pyyaml`** | Real YAML for job frontmatter (lists, quoting); replaces the regex parser |
 
 `pyproject.toml` gains:
 
@@ -82,7 +81,7 @@ pulled into the base install.
 web = ["starlette>=0.37", "uvicorn>=0.30", "jinja2>=3.1", "python-multipart>=0.0.9"]
 ```
 
-`pyyaml` moves into base `dependencies` (both jobs and tasks need it, independent of the
+`pyyaml` moves into base `dependencies` (jobs need it, independent of the
 web UI). HTMX is vendored as a static asset so the UI has **no external CDN dependency**
 and works offline. Package data grows to include `web/templates/**` and `web/static/**`.
 
@@ -91,8 +90,8 @@ and works offline. Package data grows to include `web/templates/**` and `web/sta
 Run history is captured by the `Runtime`, around the two places a provider subprocess is
 spawned for background work:
 
-- `_execute_job` — scheduled jobs and the task runner.
-- `job_run` / the new `task run` CLI — manual runs (recorded with trigger `manual`).
+- `_execute_job` — scheduled jobs.
+- `job_run` CLI — manual runs (recorded with trigger `manual`).
 
 Interactive **chat** requests are *not* runs — they are session-based and ephemeral, and
 belong to the transport, not the run log.
@@ -114,47 +113,20 @@ A small `runs.py` module owns the SQLite connection and these calls, mirroring h
 `messages.py` owns the messages file. The DB is opened lazily and created on first use
 (`CREATE TABLE IF NOT EXISTS`), so existing installs need no migration step.
 
-## The task runner
-
-The task runner is a **built-in `Job`** the runtime injects into the scheduler's job
-list — it is not a `JOB.md` under `~/.enso/jobs/`. Rationale:
-
-- It must **always exist** and stay versioned with Enso (a scaffolded file would drift,
-  and "only if missing" installs never get updates).
-- Its schedule, provider, model, and batch size are **config-driven**
-  (`config.json → tasks`), not frontmatter the user edits.
-- It keeps `~/.enso/jobs/` meaning "the user's jobs".
-
-Mechanically it is still a `Job` object flowing through the unchanged pipeline: the
-scheduler's `load_jobs()` result is augmented with the built-in task-runner job (gated on
-`tasks.enabled`), it gets the same `_running_job_tasks` concurrency guard and semaphore,
-and it runs via `_execute_job`. Its "prerun" is internal Python (claim the oldest `todo`
-task and inject it) rather than a `prerun.sh`. Full behaviour in [tasks.md](tasks.md).
-
-_Tradeoff considered:_ making it a real scaffolded `JOB.md` would be more consistent with
-"jobs are just files" and let the user tune it in place. Rejected because always-present +
-config-driven + auto-updating matters more here; noted so a future revisit is informed.
-
 ## Concurrency & consistency
 
-Three writers touch the file layer: the **web request handler**, the **agent
-subprocess** (via `enso task`/Edit), and occasionally the **operator by hand**. At
-personal scale the model is deliberately simple:
+Two writers touch the file layer: the **web request handler** and, occasionally, the
+**operator by hand** (the agent subprocess may also write via Edit). At personal scale
+the model is deliberately simple:
 
 - **File writes are atomic** — temp file in the same dir + `os.replace`, exactly as
-  `save_state`/`save_config` already do. A reader never sees a half-written `TASK.md`,
+  `save_state`/`save_config` already do. A reader never sees a half-written
   `JOB.md`, `SKILL.md`, or `AGENTS.md`.
-- **Last write wins.** Two writers racing on the same task is rare (single operator) and
+- **Last write wins.** Two writers racing on the same job is rare (single operator) and
   not worth optimistic-locking machinery. The web edit form can carry the file's mtime
   and warn on a stale save, but conflict *resolution* is out of scope for v1.
 - **SQLite in WAL mode** handles the one genuinely concurrent-write path — the scheduler
   finalising a run while a web request reads the runs feed — without blocking readers.
-
-Task **claiming** is the one place a race would matter (double-processing a task). It is
-prevented structurally: the runner sets `status: in_progress` (an atomic `TASK.md`
-rewrite) *before* spawning the agent, and the scheduler's existing "already running" guard
-stops the built-in job from overlapping itself. A task seen as `todo` by one claim is
-`in_progress` on disk before any second look.
 
 ## Access & security
 
@@ -170,10 +142,10 @@ internet and the PRD makes that a non-goal.
   param to bootstrap a cookie, then a session cookie). When unset, localhost-only is the
   security boundary. There is **no user/login system** — that would be over-engineering a
   personal tool.
-- The web app can trigger real work (run-now, edit AGENTS.md, create tasks the agent will
-  execute). That is acceptable precisely because access is already restricted to the
-  operator; it is *not* a capability to expose broadly.
-- **Writes never leave `~/.enso/`.** The UI creates/edits/deletes tasks, jobs, and
+- The web app can trigger real work (run-now, edit a job's prompt, edit AGENTS.md). That
+  is acceptable precisely because access is already restricted to the operator; it is
+  *not* a capability to expose broadly.
+- **Writes never leave `~/.enso/`.** The UI creates/edits/deletes jobs and
   Enso-owned skills under `~/.enso/`, plus the working-dir `AGENTS.md`. External/"parent"
   skills discovered from the CLIs' own roots (e.g. `~/.claude/skills/`) are surfaced
   read-only — Enso manages its own dir and only observes the rest. This is the ownership
@@ -183,16 +155,13 @@ internet and the PRD makes that a non-goal.
 
 | Area | Change |
 | --- | --- |
-| `core.py` | Record runs around `_execute_job`; register the built-in task-runner job; add a `run_task`/claim path; hold the web server task in `serve` |
-| `cli.py` | `enso web`; `enso task` subcommands; `enso runs` subcommands; web task wired into `serve` |
-| `config.py` | `web` (incl. `external_skill_roots`) and `tasks` config blocks, backfilled with defaults (same pattern as provider backfill) |
+| `core.py` | Record runs around `_execute_job`; hold the web server task in `serve` |
+| `cli.py` | `enso web`; `enso runs` subcommands; web task wired into `serve` |
+| `config.py` | `web` (incl. `external_skill_roots`) and `runs` config blocks, backfilled with defaults (same pattern as provider backfill) |
 | `jobs.py` | Frontmatter parsing moves to a shared `frontmatter.py` (pyyaml); `Job` unchanged otherwise |
-| new `tasks.py` | `Task` dataclass, load/parse/create/claim, status transitions |
 | new `runs.py` | SQLite connection + `create`/`finish`/`list`/`get`/`prune` |
-| new `frontmatter.py` | Shared YAML frontmatter read/write used by jobs and tasks |
-| new `web/` | Starlette app; routes + templates for task/job/skill CRUD, runs, and AGENTS.md; external-skill discovery (read-only); vendored static assets |
-| `prompts/AGENTS.md` | Add a Tasks section |
-| new `skills/tasks/SKILL.md` | Teach the agent to author tasks |
+| new `frontmatter.py` | Shared YAML frontmatter read/write used by jobs |
+| new `web/` | Starlette app; routes + templates for job/skill CRUD, runs, and AGENTS.md; external-skill discovery (read-only); vendored static assets |
 | `pyproject.toml` | `web` extra; `pyyaml` into base deps; new package data |
 
 > The skill create/edit/delete surface assumes seeded starter skills are ordinary,

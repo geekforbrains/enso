@@ -10,14 +10,13 @@ Design docs live in [`docs/`](docs/) and are the source of truth for planned and
 
 | Doc | Owns |
 |---|---|
-| [`docs/PRD.md`](docs/PRD.md) | **Web UI & Tasks** (proposed) — product requirements: what & why, key decisions, scope |
-| [`docs/specs/architecture.md`](docs/specs/architecture.md) | How the web server, run recording, and task runner fit into `enso serve` |
-| [`docs/specs/data-model.md`](docs/specs/data-model.md) | Task file format, the runs SQLite schema, config, `~/.enso/` layout |
-| [`docs/specs/tasks.md`](docs/specs/tasks.md) | Tasks: lifecycle, the built-in task runner, notifications, agent authoring |
+| [`docs/PRD.md`](docs/PRD.md) | **Web UI** (proposed) — product requirements: what & why, key decisions, scope |
+| [`docs/specs/architecture.md`](docs/specs/architecture.md) | How the web server and run recording fit into `enso serve` |
+| [`docs/specs/data-model.md`](docs/specs/data-model.md) | The runs SQLite schema, config, `~/.enso/` layout |
 | [`docs/specs/web.md`](docs/specs/web.md) | The web UI: routes, pages, read/write flows |
 | [`CHANGELOG.md`](CHANGELOG.md) | What has actually shipped, per version |
 
-> The Web UI & Tasks docs describe a **proposed** feature that is not yet built. Everything below this section reflects Enso as it ships today.
+> The Web UI docs describe a **proposed** feature that is not yet built. Everything below this section reflects Enso as it ships today.
 
 ## Requirements
 

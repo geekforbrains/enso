@@ -36,11 +36,6 @@ enso job run <name>                  # manual test run
 enso job create --name "Name" --provider claude --model sonnet --schedule "0 9 * * *"
 enso job create --name "Name" --provider codex --model terra --schedule "0 9 * * *"
 
-# Tasks — one-off work Enso completes on its own
-enso task create --title "…" --description "…"   # create a one-off task (--notify to be pinged)
-enso task list                       # show tasks and status
-enso task show <slug>                # task detail + result
-
 # For full usage:
 enso --help
 ```
@@ -51,14 +46,6 @@ When creating or editing jobs, **always** use the `jobs` skill — it has
 the full format reference, prerun script guide, and examples.
 
 Schedules use the system's local timezone. Do not convert to UTC.
-
-## Tasks
-
-For one-off work the user wants done *later* or in the background (not
-recurring, and not something to do right now), use the `tasks` skill. It
-covers when to make a task vs a job, and how to write a self-contained
-description the background task-runner can act on without this conversation's
-context — e.g. when the user says "let's make that a task."
 
 ## Deferred updates — use `enso message send`
 
