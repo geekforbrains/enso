@@ -14,6 +14,7 @@ directory.
 from __future__ import annotations
 
 import contextlib
+import errno
 import functools
 import hashlib
 import importlib.resources
@@ -347,12 +348,17 @@ def _atomic_write_text(path: str, text: str) -> None:
     os.makedirs(directory, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
+        stream = os.fdopen(fd, "w", encoding="utf-8")
+        fd = -1
+        with stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
         os.replace(tmp, path)
     except BaseException:
+        if fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(fd)
         with contextlib.suppress(OSError):
             os.remove(tmp)
         raise
@@ -372,6 +378,119 @@ def _safe_name(name: str) -> bool:
         and "\\" not in name
         and "\0" not in name
     )
+
+
+class _UnsafePrerunPathError(ValueError):
+    """Raised when a configured prerun path cannot be opened safely."""
+
+
+def _job_prerun_parts(job: Job) -> tuple[str, ...]:
+    """Return safe relative path parts for a configured prerun script."""
+    if (
+        not job.prerun
+        or "\0" in job.prerun
+        or os.path.isabs(job.prerun)
+        or not _safe_name(job.dir_name)
+    ):
+        raise _UnsafePrerunPathError
+    parts = tuple(part for part in job.prerun.split(os.sep) if part not in ("", "."))
+    if not parts or ".." in parts:
+        raise _UnsafePrerunPathError
+    return parts
+
+
+def _open_job_prerun(job: Job) -> tuple[int, int, str, os.stat_result]:
+    """Open a regular prerun file without following any owned-path symlinks."""
+    parts = _job_prerun_parts(job)
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    directory = getattr(os, "O_DIRECTORY", None)
+    if nofollow is None or directory is None:
+        raise OSError("Secure prerun editing is unavailable")
+
+    close_on_exec = getattr(os, "O_CLOEXEC", 0)
+    root_fd = os.open(os.path.abspath(JOBS_DIR), os.O_RDONLY | directory | close_on_exec)
+    parent_fd = root_fd
+    file_fd = -1
+    try:
+        dir_flags = os.O_RDONLY | directory | nofollow | close_on_exec
+        for component in (job.dir_name, *parts[:-1]):
+            next_fd = os.open(component, dir_flags, dir_fd=parent_fd)
+            os.close(parent_fd)
+            parent_fd = next_fd
+
+        file_flags = os.O_RDONLY | nofollow | close_on_exec | getattr(os, "O_NONBLOCK", 0)
+        file_fd = os.open(parts[-1], file_flags, dir_fd=parent_fd)
+        file_stat = os.fstat(file_fd)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise _UnsafePrerunPathError
+        return parent_fd, file_fd, parts[-1], file_stat
+    except BaseException:
+        if file_fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(file_fd)
+        with contextlib.suppress(OSError):
+            os.close(parent_fd)
+        raise
+
+
+def _atomic_write_text_at(
+    parent_fd: int,
+    filename: str,
+    text: str,
+    *,
+    mode: int,
+    expected: os.stat_result,
+) -> None:
+    """Atomically replace a held directory's existing file without path races."""
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    close_on_exec = getattr(os, "O_CLOEXEC", 0)
+    temp_name = ""
+    fd = -1
+    for _ in range(10):
+        temp_name = f".enso-prerun-{secrets.token_hex(16)}.tmp"
+        try:
+            fd = os.open(
+                temp_name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow | close_on_exec,
+                0o600,
+                dir_fd=parent_fd,
+            )
+            break
+        except FileExistsError:
+            continue
+    else:
+        raise FileExistsError("Could not allocate a prerun temporary file")
+
+    try:
+        stream = os.fdopen(fd, "w", encoding="utf-8")
+        fd = -1
+        with stream:
+            stream.write(text)
+            stream.flush()
+            # Writing can clear setuid/setgid bits, so restore the full mode last.
+            os.fchmod(stream.fileno(), mode)
+            os.fsync(stream.fileno())
+
+        current = os.stat(filename, dir_fd=parent_fd, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(current.st_mode)
+            or (current.st_dev, current.st_ino) != (expected.st_dev, expected.st_ino)
+        ):
+            raise OSError(errno.EBUSY, "Prerun script changed during save")
+        os.replace(
+            temp_name,
+            filename,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=parent_fd,
+        )
+        temp_name = ""
+    finally:
+        if fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        if temp_name:
+            with contextlib.suppress(OSError):
+                os.unlink(temp_name, dir_fd=parent_fd)
 
 
 def _remove_owned_tree(base: str, name: str) -> None:
@@ -682,9 +801,44 @@ async def job_detail(request):
         meta, _ = frontmatter.read(job.path)
     except (OSError, ValueError):
         meta = {}
-    prerun_exists = bool(job.prerun) and os.path.isfile(
-        os.path.join(job.job_dir, job.prerun or "")
-    )
+    prerun_exists = False
+    prerun_content: str | None = None
+    prerun_error: str | None = None
+    if job.prerun:
+        try:
+            parent_fd, file_fd, _, _ = _open_job_prerun(job)
+        except _UnsafePrerunPathError:
+            prerun_error = (
+                "This configured path isn't a regular file wholly inside the job "
+                "directory, so it can't be edited here."
+            )
+        except FileNotFoundError:
+            prerun_error = (
+                "Configured script not found. Create it on disk before editing it here."
+            )
+        except OSError as exc:
+            if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                prerun_error = (
+                    "Configured script paths cannot contain symlinks or non-directory "
+                    "parent components."
+                )
+            else:
+                prerun_error = "The configured script could not be opened safely."
+        else:
+            prerun_exists = True
+            try:
+                stream = os.fdopen(file_fd, encoding="utf-8")
+                file_fd = -1
+                with stream:
+                    prerun_content = stream.read()
+            except (OSError, UnicodeError):
+                prerun_error = "The configured script could not be read as UTF-8."
+            finally:
+                if file_fd >= 0:
+                    with contextlib.suppress(OSError):
+                        os.close(file_fd)
+                with contextlib.suppress(OSError):
+                    os.close(parent_fd)
     job_runs = runs.list_runs(kind="job", name=name, limit=50)
     return _render(
         request,
@@ -692,6 +846,8 @@ async def job_detail(request):
         job=job,
         meta=meta,
         prerun_exists=prerun_exists,
+        prerun_content=prerun_content,
+        prerun_error=prerun_error,
         job_runs=job_runs,
     )
 
@@ -749,6 +905,47 @@ async def job_edit_prompt(request):
     # remains safe for legacy YAML-like frontmatter accepted by the job loader.
     frontmatter.write_body(job.path, content)
     return _redirect(f"/jobs/{name}")
+
+
+async def job_edit_prerun(request):
+    name = request.path_params["name"]
+    job = _find_job(name)
+    if job is None or not job.prerun:
+        return PlainTextResponse("Prerun script not found", status_code=404)
+    try:
+        parent_fd, file_fd, filename, file_stat = _open_job_prerun(job)
+    except _UnsafePrerunPathError:
+        return PlainTextResponse("Forbidden", status_code=403)
+    except FileNotFoundError:
+        return PlainTextResponse("Prerun script not found", status_code=404)
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+            return PlainTextResponse("Forbidden", status_code=403)
+        return PlainTextResponse("Prerun script unavailable", status_code=503)
+
+    try:
+        os.close(file_fd)
+        file_fd = -1
+        form = await request.form()
+        content = (form.get("content") or "").replace("\r\n", "\n")
+        try:
+            _atomic_write_text_at(
+                parent_fd,
+                filename,
+                content,
+                mode=stat.S_IMODE(file_stat.st_mode),
+                expected=file_stat,
+            )
+        except OSError:
+            log.warning("Could not edit prerun for job %s", name, exc_info=True)
+            return PlainTextResponse("Prerun script unavailable", status_code=503)
+        return _redirect(f"/jobs/{name}")
+    finally:
+        if file_fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(file_fd)
+        with contextlib.suppress(OSError):
+            os.close(parent_fd)
 
 
 async def job_delete(request):
@@ -1022,6 +1219,11 @@ def create_app(runtime) -> Starlette:
         Route(
             "/jobs/{name}/prompt",
             _csrf_protected(job_edit_prompt),
+            methods=["POST"],
+        ),
+        Route(
+            "/jobs/{name}/prerun",
+            _csrf_protected(job_edit_prerun),
             methods=["POST"],
         ),
         Route(

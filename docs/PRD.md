@@ -15,7 +15,8 @@ persisted **run history** for jobs.
 The web UI is a read/write dashboard for:
 
 - **Jobs** and their **recent runs** — output, status, and timing. The UI can run a job,
-  enable or disable it, and edit its prompt body; full job CRUD is planned.
+  enable or disable it, and edit its prompt body or configured prerun script; full job
+  CRUD is planned.
 - **Skills** — browse the bundled/installed skills; edit Enso's own.
 - **AGENTS.md** — read (and edit) the system prompt.
 
@@ -26,8 +27,8 @@ overview, organisation, and managing the scheduled work Enso already runs.
 
 - Give a single, glanceable view of what Enso is doing and has done — jobs and their
   runs — that chat can't provide.
-- Make jobs **editable in place**. Prompt editing ships today; schedule,
-  provider/model, prerun, create, and delete forms are planned.
+- Make jobs **editable in place**. Prompt and configured prerun-script editing ship
+  today; schedule, provider/model, prerun configuration, and create forms are planned.
 - Keep Enso **file-first**: authored intent (jobs, skills) stays as inspectable,
   greppable, git-friendly Markdown. Only machine-generated history (runs) goes in a DB.
 - Surface run history in the web UI. A matching `enso runs` CLI is planned.
@@ -104,6 +105,8 @@ been doing — without turning Enso into a hosted product.
   enable/disable, and confirmed directory deletion.
 - Editing the prompt has a focused endpoint that rewrites only the `JOB.md` body,
   mirroring in-place skill editing.
+- An existing configured prerun script can be edited in a second, mode-preserving editor
+  below the prompt; unsafe or missing paths remain read-only.
 - Deleting a job removes its whole directory, including companion and prerun files;
   recorded run history remains available.
 - **Planned:** create and fully edit jobs from the UI: name, schedule, provider, model,

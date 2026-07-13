@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -281,10 +282,17 @@ def test_dashboard_shows_visible_skill_total_and_tier_counts(tmp_path, monkeypat
     assert 'href="/skills"' in response.text
 
 
-def _write_job(jobs_dir: Path, dir_name: str, body: str) -> Path:
+def _write_job(
+    jobs_dir: Path,
+    dir_name: str,
+    body: str,
+    *,
+    prerun: str | None = None,
+) -> Path:
     job_dir = jobs_dir / dir_name
     job_dir.mkdir(parents=True)
     job_md = job_dir / "JOB.md"
+    prerun_line = f"prerun: {prerun}\n" if prerun else ""
     job_md.write_text(
         "---\n"
         "name: Demo\n"
@@ -292,6 +300,7 @@ def _write_job(jobs_dir: Path, dir_name: str, body: str) -> Path:
         "provider: claude\n"
         "model: opus\n"
         "enabled: false\n"
+        f"{prerun_line}"
         f"---\n\n{body}\n",
         encoding="utf-8",
     )
@@ -397,6 +406,195 @@ def test_remove_owned_tree_rejects_unsafe_names(tmp_path, name):
         web_app._remove_owned_tree(str(owned), name)
 
     assert outside.is_dir()
+
+
+def test_job_prerun_edit_round_trips_below_prompt_and_preserves_mode(
+    tmp_path, monkeypatch
+):
+    jobs_dir, client = _job_web_app(tmp_path, monkeypatch)
+    job_md = _write_job(
+        jobs_dir,
+        "demo",
+        "Prompt body.",
+        prerun="scripts/prerun.sh",
+    )
+    script = job_md.parent / "scripts" / "prerun.sh"
+    script.parent.mkdir()
+    script.write_text("#!/bin/bash\necho original\n", encoding="utf-8")
+    script.chmod(0o4751)
+    original_job = job_md.read_bytes()
+
+    detail = client.get("/jobs/demo")
+
+    assert detail.status_code == 200
+    assert 'action="/jobs/demo/prerun"' in detail.text
+    assert "#!/bin/bash\necho original" in detail.text
+    assert "scripts/prerun.sh" in detail.text
+    assert detail.text.index('action="/jobs/demo/prompt"') < detail.text.index(
+        'action="/jobs/demo/prerun"'
+    )
+    assert client.app.state.csrf_token in detail.text
+
+    response = client.post(
+        "/jobs/demo/prerun",
+        data={
+            "content": "#!/bin/bash\r\necho edited\r\n",
+            "_csrf": client.app.state.csrf_token,
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/jobs/demo"
+    assert script.read_text(encoding="utf-8") == "#!/bin/bash\necho edited\n"
+    assert stat.S_IMODE(script.stat().st_mode) == 0o4751
+    assert job_md.read_bytes() == original_job
+
+
+def test_job_prerun_editor_requires_existing_configured_script(
+    tmp_path, monkeypatch
+):
+    jobs_dir, client = _job_web_app(tmp_path, monkeypatch)
+    _write_job(jobs_dir, "none", "No prerun.")
+    missing_job = _write_job(
+        jobs_dir,
+        "missing",
+        "Missing prerun.",
+        prerun="scripts/missing.sh",
+    )
+    token = client.app.state.csrf_token
+
+    no_prerun_detail = client.get("/jobs/none")
+    missing_detail = client.get("/jobs/missing")
+    no_prerun_save = client.post(
+        "/jobs/none/prerun",
+        data={"content": "x", "_csrf": token},
+        follow_redirects=False,
+    )
+    missing_save = client.post(
+        "/jobs/missing/prerun",
+        data={"content": "x", "_csrf": token},
+        follow_redirects=False,
+    )
+    unknown_save = client.post(
+        "/jobs/unknown/prerun",
+        data={"content": "x", "_csrf": token},
+        follow_redirects=False,
+    )
+
+    assert 'action="/jobs/none/prerun"' not in no_prerun_detail.text
+    assert 'action="/jobs/missing/prerun"' not in missing_detail.text
+    assert "Configured script not found" in missing_detail.text
+    assert no_prerun_save.status_code == 404
+    assert missing_save.status_code == 404
+    assert unknown_save.status_code == 404
+    assert not (missing_job.parent / "scripts" / "missing.sh").exists()
+
+
+def test_job_prerun_editor_rejects_unsafe_paths_and_all_symlinks(
+    tmp_path, monkeypatch
+):
+    jobs_dir, client = _job_web_app(tmp_path, monkeypatch)
+    outside = tmp_path / "outside.sh"
+    outside.write_text("SENTINEL OUTSIDE CONTENT\n", encoding="utf-8")
+    _write_job(
+        jobs_dir,
+        "traversal",
+        "Traversal.",
+        prerun="../../outside.sh",
+    )
+    _write_job(
+        jobs_dir,
+        "absolute",
+        "Absolute.",
+        prerun=str(outside),
+    )
+    linked_job = _write_job(
+        jobs_dir,
+        "linked",
+        "Linked.",
+        prerun="prerun.sh",
+    )
+    (linked_job.parent / "prerun.sh").symlink_to(outside)
+    linked_parent_job = _write_job(
+        jobs_dir,
+        "linked-parent",
+        "Linked parent.",
+        prerun="scripts/prerun.sh",
+    )
+    real_scripts = linked_parent_job.parent / "real-scripts"
+    real_scripts.mkdir()
+    (real_scripts / "prerun.sh").write_text("SENTINEL LINKED CONTENT\n", encoding="utf-8")
+    (linked_parent_job.parent / "scripts").symlink_to(
+        real_scripts,
+        target_is_directory=True,
+    )
+    original = outside.read_bytes()
+    token = client.app.state.csrf_token
+
+    for name in ("traversal", "absolute", "linked", "linked-parent"):
+        detail = client.get(f"/jobs/{name}")
+        response = client.post(
+            f"/jobs/{name}/prerun",
+            data={"content": "replacement", "_csrf": token},
+            follow_redirects=False,
+        )
+
+        assert detail.status_code == 200
+        assert "SENTINEL OUTSIDE CONTENT" not in detail.text
+        assert f'action="/jobs/{name}/prerun"' not in detail.text
+        assert response.status_code == 403
+
+    assert outside.read_bytes() == original
+
+
+def test_job_prerun_save_cannot_escape_when_parent_path_is_swapped(
+    tmp_path, monkeypatch
+):
+    jobs_dir, client = _job_web_app(tmp_path, monkeypatch)
+    job_md = _write_job(
+        jobs_dir,
+        "demo",
+        "Prompt.",
+        prerun="scripts/prerun.sh",
+    )
+    scripts = job_md.parent / "scripts"
+    scripts.mkdir()
+    script = scripts / "prerun.sh"
+    script.write_text("echo original\n", encoding="utf-8")
+
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    outside_script = outside_dir / "prerun.sh"
+    outside_script.write_text("SENTINEL OUTSIDE\n", encoding="utf-8")
+    held_scripts = job_md.parent / "scripts-before-swap"
+    real_fchmod = web_app.os.fchmod
+    swapped = False
+
+    def swap_parent_then_chmod(fd, mode):
+        nonlocal swapped
+        if not swapped:
+            scripts.rename(held_scripts)
+            scripts.symlink_to(outside_dir, target_is_directory=True)
+            swapped = True
+        return real_fchmod(fd, mode)
+
+    monkeypatch.setattr(web_app.os, "fchmod", swap_parent_then_chmod)
+
+    response = client.post(
+        "/jobs/demo/prerun",
+        data={
+            "content": "echo safely edited\n",
+            "_csrf": client.app.state.csrf_token,
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert (held_scripts / "prerun.sh").read_text(encoding="utf-8") == (
+        "echo safely edited\n"
+    )
+    assert outside_script.read_text(encoding="utf-8") == "SENTINEL OUTSIDE\n"
 
 
 def test_job_prompt_edit_round_trips_and_preserves_frontmatter(tmp_path, monkeypatch):

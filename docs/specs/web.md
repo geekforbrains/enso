@@ -39,6 +39,7 @@ policy, and prevent HTML caching. Host filtering is not authentication: an empty
 | `/jobs/{name}` | GET | Implemented | Job configuration, prompt, prerun state, and recent runs |
 | `/jobs/{name}/edit` | POST | **Planned** | Edit job metadata and prerun configuration |
 | `/jobs/{name}/prompt` | POST | Implemented | Edit only the prompt body while preserving raw frontmatter |
+| `/jobs/{name}/prerun` | POST | Implemented | Edit the configured prerun script while preserving its mode |
 | `/jobs/{name}/toggle` | POST | Implemented | Enable or disable a job |
 | `/jobs/{name}/delete` | POST | Implemented | Delete a job directory after confirmation |
 | `/jobs/{name}/run` | POST | Implemented | Run now and record a `manual` run |
@@ -78,12 +79,16 @@ The dashboard shows:
 - **Edit the prompt** (`/jobs/{name}/prompt`): save just the `JOB.md` body from the job
   detail page — the same edit-in-place affordance skills have (`/skills/{name}/edit`),
   preserving the original frontmatter text byte-for-byte.
+- **Edit the pre-run script** (`/jobs/{name}/prerun`): when a configured script exists
+  safely inside the job directory, its UTF-8 content appears in a second editor below
+  Prompt. Saving is atomic and preserves the file's permission mode. Missing, non-file,
+  symlinked, and out-of-directory paths are not editable.
 - **Delete** (`/jobs/{name}/delete`): a native disclosure confirms the destructive
   action before removing the entire job directory, including prerun and companion files.
   Existing run history remains available.
 - Recent runs for this job, linking to `/runs/{id}`.
-- **Planned:** browser forms for create and full metadata/prerun editing. Until then use
-  `enso job create` or edit the job files directly.
+- **Planned:** browser forms for create and full metadata editing, including choosing the
+  prerun path. Until then use `enso job create` or edit the job files directly.
 
 ### Run detail (`/runs/{id}`)
 

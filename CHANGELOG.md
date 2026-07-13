@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Existing job prerun scripts can now be viewed and edited below the prompt on the job detail page. Saves are atomic, preserve file permissions, and reject missing, symlinked, or out-of-directory paths
 - Jobs and Enso-owned skills can now be deleted from their dashboard detail pages after confirmation. Entire owned directories are removed, external skills remain read-only, and deleted bundled skills stay deleted across service restarts
 - The web dashboard now shows visible skill counts split into Enso-owned and system-wide tiers
 - Job prerun failures and timeouts are now recorded in run history and notify through the configured Telegram or Slack destination. Identical alerts are suppressed for 24 hours, changed failures alert immediately, and healthy preruns send one recovery notification
