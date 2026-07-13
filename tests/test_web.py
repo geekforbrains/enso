@@ -97,8 +97,8 @@ def test_dashboard_shows_visible_skill_total_and_tier_counts(tmp_path, monkeypat
     assert 'data-skills-total="3"' in response.text
     assert 'data-skills-enso="2"' in response.text
     assert 'data-skills-system="1"' in response.text
-    assert "2 Enso-only" in response.text
-    assert "1 system-wide" in response.text
+    assert "2<span" in response.text
+    assert "enso / 1 system" in response.text
     assert 'href="/skills"' in response.text
 
 

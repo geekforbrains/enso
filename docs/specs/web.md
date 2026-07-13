@@ -66,8 +66,8 @@ The dashboard shows:
   status pill (running/ok/error/timeout/prerun error/prerun timeout), trigger, duration,
   relative time; each links to `/runs/{id}`.
 - **Jobs enabled** — the enabled and total job counts, linking to the job list.
-- **Skills available** — the deduplicated total split into Enso-owned and visible system
-  skills, linking to the skill list.
+- **Skills** — deduplicated Enso-owned and visible system counts, linking to the skill
+  list.
 
 ### Jobs (`/jobs`, `/jobs/{name}`)
 

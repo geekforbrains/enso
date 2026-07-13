@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- The web dashboard now shows the total number of visible skills, split into Enso-owned and system-wide counts
+- The web dashboard now shows visible skill counts split into Enso-owned and system-wide tiers
 - Job prerun failures and timeouts are now recorded in run history and notify through the configured Telegram or Slack destination. Identical alerts are suppressed for 24 hours, changed failures alert immediately, and healthy preruns send one recovery notification
 - Codex model aliases `sol`, `terra`, and `luna` are available in Telegram/Slack model selection and background jobs. Enso translates them to the Codex CLI's `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` IDs while preserving older and custom configured models. These models require Codex CLI 0.144.0 or newer
 - `/effort` and `!effort` now support Codex as well as Claude. Sol and Terra expose levels through `ultra`; Luna exposes levels through `max`. Per-chat overrides are passed to Codex as `model_reasoning_effort` while `default` falls back to the Codex CLI configuration
