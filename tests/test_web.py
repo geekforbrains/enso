@@ -280,6 +280,8 @@ def test_dashboard_shows_visible_skill_total_and_tier_counts(tmp_path, monkeypat
     assert "2<span" in response.text
     assert "enso / 1 system" in response.text
     assert 'href="/skills"' in response.text
+    assert '<body hx-boost="true"' in response.text
+    assert response.text.count('<nav aria-label="Primary" hx-boost="false"') == 2
 
 
 def _write_job(

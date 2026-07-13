@@ -107,7 +107,7 @@
   ] %}
 
   {% macro nav_links(mobile=false) %}
-    <nav aria-label="Primary" class="space-y-1">
+    <nav aria-label="Primary" hx-boost="false" class="space-y-1">
       {% for href, label in nav %}
         {% set active = (href == "/" and current_path == "/")
              or (href != "/" and current_path.startswith(href)) %}

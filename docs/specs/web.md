@@ -152,6 +152,8 @@ Two tiers, split by the `~/.enso/` write boundary:
 - **No external requests**: compiled CSS and the pinned HTMX runtime are vendored under
   `web/static/`, so the UI works offline and over a locked-down tailnet with no CDN trust
   or flash of unstyled content.
+- **Navigation**: primary sidebar and mobile-menu links use full page loads so responsive
+  layouts are recalculated consistently. Explicit HTMX controls still update in place.
 
 ## Non-goals (recap)
 

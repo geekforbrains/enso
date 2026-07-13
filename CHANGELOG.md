@@ -17,6 +17,8 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- Primary dashboard navigation now uses full page loads, preventing HTMX swaps from
+  intermittently leaving the Jobs grid in its single-column layout
 - Dashboard requests now reject unlisted Host headers; wildcard binds require explicit `web.allowed_hosts`. Writes require a process-scoped CSRF token, and responses send browser-hardening headers
 - Job metadata now loads through PyYAML's string-preserving `BaseLoader` with a fallback for malformed legacy headers. Prompt and enable/disable edits preserve the raw frontmatter text
 - Upgrades migrate legacy task run-retention settings, remove only pristine retired task artifacts, and preserve customized copies with a cleanup warning
