@@ -406,12 +406,16 @@ def _external_skill_roots(request) -> list[str]:
     return [os.path.expanduser(r) for r in (roots or [])]
 
 
-def _external_skills(request) -> list[dict]:
+def _external_skills(request, owned_names: set[str] | None = None) -> list[dict]:
     out: list[dict] = []
     # Skill detail routes identify a skill by name alone. Mirror _resolve_skill's
     # precedence here so every listed card resolves back to the source it shows:
     # Enso-owned skills win, followed by the first configured external root.
-    seen = {skill["name"] for skill in _enso_skills()}
+    seen = (
+        set(owned_names)
+        if owned_names is not None
+        else {skill["name"] for skill in _enso_skills()}
+    )
     for root in _external_skill_roots(request):
         if not os.path.isdir(root):
             continue
@@ -431,6 +435,13 @@ def _external_skills(request) -> list[dict]:
                     }
                 )
     return out
+
+
+def _skill_inventory(request) -> tuple[list[dict], list[dict]]:
+    """Return the Enso-owned and visible system skill tiers."""
+    enso_skills = _enso_skills()
+    owned_names = {skill["name"] for skill in enso_skills}
+    return enso_skills, _external_skills(request, owned_names)
 
 
 def _resolve_skill(request, name: str) -> tuple[str | None, bool]:
@@ -459,12 +470,16 @@ def _resolve_skill(request, name: str) -> tuple[str | None, bool]:
 async def dashboard(request):
     jobs = load_jobs()
     jobs_enabled = sum(1 for j in jobs if j.enabled)
+    enso_skills, system_skills = _skill_inventory(request)
     latest = runs.list_runs(limit=6)
     return _render(
         request,
         "index.html",
         jobs_enabled=jobs_enabled,
         jobs_total=len(jobs),
+        skills_total=len(enso_skills) + len(system_skills),
+        skills_enso=len(enso_skills),
+        skills_system=len(system_skills),
         latest_runs=latest,
     )
 
@@ -616,8 +631,7 @@ async def skills_list(request):
     show = request.query_params.get("show") or "all"
     if show not in ("all", "enso", "system"):
         show = "all"
-    enso_skills = _enso_skills()
-    external_skills = _external_skills(request)
+    enso_skills, external_skills = _skill_inventory(request)
     counts = {
         "all": len(enso_skills) + len(external_skills),
         "enso": len(enso_skills),

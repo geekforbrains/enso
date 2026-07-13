@@ -32,7 +32,7 @@ policy, and prevent HTML caching. Host filtering is not authentication: an empty
 
 | Route | Method | Status | Purpose |
 | --- | --- | --- | --- |
-| `/` | GET | Implemented | Dashboard — recent runs and enabled/total job counts |
+| `/` | GET | Implemented | Dashboard — recent runs plus job and skill counts |
 | `/health` | GET | Implemented | Unauthenticated process-health probe |
 | `/jobs` | GET | Implemented | Job list — schedule, provider/model, enabled state |
 | `/jobs/new` | GET, POST | **Planned** | Create-job form and `JOB.md` scaffold |
@@ -66,6 +66,8 @@ The dashboard shows:
   status pill (running/ok/error/timeout/prerun error/prerun timeout), trigger, duration,
   relative time; each links to `/runs/{id}`.
 - **Jobs enabled** — the enabled and total job counts, linking to the job list.
+- **Skills available** — the deduplicated total split into Enso-owned and visible system
+  skills, linking to the skill list.
 
 ### Jobs (`/jobs`, `/jobs/{name}`)
 

@@ -74,6 +74,34 @@ def test_external_skills_keep_first_root_for_duplicate_names(tmp_path, monkeypat
         )
 
 
+def test_dashboard_shows_visible_skill_total_and_tier_counts(tmp_path, monkeypatch):
+    from starlette.testclient import TestClient
+
+    config_dir = tmp_path / "enso"
+    _write_skill(config_dir / "skills", "enso-only")
+    _write_skill(config_dir / "skills", "shared")
+    external_root = tmp_path / "external"
+    _write_skill(external_root, "shared", "Shadowed external copy")
+    _write_skill(external_root, "system-only")
+    runtime = SimpleNamespace(
+        config={"web": {"external_skill_roots": [str(external_root)]}}
+    )
+    monkeypatch.setattr(web_app, "CONFIG_DIR", str(config_dir))
+    monkeypatch.setattr(web_app, "load_jobs", lambda: [])
+    monkeypatch.setattr(web_app.runs, "list_runs", lambda **_kwargs: [])
+    client = TestClient(web_app.create_app(runtime), base_url="http://127.0.0.1")
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert 'data-skills-total="3"' in response.text
+    assert 'data-skills-enso="2"' in response.text
+    assert 'data-skills-system="1"' in response.text
+    assert "2 Enso-only" in response.text
+    assert "1 system-wide" in response.text
+    assert 'href="/skills"' in response.text
+
+
 def _write_job(jobs_dir: Path, dir_name: str, body: str) -> Path:
     job_dir = jobs_dir / dir_name
     job_dir.mkdir(parents=True)

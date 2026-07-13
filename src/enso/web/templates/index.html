@@ -17,6 +17,22 @@
     <a href="/jobs" class="mt-2 inline-block text-sm text-indigo-600 hover:underline dark:text-indigo-400">
       View all &rarr;</a>
   </div>
+  <div data-skills-total="{{ skills_total }}" data-skills-enso="{{ skills_enso }}"
+       data-skills-system="{{ skills_system }}"
+       class="rounded-lg border border-gray-200 bg-white p-4 shadow-sm
+              dark:border-neutral-700 dark:bg-neutral-800">
+    <div class="text-sm text-gray-500 dark:text-neutral-400">Skills available</div>
+    <div class="mt-1 flex items-baseline gap-1">
+      <span class="text-3xl font-semibold">{{ skills_total }}</span>
+      <span class="text-sm text-gray-400">total</span>
+    </div>
+    <div class="mt-1 text-sm text-gray-500 dark:text-neutral-400">
+      {{ skills_enso }} Enso-only <span aria-hidden="true">&middot;</span>
+      {{ skills_system }} system-wide
+    </div>
+    <a href="/skills" class="mt-2 inline-block text-sm text-indigo-600 hover:underline dark:text-indigo-400">
+      View all &rarr;</a>
+  </div>
 </div>
 
 <div class="rounded-lg border border-gray-200 bg-white px-4 py-4 shadow-sm sm:p-5

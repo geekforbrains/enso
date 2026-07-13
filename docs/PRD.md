@@ -93,9 +93,9 @@ been doing — without turning Enso into a hosted product.
 
 ### F2 — Web UI: dashboard & runs
 
-- `/` — overview: recent runs feed and jobs at a glance.
+- `/` — overview: recent runs plus enabled-job and visible-skill counts at a glance.
 - `/runs/<id>` — a run's output preview, on-disk log path, status, timing, and trigger.
-- Read-only views; the data comes from SQLite (runs) and the file scans (jobs).
+- Read-only views; the data comes from SQLite (runs) and file scans (jobs and skills).
 
 ### F3 — Web UI: jobs (partially implemented)
 
