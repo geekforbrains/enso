@@ -14,7 +14,7 @@
              dark:border-neutral-700 dark:bg-neutral-800">
   <div>
     <label for="run-kind" class="mb-1 block text-xs font-medium text-gray-500 dark:text-neutral-400">Kind</label>
-    <select id="run-kind" name="kind" class="touch-target w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm
+    <select id="run-kind" name="kind" class="touch-target w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm shadow-sm
                                dark:border-neutral-600 dark:bg-neutral-900 dark:text-gray-100">
       <option value="">Any kind</option>
       {% for k in ["job"] %}
@@ -24,7 +24,7 @@
   </div>
   <div>
     <label for="run-status" class="mb-1 block text-xs font-medium text-gray-500 dark:text-neutral-400">Status</label>
-    <select id="run-status" name="status" class="touch-target w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm
+    <select id="run-status" name="status" class="touch-target w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm shadow-sm
                                  dark:border-neutral-600 dark:bg-neutral-900 dark:text-gray-100">
       <option value="">Any status</option>
       {% for s in ["running", "ok", "error", "timeout", "prerun_error", "prerun_timeout"] %}

@@ -32,6 +32,47 @@ html.dark {
   outline-offset: 2px;
 }
 
+/* Replace browser-specific select chrome with one consistent dashboard control. */
+select:not([multiple]) {
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%236b7280' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 8 4 4 4-4'/%3E%3C/svg%3E");
+  background-position: right 0.875rem center;
+  background-repeat: no-repeat;
+  background-size: 1.125rem;
+  padding-right: 2.75rem;
+  transition: border-color 120ms ease, box-shadow 120ms ease, background-color 120ms ease;
+}
+
+select:not([multiple]):hover:not(:disabled) {
+  border-color: #9ca3af;
+}
+
+select:not([multiple]):focus {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 3px rgb(99 102 241 / 0.16);
+  outline: none;
+}
+
+select:not([multiple]):disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.dark select:not([multiple]) {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23a3a3a3' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 8 4 4 4-4'/%3E%3C/svg%3E");
+}
+
+.dark select:not([multiple]):hover:not(:disabled) {
+  border-color: #737373;
+}
+
+.dark select:not([multiple]):focus {
+  border-color: #818cf8;
+  box-shadow: 0 0 0 3px rgb(129 140 248 / 0.2);
+}
+
 /* Smooth the HTMX fragment swaps used for inline status/toggle actions. */
 .htmx-swapping {
   opacity: 0.5;

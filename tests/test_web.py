@@ -329,6 +329,23 @@ def _job_web_app(tmp_path, monkeypatch):
     )
 
 
+def test_run_filter_dropdowns_use_shared_select_styling(tmp_path, monkeypatch):
+    _, client = _job_web_app(tmp_path, monkeypatch)
+
+    page = client.get("/runs")
+    styles = client.get("/static/app.css")
+
+    assert page.status_code == 200
+    assert page.text.count("<select ") == 2
+    assert 'id="run-kind"' in page.text
+    assert 'id="run-status"' in page.text
+    assert page.text.count("rounded-lg border border-gray-300") == 2
+    assert styles.status_code == 200
+    assert "select:not([multiple])" in styles.text
+    assert "-webkit-appearance: none" in styles.text
+    assert ".dark select:not([multiple])" in styles.text
+
+
 def test_job_delete_removes_entire_directory_and_preserves_link_targets(
     tmp_path, monkeypatch
 ):

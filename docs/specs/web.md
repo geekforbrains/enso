@@ -146,6 +146,8 @@ Two tiers, split by the `~/.enso/` write boundary:
 - **Text editing**: Enso-owned `SKILL.md`, job prompts, and `AGENTS.md` use plain
   textareas; read-only external skills use escaped preformatted text. Rich Markdown
   rendering is not implemented.
+- **Form controls**: native single-select dropdowns share consistent spacing, focus
+  states, and chevrons across browsers and themes.
 - **Styling**: compiled Tailwind utilities are vendored as `web/static/tailwind.css`, with
   the small hand-written layer in `web/static/app.css`. Rebuild the generated file with
   `cd src/enso/web && npx tailwindcss@3.4.17 -c tailwind.config.js -i tailwind.input.css
