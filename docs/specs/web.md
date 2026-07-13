@@ -140,8 +140,9 @@ Two tiers, split by the `~/.enso/` write boundary:
 
 - **Responsive layout**: the sidebar appears only when the viewport has room for it
   (1024px+). Run history becomes readable cards below wide desktop sizes instead of
-  relying on hidden horizontal scrolling, and long IDs, paths, upload controls, and
-  metadata must never widen the document.
+  relying on hidden horizontal scrolling. The capped main column stays left-aligned
+  beside the sidebar on wide screens, and long IDs, paths, upload controls, and metadata
+  must never widen the document.
 - **Text editing**: Enso-owned `SKILL.md`, job prompts, and `AGENTS.md` use plain
   textareas; read-only external skills use escaped preformatted text. Rich Markdown
   rendering is not implemented.

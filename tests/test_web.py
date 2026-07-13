@@ -282,6 +282,8 @@ def test_dashboard_shows_visible_skill_total_and_tier_counts(tmp_path, monkeypat
     assert 'href="/skills"' in response.text
     assert '<body hx-boost="true"' in response.text
     assert response.text.count('<nav aria-label="Primary" hx-boost="false"') == 2
+    assert '<main id="main-content" class="max-w-6xl ' in response.text
+    assert 'class="mx-auto max-w-6xl' not in response.text
 
 
 def _write_job(

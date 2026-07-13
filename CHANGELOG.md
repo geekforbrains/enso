@@ -17,6 +17,8 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- Wide dashboard layouts now keep the capped main content aligned beside the sidebar
+  instead of centering it farther away as the viewport grows
 - Primary dashboard navigation now uses full page loads, preventing HTMX swaps from
   intermittently leaving the Jobs grid in its single-column layout
 - Dashboard requests now reject unlisted Host headers; wildcard binds require explicit `web.allowed_hosts`. Writes require a process-scoped CSRF token, and responses send browser-hardening headers
