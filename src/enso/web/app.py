@@ -15,9 +15,13 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import hashlib
+import importlib.resources
 import logging
 import os
 import secrets
+import shutil
+import stat
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -35,7 +39,7 @@ from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
 from .. import frontmatter, runs
-from ..config import CONFIG_DIR, JOBS_DIR
+from ..config import CONFIG_DIR, JOBS_DIR, SKILL_TOMBSTONES_DIRNAME
 from ..jobs import Job, load_jobs
 
 log = logging.getLogger(__name__)
@@ -361,7 +365,59 @@ def _find_job(name: str) -> Job | None:
 
 def _safe_name(name: str) -> bool:
     """True when ``name`` is a bare path segment (no traversal, no separators)."""
-    return bool(name) and name not in (".", "..") and "/" not in name and "\\" not in name
+    return (
+        bool(name)
+        and name not in (".", "..")
+        and "/" not in name
+        and "\\" not in name
+        and "\0" not in name
+    )
+
+
+def _remove_owned_tree(base: str, name: str) -> None:
+    """Atomically detach and remove one direct child without following symlinks."""
+    if not _safe_name(name):
+        raise ValueError("Unsafe directory name")
+    base_abs = os.path.abspath(base)
+    target = os.path.abspath(os.path.join(base_abs, name))
+    if os.path.dirname(target) != base_abs:
+        raise ValueError("Directory is outside its owned root")
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    directory = getattr(os, "O_DIRECTORY", None)
+    if nofollow is None or directory is None:
+        raise OSError("Secure directory deletion is unavailable")
+
+    base_fd = os.open(base_abs, os.O_RDONLY | nofollow | directory)
+    detached = f".deleting-{secrets.token_hex(16)}"
+    try:
+        os.rename(name, detached, src_dir_fd=base_fd, dst_dir_fd=base_fd)
+        detached_path = os.path.join(base_abs, detached)
+        try:
+            mode = os.stat(
+                detached, dir_fd=base_fd, follow_symlinks=False
+            ).st_mode
+            if stat.S_ISLNK(mode):
+                os.unlink(detached, dir_fd=base_fd)
+            elif stat.S_ISDIR(mode):
+                if not shutil.rmtree.avoids_symlink_attacks:
+                    raise OSError("Secure directory deletion is unavailable")
+                opened_root = os.fstat(base_fd)
+                current_root = os.stat(base_abs, follow_symlinks=False)
+                if (opened_root.st_dev, opened_root.st_ino) != (
+                    current_root.st_dev,
+                    current_root.st_ino,
+                ):
+                    raise OSError("Owned root changed during deletion")
+                # rmtree unlinks nested symlinks; it never recurses into them.
+                shutil.rmtree(detached_path)
+            else:
+                raise FileNotFoundError(detached_path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.rename(detached, name, src_dir_fd=base_fd, dst_dir_fd=base_fd)
+            raise
+    finally:
+        os.close(base_fd)
 
 
 # -- Skill discovery --------------------------------------------------------
@@ -369,6 +425,114 @@ def _safe_name(name: str) -> bool:
 
 def _skills_base() -> str:
     return os.path.join(CONFIG_DIR, "skills")
+
+
+def _is_bundled_skill(name: str) -> bool:
+    bundled = importlib.resources.files("enso").joinpath("skills", name)
+    return bundled.is_dir()
+
+
+def _create_skill_tombstone(name: str) -> None:
+    """Create a bundle-deletion marker without following directory symlinks."""
+    if not _safe_name(name) or name == SKILL_TOMBSTONES_DIRNAME:
+        raise ValueError("Unsafe skill name")
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    directory = getattr(os, "O_DIRECTORY", None)
+    if nofollow is None or directory is None:
+        raise OSError("Secure tombstone creation is unavailable")
+
+    skills_fd = os.open(
+        _skills_base(), os.O_RDONLY | nofollow | directory
+    )
+    try:
+        with contextlib.suppress(FileExistsError):
+            os.mkdir(SKILL_TOMBSTONES_DIRNAME, mode=0o700, dir_fd=skills_fd)
+        tombstones_fd = os.open(
+            SKILL_TOMBSTONES_DIRNAME,
+            os.O_RDONLY | nofollow | directory,
+            dir_fd=skills_fd,
+        )
+        try:
+            marker = f"{name}.deleted"
+            try:
+                marker_fd = os.open(
+                    marker,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow,
+                    0o600,
+                    dir_fd=tombstones_fd,
+                )
+            except FileExistsError:
+                return
+            try:
+                os.fsync(marker_fd)
+            finally:
+                os.close(marker_fd)
+            os.fsync(tombstones_fd)
+        finally:
+            os.close(tombstones_fd)
+    finally:
+        os.close(skills_fd)
+
+
+def _regular_file_sha256(path: str) -> str | None:
+    if os.path.islink(path) or not os.path.isfile(path):
+        return None
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+def _skill_tool_cleanup_candidates(request, name: str) -> list[tuple[str, str]]:
+    """Find unmodified installed tools owned only by the skill being deleted."""
+    runtime = request.app.state.runtime
+    working_dir = getattr(runtime, "working_dir", None)
+    if not isinstance(working_dir, str) or not working_dir:
+        return []
+    tools_dir = os.path.join(working_dir, "tools")
+    if os.path.islink(tools_dir) or not os.path.isdir(tools_dir):
+        return []
+
+    skill_dir = os.path.join(_skills_base(), name)
+    try:
+        filenames = os.listdir(skill_dir)
+        other_skills = [
+            entry
+            for entry in os.listdir(_skills_base())
+            if entry not in {name, SKILL_TOMBSTONES_DIRNAME}
+        ]
+    except OSError:
+        return []
+
+    candidates: list[tuple[str, str]] = []
+    for filename in filenames:
+        if not filename.endswith(".py"):
+            continue
+        source = os.path.join(skill_dir, filename)
+        source_hash = _regular_file_sha256(source)
+        if source_hash is None:
+            continue
+        if any(
+            os.path.isfile(os.path.join(_skills_base(), other, filename))
+            for other in other_skills
+        ):
+            continue
+        installed = os.path.join(tools_dir, filename)
+        if _regular_file_sha256(installed) == source_hash:
+            candidates.append((installed, source_hash))
+    return candidates
+
+
+def _remove_installed_skill_tools(candidates: list[tuple[str, str]]) -> None:
+    for path, expected_hash in candidates:
+        if _regular_file_sha256(path) != expected_hash:
+            continue
+        with contextlib.suppress(OSError):
+            os.remove(path)
 
 
 def _skill_description(path: str) -> str:
@@ -385,6 +549,8 @@ def _enso_skills() -> list[dict]:
     out: list[dict] = []
     if os.path.isdir(base):
         for name in sorted(os.listdir(base)):
+            if name == SKILL_TOMBSTONES_DIRNAME:
+                continue
             skill_md = os.path.join(base, name, "SKILL.md")
             if os.path.isfile(skill_md):
                 out.append(
@@ -450,7 +616,7 @@ def _resolve_skill(request, name: str) -> tuple[str | None, bool]:
     Enso-owned skills (under ``CONFIG_DIR/skills``) win and are editable;
     otherwise the first matching external root is used (read-only).
     """
-    if not _safe_name(name):
+    if not _safe_name(name) or name == SKILL_TOMBSTONES_DIRNAME:
         return None, False
     enso_md = os.path.join(_skills_base(), name, "SKILL.md")
     if os.path.isfile(enso_md):
@@ -585,6 +751,22 @@ async def job_edit_prompt(request):
     return _redirect(f"/jobs/{name}")
 
 
+async def job_delete(request):
+    name = request.path_params["name"]
+    if not _safe_name(name):
+        return PlainTextResponse("Job not found", status_code=404)
+    if _find_job(name) is None:
+        return PlainTextResponse("Job not found", status_code=404)
+    try:
+        _remove_owned_tree(JOBS_DIR, name)
+    except (FileNotFoundError, ValueError):
+        return PlainTextResponse("Job not found", status_code=404)
+    except OSError:
+        log.warning("Could not safely delete job %s", name, exc_info=True)
+        return PlainTextResponse("Deletion unavailable", status_code=503)
+    return _redirect("/jobs?msg=Job+deleted+from+disk")
+
+
 # ---------------------------------------------------------------------------
 # Routes — runs
 # ---------------------------------------------------------------------------
@@ -680,6 +862,34 @@ async def skill_edit(request):
     content = (form.get("content") or "").replace("\r\n", "\n")
     _atomic_write_text(path, content)
     return _redirect(f"/skills/{name}")
+
+
+async def skill_delete(request):
+    name = request.path_params["name"]
+    if not _safe_name(name) or name == SKILL_TOMBSTONES_DIRNAME:
+        return PlainTextResponse("Skill not found", status_code=404)
+    path, editable = _resolve_skill(request, name)
+    if path is None:
+        return PlainTextResponse("Skill not found", status_code=404)
+    if not editable:
+        return PlainTextResponse("Not deletable", status_code=403)
+
+    if _is_bundled_skill(name):
+        try:
+            _create_skill_tombstone(name)
+        except (OSError, ValueError):
+            log.warning("Could not safely tombstone skill %s", name, exc_info=True)
+            return PlainTextResponse("Forbidden", status_code=403)
+    tool_candidates = _skill_tool_cleanup_candidates(request, name)
+    try:
+        _remove_owned_tree(_skills_base(), name)
+    except (FileNotFoundError, ValueError):
+        return PlainTextResponse("Skill not found", status_code=404)
+    except OSError:
+        log.warning("Could not safely delete skill %s", name, exc_info=True)
+        return PlainTextResponse("Deletion unavailable", status_code=503)
+    _remove_installed_skill_tools(tool_candidates)
+    return _redirect("/skills?msg=Skill+deleted+from+disk")
 
 
 # ---------------------------------------------------------------------------
@@ -814,11 +1024,21 @@ def create_app(runtime) -> Starlette:
             _csrf_protected(job_edit_prompt),
             methods=["POST"],
         ),
+        Route(
+            "/jobs/{name}/delete",
+            _csrf_protected(job_delete),
+            methods=["POST"],
+        ),
         Route("/runs", runs_list),
         Route("/runs/{id}", run_detail),
         Route("/skills", skills_list),
         Route("/skills/{name}", skill_detail),
         Route("/skills/{name}/edit", _csrf_protected(skill_edit), methods=["POST"]),
+        Route(
+            "/skills/{name}/delete",
+            _csrf_protected(skill_delete),
+            methods=["POST"],
+        ),
         Route("/agents", agents_view),
         Route("/agents/edit", _csrf_protected(agents_edit), methods=["POST"]),
         Mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static"),

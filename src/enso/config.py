@@ -19,6 +19,7 @@ CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 STATE_FILE = os.path.join(CONFIG_DIR, "state.json")
 JOBS_DIR = os.path.join(CONFIG_DIR, "jobs")
 MESSAGES_FILE = os.path.join(CONFIG_DIR, "messages.json")
+SKILL_TOMBSTONES_DIRNAME = ".deleted"
 
 DEFAULT_PROVIDERS = {
     "claude": {

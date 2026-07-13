@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "macros.html" import related_run %}
+{% from "macros.html" import delete_control, related_run %}
 {% block title %}{{ job.name }} · enso{% endblock %}
 
 {% block content %}
@@ -25,6 +25,8 @@
         Run now
       </button>
     </form>
+    {{ delete_control("/jobs/" ~ job.dir_name ~ "/delete", "job", job.name,
+                      "/jobs/" ~ job.dir_name, csrf_token) }}
   </div>
 </div>
 

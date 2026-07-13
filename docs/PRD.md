@@ -100,12 +100,14 @@ been doing — without turning Enso into a hosted product.
 ### F3 — Web UI: jobs (partially implemented)
 
 - `/jobs` — list with schedule, provider/model, enabled state.
-- `/jobs/<name>` — configuration, prompt, prerun state, recent runs, **Run now**, enable/disable.
+- `/jobs/<name>` — configuration, prompt, prerun state, recent runs, **Run now**,
+  enable/disable, and confirmed directory deletion.
 - Editing the prompt has a focused endpoint that rewrites only the `JOB.md` body,
   mirroring in-place skill editing.
-- **Planned:** create, fully edit, and delete jobs from the UI: name, schedule,
-  provider, model, enabled, timeout, notify, prompt body, and optional prerun script.
-  Delete will require confirmation.
+- Deleting a job removes its whole directory, including companion and prerun files;
+  recorded run history remains available.
+- **Planned:** create and fully edit jobs from the UI: name, schedule, provider, model,
+  enabled, timeout, notify, prompt body, and optional prerun script.
 
 ### F4 — Web UI: skills & AGENTS.md
 
@@ -113,10 +115,12 @@ been doing — without turning Enso into a hosted product.
   user-created or seeded from Enso's starter set at install — **editable**; and
   **external / "parent"** skills auto-discovered from the underlying CLIs'
   own skill roots (e.g. `~/.claude/skills/`), shown **read-only with their source path** for
-  awareness. Missing bundled files are seeded, known pristine older copies can advance
-  during upgrades, and customized files or symlinks remain untouched.
-- Enso-owned `SKILL.md` files can be edited. **Planned:** create/delete skills and edit
-  their tool scripts. The skills UI never writes outside `~/.enso/`.
+  awareness. Missing bundled files are seeded unless explicitly deleted, known pristine
+  older copies can advance during upgrades, and customized files or symlinks remain
+  untouched.
+- Enso-owned skill directories can be edited or deleted after confirmation. **Planned:**
+  create skills and edit their tool scripts. The skills UI never writes outside
+  `~/.enso/`.
 - `/agents` — renders `AGENTS.md` (the system prompt); editable, writing back to the file
   in the working directory (with its `CLAUDE.md` symlink intact).
 

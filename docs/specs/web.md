@@ -40,7 +40,7 @@ policy, and prevent HTML caching. Host filtering is not authentication: an empty
 | `/jobs/{name}/edit` | POST | **Planned** | Edit job metadata and prerun configuration |
 | `/jobs/{name}/prompt` | POST | Implemented | Edit only the prompt body while preserving raw frontmatter |
 | `/jobs/{name}/toggle` | POST | Implemented | Enable or disable a job |
-| `/jobs/{name}/delete` | POST | **Planned** | Delete a job after confirmation |
+| `/jobs/{name}/delete` | POST | Implemented | Delete a job directory after confirmation |
 | `/jobs/{name}/run` | POST | Implemented | Run now and record a `manual` run |
 | `/runs` | GET | Implemented | Run feed; filter by `?kind=`, `?name=`, `?status=` |
 | `/runs/{id}` | GET | Implemented | Run metadata and captured log output |
@@ -48,7 +48,7 @@ policy, and prevent HTML caching. Host filtering is not authentication: an empty
 | `/skills/new` | GET, POST | **Planned** | Create an Enso-owned skill |
 | `/skills/{name}` | GET | Implemented | View `SKILL.md`; edit controls appear for Enso-owned skills |
 | `/skills/{name}/edit` | POST | Implemented | Replace an Enso-owned skill's `SKILL.md` |
-| `/skills/{name}/delete` | POST | **Planned** | Delete an Enso-owned skill after confirmation |
+| `/skills/{name}/delete` | POST | Implemented | Delete an Enso-owned skill directory after confirmation |
 | `/agents` | GET | Implemented | View the working-directory `AGENTS.md` |
 | `/agents/edit` | POST | Implemented | Save `AGENTS.md` atomically |
 | `/static/*` | GET | Implemented | Vendored HTMX and CSS assets |
@@ -78,9 +78,12 @@ The dashboard shows:
 - **Edit the prompt** (`/jobs/{name}/prompt`): save just the `JOB.md` body from the job
   detail page — the same edit-in-place affordance skills have (`/skills/{name}/edit`),
   preserving the original frontmatter text byte-for-byte.
+- **Delete** (`/jobs/{name}/delete`): a native disclosure confirms the destructive
+  action before removing the entire job directory, including prerun and companion files.
+  Existing run history remains available.
 - Recent runs for this job, linking to `/runs/{id}`.
-- **Planned:** browser forms for create, full metadata/prerun edit, and delete. Until
-  then use `enso job create` or edit/remove the job files directly.
+- **Planned:** browser forms for create and full metadata/prerun editing. Until then use
+  `enso job create` or edit the job files directly.
 
 ### Run detail (`/runs/{id}`)
 
@@ -96,9 +99,11 @@ Two tiers, split by the `~/.enso/` write boundary:
 
 - **Enso skills** — everything under `~/.enso/skills/`, whether created here or seeded from
   Enso's starter set at install. Listed with name + description (from SKILL.md
-  frontmatter). `/skills/{name}` offers whole-file `SKILL.md` editing. Missing bundled
-  files are seeded, known pristine prior versions may be upgraded, and customized files
-  or symlinks are preserved.
+  frontmatter). `/skills/{name}` offers whole-file `SKILL.md` editing and confirmed
+  directory deletion. Missing bundled files are seeded unless they have an explicit
+  deletion marker; known pristine prior versions may be upgraded, and customized files
+  or symlinks are preserved. Deletion also removes any unmodified, unshared tool copy
+  installed from that skill; modified or shared tool files are preserved.
 - **External / "parent" skills** — auto-discovered from the underlying CLIs' own skill
   roots *outside* `~/.enso/` (e.g. `~/.claude/skills/`; the set of roots is configurable,
   see [data-model.md](data-model.md) § Config). Listed **read-only** with their absolute
@@ -107,7 +112,7 @@ Two tiers, split by the `~/.enso/` write boundary:
 - The list has a client-side search across names and descriptions. Names are deduplicated
   using the same precedence as detail routing: Enso-owned skills first, then the first
   configured external root.
-- **Planned:** create/delete controls and tool-script editing for Enso-owned skills.
+- **Planned:** create controls and tool-script editing for Enso-owned skills.
 
 ### AGENTS.md (`/agents`)
 

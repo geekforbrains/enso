@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "macros.html" import delete_control %}
 {% block title %}{{ name }} · Skills · enso{% endblock %}
 
 {% block content %}
@@ -6,18 +7,24 @@
   <a href="/skills" class="text-sm text-indigo-600 hover:underline dark:text-indigo-400">&larr; Skills</a>
 </div>
 
-<div class="mb-4">
-  <div class="flex flex-wrap items-center gap-3">
-    <h1 class="break-words text-2xl font-semibold tracking-tight">{{ name }}</h1>
-    {% if editable %}
-      <span class="rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium
-                   text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300">editable</span>
-    {% else %}
-      <span class="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium
-                   text-gray-500 dark:bg-neutral-700 dark:text-neutral-400">read-only</span>
-    {% endif %}
+<div class="mb-4 flex flex-wrap items-start justify-between gap-3">
+  <div class="min-w-0 flex-1">
+    <div class="flex flex-wrap items-center gap-3">
+      <h1 class="break-words text-2xl font-semibold tracking-tight">{{ name }}</h1>
+      {% if editable %}
+        <span class="rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium
+                     text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300">editable</span>
+      {% else %}
+        <span class="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium
+                     text-gray-500 dark:bg-neutral-700 dark:text-neutral-400">read-only</span>
+      {% endif %}
+    </div>
+    <div class="break-anywhere mt-2 font-mono text-xs text-gray-400 dark:text-neutral-500">{{ path }}</div>
   </div>
-  <div class="break-anywhere mt-2 font-mono text-xs text-gray-400 dark:text-neutral-500">{{ path }}</div>
+  {% if editable %}
+    {{ delete_control("/skills/" ~ name ~ "/delete", "skill", name,
+                      "/skills/" ~ name, csrf_token) }}
+  {% endif %}
 </div>
 
 {% if editable %}

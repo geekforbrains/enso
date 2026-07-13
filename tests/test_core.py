@@ -14,6 +14,7 @@ import pytest
 
 from enso import core as core_module
 from enso import messages
+from enso.config import SKILL_TOMBSTONES_DIRNAME
 from enso.core import Runtime, split_text
 from enso.jobs import Job
 from enso.providers.claude import KageClaudeProvider
@@ -126,6 +127,18 @@ def test_bundled_skills_are_seeded_once(tmp_path):
     Runtime._install_bundled_skills(str(skills_dir))
 
     assert skill_file.read_text() == "locally edited through the dashboard\n"
+
+
+def test_bundled_skill_tombstone_prevents_reseeding(tmp_path):
+    skills_dir = tmp_path / "skills"
+    tombstones = skills_dir / SKILL_TOMBSTONES_DIRNAME
+    tombstones.mkdir(parents=True)
+    (tombstones / "jobs.deleted").write_text("")
+
+    Runtime._install_bundled_skills(str(skills_dir))
+
+    assert not (skills_dir / "jobs").exists()
+    assert (skills_dir / "slack" / "SKILL.md").is_file()
 
 
 def test_bundled_skills_update_only_known_pristine_files(tmp_path, monkeypatch):

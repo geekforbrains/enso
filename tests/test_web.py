@@ -33,6 +33,28 @@ def _request_with_skill_roots(*roots: Path) -> SimpleNamespace:
     )
 
 
+def _skill_web_app(tmp_path, monkeypatch, *external_roots: Path):
+    from starlette.testclient import TestClient
+
+    config_dir = tmp_path / "enso"
+    skills_dir = config_dir / "skills"
+    skills_dir.mkdir(parents=True)
+    working_dir = tmp_path / "workspace"
+    working_dir.mkdir()
+    monkeypatch.setattr(web_app, "CONFIG_DIR", str(config_dir))
+    runtime = SimpleNamespace(
+        working_dir=str(working_dir),
+        config={
+            "web": {
+                "external_skill_roots": [str(root) for root in external_roots]
+            }
+        }
+    )
+    return skills_dir, TestClient(
+        web_app.create_app(runtime), base_url="http://127.0.0.1"
+    )
+
+
 def test_external_skills_exclude_enso_owned_names(tmp_path, monkeypatch):
     config_dir = tmp_path / "enso"
     enso_path = _write_skill(config_dir / "skills", "shared", "Enso copy")
@@ -72,6 +94,163 @@ def test_external_skills_keep_first_root_for_duplicate_names(tmp_path, monkeypat
             skill["path"],
             False,
         )
+
+
+def test_skill_delete_removes_owned_tree_and_reveals_external_copy(
+    tmp_path, monkeypatch
+):
+    external_root = tmp_path / "external"
+    external_path = _write_skill(external_root, "shared", "External copy")
+    skills_dir, client = _skill_web_app(
+        tmp_path, monkeypatch, external_root
+    )
+    enso_path = _write_skill(skills_dir, "shared", "Enso copy")
+    asset = enso_path.parent / "assets" / "notes.txt"
+    asset.parent.mkdir()
+    asset.write_text("skill asset", encoding="utf-8")
+    tool = enso_path.parent / "shared_tool.py"
+    tool.write_text("print('tool')\n", encoding="utf-8")
+    installed_tool = tmp_path / "workspace" / "tools" / tool.name
+    installed_tool.parent.mkdir()
+    installed_tool.write_bytes(tool.read_bytes())
+    outside = tmp_path / "outside-skill.txt"
+    outside.write_text("keep me", encoding="utf-8")
+    (enso_path.parent / "outside-link").symlink_to(outside)
+
+    detail = client.get("/skills/shared")
+    assert detail.status_code == 200
+    assert 'action="/skills/shared/delete"' in detail.text
+    assert "Delete “shared” from disk?" in detail.text
+    assert client.app.state.csrf_token in detail.text
+
+    rejected = client.post("/skills/shared/delete", follow_redirects=False)
+    assert rejected.status_code == 403
+    assert enso_path.parent.is_dir()
+
+    response = client.post(
+        "/skills/shared/delete",
+        data={"_csrf": client.app.state.csrf_token},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/skills?msg=Skill+deleted+from+disk"
+    assert not enso_path.parent.exists()
+    assert outside.read_text(encoding="utf-8") == "keep me"
+    assert not (skills_dir / ".deleted" / "shared.deleted").exists()
+    assert not installed_tool.exists()
+    assert external_path.is_file()
+
+    revealed = client.get("/skills/shared")
+    assert revealed.status_code == 200
+    assert "External copy" in revealed.text
+    assert "read-only" in revealed.text
+    assert 'action="/skills/shared/delete"' not in revealed.text
+
+
+def test_skill_delete_rejects_external_and_missing_skills(tmp_path, monkeypatch):
+    external_root = tmp_path / "external"
+    external_path = _write_skill(external_root, "system-only")
+    _, client = _skill_web_app(tmp_path, monkeypatch, external_root)
+    token = client.app.state.csrf_token
+
+    detail = client.get("/skills/system-only")
+    external_delete = client.post(
+        "/skills/system-only/delete",
+        data={"_csrf": token},
+        follow_redirects=False,
+    )
+    missing_delete = client.post(
+        "/skills/missing/delete",
+        data={"_csrf": token},
+        follow_redirects=False,
+    )
+
+    assert detail.status_code == 200
+    assert 'action="/skills/system-only/delete"' not in detail.text
+    assert external_delete.status_code == 403
+    assert external_path.is_file()
+    assert missing_delete.status_code == 404
+
+
+def test_skill_delete_unlinks_directory_symlink_without_touching_target(
+    tmp_path, monkeypatch
+):
+    skills_dir, client = _skill_web_app(tmp_path, monkeypatch)
+    target_path = _write_skill(tmp_path / "outside-skills", "linked")
+    link = skills_dir / "linked"
+    link.symlink_to(target_path.parent, target_is_directory=True)
+
+    response = client.post(
+        "/skills/linked/delete",
+        data={"_csrf": client.app.state.csrf_token},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert not link.exists()
+    assert not link.is_symlink()
+    assert target_path.is_file()
+
+
+def test_skill_delete_preserves_modified_installed_tool(tmp_path, monkeypatch):
+    skills_dir, client = _skill_web_app(tmp_path, monkeypatch)
+    skill_path = _write_skill(skills_dir, "custom")
+    tool = skill_path.parent / "custom_tool.py"
+    tool.write_text("print('source')\n", encoding="utf-8")
+    installed_tool = tmp_path / "workspace" / "tools" / tool.name
+    installed_tool.parent.mkdir()
+    installed_tool.write_text("print('locally modified')\n", encoding="utf-8")
+
+    response = client.post(
+        "/skills/custom/delete",
+        data={"_csrf": client.app.state.csrf_token},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert not skill_path.parent.exists()
+    assert installed_tool.read_text(encoding="utf-8") == "print('locally modified')\n"
+
+
+def test_skill_delete_tombstone_prevents_bundled_skill_reseed(
+    tmp_path, monkeypatch
+):
+    from enso.core import Runtime
+
+    skills_dir, client = _skill_web_app(tmp_path, monkeypatch)
+    skill_path = _write_skill(skills_dir, "jobs")
+
+    response = client.post(
+        "/skills/jobs/delete",
+        data={"_csrf": client.app.state.csrf_token},
+        follow_redirects=False,
+    )
+    Runtime._install_bundled_skills(str(skills_dir))
+
+    assert response.status_code == 303
+    assert (skills_dir / ".deleted" / "jobs.deleted").is_file()
+    assert not skill_path.parent.exists()
+
+
+def test_skill_delete_rejects_symlinked_tombstone_directory(
+    tmp_path, monkeypatch
+):
+    skills_dir, client = _skill_web_app(tmp_path, monkeypatch)
+    skill_path = _write_skill(skills_dir, "jobs")
+    outside = tmp_path / "outside-tombstones"
+    outside.mkdir()
+    (skills_dir / ".deleted").symlink_to(outside, target_is_directory=True)
+
+    response = client.post(
+        "/skills/jobs/delete",
+        data={"_csrf": client.app.state.csrf_token},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 403
+    assert skill_path.is_file()
+    assert not (outside / "jobs.deleted").exists()
 
 
 def test_dashboard_shows_visible_skill_total_and_tier_counts(tmp_path, monkeypatch):
@@ -130,10 +309,94 @@ def _job_web_app(tmp_path, monkeypatch):
     jobs_dir.mkdir()
     for mod in (cfg, jobs_mod, web_app):
         monkeypatch.setattr(mod, "JOBS_DIR", str(jobs_dir))
+    monkeypatch.setattr(web_app.runs, "list_runs", lambda **_kwargs: [])
     runtime = SimpleNamespace(config={"web": {}})
     return jobs_dir, TestClient(
         web_app.create_app(runtime), base_url="http://127.0.0.1"
     )
+
+
+def test_job_delete_removes_entire_directory_and_preserves_link_targets(
+    tmp_path, monkeypatch
+):
+    jobs_dir, client = _job_web_app(tmp_path, monkeypatch)
+    job_md = _write_job(jobs_dir, "demo", "Delete this job.")
+    companion = job_md.parent / "scripts" / "prerun.py"
+    companion.parent.mkdir()
+    companion.write_text("print('ready')\n", encoding="utf-8")
+    outside = tmp_path / "outside-job.txt"
+    outside.write_text("keep me", encoding="utf-8")
+    (job_md.parent / "outside-link").symlink_to(outside)
+    sibling = _write_job(jobs_dir, "keep", "Keep this job.")
+
+    detail = client.get("/jobs/demo")
+    assert detail.status_code == 200
+    assert 'action="/jobs/demo/delete"' in detail.text
+    assert "Delete “Demo” from disk?" in detail.text
+    assert client.app.state.csrf_token in detail.text
+
+    rejected = client.post("/jobs/demo/delete", follow_redirects=False)
+    assert rejected.status_code == 403
+    assert job_md.parent.is_dir()
+
+    response = client.post(
+        "/jobs/demo/delete",
+        data={"_csrf": client.app.state.csrf_token},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/jobs?msg=Job+deleted+from+disk"
+    assert not job_md.parent.exists()
+    assert outside.read_text(encoding="utf-8") == "keep me"
+    assert sibling.is_file()
+
+
+def test_job_delete_unlinks_directory_symlink_without_touching_target(
+    tmp_path, monkeypatch
+):
+    jobs_dir, client = _job_web_app(tmp_path, monkeypatch)
+    target_path = _write_job(tmp_path, "outside-job", "Outside prompt.")
+    link = jobs_dir / "linked"
+    link.symlink_to(target_path.parent, target_is_directory=True)
+
+    response = client.post(
+        "/jobs/linked/delete",
+        data={"_csrf": client.app.state.csrf_token},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert not link.exists()
+    assert not link.is_symlink()
+    assert target_path.is_file()
+
+
+def test_job_delete_unknown_job_404s(tmp_path, monkeypatch):
+    _, client = _job_web_app(tmp_path, monkeypatch)
+
+    response = client.post(
+        "/jobs/missing/delete",
+        data={"_csrf": client.app.state.csrf_token},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "name", ["", ".", "..", "../outside", "nested/child", "nested\\child", "bad\0name"]
+)
+def test_remove_owned_tree_rejects_unsafe_names(tmp_path, name):
+    owned = tmp_path / "owned"
+    owned.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    with pytest.raises(ValueError, match="Unsafe directory name"):
+        web_app._remove_owned_tree(str(owned), name)
+
+    assert outside.is_dir()
 
 
 def test_job_prompt_edit_round_trips_and_preserves_frontmatter(tmp_path, monkeypatch):

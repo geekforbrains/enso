@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from croniter import croniter
 
 from . import messages, runs
-from .config import CONFIG_DIR, STATE_FILE
+from .config import CONFIG_DIR, SKILL_TOMBSTONES_DIRNAME, STATE_FILE
 from .jobs import Job, load_jobs
 from .logging_config import logging_flags
 from .providers import BaseProvider, StreamEvent, get_provider
@@ -433,8 +433,15 @@ class Runtime:
         bundled = importlib.resources.files("enso").joinpath("skills")
         if not bundled.is_dir():
             return
+        tombstones_dir = os.path.join(skills_dir, SKILL_TOMBSTONES_DIRNAME)
         for skill_dir in bundled.iterdir():
             if not skill_dir.is_dir():
+                continue
+            tombstone = os.path.join(
+                tombstones_dir, f"{skill_dir.name}.deleted"
+            )
+            if os.path.lexists(tombstone):
+                log.info("Preserving deleted bundled skill: %s", skill_dir.name)
                 continue
             dest = os.path.join(skills_dir, skill_dir.name)
             if os.path.lexists(dest):

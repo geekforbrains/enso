@@ -23,8 +23,15 @@ are append-only telemetry no one edits by hand — the one dataset that earns a 
 ├── skills/              # existing — Enso-owned skills (editable via UI). External
 │                        #   "parent" skills live OUTSIDE ~/.enso (e.g. ~/.claude/skills),
 │                        #   discovered read-only via web.external_skill_roots
+│   └── .deleted/        # deletion markers preventing bundled skills from being reseeded
 └── workspace/           # existing — working_dir (AGENTS.md, CLAUDE.md, tools/)
 ```
+
+Deleting an Enso-owned skill removes its complete directory. For a bundled skill, a
+zero-byte marker at `skills/.deleted/<name>.deleted` records the explicit deletion so it
+is not silently recreated the next time the agent service installs its system prompts.
+Custom and external skill names do not receive markers; external skills cannot be deleted
+by the dashboard.
 
 `runs/` mirrors a convention already in place: it is a flat blob store keyed by run id.
 

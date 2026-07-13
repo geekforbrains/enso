@@ -1,5 +1,43 @@
 {# Reusable UI fragments. #}
 
+{% macro delete_control(action, kind, label, cancel_url, csrf_token) %}
+  <details class="relative">
+    <summary class="touch-target inline-flex cursor-pointer list-none items-center rounded-md border
+                    border-red-300 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50
+                    focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500
+                    focus-visible:ring-offset-2 dark:border-red-800 dark:text-red-400
+                    dark:hover:bg-red-950/40">
+      Delete
+    </summary>
+    <div class="absolute right-0 z-10 mt-2 w-72 rounded-lg border border-gray-200 bg-white
+                p-4 text-left shadow-xl dark:border-neutral-700 dark:bg-neutral-800">
+      <p id="{{ kind }}-delete-warning" class="text-sm font-medium">
+        Delete “{{ label }}” from disk?
+      </p>
+      <p class="mt-1 text-sm text-gray-500 dark:text-neutral-400">
+        Every file in its directory will be removed. This cannot be undone.
+      </p>
+      <div class="mt-3 flex items-center gap-2">
+        <form method="post" action="{{ action }}">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+          <button type="submit" aria-describedby="{{ kind }}-delete-warning"
+                  class="touch-target rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white
+                         hover:bg-red-500 focus:outline-none focus-visible:ring-2
+                         focus-visible:ring-red-500 focus-visible:ring-offset-2">
+            Delete {{ kind }}
+          </button>
+        </form>
+        <a href="{{ cancel_url }}"
+           class="touch-target inline-flex items-center rounded-md px-3 py-2 text-sm font-medium
+                  text-gray-600 hover:bg-gray-100 focus:outline-none focus-visible:ring-2
+                  focus-visible:ring-indigo-500 dark:text-neutral-300 dark:hover:bg-neutral-700">
+          Cancel
+        </a>
+      </div>
+    </div>
+  </details>
+{% endmacro %}
+
 {% macro run_badge(status) %}
   <span class="inline-flex shrink-0 items-center whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium
                {{ run_badges.get(status, run_badges['error']) }}">
