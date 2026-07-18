@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "macros.html" import run_badge, run_card %}
+{% from "macros.html" import btn_primary, run_badge, run_card %}
 {% block title %}Runs · enso{% endblock %}
 
 {% block content %}
@@ -39,12 +39,7 @@
                   dark:border-neutral-600 dark:bg-neutral-900 dark:text-gray-100">
   </div>
   <div class="flex items-end gap-2 xl:justify-end">
-    <button type="submit"
-            class="touch-target rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white
-                   hover:bg-indigo-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500
-                   focus-visible:ring-offset-2">
-      Apply filters
-    </button>
+    {{ btn_primary("Apply filters") }}
     {% if active_kind or active_status or active_name %}
       <a href="/runs" class="touch-target inline-flex items-center rounded-md border border-gray-300 px-4 py-2
                              text-sm font-medium hover:bg-gray-50 dark:border-neutral-600

@@ -6,12 +6,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from enso.transports import safe_filename
 from enso.transports.slack import (
     SlackContext,
     SlackTransport,
     _attachment_files,
     _attachments_prompt,
-    _safe_filename,
 )
 
 # ---------------------------------------------------------------------------
@@ -1183,19 +1183,19 @@ class TestNotify:
 
 
 class TestSafeFilename:
-    """Tests for _safe_filename."""
+    """Tests for safe_filename."""
 
     def test_normal_filename(self):
-        assert _safe_filename("report.pdf") == "report.pdf"
+        assert safe_filename("report.pdf") == "report.pdf"
 
     def test_path_traversal(self):
-        assert _safe_filename("../../etc/passwd") == "passwd"
+        assert safe_filename("../../etc/passwd") == "passwd"
 
     def test_dotfile(self):
-        assert _safe_filename(".env") == "env"
+        assert safe_filename(".env") == "env"
 
     def test_nested_path(self):
-        assert _safe_filename("/home/user/file.txt") == "file.txt"
+        assert safe_filename("/home/user/file.txt") == "file.txt"
 
 
 # ---------------------------------------------------------------------------

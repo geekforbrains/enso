@@ -22,10 +22,10 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from croniter import croniter
 
 from . import messages, runs
-from .config import CONFIG_DIR, SKILL_TOMBSTONES_DIRNAME, STATE_FILE
+from .config import CONFIG_DIR, SKILL_TOMBSTONES_DIRNAME, STATE_FILE, claude_cfg
 from .jobs import Job, load_jobs
 from .logging_config import logging_flags
-from .providers import BaseProvider, StreamEvent, get_provider
+from .providers import BaseProvider, StreamEvent, get_provider, provider_class
 
 if TYPE_CHECKING:
     from .transports import BaseTransport, TransportContext
@@ -644,13 +644,10 @@ class Runtime:
         stored = self.effort_by_chat_provider_model.get((chat_id, provider, model))
         if stored is None:
             return None
-        if provider == "claude":
-            from .providers.claude import clamp_effort
-        elif provider == "codex":
-            from .providers.codex import clamp_effort
-        else:
+        provider_cls = provider_class(provider)
+        if not provider_cls.effort_levels:
             return None
-        return clamp_effort(stored, model)
+        return provider_cls.clamp_effort(stored, model)
 
     def get_chat_lock(self, chat_id: str) -> asyncio.Lock:
         """Get or create a per-chat lock to serialize requests."""
@@ -700,9 +697,7 @@ class Runtime:
         """
         if provider_name != "claude":
             return None
-        providers = self.config.get("providers", {})
-        claude_cfg = providers.get("claude", {}) if isinstance(providers, dict) else {}
-        return "kage" if claude_cfg.get("job_runner") == "kage" else "print"
+        return "kage" if claude_cfg(self.config).get("job_runner") == "kage" else "print"
 
     def _interactive_overrides(
         self, provider_name: str, chat_id: str, model: str, effort: str | None,
@@ -718,9 +713,8 @@ class Runtime:
         overrides: dict[str, Any] = {}
         if provider_name != "claude":
             return overrides
-        providers = self.config.get("providers", {})
-        claude_cfg = providers.get("claude", {}) if isinstance(providers, dict) else {}
-        if claude_cfg.get("runner") != "kage":
+        cfg = claude_cfg(self.config)
+        if cfg.get("runner") != "kage":
             return overrides
 
         key = chat_id
@@ -730,7 +724,7 @@ class Runtime:
         changed = prev is not None and prev != current
         # ``kage_restart`` (default on) gates whether we restart at all; the
         # diff decides whether a restart is warranted this turn.
-        enabled = bool(claude_cfg.get("kage_restart", True))
+        enabled = bool(cfg.get("kage_restart", True))
         overrides["kage_restart"] = enabled and changed
         log.debug(
             "[claude] kage restart decision chat=%s prev=%s current=%s -> restart=%s",
@@ -1262,6 +1256,13 @@ class Runtime:
         stop = asyncio.Event()
         ticker = asyncio.create_task(self._run_ticker(ctx, status_msg, state, stop))
 
+        def stop_ticker() -> None:
+            # Must run before the status message is edited or deleted; a
+            # late tick would overwrite the final status.
+            stop.set()
+            ticker.cancel()
+
+        msg_limit = self.transport.message_limit if self.transport else 4096
         response_parts: list[str] = []
         error_text = ""
         usage_pct: int | None = None
@@ -1289,8 +1290,7 @@ class Runtime:
                 elif event.kind == "usage" and event.usage:
                     usage_pct = event.usage.get("pct")
 
-            stop.set()
-            ticker.cancel()
+            stop_ticker()
             if status_msg is not None:
                 await ctx.delete_status(status_msg)
 
@@ -1309,7 +1309,6 @@ class Runtime:
             usage_part = f" / {usage_pct}%" if usage_pct is not None else ""
             prefix = f"({display}{effort_part}{usage_part} / {state['elapsed']}s)"
 
-            msg_limit = self.transport.message_limit if self.transport else 4096
             if response_text:
                 for chunk in split_text(f"{prefix}\n{response_text}", limit=msg_limit):
                     await ctx.reply(chunk)
@@ -1319,16 +1318,14 @@ class Runtime:
                 await ctx.reply(f"{prefix} (No response)")
 
         except asyncio.CancelledError:
-            stop.set()
-            ticker.cancel()
+            stop_ticker()
             if status_msg is not None:
                 with contextlib.suppress(Exception):
                     await ctx.edit_status(status_msg, f"({display}{effort_part}) Stopped.")
             raise
 
         except Exception as exc:
-            stop.set()
-            ticker.cancel()
+            stop_ticker()
             log.error("Error processing %s request: %s", provider_name, exc, exc_info=True)
             prefix = f"({display}{effort_part} / {state['elapsed']}s)"
             try:
@@ -1337,7 +1334,6 @@ class Runtime:
                     return
             except Exception:
                 pass
-            msg_limit = self.transport.message_limit if self.transport else 4096
             for chunk in split_text(f"{prefix} Error: {exc}", limit=msg_limit):
                 await ctx.reply(chunk)
 

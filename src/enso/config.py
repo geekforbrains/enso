@@ -54,6 +54,12 @@ DEFAULT_WEB = {
 DEFAULT_RUNS = {"keep": 500, "max_age_days": 30}
 
 
+def claude_cfg(config: dict) -> dict:
+    """Return the ``providers.claude`` config, tolerating malformed shapes."""
+    providers = config.get("providers", {})
+    return providers.get("claude", {}) if isinstance(providers, dict) else {}
+
+
 def load_config() -> dict:
     """Load config from ~/.enso/config.json, creating defaults if missing."""
     os.makedirs(CONFIG_DIR, exist_ok=True)

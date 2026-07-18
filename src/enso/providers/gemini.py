@@ -92,9 +92,6 @@ class GeminiProvider(BaseProvider):
 
         return events
 
-    def stdout_limit(self) -> int | None:
-        return 10 * 1024 * 1024
-
     def format_response(self, parts: list[str]) -> str:
         """Gemini streams content in chunks; join them all."""
         return "".join(parts)

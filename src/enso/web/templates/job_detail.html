@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "macros.html" import delete_control, related_run %}
+{% from "macros.html" import btn_primary, delete_control, editor_form, related_run %}
 {% block title %}{{ job.name }} · enso{% endblock %}
 
 {% block content %}
@@ -18,12 +18,7 @@
     {% include "_job_toggle.html" %}
     <form method="post" action="/jobs/{{ job.dir_name }}/run">
       <input type="hidden" name="_csrf" value="{{ csrf_token }}">
-      <button type="submit"
-              class="touch-target rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white
-                     hover:bg-indigo-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500
-                     focus-visible:ring-offset-2">
-        Run now
-      </button>
+      {{ btn_primary("Run now") }}
     </form>
     {{ delete_control("/jobs/" ~ job.dir_name ~ "/delete", "job", job.name,
                       "/jobs/" ~ job.dir_name, csrf_token) }}
@@ -93,52 +88,22 @@
   </div>
 </div>
 
-<form method="post" action="/jobs/{{ job.dir_name }}/prompt"
-      class="rounded-lg border border-gray-200 bg-white p-4 shadow-sm
-             dark:border-neutral-700 dark:bg-neutral-800">
-  <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+{% call editor_form("/jobs/" ~ job.dir_name ~ "/prompt", "job-prompt", "JOB.md prompt",
+                    job.prompt, "Save JOB.md", 24, csrf_token) %}
   <h2 class="mb-3 text-lg font-semibold">Prompt</h2>
-  <label for="job-prompt" class="sr-only">JOB.md prompt</label>
-  <textarea id="job-prompt" name="content" rows="24" spellcheck="false"
-            class="w-full rounded-md border border-gray-300 bg-white px-3 py-2 font-mono text-sm
-                   focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500
-                   dark:border-neutral-600 dark:bg-neutral-900 dark:text-gray-100">{{ job.prompt }}</textarea>
-  <div class="mt-3">
-    <button type="submit"
-            class="touch-target rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white
-                   hover:bg-indigo-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500
-                   focus-visible:ring-offset-2">
-      Save JOB.md
-    </button>
-  </div>
-</form>
+{% endcall %}
 
 {% if job.prerun %}
   {% if prerun_content is not none %}
-    <form method="post" action="/jobs/{{ job.dir_name }}/prerun"
-          class="mt-6 rounded-lg border border-gray-200 bg-white p-4 shadow-sm
-                 dark:border-neutral-700 dark:bg-neutral-800">
-      <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    {% call editor_form("/jobs/" ~ job.dir_name ~ "/prerun", "job-prerun", "Pre-run script content",
+                        prerun_content, "Save pre-run script", 18, csrf_token, extra="mt-6") %}
       <div class="mb-3 flex flex-wrap items-baseline justify-between gap-2">
         <h2 class="text-lg font-semibold">Pre-run script</h2>
         <span class="break-anywhere font-mono text-xs text-gray-500 dark:text-neutral-400">
           {{ job.prerun }}
         </span>
       </div>
-      <label for="job-prerun" class="sr-only">Pre-run script content</label>
-      <textarea id="job-prerun" name="content" rows="18" spellcheck="false"
-                class="w-full rounded-md border border-gray-300 bg-white px-3 py-2 font-mono text-sm
-                       focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500
-                       dark:border-neutral-600 dark:bg-neutral-900 dark:text-gray-100">{{ prerun_content }}</textarea>
-      <div class="mt-3">
-        <button type="submit"
-                class="touch-target rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white
-                       hover:bg-indigo-500 focus:outline-none focus-visible:ring-2
-                       focus-visible:ring-indigo-500 focus-visible:ring-offset-2">
-          Save pre-run script
-        </button>
-      </div>
-    </form>
+    {% endcall %}
   {% else %}
     <section class="mt-6 rounded-lg border border-gray-200 bg-white p-4 shadow-sm
                     dark:border-neutral-700 dark:bg-neutral-800">

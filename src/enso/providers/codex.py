@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import ClassVar
 
 from . import BaseProvider, StreamEvent, truncate_status
 
@@ -12,32 +13,10 @@ CODEX_MODEL_ALIASES = {
     "luna": "gpt-5.6-luna",
 }
 
-# Reasoning-effort levels in the Codex 0.144 model catalog, least to most.
-EFFORT_LEVELS: list[str] = ["low", "medium", "high", "xhigh", "max", "ultra"]
-
-_MODEL_MAX_EFFORT = {
-    "gpt-5.6-sol": "ultra",
-    "gpt-5.6-terra": "ultra",
-    "gpt-5.6-luna": "max",
-}
-
 
 def resolve_codex_model(model: str) -> str:
     """Translate Enso's short Codex model names to CLI model IDs."""
     return CODEX_MODEL_ALIASES.get(model, model)
-
-
-def max_effort_for_model(model: str) -> str:
-    """Return the highest effort level advertised for a Codex model."""
-    return _MODEL_MAX_EFFORT.get(resolve_codex_model(model), "xhigh")
-
-
-def clamp_effort(effort: str, model: str) -> str:
-    """Degrade ``effort`` to the highest level the model accepts."""
-    if effort not in EFFORT_LEVELS:
-        return effort
-    cap = max_effort_for_model(model)
-    return EFFORT_LEVELS[min(EFFORT_LEVELS.index(effort), EFFORT_LEVELS.index(cap))]
 
 
 def _reasoning_override(effort: str) -> str:
@@ -75,6 +54,20 @@ def _format_status(event: dict) -> str | None:
 
 class CodexProvider(BaseProvider):
     name = "codex"
+
+    # Reasoning-effort levels in the Codex 0.144 model catalog, least to most.
+    effort_levels: ClassVar[list[str]] = ["low", "medium", "high", "xhigh", "max", "ultra"]
+    _model_max_effort: ClassVar[dict[str, str]] = {
+        "gpt-5.6-sol": "ultra",
+        "gpt-5.6-terra": "ultra",
+        "gpt-5.6-luna": "max",
+    }
+    _default_max_effort = "xhigh"
+
+    @classmethod
+    def max_effort_for_model(cls, model: str) -> str:
+        """Return the highest effort level advertised for a Codex model."""
+        return super().max_effort_for_model(resolve_codex_model(model))
 
     def build_command(
         self,
@@ -156,9 +149,6 @@ class CodexProvider(BaseProvider):
                 events.append(StreamEvent(kind="session", session_id=thread_id))
 
         return events
-
-    def stdout_limit(self) -> int | None:
-        return 10 * 1024 * 1024
 
     def stderr_to_stdout(self) -> bool:
         return True

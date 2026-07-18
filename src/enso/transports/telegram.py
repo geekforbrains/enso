@@ -37,12 +37,13 @@ from ..commands import (
     cmd_logs,
     cmd_model,
     cmd_status,
+    cmd_stop_async,
     cmd_update_async,
     cmd_use,
 )
 from ..formatting import md_to_html
 from ..providers import PROVIDER_NAMES
-from . import BaseTransport, TransportContext
+from . import BaseTransport, TransportContext, safe_filename
 
 if TYPE_CHECKING:
     from ..core import Runtime
@@ -88,11 +89,6 @@ def _restart() -> None:
     elif sys.platform == "linux":
         os.execvp("systemctl", ["systemctl", "--user", "restart", "enso.service"])
     os.execvp(sys.executable, [sys.executable, "-m", "enso.cli", "serve"])
-
-
-def _safe_filename(name: str) -> str:
-    """Sanitise a filename from Telegram to prevent path traversal."""
-    return os.path.basename(name).lstrip(".")
 
 
 class TelegramContext(TransportContext):
@@ -221,35 +217,13 @@ class TelegramTransport(BaseTransport):
         """Register commands with Telegram and start background tasks."""
         self._bot = app.bot
         await self._bot.set_my_commands(COMMANDS)
-        self._scheduler_task = asyncio.create_task(
-            self.runtime.run_job_scheduler()
-        )
-        self._update_confirmation_task = asyncio.create_task(
-            self._confirm_pending_update()
-        )
+        self._start_background_tasks()
 
-    async def _confirm_pending_update(self) -> None:
-        """Confirm that the newly installed process and services came up."""
-        from ..updater import (
-            clear_update_confirmation,
-            pending_update_confirmation,
-            update_confirmation_message,
-            wait_for_service_settle,
+    async def _send_update_confirmation(self, pending: dict, text: str) -> bool:
+        await self._bot.send_message(
+            chat_id=pending.get("channel", ""), text=text,
         )
-
-        pending = pending_update_confirmation(self.name)
-        if not pending:
-            return
-        await wait_for_service_settle()
-        try:
-            await self._bot.send_message(
-                chat_id=pending.get("channel", ""),
-                text=update_confirmation_message(pending),
-            )
-        except Exception:
-            log.exception("Failed to send Telegram update confirmation")
-            return
-        clear_update_confirmation(str(pending.get("id", "")))
+        return True
 
     async def notify(self, text: str, *, destination: str | None = None) -> None:
         """Send a one-way notification.
@@ -350,19 +324,7 @@ class TelegramTransport(BaseTransport):
         if not self._is_authorized(update):
             return
         conv_id = str(update.effective_chat.id)
-        queued_count = self.runtime.clear_queue(conv_id)
-        had, error = await self.runtime.stop_chat(conv_id)
-        if not had and not queued_count:
-            await update.message.reply_text("Nothing running.")
-        elif error:
-            await update.message.reply_text(f"Error stopping: {error}")
-        else:
-            parts = []
-            if had:
-                parts.append("Stopped.")
-            if queued_count:
-                parts.append(f"Cleared {queued_count} queued message(s).")
-            await update.message.reply_text(" ".join(parts))
+        await update.message.reply_text(await cmd_stop_async(self.runtime, conv_id))
 
     async def _cmd_queue(self, update: Update, _ctx: Any) -> None:
         if not self._is_authorized(update):
@@ -713,19 +675,19 @@ def _build_reply_context(msg: Any) -> str | None:
 def _resolve_file(msg: Any) -> tuple[Any, str, str]:
     """Extract the file object, filename, and description from a Telegram message."""
     if msg.document:
-        name = _safe_filename(msg.document.file_name or f"document_{uuid.uuid4().hex[:8]}")
+        name = safe_filename(msg.document.file_name or f"document_{uuid.uuid4().hex[:8]}")
         return msg.document, name, f"file ({name})"
     if msg.photo:
         name = f"photo_{uuid.uuid4().hex[:8]}.jpg"
         return msg.photo[-1], name, "photo"
     if msg.audio:
-        name = _safe_filename(msg.audio.file_name or f"audio_{uuid.uuid4().hex[:8]}.mp3")
+        name = safe_filename(msg.audio.file_name or f"audio_{uuid.uuid4().hex[:8]}.mp3")
         return msg.audio, name, f"audio file ({name})"
     if msg.voice:
         name = f"voice_{uuid.uuid4().hex[:8]}.ogg"
         return msg.voice, name, "voice message"
     if msg.video:
-        name = _safe_filename(msg.video.file_name or f"video_{uuid.uuid4().hex[:8]}.mp4")
+        name = safe_filename(msg.video.file_name or f"video_{uuid.uuid4().hex[:8]}.mp4")
         return msg.video, name, f"video ({name})"
     if msg.video_note:
         name = f"videonote_{uuid.uuid4().hex[:8]}.mp4"

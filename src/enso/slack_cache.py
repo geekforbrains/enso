@@ -85,7 +85,7 @@ def save(data: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _get(token: str, method: str, params: dict[str, str] | None = None) -> dict:
+def api_get(token: str, method: str, params: dict[str, str] | None = None) -> dict:
     """Call a GET-style Slack API method. Raises on transport failure."""
     url = API + method
     if params:
@@ -97,7 +97,7 @@ def _get(token: str, method: str, params: dict[str, str] | None = None) -> dict:
         return json.loads(resp.read())
 
 
-def _post(token: str, method: str, body: dict) -> dict:
+def api_post(token: str, method: str, body: dict) -> dict:
     """Call a POST-style Slack API method with a JSON body."""
     data = json.dumps(body).encode()
     req = urllib.request.Request(
@@ -160,7 +160,7 @@ def _paginate(token: str, method: str, params: dict[str, str], key: str) -> list
         page_params = dict(params)
         if cursor:
             page_params["cursor"] = cursor
-        data = _get(token, method, page_params)
+        data = api_get(token, method, page_params)
         if not data.get("ok"):
             err = data.get("error", "unknown")
             raise RuntimeError(f"{method}: {err}")
@@ -265,7 +265,7 @@ def whois(user_id: str, *, token: str | None = None) -> dict | None:
     entry = cache["users"]["items"].get(user_id)
     if entry or not token:
         return entry
-    data = _get(token, "users.info", {"user": user_id})
+    data = api_get(token, "users.info", {"user": user_id})
     if not data.get("ok") or not data.get("user"):
         return None
     user = _normalise_user(data["user"])
@@ -280,7 +280,7 @@ def open_dm(user_id: str, token: str) -> str:
     dm = cache.get("dm_cache", {}).get(user_id)
     if dm:
         return dm
-    data = _post(token, "conversations.open", {"users": user_id})
+    data = api_post(token, "conversations.open", {"users": user_id})
     if not data.get("ok"):
         raise RuntimeError(f"conversations.open: {data.get('error', 'unknown')}")
     channel_id = data["channel"]["id"]

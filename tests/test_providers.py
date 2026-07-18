@@ -3,26 +3,8 @@
 from __future__ import annotations
 
 from enso.providers import get_provider
-from enso.providers.claude import (
-    EFFORT_LEVELS,
-    ClaudeProvider,
-    KageClaudeProvider,
-    clamp_effort,
-    max_effort_for_model,
-)
-from enso.providers.codex import (
-    CODEX_MODEL_ALIASES,
-    CodexProvider,
-)
-from enso.providers.codex import (
-    EFFORT_LEVELS as CODEX_EFFORT_LEVELS,
-)
-from enso.providers.codex import (
-    clamp_effort as clamp_codex_effort,
-)
-from enso.providers.codex import (
-    max_effort_for_model as max_codex_effort_for_model,
-)
+from enso.providers.claude import ClaudeProvider, KageClaudeProvider
+from enso.providers.codex import CODEX_MODEL_ALIASES, CodexProvider
 from enso.providers.gemini import GeminiProvider
 
 # -- Command building --
@@ -388,52 +370,52 @@ def test_gemini_ignores_effort():
 
 
 def test_effort_levels_ordered():
-    assert EFFORT_LEVELS == ["low", "medium", "high", "xhigh", "max"]
+    assert ClaudeProvider.effort_levels == ["low", "medium", "high", "xhigh", "max"]
 
 
 def test_max_effort_opus_is_max():
-    assert max_effort_for_model("opus") == "max"
-    assert max_effort_for_model("claude-opus-4-7") == "max"
+    assert ClaudeProvider.max_effort_for_model("opus") == "max"
+    assert ClaudeProvider.max_effort_for_model("claude-opus-4-7") == "max"
 
 
 def test_max_effort_other_models_capped_at_high():
-    assert max_effort_for_model("sonnet") == "high"
-    assert max_effort_for_model("haiku") == "high"
-    assert max_effort_for_model("unknown-model") == "high"
+    assert ClaudeProvider.max_effort_for_model("sonnet") == "high"
+    assert ClaudeProvider.max_effort_for_model("haiku") == "high"
+    assert ClaudeProvider.max_effort_for_model("unknown-model") == "high"
 
 
 def test_clamp_effort_within_cap():
     # Opus supports everything — no clamping.
-    assert clamp_effort("max", "opus") == "max"
-    assert clamp_effort("xhigh", "opus") == "xhigh"
-    assert clamp_effort("low", "opus") == "low"
+    assert ClaudeProvider.clamp_effort("max", "opus") == "max"
+    assert ClaudeProvider.clamp_effort("xhigh", "opus") == "xhigh"
+    assert ClaudeProvider.clamp_effort("low", "opus") == "low"
 
 
 def test_clamp_effort_degrades_to_cap():
     # Sonnet caps at high — xhigh/max clamp down.
-    assert clamp_effort("max", "sonnet") == "high"
-    assert clamp_effort("xhigh", "sonnet") == "high"
-    assert clamp_effort("high", "sonnet") == "high"
-    assert clamp_effort("medium", "sonnet") == "medium"
+    assert ClaudeProvider.clamp_effort("max", "sonnet") == "high"
+    assert ClaudeProvider.clamp_effort("xhigh", "sonnet") == "high"
+    assert ClaudeProvider.clamp_effort("high", "sonnet") == "high"
+    assert ClaudeProvider.clamp_effort("medium", "sonnet") == "medium"
 
 
 def test_clamp_effort_unknown_level_passthrough():
-    assert clamp_effort("bogus", "opus") == "bogus"
+    assert ClaudeProvider.clamp_effort("bogus", "opus") == "bogus"
 
 
 def test_codex_effort_levels_ordered():
-    assert CODEX_EFFORT_LEVELS == ["low", "medium", "high", "xhigh", "max", "ultra"]
+    assert CodexProvider.effort_levels == ["low", "medium", "high", "xhigh", "max", "ultra"]
 
 
 def test_codex_model_effort_caps():
-    assert max_codex_effort_for_model("sol") == "ultra"
-    assert max_codex_effort_for_model("gpt-5.6-terra") == "ultra"
-    assert max_codex_effort_for_model("luna") == "max"
-    assert max_codex_effort_for_model("gpt-5.5") == "xhigh"
+    assert CodexProvider.max_effort_for_model("sol") == "ultra"
+    assert CodexProvider.max_effort_for_model("gpt-5.6-terra") == "ultra"
+    assert CodexProvider.max_effort_for_model("luna") == "max"
+    assert CodexProvider.max_effort_for_model("gpt-5.5") == "xhigh"
 
 
 def test_codex_clamp_effort():
-    assert clamp_codex_effort("ultra", "sol") == "ultra"
-    assert clamp_codex_effort("ultra", "luna") == "max"
-    assert clamp_codex_effort("max", "gpt-5.5") == "xhigh"
-    assert clamp_codex_effort("high", "luna") == "high"
+    assert CodexProvider.clamp_effort("ultra", "sol") == "ultra"
+    assert CodexProvider.clamp_effort("ultra", "luna") == "max"
+    assert CodexProvider.clamp_effort("max", "gpt-5.5") == "xhigh"
+    assert CodexProvider.clamp_effort("high", "luna") == "high"

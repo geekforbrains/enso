@@ -6,7 +6,7 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Literal
+from typing import ClassVar, Literal
 
 log = logging.getLogger(__name__)
 
@@ -35,8 +35,36 @@ class BaseProvider(ABC):
 
     name: str
 
+    # Reasoning-effort levels the provider accepts, ordered least → most.
+    # Empty means the provider has no effort control.
+    effort_levels: ClassVar[list[str]] = []
+    # Highest effort per model; unlisted models fall back to _default_max_effort.
+    _model_max_effort: ClassVar[dict[str, str]] = {}
+    _default_max_effort: ClassVar[str] = ""
+
     def __init__(self, path: str):
         self.path = path
+
+    @classmethod
+    def max_effort_for_model(cls, model: str) -> str:
+        """Return the highest effort level the given model supports."""
+        return cls._model_max_effort.get(model, cls._default_max_effort)
+
+    @classmethod
+    def supported_efforts(cls, model: str) -> list[str]:
+        """Effort levels the given model supports, ordered least → most."""
+        if not cls.effort_levels:
+            return []
+        cap = cls.max_effort_for_model(model)
+        return cls.effort_levels[: cls.effort_levels.index(cap) + 1]
+
+    @classmethod
+    def clamp_effort(cls, effort: str, model: str) -> str:
+        """Degrade ``effort`` to the highest level the model actually supports."""
+        if effort not in cls.effort_levels:
+            return effort
+        supported = cls.supported_efforts(model)
+        return effort if effort in supported else supported[-1]
 
     @abstractmethod
     def build_command(
@@ -82,8 +110,12 @@ class BaseProvider(ABC):
         return False
 
     def stdout_limit(self) -> int | None:
-        """Buffer limit for stdout, or None for default."""
-        return None
+        """Buffer limit for stdout, or None for asyncio's 64 KiB default.
+
+        Generous default so one long JSON event line can't overrun the
+        stream buffer.
+        """
+        return 10 * 1024 * 1024
 
     def format_response(self, parts: list[str]) -> str:
         """Combine response parts into final text. Default: last part wins."""
@@ -106,15 +138,30 @@ class BaseProvider(ABC):
 PROVIDER_NAMES = ["claude", "codex", "gemini"]
 
 
-def get_provider(name: str, path: str, config: dict | None = None) -> BaseProvider:
-    """Create a provider instance by name.
+def provider_class(name: str) -> type[BaseProvider]:
+    """Return the provider class for a name.
 
     Uses lazy imports to avoid circular dependencies — provider
     subclasses import from this module.
     """
-    from .claude import ClaudeProvider, KageClaudeProvider
+    from .claude import ClaudeProvider
     from .codex import CodexProvider
     from .gemini import GeminiProvider
+
+    classes: dict[str, type[BaseProvider]] = {
+        "claude": ClaudeProvider,
+        "codex": CodexProvider,
+        "gemini": GeminiProvider,
+    }
+    cls = classes.get(name)
+    if cls is None:
+        raise ValueError(f"Unknown provider: {name}")
+    return cls
+
+
+def get_provider(name: str, path: str, config: dict | None = None) -> BaseProvider:
+    """Create a provider instance by name."""
+    from .claude import KageClaudeProvider
 
     config = config or {}
     if name == "claude" and config.get("runner") == "kage":
@@ -126,12 +173,4 @@ def get_provider(name: str, path: str, config: dict | None = None) -> BaseProvid
             restart=restart,
         )
 
-    classes: dict[str, type[BaseProvider]] = {
-        "claude": ClaudeProvider,
-        "codex": CodexProvider,
-        "gemini": GeminiProvider,
-    }
-    cls = classes.get(name)
-    if cls is None:
-        raise ValueError(f"Unknown provider: {name}")
-    return cls(path)
+    return provider_class(name)(path)

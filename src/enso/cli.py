@@ -284,26 +284,33 @@ def _service_is_installed() -> bool:
     return False
 
 
-def _service_is_running() -> bool:
-    """Check if the service process is currently running."""
+def _service_cmd(launchd_argv: list[str], systemd_argv: list[str]) -> bool:
+    """Run the current platform's service-control command.
+
+    Returns True when the command exits 0; False on failure, unknown
+    platform, or any raised error.
+    """
     platform = _service_platform()
     try:
         if platform == "launchd":
+            r = subprocess.run(launchd_argv, capture_output=True)
+        elif platform == "systemd":
             r = subprocess.run(
-                ["launchctl", "list", _LAUNCHD_LABEL],
-                capture_output=True,
+                systemd_argv, env=_systemd_env(), capture_output=True,
             )
-            return r.returncode == 0
-        if platform == "systemd":
-            r = subprocess.run(
-                ["systemctl", "--user", "is-active", "--quiet",
-                 _SYSTEMD_UNIT],
-                env=_systemd_env(), capture_output=True,
-            )
-            return r.returncode == 0
+        else:
+            return False
+        return r.returncode == 0
     except Exception:
-        pass
-    return False
+        return False
+
+
+def _service_is_running() -> bool:
+    """Check if the service process is currently running."""
+    return _service_cmd(
+        ["launchctl", "list", _LAUNCHD_LABEL],
+        ["systemctl", "--user", "is-active", "--quiet", _SYSTEMD_UNIT],
+    )
 
 
 def _service_install(config: dict) -> bool:
@@ -478,67 +485,26 @@ def _service_uninstall() -> bool:
 
 def _service_start() -> bool:
     """Start the service. Returns True on success."""
-    platform = _service_platform()
-    try:
-        if platform == "launchd":
-            r = subprocess.run(
-                ["launchctl", "load", _LAUNCHD_PLIST],
-                capture_output=True,
-            )
-            return r.returncode == 0
-        if platform == "systemd":
-            r = subprocess.run(
-                ["systemctl", "--user", "start", _SYSTEMD_UNIT],
-                env=_systemd_env(), capture_output=True,
-            )
-            return r.returncode == 0
-    except Exception:
-        pass
-    return False
+    return _service_cmd(
+        ["launchctl", "load", _LAUNCHD_PLIST],
+        ["systemctl", "--user", "start", _SYSTEMD_UNIT],
+    )
 
 
 def _service_stop() -> bool:
     """Stop the service. Returns True on success."""
-    platform = _service_platform()
-    try:
-        if platform == "launchd":
-            r = subprocess.run(
-                ["launchctl", "unload", _LAUNCHD_PLIST],
-                capture_output=True,
-            )
-            return r.returncode == 0
-        if platform == "systemd":
-            r = subprocess.run(
-                ["systemctl", "--user", "stop", _SYSTEMD_UNIT],
-                env=_systemd_env(), capture_output=True,
-            )
-            return r.returncode == 0
-    except Exception:
-        pass
-    return False
+    return _service_cmd(
+        ["launchctl", "unload", _LAUNCHD_PLIST],
+        ["systemctl", "--user", "stop", _SYSTEMD_UNIT],
+    )
 
 
 def _service_restart() -> bool:
     """Restart the service. Returns True on success."""
-    platform = _service_platform()
-    try:
-        if platform == "launchd":
-            uid = str(os.getuid())
-            r = subprocess.run(
-                ["launchctl", "kickstart", "-k",
-                 f"gui/{uid}/{_LAUNCHD_LABEL}"],
-                capture_output=True,
-            )
-            return r.returncode == 0
-        if platform == "systemd":
-            r = subprocess.run(
-                ["systemctl", "--user", "restart", _SYSTEMD_UNIT],
-                env=_systemd_env(), capture_output=True,
-            )
-            return r.returncode == 0
-    except Exception:
-        pass
-    return False
+    return _service_cmd(
+        ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{_LAUNCHD_LABEL}"],
+        ["systemctl", "--user", "restart", _SYSTEMD_UNIT],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -590,9 +556,7 @@ def _setup_telegram(config: dict) -> int | None:
     """Configure Telegram bot and capture user. Returns chat_id or None."""
     tg_cfg = config.get("transports", {}).get("telegram", {})
     current_token = tg_cfg.get("bot_token", "")
-    current_users = tg_cfg.get("allowed_users") or [
-        str(u) for u in tg_cfg.get("allowed_user_ids", [])
-    ]
+    current_users = _tg_allowed_users(tg_cfg)
     bot_info = None
 
     if current_token:
@@ -657,14 +621,9 @@ def _slack_validate_token(token: str) -> dict | None:
 
     Returns the response dict on success, or None on failure.
     """
-    req = urllib.request.Request(
-        "https://slack.com/api/auth.test",
-        headers={"Authorization": f"Bearer {token}"},
-    )
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
-            return data if data.get("ok") else None
+        data = slack_cache.api_get(token, "auth.test")
+        return data if data.get("ok") else None
     except Exception:
         return None
 
@@ -679,19 +638,8 @@ def _slack_send_message(
     payload: dict = {"channel": channel, "text": text}
     if thread_ts:
         payload["thread_ts"] = thread_ts
-    data = json.dumps(payload).encode()
-    req = urllib.request.Request(
-        "https://slack.com/api/chat.postMessage",
-        data=data,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
-    )
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            result = json.loads(resp.read())
-            return result.get("ok", False)
+        return slack_cache.api_post(token, "chat.postMessage", payload).get("ok", False)
     except Exception:
         return False
 
@@ -719,6 +667,60 @@ def _resolve_slack_target(
     if origin:
         return origin, os.environ.get("ENSO_ORIGIN_THREAD_TS", "")
     return notify_channel, ""
+
+
+def _tg_allowed_users(tg_cfg: dict) -> list[str]:
+    """Configured Telegram users, with legacy ``allowed_user_ids`` fallback."""
+    raw = tg_cfg.get("allowed_users") or tg_cfg.get("allowed_user_ids", [])
+    return [str(u) for u in raw]
+
+
+def _resolve_send_targets(cfg: dict, to: str) -> tuple[str, str, list[str], str]:
+    """Resolve delivery for ``message send``/``attach``.
+
+    Returns ``(transport, token, targets, thread_ts)``. Slack always yields a
+    single target; Telegram may broadcast to every allowed user. Exits with a
+    console error when the transport isn't configured or nothing resolves.
+    """
+    transport = cfg.get("transport", "telegram")
+
+    if transport == "slack":
+        slack_cfg = cfg.get("transports", {}).get("slack", {})
+        token = slack_cfg.get("bot_token", "")
+        if not token:
+            console.print(
+                "[red]✗[/] Slack not configured."
+                " Run [bold]enso setup[/]."
+            )
+            raise typer.Exit(1)
+        target, thread_ts = _resolve_slack_target(
+            to, slack_cfg.get("notify_channel", ""),
+        )
+        if not target:
+            console.print(
+                "[red]✗[/] No destination. Pass --to or"
+                " set notify_channel in config."
+            )
+            raise typer.Exit(1)
+        return transport, token, [target], thread_ts
+
+    tg_cfg = cfg.get("transports", {}).get("telegram", {})
+    token = tg_cfg.get("bot_token", "")
+    users = _tg_allowed_users(tg_cfg)
+    if not token or not users:
+        console.print(
+            "[red]✗[/] Telegram not configured."
+            " Run [bold]enso setup[/]."
+        )
+        raise typer.Exit(1)
+    origin = os.environ.get("ENSO_ORIGIN_CHANNEL", "")
+    if to:
+        targets = [to]
+    elif origin:
+        targets = [origin]
+    else:
+        targets = users
+    return transport, token, targets, ""
 
 
 _SLACK_MAX_UPLOAD_BYTES = 1024 * 1024 * 1024  # 1 GB
@@ -1233,51 +1235,15 @@ def message_send(
 ) -> None:
     """Send a message via the configured transport."""
     cfg = load_config()
-    transport = cfg.get("transport", "telegram")
+    transport, token, targets, thread_ts = _resolve_send_targets(cfg, to)
 
     if transport == "slack":
-        slack_cfg = cfg.get("transports", {}).get("slack", {})
-        token = slack_cfg.get("bot_token", "")
-        if not token:
+        if not _slack_send_message(token, targets[0], text[:40000], thread_ts):
             console.print(
-                "[red]\u2717[/] Slack not configured."
-                " Run [bold]enso setup[/]."
-            )
-            raise typer.Exit(1)
-        target, thread_ts = _resolve_slack_target(
-            to, slack_cfg.get("notify_channel", ""),
-        )
-        if not target:
-            console.print(
-                "[red]\u2717[/] No destination. Pass --to or"
-                " set notify_channel in config."
-            )
-            raise typer.Exit(1)
-        if not _slack_send_message(token, target, text[:40000], thread_ts):
-            console.print(
-                f"[red]\u2717[/] Failed to send to {target}."
+                f"[red]\u2717[/] Failed to send to {targets[0]}."
             )
             raise typer.Exit(1)
     else:
-        tg_cfg = cfg.get("transports", {}).get("telegram", {})
-        token = tg_cfg.get("bot_token", "")
-        users = tg_cfg.get("allowed_users") or [
-            str(u)
-            for u in tg_cfg.get("allowed_user_ids", [])
-        ]
-        if not token or not users:
-            console.print(
-                "[red]\u2717[/] Telegram not configured."
-                " Run [bold]enso setup[/]."
-            )
-            raise typer.Exit(1)
-        origin = os.environ.get("ENSO_ORIGIN_CHANNEL", "")
-        if to:
-            targets = [to]
-        elif origin:
-            targets = [origin]
-        else:
-            targets = users
         for uid in targets:
             if not _tg_send_message(token, uid, text[:4096]):
                 console.print(
@@ -1327,27 +1293,11 @@ def message_attach(
         console.print(f"[red]\u2717[/] File not found: {file}")
         raise typer.Exit(1)
     cfg = load_config()
-    transport = cfg.get("transport", "telegram")
     filename = os.path.basename(file)
+    transport, token, targets, thread_ts = _resolve_send_targets(cfg, to)
 
     if transport == "slack":
-        slack_cfg = cfg.get("transports", {}).get("slack", {})
-        token = slack_cfg.get("bot_token", "")
-        if not token:
-            console.print(
-                "[red]\u2717[/] Slack not configured."
-                " Run [bold]enso setup[/]."
-            )
-            raise typer.Exit(1)
-        target, thread_ts = _resolve_slack_target(
-            to, slack_cfg.get("notify_channel", ""),
-        )
-        if not target:
-            console.print(
-                "[red]\u2717[/] No destination. Pass --to or"
-                " set notify_channel in config."
-            )
-            raise typer.Exit(1)
+        target = targets[0]
         with console.status(f"Uploading {filename} to {target}..."):
             ok, err = _slack_upload_file(token, target, file, caption, thread_ts)
         if not ok:
@@ -1360,24 +1310,6 @@ def message_attach(
         console.print("[green]\u2713[/] File sent.")
         return
 
-    tg_cfg = cfg.get("transports", {}).get("telegram", {})
-    token = tg_cfg.get("bot_token", "")
-    users = tg_cfg.get("allowed_users") or [
-        str(u) for u in tg_cfg.get("allowed_user_ids", [])
-    ]
-    if not token or not users:
-        console.print(
-            "[red]\u2717[/] Telegram not configured."
-            " Run [bold]enso setup[/]."
-        )
-        raise typer.Exit(1)
-    origin = os.environ.get("ENSO_ORIGIN_CHANNEL", "")
-    if to:
-        targets = [to]
-    elif origin:
-        targets = [origin]
-    else:
-        targets = users
     failures = [uid for uid in targets if not _tg_send_file(token, uid, file, caption)]
     if failures:
         # File delivery failed (after retries). Fall back to a lightweight
@@ -1676,20 +1608,10 @@ def slack_search(
 ) -> None:
     """Search Slack messages across accessible channels."""
     token = _slack_token_or_exit()
-    data = json.loads(urllib.request.urlopen(
-        urllib.request.Request(
-            "https://slack.com/api/search.messages",
-            data=json.dumps({
-                "query": query, "count": count,
-                "sort": "timestamp", "sort_dir": "desc",
-            }).encode(),
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            },
-        ),
-        timeout=20,
-    ).read())
+    data = slack_cache.api_post(token, "search.messages", {
+        "query": query, "count": count,
+        "sort": "timestamp", "sort_dir": "desc",
+    })
     if not data.get("ok"):
         console.print(f"[red]\u2717[/] search.messages: {data.get('error', '?')}")
         raise typer.Exit(1)
@@ -1717,12 +1639,10 @@ def slack_history(
 ) -> None:
     """Fetch recent messages from a channel."""
     token = _slack_token_or_exit()
-    url = (
-        "https://slack.com/api/conversations.history"
-        f"?channel={channel}&limit={count}"
+    data = slack_cache.api_get(
+        token, "conversations.history",
+        {"channel": channel, "limit": str(count)},
     )
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    data = json.loads(urllib.request.urlopen(req, timeout=20).read())
     if not data.get("ok"):
         console.print(f"[red]\u2717[/] conversations.history: {data.get('error', '?')}")
         raise typer.Exit(1)
@@ -1744,12 +1664,10 @@ def slack_thread(
 ) -> None:
     """Fetch every message in a thread."""
     token = _slack_token_or_exit()
-    url = (
-        "https://slack.com/api/conversations.replies"
-        f"?channel={channel}&ts={thread_ts}&limit=100"
+    data = slack_cache.api_get(
+        token, "conversations.replies",
+        {"channel": channel, "ts": thread_ts, "limit": "100"},
     )
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    data = json.loads(urllib.request.urlopen(req, timeout=20).read())
     if not data.get("ok"):
         console.print(f"[red]\u2717[/] conversations.replies: {data.get('error', '?')}")
         raise typer.Exit(1)

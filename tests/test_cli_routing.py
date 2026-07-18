@@ -55,21 +55,21 @@ def test_nothing_configured(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+class _FakeResp:
+    status = 200
+
+    def __enter__(self): return self
+    def __exit__(self, *a): pass
+    def read(self): return b'{"ok": true}'
+
+
 def test_slack_send_message_includes_thread_ts(monkeypatch):
     """_slack_send_message adds thread_ts to chat.postMessage payload."""
     import json
-    from io import BytesIO
 
     from enso import cli as cli_mod
 
     captured: dict = {}
-
-    class _FakeResp:
-        status = 200
-
-        def __enter__(self): return self
-        def __exit__(self, *a): pass
-        def read(self): return b'{"ok": true}'
 
     def _fake_urlopen(req, timeout=10):
         captured["data"] = json.loads(req.data)
@@ -87,7 +87,6 @@ def test_slack_send_message_includes_thread_ts(monkeypatch):
         "text": "hi",
         "thread_ts": "1700000000.123",
     }
-    _ = BytesIO  # silence unused-import warning on older pytest
 
 
 def test_slack_send_message_no_thread(monkeypatch):
@@ -97,13 +96,6 @@ def test_slack_send_message_no_thread(monkeypatch):
     from enso import cli as cli_mod
 
     captured: dict = {}
-
-    class _FakeResp:
-        status = 200
-
-        def __enter__(self): return self
-        def __exit__(self, *a): pass
-        def read(self): return b'{"ok": true}'
 
     def _fake_urlopen(req, timeout=10):
         captured["data"] = json.loads(req.data)

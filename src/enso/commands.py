@@ -6,8 +6,8 @@ import logging
 import os
 from typing import TYPE_CHECKING
 
-from .config import CONFIG_DIR, save_config
-from .providers import PROVIDER_NAMES
+from .config import CONFIG_DIR, claude_cfg, save_config
+from .providers import PROVIDER_NAMES, provider_class
 
 if TYPE_CHECKING:
     from .core import Runtime
@@ -22,9 +22,7 @@ def _get_claude_runner(runtime: Runtime, *, key: str = "runner") -> str:
     ``key`` is ``"runner"`` for interactive chat or ``"job_runner"`` for
     background jobs — the two are configured independently.
     """
-    providers = runtime.config.get("providers", {})
-    claude_cfg = providers.get("claude", {}) if isinstance(providers, dict) else {}
-    return "kage" if claude_cfg.get(key) == "kage" else "print"
+    return "kage" if claude_cfg(runtime.config).get(key) == "kage" else "print"
 
 
 def _runner_label(runner: str) -> str:
@@ -44,20 +42,20 @@ def _kage_menu(runtime: Runtime) -> list[tuple[str, str, bool]]:
     ]
 
 
-def cmd_stop(runtime: Runtime, conv_id: str) -> tuple[bool, str | None]:
-    """Stop a running process. Returns (had_something, error_msg).
-
-    Queue clearing is handled by the caller (transport/runtime dispatch layer).
-    """
-    import asyncio
-
-    loop = asyncio.get_event_loop()
-    return loop.run_until_complete(runtime.stop_chat(conv_id))
-
-
-async def cmd_stop_async(runtime: Runtime, conv_id: str) -> tuple[bool, str | None]:
-    """Async version of cmd_stop."""
-    return await runtime.stop_chat(conv_id)
+async def cmd_stop_async(runtime: Runtime, conv_id: str) -> str:
+    """Stop any running process, clear the queue, and describe what happened."""
+    queued_count = runtime.clear_queue(conv_id)
+    had, error = await runtime.stop_chat(conv_id)
+    if not had and not queued_count:
+        return "Nothing running."
+    if error:
+        return f"Error stopping: {error}"
+    parts = []
+    if had:
+        parts.append("Stopped.")
+    if queued_count:
+        parts.append(f"Cleared {queued_count} queued message(s).")
+    return " ".join(parts)
 
 
 def cmd_status(runtime: Runtime, conv_id: str) -> str:
@@ -142,11 +140,9 @@ def cmd_effort(
     included.
     """
     provider = runtime.get_active_provider(conv_id)
-    if provider == "claude":
-        from .providers.claude import EFFORT_LEVELS, clamp_effort, max_effort_for_model
-    elif provider == "codex":
-        from .providers.codex import EFFORT_LEVELS, clamp_effort, max_effort_for_model
-    else:
+    provider_cls = provider_class(provider)
+    levels = provider_cls.effort_levels
+    if not levels:
         return f"Effort is only supported for Claude and Codex (current: {provider}).", []
 
     model = runtime.get_active_model(conv_id, provider)
@@ -159,24 +155,21 @@ def cmd_effort(
             runtime.save_state()
             return f"Effort cleared (using {provider} CLI config/default).", []
 
-        max_level = max_effort_for_model(model)
-        max_idx = EFFORT_LEVELS.index(max_level)
-        supported = EFFORT_LEVELS[: max_idx + 1]
-
+        supported = provider_cls.supported_efforts(model)
         if normalized.isdigit():
             idx = int(normalized) - 1
             if not (0 <= idx < len(supported)):
                 return f"Invalid index. Use 1-{len(supported)}.", []
             selected = supported[idx]
-        elif normalized in EFFORT_LEVELS:
+        elif normalized in levels:
             selected = normalized
         else:
-            opts = ", ".join(EFFORT_LEVELS)
+            opts = ", ".join(levels)
             return f"Unknown effort '{choice}'. Choose: {opts}, or 'default'.", []
 
         runtime.effort_by_chat_provider_model[key] = selected
         runtime.save_state()
-        effective = clamp_effort(selected, model)
+        effective = provider_cls.clamp_effort(selected, model)
         if effective != selected:
             return (
                 f"Effort \u2192 {selected} "
@@ -186,9 +179,7 @@ def cmd_effort(
         return f"Effort \u2192 {selected}", []
 
     active = runtime.effort_by_chat_provider_model.get(key)
-    max_level = max_effort_for_model(model)
-    max_idx = EFFORT_LEVELS.index(max_level)
-    options = [(level, level == active) for level in EFFORT_LEVELS[: max_idx + 1]]
+    options = [(level, level == active) for level in provider_cls.supported_efforts(model)]
     return None, options
 
 

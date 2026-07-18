@@ -561,6 +561,16 @@ def test_effort_state_persistence(tmp_enso, sample_config):
     assert rt2.effort_by_chat_provider_model[("42", "claude", "opus")] == "xhigh"
 
 
+class _FakeSpawnedProcess:
+    pid = 42
+    returncode = 0
+    stdout = None
+    stderr = None
+
+    async def wait(self):
+        return 0
+
+
 @pytest.mark.asyncio
 async def test_run_provider_injects_extra_env(tmp_enso, sample_config, monkeypatch):
     """extra_env reaches create_subprocess_exec merged on top of os.environ."""
@@ -569,18 +579,9 @@ async def test_run_provider_injects_extra_env(tmp_enso, sample_config, monkeypat
 
     captured: dict = {}
 
-    class FakeProcess:
-        pid = 42
-        returncode = 0
-        stdout = None
-        stderr = None
-
-        async def wait(self):
-            return 0
-
     async def fake_spawn(*args, **kwargs):
         captured["env"] = kwargs.get("env")
-        return FakeProcess()
+        return _FakeSpawnedProcess()
 
     monkeypatch.setattr("asyncio.create_subprocess_exec", fake_spawn)
 
@@ -614,18 +615,9 @@ async def test_run_provider_omits_env_when_not_requested(tmp_enso, sample_config
 
     captured: dict = {}
 
-    class FakeProcess:
-        pid = 42
-        returncode = 0
-        stdout = None
-        stderr = None
-
-        async def wait(self):
-            return 0
-
     async def fake_spawn(*args, **kwargs):
         captured["env"] = kwargs.get("env", "SENTINEL_UNSET")
-        return FakeProcess()
+        return _FakeSpawnedProcess()
 
     monkeypatch.setattr("asyncio.create_subprocess_exec", fake_spawn)
 

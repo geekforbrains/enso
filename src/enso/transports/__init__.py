@@ -2,8 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import os
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from ..core import Runtime
+
+log = logging.getLogger(__name__)
+
+
+def safe_filename(name: str) -> str:
+    """Sanitise an attachment filename to prevent path traversal."""
+    return os.path.basename(name).lstrip(".")
 
 
 class TransportContext(ABC):
@@ -54,6 +67,7 @@ class BaseTransport(ABC):
 
     name: str
     message_limit: int = 4096
+    runtime: Runtime
 
     @abstractmethod
     def start(self) -> None:
@@ -66,3 +80,44 @@ class BaseTransport(ABC):
     @abstractmethod
     async def notify(self, text: str, *, destination: str | None = None) -> None:
         """Send a one-way notification to the user (e.g. job output)."""
+
+    def _start_background_tasks(self) -> None:
+        """Start the job scheduler and update-confirmation background tasks.
+
+        Must be called from within the transport's running event loop.
+        """
+        self._scheduler_task = asyncio.create_task(self.runtime.run_job_scheduler())
+        self._update_confirmation_task = asyncio.create_task(
+            self._confirm_pending_update()
+        )
+
+    async def _confirm_pending_update(self) -> None:
+        """Confirm that a newly installed process and services came up."""
+        from ..updater import (
+            clear_update_confirmation,
+            pending_update_confirmation,
+            update_confirmation_message,
+            wait_for_service_settle,
+        )
+
+        pending = pending_update_confirmation(self.name)
+        if not pending:
+            return
+        await wait_for_service_settle()
+        try:
+            sent = await self._send_update_confirmation(
+                pending, update_confirmation_message(pending)
+            )
+        except Exception:
+            log.exception("Failed to send %s update confirmation", self.name)
+            return
+        if sent:
+            clear_update_confirmation(str(pending.get("id", "")))
+
+    async def _send_update_confirmation(self, pending: dict, text: str) -> bool:
+        """Deliver the post-update confirmation message. Returns True when sent.
+
+        A False return leaves the confirmation queued for the next start
+        (e.g. the transport's client isn't ready yet).
+        """
+        raise NotImplementedError

@@ -5,34 +5,9 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
+from typing import ClassVar
 
 from . import BaseProvider, StreamEvent, truncate_status
-
-# Reasoning-effort levels accepted by `claude --effort`, ordered least → most.
-EFFORT_LEVELS: list[str] = ["low", "medium", "high", "xhigh", "max"]
-
-# Maximum effort supported per model. Models not listed default to "high"
-# (safe floor that every supported Claude model accepts). Opus 4.7 is the
-# only family that currently exposes the full range up through "max".
-_MODEL_MAX_EFFORT: dict[str, str] = {
-    "opus": "max",
-    "claude-opus-4-7": "max",
-}
-
-
-def max_effort_for_model(model: str) -> str:
-    """Return the highest effort level the given model supports."""
-    return _MODEL_MAX_EFFORT.get(model, "high")
-
-
-def clamp_effort(effort: str, model: str) -> str:
-    """Degrade ``effort`` to the highest level the model actually supports."""
-    if effort not in EFFORT_LEVELS:
-        return effort
-    cap = max_effort_for_model(model)
-    req_idx = EFFORT_LEVELS.index(effort)
-    cap_idx = EFFORT_LEVELS.index(cap)
-    return EFFORT_LEVELS[min(req_idx, cap_idx)]
 
 
 def _format_tool_status(tool_name: str, tool_input: dict) -> str:
@@ -70,6 +45,17 @@ def _get_project_dir(working_dir: str) -> str:
 
 class ClaudeProvider(BaseProvider):
     name = "claude"
+
+    # Levels accepted by `claude --effort`. Models not listed in
+    # _model_max_effort default to "high" (safe floor every supported
+    # Claude model accepts); Opus 4.7 is the only family that currently
+    # exposes the full range up through "max".
+    effort_levels: ClassVar[list[str]] = ["low", "medium", "high", "xhigh", "max"]
+    _model_max_effort: ClassVar[dict[str, str]] = {
+        "opus": "max",
+        "claude-opus-4-7": "max",
+    }
+    _default_max_effort = "high"
 
     def build_command(
         self,
@@ -182,9 +168,6 @@ class ClaudeProvider(BaseProvider):
 
         return events
 
-    def stdout_limit(self) -> int | None:
-        return 10 * 1024 * 1024
-
     def clear_session(self, session_id: str | None, working_dir: str) -> str:
         if not session_id:
             return "no session"
@@ -261,6 +244,10 @@ class KageClaudeProvider(BaseProvider):
             cmd.extend(["--effort", effort])
         cmd.extend(["--", prompt])
         return cmd
+
+    def stdout_limit(self) -> int | None:
+        # kage emits short JSONL summaries; asyncio's default buffer is plenty.
+        return None
 
     def parse_batch_output(self, stdout: str) -> str:
         """Pull the final response (or error) out of kage's --stream JSONL.

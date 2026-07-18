@@ -37,7 +37,7 @@ from ..commands import (
     cmd_use,
 )
 from ..formatting import md_to_mrkdwn
-from . import BaseTransport, TransportContext
+from . import BaseTransport, TransportContext, safe_filename
 
 if TYPE_CHECKING:
     from ..core import Runtime
@@ -88,9 +88,13 @@ SLACK_COMMANDS: list[tuple[str, str]] = [
 ]
 
 
-def _safe_filename(name: str) -> str:
-    """Sanitise a filename to prevent path traversal."""
-    return os.path.basename(name).lstrip(".")
+def _render_options(header: str, options: list[tuple[str, bool]]) -> str:
+    """Render a picker as text lines with the active entry marked."""
+    lines = [header]
+    for label, active in options:
+        prefix = "● " if active else "  "
+        lines.append(f"{prefix}{label}")
+    return "\n".join(lines)
 
 
 def _file_download_url(file_info: dict) -> str:
@@ -101,14 +105,14 @@ def _file_download_url(file_info: dict) -> str:
 def _download_filename(file_info: dict) -> str:
     """Build a collision-resistant local filename for a Slack file."""
     raw_name = file_info.get("name") or file_info.get("title") or "file"
-    name = _safe_filename(str(raw_name)) or "file"
-    prefix = _safe_filename(str(file_info.get("id") or "")) or uuid.uuid4().hex[:8]
+    name = safe_filename(str(raw_name)) or "file"
+    prefix = safe_filename(str(file_info.get("id") or "")) or uuid.uuid4().hex[:8]
     return f"{prefix}-{name}"
 
 
 def _file_label(file_info: dict) -> str:
     raw_name = file_info.get("name") or file_info.get("title") or file_info.get("id")
-    return _safe_filename(str(raw_name)) if raw_name else "file"
+    return safe_filename(str(raw_name)) if raw_name else "file"
 
 
 def _file_prompt(downloaded: list[str], files: list[dict]) -> str:
@@ -322,41 +326,22 @@ class SlackTransport(BaseTransport):
 
         async def _run() -> None:
             handler = AsyncSocketModeHandler(app, self.app_token)
-            self._scheduler_task = asyncio.create_task(
-                self.runtime.run_job_scheduler()
-            )
-            self._update_confirmation_task = asyncio.create_task(
-                self._confirm_pending_update()
-            )
+            self._start_background_tasks()
             await handler.start_async()
 
         asyncio.run(_run())
 
-    async def _confirm_pending_update(self) -> None:
-        """Confirm that the newly installed process and services came up."""
-        from ..updater import (
-            clear_update_confirmation,
-            pending_update_confirmation,
-            update_confirmation_message,
-            wait_for_service_settle,
-        )
-
-        pending = pending_update_confirmation(self.name)
-        if not pending or not self._client:
-            return
-        await wait_for_service_settle()
+    async def _send_update_confirmation(self, pending: dict, text: str) -> bool:
+        if not self._client:
+            return False
         payload: dict[str, str] = {
             "channel": str(pending.get("channel", "")),
-            "text": update_confirmation_message(pending),
+            "text": text,
         }
         if pending.get("thread"):
             payload["thread_ts"] = str(pending["thread"])
-        try:
-            await self._client.chat_postMessage(**payload)
-        except Exception:
-            log.exception("Failed to send Slack update confirmation")
-            return
-        clear_update_confirmation(str(pending.get("id", "")))
+        await self._client.chat_postMessage(**payload)
+        return True
 
     def _warm_directory_cache(self) -> None:
         """Populate the user+channel cache on startup so origin-env lookups
@@ -725,60 +710,31 @@ class SlackTransport(BaseTransport):
         rt = self.runtime
 
         if cmd_name == "stop":
-            queued_count = rt.clear_queue(conv_id)
-            had, error = await cmd_stop_async(rt, conv_id)
-            if not had and not queued_count:
-                return "Nothing running."
-            if error:
-                return f"Error stopping: {error}"
-            msg_parts = []
-            if had:
-                msg_parts.append("Stopped.")
-            if queued_count:
-                msg_parts.append(f"Cleared {queued_count} queued message(s).")
-            return " ".join(msg_parts)
+            return await cmd_stop_async(rt, conv_id)
 
         if cmd_name == "use":
             response, options = cmd_use(rt, conv_id, cmd_args)
-            if response:
-                return response
-            lines = ["Switch provider:"]
-            for name, active in options:
-                prefix = "\u25cf " if active else "  "
-                lines.append(f"{prefix}{name}")
-            return "\n".join(lines)
+            return response or _render_options("Switch provider:", options)
 
         if cmd_name == "model":
             response, options = cmd_model(rt, conv_id, cmd_args)
-            if response:
-                return response
             provider = rt.get_active_provider(conv_id)
-            lines = [f"Switch model ({provider}):"]
-            for name, active in options:
-                prefix = "\u25cf " if active else "  "
-                lines.append(f"{prefix}{name}")
-            return "\n".join(lines)
+            return response or _render_options(f"Switch model ({provider}):", options)
 
         if cmd_name == "effort":
             response, options = cmd_effort(rt, conv_id, cmd_args)
             if response:
                 return response
             model = rt.get_active_model(conv_id, rt.get_active_provider(conv_id))
-            lines = [f"Set effort ({model}) — '!effort default' to clear:"]
-            for name, active in options:
-                prefix = "\u25cf " if active else "  "
-                lines.append(f"{prefix}{name}")
-            return "\n".join(lines)
+            header = f"Set effort ({model}) — '!effort default' to clear:"
+            return _render_options(header, options)
 
         if cmd_name == "kage":
             response, options = cmd_kage(rt, conv_id, cmd_args)
-            if response:
-                return response
-            lines = ["Claude runner - '!kage on/off' or '!kage jobs on/off':"]
-            for _cb, label, active in options:
-                prefix = "\u25cf " if active else "  "
-                lines.append(f"{prefix}{label}")
-            return "\n".join(lines)
+            return response or _render_options(
+                "Claude runner - '!kage on/off' or '!kage jobs on/off':",
+                [(label, active) for _cb, label, active in options],
+            )
 
         if cmd_name == "status":
             return cmd_status(rt, conv_id)
