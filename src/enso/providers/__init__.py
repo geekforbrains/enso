@@ -35,8 +35,10 @@ class BaseProvider(ABC):
     _model_max_effort: ClassVar[dict[str, str]] = {}
     _default_max_effort: ClassVar[str] = ""
 
-    def __init__(self, path: str):
+    def __init__(self, path: str, working_dir: str | None = None):
         self.path = path
+        # Directory the runtime runs the provider process in (subprocess cwd).
+        self.working_dir = working_dir
 
     @classmethod
     def max_effort_for_model(cls, model: str) -> str:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from enso.providers import PROVIDER_CLASSES, PROVIDER_NAMES, provider_class
@@ -135,6 +137,7 @@ def test_agy_build_command_without_session_starts_fresh():
     cmd = provider.build_command("hello", AGY_MODELS[0])
     try:
         assert "--conversation" not in cmd
+        assert "--new-project" in cmd
     finally:
         provider.finalize_events()
 
@@ -147,6 +150,7 @@ def test_agy_batch_command_is_plain_yolo_output():
         "agy", "--dangerously-skip-permissions",
         "--model", "gemini-3.6-flash-low",
         "--effort", "medium",
+        "--new-project",
         "--prompt", "hello",
     ]
 
@@ -188,6 +192,148 @@ def test_agy_finalize_falls_back_to_created_session(tmp_path):
 
     assert events[0].session_id == "33333333-3333-4333-8333-333333333333"
     assert not log_file.exists()
+
+
+# -- Agy project pinning --
+#
+# Antigravity pins conversations to a project at creation and print mode
+# never derives one from cwd, so fresh conversations must pass --project
+# (existing catalog entry) or --new-project (first use of a directory).
+
+
+def _write_project(projects_dir, filename, project_id, uri, *, git=False):
+    projects_dir.mkdir(parents=True, exist_ok=True)
+    resource = {"gitFolder": {"folderUri": uri}} if git else {"folderUri": uri}
+    (projects_dir / f"{filename}.json").write_text(json.dumps({
+        "id": project_id,
+        "name": "test-project",
+        "projectResources": {"resources": [resource]},
+    }))
+
+
+def _fresh_command(provider, model=AGY_MODELS[0]):
+    try:
+        return provider.build_command("hello", model)
+    finally:
+        provider.finalize_events()
+
+
+def test_agy_fresh_conversation_reuses_project_mapped_to_working_dir(
+    tmp_path, agy_projects_dir,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _write_project(agy_projects_dir, "aaa", "proj-123", workspace.as_uri())
+
+    cmd = _fresh_command(AgyProvider("agy", working_dir=str(workspace)))
+
+    assert cmd[cmd.index("--project") + 1] == "proj-123"
+    assert "--new-project" not in cmd
+
+
+def test_agy_fresh_conversation_matches_git_folder_projects(
+    tmp_path, agy_projects_dir,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _write_project(
+        agy_projects_dir, "aaa", "proj-git", workspace.as_uri(), git=True,
+    )
+
+    cmd = _fresh_command(AgyProvider("agy", working_dir=str(workspace)))
+
+    assert cmd[cmd.index("--project") + 1] == "proj-git"
+
+
+def test_agy_resume_never_passes_project_flags(tmp_path, agy_projects_dir):
+    """Resume re-pins from the conversation; project flags stay off."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _write_project(agy_projects_dir, "aaa", "proj-123", workspace.as_uri())
+
+    provider = AgyProvider("agy", working_dir=str(workspace))
+    try:
+        cmd = provider.build_command("hello", AGY_MODELS[0], "session-1")
+    finally:
+        provider.finalize_events()
+
+    assert "--project" not in cmd
+    assert "--new-project" not in cmd
+
+
+def test_agy_batch_command_reuses_mapped_project(tmp_path, agy_projects_dir):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _write_project(agy_projects_dir, "aaa", "proj-123", workspace.as_uri())
+
+    cmd = AgyProvider("agy", working_dir=str(workspace)).build_batch_command(
+        "hello", "gemini-3.6-flash-low",
+    )
+
+    assert cmd[cmd.index("--project") + 1] == "proj-123"
+    assert "--new-project" not in cmd
+
+
+def test_agy_project_lookup_resolves_encoded_and_symlinked_paths(
+    tmp_path, agy_projects_dir,
+):
+    workspace = tmp_path / "work space"
+    workspace.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(workspace)
+    # as_uri() percent-encodes the space; trailing slash mimics hand-edited
+    # catalog entries.
+    _write_project(agy_projects_dir, "aaa", "proj-enc", workspace.as_uri() + "/")
+
+    cmd = _fresh_command(AgyProvider("agy", working_dir=str(link)))
+
+    assert cmd[cmd.index("--project") + 1] == "proj-enc"
+
+
+def test_agy_project_lookup_skips_malformed_entries(tmp_path, agy_projects_dir):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    agy_projects_dir.mkdir(parents=True)
+    (agy_projects_dir / "broken.json").write_text("{not json")
+    (agy_projects_dir / "no-id.json").write_text(json.dumps({
+        "projectResources": {"resources": [{"folderUri": workspace.as_uri()}]},
+    }))
+    # Shape of Antigravity's own default-cli-project.json.
+    (agy_projects_dir / "default-cli-project.json").write_text(json.dumps({
+        "id": "default-cli-project", "projectResources": {},
+    }))
+
+    cmd = _fresh_command(AgyProvider("agy", working_dir=str(workspace)))
+
+    assert "--new-project" in cmd
+    assert "--project" not in cmd
+
+
+def test_agy_project_lookup_is_stable_across_duplicates(
+    tmp_path, agy_projects_dir,
+):
+    """Duplicate projects for one directory resolve by filename order."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _write_project(agy_projects_dir, "bbb", "proj-b", workspace.as_uri())
+    _write_project(agy_projects_dir, "aaa", "proj-a", workspace.as_uri())
+
+    cmd = _fresh_command(AgyProvider("agy", working_dir=str(workspace)))
+
+    assert cmd[cmd.index("--project") + 1] == "proj-a"
+
+
+def test_agy_without_working_dir_falls_back_to_cwd(
+    tmp_path, agy_projects_dir, monkeypatch,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _write_project(agy_projects_dir, "aaa", "proj-cwd", workspace.as_uri())
+    monkeypatch.chdir(workspace)
+
+    cmd = _fresh_command(AgyProvider("agy"))
+
+    assert cmd[cmd.index("--project") + 1] == "proj-cwd"
 
 
 # -- Event parsing --

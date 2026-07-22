@@ -98,6 +98,17 @@ uses a private temporary `--log-file`, Enso captures the authoritative active
 conversation ID after the process exits, and the file is immediately removed. `/clear`
 forgets the stored provider session, so the next message starts and captures a new one.
 
+Antigravity additionally pins every conversation to a *project* at creation, and its
+print mode never derives one from the working directory — without an explicit flag,
+conversations land in the default scratch project rather than the workspace. When Enso
+starts a fresh conversation (first chat turn, post-`/clear`, or any job run) it resolves
+the project for `working_dir` from Antigravity's catalog (`~/.gemini/config/projects/`,
+matching plain and git-folder file URIs) and passes `--project`, falling back to
+`--new-project` the first time a directory is used; the created project is then found by
+lookup on subsequent runs. Resume keeps the conversation's existing pin, so no project
+flags are sent, and `/clear` only forgets the conversation — projects are durable
+per-workspace state, like Claude's project directories, and are never deleted.
+
 The recording seam (see [data-model.md](data-model.md) for the schema):
 
 1. Before provider spawn: `runs.create(kind, name, trigger)` → a row with

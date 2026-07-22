@@ -20,6 +20,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- Antigravity conversations now run inside the project mapped to the Enso workspace instead of Antigravity's default scratch project, so workspace files, skills, and context resolve correctly. Fresh conversations reuse the project already catalogued for the working directory (including one created by interactive Antigravity use) and create one only when none exists; background jobs pin the same way. Chats whose stored conversation predates this fix stay pinned to scratch until `/clear` starts a fresh conversation
 - Wide dashboard layouts now keep the capped main content aligned beside the sidebar
   instead of centering it farther away as the viewport grows
 - Primary dashboard navigation now uses full page loads, preventing HTMX swaps from

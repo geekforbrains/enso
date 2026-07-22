@@ -303,6 +303,14 @@ def test_make_provider_uses_configured_path(sample_config):
     assert provider.path == "/custom/claude"
 
 
+def test_make_provider_binds_working_dir(sample_config):
+    """Providers see the directory their process will run in (agy needs it
+    to pin conversations to the workspace project)."""
+    rt = Runtime(sample_config)
+    provider = rt.make_provider("agy")
+    assert provider.working_dir == rt.working_dir
+
+
 def test_make_provider_unknown_provider_raises(sample_config):
     rt = Runtime(sample_config)
     with pytest.raises(ValueError, match="Unknown provider"):

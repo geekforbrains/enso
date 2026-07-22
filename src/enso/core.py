@@ -700,7 +700,7 @@ class Runtime:
         """Create a fresh provider instance using the configured CLI path."""
         provider_cfg = self.config.get("providers", {}).get(provider_name, {})
         path = provider_cfg.get("path", provider_name)
-        return provider_class(provider_name)(path)
+        return provider_class(provider_name)(path, working_dir=self.working_dir)
 
     # -- Session management --
 

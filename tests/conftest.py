@@ -18,6 +18,18 @@ def reset_run_connections():
     runs._connections.clear()
 
 
+@pytest.fixture(autouse=True)
+def agy_projects_dir(tmp_path, monkeypatch):
+    """Point Antigravity project lookups at an isolated, initially absent dir.
+
+    Keeps agy command building deterministic — the real catalog under
+    ~/.gemini would otherwise leak the developer's projects into tests.
+    """
+    projects_dir = tmp_path / "agy-projects"
+    monkeypatch.setattr("enso.providers.agy._PROJECTS_DIR", projects_dir)
+    return projects_dir
+
+
 @pytest.fixture
 def tmp_enso(tmp_path, monkeypatch):
     """Set up a temporary ~/.enso directory for testing.
