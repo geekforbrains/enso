@@ -35,6 +35,10 @@ class BaseProvider(ABC):
 
     name: str
 
+    # Models offered when the provider has no configured model list.
+    default_models: ClassVar[list[str]] = []
+    # API-key env vars the provider's CLI needs (snapshotted into service envs).
+    env_keys: ClassVar[tuple[str, ...]] = ()
     # Reasoning-effort levels the provider accepts, ordered least → most.
     # Empty means the provider has no effort control.
     effort_levels: ClassVar[list[str]] = []
@@ -135,40 +139,21 @@ class BaseProvider(ABC):
         return "session cleared" if session_id else "no session"
 
 
-PROVIDER_NAMES = ["claude", "codex"]
+# Provider registry — the single source of truth for supported providers.
+# Imported at the bottom so subclasses can import BaseProvider from here.
+from .claude import ClaudeProvider  # noqa: E402
+from .codex import CodexProvider  # noqa: E402
+
+PROVIDER_CLASSES: dict[str, type[BaseProvider]] = {
+    ClaudeProvider.name: ClaudeProvider,
+    CodexProvider.name: CodexProvider,
+}
+PROVIDER_NAMES = list(PROVIDER_CLASSES)
 
 
 def provider_class(name: str) -> type[BaseProvider]:
-    """Return the provider class for a name.
-
-    Uses lazy imports to avoid circular dependencies — provider
-    subclasses import from this module.
-    """
-    from .claude import ClaudeProvider
-    from .codex import CodexProvider
-
-    classes: dict[str, type[BaseProvider]] = {
-        "claude": ClaudeProvider,
-        "codex": CodexProvider,
-    }
-    cls = classes.get(name)
+    """Return the provider class for a name."""
+    cls = PROVIDER_CLASSES.get(name)
     if cls is None:
         raise ValueError(f"Unknown provider: {name}")
     return cls
-
-
-def get_provider(name: str, path: str, config: dict | None = None) -> BaseProvider:
-    """Create a provider instance by name."""
-    from .claude import KageClaudeProvider
-
-    config = config or {}
-    if name == "claude" and config.get("runner") == "kage":
-        timeout = int(config.get("kage_timeout", 1800))
-        restart = bool(config.get("kage_restart", True))
-        return KageClaudeProvider(
-            config.get("kage_path", "kage"),
-            timeout=timeout,
-            restart=restart,
-        )
-
-    return provider_class(name)(path)

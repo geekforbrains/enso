@@ -65,16 +65,11 @@ The prompt goes here. Use {{prerun_output}} to inject prerun results.
 | `prerun`   | no       | Script filename in the job directory |
 | `prerun_timeout` | no | Max seconds for the prerun (default 120) |
 | `notify`   | no       | Telegram user ID or Slack channel/DM for failure alerts |
-| `timeout`  | no       | Max seconds for the run (default 900). For Claude jobs on the kage runner this also bounds kage's own `--timeout`. |
+| `timeout`  | no       | Max seconds for the run (default 900) |
 
-### Claude runner for jobs
-
-Claude jobs run through whichever runner is set in
-`providers.claude.job_runner` (`print` for native `claude -p`, the default,
-or `kage`). This is **independent** of the interactive chat runner
-(`providers.claude.runner`): toggling `/kage` for chat never changes how
-background jobs run, and vice versa. Switch the job runner with
-`/kage jobs on` / `/kage jobs off`.
+`provider` and `model` are validated against the configured providers and
+their model lists — a job naming an unknown provider or model is rejected at
+creation and fails with a clear error instead of running.
 
 ### Schedule (cron syntax)
 

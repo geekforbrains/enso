@@ -22,16 +22,10 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from croniter import croniter
 
 from . import messages, runs
-from .config import CONFIG_DIR, SKILL_TOMBSTONES_DIRNAME, STATE_FILE, claude_cfg
-from .jobs import Job, load_jobs
+from .config import CONFIG_DIR, SKILL_TOMBSTONES_DIRNAME, STATE_FILE, provider_models
+from .jobs import Job, job_config_error, load_jobs
 from .logging_config import logging_flags
-from .providers import (
-    PROVIDER_NAMES,
-    BaseProvider,
-    StreamEvent,
-    get_provider,
-    provider_class,
-)
+from .providers import PROVIDER_NAMES, BaseProvider, StreamEvent, provider_class
 
 if TYPE_CHECKING:
     from .transports import BaseTransport, TransportContext
@@ -116,6 +110,7 @@ _BUNDLED_SKILL_PRISTINE_HASHES: dict[tuple[str, str], frozenset[str]] = {
         "256ce5a5609551246927c9e19ef0be13f68f630fb343815f303e6f90ab8cb51c",
         "608c4a5d9f34d76ae9143f749fa7b028a4fce413d260e1a5f58d361288730bd8",
         "1756397ae5838a5aba08c6371cb721f9e1b4f815c8b1907a19b017e7aca53be0",
+        "dabb0fa66f276cd78c8e88e17c38155ad537aa52938e50622dcc2955b70f036a",
     }),
 }
 
@@ -170,11 +165,7 @@ class Runtime:
         self.debug_events: bool = flags["debug_events"]
         self.working_dir: str = config.get("working_dir", os.getcwd())
         os.makedirs(self.working_dir, exist_ok=True)
-        self.models: dict[str, list[str]] = {
-            name: pcfg.get("models", [])
-            for name, pcfg in config.get("providers", {}).items()
-            if name in PROVIDER_NAMES and isinstance(pcfg, dict)
-        }
+        self.models: dict[str, list[str]] = provider_models(config)
         self.transport: BaseTransport | None = None
 
         # Per-chat state (keyed by conversation ID — str for all transports)
@@ -206,11 +197,6 @@ class Runtime:
         # Set while the self-updater validates and installs a release. New
         # agent turns and scheduler ticks pause until the operation finishes.
         self._update_in_progress = False
-
-        # Last (model, effort) a kage interactive turn ran with, per chat. Used
-        # to keep the warm tmux session alive across same-config turns and only
-        # restart it when the model or effort actually changes.
-        self._kage_last_config: dict[str, tuple[str, str | None]] = {}
 
     # -- Workspace setup --
 
@@ -572,7 +558,9 @@ class Runtime:
                     state_changed = True
             for k, v in data.get("active_model_by_chat_provider", {}).items():
                 cid, provider = k.split(":", 1)
-                if provider in PROVIDER_NAMES:
+                # Entries for retired providers or models removed from config
+                # are inert (selection falls back anyway) — prune them.
+                if v in self.models.get(provider, []):
                     self.active_model_by_chat_provider[(cid, provider)] = v
                 else:
                     state_changed = True
@@ -580,7 +568,7 @@ class Runtime:
                 parts = k.split(":", 2)
                 if len(parts) == 3:
                     cid, provider, model = parts
-                    if provider in PROVIDER_NAMES:
+                    if model in self.models.get(provider, []):
                         self.effort_by_chat_provider_model[(cid, provider, model)] = v
                     else:
                         state_changed = True
@@ -630,7 +618,6 @@ class Runtime:
             for key in [k for k in self.effort_by_chat_provider_model if k[0] == cid]:
                 self.effort_by_chat_provider_model.pop(key)
             self.compact_seed_by_chat.pop(cid, None)
-            self._kage_last_config.pop(cid, None)
             self._last_active.pop(cid)
         log.info("Pruned %d stale conversation(s) (>%dd)", len(stale), SESSION_TTL_DAYS)
         self.save_state()
@@ -655,17 +642,14 @@ class Runtime:
     ) -> str | None:
         """Return the effective effort level for chat+provider+model.
 
-        Returns ``None`` when the provider doesn't support effort or the user
-        hasn't picked a level. A stored level is clamped to whatever the model
-        actually accepts so callers always see the real value in use.
+        Returns ``None`` when the user hasn't picked a level. A stored level
+        is clamped to whatever the model actually accepts so callers always
+        see the real value in use.
         """
         stored = self.effort_by_chat_provider_model.get((chat_id, provider, model))
         if stored is None:
             return None
-        provider_cls = provider_class(provider)
-        if not provider_cls.effort_levels:
-            return None
-        return provider_cls.clamp_effort(stored, model)
+        return provider_class(provider).clamp_effort(stored, model)
 
     def get_chat_lock(self, chat_id: str) -> asyncio.Lock:
         """Get or create a per-chat lock to serialize requests."""
@@ -677,78 +661,11 @@ class Runtime:
 
     # -- Provider management --
 
-    def make_provider(
-        self,
-        provider_name: str,
-        *,
-        overrides: dict[str, Any] | None = None,
-    ) -> BaseProvider:
-        """Create a fresh provider instance.
-
-        ``overrides`` shallow-merges onto the provider's stored config before
-        construction. The job runner uses this to select its own ``runner``
-        (independent of interactive chat) and to thread the job's ``timeout``
-        into kage's ``--timeout`` — without mutating the persisted config.
-        """
-        providers_cfg = self.config.get("providers", {})
-        provider_cfg = dict(providers_cfg.get(provider_name, {}))
-        if overrides:
-            provider_cfg.update(overrides)
+    def make_provider(self, provider_name: str) -> BaseProvider:
+        """Create a fresh provider instance using the configured CLI path."""
+        provider_cfg = self.config.get("providers", {}).get(provider_name, {})
         path = provider_cfg.get("path", provider_name)
-        provider = get_provider(provider_name, path, provider_cfg)
-        log.debug(
-            "Resolved provider name=%s class=%s path=%s runner=%s",
-            provider_name,
-            provider.__class__.__name__,
-            provider.path,
-            provider_cfg.get("runner", "default"),
-        )
-        return provider
-
-    def resolve_job_runner(self, provider_name: str) -> str | None:
-        """Return the configured runner for background jobs of this provider.
-
-        Only Claude has alternate runners; everything else returns ``None``
-        (no override). Jobs are decoupled from interactive chat: they read
-        ``providers.claude.job_runner`` (default ``"print"``), so toggling
-        ``/kage`` for chat never silently changes background jobs.
-        """
-        if provider_name != "claude":
-            return None
-        return "kage" if claude_cfg(self.config).get("job_runner") == "kage" else "print"
-
-    def _interactive_overrides(
-        self, provider_name: str, chat_id: str, model: str, effort: str | None,
-    ) -> dict[str, Any]:
-        """Per-request provider overrides for interactive chat.
-
-        For the kage runner this decides whether to restart the underlying
-        tmux/Claude-Code session: restart only when the model or effort changed
-        since the last turn, so the warm session is reused otherwise. kage
-        always re-applies --model/--effort on a fresh start, so a restart is
-        only needed to re-apply config to an already-running session.
-        """
-        overrides: dict[str, Any] = {}
-        if provider_name != "claude":
-            return overrides
-        cfg = claude_cfg(self.config)
-        if cfg.get("runner") != "kage":
-            return overrides
-
-        key = chat_id
-        prev = self._kage_last_config.get(key)
-        current = (model, effort)
-        self._kage_last_config[key] = current
-        changed = prev is not None and prev != current
-        # ``kage_restart`` (default on) gates whether we restart at all; the
-        # diff decides whether a restart is warranted this turn.
-        enabled = bool(cfg.get("kage_restart", True))
-        overrides["kage_restart"] = enabled and changed
-        log.debug(
-            "[claude] kage restart decision chat=%s prev=%s current=%s -> restart=%s",
-            chat_id, prev, current, overrides["kage_restart"],
-        )
-        return overrides
+        return provider_class(provider_name)(path)
 
     # -- Session management --
 
@@ -942,10 +859,7 @@ class Runtime:
         async with lock:
             model = self.get_active_model(chat_id, provider_name)
             effort = self.get_active_effort(chat_id, provider_name, model)
-            overrides = self._interactive_overrides(
-                provider_name, chat_id, model, effort,
-            )
-            provider = self.make_provider(provider_name, overrides=overrides)
+            provider = self.make_provider(provider_name)
 
             log.info(
                 "[%s] Compacting chat=%s model=%s effort=%s",
@@ -1230,8 +1144,7 @@ class Runtime:
 
         model = self.get_active_model(chat_id, provider_name)
         effort = self.get_active_effort(chat_id, provider_name, model)
-        overrides = self._interactive_overrides(provider_name, chat_id, model, effort)
-        provider = self.make_provider(provider_name, overrides=overrides)
+        provider = self.make_provider(provider_name)
         display = provider_name.capitalize()
         effort_part = f" / {effort}" if effort else ""
 
@@ -1456,24 +1369,6 @@ class Runtime:
             self.save_state()
             return False
         return True
-
-    def make_job_provider(self, job: Job) -> BaseProvider:
-        """Build the provider for a background job.
-
-        Jobs select their runner independently from interactive chat
-        (``resolve_job_runner``) and thread their own ``timeout`` into the
-        runner so a single value governs how long the job may run — fixing
-        the prior split where kage used its own ``kage_timeout`` while the
-        job runner enforced ``job.timeout`` separately.
-        """
-        overrides: dict[str, Any] = {}
-        runner = self.resolve_job_runner(job.provider)
-        if runner is not None:
-            overrides["runner"] = runner
-            # kage's internal --timeout should match the job budget so it can
-            # self-terminate (and clean up its tmux pane) before we do.
-            overrides["kage_timeout"] = job.timeout
-        return self.make_provider(job.provider, overrides=overrides)
 
     def _sensitive_values(self) -> set[str]:
         """Return configured/environment secret values that diagnostics must redact."""
@@ -1718,13 +1613,26 @@ class Runtime:
         tag = f"[job:{job.dir_name}]"
         started = datetime.now()
         started_at = datetime.now(timezone.utc).isoformat()
-        runner = self.resolve_job_runner(job.provider) or "n/a"
         log.info(
-            "%s start name=%r provider=%s model=%s runner=%s timeout=%ss prerun=%s",
-            tag, job.name, job.provider, job.model, runner, job.timeout,
+            "%s start name=%r provider=%s model=%s timeout=%ss prerun=%s",
+            tag, job.name, job.provider, job.model, job.timeout,
             job.prerun or "-",
         )
         try:
+            config_error = job_config_error(job.provider, job.model, self.models)
+            if config_error:
+                run_id = self._create_job_run(job, trigger, tag, started_at)
+                output = f"Invalid job config: {config_error}"
+                log.warning("%s %s", tag, output)
+                self._record_run_finish(run_id, output, -1, "error", tag)
+                if notify_failures:
+                    await self._send_job_notification(
+                        job, f"⚠️ [{job.name}] {output}", tag,
+                    )
+                return JobRunResult(
+                    "error", run_id=run_id, output=output, exit_code=-1,
+                )
+
             prerun = await self._run_job_prerun(job, tag)
             if prerun.outcome == "no_work":
                 if notify_failures:
@@ -1759,11 +1667,11 @@ class Runtime:
             run_id = self._create_job_run(job, trigger, tag, started_at)
             proc: Process | None = None
             try:
-                provider = self.make_job_provider(job)
+                provider = self.make_provider(job.provider)
                 cmd = provider.build_batch_command(prompt, job.model)
                 log.info(
-                    "%s spawning provider_class=%s runner=%s cwd=%s prompt_len=%d",
-                    tag, provider.__class__.__name__, runner,
+                    "%s spawning provider_class=%s cwd=%s prompt_len=%d",
+                    tag, provider.__class__.__name__,
                     self.working_dir, len(prompt),
                 )
                 log.debug("%s command=%s", tag, _redacted_command(cmd))

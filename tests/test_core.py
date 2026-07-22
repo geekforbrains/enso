@@ -17,7 +17,7 @@ from enso import messages
 from enso.config import SKILL_TOMBSTONES_DIRNAME
 from enso.core import Runtime, split_text
 from enso.jobs import Job
-from enso.providers.claude import KageClaudeProvider
+from enso.providers.claude import ClaudeProvider
 
 # -- split_text --
 
@@ -268,151 +268,18 @@ def test_runtime_model_switch(sample_config):
     assert rt.get_active_model("1", "claude") == "sonnet"
 
 
-def test_runtime_make_provider_uses_kage_runner(sample_config):
-    sample_config["providers"]["claude"].update({
-        "runner": "kage",
-        "kage_path": "kage",
-        "kage_timeout": 900,
-    })
+def test_make_provider_uses_configured_path(sample_config):
+    sample_config["providers"]["claude"]["path"] = "/custom/claude"
     rt = Runtime(sample_config)
     provider = rt.make_provider("claude")
-    assert isinstance(provider, KageClaudeProvider)
-    assert provider.path == "kage"
-    assert provider.timeout == 900
+    assert isinstance(provider, ClaudeProvider)
+    assert provider.path == "/custom/claude"
 
 
-def test_make_provider_overrides_runner(sample_config):
-    """overrides win over stored config without mutating it."""
-    sample_config["providers"]["claude"].update({"runner": "print", "kage_path": "kage"})
+def test_make_provider_unknown_provider_raises(sample_config):
     rt = Runtime(sample_config)
-    provider = rt.make_provider("claude", overrides={"runner": "kage"})
-    assert isinstance(provider, KageClaudeProvider)
-    # Stored config is untouched by the override.
-    assert rt.config["providers"]["claude"]["runner"] == "print"
-
-
-# -- Job runner resolution --
-
-
-def test_resolve_job_runner_defaults_to_print(sample_config):
-    rt = Runtime(sample_config)
-    assert rt.resolve_job_runner("claude") == "print"
-
-
-def test_resolve_job_runner_reads_job_runner_key(sample_config):
-    sample_config["providers"]["claude"]["job_runner"] = "kage"
-    rt = Runtime(sample_config)
-    assert rt.resolve_job_runner("claude") == "kage"
-
-
-def test_resolve_job_runner_independent_of_interactive(sample_config):
-    """Interactive runner=kage must NOT make jobs use kage."""
-    sample_config["providers"]["claude"]["runner"] = "kage"
-    rt = Runtime(sample_config)
-    assert rt.resolve_job_runner("claude") == "print"
-
-
-def test_resolve_job_runner_non_claude_is_none(sample_config):
-    rt = Runtime(sample_config)
-    assert rt.resolve_job_runner("codex") is None
-
-
-def test_make_job_provider_selects_kage_and_threads_timeout(sample_config):
-    sample_config["providers"]["claude"].update({
-        "job_runner": "kage",
-        "kage_path": "kage",
-        "kage_timeout": 1800,
-    })
-    rt = Runtime(sample_config)
-    job = Job(
-        dir_name="j", name="J", schedule="* * * * *",
-        provider="claude", model="sonnet", timeout=300,
-    )
-    provider = rt.make_job_provider(job)
-    assert isinstance(provider, KageClaudeProvider)
-    # kage's --timeout is threaded from job.timeout, not the global kage_timeout.
-    assert provider.timeout == 300
-    cmd = provider.build_batch_command("hi", "sonnet")
-    assert cmd[cmd.index("--timeout") + 1] == "300"
-    assert "--stop-on-signal" in cmd
-
-
-def test_make_job_provider_uses_print_when_job_runner_unset(sample_config):
-    sample_config["providers"]["claude"]["runner"] = "kage"  # interactive only
-    rt = Runtime(sample_config)
-    job = Job(
-        dir_name="j", name="J", schedule="* * * * *",
-        provider="claude", model="sonnet",
-    )
-    provider = rt.make_job_provider(job)
-    assert not isinstance(provider, KageClaudeProvider)
-    cmd = provider.build_batch_command("hi", "sonnet")
-    assert cmd[:2] == [provider.path, "-p"]
-
-
-def test_make_job_provider_resolves_codex_model_alias(sample_config):
-    rt = Runtime(sample_config)
-    job = Job(
-        dir_name="j", name="J", schedule="* * * * *",
-        provider="codex", model="luna",
-    )
-    provider = rt.make_job_provider(job)
-    cmd = provider.build_batch_command("hi", job.model)
-    assert cmd[cmd.index("-m") + 1] == "gpt-5.6-luna"
-
-
-# -- Kage smart restart (warm-session reuse) --
-
-
-def test_interactive_overrides_empty_for_non_kage(sample_config):
-    rt = Runtime(sample_config)  # runner unset -> print
-    assert rt._interactive_overrides("claude", "1", "opus", None) == {}
-    assert rt._interactive_overrides("codex", "1", "gpt", None) == {}
-
-
-def test_interactive_overrides_first_turn_no_restart(sample_config):
-    sample_config["providers"]["claude"]["runner"] = "kage"
-    rt = Runtime(sample_config)
-    # First turn for the chat: kage starts fresh, no restart needed.
-    assert rt._interactive_overrides("claude", "1", "opus", None) == {"kage_restart": False}
-
-
-def test_interactive_overrides_reuses_warm_session(sample_config):
-    sample_config["providers"]["claude"]["runner"] = "kage"
-    rt = Runtime(sample_config)
-    rt._interactive_overrides("claude", "1", "opus", "high")
-    # Same model+effort -> warm reuse, still no restart.
-    assert rt._interactive_overrides("claude", "1", "opus", "high") == {"kage_restart": False}
-
-
-def test_interactive_overrides_restarts_on_model_change(sample_config):
-    sample_config["providers"]["claude"]["runner"] = "kage"
-    rt = Runtime(sample_config)
-    rt._interactive_overrides("claude", "1", "opus", None)
-    assert rt._interactive_overrides("claude", "1", "sonnet", None) == {"kage_restart": True}
-
-
-def test_interactive_overrides_restarts_on_effort_change(sample_config):
-    sample_config["providers"]["claude"]["runner"] = "kage"
-    rt = Runtime(sample_config)
-    rt._interactive_overrides("claude", "1", "opus", "high")
-    assert rt._interactive_overrides("claude", "1", "opus", "max") == {"kage_restart": True}
-
-
-def test_interactive_overrides_per_chat_isolation(sample_config):
-    sample_config["providers"]["claude"]["runner"] = "kage"
-    rt = Runtime(sample_config)
-    rt._interactive_overrides("claude", "chatA", "opus", None)
-    # A different chat is independent -> its first turn never restarts.
-    assert rt._interactive_overrides("claude", "chatB", "sonnet", None) == {"kage_restart": False}
-
-
-def test_interactive_overrides_respects_disabled_restart(sample_config):
-    sample_config["providers"]["claude"].update({"runner": "kage", "kage_restart": False})
-    rt = Runtime(sample_config)
-    rt._interactive_overrides("claude", "1", "opus", None)
-    # Even on a config change, an explicit kage_restart=False never restarts.
-    assert rt._interactive_overrides("claude", "1", "sonnet", None) == {"kage_restart": False}
+    with pytest.raises(ValueError, match="Unknown provider"):
+        rt.make_provider("retired")
 
 
 def test_runtime_state_persistence(tmp_enso, sample_config):
@@ -452,6 +319,31 @@ def test_load_state_removes_unsupported_provider_entries(tmp_enso, sample_config
     assert persisted["active_model_by_chat_provider"] == {}
     assert persisted["effort_by_chat_provider_model"] == {}
     assert persisted["session_by_chat_provider"] == {}
+
+
+def test_load_state_removes_entries_for_unconfigured_models(tmp_enso, sample_config):
+    """Model and effort state for models no longer in config is pruned;
+    entries for configured models survive."""
+    state_file = Path(tmp_enso) / "state.json"
+    state_file.write_text(json.dumps({
+        "active_model_by_chat_provider": {
+            "42:claude": "removed-model",
+            "7:claude": "sonnet",
+        },
+        "effort_by_chat_provider_model": {
+            "42:claude:removed-model": "high",
+            "7:claude:sonnet": "low",
+        },
+    }))
+
+    rt = Runtime(sample_config)  # claude models: opus, sonnet
+    rt.load_state()
+
+    assert rt.active_model_by_chat_provider == {("7", "claude"): "sonnet"}
+    assert rt.effort_by_chat_provider_model == {("7", "claude", "sonnet"): "low"}
+    persisted = json.loads(state_file.read_text())
+    assert persisted["active_model_by_chat_provider"] == {"7:claude": "sonnet"}
+    assert persisted["effort_by_chat_provider_model"] == {"7:claude:sonnet": "low"}
 
 
 def test_save_state_failure_preserves_existing_file_and_removes_temp(

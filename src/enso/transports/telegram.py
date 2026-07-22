@@ -33,7 +33,6 @@ from ..commands import (
     cmd_compact_async,
     cmd_effort,
     cmd_help,
-    cmd_kage,
     cmd_logs,
     cmd_model,
     cmd_status,
@@ -65,7 +64,6 @@ COMMANDS = [
     BotCommand("use", "Switch provider"),
     BotCommand("model", "Switch model"),
     BotCommand("effort", "Set reasoning effort (Claude/Codex)"),
-    BotCommand("kage", "Toggle Kage for Claude (add 'jobs' for jobs)"),
     BotCommand("status", "Provider, model & effort info"),
     BotCommand("clear", "Clear session"),
     BotCommand("compact", "Summarise & compact the active session"),
@@ -467,34 +465,6 @@ class TelegramTransport(BaseTransport):
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
 
-    async def _cmd_kage(self, update: Update, _ctx: Any) -> None:
-        if not self._is_authorized(update):
-            return
-        conv_id = str(update.effective_chat.id)
-        parts = (update.message.text or "").split()
-        choice = " ".join(parts[1:]) if len(parts) > 1 else None
-
-        response, options = cmd_kage(self.runtime, conv_id, choice)
-        if response:
-            await update.message.reply_text(response)
-            return
-
-        # options are (callback_data, label, active). One button per row so
-        # longer labels (e.g. "claude -p") aren't truncated on mobile.
-        rows = [
-            [
-                InlineKeyboardButton(
-                    f"{'● ' if active else ''}{label}",
-                    callback_data=cb,
-                )
-            ]
-            for cb, label, active in options
-        ]
-        await update.message.reply_text(
-            "Claude runner:",
-            reply_markup=InlineKeyboardMarkup(rows),
-        )
-
     async def _cmd_clear(self, update: Update, _ctx: Any) -> None:
         if not self._is_authorized(update):
             return
@@ -598,13 +568,6 @@ class TelegramTransport(BaseTransport):
             if response:
                 await query.edit_message_text(response)
 
-        elif data.startswith("kage:"):
-            # "kage:on" -> "on"; "kage:jobs:on" -> "jobs on"
-            choice = data.split(":", 1)[1].replace(":", " ")
-            response, _ = cmd_kage(rt, conv_id, choice)
-            if response:
-                await query.edit_message_text(response)
-
         elif data.startswith("clear:"):
             scope = data.split(":", 1)[1]
             is_all = scope == "all"
@@ -675,19 +638,20 @@ def _build_reply_context(msg: Any) -> str | None:
 def _resolve_file(msg: Any) -> tuple[Any, str, str]:
     """Extract the file object, filename, and description from a Telegram message."""
     if msg.document:
-        name = safe_filename(msg.document.file_name or f"document_{uuid.uuid4().hex[:8]}")
+        # The fallback also covers names that sanitize to empty (e.g. "...").
+        name = safe_filename(msg.document.file_name or "") or f"document_{uuid.uuid4().hex[:8]}"
         return msg.document, name, f"file ({name})"
     if msg.photo:
         name = f"photo_{uuid.uuid4().hex[:8]}.jpg"
         return msg.photo[-1], name, "photo"
     if msg.audio:
-        name = safe_filename(msg.audio.file_name or f"audio_{uuid.uuid4().hex[:8]}.mp3")
+        name = safe_filename(msg.audio.file_name or "") or f"audio_{uuid.uuid4().hex[:8]}.mp3"
         return msg.audio, name, f"audio file ({name})"
     if msg.voice:
         name = f"voice_{uuid.uuid4().hex[:8]}.ogg"
         return msg.voice, name, "voice message"
     if msg.video:
-        name = safe_filename(msg.video.file_name or f"video_{uuid.uuid4().hex[:8]}.mp4")
+        name = safe_filename(msg.video.file_name or "") or f"video_{uuid.uuid4().hex[:8]}.mp4"
         return msg.video, name, f"video ({name})"
     if msg.video_note:
         name = f"videonote_{uuid.uuid4().hex[:8]}.mp4"

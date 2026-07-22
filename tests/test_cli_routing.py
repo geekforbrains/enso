@@ -105,3 +105,18 @@ def test_slack_send_message_no_thread(monkeypatch):
 
     cli_mod._slack_send_message("xoxb-fake", "C012345", "hi")
     assert "thread_ts" not in captured["data"]
+
+
+# ---------------------------------------------------------------------------
+# Service control
+# ---------------------------------------------------------------------------
+
+
+def test_service_restart_unknown_platform_returns_false(monkeypatch):
+    """On a platform with no service manager (and no os.getuid), restart
+    returns False instead of raising."""
+    from enso import cli as cli_mod
+
+    monkeypatch.setattr("sys.platform", "win32")
+    monkeypatch.delattr(cli_mod.os, "getuid", raising=False)
+    assert cli_mod._service_restart() is False

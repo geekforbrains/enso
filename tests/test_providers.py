@@ -2,15 +2,39 @@
 
 from __future__ import annotations
 
-from enso.providers import PROVIDER_NAMES, get_provider
-from enso.providers.claude import ClaudeProvider, KageClaudeProvider
+import pytest
+
+from enso.providers import PROVIDER_CLASSES, PROVIDER_NAMES, provider_class
+from enso.providers.claude import ClaudeProvider
 from enso.providers.codex import CODEX_MODEL_ALIASES, CodexProvider
 
-# -- Command building --
+# -- Registry --
 
 
 def test_supported_provider_names():
     assert PROVIDER_NAMES == ["claude", "codex"]
+    # PROVIDER_NAMES is derived from the registry — the single source of truth.
+    assert list(PROVIDER_CLASSES) == PROVIDER_NAMES
+
+
+def test_provider_class_lookup():
+    assert provider_class("claude") is ClaudeProvider
+    assert provider_class("codex") is CodexProvider
+
+
+def test_provider_class_unknown():
+    with pytest.raises(ValueError, match="Unknown provider"):
+        provider_class("unknown")
+
+
+def test_registry_declares_config_defaults():
+    """Every provider carries the defaults config derives from the registry."""
+    for cls in PROVIDER_CLASSES.values():
+        assert cls.default_models
+        assert cls.env_keys
+
+
+# -- Command building --
 
 
 def test_claude_build_command_no_session():
@@ -46,46 +70,6 @@ def test_claude_build_batch_command():
     assert "stream-json" not in cmd
     assert "--verbose" not in cmd
     assert "--continue" not in cmd
-
-
-def test_kage_claude_build_command_new_session():
-    p = KageClaudeProvider("kage", timeout=300)
-    cmd = p.build_command("hello", "sonnet", session_id="new:abc-123", effort="high")
-    assert cmd[:2] == ["kage", "claude"]
-    assert "--stream" in cmd
-    assert "--stop-on-signal" in cmd
-    assert "--restart" in cmd
-    assert "--timeout" in cmd
-    assert cmd[cmd.index("--timeout") + 1] == "300"
-    assert cmd[cmd.index("--session-id") + 1] == "abc-123"
-    assert cmd[cmd.index("--model") + 1] == "sonnet"
-    assert cmd[cmd.index("--effort") + 1] == "high"
-    assert "new:" not in " ".join(cmd)
-    assert cmd[-2:] == ["--", "hello"]
-
-
-def test_kage_claude_build_command_without_restart():
-    p = KageClaudeProvider("kage", restart=False)
-    cmd = p.build_command("hello", "opus", session_id="abc-123")
-    assert "--restart" not in cmd
-
-
-def test_kage_claude_build_batch_command():
-    p = KageClaudeProvider("kage", timeout=600)
-    cmd = p.build_batch_command("hello", "opus", effort="max")
-    assert cmd[:2] == ["kage", "claude"]
-    # Jobs stream so completion rides the Stop hook (format-independent) instead
-    # of kage's TUI done-marker scrape, which silently misses turns over 60s.
-    assert "--stream" in cmd
-    # Still ephemeral — no caller-managed session id; kage assigns its own uuid
-    # and tears the pane down on exit.
-    assert "--session-id" not in cmd
-    # batch must request signal-based teardown so a killed job doesn't orphan
-    # its tmux pane.
-    assert "--stop-on-signal" in cmd
-    assert cmd[cmd.index("--timeout") + 1] == "600"
-    assert cmd[cmd.index("--effort") + 1] == "max"
-    assert cmd[-2:] == ["--", "hello"]
 
 
 def test_codex_build_command():
@@ -153,79 +137,7 @@ def test_claude_parse_tool_use():
     assert "Reading" in events[0].text
 
 
-def test_kage_claude_parse_progress():
-    p = KageClaudeProvider("kage")
-    events = p.parse_event({
-        "status": "progress",
-        "session_id": "sid-123",
-        "event": "PreToolUse",
-        "tool": "Bash",
-        "summary": "pytest",
-    })
-    assert events[0].kind == "session"
-    assert events[0].session_id == "sid-123"
-    assert events[1].kind == "status"
-    assert events[1].text == "pytest"
-
-
-def test_kage_claude_parse_done():
-    p = KageClaudeProvider("kage")
-    events = p.parse_event({
-        "status": "done",
-        "session_id": "sid-123",
-        "response": "Done!",
-    })
-    assert any(e.kind == "session" and e.session_id == "sid-123" for e in events)
-    assert any(e.kind == "response" and e.text == "Done!" for e in events)
-
-
-def test_kage_claude_parse_error():
-    p = KageClaudeProvider("kage")
-    events = p.parse_event({
-        "status": "error",
-        "reason": "timeout",
-        "message": "no done marker",
-    })
-    assert len(events) == 1
-    assert events[0].kind == "error"
-    assert events[0].text == "no done marker"
-
-
 # -- Batch (job) output parsing --
-#
-# Jobs now run with --stream, so their stdout is newline-delimited JSON. The
-# job runner must extract the final response (or error) from that stream rather
-# than treating the raw JSONL blob as the answer.
-
-
-def _jsonl(*objs):
-    import json as _json
-    return "\n".join(_json.dumps(o) for o in objs)
-
-
-def test_kage_parse_batch_output_extracts_done_response():
-    p = KageClaudeProvider("kage")
-    out = _jsonl(
-        {"status": "progress", "session_id": "sid", "event": "PreToolUse",
-         "tool": "Bash", "summary": "rg"},
-        {"status": "done", "session_id": "sid", "response": "All clear. 1 note filed."},
-    )
-    assert p.parse_batch_output(out) == "All clear. 1 note filed."
-
-
-def test_kage_parse_batch_output_surfaces_error():
-    p = KageClaudeProvider("kage")
-    out = _jsonl(
-        {"status": "progress", "event": "PreToolUse", "tool": "Bash"},
-        {"status": "error", "reason": "timeout", "message": "no done marker"},
-    )
-    assert p.parse_batch_output(out) == "no done marker"
-
-
-def test_kage_parse_batch_output_non_stream_fallback():
-    """Defensive: plain (non-JSON) stdout is returned stripped, unchanged."""
-    p = KageClaudeProvider("kage")
-    assert p.parse_batch_output("  just text, not a stream\n") == "just text, not a stream"
 
 
 def test_base_provider_parse_batch_output_passthrough():
@@ -249,32 +161,13 @@ def test_codex_parse_session():
     assert any(e.kind == "session" and e.session_id == "t_123" for e in events)
 
 
-# -- Factory --
+# -- Stream buffering --
 
 
-def test_get_provider():
-    p = get_provider("claude", "/usr/bin/claude")
-    assert isinstance(p, ClaudeProvider)
-    assert p.path == "/usr/bin/claude"
-
-
-def test_get_provider_kage_claude():
-    p = get_provider("claude", "claude", {
-        "runner": "kage",
-        "kage_path": "/usr/bin/kage",
-        "kage_timeout": 900,
-        "kage_restart": False,
-    })
-    assert isinstance(p, KageClaudeProvider)
-    assert p.path == "/usr/bin/kage"
-    assert p.timeout == 900
-    assert p.restart is False
-
-
-def test_get_provider_unknown():
-    import pytest
-    with pytest.raises(ValueError, match="Unknown provider"):
-        get_provider("unknown", "path")
+def test_stdout_limit_generous_default():
+    """One long JSON event line (e.g. a full response) must not overrun the buffer."""
+    assert ClaudeProvider("claude").stdout_limit() == 10 * 1024 * 1024
+    assert CodexProvider("codex").stdout_limit() == 10 * 1024 * 1024
 
 
 # -- Effort: command building --

@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 
 from enso import frontmatter
-from enso.jobs import Job, create_job, load_jobs, parse_job
+from enso.config import load_config, save_config
+from enso.jobs import Job, create_job, job_config_error, load_jobs, parse_job
 
 
 def test_parse_job(tmp_path):
@@ -118,12 +119,20 @@ def test_create_job(tmp_enso):
     assert parsed.prompt == job.prompt
 
 
+def _configure_model(model: str) -> None:
+    """Register a custom model name so create_job validation accepts it."""
+    config = load_config()
+    config["providers"]["claude"]["models"].append(model)
+    save_config(config)
+
+
 def test_create_job_quotes_yaml_sensitive_values(tmp_enso):
     """New scaffolds are valid YAML and remain compatible with the loader."""
+    _configure_model("null")  # YAML-sensitive scalar as a model name
     job = create_job(
         "daily-review",
         "Daily: Review",
-        "on",
+        "claude",
         "null",
         "* * * * *",
     )
@@ -132,7 +141,7 @@ def test_create_job_quotes_yaml_sensitive_values(tmp_enso):
     assert meta == {
         "name": "Daily: Review",
         "schedule": "* * * * *",
-        "provider": "on",
+        "provider": "claude",
         "model": "null",
         "enabled": False,
     }
@@ -142,17 +151,18 @@ def test_create_job_quotes_yaml_sensitive_values(tmp_enso):
     assert parsed is not None
     assert parsed.name == "Daily: Review"
     assert parsed.schedule == "* * * * *"
-    assert parsed.provider == "on"
+    assert parsed.provider == "claude"
     assert parsed.model == "null"
 
 
 def test_create_job_and_loader_handle_safe_dump_edge_values(tmp_enso):
     """Quoted apostrophes, colons, and fence-like lines round-trip exactly."""
+    _configure_model("null")
     name = "Bob's: Review\n---\ncontinued"
     job = create_job(
         "yaml-edge",
         name,
-        "on",
+        "claude",
         "null",
         "* * * * *",
     )
@@ -162,7 +172,7 @@ def test_create_job_and_loader_handle_safe_dump_edge_values(tmp_enso):
     assert parsed is not None
     assert parsed.name == name
     assert parsed.schedule == "* * * * *"
-    assert parsed.provider == "on"
+    assert parsed.provider == "claude"
     assert parsed.model == "null"
     assert parsed.enabled is False
 
@@ -207,6 +217,49 @@ def test_create_job_rejects_unsafe_directory_names(tmp_enso, dir_name):
         create_job(dir_name, "Unsafe", "claude", "sonnet", "0 9 * * *")
 
     assert not os.path.exists(os.path.join(tmp_enso, "jobs"))
+
+
+def test_job_config_error_messages():
+    models = {"claude": ["opus"], "codex": []}
+    assert job_config_error("claude", "opus", models) is None
+    assert "Unknown provider 'gemini'" in job_config_error("gemini", "opus", models)
+    assert "Unknown claude model 'bogus'" in job_config_error("claude", "bogus", models)
+    assert "none configured" in job_config_error("codex", "sol", models)
+
+
+def test_create_job_rejects_unknown_provider(tmp_enso):
+    with pytest.raises(ValueError, match="Unknown provider 'gemini'"):
+        create_job("bad", "Bad", "gemini", "gemini-pro", "0 0 * * *")
+    # Validation fails before anything touches disk.
+    assert not os.path.isdir(os.path.join(tmp_enso, "jobs", "bad"))
+
+
+def test_create_job_rejects_unknown_model(tmp_enso):
+    with pytest.raises(ValueError, match="Unknown claude model 'bogus'"):
+        create_job("bad", "Bad", "claude", "bogus", "0 0 * * *")
+    assert not os.path.isdir(os.path.join(tmp_enso, "jobs", "bad"))
+
+
+def test_create_job_with_malformed_models_config_rejects_cleanly(tmp_enso):
+    """A non-list models value must not enable substring matches or crash."""
+    config = load_config()
+    config["providers"]["claude"]["models"] = "sonnet"
+    save_config(config)
+
+    # "son" would pass a naive `in` check against the string "sonnet".
+    with pytest.raises(ValueError, match="none configured"):
+        create_job("bad", "Bad", "claude", "son", "0 0 * * *")
+
+
+def test_create_job_accepts_custom_configured_model(tmp_enso):
+    """Models the user added to config are valid job targets."""
+    config = load_config()
+    config["providers"]["claude"]["models"].append("my-custom-model")
+    save_config(config)
+
+    job = create_job("custom", "Custom", "claude", "my-custom-model", "0 0 * * *")
+
+    assert job.model == "my-custom-model"
 
 
 def test_create_job_refuses_to_overwrite_existing_job(tmp_enso):

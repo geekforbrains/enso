@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import yaml
 
 from . import frontmatter
-from .config import JOBS_DIR
+from .config import JOBS_DIR, load_config, provider_models
 
 log = logging.getLogger(__name__)
 
@@ -103,6 +103,20 @@ def parse_job(dir_name: str, path: str) -> Job | None:
     )
 
 
+def job_config_error(
+    provider: str, model: str, models_by_provider: dict[str, list[str]],
+) -> str | None:
+    """Explain why a job's provider/model pair can't run, or None when valid."""
+    if provider not in models_by_provider:
+        valid = ", ".join(models_by_provider) or "none configured"
+        return f"Unknown provider '{provider}' (valid: {valid})"
+    models = models_by_provider[provider]
+    if model not in models:
+        valid = ", ".join(models) or "none configured"
+        return f"Unknown {provider} model '{model}' (valid: {valid})"
+    return None
+
+
 def create_job(
     dir_name: str,
     name: str,
@@ -115,6 +129,9 @@ def create_job(
     The prompt body is left as a placeholder for the caller to fill in.
     """
     _validate_dir_name(dir_name)
+    error = job_config_error(provider, model, provider_models(load_config()))
+    if error:
+        raise ValueError(error)
     os.makedirs(JOBS_DIR, exist_ok=True)
     job_dir = os.path.join(JOBS_DIR, dir_name)
     try:

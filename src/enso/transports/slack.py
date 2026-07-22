@@ -28,7 +28,6 @@ from ..commands import (
     cmd_compact_async,
     cmd_effort,
     cmd_help,
-    cmd_kage,
     cmd_logs,
     cmd_model,
     cmd_status,
@@ -78,7 +77,6 @@ SLACK_COMMANDS: list[tuple[str, str]] = [
     ("use", "Switch provider"),
     ("model", "Switch model"),
     ("effort", "Set reasoning effort (Claude/Codex, or 'default' to clear)"),
-    ("kage", "Toggle Kage for Claude (add 'jobs' for jobs)"),
     ("status", "Provider, model & effort info"),
     ("clear", "Clear session (use !clear all for all providers)"),
     ("compact", "Summarise & compact the active session"),
@@ -728,13 +726,6 @@ class SlackTransport(BaseTransport):
             model = rt.get_active_model(conv_id, rt.get_active_provider(conv_id))
             header = f"Set effort ({model}) — '!effort default' to clear:"
             return _render_options(header, options)
-
-        if cmd_name == "kage":
-            response, options = cmd_kage(rt, conv_id, cmd_args)
-            return response or _render_options(
-                "Claude runner - '!kage on/off' or '!kage jobs on/off':",
-                [(label, active) for _cb, label, active in options],
-            )
 
         if cmd_name == "status":
             return cmd_status(rt, conv_id)

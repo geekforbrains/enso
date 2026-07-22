@@ -114,10 +114,10 @@ class BaseTransport(ABC):
         if sent:
             clear_update_confirmation(str(pending.get("id", "")))
 
+    @abstractmethod
     async def _send_update_confirmation(self, pending: dict, text: str) -> bool:
         """Deliver the post-update confirmation message. Returns True when sent.
 
         A False return leaves the confirmation queued for the next start
         (e.g. the transport's client isn't ready yet).
         """
-        raise NotImplementedError

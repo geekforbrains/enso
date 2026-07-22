@@ -82,12 +82,60 @@ def stub_provider(
     runtime: Runtime, *, returncode: int = 0, output: bytes = b"done"
 ) -> FakeProvider:
     provider = FakeProvider()
-    runtime.make_job_provider = MagicMock(return_value=provider)
+    runtime.make_provider = MagicMock(return_value=provider)
     runtime._spawn_process = AsyncMock(return_value=FakeProcess(returncode))
     runtime._communicate_with_timeout = AsyncMock(
         return_value=(output, b"", False)
     )
     return provider
+
+
+async def test_invalid_job_provider_errors_before_prerun(tmp_enso, sample_config):
+    """A job naming a retired/unknown provider errors out without running anything."""
+    runtime = Runtime(sample_config)
+    runtime.transport = RecordingTransport()
+    job = make_job(tmp_enso)
+    job.provider = "gemini"
+    runtime._spawn_process = AsyncMock()  # neither prerun nor provider may spawn
+
+    result = await runtime._execute_job(job)
+
+    assert result.status == "error"
+    assert "Unknown provider 'gemini'" in result.output
+    row = runs.get(result.run_id)
+    assert row["status"] == "error"
+    assert row["exit_code"] == -1
+    runtime._spawn_process.assert_not_called()
+    assert "Unknown provider 'gemini'" in runtime.transport.notifications[0][0]
+
+
+async def test_invalid_job_model_errors_and_lists_valid_models(tmp_enso, sample_config):
+    runtime = Runtime(sample_config)
+    runtime.transport = RecordingTransport()
+    job = make_job(tmp_enso)
+    job.model = "bogus"
+    runtime._spawn_process = AsyncMock()
+
+    result = await runtime._execute_job(job)
+
+    assert result.status == "error"
+    assert "Unknown claude model 'bogus'" in result.output
+    assert "opus, sonnet" in result.output  # valid models from config
+    runtime._spawn_process.assert_not_called()
+
+
+async def test_manual_run_of_invalid_job_errors_without_notifying(tmp_enso, sample_config):
+    runtime = Runtime(sample_config)
+    runtime.transport = RecordingTransport()
+    job = make_job(tmp_enso)
+    job.provider = "gemini"
+    runtime._spawn_process = AsyncMock()
+
+    result = await runtime._execute_job(job, trigger="manual", notify_failures=False)
+
+    assert result.status == "error"
+    assert runs.get(result.run_id)["status"] == "error"
+    assert runtime.transport.notifications == []
 
 
 @pytest.mark.parametrize(
@@ -274,7 +322,7 @@ async def test_no_work_is_silent_without_history_or_provider(tmp_enso, sample_co
     runtime._run_job_prerun = AsyncMock(
         return_value=PrerunResult("no_work", exit_code=1)
     )
-    runtime.make_job_provider = MagicMock()
+    runtime.make_provider = MagicMock()
 
     result = await runtime._execute_job(job)
 
@@ -282,7 +330,7 @@ async def test_no_work_is_silent_without_history_or_provider(tmp_enso, sample_co
     assert result.run_id is None
     assert runs.list_runs() == []
     assert runtime.transport.notifications == []
-    runtime.make_job_provider.assert_not_called()
+    runtime.make_provider.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -299,7 +347,7 @@ async def test_scheduled_prerun_failure_records_and_notifies_destination(
     runtime.transport = RecordingTransport()
     job = make_job(tmp_enso, notify="987")
     runtime._run_job_prerun = AsyncMock(return_value=prerun)
-    runtime.make_job_provider = MagicMock()
+    runtime.make_provider = MagicMock()
 
     result = await runtime._execute_job(job)
 
@@ -310,7 +358,7 @@ async def test_scheduled_prerun_failure_records_and_notifies_destination(
     assert row["duration_ms"] >= 0
     assert runtime.transport.notifications[0][1] == "987"
     assert "Capture" in runtime.transport.notifications[0][0]
-    runtime.make_job_provider.assert_not_called()
+    runtime.make_provider.assert_not_called()
 
 
 async def test_missing_prerun_records_failure_and_never_runs_provider(tmp_enso, sample_config):
@@ -318,13 +366,13 @@ async def test_missing_prerun_records_failure_and_never_runs_provider(tmp_enso, 
     runtime.transport = RecordingTransport()
     job = make_job(tmp_enso, prerun=None)
     job.prerun = "missing.sh"
-    runtime.make_job_provider = MagicMock()
+    runtime.make_provider = MagicMock()
 
     result = await runtime._execute_job(job)
 
     assert result.status == "prerun_error"
     assert runs.get(result.run_id)["status"] == "prerun_error"
-    runtime.make_job_provider.assert_not_called()
+    runtime.make_provider.assert_not_called()
 
 
 async def test_identical_prerun_failures_are_suppressed_but_recorded(
@@ -482,14 +530,14 @@ async def test_manual_run_uses_prerun_records_failure_without_notifying(
     job = make_job(tmp_enso)
     monkeypatch.setattr("enso.core.load_jobs", lambda: [job])
     runtime._run_job_prerun = AsyncMock(return_value=prerun)
-    runtime.make_job_provider = MagicMock()
+    runtime.make_provider = MagicMock()
 
     result = await runtime.run_job_now(job.dir_name)
 
     assert result.status in {"prerun_error", "prerun_timeout"}
     assert runs.get(result.run_id)["trigger"] == "manual"
     assert runtime.transport.notifications == []
-    runtime.make_job_provider.assert_not_called()
+    runtime.make_provider.assert_not_called()
 
 
 async def test_manual_no_work_has_no_history(tmp_enso, sample_config, monkeypatch):

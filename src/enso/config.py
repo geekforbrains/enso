@@ -10,6 +10,7 @@ import shutil
 import tempfile
 
 from .logging_config import default_logging_config
+from .providers import PROVIDER_CLASSES
 from .providers.codex import CODEX_MODEL_ALIASES
 
 log = logging.getLogger(__name__)
@@ -21,17 +22,18 @@ JOBS_DIR = os.path.join(CONFIG_DIR, "jobs")
 MESSAGES_FILE = os.path.join(CONFIG_DIR, "messages.json")
 SKILL_TOMBSTONES_DIRNAME = ".deleted"
 
+# Derived from the provider registry so supported names, CLI paths, and
+# default model lists have one source of truth.
 DEFAULT_PROVIDERS = {
-    "claude": {
-        "path": "claude",
-        "runner": "print",
-        "job_runner": "print",
-        "kage_path": "kage",
-        "kage_timeout": 1800,
-        "kage_restart": True,
-        "models": ["opus", "sonnet", "haiku", "fable"],
-    },
-    "codex": {"path": "codex", "models": list(CODEX_MODEL_ALIASES)},
+    name: {"path": name, "models": list(cls.default_models)}
+    for name, cls in PROVIDER_CLASSES.items()
+}
+
+# Provider options removed in past releases. Only these are stripped from
+# existing configs (and the removal persisted); unknown keys pass through so
+# a rollback from a newer version never destroys its settings.
+_RETIRED_PROVIDER_KEYS: dict[str, frozenset[str]] = {
+    "claude": frozenset({"runner", "job_runner", "kage_path", "kage_timeout", "kage_restart"}),
 }
 
 DEFAULT_WEB = {
@@ -46,10 +48,38 @@ DEFAULT_WEB = {
 DEFAULT_RUNS = {"keep": 500, "max_age_days": 30}
 
 
-def claude_cfg(config: dict) -> dict:
-    """Return the ``providers.claude`` config, tolerating malformed shapes."""
+def provider_models(config: dict) -> dict[str, list[str]]:
+    """Configured models per supported provider, normalized to string lists.
+
+    Malformed shapes (non-dict provider entries, non-list ``models``, or
+    non-string members) collapse to an empty/filtered list so validation and
+    selection never substring-match against a string or raise on bad types.
+    """
     providers = config.get("providers", {})
-    return providers.get("claude", {}) if isinstance(providers, dict) else {}
+    if not isinstance(providers, dict):
+        return {}
+    result: dict[str, list[str]] = {}
+    for name, pcfg in providers.items():
+        if name not in DEFAULT_PROVIDERS or not isinstance(pcfg, dict):
+            continue
+        models = pcfg.get("models")
+        result[name] = (
+            [m for m in models if isinstance(m, str)] if isinstance(models, list) else []
+        )
+    return result
+
+
+def _providers_need_migration(raw_providers: object) -> bool:
+    """True when config carries retired providers or retired provider keys."""
+    if not isinstance(raw_providers, dict):
+        return False
+    for name, pcfg in raw_providers.items():
+        if name not in DEFAULT_PROVIDERS:
+            return True
+        retired = _RETIRED_PROVIDER_KEYS.get(name, frozenset())
+        if isinstance(pcfg, dict) and any(k in retired for k in pcfg):
+            return True
+    return False
 
 
 def load_config() -> dict:
@@ -60,11 +90,10 @@ def load_config() -> dict:
             with open(CONFIG_FILE) as f:
                 raw = json.load(f)
             config = _with_config_defaults(raw)
-            raw_providers = raw.get("providers") if isinstance(raw, dict) else None
-            has_unsupported_provider = isinstance(raw_providers, dict) and any(
-                name not in DEFAULT_PROVIDERS for name in raw_providers
+            needs_migration = isinstance(raw, dict) and (
+                "tasks" in raw or _providers_need_migration(raw.get("providers"))
             )
-            if isinstance(raw, dict) and ("tasks" in raw or has_unsupported_provider):
+            if needs_migration:
                 try:
                     save_config(config)
                 except OSError:
@@ -136,8 +165,8 @@ def _with_config_defaults(config: dict) -> dict:
     else:
         merged["logging"] = logging_defaults
 
-    # Backfill any provider keys added in newer versions (e.g. job_runner)
-    # without overwriting values the user has already set.
+    # Normalize provider entries: drop retired providers and retired keys,
+    # backfill newly added defaults without overwriting user values.
     providers = merged.get("providers")
     if isinstance(providers, dict):
         backfilled = {
@@ -148,7 +177,12 @@ def _with_config_defaults(config: dict) -> dict:
         for name, defaults in DEFAULT_PROVIDERS.items():
             existing = backfilled.get(name)
             if isinstance(existing, dict):
-                provider = {**defaults, **existing}
+                retired = _RETIRED_PROVIDER_KEYS.get(name, frozenset())
+                provider = {
+                    key: value
+                    for key, value in {**defaults, **existing}.items()
+                    if key not in retired
+                }
                 if name == "codex" and isinstance(existing.get("models"), list):
                     # Make new aliases available to existing installs while
                     # retaining full, older, or custom model IDs.
@@ -177,14 +211,10 @@ def _with_config_defaults(config: dict) -> dict:
 
 def resolve_providers() -> dict:
     """Build provider config with absolute paths where available."""
-    providers = {}
-    for name, defaults in DEFAULT_PROVIDERS.items():
-        resolved = shutil.which(name)
-        providers[name] = {**defaults, "path": resolved or name}
-        if name == "claude":
-            kage_resolved = shutil.which("kage")
-            providers[name]["kage_path"] = kage_resolved or defaults["kage_path"]
-    return providers
+    return {
+        name: {**defaults, "path": shutil.which(name) or name}
+        for name, defaults in DEFAULT_PROVIDERS.items()
+    }
 
 
 def detect_providers() -> dict[str, bool]:

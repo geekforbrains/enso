@@ -83,8 +83,7 @@ Telegram autocompletes these when you type `/`. On Slack, use `!` instead (e.g. 
 | `/use` | Switch agent (shows buttons, or `/use claude`) |
 | `/model` | Switch model (shows buttons, or `/model sonnet` / `/model sol`) |
 | `/effort` | Set Claude/Codex reasoning effort (or `default` to clear) |
-| `/kage` | Route Claude through kage instead of `claude -p` (`/kage jobs on` for background jobs) |
-| `/status` | Active agent, model, runner, and effort |
+| `/status` | Active agent, model, and effort |
 | `/stop` | Stop process & clear queue |
 | `/queue` | View & manage queued messages |
 | `/clear` | New session (shows current/all buttons) |
@@ -99,19 +98,6 @@ You can also send files — they're downloaded and passed to the active agent. R
 Effort is stored separately for each conversation, provider, and model. Claude supports its existing model-dependent range through `max`. Codex Sol and Terra support `low` through `ultra`; Luna supports `low` through `max`. Enso clamps an unsupported higher choice to the active model's maximum and reports the effective level.
 
 **Slack specifics.** DMs work like Telegram — every message dispatches. In channels, Enso only responds when mentioned (`@bot help me`); once a thread starts, it stays attentive to that thread only if you keep mentioning it. The bot fetches the last few thread/channel messages as context so it knows what's going on.
-
-## Claude runner (kage)
-
-Claude requests default to `claude -p`. You can instead route them through [kage](https://github.com/geekforbrains/kage), which drives Claude Code's interactive TUI in tmux — useful when you'd rather use your Claude subscription than `claude -p`'s API billing. kage must be installed and on your PATH.
-
-Interactive chat and background jobs choose their runner **independently**:
-
-| Toggle | Affects |
-|--------|---------|
-| `/kage on` · `/kage off` | Your interactive chat messages |
-| `/kage jobs on` · `/kage jobs off` | Background jobs |
-
-So chat can run through kage while jobs stay on `claude -p`, or any other mix. `/status` shows both. The settings live under `providers.claude` in `config.json` (`runner` for chat, `job_runner` for jobs); both default to `print` (i.e. `claude -p`).
 
 ## Slack directory (`enso slack`)
 
@@ -191,7 +177,7 @@ Each job has a `JOB.md` with a cron schedule, provider, model, and prompt. Jobs 
 
 Codex models use the short names `sol`, `terra`, and `luna` in chat commands and job files. Enso translates them to the CLI model IDs `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` when spawning Codex. Full or custom model IDs remain supported.
 
-Claude jobs run via `claude -p` by default; `/kage jobs on` routes them through kage independently of your chat runner (see [Claude runner](#claude-runner-kage)). Each job's whole lifecycle — dispatch, prerun gate, spawn, completion or timeout — is logged under a `[job:<name>]` tag for easy tracing.
+A job's `provider` and `model` are validated against your configured providers — jobs naming unknown values fail with a clear error instead of running. Each job's whole lifecycle — dispatch, prerun gate, spawn, completion or timeout — is logged under a `[job:<name>]` tag for easy tracing.
 
 ## Service Management
 

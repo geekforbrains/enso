@@ -8,7 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from enso.config import load_config, save_config
+from enso.config import DEFAULT_PROVIDERS, load_config, provider_models, save_config
+from enso.providers import PROVIDER_NAMES, provider_class
 
 
 def test_load_creates_default(tmp_enso):
@@ -64,42 +65,87 @@ def test_load_merges_missing_logging_defaults(tmp_enso):
     assert loaded["logging"]["loggers"] == {}
 
 
-def test_default_config_has_job_runner(tmp_enso):
-    """Fresh configs expose an independent job_runner, defaulting to print."""
-    config = load_config()
-    claude = config["providers"]["claude"]
-    assert claude["runner"] == "print"
-    assert claude["job_runner"] == "print"
-
-
 def test_default_config_has_codex_model_aliases(tmp_enso):
     config = load_config()
     assert config["providers"]["codex"]["models"] == ["sol", "terra", "luna"]
 
 
-def test_load_backfills_job_runner_without_clobbering(tmp_enso):
-    """An existing claude provider gains job_runner but keeps custom values."""
+def test_default_providers_derive_from_registry():
+    """Provider names and default models have one source of truth: the registry."""
+    assert list(DEFAULT_PROVIDERS) == PROVIDER_NAMES
+    for name, defaults in DEFAULT_PROVIDERS.items():
+        assert set(defaults) == {"path", "models"}
+        assert defaults["path"] == name
+        assert defaults["models"] == provider_class(name).default_models
+
+
+def test_provider_models_filters_unsupported_and_malformed():
     config = {
-        "working_dir": "/tmp/test",
-        "transport": "telegram",
-        "transports": {},
+        "providers": {
+            "claude": {"models": ["opus"]},
+            "codex": "broken",
+            "retired": {"models": ["old"]},
+        },
+    }
+    assert provider_models(config) == {"claude": ["opus"]}
+
+
+def test_provider_models_normalizes_malformed_model_lists():
+    """Non-list or mixed-type models must not enable substring matching or
+    TypeErrors downstream — only well-formed string lists come through."""
+    config = {
+        "providers": {
+            "claude": {"models": "sonnet"},          # string, not list
+            "codex": {"models": [123, "sol", None]},  # mixed types
+        },
+    }
+    assert provider_models(config) == {"claude": [], "codex": ["sol"]}
+    assert provider_models({"providers": {"claude": {"models": None}}}) == {"claude": []}
+
+
+def test_load_strips_retired_provider_keys(tmp_enso):
+    """Keys dropped from a provider's defaults (e.g. the old kage runner set)
+    are removed on load and the cleanup is persisted."""
+    config_file = Path(tmp_enso) / "config.json"
+    config_file.write_text(json.dumps({
         "providers": {
             "claude": {
                 "path": "/custom/claude",
                 "runner": "kage",
+                "job_runner": "print",
+                "kage_path": "kage",
+                "kage_timeout": 900,
+                "kage_restart": False,
                 "models": ["opus"],
             },
         },
-    }
-    save_config(config)
+    }))
+
     loaded = load_config()
+
     claude = loaded["providers"]["claude"]
-    # Backfilled default.
-    assert claude["job_runner"] == "print"
-    # User choices preserved.
+    assert set(claude) == {"path", "models"}
     assert claude["path"] == "/custom/claude"
-    assert claude["runner"] == "kage"
     assert claude["models"] == ["opus"]
+    persisted = json.loads(config_file.read_text())
+    assert set(persisted["providers"]["claude"]) == {"path", "models"}
+
+
+def test_load_preserves_unknown_provider_keys(tmp_enso):
+    """Only explicitly retired keys are stripped — unknown keys (e.g. from a
+    newer version after a rollback) survive load and are not migrated away."""
+    config_file = Path(tmp_enso) / "config.json"
+    config_file.write_text(json.dumps({
+        "providers": {
+            "claude": {"path": "claude", "models": ["opus"], "future_option": True},
+        },
+    }))
+
+    loaded = load_config()
+
+    assert loaded["providers"]["claude"]["future_option"] is True
+    # No migration was persisted — the raw file keeps the key too.
+    assert json.loads(config_file.read_text())["providers"]["claude"]["future_option"] is True
 
 
 def test_load_backfills_codex_aliases_and_preserves_custom_models(tmp_enso):

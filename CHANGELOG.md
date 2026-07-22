@@ -14,6 +14,7 @@ All notable changes to this project will be documented in this file.
 - `/effort` and `!effort` now support Codex as well as Claude. Sol and Terra expose levels through `ultra`; Luna exposes levels through `max`. Per-chat overrides are passed to Codex as `model_reasoning_effort` while `default` falls back to the Codex CLI configuration
 - `/update` (Telegram) / `!update` (Slack) deterministically updates Enso from the exact current commit on the stable `main` branch. It builds a wheel, validates it in an isolated environment, runs the upstream test suite, installs that same wheel, restarts the bot and dashboard services, and confirms health after restart. Already-current installs are left untouched, and editable development checkouts ahead of stable are never downgraded. Revision metadata is stored separately in `~/.enso/update.json`; the active model is never involved
 - Edit a job's prompt (the `JOB.md` body) directly from the web dashboard, mirroring in-place skill editing
+- Background jobs validate their `provider` and `model` against the configured providers before running: `enso job create` rejects unknown values upfront, and an existing job naming a retired provider or unknown model records a clear error run (and notifies) instead of failing obscurely at spawn time
 
 ### Fixed
 
@@ -38,6 +39,7 @@ All notable changes to this project will be documented in this file.
 
 ### Removed
 
+- The alternate Claude runner integration — the `/kage` chat command, the `providers.claude` runner settings (`runner`, `job_runner`, `kage_path`, `kage_timeout`, `kage_restart`), and its provider adapter, tests, and documentation. Claude always runs through `claude -p`; upgrades strip the retired settings from `config.json` automatically
 - Provider integrations outside Claude Code and Codex, including their adapters, setup detection, configuration defaults, service environment handling, tests, and documentation
 - Built-in one-off tasks system (the `enso task` CLI, the task-runner, and the tasks web UI) — use Todoist or jobs instead
 
@@ -55,28 +57,17 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
-- Background jobs whose Claude turn ran longer than 60 seconds would hang until the wall-clock timeout and be force-killed, even though the work had finished. Jobs run through kage in non-stream mode, where completion was detected by scraping kage's TUI done-marker, which only recognised sub-minute elapsed times; past a minute the marker renders in compound units and was missed (fixed in kage 0.2.1, and hardened here)
-
-### Changed
-
-- Background jobs now run with kage's `--stream`, so completion rides kage's Stop hook instead of the TUI done-marker scrape. This is independent of the rendered marker format, so it survives the >60s case and any future TUI drift. Jobs stay ephemeral (kage assigns its own session UUID, giving each run an isolated transcript and event log). Job stdout is now a stream of JSON envelopes; the job runner extracts the final response (or error) from it via `parse_batch_output`. Codex and native `claude -p` are unaffected
+- Background jobs whose Claude turn ran longer than 60 seconds could hang until the wall-clock timeout and be force-killed even though the work had finished; job completion detection was reworked to be independent of turn duration
 
 ## [0.15.0] - 2026-05-31
 
 ### Added
 
-- Claude requests can be routed through [kage](https://github.com/geekforbrains/kage) instead of `claude -p`. kage drives Claude Code's interactive TUI in tmux, so you can run on your Claude subscription rather than `claude -p`'s API billing. kage must be installed and on `PATH`; native `claude -p` remains the default
-- `/kage` (Telegram) / `!kage` (Slack) command toggles the runner without clearing session state. Interactive chat and background jobs select their runner **independently**: `/kage on|off` controls chat, `/kage jobs on|off` controls jobs. `/status` now shows both the chat and job runner
-- Runner settings persist under `providers.claude` in `config.json` (`runner` for chat, `job_runner` for jobs); both default to `print` (i.e. `claude -p`). Existing configs are backfilled with `job_runner` without clobbering user values
 - Configurable logging: log level and request/provider-flow debug visibility are now driven by config, with sane defaults backfilled for setup and existing installs (`logging_config.py`)
 
 ### Fixed
 
-- Background-job process cleanup is hardened so a job's whole process tree (including the underlying kage/tmux panes) is reliably torn down on completion, timeout, or cancel
-
-### Changed
-
-- `/kage` inline menu renders one button per row so longer labels like `claude -p` no longer truncate on mobile
+- Background-job process cleanup is hardened so a job's whole process tree is reliably torn down on completion, timeout, or cancel
 
 ## [0.14.0] - 2026-05-12
 

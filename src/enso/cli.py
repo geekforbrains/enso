@@ -28,6 +28,7 @@ from .logging_config import configure_logging
 from .messages import clear as msg_clear
 from .messages import pending as msg_pending
 from .messages import send as msg_send
+from .providers import PROVIDER_CLASSES, PROVIDER_NAMES
 from .transports import BaseTransport
 
 log = logging.getLogger(__name__)
@@ -242,7 +243,7 @@ def _find_enso_bin() -> str | None:
 def _build_path_str(enso_bin: str) -> str:
     """Build a PATH string from detected CLI locations."""
     path_dirs: set[str] = {os.path.dirname(enso_bin)}
-    for cmd in ("claude", "codex", "node", "npx"):
+    for cmd in (*PROVIDER_NAMES, "node", "npx"):
         p = shutil.which(cmd)
         if p:
             path_dirs.add(os.path.dirname(p))
@@ -341,9 +342,8 @@ def _install_launchd(config: dict, enso_bin: str) -> bool:
     # Snapshot API keys and essential env vars so provider CLIs work
     # under launchd's minimal environment.
     extra_env = ""
-    for key in (
-        "HOME", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
-    ):
+    provider_env_keys = (key for cls in PROVIDER_CLASSES.values() for key in cls.env_keys)
+    for key in ("HOME", *provider_env_keys):
         val = os.environ.get(key)
         if val:
             extra_env += f"        <key>{key}</key>\n        <string>{val}</string>\n"
@@ -500,6 +500,9 @@ def _service_stop() -> bool:
 
 def _service_restart() -> bool:
     """Restart the service. Returns True on success."""
+    if _service_platform() is None:
+        # Guard before building argv — os.getuid() doesn't exist everywhere.
+        return False
     return _service_cmd(
         ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{_LAUNCHD_LABEL}"],
         ["systemctl", "--user", "restart", _SYSTEMD_UNIT],
@@ -530,7 +533,7 @@ def _setup_providers(config: dict) -> None:
 
     if not any(available.values()):
         console.print("\n[yellow]No provider CLIs found on PATH.[/]")
-        console.print("Install at least one of: claude, codex")
+        console.print(f"Install at least one of: {', '.join(PROVIDER_NAMES)}")
 
 
 def _setup_transport(config: dict) -> int | None:
@@ -1163,7 +1166,7 @@ def job_list() -> None:
 @job_app.command("create")
 def job_create(
     name: Annotated[str, typer.Option("--name", help="Display name for the job")],
-    provider: Annotated[str, typer.Option("--provider", help="claude or codex")],
+    provider: Annotated[str, typer.Option("--provider", help=" or ".join(PROVIDER_NAMES))],
     model: Annotated[
         str, typer.Option("--model", help="Model name (e.g. sonnet, sol, terra, luna)")
     ],

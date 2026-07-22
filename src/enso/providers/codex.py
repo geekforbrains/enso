@@ -55,6 +55,9 @@ def _format_status(event: dict) -> str | None:
 class CodexProvider(BaseProvider):
     name = "codex"
 
+    default_models: ClassVar[list[str]] = list(CODEX_MODEL_ALIASES)
+    env_keys: ClassVar[tuple[str, ...]] = ("OPENAI_API_KEY",)
+
     # Reasoning-effort levels in the Codex 0.144 model catalog, least to most.
     effort_levels: ClassVar[list[str]] = ["low", "medium", "high", "xhigh", "max", "ultra"]
     _model_max_effort: ClassVar[dict[str, str]] = {

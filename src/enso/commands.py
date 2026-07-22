@@ -6,7 +6,7 @@ import logging
 import os
 from typing import TYPE_CHECKING
 
-from .config import CONFIG_DIR, claude_cfg, save_config
+from .config import CONFIG_DIR
 from .providers import PROVIDER_NAMES, provider_class
 
 if TYPE_CHECKING:
@@ -14,32 +14,6 @@ if TYPE_CHECKING:
     from .updater import UpdateResult
 
 log = logging.getLogger(__name__)
-
-
-def _get_claude_runner(runtime: Runtime, *, key: str = "runner") -> str:
-    """Return the effective Claude runner for the given config key.
-
-    ``key`` is ``"runner"`` for interactive chat or ``"job_runner"`` for
-    background jobs — the two are configured independently.
-    """
-    return "kage" if claude_cfg(runtime.config).get(key) == "kage" else "print"
-
-
-def _runner_label(runner: str) -> str:
-    """Return the user-facing label for a Claude runner value."""
-    return "kage" if runner == "kage" else "claude -p"
-
-
-def _kage_menu(runtime: Runtime) -> list[tuple[str, str, bool]]:
-    """Build the kage toggle menu: (callback_data, label, active) per option."""
-    chat = _get_claude_runner(runtime, key="runner")
-    jobs = _get_claude_runner(runtime, key="job_runner")
-    return [
-        ("kage:on", "Interactive: kage", chat == "kage"),
-        ("kage:off", "Interactive: claude -p", chat != "kage"),
-        ("kage:jobs:on", "Jobs: kage", jobs == "kage"),
-        ("kage:jobs:off", "Jobs: claude -p", jobs != "kage"),
-    ]
 
 
 async def cmd_stop_async(runtime: Runtime, conv_id: str) -> str:
@@ -63,11 +37,6 @@ def cmd_status(runtime: Runtime, conv_id: str) -> str:
     provider = runtime.get_active_provider(conv_id)
     model = runtime.get_active_model(conv_id, provider)
     lines = [f"Provider: {provider}", f"Model: {model}"]
-    if provider == "claude":
-        lines.append(f"Runner: {_runner_label(_get_claude_runner(runtime))}")
-        lines.append(
-            f"Job runner: {_runner_label(_get_claude_runner(runtime, key='job_runner'))}"
-        )
     effort = runtime.get_active_effort(conv_id, provider, model)
     if effort:
         lines.append(f"Effort: {effort}")
@@ -142,9 +111,6 @@ def cmd_effort(
     provider = runtime.get_active_provider(conv_id)
     provider_cls = provider_class(provider)
     levels = provider_cls.effort_levels
-    if not levels:
-        return f"Effort is only supported for Claude and Codex (current: {provider}).", []
-
     model = runtime.get_active_model(conv_id, provider)
     key = (conv_id, provider, model)
 
@@ -181,62 +147,6 @@ def cmd_effort(
     active = runtime.effort_by_chat_provider_model.get(key)
     options = [(level, level == active) for level in provider_cls.supported_efforts(model)]
     return None, options
-
-
-def cmd_kage(
-    runtime: Runtime, conv_id: str, choice: str | None,
-) -> tuple[str | None, list[tuple[str, str, bool]]]:
-    """Toggle whether Claude runs through kage or native claude -p.
-
-    Interactive chat and background jobs are configured independently:
-    ``runner`` governs chat, ``job_runner`` governs jobs. ``choice`` is the
-    raw argument string. Supported forms (optionally prefixed with ``jobs``):
-    empty/``show`` \u2192 menu; ``on``/``off``/``toggle``/``status``.
-
-    Returns ``(response_text | None, options)`` where each option is
-    ``(callback_data, label, active)`` for rendering toggle buttons.
-    """
-    del conv_id  # Runner mode is global config, not per-chat state.
-
-    tokens = (choice or "").strip().lower().split()
-    if tokens and tokens[0] in {"job", "jobs"}:
-        key, label = "job_runner", "Job runner"
-        tokens = tokens[1:]
-    else:
-        key, label = "runner", "Interactive runner"
-
-    action = tokens[0] if tokens else ""
-    runner = _get_claude_runner(runtime, key=key)
-
-    if action in {"", "show"}:
-        return None, _kage_menu(runtime)
-
-    if action == "status":
-        return f"{label}: {_runner_label(runner)}.", []
-
-    if action == "toggle":
-        target = "print" if runner == "kage" else "kage"
-    elif action in {"on", "kage", "enable", "enabled", "true"}:
-        target = "kage"
-    elif action in {"off", "print", "native", "claude", "disable", "disabled", "false"}:
-        target = "print"
-    else:
-        return (
-            "Unknown kage mode. Use: on, off, toggle, or status "
-            "(optionally prefixed with 'jobs').",
-            [],
-        )
-
-    providers = runtime.config.setdefault("providers", {})
-    claude_cfg = providers.setdefault("claude", {})
-    claude_cfg[key] = target
-    save_config(runtime.config)
-
-    return (
-        f"{label} \u2192 {_runner_label(target)}. "
-        "Existing session state was left unchanged.",
-        [],
-    )
 
 
 async def cmd_compact_async(runtime: Runtime, conv_id: str) -> str:
