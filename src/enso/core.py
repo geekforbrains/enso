@@ -25,7 +25,13 @@ from . import messages, runs
 from .config import CONFIG_DIR, SKILL_TOMBSTONES_DIRNAME, STATE_FILE, claude_cfg
 from .jobs import Job, load_jobs
 from .logging_config import logging_flags
-from .providers import BaseProvider, StreamEvent, get_provider, provider_class
+from .providers import (
+    PROVIDER_NAMES,
+    BaseProvider,
+    StreamEvent,
+    get_provider,
+    provider_class,
+)
 
 if TYPE_CHECKING:
     from .transports import BaseTransport, TransportContext
@@ -109,6 +115,7 @@ _BUNDLED_SKILL_PRISTINE_HASHES: dict[tuple[str, str], frozenset[str]] = {
         "cc8d7abc0e550b901644d7c7feee2e3363608adf794a2f885c7421a5cb7fa08b",
         "256ce5a5609551246927c9e19ef0be13f68f630fb343815f303e6f90ab8cb51c",
         "608c4a5d9f34d76ae9143f749fa7b028a4fce413d260e1a5f58d361288730bd8",
+        "1756397ae5838a5aba08c6371cb721f9e1b4f815c8b1907a19b017e7aca53be0",
     }),
 }
 
@@ -166,6 +173,7 @@ class Runtime:
         self.models: dict[str, list[str]] = {
             name: pcfg.get("models", [])
             for name, pcfg in config.get("providers", {}).items()
+            if name in PROVIDER_NAMES and isinstance(pcfg, dict)
         }
         self.transport: BaseTransport | None = None
 
@@ -214,10 +222,10 @@ class Runtime:
         - Bundled skills seeded into ~/.enso/skills/
         - AGENTS.md in working_dir (from bundled template on first install)
         - CLAUDE.md as a symlink to AGENTS.md (Claude reads CLAUDE.md;
-          Codex and Gemini read AGENTS.md natively)
+          Codex reads AGENTS.md natively)
         - .claude/skills and .agents/skills symlinked to ~/.enso/skills/
-          (so Claude, Codex, and Gemini auto-discover skills)
-        - Auto-compact notification hooks for Claude and Gemini
+          (so Claude and Codex auto-discover skills)
+        - Auto-compact notification hooks for Claude
         """
         from .config import JOBS_DIR
 
@@ -230,8 +238,8 @@ class Runtime:
         self._install_skill_tools(skills_dir)
 
         # System prompt. AGENTS.md is canonical; Claude reads CLAUDE.md, so
-        # it's symlinked to AGENTS.md. Codex and Gemini read AGENTS.md
-        # natively, so no further symlinks are needed.
+        # it's symlinked to AGENTS.md. Codex reads AGENTS.md natively, so no
+        # further symlinks are needed.
         source = importlib.resources.files("enso").joinpath("prompts", "AGENTS.md")
         content = source.read_text(encoding="utf-8")
 
@@ -260,7 +268,7 @@ class Runtime:
 
         # Symlink skills into CLI-specific discovery paths
         # .claude/skills -> ~/.enso/skills (Claude Code)
-        # .agents/skills -> ~/.enso/skills (Codex + Gemini)
+        # .agents/skills -> ~/.enso/skills (Codex)
         for cli_dir in (".claude", ".agents"):
             parent = os.path.join(self.working_dir, cli_dir)
             os.makedirs(parent, exist_ok=True)
@@ -272,9 +280,6 @@ class Runtime:
         # when a provider is compacting context (which can be slow).
         # Claude: PreCompact with "auto" matcher
         # Codex: no compaction hooks available
-        # Gemini: skipped — the CLI fires PreCompress unconditionally on
-        # every turn (before its own threshold check), so the hook is pure
-        # noise. Restore once upstream fixes the timing.
         notify_cmd = (
             "enso message send"
             " 'Autocompacting context, this might take a moment...'"
@@ -559,25 +564,37 @@ class Runtime:
         try:
             with open(STATE_FILE) as f:
                 data = json.load(f)
-            removed_legacy_runner_state = False
+            state_changed = False
             for k, v in data.get("active_provider_by_chat", {}).items():
-                self.active_provider_by_chat[k] = v
+                if v in PROVIDER_NAMES:
+                    self.active_provider_by_chat[k] = v
+                else:
+                    state_changed = True
             for k, v in data.get("active_model_by_chat_provider", {}).items():
                 cid, provider = k.split(":", 1)
-                self.active_model_by_chat_provider[(cid, provider)] = v
+                if provider in PROVIDER_NAMES:
+                    self.active_model_by_chat_provider[(cid, provider)] = v
+                else:
+                    state_changed = True
             for k, v in data.get("effort_by_chat_provider_model", {}).items():
                 parts = k.split(":", 2)
                 if len(parts) == 3:
                     cid, provider, model = parts
-                    self.effort_by_chat_provider_model[(cid, provider, model)] = v
+                    if provider in PROVIDER_NAMES:
+                        self.effort_by_chat_provider_model[(cid, provider, model)] = v
+                    else:
+                        state_changed = True
             for k, v in data.get("session_by_chat_provider", {}).items():
                 cid, provider = k.split(":", 1)
-                self.session_by_chat_provider[(cid, provider)] = v
+                if provider in PROVIDER_NAMES:
+                    self.session_by_chat_provider[(cid, provider)] = v
+                else:
+                    state_changed = True
             for k, v in data.get("compact_seed_by_chat", {}).items():
                 self.compact_seed_by_chat[k] = v
             for name, ts in data.get("job_last_run", {}).items():
                 if name == _LEGACY_TASK_RUNNER_STATE_KEY:
-                    removed_legacy_runner_state = True
+                    state_changed = True
                     continue
                 self._job_last_run[name] = datetime.fromisoformat(ts)
             failure_alerts = data.get("job_failure_alerts", {})
@@ -593,7 +610,7 @@ class Runtime:
                 len(self.session_by_chat_provider),
             )
             self._prune_stale_sessions()
-            if removed_legacy_runner_state:
+            if state_changed:
                 self.save_state()
         except Exception:
             log.exception("Failed to load state, starting fresh")
@@ -622,7 +639,8 @@ class Runtime:
 
     def get_active_provider(self, chat_id: str) -> str:
         """Return active provider for chat, defaulting to claude."""
-        return self.active_provider_by_chat.get(chat_id, "claude")
+        provider = self.active_provider_by_chat.get(chat_id)
+        return provider if provider in PROVIDER_NAMES else "claude"
 
     def get_active_model(self, chat_id: str, provider: str) -> str:
         """Return active model for chat+provider, defaulting to first in list."""
@@ -736,8 +754,7 @@ class Runtime:
 
     # Providers that support pre-assigned session IDs. For these,
     # Enso generates the ID upfront so it persists across restarts.
-    # Other providers (codex, gemini) generate their own IDs which we
-    # capture from stream events.
+    # Codex generates its own IDs, which we capture from stream events.
     _SELF_MANAGED_SESSIONS: ClassVar[set[str]] = {"claude"}
 
     def _get_or_create_session(

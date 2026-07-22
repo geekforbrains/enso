@@ -59,7 +59,7 @@ The prompt goes here. Use {{prerun_output}} to inject prerun results.
 |------------|----------|-------------|
 | `name`     | yes      | Display name (shown in notifications) |
 | `schedule` | yes      | Cron: `minute hour dom month dow` |
-| `provider` | yes      | `claude`, `codex`, or `gemini` |
+| `provider` | yes      | `claude` or `codex` |
 | `model`    | yes      | Model name (e.g. `sonnet`; Codex: `sol`, `terra`, or `luna`) |
 | `enabled`  | yes      | `true` or `false` — disabled jobs are skipped |
 | `prerun`   | no       | Script filename in the job directory |

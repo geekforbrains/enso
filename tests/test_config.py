@@ -123,6 +123,21 @@ def test_load_backfills_codex_aliases_and_preserves_custom_models(tmp_enso):
     ]
 
 
+def test_load_removes_unsupported_provider_config(tmp_enso):
+    config_file = Path(tmp_enso) / "config.json"
+    config_file.write_text(json.dumps({
+        "providers": {
+            "claude": {"path": "claude", "models": ["opus"]},
+            "retired": {"path": "retired", "models": ["old-model"]},
+        },
+    }))
+
+    loaded = load_config()
+
+    assert set(loaded["providers"]) == {"claude"}
+    assert set(json.loads(config_file.read_text())["providers"]) == {"claude"}
+
+
 def test_load_replaces_invalid_logging_with_defaults(tmp_enso):
     """Invalid logging config is normalized to defaults."""
     config = {

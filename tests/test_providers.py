@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from enso.providers import get_provider
+from enso.providers import PROVIDER_NAMES, get_provider
 from enso.providers.claude import ClaudeProvider, KageClaudeProvider
 from enso.providers.codex import CODEX_MODEL_ALIASES, CodexProvider
-from enso.providers.gemini import GeminiProvider
 
 # -- Command building --
+
+
+def test_supported_provider_names():
+    assert PROVIDER_NAMES == ["claude", "codex"]
 
 
 def test_claude_build_command_no_session():
@@ -124,27 +127,6 @@ def test_codex_unknown_model_passes_through():
     assert cmd[cmd.index("-m") + 1] == "gpt-5.5"
 
 
-def test_gemini_build_command():
-    p = GeminiProvider("gemini")
-    cmd = p.build_command("hello", "gemini-2.5-pro")
-    assert "stream-json" in cmd
-    assert "--yolo" in cmd
-
-
-def test_gemini_build_command_resume():
-    p = GeminiProvider("gemini")
-    cmd = p.build_command("hello", "gemini-2.5-pro", session_id="sess_abc")
-    assert "--resume" in cmd
-    assert "sess_abc" in cmd
-
-
-def test_gemini_build_batch_command():
-    p = GeminiProvider("gemini")
-    cmd = p.build_batch_command("hello", "gemini-2.5-pro")
-    assert "text" in cmd
-    assert "stream-json" not in cmd
-
-
 # -- Event parsing --
 
 
@@ -247,9 +229,9 @@ def test_kage_parse_batch_output_non_stream_fallback():
 
 
 def test_base_provider_parse_batch_output_passthrough():
-    """Non-streaming providers (gemini/codex) keep raw batch stdout."""
-    g = GeminiProvider("gemini")
-    assert g.parse_batch_output("  hello world \n") == "hello world"
+    """Non-streaming providers keep raw batch stdout."""
+    provider = CodexProvider("codex")
+    assert provider.parse_batch_output("  hello world \n") == "hello world"
 
 
 def test_codex_parse_agent_message():
@@ -265,25 +247,6 @@ def test_codex_parse_session():
     p = CodexProvider("codex")
     events = p.parse_event({"type": "thread.started", "thread_id": "t_123"})
     assert any(e.kind == "session" and e.session_id == "t_123" for e in events)
-
-
-def test_gemini_parse_message():
-    p = GeminiProvider("gemini")
-    events = p.parse_event({"type": "message", "role": "assistant", "content": "Hi!"})
-    assert len(events) == 1
-    assert events[0].kind == "response"
-    assert events[0].text == "Hi!"
-
-
-def test_gemini_parse_session():
-    p = GeminiProvider("gemini")
-    events = p.parse_event({"type": "init", "session_id": "s_abc"})
-    assert any(e.kind == "session" and e.session_id == "s_abc" for e in events)
-
-
-def test_gemini_format_response():
-    p = GeminiProvider("gemini")
-    assert p.format_response(["Hello ", "world"]) == "Hello world"
 
 
 # -- Factory --
@@ -357,13 +320,6 @@ def test_codex_build_command_without_effort_has_no_override():
     c = CodexProvider("codex")
     assert "model_reasoning_effort" not in " ".join(c.build_command("hi", "sol"))
     assert "model_reasoning_effort" not in " ".join(c.build_batch_command("hi", "sol"))
-
-
-def test_gemini_ignores_effort():
-    """Gemini accepts the shared kwarg but emits no effort flag."""
-    g = GeminiProvider("gemini")
-    assert "--effort" not in g.build_command("hi", "gemini-2.5-pro", effort="xhigh")
-    assert "--effort" not in g.build_batch_command("hi", "gemini-2.5-pro", effort="xhigh")
 
 
 # -- Effort: clamping --

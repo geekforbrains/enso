@@ -133,8 +133,8 @@ Notes:
   trusted tailnet/reverse-proxy access controls.
 - `web.external_skill_roots` are scanned **read-only** to surface skills the agent can use
   that live outside `~/.enso/` (the CLIs' user-level skill dirs). The UI lists them with
-  their path and never writes to them. Defaults to Claude's user skills; add Codex/Gemini
-  roots as needed. Enso-owned skills (under `~/.enso/skills/`) are always editable.
+  their path and never writes to them. Defaults to Claude's user skills; add Codex roots
+  as needed. Enso-owned skills (under `~/.enso/skills/`) are always editable.
 - `runs.keep` / `runs.max_age_days` govern retention for **all** run history, pruned after
   each terminal finish (see § Retention).
 - Upgrades migrate legacy `tasks.runs_keep` / `tasks.runs_max_age_days` values into this

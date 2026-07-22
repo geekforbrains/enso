@@ -258,8 +258,8 @@ def test_runtime_reads_debug_logging_flags(sample_config):
 
 def test_runtime_provider_switch(sample_config):
     rt = Runtime(sample_config)
-    rt.active_provider_by_chat["1"] = "gemini"
-    assert rt.get_active_provider("1") == "gemini"
+    rt.active_provider_by_chat["1"] = "codex"
+    assert rt.get_active_provider("1") == "codex"
 
 
 def test_runtime_model_switch(sample_config):
@@ -315,7 +315,6 @@ def test_resolve_job_runner_independent_of_interactive(sample_config):
 def test_resolve_job_runner_non_claude_is_none(sample_config):
     rt = Runtime(sample_config)
     assert rt.resolve_job_runner("codex") is None
-    assert rt.resolve_job_runner("gemini") is None
 
 
 def test_make_job_provider_selects_kage_and_threads_timeout(sample_config):
@@ -431,6 +430,30 @@ def test_runtime_state_persistence(tmp_enso, sample_config):
     assert rt2.session_by_chat_provider[("42", "codex")] == "sess_123"
 
 
+def test_load_state_removes_unsupported_provider_entries(tmp_enso, sample_config):
+    state_file = Path(tmp_enso) / "state.json"
+    state_file.write_text(json.dumps({
+        "active_provider_by_chat": {"42": "retired"},
+        "active_model_by_chat_provider": {"42:retired": "old-model"},
+        "effort_by_chat_provider_model": {"42:retired:old-model": "high"},
+        "session_by_chat_provider": {"42:retired": "old-session"},
+    }))
+
+    rt = Runtime(sample_config)
+    rt.load_state()
+
+    assert rt.get_active_provider("42") == "claude"
+    assert rt.active_provider_by_chat == {}
+    assert rt.active_model_by_chat_provider == {}
+    assert rt.effort_by_chat_provider_model == {}
+    assert rt.session_by_chat_provider == {}
+    persisted = json.loads(state_file.read_text())
+    assert persisted["active_provider_by_chat"] == {}
+    assert persisted["active_model_by_chat_provider"] == {}
+    assert persisted["effort_by_chat_provider_model"] == {}
+    assert persisted["session_by_chat_provider"] == {}
+
+
 def test_save_state_failure_preserves_existing_file_and_removes_temp(
     tmp_enso, sample_config, monkeypatch, caplog
 ):
@@ -542,12 +565,6 @@ def test_get_active_effort_codex_clamps_to_model_cap(sample_config):
     rt = Runtime(sample_config)
     rt.effort_by_chat_provider_model[("1", "codex", "luna")] = "ultra"
     assert rt.get_active_effort("1", "codex", "luna") == "max"
-
-
-def test_get_active_effort_unsupported_provider_returns_none(sample_config):
-    rt = Runtime(sample_config)
-    rt.effort_by_chat_provider_model[("1", "gemini", "gemini-2.5-pro")] = "high"
-    assert rt.get_active_effort("1", "gemini", "gemini-2.5-pro") is None
 
 
 def test_effort_state_persistence(tmp_enso, sample_config):
@@ -779,8 +796,8 @@ def test_prune_stale_sessions(tmp_enso, sample_config):
     rt.session_by_chat_provider[("old_chat", "claude")] = "old_session"
     rt._last_active["old_chat"] = datetime.now() - timedelta(days=60)
 
-    rt.active_provider_by_chat["fresh_chat"] = "gemini"
-    rt.session_by_chat_provider[("fresh_chat", "gemini")] = "fresh_session"
+    rt.active_provider_by_chat["fresh_chat"] = "codex"
+    rt.session_by_chat_provider[("fresh_chat", "codex")] = "fresh_session"
     rt._last_active["fresh_chat"] = datetime.now()
 
     rt.save_state()
@@ -793,8 +810,8 @@ def test_prune_stale_sessions(tmp_enso, sample_config):
     assert ("old_chat", "claude") not in rt2.session_by_chat_provider
     assert "old_chat" not in rt2._last_active
     # Fresh one survives
-    assert rt2.active_provider_by_chat["fresh_chat"] == "gemini"
-    assert rt2.session_by_chat_provider[("fresh_chat", "gemini")] == "fresh_session"
+    assert rt2.active_provider_by_chat["fresh_chat"] == "codex"
+    assert rt2.session_by_chat_provider[("fresh_chat", "codex")] == "fresh_session"
 
 
 # -- Message injection --

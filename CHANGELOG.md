@@ -33,11 +33,12 @@ All notable changes to this project will be documented in this file.
 - The web dashboard now uses sidebar-aware breakpoints, readable mobile run cards, compact desktop grids, accessible form controls, simplified job detail views, and searchable deduplicated Skills. Long IDs and upload controls no longer widen phone layouts, and compiled Tailwind plus pinned HTMX assets are vendored for fast offline rendering without CDN requests
 - Scheduled, CLI, and web job runs now share one prerun/provider pipeline. Exit `1` is reserved for intentional no-work; missing scripts, timeouts, and all other nonzero exits are failures. Manual runs report distinct outcomes and return a nonzero shell status for real failures
 - The bundled agent-instruction template moved from `enso/system_prompt.md` to `enso/prompts/AGENTS.md`, making it easier to find and review separately from the code
-- On setup, `AGENTS.md` is now the canonical instruction file in the workspace and `CLAUDE.md` is symlinked to it (previously reversed). The `GEMINI.md` symlink is no longer created — Gemini reads `AGENTS.md` natively, as does Codex
+- On setup, `AGENTS.md` is now the canonical instruction file in the workspace and `CLAUDE.md` is symlinked to it (previously reversed). Codex reads `AGENTS.md` natively
 - Run-retention config moved from `tasks.runs_keep` / `tasks.runs_max_age_days` to a top-level `runs.keep` / `runs.max_age_days` block
 
 ### Removed
 
+- Provider integrations outside Claude Code and Codex, including their adapters, setup detection, configuration defaults, service environment handling, tests, and documentation
 - Built-in one-off tasks system (the `enso task` CLI, the task-runner, and the tasks web UI) — use Todoist or jobs instead
 
 ## [0.17.0] - 2026-06-24
@@ -58,7 +59,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
-- Background jobs now run with kage's `--stream`, so completion rides kage's Stop hook instead of the TUI done-marker scrape. This is independent of the rendered marker format, so it survives the >60s case and any future TUI drift. Jobs stay ephemeral (kage assigns its own session UUID, giving each run an isolated transcript and event log). Job stdout is now a stream of JSON envelopes; the job runner extracts the final response (or error) from it via `parse_batch_output`. Other providers (Codex, Gemini, native `claude -p`) are unaffected
+- Background jobs now run with kage's `--stream`, so completion rides kage's Stop hook instead of the TUI done-marker scrape. This is independent of the rendered marker format, so it survives the >60s case and any future TUI drift. Jobs stay ephemeral (kage assigns its own session UUID, giving each run an isolated transcript and event log). Job stdout is now a stream of JSON envelopes; the job runner extracts the final response (or error) from it via `parse_batch_output`. Codex and native `claude -p` are unaffected
 
 ## [0.15.0] - 2026-05-31
 
@@ -81,7 +82,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- `/compact` (Telegram) / `!compact` (Slack) command summarises the active session and reseeds a fresh one — keeps the thread alive but trims token usage between turns. Cross-provider: works for Claude, Codex, and Gemini by driving the existing provider pipeline (headless Claude has no native `/compact`). The summary is never shown to the user; it's injected into the next user prompt inside a `[Continuing from a previous session…]` envelope so the LLM sees prior context without paying for the full transcript. The seed is one-shot and persists across `enso` restarts so the contract holds if the user takes a break between `/compact` and their next message
+- `/compact` (Telegram) / `!compact` (Slack) command summarises the active session and reseeds a fresh one — keeps the thread alive but trims token usage between turns. It works for Claude and Codex by driving the existing provider pipeline (headless Claude has no native `/compact`). The summary is never shown to the user; it's injected into the next user prompt inside a `[Continuing from a previous session…]` envelope so the LLM sees prior context without paying for the full transcript. The seed is one-shot and persists across `enso` restarts so the contract holds if the user takes a break between `/compact` and their next message
 - `/compact` posts an immediate ack ("Compacting context — this can take 10–30s…") before the summarisation pass starts, and refuses while a request is already running for that chat (asks the user to `!stop` or wait)
 
 ### Fixed
@@ -155,7 +156,7 @@ All notable changes to this project will be documented in this file.
 ### Added
 
 - Telegram reply support — reply to any message in the chat and the quoted context is included in the prompt, with the bot's response visually threaded back
-- Auto-compact notification — when Claude or Gemini auto-compacts context, a Telegram message is sent immediately so you know why the next response is slow. Hooks are installed automatically on setup.
+- Auto-compact notification — when Claude auto-compacts context, a Telegram message is sent immediately so you know why the next response is slow. Hooks are installed automatically on setup.
 - Message queue — messages sent while a request is running are queued (up to 5) and auto-dispatched when the current request finishes. `/queue` to view/remove items, `/stop` clears the queue.
 - Context window usage percentage in Telegram response prefix — `(Claude / 11% / 23s)`
 - Launchd plist now snapshots API keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.) so provider CLIs work under launchd's minimal environment
@@ -233,7 +234,6 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 
 - `clear_session` now only deletes the specific session file Enso owns, not all sessions in the project directory
-- Gemini CLI flag updated (`-p` → `--prompt`) for compatibility with recent Gemini CLI versions
 
 ## [0.7.0] - 2026-03-30
 
@@ -309,13 +309,13 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- Auto-install system prompt files (CLAUDE.md, AGENTS.md, GEMINI.md) to working directory on serve
+- Auto-install system prompt files to the working directory on serve
 - Bundled system prompt as package data so it ships with the package
 - Existing user-customized prompt files are never overwritten
 
 ### Removed
 
-- Symlinked AGENTS.md and GEMINI.md from repo root (canonical source is now bundled in package)
+- Symlinked instruction files from the repo root (canonical source is now bundled in the package)
 
 ## [0.2.0] - 2026-02-12
 
@@ -339,7 +339,7 @@ Initial public release.
 
 - Interactive setup wizard (`enso setup`) with provider detection, Telegram bot onboarding, and working directory configuration
 - Telegram transport with live status updates as agents work
-- Support for Claude, Codex, and Gemini CLI agents
+- Support for Claude Code and Codex agents
 - Chat commands for switching providers, models, stopping tasks, and managing sessions
 - Background service installation for macOS (launchd) and Linux (systemd)
 - Platform-aware setup summary with service management commands

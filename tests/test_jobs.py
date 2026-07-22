@@ -44,8 +44,8 @@ def test_parse_job_disabled(tmp_path):
 ---
 name: Disabled
 schedule: "0 0 * * *"
-provider: gemini
-model: gemini-2.5-pro
+provider: codex
+model: luna
 enabled: false
 ---
 
@@ -216,7 +216,7 @@ def test_create_job_refuses_to_overwrite_existing_job(tmp_enso):
     original = Path(job.path).read_bytes()
 
     with pytest.raises(FileExistsError, match="Job 'daily' already exists"):
-        create_job("daily", "Replacement", "gemini", "pro", "0 0 * * *")
+        create_job("daily", "Replacement", "codex", "luna", "0 0 * * *")
 
     assert Path(job.path).read_bytes() == original
 
@@ -244,7 +244,7 @@ def test_parse_job_skips_non_utf8_file(tmp_path):
 def test_load_jobs(tmp_enso):
     """load_jobs finds all jobs in the jobs directory."""
     create_job("alpha", "Alpha", "claude", "sonnet", "0 9 * * *")
-    create_job("beta", "Beta", "gemini", "gemini-2.5-pro", "0 12 * * *")
+    create_job("beta", "Beta", "codex", "luna", "0 12 * * *")
     jobs = load_jobs()
     assert len(jobs) == 2
     names = {j.dir_name for j in jobs}

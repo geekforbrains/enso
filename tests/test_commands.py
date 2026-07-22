@@ -23,15 +23,6 @@ def test_cmd_model_selects_codex_alias(sample_config):
     assert rt.get_active_model("1", "codex") == "terra"
 
 
-def test_cmd_effort_unsupported_provider_rejects(sample_config):
-    rt = Runtime(sample_config)
-    rt.active_provider_by_chat["1"] = "gemini"
-    response, options = cmd_effort(rt, "1", "high")
-    assert response is not None
-    assert "only supported for Claude and Codex" in response
-    assert options == []
-
-
 def test_cmd_effort_set_level(sample_config):
     rt = Runtime(sample_config)
     response, options = cmd_effort(rt, "1", "high")

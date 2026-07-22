@@ -242,7 +242,7 @@ def _find_enso_bin() -> str | None:
 def _build_path_str(enso_bin: str) -> str:
     """Build a PATH string from detected CLI locations."""
     path_dirs: set[str] = {os.path.dirname(enso_bin)}
-    for cmd in ("claude", "codex", "gemini", "node", "npx"):
+    for cmd in ("claude", "codex", "node", "npx"):
         p = shutil.which(cmd)
         if p:
             path_dirs.add(os.path.dirname(p))
@@ -343,7 +343,6 @@ def _install_launchd(config: dict, enso_bin: str) -> bool:
     extra_env = ""
     for key in (
         "HOME", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
-        "GEMINI_API_KEY", "GOOGLE_API_KEY",
     ):
         val = os.environ.get(key)
         if val:
@@ -531,7 +530,7 @@ def _setup_providers(config: dict) -> None:
 
     if not any(available.values()):
         console.print("\n[yellow]No provider CLIs found on PATH.[/]")
-        console.print("Install at least one of: claude, codex, gemini")
+        console.print("Install at least one of: claude, codex")
 
 
 def _setup_transport(config: dict) -> int | None:
@@ -1164,7 +1163,7 @@ def job_list() -> None:
 @job_app.command("create")
 def job_create(
     name: Annotated[str, typer.Option("--name", help="Display name for the job")],
-    provider: Annotated[str, typer.Option("--provider", help="claude, codex, or gemini")],
+    provider: Annotated[str, typer.Option("--provider", help="claude or codex")],
     model: Annotated[
         str, typer.Option("--model", help="Model name (e.g. sonnet, sol, terra, luna)")
     ],

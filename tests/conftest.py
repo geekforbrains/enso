@@ -62,6 +62,5 @@ def sample_config(tmp_enso):
         "providers": {
             "claude": {"path": "claude", "models": ["opus", "sonnet"]},
             "codex": {"path": "codex", "models": ["gpt-5.3-codex"]},
-            "gemini": {"path": "gemini", "models": ["gemini-2.5-pro"]},
         },
     }

@@ -135,7 +135,7 @@ class BaseProvider(ABC):
         return "session cleared" if session_id else "no session"
 
 
-PROVIDER_NAMES = ["claude", "codex", "gemini"]
+PROVIDER_NAMES = ["claude", "codex"]
 
 
 def provider_class(name: str) -> type[BaseProvider]:
@@ -146,12 +146,10 @@ def provider_class(name: str) -> type[BaseProvider]:
     """
     from .claude import ClaudeProvider
     from .codex import CodexProvider
-    from .gemini import GeminiProvider
 
     classes: dict[str, type[BaseProvider]] = {
         "claude": ClaudeProvider,
         "codex": CodexProvider,
-        "gemini": GeminiProvider,
     }
     cls = classes.get(name)
     if cls is None:

@@ -2,7 +2,7 @@
 
 Text your AI agents from Telegram or Slack. They run on your machine.
 
-Enso connects [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), and [Gemini CLI](https://github.com/google-gemini/gemini-cli) to a Telegram bot or Slack workspace so you can chat with them from your phone. You get live status updates as they work, can switch between agents mid-conversation, and schedule background jobs on a cron.
+Enso connects [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Codex](https://github.com/openai/codex) to a Telegram bot or Slack workspace so you can chat with them from your phone. You get live status updates as they work, can switch between agents mid-conversation, and schedule background jobs on a cron.
 
 ## Documentation
 
@@ -22,7 +22,7 @@ Design docs live in [`docs/`](docs/) and are the source of truth for planned and
 ## Requirements
 
 - Python 3.10+
-- At least one of: `claude`, `codex`, or `gemini` installed and on your PATH
+- At least one of `claude` or `codex` installed and on your PATH
   - Codex CLI 0.144.0 or newer is required for the Sol, Terra, and Luna models
 - One of:
   - A Telegram bot token ([create one with @BotFather](https://t.me/BotFather)), or

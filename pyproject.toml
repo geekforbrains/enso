@@ -6,7 +6,7 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [{ name = "Gavin Vickery", email = "gavin@geekforbrains.com" }]
-keywords = ["ai", "agent", "telegram", "slack", "claude", "codex", "gemini", "cli", "enso"]
+keywords = ["ai", "agent", "telegram", "slack", "claude", "codex", "cli", "enso"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

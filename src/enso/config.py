@@ -32,14 +32,6 @@ DEFAULT_PROVIDERS = {
         "models": ["opus", "sonnet", "haiku", "fable"],
     },
     "codex": {"path": "codex", "models": list(CODEX_MODEL_ALIASES)},
-    "gemini": {
-        "path": "gemini",
-        "models": [
-            "gemini-flash-latest",
-            "gemini-flash-lite-latest",
-            "gemini-pro-latest",
-        ],
-    },
 }
 
 DEFAULT_WEB = {
@@ -68,15 +60,17 @@ def load_config() -> dict:
             with open(CONFIG_FILE) as f:
                 raw = json.load(f)
             config = _with_config_defaults(raw)
-            if isinstance(raw, dict) and "tasks" in raw:
+            raw_providers = raw.get("providers") if isinstance(raw, dict) else None
+            has_unsupported_provider = isinstance(raw_providers, dict) and any(
+                name not in DEFAULT_PROVIDERS for name in raw_providers
+            )
+            if isinstance(raw, dict) and ("tasks" in raw or has_unsupported_provider):
                 try:
                     save_config(config)
                 except OSError:
-                    log.exception(
-                        "Could not persist tasks config migration; using it in memory"
-                    )
+                    log.exception("Could not persist config migration; using it in memory")
                 else:
-                    log.info("Migrated legacy tasks config to runs")
+                    log.info("Persisted migrated config")
             return config
         except Exception:
             log.exception("Failed to load config.json, using defaults")
@@ -146,7 +140,11 @@ def _with_config_defaults(config: dict) -> dict:
     # without overwriting values the user has already set.
     providers = merged.get("providers")
     if isinstance(providers, dict):
-        backfilled = dict(providers)
+        backfilled = {
+            name: value
+            for name, value in providers.items()
+            if name in DEFAULT_PROVIDERS
+        }
         for name, defaults in DEFAULT_PROVIDERS.items():
             existing = backfilled.get(name)
             if isinstance(existing, dict):
