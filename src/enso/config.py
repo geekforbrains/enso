@@ -45,6 +45,7 @@ DEFAULT_WEB = {
     "external_skill_roots": ["~/.claude/skills"],
 }
 
+DEFAULT_AGENT = {"timeout": 15 * 60}
 DEFAULT_RUNS = {"keep": 500, "max_age_days": 30}
 
 
@@ -94,6 +95,7 @@ def load_config() -> dict:
             config = _with_config_defaults(raw)
             needs_migration = isinstance(raw, dict) and (
                 "tasks" in raw or _providers_need_migration(raw.get("providers"))
+                or raw.get("agent") != config.get("agent")
             )
             if needs_migration:
                 try:
@@ -137,6 +139,7 @@ def _build_default_config() -> dict:
         "transports": {},
         "logging": default_logging_config(),
         "providers": resolve_providers(),
+        "agent": dict(DEFAULT_AGENT),
         "web": dict(DEFAULT_WEB),
         "runs": dict(DEFAULT_RUNS),
     }
@@ -206,6 +209,17 @@ def _with_config_defaults(config: dict) -> dict:
             name: {"path": defaults["path"], "models": list(defaults["models"])}
             for name, defaults in DEFAULT_PROVIDERS.items()
         }
+
+    agent = merged.get("agent")
+    merged_agent = (
+        {**DEFAULT_AGENT, **agent}
+        if isinstance(agent, dict)
+        else dict(DEFAULT_AGENT)
+    )
+    timeout = merged_agent.get("timeout")
+    if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 0:
+        merged_agent["timeout"] = DEFAULT_AGENT["timeout"]
+    merged["agent"] = merged_agent
 
     # Backfill web/runs blocks added in newer versions without overwriting
     # values the user has already set.

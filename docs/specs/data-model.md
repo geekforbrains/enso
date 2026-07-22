@@ -99,11 +99,14 @@ timestamps, and a suppression count — never the diagnostic or prerun source ou
 
 ## Config blocks
 
-`config.json` contains two blocks, backfilled with defaults by `_with_config_defaults`
-without replacing user settings:
+The three defaulted blocks documented here are backfilled by
+`_with_config_defaults` without replacing user settings:
 
 ```jsonc
 {
+  "agent": {
+    "timeout": 900            // interactive turn timeout in seconds; 0 disables
+  },
   "web": {
     "enabled": true,
     "host": "127.0.0.1",     // bind localhost; set tailnet IP / 0.0.0.0 for remote
@@ -121,6 +124,9 @@ without replacing user settings:
 
 Notes:
 
+- `agent.timeout` applies equally to Claude, Codex, and Antigravity interactive turns.
+  Timeout recovery context is durable and scoped to the originating conversation;
+  scheduled jobs continue to use the `timeout` in each `JOB.md`.
 - The `providers` block is derived from the provider registry. Upgrades add missing
   provider entries and their default model lists while preserving existing provider
   paths, custom models, and unknown per-provider settings.

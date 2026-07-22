@@ -93,7 +93,7 @@ Telegram autocompletes these when you type `/`. On Slack, use `!` instead (e.g. 
 | `/logs` | Last 25 log entries |
 | `/help` | Show all commands |
 
-You can also send files — they're downloaded and passed to the active agent. Responses render with per-transport formatting (Telegram HTML; Slack mrkdwn). While a request runs, Enso edits one provider-neutral status message every second with elapsed time and a rotating phrase; the final response contains only the agent's answer.
+You can also send files — they're downloaded and passed to the active agent. Responses render with per-transport formatting (Telegram HTML; Slack mrkdwn). While a request runs, Enso edits one provider-neutral status message every second with elapsed time and a rotating phrase; the final response contains only the agent's answer. Interactive turns stop after `agent.timeout` seconds (900 by default; set it to `0` to disable). A timeout leaves a conversation-scoped background notice for the next turn so the active provider knows partial work may remain.
 
 Effort is stored separately for each conversation, provider, and model. Claude supports its existing model-dependent range through `max`. Codex Sol and Terra support `low` through `ultra`; Luna supports `low` through `max`. Antigravity supports `low`, `medium`, and `high`. Enso clamps an unsupported higher choice to the active model's maximum and reports the effective level.
 
@@ -206,7 +206,7 @@ development is in progress.
 
 ## Config
 
-Everything lives under `~/.enso/`. Config is at `~/.enso/config.json` — the setup wizard writes it for you, but you can edit it directly to add models or change the working directory. Upgrades backfill newly supported providers without replacing existing paths or custom model lists. Set `notify_channel` to give `enso message send`, job alerts, and autocompact hooks a default destination (required for Slack; on Telegram it's optional — without it, sends broadcast to `allowed_users`).
+Everything lives under `~/.enso/`. Config is at `~/.enso/config.json` — the setup wizard writes it for you, but you can edit it directly to add models, change the working directory, or set the interactive timeout through `agent.timeout` (whole seconds). Upgrades backfill newly supported providers without replacing existing paths or custom model lists. Set `notify_channel` to give `enso message send`, job alerts, and autocompact hooks a default destination (required for Slack; on Telegram it's optional — without it, sends broadcast to `allowed_users`).
 
 ## Development
 

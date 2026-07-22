@@ -25,6 +25,7 @@ def test_load_creates_default(tmp_enso):
     assert config["logging"]["debug_prompts"] is False
     assert config["logging"]["debug_events"] is False
     assert "providers" in config
+    assert config["agent"] == {"timeout": 15 * 60}
     assert config["runs"] == {"keep": 500, "max_age_days": 30}
     assert "tasks" not in config
 
@@ -44,6 +45,30 @@ def test_save_and_load_roundtrip(tmp_enso):
     assert loaded["providers"]["claude"]["models"] == ["opus"]
     assert loaded["logging"]["level"] == "INFO"
     assert loaded["logging"]["debug_prompts"] is False
+
+
+def test_load_backfills_agent_timeout_and_persists(tmp_enso):
+    config_file = Path(tmp_enso) / "config.json"
+    config_file.write_text(json.dumps({"providers": DEFAULT_PROVIDERS}))
+
+    loaded = load_config()
+
+    assert loaded["agent"] == {"timeout": 900}
+    assert json.loads(config_file.read_text())["agent"] == {"timeout": 900}
+
+
+@pytest.mark.parametrize("timeout", [0, 75])
+def test_agent_timeout_preserves_explicit_values(tmp_enso, timeout):
+    save_config({"agent": {"timeout": timeout}})
+
+    assert load_config()["agent"]["timeout"] == timeout
+
+
+@pytest.mark.parametrize("timeout", [-1, True, "900", None])
+def test_agent_timeout_replaces_invalid_values(tmp_enso, timeout):
+    save_config({"agent": {"timeout": timeout}})
+
+    assert load_config()["agent"]["timeout"] == 900
 
 
 def test_load_merges_missing_logging_defaults(tmp_enso):

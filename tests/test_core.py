@@ -265,8 +265,15 @@ def test_runtime_defaults(sample_config):
     rt = Runtime(sample_config)
     assert rt.get_active_provider("1") == "claude"
     assert rt.get_active_model("1", "claude") == "opus"
+    assert rt.agent_timeout == 15 * 60
     assert rt.debug_prompts is False
     assert rt.debug_events is False
+
+
+def test_runtime_reads_configured_agent_timeout(sample_config):
+    sample_config["agent"] = {"timeout": 75}
+
+    assert Runtime(sample_config).agent_timeout == 75
 
 
 def test_runtime_reads_debug_logging_flags(sample_config):
@@ -866,6 +873,306 @@ async def test_process_request_uses_normalized_status_and_plain_final_response(s
     assert ctx.statuses == ["(0s) Thinking hard"]
     assert ctx.deleted == ["handle"]
     assert ctx.replies == ["Done"]
+
+
+@pytest.mark.asyncio
+async def test_process_request_timeout_stops_provider_and_queues_scoped_notice(
+    tmp_enso, sample_config,
+):
+    rt = Runtime(sample_config)
+    rt.agent_timeout = 0.01
+    provider_cancelled = asyncio.Event()
+
+    class FakeCtx:
+        def __init__(self):
+            self.statuses = []
+            self.edits = []
+            self.replies = []
+            self.deleted = []
+
+        async def reply(self, text): self.replies.append(text)
+        async def reply_status(self, text):
+            self.statuses.append(text)
+            return "handle"
+        async def edit_status(self, handle, text): self.edits.append(text)
+        async def delete_status(self, handle): self.deleted.append(handle)
+        async def send_typing(self): pass
+        def get_origin_env(self): return {}
+
+    async def hanging_run(*args, **kwargs):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            provider_cancelled.set()
+        if False:
+            yield
+
+    rt.run_provider = hanging_run
+    ctx = FakeCtx()
+
+    await asyncio.wait_for(
+        rt.process_request("claude", "hello", "chat-a", ctx), timeout=0.5,
+    )
+
+    assert provider_cancelled.is_set()
+    assert ctx.statuses == ["(0s) Thinking hard"]
+    assert len(ctx.edits) == 1
+    assert "timeout" in ctx.edits[0].lower()
+    assert ctx.edits[0] != "Stopped."
+    assert ctx.deleted == []
+    assert ctx.replies == []
+    pending = messages.pending()
+    assert len(pending) == 1
+    assert pending[0]["conversation_id"] == "chat-a"
+    assert pending[0]["source"] == "enso:timeout"
+    assert "Partial work may remain" in pending[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_provider_timeout_error_is_not_mislabeled_as_configured_timeout(
+    tmp_enso, sample_config,
+):
+    rt = Runtime(sample_config)
+
+    class FakeCtx:
+        def __init__(self):
+            self.replies = []
+            self.deleted = []
+
+        async def reply(self, text): self.replies.append(text)
+        async def reply_status(self, text): return "handle"
+        async def edit_status(self, handle, text): pass
+        async def delete_status(self, handle): self.deleted.append(handle)
+        async def send_typing(self): pass
+        def get_origin_env(self): return {}
+
+    async def failing_run(*args, **kwargs):
+        raise asyncio.TimeoutError("provider read failed")
+        if False:
+            yield
+
+    rt.run_provider = failing_run
+    ctx = FakeCtx()
+
+    await rt.process_request("claude", "hello", "chat-a", ctx)
+
+    assert ctx.deleted == ["handle"]
+    assert ctx.replies == ["Error: provider read failed"]
+    assert messages.pending() == []
+
+
+@pytest.mark.asyncio
+async def test_timeout_notice_is_injected_once_after_provider_switch(
+    tmp_enso, sample_config,
+):
+    messages.send(
+        "The previous agent turn timed out. Partial work may remain.",
+        source="enso:timeout",
+        conversation_id="chat-a",
+    )
+    rt = Runtime(sample_config)
+    prompts_received: list[tuple[str, str]] = []
+
+    class FakeCtx:
+        async def reply(self, text): pass
+        async def reply_status(self, text): return "handle"
+        async def edit_status(self, handle, text): pass
+        async def delete_status(self, handle): pass
+        async def send_typing(self): pass
+        def get_origin_env(self): return {}
+
+    async def fake_run(provider, prompt, chat_id, *args, **kwargs):
+        prompts_received.append((chat_id, prompt))
+        yield StreamEvent(kind="response", text="Done")
+
+    rt.run_provider = fake_run
+
+    await rt.process_request("claude", "other chat", "chat-b", FakeCtx())
+    assert "timed out" not in prompts_received[-1][1]
+    assert len(messages.pending()) == 1
+
+    await rt.process_request("agy", "what happened?", "chat-a", FakeCtx())
+    assert "The previous agent turn timed out" in prompts_received[-1][1]
+    assert prompts_received[-1][1].endswith("what happened?")
+    assert messages.pending() == []
+
+
+@pytest.mark.asyncio
+async def test_manual_cancellation_does_not_queue_timeout_notice(
+    tmp_enso, sample_config,
+):
+    rt = Runtime(sample_config)
+    started = asyncio.Event()
+
+    class FakeCtx:
+        def __init__(self): self.edits = []
+        async def reply(self, text): pass
+        async def reply_status(self, text): return "handle"
+        async def edit_status(self, handle, text): self.edits.append(text)
+        async def delete_status(self, handle): pass
+        async def send_typing(self): pass
+        def get_origin_env(self): return {}
+
+    async def hanging_run(*args, **kwargs):
+        started.set()
+        await asyncio.Event().wait()
+        if False:
+            yield
+
+    rt.run_provider = hanging_run
+    ctx = FakeCtx()
+    request = asyncio.create_task(
+        rt._run_request("claude", "hello", "chat-a", ctx),
+    )
+    await started.wait()
+
+    stopped, error = await rt.stop_chat("chat-a")
+    await request
+
+    assert stopped is True
+    assert error is None
+    assert ctx.edits == ["Stopped."]
+    assert messages.pending() == []
+
+
+@pytest.mark.asyncio
+async def test_agy_timeout_captures_session_and_removes_private_log(
+    tmp_enso, sample_config,
+):
+    rt = Runtime(sample_config)
+    rt.agent_timeout = 0.01
+    session_id = "55555555-5555-4555-8555-555555555555"
+    captured: dict[str, str] = {}
+
+    class HangingProcess:
+        pid = 45
+        returncode = None
+        stdout = object()
+        stderr = object()
+
+        async def communicate(self):
+            await asyncio.Event().wait()
+
+    async def fake_spawn(*args, **kwargs):
+        log_path = args[args.index("--log-file") + 1]
+        captured["log_path"] = log_path
+        Path(log_path).write_text(
+            f"Print mode: conversation={session_id}, sending message\n",
+        )
+        return HangingProcess()
+
+    async def fake_terminate(process, label, *, grace=1.0):
+        process.returncode = -15
+
+    class FakeCtx:
+        async def reply(self, text): pass
+        async def reply_status(self, text): return "handle"
+        async def edit_status(self, handle, text): pass
+        async def delete_status(self, handle): pass
+        async def send_typing(self): pass
+        def get_origin_env(self): return {}
+
+    rt._spawn_process = fake_spawn
+    rt._terminate_process_tree = fake_terminate
+
+    await asyncio.wait_for(
+        rt.process_request("agy", "hello", "chat-a", FakeCtx()), timeout=0.5,
+    )
+
+    assert rt.session_by_chat_provider[("chat-a", "agy")] == session_id
+    assert not Path(captured["log_path"]).exists()
+    assert "chat-a" not in rt.running_process_by_chat
+
+
+@pytest.mark.asyncio
+async def test_timeout_notice_wins_over_in_flight_ticker_edit(
+    tmp_enso, sample_config,
+):
+    rt = Runtime(sample_config)
+    rt.agent_timeout = 0.01
+    edit_started = asyncio.Event()
+    release_edit = asyncio.Event()
+
+    class FakeCtx:
+        def __init__(self): self.edits = []
+        async def reply(self, text): pass
+        async def reply_status(self, text): return "handle"
+        async def edit_status(self, handle, text):
+            if text == "old progress":
+                edit_started.set()
+                try:
+                    await release_edit.wait()
+                except asyncio.CancelledError:
+                    await release_edit.wait()
+            self.edits.append(text)
+        async def delete_status(self, handle): pass
+        async def send_typing(self): pass
+        def get_origin_env(self): return {}
+
+    async def hanging_run(*args, **kwargs):
+        await asyncio.Event().wait()
+        if False:
+            yield
+
+    async def in_flight_ticker(ctx, status_msg, state, stop):
+        await ctx.edit_status(status_msg, "old progress")
+
+    rt.run_provider = hanging_run
+    rt._run_ticker = in_flight_ticker
+    ctx = FakeCtx()
+    task = asyncio.create_task(
+        rt.process_request("claude", "hello", "chat-a", ctx),
+    )
+    await edit_started.wait()
+    await asyncio.sleep(0.03)
+    release_edit.set()
+    await asyncio.wait_for(task, timeout=0.5)
+
+    assert ctx.edits[0] == "old progress"
+    assert "timeout" in ctx.edits[-1].lower()
+
+
+@pytest.mark.asyncio
+async def test_manual_cancellation_wins_race_with_timeout_cleanup(
+    tmp_enso, sample_config,
+):
+    rt = Runtime(sample_config)
+    rt.agent_timeout = 0.01
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+
+    class FakeCtx:
+        def __init__(self): self.edits = []
+        async def reply(self, text): pass
+        async def reply_status(self, text): return "handle"
+        async def edit_status(self, handle, text): self.edits.append(text)
+        async def delete_status(self, handle): pass
+        async def send_typing(self): pass
+        def get_origin_env(self): return {}
+
+    async def hanging_run(*args, **kwargs):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleanup_started.set()
+            await release_cleanup.wait()
+        if False:
+            yield
+
+    rt.run_provider = hanging_run
+    ctx = FakeCtx()
+    task = asyncio.create_task(
+        rt.process_request("claude", "hello", "chat-a", ctx),
+    )
+    await cleanup_started.wait()
+    task.cancel()
+    release_cleanup.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert ctx.edits == ["Stopped."]
+    assert messages.pending() == []
 
 
 @pytest.mark.asyncio

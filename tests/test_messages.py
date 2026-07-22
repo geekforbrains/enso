@@ -30,6 +30,18 @@ def test_consume_empty(tmp_enso):
     assert messages.consume() == []
 
 
+def test_scoped_messages_only_reach_their_conversation(tmp_enso):
+    messages.send("global")
+    messages.send("for a", conversation_id="chat-a")
+    messages.send("for b", conversation_id="chat-b")
+
+    consumed = messages.consume("chat-a")
+
+    assert [message["text"] for message in consumed] == ["global", "for a"]
+    assert [message["text"] for message in messages.pending()] == ["for b"]
+    assert messages.consume("chat-b")[0]["text"] == "for b"
+
+
 def test_clear(tmp_enso):
     """Clear removes all pending messages."""
     messages.send("will be cleared")

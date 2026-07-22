@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Interactive agent turns now have a provider-neutral timeout configured through `agent.timeout` (900 seconds by default; `0` disables it). A timed-out Claude, Codex, or Antigravity process tree is stopped, the user sees a concise terminal notice, and durable recovery context is injected only into that conversation's next turn so the agent can inspect partial work before continuing
 - Google Antigravity CLI support through the registry-backed `agy` provider, including its current model catalog, reasoning effort, background jobs, per-chat conversation resume, and automatic migration of existing configs. Enso captures Antigravity's generated conversation ID from a private per-run log and removes that log immediately afterward
 - Existing job prerun scripts can now be viewed and edited below the prompt on the job detail page. Saves are atomic, preserve file permissions, and reject missing, symlinked, or out-of-directory paths
 - Jobs and Enso-owned skills can now be deleted from their dashboard detail pages after confirmation. Entire owned directories are removed, external skills remain read-only, and deleted bundled skills stay deleted across service restarts

@@ -22,7 +22,13 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from croniter import croniter
 
 from . import messages, runs
-from .config import CONFIG_DIR, SKILL_TOMBSTONES_DIRNAME, STATE_FILE, provider_models
+from .config import (
+    CONFIG_DIR,
+    DEFAULT_AGENT,
+    SKILL_TOMBSTONES_DIRNAME,
+    STATE_FILE,
+    provider_models,
+)
 from .jobs import Job, job_config_error, load_jobs
 from .logging_config import logging_flags
 from .providers import PROVIDER_NAMES, BaseProvider, StreamEvent, provider_class
@@ -51,6 +57,13 @@ def progress_text(elapsed: int) -> str:
     """Return the provider-neutral progress text for an elapsed second."""
     message = PROGRESS_MESSAGES[elapsed % len(PROGRESS_MESSAGES)]
     return f"({elapsed}s) {message}"
+
+
+async def _cancel_and_wait(task: asyncio.Task[Any]) -> BaseException | None:
+    """Cancel a child task without swallowing cancellation of the caller."""
+    task.cancel()
+    result = (await asyncio.gather(task, return_exceptions=True))[0]
+    return result if isinstance(result, BaseException) else None
 
 
 def split_text(text: str, limit: int = 4096) -> list[str]:
@@ -179,6 +192,15 @@ class Runtime:
         self.working_dir: str = config.get("working_dir", os.getcwd())
         os.makedirs(self.working_dir, exist_ok=True)
         self.models: dict[str, list[str]] = provider_models(config)
+        agent_config = config.get("agent")
+        timeout = (
+            agent_config.get("timeout")
+            if isinstance(agent_config, dict)
+            else DEFAULT_AGENT["timeout"]
+        )
+        if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 0:
+            timeout = DEFAULT_AGENT["timeout"]
+        self.agent_timeout: int | float = timeout
         self.transport: BaseTransport | None = None
 
         # Per-chat state (keyed by conversation ID — str for all transports)
@@ -1164,7 +1186,7 @@ class Runtime:
         Automatically injects any pending background messages into the prompt.
         """
         # Inject background messages
-        bg = messages.consume()
+        bg = messages.consume(chat_id)
         if bg:
             prompt = f"{messages.format_for_injection(bg)}\n\n{prompt}"
             log.info("[%s] Injected %d background message(s) into prompt", provider_name, len(bg))
@@ -1209,17 +1231,23 @@ class Runtime:
         stop = asyncio.Event()
         ticker = asyncio.create_task(self._run_ticker(ctx, status_msg, state, stop))
 
-        def stop_ticker() -> None:
+        async def stop_ticker() -> None:
             # Must run before the status message is edited or deleted; a
             # late tick would overwrite the final status.
             stop.set()
-            ticker.cancel()
+            error = await _cancel_and_wait(ticker)
+            if error is not None and not isinstance(error, asyncio.CancelledError):
+                log.warning(
+                    "Status ticker failed while stopping for chat %s: %s",
+                    chat_id, error,
+                )
 
         msg_limit = self.transport.message_limit if self.transport else 4096
         response_parts: list[str] = []
         error_text = ""
 
-        try:
+        async def consume_provider_events() -> None:
+            nonlocal error_text
             async for event in self.run_provider(
                 provider, prompt, chat_id, model,
                 effort=effort, extra_env=origin_env,
@@ -1237,7 +1265,82 @@ class Runtime:
                 elif event.kind == "error":
                     error_text = event.text
 
-            stop_ticker()
+        async def run_with_timeout() -> bool:
+            """Run the provider and return True only when our deadline expires."""
+            if not self.agent_timeout:
+                await consume_provider_events()
+                return False
+
+            provider_task = asyncio.create_task(consume_provider_events())
+
+            async def cancel_provider() -> None:
+                error = await _cancel_and_wait(provider_task)
+                if error is not None and not isinstance(error, asyncio.CancelledError):
+                    log.warning(
+                        "Provider cleanup failed for chat %s: %s",
+                        chat_id, error,
+                    )
+
+            try:
+                done, _ = await asyncio.wait(
+                    {provider_task}, timeout=self.agent_timeout,
+                )
+                if provider_task in done:
+                    await provider_task
+                    return False
+                await cancel_provider()
+                return True
+            except BaseException:
+                if not provider_task.done():
+                    await cancel_provider()
+                raise
+
+        try:
+            if await run_with_timeout():
+                await stop_ticker()
+                duration = self._format_duration(self.agent_timeout)
+                user_notice = f"Stopped after reaching the {duration} timeout."
+                agent_notice = (
+                    "Enso stopped the previous agent turn after it reached the "
+                    f"configured {duration} timeout. Partial work may remain; inspect "
+                    "the current workspace and prior session before continuing."
+                )
+                log.warning(
+                    "[%s] request timed out chat=%s after %ss",
+                    provider_name, chat_id, self.agent_timeout,
+                )
+                try:
+                    messages.send(
+                        agent_notice,
+                        source="enso:timeout",
+                        conversation_id=chat_id,
+                    )
+                except Exception:
+                    log.exception("Could not persist timeout notice for chat %s", chat_id)
+
+                delivered = False
+                if status_msg is not None:
+                    try:
+                        await ctx.edit_status(status_msg, user_notice)
+                        delivered = True
+                    except Exception:
+                        log.warning(
+                            "Could not finalize timeout status for chat %s",
+                            chat_id,
+                            exc_info=True,
+                        )
+                if not delivered:
+                    try:
+                        await ctx.reply(user_notice)
+                    except Exception:
+                        log.warning(
+                            "Could not send timeout notice for chat %s",
+                            chat_id,
+                            exc_info=True,
+                        )
+                return
+
+            await stop_ticker()
             if status_msg is not None:
                 await ctx.delete_status(status_msg)
 
@@ -1262,20 +1365,29 @@ class Runtime:
                 await ctx.reply("(No response)")
 
         except asyncio.CancelledError:
-            stop_ticker()
+            await stop_ticker()
             if status_msg is not None:
                 with contextlib.suppress(Exception):
                     await ctx.edit_status(status_msg, "Stopped.")
             raise
 
         except Exception as exc:
-            stop_ticker()
+            await stop_ticker()
             log.error("Error processing %s request: %s", provider_name, exc, exc_info=True)
             if status_msg is not None:
                 with contextlib.suppress(Exception):
                     await ctx.delete_status(status_msg)
             for chunk in split_text(f"Error: {exc}", limit=msg_limit):
                 await ctx.reply(chunk)
+
+    @staticmethod
+    def _format_duration(seconds: int | float) -> str:
+        """Format a configured timeout as a concise compound modifier."""
+        if seconds >= 60 and seconds % 60 == 0:
+            minutes = int(seconds // 60)
+            return f"{minutes}-minute"
+        rendered = f"{seconds:g}"
+        return f"{rendered}-second"
 
     async def _run_ticker(
         self, ctx: TransportContext, status_msg: Any | None, state: dict, stop: asyncio.Event

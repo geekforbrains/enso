@@ -2,21 +2,30 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import tempfile
 from datetime import datetime, timezone
 
 from .config import MESSAGES_FILE
 
 
-def send(text: str, source: str = "manual") -> None:
-    """Append a message to the queue."""
+def send(
+    text: str,
+    source: str = "manual",
+    conversation_id: str | None = None,
+) -> None:
+    """Append a global or conversation-scoped message to the queue."""
     messages = _load()
-    messages.append({
+    message = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "text": text,
         "source": source,
-    })
+    }
+    if conversation_id is not None:
+        message["conversation_id"] = conversation_id
+    messages.append(message)
     _save(messages)
 
 
@@ -25,12 +34,25 @@ def pending() -> list[dict]:
     return _load()
 
 
-def consume() -> list[dict]:
-    """Return all pending messages and clear the queue atomically."""
-    messages = _load()
-    if messages:
-        _save([])
-    return messages
+def consume(conversation_id: str | None = None) -> list[dict]:
+    """Consume global messages plus those scoped to one conversation.
+
+    Omitting ``conversation_id`` retains the original consume-all behavior.
+    """
+    queued = _load()
+    if conversation_id is None:
+        consumed, remaining = queued, []
+    else:
+        consumed, remaining = [], []
+        for message in queued:
+            target = message.get("conversation_id")
+            if target in (None, conversation_id):
+                consumed.append(message)
+            else:
+                remaining.append(message)
+    if consumed:
+        _save(remaining)
+    return consumed
 
 
 def clear() -> None:
@@ -70,8 +92,19 @@ def _load() -> list[dict]:
 
 
 def _save(messages: list[dict]) -> None:
-    """Save messages to disk."""
-    os.makedirs(os.path.dirname(MESSAGES_FILE), exist_ok=True)
-    with open(MESSAGES_FILE, "w") as f:
-        json.dump(messages, f, indent=2)
-        f.write("\n")
+    """Atomically save messages to disk."""
+    directory = os.path.dirname(MESSAGES_FILE)
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(messages, f, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, MESSAGES_FILE)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        raise
