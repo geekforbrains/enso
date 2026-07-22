@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from enso.providers import PROVIDER_CLASSES, PROVIDER_NAMES, provider_class
+from enso.providers.agy import AGY_MODELS, AgyProvider
 from enso.providers.claude import ClaudeProvider
 from enso.providers.codex import CODEX_MODEL_ALIASES, CodexProvider
 
@@ -12,7 +13,7 @@ from enso.providers.codex import CODEX_MODEL_ALIASES, CodexProvider
 
 
 def test_supported_provider_names():
-    assert PROVIDER_NAMES == ["claude", "codex"]
+    assert PROVIDER_NAMES == ["claude", "codex", "agy"]
     # PROVIDER_NAMES is derived from the registry — the single source of truth.
     assert list(PROVIDER_CLASSES) == PROVIDER_NAMES
 
@@ -20,6 +21,7 @@ def test_supported_provider_names():
 def test_provider_class_lookup():
     assert provider_class("claude") is ClaudeProvider
     assert provider_class("codex") is CodexProvider
+    assert provider_class("agy") is AgyProvider
 
 
 def test_provider_class_unknown():
@@ -31,7 +33,7 @@ def test_registry_declares_config_defaults():
     """Every provider carries the defaults config derives from the registry."""
     for cls in PROVIDER_CLASSES.values():
         assert cls.default_models
-        assert cls.env_keys
+        assert isinstance(cls.env_keys, tuple)
 
 
 # -- Command building --
@@ -111,6 +113,83 @@ def test_codex_unknown_model_passes_through():
     assert cmd[cmd.index("-m") + 1] == "gpt-5.5"
 
 
+def test_agy_build_command_creates_resumable_yolo_session_command():
+    provider = AgyProvider("agy")
+    cmd = provider.build_command(
+        "hello", "gemini-3.6-flash-high", session_id="session-123", effort="low",
+    )
+    try:
+        assert cmd[0] == "agy"
+        assert "--dangerously-skip-permissions" in cmd
+        assert cmd[cmd.index("--model") + 1] == "gemini-3.6-flash-high"
+        assert cmd[cmd.index("--effort") + 1] == "low"
+        assert cmd[cmd.index("--conversation") + 1] == "session-123"
+        assert cmd[cmd.index("--prompt") + 1] == "hello"
+        assert "--log-file" in cmd
+    finally:
+        provider.finalize_events()
+
+
+def test_agy_build_command_without_session_starts_fresh():
+    provider = AgyProvider("agy")
+    cmd = provider.build_command("hello", AGY_MODELS[0])
+    try:
+        assert "--conversation" not in cmd
+    finally:
+        provider.finalize_events()
+
+
+def test_agy_batch_command_is_plain_yolo_output():
+    cmd = AgyProvider("agy").build_batch_command(
+        "hello", "gemini-3.6-flash-low", effort="medium",
+    )
+    assert cmd == [
+        "agy", "--dangerously-skip-permissions",
+        "--model", "gemini-3.6-flash-low",
+        "--effort", "medium",
+        "--prompt", "hello",
+    ]
+
+
+def test_agy_preserves_multiline_final_output():
+    provider = AgyProvider("agy")
+    events = provider.parse_complete_output("First paragraph.\n\n```py\nprint('hi')\n```\n")
+    assert len(events) == 1
+    assert events[0].kind == "response"
+    assert events[0].text == "First paragraph.\n\n```py\nprint('hi')\n```"
+
+
+def test_agy_finalize_captures_authoritative_session_and_removes_log(tmp_path):
+    log_file = tmp_path / "agy.log"
+    log_file.write_text(
+        "Created conversation 11111111-1111-4111-8111-111111111111\n"
+        "Print mode: conversation=22222222-2222-4222-8222-222222222222, sending message\n"
+    )
+    provider = AgyProvider("agy")
+    provider._log_path = str(log_file)
+
+    events = provider.finalize_events()
+
+    assert [(event.kind, event.session_id) for event in events] == [
+        ("session", "22222222-2222-4222-8222-222222222222"),
+    ]
+    assert not log_file.exists()
+
+
+def test_agy_finalize_falls_back_to_created_session(tmp_path):
+    log_file = tmp_path / "agy.log"
+    log_file.write_text(
+        "Created conversation 33333333-3333-4333-8333-333333333333\n"
+    )
+    provider = AgyProvider("agy")
+    provider._log_path = str(log_file)
+
+    events = provider.finalize_events()
+
+    assert events[0].session_id == "33333333-3333-4333-8333-333333333333"
+    assert not log_file.exists()
+
+
 # -- Event parsing --
 
 
@@ -132,9 +211,7 @@ def test_claude_parse_tool_use():
             ]
         },
     })
-    assert len(events) == 1
-    assert events[0].kind == "status"
-    assert "Reading" in events[0].text
+    assert events == []
 
 
 # -- Batch (job) output parsing --
@@ -152,7 +229,7 @@ def test_codex_parse_agent_message():
         "type": "item.completed",
         "item": {"type": "agent_message", "text": "Done!"},
     })
-    assert any(e.kind == "response" and e.text == "Done!" for e in events)
+    assert [(e.kind, e.text) for e in events] == [("response", "Done!")]
 
 
 def test_codex_parse_session():
@@ -168,6 +245,11 @@ def test_stdout_limit_generous_default():
     """One long JSON event line (e.g. a full response) must not overrun the buffer."""
     assert ClaudeProvider("claude").stdout_limit() == 10 * 1024 * 1024
     assert CodexProvider("codex").stdout_limit() == 10 * 1024 * 1024
+
+
+def test_agy_effort_levels_and_models():
+    assert AgyProvider.effort_levels == ["low", "medium", "high"]
+    assert AgyProvider.default_models == AGY_MODELS
 
 
 # -- Effort: command building --

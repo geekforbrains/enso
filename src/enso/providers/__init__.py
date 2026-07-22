@@ -3,37 +3,26 @@
 from __future__ import annotations
 
 import json
-import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import ClassVar, Literal
 
-log = logging.getLogger(__name__)
-
-
-def truncate_status(text: str, limit: int = 60) -> str:
-    """Extract a short status line from thinking/narration text."""
-    # Take first line, strip markdown
-    line = text.strip().split("\n")[0].strip("*_#> ")
-    if len(line) > limit:
-        return line[:limit] + "…"
-    return line
-
 
 @dataclass
 class StreamEvent:
-    """Unified event type emitted by all providers during streaming."""
+    """Unified event type emitted by all providers."""
 
-    kind: Literal["status", "response", "session", "error", "usage"]
+    kind: Literal["response", "session", "error"]
     text: str = ""
     session_id: str | None = None
-    usage: dict | None = None
 
 
 class BaseProvider(ABC):
     """Base class for CLI agent providers."""
 
     name: str
+    # True when stdout is a provider event stream; False when it is one final response.
+    streaming_output: ClassVar[bool] = True
 
     # Models offered when the provider has no configured model list.
     default_models: ClassVar[list[str]] = []
@@ -134,6 +123,15 @@ class BaseProvider(ABC):
         """
         return stdout.strip()
 
+    def parse_complete_output(self, stdout: str) -> list[StreamEvent]:
+        """Parse one completed, non-streaming stdout payload."""
+        text = stdout.strip()
+        return [StreamEvent(kind="response", text=text)] if text else []
+
+    def finalize_events(self) -> list[StreamEvent]:
+        """Return metadata discovered outside stdout after a process finishes."""
+        return []
+
     def clear_session(self, session_id: str | None, working_dir: str) -> str:
         """Clear session data. Returns human-readable summary."""
         return "session cleared" if session_id else "no session"
@@ -141,12 +139,14 @@ class BaseProvider(ABC):
 
 # Provider registry — the single source of truth for supported providers.
 # Imported at the bottom so subclasses can import BaseProvider from here.
+from .agy import AgyProvider  # noqa: E402
 from .claude import ClaudeProvider  # noqa: E402
 from .codex import CodexProvider  # noqa: E402
 
 PROVIDER_CLASSES: dict[str, type[BaseProvider]] = {
     ClaudeProvider.name: ClaudeProvider,
     CodexProvider.name: CodexProvider,
+    AgyProvider.name: AgyProvider,
 }
 PROVIDER_NAMES = list(PROVIDER_CLASSES)
 

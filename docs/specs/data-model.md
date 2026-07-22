@@ -121,6 +121,9 @@ without replacing user settings:
 
 Notes:
 
+- The `providers` block is derived from the provider registry. Upgrades add missing
+  provider entries and their default model lists while preserving existing provider
+  paths, custom models, and unknown per-provider settings.
 - The dashboard is a separate `enso web` process. `web.enabled` tells the self-updater
   whether to install web dependencies; `enso web` itself is started and stopped
   separately from `enso serve`.

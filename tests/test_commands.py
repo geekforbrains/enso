@@ -6,8 +6,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from enso.commands import cmd_compact_async, cmd_effort, cmd_model, cmd_status
+from enso.commands import cmd_compact_async, cmd_effort, cmd_model, cmd_status, cmd_use
 from enso.core import Runtime
+from enso.providers import PROVIDER_NAMES
+from enso.providers.agy import AgyProvider
 
 
 def test_cmd_model_selects_codex_alias(sample_config):
@@ -20,6 +22,23 @@ def test_cmd_model_selects_codex_alias(sample_config):
     assert response == "codex model → terra"
     assert options == []
     assert rt.get_active_model("1", "codex") == "terra"
+
+
+def test_provider_and_model_switching_follow_registry(sample_config):
+    sample_config["providers"]["agy"]["models"] = list(AgyProvider.default_models)
+    rt = Runtime(sample_config)
+
+    response, providers = cmd_use(rt, "1", None)
+    assert response is None
+    assert [name for name, _active in providers] == PROVIDER_NAMES
+
+    response, providers = cmd_use(rt, "1", "agy")
+    assert response == "Provider set to agy."
+    assert providers == []
+
+    response, models = cmd_model(rt, "1", None)
+    assert response is None
+    assert [name for name, _active in models] == AgyProvider.default_models
 
 
 def test_cmd_effort_set_level(sample_config):

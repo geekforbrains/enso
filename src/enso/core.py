@@ -33,18 +33,24 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-def _status_edit_due(elapsed: int) -> bool:
-    """Return True when the status message should be edited at this tick.
+PROGRESS_MESSAGES = (
+    "Thinking hard",
+    "Crunching data",
+    "Poking at files",
+    "Grabbing a coffee",
+    "Connecting dots",
+    "Following breadcrumbs",
+    "Turning over rocks",
+    "Untangling things",
+    "Reading the fine print",
+    "Asking electrons nicely",
+)
 
-    Progressive backoff: every 1s for the first 10s, every 2s until 60s,
-    then every 5s after that.  Keeps Telegram happy while still feeling
-    responsive at the start of a request.
-    """
-    if elapsed <= 10:
-        return True
-    if elapsed <= 60:
-        return elapsed % 2 == 0
-    return elapsed % 5 == 0
+
+def progress_text(elapsed: int) -> str:
+    """Return the provider-neutral progress text for an elapsed second."""
+    message = PROGRESS_MESSAGES[elapsed % len(PROGRESS_MESSAGES)]
+    return f"({elapsed}s) {message}"
 
 
 def split_text(text: str, limit: int = 4096) -> list[str]:
@@ -139,11 +145,18 @@ class JobRunResult:
 
 def _redacted_command(cmd: list[str]) -> str:
     """Return a shell-like command string with the prompt argument redacted."""
-    if "--" not in cmd:
-        return shlex.join(cmd)
-    sep = cmd.index("--")
-    prompt_chars = sum(len(part) for part in cmd[sep + 1 :])
-    return shlex.join([*cmd[: sep + 1], f"<prompt chars={prompt_chars}>"])
+    if "--" in cmd:
+        sep = cmd.index("--")
+        prompt_chars = sum(len(part) for part in cmd[sep + 1 :])
+        return shlex.join([*cmd[: sep + 1], f"<prompt chars={prompt_chars}>"])
+    for flag in ("--prompt", "--print", "-p"):
+        if flag in cmd:
+            prompt_index = cmd.index(flag) + 1
+            if prompt_index < len(cmd):
+                redacted = list(cmd)
+                redacted[prompt_index] = f"<prompt chars={len(cmd[prompt_index])}>"
+                return shlex.join(redacted)
+    return shlex.join(cmd)
 
 
 @dataclass
@@ -671,7 +684,7 @@ class Runtime:
 
     # Providers that support pre-assigned session IDs. For these,
     # Enso generates the ID upfront so it persists across restarts.
-    # Codex generates its own IDs, which we capture from stream events.
+    # Codex and Agy generate their own IDs, which we capture after spawning.
     _SELF_MANAGED_SESSIONS: ClassVar[set[str]] = {"claude"}
 
     def _get_or_create_session(
@@ -1052,60 +1065,74 @@ class Runtime:
         else:
             log.debug("[%s] subprocess cwd=%s extra_env_keys=[]", provider.name, self.working_dir)
 
-        process = await self._spawn_process(*cmd, **kwargs)
+        try:
+            process = await self._spawn_process(*cmd, **kwargs)
+        except BaseException:
+            provider.finalize_events()
+            raise
         log.info("[%s] pid=%s", provider.name, process.pid)
         self.running_process_by_chat[chat_id] = process
 
         event_count = 0
+        finalized = False
+
+        def remember_session(event: StreamEvent) -> None:
+            if event.kind == "session" and event.session_id:
+                self.session_by_chat_provider[(chat_id, provider.name)] = event.session_id
+                self.save_state()
+
         try:
             assert process.stdout is not None
-            async for line in process.stdout:
-                decoded = line.decode(errors="replace").strip()
-                if not decoded:
-                    continue
-                raw = provider.parse_line(decoded)
-                if raw is None:
-                    continue
-                event_count += 1
-                if self.debug_events:
-                    log.debug(
-                        "[%s] raw_event=%d type=%s status=%s keys=%s",
-                        provider.name,
-                        event_count,
-                        raw.get("type", "-"),
-                        raw.get("status", "-"),
-                        sorted(raw),
-                    )
-                parsed_events = provider.parse_event(raw)
-                if self.debug_events and not parsed_events:
-                    log.debug(
-                        "[%s] raw_event=%d emitted no stream events",
-                        provider.name,
-                        event_count,
-                    )
-                for stream_event in parsed_events:
+            stderr_data: bytes | None = None
+            if provider.streaming_output:
+                async for line in process.stdout:
+                    decoded = line.decode(errors="replace").strip()
+                    if not decoded:
+                        continue
+                    raw = provider.parse_line(decoded)
+                    if raw is None:
+                        continue
+                    event_count += 1
                     if self.debug_events:
                         log.debug(
-                            "[%s] stream_event raw=%d kind=%s text_len=%d session=%s usage=%s",
+                            "[%s] raw_event=%d type=%s status=%s keys=%s",
                             provider.name,
                             event_count,
-                            stream_event.kind,
-                            len(stream_event.text or ""),
-                            stream_event.session_id or "-",
-                            stream_event.usage or "-",
+                            raw.get("type", "-"),
+                            raw.get("status", "-"),
+                            sorted(raw),
                         )
-                    if stream_event.kind == "session" and stream_event.session_id:
-                        self.session_by_chat_provider[
-                            (chat_id, provider.name)
-                        ] = stream_event.session_id
-                        self.save_state()
+                    parsed_events = provider.parse_event(raw)
+                    if self.debug_events and not parsed_events:
+                        log.debug(
+                            "[%s] raw_event=%d emitted no stream events",
+                            provider.name,
+                            event_count,
+                        )
+                    for stream_event in parsed_events:
+                        remember_session(stream_event)
+                        yield stream_event
+                await process.wait()
+            else:
+                stdout_data, stderr_data = await process.communicate()
+                parsed_events = provider.parse_complete_output(
+                    stdout_data.decode(errors="replace")
+                )
+                event_count += len(parsed_events)
+                for stream_event in parsed_events:
+                    remember_session(stream_event)
                     yield stream_event
 
-            # Surface stderr as an error when the process fails
-            await process.wait()
+            for stream_event in provider.finalize_events():
+                event_count += 1
+                remember_session(stream_event)
+                yield stream_event
+            finalized = True
+
             rc = process.returncode
             if rc and not provider.stderr_to_stdout() and process.stderr:
-                stderr_data = await process.stderr.read()
+                if stderr_data is None:
+                    stderr_data = await process.stderr.read()
                 if stderr_data:
                     stderr_text = stderr_data.decode(errors="replace").strip()[:2000]
                     log.error("[%s] stderr: %s", provider.name, stderr_text)
@@ -1115,6 +1142,9 @@ class Runtime:
                 await self._terminate_process_tree(
                     process, f"{provider.name} chat {chat_id}", grace=1.0,
                 )
+            if not finalized:
+                for stream_event in provider.finalize_events():
+                    remember_session(stream_event)
             rc = process.returncode
             log.info("[%s] pid=%s exit=%s events=%d", provider.name, process.pid, rc, event_count)
             if self.running_process_by_chat.get(chat_id) is process:
@@ -1145,8 +1175,6 @@ class Runtime:
         model = self.get_active_model(chat_id, provider_name)
         effort = self.get_active_effort(chat_id, provider_name, model)
         provider = self.make_provider(provider_name)
-        display = provider_name.capitalize()
-        effort_part = f" / {effort}" if effort else ""
 
         try:
             origin_env = ctx.get_origin_env()
@@ -1172,16 +1200,11 @@ class Runtime:
         await ctx.send_typing()
         status_msg = None
         try:
-            status_msg = await ctx.reply_status(
-                f"({display}{effort_part} / 0s) Working…"
-            )
+            status_msg = await ctx.reply_status(progress_text(0))
         except Exception:
             log.warning("Failed to send initial status message for chat %s", chat_id, exc_info=True)
         state = {
-            "status": "Working…",
             "elapsed": 0,
-            "display": display,
-            "effort_part": effort_part,
         }
         stop = asyncio.Event()
         ticker = asyncio.create_task(self._run_ticker(ctx, status_msg, state, stop))
@@ -1195,7 +1218,6 @@ class Runtime:
         msg_limit = self.transport.message_limit if self.transport else 4096
         response_parts: list[str] = []
         error_text = ""
-        usage_pct: int | None = None
 
         try:
             async for event in self.run_provider(
@@ -1204,21 +1226,16 @@ class Runtime:
             ):
                 if self.debug_events:
                     log.debug(
-                        "[%s] handling_event kind=%s text_len=%d session=%s usage=%s",
+                        "[%s] handling_event kind=%s text_len=%d session=%s",
                         provider_name,
                         event.kind,
                         len(event.text or ""),
                         event.session_id or "-",
-                        event.usage or "-",
                     )
-                if event.kind == "status":
-                    state["status"] = event.text
-                elif event.kind == "response":
+                if event.kind == "response":
                     response_parts.append(event.text)
                 elif event.kind == "error":
                     error_text = event.text
-                elif event.kind == "usage" and event.usage:
-                    usage_pct = event.usage.get("pct")
 
             stop_ticker()
             if status_msg is not None:
@@ -1227,44 +1244,37 @@ class Runtime:
             response_text = provider.format_response(response_parts)
             log.info(
                 "[%s] request complete chat=%s response_parts=%d "
-                "response_len=%d error=%s usage_pct=%s elapsed=%s",
+                "response_len=%d error=%s elapsed=%s",
                 provider_name,
                 chat_id,
                 len(response_parts),
                 len(response_text),
                 bool(error_text),
-                usage_pct if usage_pct is not None else "-",
                 state["elapsed"],
             )
-            usage_part = f" / {usage_pct}%" if usage_pct is not None else ""
-            prefix = f"({display}{effort_part}{usage_part} / {state['elapsed']}s)"
 
             if response_text:
-                for chunk in split_text(f"{prefix}\n{response_text}", limit=msg_limit):
+                for chunk in split_text(response_text, limit=msg_limit):
                     await ctx.reply(chunk)
             elif error_text:
-                await ctx.reply(f"{prefix} Error: {error_text[:4000]}")
+                await ctx.reply(f"Error: {error_text[:4000]}")
             else:
-                await ctx.reply(f"{prefix} (No response)")
+                await ctx.reply("(No response)")
 
         except asyncio.CancelledError:
             stop_ticker()
             if status_msg is not None:
                 with contextlib.suppress(Exception):
-                    await ctx.edit_status(status_msg, f"({display}{effort_part}) Stopped.")
+                    await ctx.edit_status(status_msg, "Stopped.")
             raise
 
         except Exception as exc:
             stop_ticker()
             log.error("Error processing %s request: %s", provider_name, exc, exc_info=True)
-            prefix = f"({display}{effort_part} / {state['elapsed']}s)"
-            try:
-                if status_msg is not None:
-                    await ctx.edit_status(status_msg, f"{prefix} Error: {str(exc)[:4000]}")
-                    return
-            except Exception:
-                pass
-            for chunk in split_text(f"{prefix} Error: {exc}", limit=msg_limit):
+            if status_msg is not None:
+                with contextlib.suppress(Exception):
+                    await ctx.delete_status(status_msg)
+            for chunk in split_text(f"Error: {exc}", limit=msg_limit):
                 await ctx.reply(chunk)
 
     async def _run_ticker(
@@ -1277,11 +1287,8 @@ class Runtime:
             if stop.is_set():
                 break
             state["elapsed"] += 1
-            if status_updates_enabled and _status_edit_due(state["elapsed"]):
-                text = (
-                    f"({state['display']}{state.get('effort_part', '')} / "
-                    f"{state['elapsed']}s) {state['status']}"
-                )
+            if status_updates_enabled:
+                text = progress_text(state["elapsed"])
                 try:
                     await asyncio.wait_for(ctx.edit_status(status_msg, text), timeout=5.0)
                 except Exception:

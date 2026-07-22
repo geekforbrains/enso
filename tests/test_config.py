@@ -70,6 +70,24 @@ def test_default_config_has_codex_model_aliases(tmp_enso):
     assert config["providers"]["codex"]["models"] == ["sol", "terra", "luna"]
 
 
+def test_existing_config_backfills_new_registry_providers_and_persists(tmp_enso):
+    config_file = Path(tmp_enso) / "config.json"
+    config_file.write_text(json.dumps({
+        "providers": {
+            "claude": {"path": "/custom/claude", "models": ["opus"]},
+            "codex": {"path": "/custom/codex", "models": ["gpt-5.5"]},
+        },
+    }))
+
+    loaded = load_config()
+
+    assert loaded["providers"]["agy"] == DEFAULT_PROVIDERS["agy"]
+    persisted = json.loads(config_file.read_text())
+    assert persisted["providers"]["agy"] == DEFAULT_PROVIDERS["agy"]
+    assert persisted["providers"]["codex"]["path"] == "/custom/codex"
+    assert "gpt-5.5" in persisted["providers"]["codex"]["models"]
+
+
 def test_default_providers_derive_from_registry():
     """Provider names and default models have one source of truth: the registry."""
     assert list(DEFAULT_PROVIDERS) == PROVIDER_NAMES
@@ -180,8 +198,8 @@ def test_load_removes_unsupported_provider_config(tmp_enso):
 
     loaded = load_config()
 
-    assert set(loaded["providers"]) == {"claude"}
-    assert set(json.loads(config_file.read_text())["providers"]) == {"claude"}
+    assert set(loaded["providers"]) == set(PROVIDER_NAMES)
+    assert set(json.loads(config_file.read_text())["providers"]) == set(PROVIDER_NAMES)
 
 
 def test_load_replaces_invalid_logging_with_defaults(tmp_enso):

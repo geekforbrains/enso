@@ -72,6 +72,25 @@ for background work:
 Interactive **chat** requests are *not* runs — they are session-based and ephemeral, and
 belong to the transport, not the run log.
 
+## Provider execution
+
+The provider registry is the single source of truth for supported CLI names, default
+models, setup detection, service environment keys, chat selectors, and job validation.
+Existing configs are backfilled when a provider is added, while configured paths and
+custom models are preserved.
+
+Claude and Codex expose structured event streams. Antigravity's headless mode emits one
+plain-text response, so the shared runner supports both streamed events and completed
+stdout without changing the transport contract. All providers use the same transient
+chat progress ticker; provider-specific tool and reasoning events do not affect the
+user-facing status.
+
+Claude accepts an Enso-generated session ID and Codex emits its ID in the event stream.
+Antigravity generates its own ID but exposes it only in diagnostics: each invocation
+uses a private temporary `--log-file`, Enso captures the authoritative active
+conversation ID after the process exits, and the file is immediately removed. `/clear`
+forgets the stored provider session, so the next message starts and captures a new one.
+
 The recording seam (see [data-model.md](data-model.md) for the schema):
 
 1. Before provider spawn: `runs.create(kind, name, trigger)` → a row with

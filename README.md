@@ -2,7 +2,7 @@
 
 Text your AI agents from Telegram or Slack. They run on your machine.
 
-Enso connects [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Codex](https://github.com/openai/codex) to a Telegram bot or Slack workspace so you can chat with them from your phone. You get live status updates as they work, can switch between agents mid-conversation, and schedule background jobs on a cron.
+Enso connects [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), and Google's Antigravity CLI (`agy`) to a Telegram bot or Slack workspace so you can chat with them from your phone. You get live status updates as they work, can switch between agents mid-conversation, and schedule background jobs on a cron.
 
 ## Documentation
 
@@ -22,7 +22,7 @@ Design docs live in [`docs/`](docs/) and are the source of truth for planned and
 ## Requirements
 
 - Python 3.10+
-- At least one of `claude` or `codex` installed and on your PATH
+- At least one of `claude`, `codex`, or `agy` installed and on your PATH
   - Codex CLI 0.144.0 or newer is required for the Sol, Terra, and Luna models
 - One of:
   - A Telegram bot token ([create one with @BotFather](https://t.me/BotFather)), or
@@ -80,9 +80,9 @@ Telegram autocompletes these when you type `/`. On Slack, use `!` instead (e.g. 
 
 | Command | What it does |
 |---------|-------------|
-| `/use` | Switch agent (shows buttons, or `/use claude`) |
-| `/model` | Switch model (shows buttons, or `/model sonnet` / `/model sol`) |
-| `/effort` | Set Claude/Codex reasoning effort (or `default` to clear) |
+| `/use` | Switch agent (shows buttons, or `/use claude` / `/use agy`) |
+| `/model` | Switch model (shows buttons, or `/model sonnet` / `/model gemini-3.6-flash-high`) |
+| `/effort` | Set the active provider's reasoning effort (or `default` to clear) |
 | `/status` | Active agent, model, and effort |
 | `/stop` | Stop process & clear queue |
 | `/queue` | View & manage queued messages |
@@ -93,9 +93,9 @@ Telegram autocompletes these when you type `/`. On Slack, use `!` instead (e.g. 
 | `/logs` | Last 25 log entries |
 | `/help` | Show all commands |
 
-You can also send files — they're downloaded and passed to the active agent. Responses render with per-transport formatting (Telegram HTML; Slack mrkdwn).
+You can also send files — they're downloaded and passed to the active agent. Responses render with per-transport formatting (Telegram HTML; Slack mrkdwn). While a request runs, Enso edits one provider-neutral status message every second with elapsed time and a rotating phrase; the final response contains only the agent's answer.
 
-Effort is stored separately for each conversation, provider, and model. Claude supports its existing model-dependent range through `max`. Codex Sol and Terra support `low` through `ultra`; Luna supports `low` through `max`. Enso clamps an unsupported higher choice to the active model's maximum and reports the effective level.
+Effort is stored separately for each conversation, provider, and model. Claude supports its existing model-dependent range through `max`. Codex Sol and Terra support `low` through `ultra`; Luna supports `low` through `max`. Antigravity supports `low`, `medium`, and `high`. Enso clamps an unsupported higher choice to the active model's maximum and reports the effective level.
 
 **Slack specifics.** DMs work like Telegram — every message dispatches. In channels, Enso only responds when mentioned (`@bot help me`); once a thread starts, it stays attentive to that thread only if you keep mentioning it. The bot fetches the last few thread/channel messages as context so it knows what's going on.
 
@@ -167,6 +167,7 @@ Enso can run agents on a schedule. Jobs live in `~/.enso/jobs/` and run inside `
 ```bash
 enso job create --name "Daily Review" --provider claude --model sonnet --schedule "0 9 * * *"
 enso job create --name "Fast Triage" --provider codex --model luna --schedule "*/30 * * * *"
+enso job create --name "Agy Review" --provider agy --model gemini-3.6-flash-high --schedule "0 10 * * *"
 enso job list
 enso job run daily-review    # test it manually
 ```
@@ -205,7 +206,7 @@ development is in progress.
 
 ## Config
 
-Everything lives under `~/.enso/`. Config is at `~/.enso/config.json` — the setup wizard writes it for you, but you can edit it directly to add models or change the working directory. Set `notify_channel` to give `enso message send`, job alerts, and autocompact hooks a default destination (required for Slack; on Telegram it's optional — without it, sends broadcast to `allowed_users`).
+Everything lives under `~/.enso/`. Config is at `~/.enso/config.json` — the setup wizard writes it for you, but you can edit it directly to add models or change the working directory. Upgrades backfill newly supported providers without replacing existing paths or custom model lists. Set `notify_channel` to give `enso message send`, job alerts, and autocompact hooks a default destination (required for Slack; on Telegram it's optional — without it, sends broadcast to `allowed_users`).
 
 ## Development
 

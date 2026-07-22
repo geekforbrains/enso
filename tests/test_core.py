@@ -15,8 +15,15 @@ import pytest
 from enso import core as core_module
 from enso import messages
 from enso.config import SKILL_TOMBSTONES_DIRNAME
-from enso.core import Runtime, split_text
+from enso.core import (
+    PROGRESS_MESSAGES,
+    Runtime,
+    _redacted_command,
+    progress_text,
+    split_text,
+)
 from enso.jobs import Job
+from enso.providers import StreamEvent
 from enso.providers.claude import ClaudeProvider
 
 # -- split_text --
@@ -38,6 +45,19 @@ def test_split_text_long_line():
     chunks = split_text(text, limit=50)
     assert all(len(c) <= 50 for c in chunks)
     assert "".join(chunks) == text
+
+
+def test_progress_text_rotates_with_elapsed_seconds():
+    assert progress_text(0) == f"(0s) {PROGRESS_MESSAGES[0]}"
+    assert progress_text(1) == f"(1s) {PROGRESS_MESSAGES[1]}"
+    elapsed = len(PROGRESS_MESSAGES)
+    assert progress_text(elapsed) == f"({elapsed}s) {PROGRESS_MESSAGES[0]}"
+
+
+def test_redacted_command_hides_agy_prompt():
+    rendered = _redacted_command(["agy", "--model", "model", "--prompt", "secret prompt"])
+    assert "secret prompt" not in rendered
+    assert "<prompt chars=13>" in rendered
 
 
 # -- Workspace setup --
@@ -480,6 +500,16 @@ class _FakeSpawnedProcess:
         return 0
 
 
+class _FakePlainProcess:
+    pid = 43
+    returncode = 0
+    stdout = object()
+    stderr = object()
+
+    async def communicate(self):
+        return b"First paragraph.\n\nSecond paragraph.\n", b""
+
+
 @pytest.mark.asyncio
 async def test_run_provider_injects_extra_env(tmp_enso, sample_config, monkeypatch):
     """extra_env reaches create_subprocess_exec merged on top of os.environ."""
@@ -541,6 +571,60 @@ async def test_run_provider_omits_env_when_not_requested(tmp_enso, sample_config
     assert captured["env"] == "SENTINEL_UNSET"
 
 
+@pytest.mark.asyncio
+async def test_run_provider_handles_agy_plain_output_and_captures_session(
+    tmp_enso, sample_config, monkeypatch,
+):
+    sample_config["working_dir"] = os.path.join(tmp_enso, "workspace")
+    rt = Runtime(sample_config)
+    session_id = "44444444-4444-4444-8444-444444444444"
+
+    async def fake_spawn(*args, **kwargs):
+        log_path = args[args.index("--log-file") + 1]
+        Path(log_path).write_text(f"Print mode: conversation={session_id}, sending message\n")
+        return _FakePlainProcess()
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_spawn)
+
+    events = [
+        event
+        async for event in rt.run_provider(
+            rt.make_provider("agy"), "hello", "1", "gemini-3.6-flash-high",
+        )
+    ]
+
+    assert [(event.kind, event.text) for event in events] == [
+        ("response", "First paragraph.\n\nSecond paragraph."),
+        ("session", ""),
+    ]
+    assert rt.session_by_chat_provider[("1", "agy")] == session_id
+
+
+@pytest.mark.asyncio
+async def test_run_provider_cleans_agy_log_when_spawn_fails(
+    tmp_enso, sample_config, monkeypatch,
+):
+    sample_config["working_dir"] = os.path.join(tmp_enso, "workspace")
+    rt = Runtime(sample_config)
+    provider = rt.make_provider("agy")
+    captured: dict[str, str] = {}
+
+    async def fake_spawn(*args, **kwargs):
+        captured["log_path"] = args[args.index("--log-file") + 1]
+        raise OSError("spawn failed")
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_spawn)
+
+    with pytest.raises(OSError, match="spawn failed"):
+        async for _event in rt.run_provider(
+            provider, "hello", "1", "gemini-3.6-flash-high",
+        ):
+            pass
+
+    assert not Path(captured["log_path"]).exists()
+    assert provider._log_path is None
+
+
 def test_prune_clears_effort(tmp_enso, sample_config):
     """Stale conversations drop their effort settings too."""
     sample_config["working_dir"] = os.path.join(tmp_enso, "workspace")
@@ -572,6 +656,12 @@ def test_get_or_create_session_codex(sample_config):
     """Codex does not get a pre-generated session — it creates its own."""
     rt = Runtime(sample_config)
     assert rt._get_or_create_session("1", "codex") is None
+
+
+def test_get_or_create_session_agy(sample_config):
+    """Agy creates its own session ID, captured from its private run log."""
+    rt = Runtime(sample_config)
+    assert rt._get_or_create_session("1", "agy") is None
 
 
 def test_should_run_job_first_time(sample_config):
@@ -744,3 +834,63 @@ async def test_process_request_injects_messages(tmp_enso, sample_config):
     assert len(prompts_received) == 1
     assert "background info" in prompts_received[0]
     assert "user message" in prompts_received[0]
+
+
+@pytest.mark.asyncio
+async def test_process_request_uses_normalized_status_and_plain_final_response(sample_config):
+    rt = Runtime(sample_config)
+    rt.effort_by_chat_provider_model[("1", "claude", "opus")] = "high"
+
+    class FakeCtx:
+        def __init__(self):
+            self.statuses = []
+            self.replies = []
+            self.deleted = []
+
+        async def reply(self, text): self.replies.append(text)
+        async def reply_status(self, text):
+            self.statuses.append(text)
+            return "handle"
+        async def edit_status(self, handle, text): self.statuses.append(text)
+        async def delete_status(self, handle): self.deleted.append(handle)
+        async def send_typing(self): pass
+        def get_origin_env(self): return {}
+
+    async def fake_run(*args, **kwargs):
+        yield StreamEvent(kind="response", text="Done")
+
+    ctx = FakeCtx()
+    rt.run_provider = fake_run
+    await rt.process_request("claude", "hello", "1", ctx)
+
+    assert ctx.statuses == ["(0s) Thinking hard"]
+    assert ctx.deleted == ["handle"]
+    assert ctx.replies == ["Done"]
+
+
+@pytest.mark.asyncio
+async def test_ticker_rotates_every_second(sample_config, monkeypatch):
+    rt = Runtime(sample_config)
+    stop = asyncio.Event()
+
+    class FakeCtx:
+        def __init__(self):
+            self.edits = []
+
+        async def edit_status(self, handle, text):
+            self.edits.append(text)
+            if len(self.edits) == 3:
+                stop.set()
+
+        async def send_typing(self): pass
+
+    async def no_wait(_seconds):
+        return None
+
+    monkeypatch.setattr(core_module.asyncio, "sleep", no_wait)
+    ctx = FakeCtx()
+    state = {"elapsed": 0}
+
+    await rt._run_ticker(ctx, "handle", state, stop)
+
+    assert ctx.edits == [progress_text(1), progress_text(2), progress_text(3)]

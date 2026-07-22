@@ -6,33 +6,7 @@ import os
 from pathlib import Path
 from typing import ClassVar
 
-from . import BaseProvider, StreamEvent, truncate_status
-
-
-def _format_tool_status(tool_name: str, tool_input: dict) -> str:
-    """Format tool usage into human-readable status."""
-    match tool_name:
-        case "Read":
-            return f"Reading {os.path.basename(tool_input.get('file_path', 'file'))}"
-        case "Write":
-            return f"Writing {os.path.basename(tool_input.get('file_path', 'file'))}"
-        case "Edit":
-            return f"Editing {os.path.basename(tool_input.get('file_path', 'file'))}"
-        case "Bash":
-            cmd = tool_input.get("command", "")
-            return f"Running `{cmd[:50]}{'…' if len(cmd) > 50 else ''}`"
-        case "Glob":
-            return f"Finding {tool_input.get('pattern', '')}"
-        case "Grep":
-            return f"Searching for '{tool_input.get('pattern', '')}'"
-        case "WebFetch":
-            return f"Fetching {tool_input.get('url', '')[:40]}"
-        case "WebSearch":
-            return f"Searching: {tool_input.get('query', '')}"
-        case "Agent":
-            return "Running subagent…"
-        case _:
-            return f"Using {tool_name}"
+from . import BaseProvider, StreamEvent
 
 
 def _get_project_dir(working_dir: str) -> str:
@@ -110,28 +84,8 @@ class ClaudeProvider(BaseProvider):
             message = event.get("message", {})
             for block in message.get("content", []):
                 block_type = block.get("type")
-                if block_type == "thinking":
-                    text = block.get("thinking", "")
-                    if text:
-                        events.append(StreamEvent(
-                            kind="status", text=truncate_status(text),
-                        ))
-                elif block_type == "tool_use":
-                    events.append(StreamEvent(
-                        kind="status",
-                        text=_format_tool_status(
-                            block.get("name", ""), block.get("input", {})
-                        ),
-                    ))
-                elif block_type == "text" and block.get("text"):
+                if block_type == "text" and block.get("text"):
                     events.append(StreamEvent(kind="response", text=block["text"]))
-
-            # Track per-turn usage from each assistant event. The last
-            # one reflects the actual context window fill for the final
-            # API call (earlier turns re-count cached tokens).
-            usage = message.get("usage", {})
-            if usage:
-                self._last_usage = usage
 
         elif event_type == "result":
             result_text = event.get("result", "")
@@ -141,32 +95,6 @@ class ClaudeProvider(BaseProvider):
             session_id = event.get("session_id")
             if isinstance(session_id, str) and session_id:
                 events.append(StreamEvent(kind="session", session_id=session_id))
-
-            # Emit context window usage from the last assistant turn.
-            # modelUsage provides the context window size; _last_usage
-            # (from the final assistant event) gives the actual token
-            # counts for the last API call — which reflects how full
-            # the context window really is.
-            model_usage = event.get("modelUsage", {})
-            last = getattr(self, "_last_usage", None)
-            if model_usage and last:
-                model_data = next(iter(model_usage.values()), {})
-                context_window = model_data.get("contextWindow", 0)
-                total_tokens = (
-                    last.get("input_tokens", 0)
-                    + last.get("cache_creation_input_tokens", 0)
-                    + last.get("cache_read_input_tokens", 0)
-                    + last.get("output_tokens", 0)
-                )
-                if context_window:
-                    events.append(StreamEvent(
-                        kind="usage",
-                        usage={
-                            "total_tokens": total_tokens,
-                            "context_window": context_window,
-                            "pct": round(total_tokens / context_window * 100),
-                        },
-                    ))
 
         return events
 

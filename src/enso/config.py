@@ -70,9 +70,11 @@ def provider_models(config: dict) -> dict[str, list[str]]:
 
 
 def _providers_need_migration(raw_providers: object) -> bool:
-    """True when config carries retired providers or retired provider keys."""
+    """True when provider config is missing defaults or carries retired values."""
     if not isinstance(raw_providers, dict):
-        return False
+        return True
+    if any(name not in raw_providers for name in DEFAULT_PROVIDERS):
+        return True
     for name, pcfg in raw_providers.items():
         if name not in DEFAULT_PROVIDERS:
             return True
@@ -193,7 +195,17 @@ def _with_config_defaults(config: dict) -> dict:
                     ]
                     provider["models"] = [*aliases, *existing_models]
                 backfilled[name] = provider
+            else:
+                backfilled[name] = {
+                    "path": defaults["path"],
+                    "models": list(defaults["models"]),
+                }
         merged["providers"] = backfilled
+    else:
+        merged["providers"] = {
+            name: {"path": defaults["path"], "models": list(defaults["models"])}
+            for name, defaults in DEFAULT_PROVIDERS.items()
+        }
 
     # Backfill web/runs blocks added in newer versions without overwriting
     # values the user has already set.
