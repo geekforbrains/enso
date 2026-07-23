@@ -20,13 +20,12 @@ file behind.
 
 from __future__ import annotations
 
-import contextlib
 import logging
-import os
 import re
-import tempfile
 
 import yaml
+
+from .fsutil import atomic_write_text
 
 log = logging.getLogger(__name__)
 
@@ -203,20 +202,8 @@ def read(path: str) -> tuple[dict, str]:
 
 
 def _atomic_write(path: str, text: str) -> None:
-    """Fsync a temporary UTF-8 file, then atomically replace ``path``."""
-    directory = os.path.dirname(os.path.abspath(path))
-    os.makedirs(directory, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.remove(tmp)
-        raise
+    """Atomically replace ``path``, preserving exact line endings."""
+    atomic_write_text(path, text, newline="")
 
 
 def write(path: str, meta: dict, body: str) -> None:

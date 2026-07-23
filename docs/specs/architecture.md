@@ -46,7 +46,7 @@ pulled into the base install.
 | Server | **Uvicorn** | Serves the standalone dashboard process |
 | Templates | **Jinja2** | Server-rendered HTML; the UI is views + forms, not an SPA |
 | Interactivity | **HTMX** (vendored; no runtime build) | Inline toggle/run actions without a client application bundle |
-| Forms | **python-multipart** | Parse form posts |
+| Forms | urlencoded posts (Starlette built-in) | No uploads/multipart in the UI, so no extra parser dependency |
 | Run store | **`sqlite3`** (stdlib) | No dependency; WAL mode for concurrent readers; see [data-model.md](data-model.md) |
 | Job frontmatter | **PyYAML `BaseLoader` + legacy fallback** | Valid YAML scalars stay strings; malformed older headers remain loadable; raw web edits avoid reserialization |
 
@@ -54,7 +54,7 @@ pulled into the base install.
 
 ```toml
 [project.optional-dependencies]
-web = ["starlette>=0.37", "uvicorn>=0.30", "jinja2>=3.1", "python-multipart>=0.0.9"]
+web = ["starlette>=0.37", "uvicorn>=0.30", "jinja2>=3.1"]
 ```
 
 `pyyaml` is a base dependency (jobs need it independently of the web UI). HTMX and the

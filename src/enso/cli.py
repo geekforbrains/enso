@@ -229,6 +229,16 @@ _LAUNCHD_PLIST = os.path.expanduser(
 )
 _SYSTEMD_UNIT = "enso.service"
 
+# Advanced tuning env vars read by the runtime (see core.py). Snapshotted
+# into the service definition at install time so exports actually reach
+# `enso serve` under launchd/systemd's minimal environment.
+_ENSO_TUNING_ENV_KEYS = (
+    "ENSO_SESSION_TTL_DAYS",
+    "ENSO_JOB_CONCURRENCY",
+    "ENSO_PROCESS_TERMINATE_GRACE_SECS",
+    "ENSO_JOB_FAILURE_RENOTIFY_SECS",
+)
+
 
 def _find_enso_bin() -> str | None:
     """Locate the enso binary."""
@@ -343,7 +353,7 @@ def _install_launchd(config: dict, enso_bin: str) -> bool:
     # under launchd's minimal environment.
     extra_env = ""
     provider_env_keys = (key for cls in PROVIDER_CLASSES.values() for key in cls.env_keys)
-    for key in ("HOME", *provider_env_keys):
+    for key in ("HOME", *provider_env_keys, *_ENSO_TUNING_ENV_KEYS):
         val = os.environ.get(key)
         if val:
             extra_env += f"        <key>{key}</key>\n        <string>{val}</string>\n"
@@ -409,6 +419,12 @@ def _install_systemd(config: dict, enso_bin: str) -> bool:
     path_str = _build_path_str(enso_bin)
     working_dir = config.get("working_dir", os.getcwd())
 
+    extra_env = ""
+    for key in _ENSO_TUNING_ENV_KEYS:
+        val = os.environ.get(key)
+        if val:
+            extra_env += f"Environment={key}={val}\n"
+
     unit = f"""\
 [Unit]
 Description=Enso - Personal AI Agent
@@ -422,7 +438,7 @@ Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
 Environment=PATH={path_str}
-
+{extra_env}
 [Install]
 WantedBy=default.target
 """
@@ -1122,7 +1138,9 @@ def web(
     config["web"] = {**web_cfg, "host": bind_host, "port": bind_port}
 
     runtime = Runtime(config)
-    runtime.load_state()
+    # Read-only snapshot: the dashboard must never write back pruned state
+    # over the serve process's live state.json.
+    runtime.load_state(persist=False)
 
     # Lazy import so missing optional web deps never break other commands.
     try:

@@ -76,7 +76,7 @@ SLACK_COMMANDS: list[tuple[str, str]] = [
     ("stop", "Stop process & clear queue"),
     ("use", "Switch provider"),
     ("model", "Switch model"),
-    ("effort", "Set reasoning effort (Claude/Codex, or 'default' to clear)"),
+    ("effort", "Set the active provider's reasoning effort (or 'default' to clear)"),
     ("status", "Provider, model & effort info"),
     ("clear", "Clear session (use !clear all for all providers)"),
     ("compact", "Summarise & compact the active session"),

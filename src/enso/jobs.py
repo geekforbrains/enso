@@ -9,6 +9,7 @@ import re
 from dataclasses import dataclass
 
 import yaml
+from croniter import croniter
 
 from . import frontmatter
 from .config import JOBS_DIR, load_config, provider_models
@@ -117,6 +118,13 @@ def job_config_error(
     return None
 
 
+def schedule_error(schedule: str) -> str | None:
+    """Explain why a cron schedule can't be parsed, or None when valid."""
+    if isinstance(schedule, str) and croniter.is_valid(schedule):
+        return None
+    return f"Invalid cron schedule {schedule!r} (expected e.g. '0 9 * * *')"
+
+
 def create_job(
     dir_name: str,
     name: str,
@@ -130,6 +138,9 @@ def create_job(
     """
     _validate_dir_name(dir_name)
     error = job_config_error(provider, model, provider_models(load_config()))
+    if error:
+        raise ValueError(error)
+    error = schedule_error(schedule)
     if error:
         raise ValueError(error)
     os.makedirs(JOBS_DIR, exist_ok=True)

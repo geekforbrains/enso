@@ -43,7 +43,7 @@ policy, and prevent HTML caching. Host filtering is not authentication: an empty
 | `/jobs/{name}/toggle` | POST | Implemented | Enable or disable a job |
 | `/jobs/{name}/delete` | POST | Implemented | Delete a job directory after confirmation |
 | `/jobs/{name}/run` | POST | Implemented | Run now and record a `manual` run |
-| `/runs` | GET | Implemented | Run feed; filter by `?kind=`, `?name=`, `?status=` |
+| `/runs` | GET | Implemented | Run feed; filter by `?name=`, `?status=` |
 | `/runs/{id}` | GET | Implemented | Run metadata and captured log output |
 | `/skills` | GET | Implemented | Enso-owned and external read-only skill tiers |
 | `/skills/new` | GET, POST | **Planned** | Create an Enso-owned skill |

@@ -6,6 +6,35 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Cron schedules are validated when a job is created (`enso job create` rejects malformed expressions), and the scheduler now skips — with a log warning — any job whose hand-edited schedule has become invalid instead of dying silently and stopping all scheduled jobs. Background scheduler/task deaths are now logged instead of vanishing
+- A cross-process per-job run lock: the scheduler, `enso job run`, and the dashboard's "Run now" can no longer run the same job concurrently. `/update` also refuses to proceed while a dashboard- or CLI-triggered job is mid-run
+- Agents now see documented `ENSO_ORIGIN_*` environment variables (transport, user id/name, channel id/name, thread) describing who triggered the current turn; previously they were exported but undocumented
+- The four advanced tuning env vars (`ENSO_SESSION_TTL_DAYS`, `ENSO_JOB_CONCURRENCY`, `ENSO_PROCESS_TERMINATE_GRACE_SECS`, `ENSO_JOB_FAILURE_RENOTIFY_SECS`) are documented in the README and are snapshotted into the launchd/systemd service definition by `enso service install`, so they actually reach `enso serve` under a service manager
+
+### Fixed
+
+- The background message queue (`messages.json`) now serializes read-modify-write cycles across processes with a file lock, so a job-failure notice can no longer be silently lost when it races an agent's `enso message send`
+- `/compact` now honors `agent.timeout` like interactive turns — a hung provider CLI no longer wedges the chat behind a held lock — and messages queued during compaction are dispatched right after it finishes instead of waiting for the next user message
+- A first turn that fails before the provider CLI creates its session (bad `providers.claude.path`, auth failure, immediate exit) no longer permanently wedges the chat on `--resume` of a session that never existed; the pre-assigned session id is reverted so the next turn starts fresh
+- Slack `channel_rename` events no longer reset cached channel fields (`is_member`, `is_private`, topic, member count) to defaults — minimal events only overwrite the fields they actually carry
+- Slack job notifications are now truncated at Slack's 40,000-character limit instead of a hard-coded 4,096
+- `enso web` no longer writes pruned session state back to `state.json` on startup, so a dashboard (re)start can no longer clobber the serve process's live state
+- Deliberately removed Codex model aliases (`sol`/`terra`/`luna`) stay removed: the alias backfill now runs only for configs that predate the aliases, and user ordering is preserved
+- The pre-0.12 bundled `slack_search.py` skill tool is now retired on upgrade (pristine-hash gated, like the tasks skill), including its installed `workspace/tools/` copy; customized copies are preserved with a warning
+- The updater no longer claims to restart a dashboard service — no such service is ever installed; docs now note that a foreground `enso web` must be restarted manually after an update
+
+### Changed
+
+- Atomic file writes and pristine-file hashing are consolidated into one `enso.fsutil` module (seven near-identical copies removed); Claude hook settings are now written atomically too
+- Telegram inline-keyboard provider/model taps route through the same shared command handlers as the text commands
+- The runs page dropped its vestigial "Kind" filter (only `job` runs exist since the tasks system was removed)
+- `/effort` help text no longer names only Claude/Codex — effort applies to the active provider, including Antigravity
+- The bundled jobs skill, system prompt, and README now document the `agy` provider, the `catch_up`/`misfire_grace_seconds` job fields, and Telegram-only chat commands; the bundled slack skill and app manifest now agree that `enso slack search` uses the bot token's `search:read.public` scope
+
+### Removed
+
+- The unused `python-multipart` dependency from the `web` extra and the dead `skills/**/*.py` package-data glob
+
 - Interactive agent turns now have a provider-neutral timeout configured through `agent.timeout` (900 seconds by default; `0` disables it). A timed-out Claude, Codex, or Antigravity process tree is stopped, the user sees a concise terminal notice, and durable recovery context is injected only into that conversation's next turn so the agent can inspect partial work before continuing
 - Google Antigravity CLI support through the registry-backed `agy` provider, including its current effort-qualified model catalog, background jobs, per-chat conversation resume, and automatic migration of existing configs. Enso captures Antigravity's generated conversation ID from a private per-run log and removes that log immediately afterward
 - Existing job prerun scripts can now be viewed and edited below the prompt on the job detail page. Saves are atomic, preserve file permissions, and reject missing, symlinked, or out-of-directory paths

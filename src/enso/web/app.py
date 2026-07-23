@@ -16,14 +16,12 @@ from __future__ import annotations
 import contextlib
 import errno
 import functools
-import hashlib
 import importlib.resources
 import logging
 import os
 import secrets
 import shutil
 import stat
-import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -41,6 +39,7 @@ from starlette.templating import Jinja2Templates
 
 from .. import frontmatter, runs
 from ..config import CONFIG_DIR, JOBS_DIR, SKILL_TOMBSTONES_DIRNAME
+from ..fsutil import atomic_write_text, regular_file_sha256
 from ..jobs import Job, load_jobs
 
 log = logging.getLogger(__name__)
@@ -342,28 +341,6 @@ def _within(base: str, target: str) -> bool:
     return tgt_r == base_r or tgt_r.startswith(base_r + os.sep)
 
 
-def _atomic_write_text(path: str, text: str) -> None:
-    """Atomically write UTF-8 text: temp file in the same dir, fsync, os.replace."""
-    directory = os.path.dirname(os.path.abspath(path))
-    os.makedirs(directory, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
-    try:
-        stream = os.fdopen(fd, "w", encoding="utf-8")
-        fd = -1
-        with stream:
-            stream.write(text)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(tmp, path)
-    except BaseException:
-        if fd >= 0:
-            with contextlib.suppress(OSError):
-                os.close(fd)
-        with contextlib.suppress(OSError):
-            os.remove(tmp)
-        raise
-
-
 def _find_job(name: str) -> Job | None:
     """Return the job whose ``dir_name`` matches ``name``."""
     return next((j for j in load_jobs() if j.dir_name == name), None)
@@ -593,19 +570,6 @@ def _create_skill_tombstone(name: str) -> None:
         os.close(skills_fd)
 
 
-def _regular_file_sha256(path: str) -> str | None:
-    if os.path.islink(path) or not os.path.isfile(path):
-        return None
-    digest = hashlib.sha256()
-    try:
-        with open(path, "rb") as f:
-            for chunk in iter(lambda: f.read(65536), b""):
-                digest.update(chunk)
-    except OSError:
-        return None
-    return digest.hexdigest()
-
-
 def _skill_tool_cleanup_candidates(request, name: str) -> list[tuple[str, str]]:
     """Find unmodified installed tools owned only by the skill being deleted."""
     runtime = request.app.state.runtime
@@ -632,7 +596,7 @@ def _skill_tool_cleanup_candidates(request, name: str) -> list[tuple[str, str]]:
         if not filename.endswith(".py"):
             continue
         source = os.path.join(skill_dir, filename)
-        source_hash = _regular_file_sha256(source)
+        source_hash = regular_file_sha256(source)
         if source_hash is None:
             continue
         if any(
@@ -641,14 +605,14 @@ def _skill_tool_cleanup_candidates(request, name: str) -> list[tuple[str, str]]:
         ):
             continue
         installed = os.path.join(tools_dir, filename)
-        if _regular_file_sha256(installed) == source_hash:
+        if regular_file_sha256(installed) == source_hash:
             candidates.append((installed, source_hash))
     return candidates
 
 
 def _remove_installed_skill_tools(candidates: list[tuple[str, str]]) -> None:
     for path, expected_hash in candidates:
-        if _regular_file_sha256(path) != expected_hash:
+        if regular_file_sha256(path) != expected_hash:
             continue
         with contextlib.suppress(OSError):
             os.remove(path)
@@ -970,15 +934,13 @@ async def job_delete(request):
 
 
 async def runs_list(request):
-    kind = request.query_params.get("kind") or None
     name = request.query_params.get("name") or None
     status = request.query_params.get("status") or None
-    rows = runs.list_runs(kind=kind, name=name, status=status, limit=200)
+    rows = runs.list_runs(name=name, status=status, limit=200)
     return _render(
         request,
         "runs.html",
         runs=rows,
-        active_kind=kind or "",
         active_status=status or "",
         active_name=name or "",
     )
@@ -1057,7 +1019,7 @@ async def skill_edit(request):
         return PlainTextResponse("Forbidden", status_code=403)
     form = await request.form()
     content = (form.get("content") or "").replace("\r\n", "\n")
-    _atomic_write_text(path, content)
+    atomic_write_text(path, content)
     return _redirect(f"/skills/{name}")
 
 
@@ -1117,7 +1079,7 @@ async def agents_edit(request):
     content = (form.get("content") or "").replace("\r\n", "\n")
     # Write the symlink target directly; the CLAUDE.md -> AGENTS.md symlink is
     # left untouched (os.replace onto the resolved regular file).
-    _atomic_write_text(path, content)
+    atomic_write_text(path, content)
     return _redirect("/agents")
 
 

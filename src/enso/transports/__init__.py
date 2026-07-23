@@ -19,6 +19,15 @@ def safe_filename(name: str) -> str:
     return os.path.basename(name).lstrip(".")
 
 
+def _warn_if_task_died(task: asyncio.Task, label: str) -> None:
+    """Surface a background task that died — silence here hides real outages."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        log.error("%s task died: %s", label, exc, exc_info=exc)
+
+
 class TransportContext(ABC):
     """Interface for sending messages back to a user during a conversation.
 
@@ -87,6 +96,9 @@ class BaseTransport(ABC):
         Must be called from within the transport's running event loop.
         """
         self._scheduler_task = asyncio.create_task(self.runtime.run_job_scheduler())
+        self._scheduler_task.add_done_callback(
+            lambda task: _warn_if_task_died(task, "Job scheduler")
+        )
         self._update_confirmation_task = asyncio.create_task(
             self._confirm_pending_update()
         )

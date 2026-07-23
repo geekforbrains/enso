@@ -129,8 +129,6 @@ class BaseProvider(ABC):
         """Extract the final answer from a finished batch (job) run's stdout.
 
         Default: the batch command emits plain text, so return it stripped.
-        Providers whose batch command streams JSON override this to pull the
-        final response/error out of the event stream.
         """
         return stdout.strip()
 

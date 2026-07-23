@@ -191,6 +191,9 @@ async def cmd_compact_async(runtime: Runtime, conv_id: str) -> str:
         "Compacted %s session for chat %s (%d-char summary stashed)",
         provider, conv_id, len(summary),
     )
+    # Messages that queued while compaction held the chat lock would
+    # otherwise wait for the next user message.
+    runtime.kick_queue(conv_id)
     return "Compacted. Continue the conversation — context will be preserved as a summary."
 
 
@@ -214,7 +217,10 @@ async def cmd_update_async(runtime: Runtime) -> UpdateResult:
             task for task in runtime._running_job_tasks.values()
             if not task.done()
         ]
-        if active_chats or active_jobs:
+        # Jobs triggered from the dashboard or CLI run in other processes;
+        # their cross-process run locks are the only visible signal here.
+        external_jobs = runtime.jobs_running_elsewhere()
+        if active_chats or active_jobs or external_jobs:
             return UpdateResult(
                 "blocked",
                 "Enso is busy with active agent work. Wait for it to finish "

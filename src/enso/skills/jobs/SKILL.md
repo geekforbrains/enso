@@ -27,6 +27,7 @@ enso job list                    # show all jobs with status
 enso job run <name>              # manual run (output to stdout)
 enso job create --name "Name" --provider claude --model sonnet --schedule "0 9 * * *"
 enso job create --name "Name" --provider codex --model terra --schedule "0 9 * * *"
+enso job create --name "Name" --provider agy --model gemini-3.6-flash-high --schedule "0 9 * * *"
 ```
 
 ## Directory structure
@@ -59,17 +60,25 @@ The prompt goes here. Use {{prerun_output}} to inject prerun results.
 |------------|----------|-------------|
 | `name`     | yes      | Display name (shown in notifications) |
 | `schedule` | yes      | Cron: `minute hour dom month dow` |
-| `provider` | yes      | `claude` or `codex` |
-| `model`    | yes      | Model name (e.g. `sonnet`; Codex: `sol`, `terra`, or `luna`) |
+| `provider` | yes      | `claude`, `codex`, or `agy` |
+| `model`    | yes      | Model name (e.g. `sonnet`; Codex: `sol`, `terra`, or `luna`; Agy: `gemini-3.6-flash-high`) |
 | `enabled`  | yes      | `true` or `false` — disabled jobs are skipped |
 | `prerun`   | no       | Script filename in the job directory |
 | `prerun_timeout` | no | Max seconds for the prerun (default 120) |
 | `notify`   | no       | Telegram user ID or Slack channel/DM for failure alerts |
 | `timeout`  | no       | Max seconds for the run (default 900) |
+| `catch_up` | no       | `true` to run a missed schedule late (default `false`) |
+| `misfire_grace_seconds` | no | How late a missed run may still fire (default 300) |
 
 `provider` and `model` are validated against the configured providers and
 their model lists — a job naming an unknown provider or model is rejected at
-creation and fails with a clear error instead of running.
+creation and fails with a clear error instead of running. The cron schedule
+is validated at creation too; if a hand-edited schedule later becomes
+invalid, the scheduler skips that job (with a log warning) rather than run it.
+
+By default a job that misses its scheduled time by more than
+`misfire_grace_seconds` (e.g. the machine was asleep) is skipped rather than
+run late; set `catch_up: true` when a late run is better than no run.
 
 ### Schedule (cron syntax)
 
@@ -230,6 +239,7 @@ echo "$NEW_PEOPLE"
 - Use `haiku` or `sonnet` for frequent/simple jobs to save cost
 - Use `opus` for jobs that need deep reasoning or complex output
 - For Codex, use `sol` for frontier work, `terra` for balanced everyday work, or `luna` for fast, affordable runs
+- For Antigravity (`agy`), use a `gemini-3.6-flash-*` model for fast, inexpensive runs or `gemini-3.1-pro-*` for deeper reasoning
 - Test with `enso job run <name>` before relying on the schedule
 - Check logs with `enso service logs` if a job isn't firing
 - Set `enabled: false` to pause a job without deleting it

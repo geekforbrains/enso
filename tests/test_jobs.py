@@ -9,7 +9,14 @@ import pytest
 
 from enso import frontmatter
 from enso.config import load_config, save_config
-from enso.jobs import Job, create_job, job_config_error, load_jobs, parse_job
+from enso.jobs import (
+    Job,
+    create_job,
+    job_config_error,
+    load_jobs,
+    parse_job,
+    schedule_error,
+)
 
 
 def test_parse_job(tmp_path):
@@ -375,3 +382,15 @@ def test_job_dir_property():
     """Job.job_dir computes correctly."""
     job = Job(dir_name="foo", name="Foo", schedule="* * * * *", provider="claude", model="sonnet")
     assert job.job_dir.endswith("/foo")
+
+
+def test_create_job_rejects_invalid_schedule(tmp_enso):
+    with pytest.raises(ValueError, match="Invalid cron schedule"):
+        create_job("bad", "Bad", "claude", "sonnet", "0 9 * *")
+    # Validation fails before anything touches disk.
+    assert not os.path.isdir(os.path.join(tmp_enso, "jobs", "bad"))
+
+
+def test_schedule_error_accepts_valid_cron():
+    assert schedule_error("*/5 * * * *") is None
+    assert "Invalid cron schedule" in schedule_error("not a cron")

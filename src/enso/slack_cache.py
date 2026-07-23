@@ -309,8 +309,16 @@ def apply_channel_upsert(raw_channel: dict) -> None:
     if not raw_channel.get("id"):
         return
     cache = load()
-    existing = cache["channels"]["items"].get(raw_channel["id"], {})
-    merged = {**existing, **_normalise_channel(raw_channel)}
+    existing = cache["channels"]["items"].get(raw_channel["id"])
+    normalised = _normalise_channel(raw_channel)
+    if existing:
+        # Minimal events (channel_rename sends only id/name/created) omit
+        # most fields; only overwrite what the event actually carried so
+        # cached membership, privacy, and topic survive.
+        updates = {k: v for k, v in normalised.items() if k in raw_channel}
+        merged = {**existing, **updates}
+    else:
+        merged = normalised
     cache["channels"]["items"][raw_channel["id"]] = merged
     save(cache)
 

@@ -35,6 +35,7 @@ class FakeProvider:
 
 class RecordingTransport:
     name = "telegram"
+    message_limit = 4096
 
     def __init__(self):
         self.notifications: list[tuple[str, str | None]] = []
@@ -558,3 +559,25 @@ async def test_manual_no_work_has_no_history(tmp_enso, sample_config, monkeypatc
     assert result.run_id is None
     assert runs.list_runs() == []
     assert runtime.transport.notifications == []
+
+
+async def test_concurrent_same_job_is_skipped_via_run_lock(tmp_enso, sample_config):
+    """The cross-process run lock rejects overlapping runs of one job."""
+    runtime = Runtime(sample_config)
+    runtime.transport = RecordingTransport()
+    job = make_job(tmp_enso, prerun=None)
+
+    held = runtime._acquire_job_lock(job)
+    assert held not in (None, "unlocked")
+    try:
+        assert runtime.jobs_running_elsewhere() == []  # load_jobs sees no JOB.md
+        result = await runtime._execute_job(job, trigger="manual", notify_failures=False)
+        assert result.status == "error"
+        assert "already running" in result.output
+    finally:
+        held.close()
+
+    # Lock released — a fresh probe acquires cleanly.
+    reacquired = runtime._acquire_job_lock(job)
+    assert reacquired not in (None, "unlocked")
+    reacquired.close()

@@ -41,7 +41,6 @@ from ..commands import (
     cmd_use,
 )
 from ..formatting import md_to_html
-from ..providers import PROVIDER_NAMES
 from . import BaseTransport, TransportContext, safe_filename
 
 if TYPE_CHECKING:
@@ -63,7 +62,7 @@ COMMANDS = [
     BotCommand("queue", "View & manage queued messages"),
     BotCommand("use", "Switch provider"),
     BotCommand("model", "Switch model"),
-    BotCommand("effort", "Set reasoning effort (Claude/Codex)"),
+    BotCommand("effort", "Set the active provider's reasoning effort"),
     BotCommand("status", "Provider, model & effort info"),
     BotCommand("clear", "Clear session"),
     BotCommand("compact", "Summarise & compact the active session"),
@@ -547,20 +546,14 @@ class TelegramTransport(BaseTransport):
         rt = self.runtime
 
         if data.startswith("use:"):
-            name = data.split(":", 1)[1]
-            if name in PROVIDER_NAMES:
-                rt.active_provider_by_chat[conv_id] = name
-                rt.save_state()
-                await query.edit_message_text(f"Provider → {name}")
+            response, _ = cmd_use(rt, conv_id, data.split(":", 1)[1])
+            if response:
+                await query.edit_message_text(response)
 
         elif data.startswith("model:"):
-            model = data.split(":", 1)[1]
-            provider = rt.get_active_provider(conv_id)
-            models = rt.models.get(provider, [])
-            if model in models:
-                rt.active_model_by_chat_provider[(conv_id, provider)] = model
-                rt.save_state()
-                await query.edit_message_text(f"{provider} model → {model}")
+            response, _ = cmd_model(rt, conv_id, data.split(":", 1)[1])
+            if response:
+                await query.edit_message_text(response)
 
         elif data.startswith("effort:"):
             choice = data.split(":", 1)[1]

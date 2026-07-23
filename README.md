@@ -86,11 +86,11 @@ Telegram autocompletes these when you type `/`. On Slack, use `!` instead (e.g. 
 | `/effort` | Set Claude/Codex reasoning effort (or `default` to clear) |
 | `/status` | Active agent, model, and effort |
 | `/stop` | Stop process & clear queue |
-| `/queue` | View & manage queued messages |
+| `/queue` | View & manage queued messages (Telegram only) |
 | `/clear` | New session (shows current/all buttons) |
 | `/compact` | Summarise the current session and reseed a fresh one — keeps the thread, trims tokens |
-| `/update` | Validate and install the latest stable Enso source, then restart services |
-| `/restart` | Restart the service |
+| `/update` | Validate and install the latest stable Enso source, then restart the service |
+| `/restart` | Restart the service (Telegram only) |
 | `/logs` | Last 25 log entries |
 | `/help` | Show all commands |
 
@@ -115,7 +115,7 @@ enso slack open-dm gavin                  # returns the DM channel ID
 enso slack list [users|channels]          # dump cache (auto-refresh if empty)
 enso slack refresh [--users|--channels]   # force refresh
 
-enso slack search "deploy failed"         # search.messages (needs user token)
+enso slack search "deploy failed"         # search.messages (public channels)
 enso slack history C0AEWRPJ9LM            # channel history
 enso slack thread C0AEWRPJ9LM <ts>        # full thread
 ```
@@ -173,7 +173,7 @@ enso job list
 enso job run daily-review    # test it manually
 ```
 
-Each job has a `JOB.md` with a cron schedule, provider, model, and prompt. Jobs can include a prerun script that gates execution — `exit 0` to proceed, `exit 1` to skip silently, and any other exit to fail. Prerun timeouts, missing scripts, and exit `2+` are recorded in run history and notify through the job's configured destination. Identical alerts are suppressed for 24 hours and one recovery is sent when the prerun becomes healthy. Prerun stdout gets injected into the prompt via `{{prerun_output}}`; only an explicit, sanitized `ENSO_ERROR:` stderr summary can appear in an alert. The bundled `jobs` skill teaches your agents how to create and manage jobs themselves.
+Each job has a `JOB.md` with a cron schedule, provider, model, and prompt. Schedules are validated at creation; if a hand-edited schedule later becomes invalid, the scheduler skips that job (with a log warning) instead of running it. By default a job that misses its scheduled time by more than `misfire_grace_seconds` (300) — say the machine was asleep — is skipped rather than run late; set `catch_up: true` in the frontmatter to run missed schedules on the next tick. A per-job lock prevents the scheduler, the CLI, and the dashboard from running the same job concurrently. Jobs can include a prerun script that gates execution — `exit 0` to proceed, `exit 1` to skip silently, and any other exit to fail. Prerun timeouts, missing scripts, and exit `2+` are recorded in run history and notify through the job's configured destination. Identical alerts are suppressed for 24 hours and one recovery is sent when the prerun becomes healthy. Prerun stdout gets injected into the prompt via `{{prerun_output}}`; only an explicit, sanitized `ENSO_ERROR:` stderr summary can appear in an alert. The bundled `jobs` skill teaches your agents how to create and manage jobs themselves.
 
 `enso job run <name>` exercises the same prerun and provider pipeline without sending chat notifications. Intentional no-work exits successfully with a clear message; prerun and provider failures return a nonzero CLI status.
 
@@ -196,8 +196,9 @@ model to modify the installation. It checks the fixed
 installs it in an isolated environment, runs that revision's test suite, and
 only then installs the same wheel and restarts Enso. If the installed commit
 already matches, it reports that there is nothing to update. Successful
-updates are confirmed after the bot (and the dashboard service, when
-installed) have restarted. Editable development checkouts that already
+updates are confirmed after the bot service has restarted. A dashboard
+started with `enso web` is a separate foreground process — restart it
+manually after an update. Editable development checkouts that already
 contain stable `main` are recognized as ahead and are never downgraded.
 
 Update metadata lives in `~/.enso/update.json`, separate from user settings in
@@ -208,6 +209,8 @@ development is in progress.
 ## Config
 
 Everything lives under `~/.enso/`. Config is at `~/.enso/config.json` — the setup wizard writes it for you, but you can edit it directly to add models, change the working directory, or set the interactive timeout through `agent.timeout` (whole seconds). Upgrades backfill newly supported providers without replacing existing paths or custom model lists. Set `notify_channel` to give `enso message send`, job alerts, and autocompact hooks a default destination (required for Slack; on Telegram it's optional — without it, sends broadcast to `allowed_users`).
+
+A few advanced knobs are environment variables rather than config keys: `ENSO_SESSION_TTL_DAYS` (prune idle conversations, default 30), `ENSO_JOB_CONCURRENCY` (parallel scheduled jobs, default 2), `ENSO_PROCESS_TERMINATE_GRACE_SECS` (SIGTERM grace before SIGKILL, default 5), and `ENSO_JOB_FAILURE_RENOTIFY_SECS` (duplicate-alert cooldown, default 86400). `enso service install` snapshots any that are set into the service definition — re-run it after changing them.
 
 ## Development
 
@@ -230,11 +233,11 @@ pytest
 1. Create a feature branch off `main` (or `dev` if building on unreleased work)
 2. Do the work, commit with [conventional commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, etc.)
 3. Merge into `dev` — this is where changes accumulate before release
-4. When ready to release: bump version in `pyproject.toml` (remove `.dev0`), finalize the `[Unreleased]` section in `CHANGELOG.md` with the date, merge `dev` → `main`, and tag
+4. When ready to release: bump the version in `pyproject.toml`, finalize the `[Unreleased]` section in `CHANGELOG.md` with the date, merge `dev` → `main`, and tag
 
 ### Versioning
 
-Version lives in `pyproject.toml`. When cutting a release: bump the version, change the `CHANGELOG.md` heading from `[Unreleased] (X.Y.Z)` to `[X.Y.Z] - YYYY-MM-DD`, commit as `chore: release vX.Y.Z`, merge `dev` → `main`, and tag `vX.Y.Z`.
+Version lives in `pyproject.toml`. When cutting a release: bump the version, change the `CHANGELOG.md` heading from `[Unreleased]` to `[X.Y.Z] - YYYY-MM-DD`, commit as `chore: release vX.Y.Z`, merge `dev` → `main`, and tag `vX.Y.Z`.
 
 ### Changelog
 

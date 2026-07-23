@@ -146,7 +146,7 @@ def test_live_install_forces_same_version_wheel(sample_config, monkeypatch):
 
 def test_confirmation_is_private_and_consumed(tmp_enso, monkeypatch):
     result = updater.UpdateResult("updated", "done", REVISION, "9.1.0")
-    monkeypatch.setattr(updater, "installed_service_names", lambda: ["agent", "web"])
+    monkeypatch.setattr(updater, "installed_service_names", lambda: ["agent"])
     monkeypatch.setattr(updater, "_service_running", lambda _service: True)
 
     updater.queue_update_confirmation(

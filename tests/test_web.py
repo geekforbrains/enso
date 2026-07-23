@@ -336,10 +336,9 @@ def test_run_filter_dropdowns_use_shared_select_styling(tmp_path, monkeypatch):
     styles = client.get("/static/app.css")
 
     assert page.status_code == 200
-    assert page.text.count("<select ") == 2
-    assert 'id="run-kind"' in page.text
+    assert page.text.count("<select ") == 1
     assert 'id="run-status"' in page.text
-    assert page.text.count("rounded-lg border border-gray-300") == 2
+    assert page.text.count("rounded-lg border border-gray-300") == 1
     assert styles.status_code == 200
     assert "select:not([multiple])" in styles.text
     assert "-webkit-appearance: none" in styles.text

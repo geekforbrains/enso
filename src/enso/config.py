@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import os
 import shutil
-import tempfile
 
+from .fsutil import atomic_write_text
 from .logging_config import default_logging_config
 from .providers import PROVIDER_CLASSES
 from .providers.codex import CODEX_MODEL_ALIASES
@@ -82,6 +81,14 @@ def _providers_need_migration(raw_providers: object) -> bool:
         retired = _RETIRED_PROVIDER_KEYS.get(name, frozenset())
         if isinstance(pcfg, dict) and any(k in retired for k in pcfg):
             return True
+        if (
+            name == "codex"
+            and isinstance(pcfg, dict)
+            and isinstance(pcfg.get("models"), list)
+            and not any(m in CODEX_MODEL_ALIASES for m in pcfg["models"])
+        ):
+            # Pre-alias config: the alias backfill should persist once.
+            return True
     return False
 
 
@@ -115,20 +122,7 @@ def load_config() -> dict:
 def save_config(config: dict) -> None:
     """Atomically save config.json with restricted permissions."""
     config = _with_config_defaults(config)
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=CONFIG_DIR, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(config, f, indent=2)
-            f.write("\n")
-            f.flush()
-            os.fsync(f.fileno())
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, CONFIG_FILE)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.remove(tmp)
-        raise
+    atomic_write_text(CONFIG_FILE, json.dumps(config, indent=2) + "\n", mode=0o600)
 
 
 def _build_default_config() -> dict:
@@ -189,14 +183,15 @@ def _with_config_defaults(config: dict) -> dict:
                     if key not in retired
                 }
                 if name == "codex" and isinstance(existing.get("models"), list):
-                    # Make new aliases available to existing installs while
-                    # retaining full, older, or custom model IDs.
-                    aliases = list(CODEX_MODEL_ALIASES)
-                    existing_models = [
-                        model for model in existing["models"]
-                        if model not in CODEX_MODEL_ALIASES
-                    ]
-                    provider["models"] = [*aliases, *existing_models]
+                    # One-time upgrade: configs predating the aliases gain
+                    # them up front. Configs that already carry any alias
+                    # keep the user's list verbatim, including deliberate
+                    # removals and reordering.
+                    existing_models = existing["models"]
+                    if not any(m in CODEX_MODEL_ALIASES for m in existing_models):
+                        provider["models"] = [
+                            *CODEX_MODEL_ALIASES, *existing_models,
+                        ]
                 backfilled[name] = provider
             else:
                 backfilled[name] = {

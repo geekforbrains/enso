@@ -29,7 +29,7 @@ Issues = "https://github.com/geekforbrains/enso/issues"
 [project.optional-dependencies]
 telegram = ["python-telegram-bot>=22.6"]
 slack = ["slack-bolt>=1.28", "aiohttp>=3.9"]
-web = ["starlette>=0.37", "uvicorn>=0.30", "jinja2>=3.1", "python-multipart>=0.0.9"]
+web = ["starlette>=0.37", "uvicorn>=0.30", "jinja2>=3.1"]
 dev = ["ruff>=0.15.0", "pytest>=8.0", "pytest-asyncio>=0.23"]
 
 [project.scripts]
@@ -47,7 +47,6 @@ enso = [
     "prompts/*.md",
     "slack_manifest.yaml",
     "skills/**/*.md",
-    "skills/**/*.py",
     "web/tailwind.config.js",
     "web/tailwind.input.css",
     "web/templates/**/*",

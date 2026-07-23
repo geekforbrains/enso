@@ -13,11 +13,15 @@ are append-only telemetry no one edits by hand — the one dataset that earns a 
 ~/.enso/
 ├── config.json          # settings, including `web` and `runs` blocks
 ├── state.json           # session/job-last-run state
-├── messages.json        # background message queue
+├── messages.json        # background message queue (plus a .lock twin for cross-process writes)
+├── update.json          # updater-owned metadata (installed revision, pending confirmation)
+├── slack-app-manifest.yaml  # copy of the bundled Slack app manifest (written by `enso setup`)
 ├── enso.log             # service log
 ├── enso.db              # SQLite: the runs table
+├── cache/
+│   └── slack.json       # Slack name↔ID directory cache (`enso slack`)
 ├── jobs/                # user jobs
-│   └── <name>/JOB.md
+│   └── <name>/JOB.md    # plus a .run.lock twin while a run is in flight
 ├── runs/                # captured output, one file per run
 │   └── <run_id>.log
 ├── skills/              # existing — Enso-owned skills (editable via UI). External

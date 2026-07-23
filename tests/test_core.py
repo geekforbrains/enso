@@ -65,32 +65,20 @@ def test_redacted_command_hides_agy_prompt():
 
 
 def _legacy_agents_prompt() -> tuple[str, str]:
-    """Return the current and exact pre-task-removal prompt templates."""
+    """Return the current and exact pre-task-removal prompt templates.
+
+    The legacy template is a checked-in fixture (the last bundled prompt
+    that still documented the tasks system) so editing the current bundled
+    prompt never breaks migration tests.
+    """
     current = (
         importlib.resources.files("enso")
         .joinpath("prompts", "AGENTS.md")
         .read_text(encoding="utf-8")
     )
-    legacy = current.replace(
-        "# For full usage:\n",
-        "# Tasks — one-off work Enso completes on its own\n"
-        'enso task create --title "…" --description "…"   '
-        "# create a one-off task (--notify to be pinged)\n"
-        "enso task list                       # show tasks and status\n"
-        "enso task show <slug>                # task detail + result\n\n"
-        "# For full usage:\n",
-        1,
-    ).replace(
-        "## Deferred updates — use `enso message send`\n",
-        "## Tasks\n\n"
-        "For one-off work the user wants done *later* or in the background (not\n"
-        "recurring, and not something to do right now), use the `tasks` skill. It\n"
-        "covers when to make a task vs a job, and how to write a self-contained\n"
-        "description the background task-runner can act on without this conversation's\n"
-        'context — e.g. when the user says "let\'s make that a task."\n\n'
-        "## Deferred updates — use `enso message send`\n",
-        1,
-    )
+    legacy = (
+        Path(__file__).parent / "data" / "legacy_tasks_agents.md"
+    ).read_text(encoding="utf-8")
     assert hashlib.sha256(legacy.encode()).hexdigest() == (
         core_module._LEGACY_TASKS_AGENTS_SHA256
     )
@@ -1265,3 +1253,127 @@ async def test_ticker_uses_progressive_status_edit_cadence(sample_config, monkey
     expected_seconds = [*range(1, 11), *range(12, 61, 2), 65]
     assert ctx.edits == [progress_text(elapsed) for elapsed in expected_seconds]
     assert state["elapsed"] == 65
+
+
+def test_should_run_job_invalid_schedule_is_skipped(sample_config):
+    """A malformed schedule must not raise — it would kill the scheduler."""
+    rt = Runtime(sample_config)
+    job = Job(
+        dir_name="bad", name="Bad", schedule="0 9 * *",
+        provider="claude", model="sonnet",
+    )
+    rt._job_last_run["bad"] = datetime.now() - timedelta(days=1)
+    assert rt._should_run_job(job, datetime.now()) is False
+
+
+class _SilentStream:
+    """An empty async stdout/stderr that also supports read()."""
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        raise StopAsyncIteration
+
+    async def read(self):
+        return b""
+
+
+class _ImmediateExitProcess:
+    pid = 45
+    returncode = 1
+
+    def __init__(self):
+        self.stdout = _SilentStream()
+        self.stderr = _SilentStream()
+
+    async def wait(self):
+        return 1
+
+
+@pytest.mark.asyncio
+async def test_run_provider_reverts_session_on_spawn_failure(
+    tmp_enso, sample_config, monkeypatch,
+):
+    """A first turn that never spawns must not leave a --resume-able id behind."""
+    sample_config["working_dir"] = os.path.join(tmp_enso, "workspace")
+    rt = Runtime(sample_config)
+
+    async def fake_spawn(*args, **kwargs):
+        raise FileNotFoundError("no such binary")
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_spawn)
+
+    with pytest.raises(FileNotFoundError):
+        async for _event in rt.run_provider(
+            rt.make_provider("claude"), "hi", "1", "opus",
+        ):
+            pass
+
+    stored = rt.session_by_chat_provider[("1", "claude")]
+    assert stored.startswith("new:"), "failed first turn must stay a fresh session"
+
+
+@pytest.mark.asyncio
+async def test_run_provider_reverts_session_on_eventless_failure(
+    tmp_enso, sample_config, monkeypatch,
+):
+    """An immediate nonzero exit with no events must not promote the session."""
+    sample_config["working_dir"] = os.path.join(tmp_enso, "workspace")
+    rt = Runtime(sample_config)
+
+    async def fake_spawn(*args, **kwargs):
+        return _ImmediateExitProcess()
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_spawn)
+
+    async for _event in rt.run_provider(
+        rt.make_provider("claude"), "hi", "1", "opus",
+    ):
+        pass
+
+    stored = rt.session_by_chat_provider[("1", "claude")]
+    assert stored.startswith("new:")
+
+
+def test_retire_legacy_skill_tools_removes_pristine_copies(
+    sample_config, tmp_enso, monkeypatch,
+):
+    """Pristine retired tool scripts vanish from both the skill and tools dirs."""
+    skills_dir = os.path.join(tmp_enso, "skills")
+    skill_dir = os.path.join(skills_dir, "slack")
+    os.makedirs(skill_dir)
+    content = "print('legacy tool')\n"
+    pristine = hashlib.sha256(content.encode()).hexdigest()
+    Path(skill_dir, "slack_search.py").write_text(content)
+    tools_dir = os.path.join(sample_config["working_dir"], "tools")
+    os.makedirs(tools_dir)
+    Path(tools_dir, "slack_search.py").write_text(content)
+    monkeypatch.setattr(
+        core_module,
+        "_RETIRED_SKILL_TOOL_HASHES",
+        {("slack", "slack_search.py"): frozenset({pristine})},
+    )
+
+    Runtime(sample_config)._retire_legacy_skill_tools(skills_dir)
+
+    assert not os.path.exists(os.path.join(skill_dir, "slack_search.py"))
+    assert not os.path.exists(os.path.join(tools_dir, "slack_search.py"))
+
+
+def test_retire_legacy_skill_tools_preserves_customized_copy(
+    sample_config, tmp_enso, monkeypatch,
+):
+    skills_dir = os.path.join(tmp_enso, "skills")
+    skill_dir = os.path.join(skills_dir, "slack")
+    os.makedirs(skill_dir)
+    Path(skill_dir, "slack_search.py").write_text("print('user changed this')\n")
+    monkeypatch.setattr(
+        core_module,
+        "_RETIRED_SKILL_TOOL_HASHES",
+        {("slack", "slack_search.py"): frozenset({"0" * 64})},
+    )
+
+    Runtime(sample_config)._retire_legacy_skill_tools(skills_dir)
+
+    assert os.path.exists(os.path.join(skill_dir, "slack_search.py"))

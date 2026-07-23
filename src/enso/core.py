@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import fcntl
 import hashlib
 import importlib.resources
 import json
@@ -12,7 +13,6 @@ import os
 import re
 import shlex
 import signal
-import tempfile
 from asyncio.subprocess import Process
 from collections import deque
 from dataclasses import dataclass
@@ -29,6 +29,7 @@ from .config import (
     STATE_FILE,
     provider_models,
 )
+from .fsutil import atomic_write_text, regular_file_sha256
 from .jobs import Job, job_config_error, load_jobs
 from .logging_config import logging_flags
 from .providers import PROVIDER_NAMES, BaseProvider, StreamEvent, provider_class
@@ -144,6 +145,21 @@ _BUNDLED_SKILL_PRISTINE_HASHES: dict[tuple[str, str], frozenset[str]] = {
         "608c4a5d9f34d76ae9143f749fa7b028a4fce413d260e1a5f58d361288730bd8",
         "1756397ae5838a5aba08c6371cb721f9e1b4f815c8b1907a19b017e7aca53be0",
         "dabb0fa66f276cd78c8e88e17c38155ad537aa52938e50622dcc2955b70f036a",
+        "ecde110e219de184ccf52594d02d9ae458022a4813dcc8ac417a975c5010f282",
+    }),
+    ("slack", "SKILL.md"): frozenset({
+        "5d9f76e2bcb757b27ab294a6f7322e07a59ebafbe08566f218348f8d15ac178a",
+        "646d0ab64c0713baf32eec4f0639b4d709d4b1c7a2a1a320e2eed84d55fc5582",
+    }),
+}
+
+# The pre-0.12 bundled slack skill shipped a Python tool script that the
+# `enso slack` CLI replaced. Pristine copies (and their installed
+# workspace/tools twins) are removed on setup/serve; customized copies are
+# preserved with a warning.
+_RETIRED_SKILL_TOOL_HASHES: dict[tuple[str, str], frozenset[str]] = {
+    ("slack", "slack_search.py"): frozenset({
+        "2a993392c4d58ac7e5ce653ade6070ed9db9baaa6b909ae2167d29de490ded7d",
     }),
 }
 
@@ -228,6 +244,8 @@ class Runtime:
 
         # Dispatch queue (per-conversation)
         self._queue_by_conversation: dict[str, deque[_QueuedItem]] = {}
+        # Strong references to fire-and-forget queue drains (kick_queue)
+        self._kicked_queue_tasks: set[asyncio.Task] = set()
 
         # Compact-command seeds: per-chat prior-session summaries waiting to
         # be prepended to the next user prompt. Set by /compact; consumed in
@@ -269,6 +287,7 @@ class Runtime:
             os.makedirs(d, exist_ok=True)
 
         self._retire_legacy_tasks_skill(skills_dir)
+        self._retire_legacy_skill_tools(skills_dir)
         self._install_bundled_skills(skills_dir)
         self._install_skill_tools(skills_dir)
 
@@ -280,11 +299,11 @@ class Runtime:
 
         canonical = os.path.join(self.working_dir, "AGENTS.md")
         is_legacy_template = (
-            self._regular_file_sha256(canonical) == _LEGACY_TASKS_AGENTS_SHA256
+            regular_file_sha256(canonical) == _LEGACY_TASKS_AGENTS_SHA256
         )
         if not os.path.lexists(canonical) or is_legacy_template:
             try:
-                self._atomic_write_text(canonical, content)
+                atomic_write_text(canonical, content)
                 action = "Updated" if is_legacy_template else "Wrote"
                 log.info("%s AGENTS.md in %s", action, self.working_dir)
             except OSError:
@@ -311,8 +330,9 @@ class Runtime:
                 os.path.join(parent, "skills"), skills_dir
             )
 
-        # Auto-compact notification hooks — lets the user know via Telegram
-        # when a provider is compacting context (which can be slow).
+        # Auto-compact notification hooks — lets the user know via the
+        # configured chat transport when a provider is compacting context
+        # (which can be slow).
         # Claude: PreCompact with "auto" matcher
         # Codex: no compaction hooks available
         notify_cmd = (
@@ -377,41 +397,11 @@ class Runtime:
             "hooks": [{"type": "command", "command": command, "async": True}],
         })
 
-        os.makedirs(os.path.dirname(settings_path), exist_ok=True)
         try:
-            with open(settings_path, "w") as f:
-                json.dump(settings, f, indent=2)
-                f.write("\n")
+            atomic_write_text(settings_path, json.dumps(settings, indent=2) + "\n")
             log.info("Installed %s hook in %s", event, settings_path)
         except OSError:
             log.warning("Could not write %s", settings_path, exc_info=True)
-
-    @staticmethod
-    def _atomic_write_text(path: str, content: str) -> None:
-        """Fsync a temporary UTF-8 file, then atomically replace ``path``."""
-        directory = os.path.dirname(os.path.abspath(path))
-        fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(content)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, path)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.remove(tmp)
-            raise
-
-    @staticmethod
-    def _regular_file_sha256(path: str) -> str | None:
-        """Hash a regular, non-symlink file, or return ``None`` safely."""
-        if os.path.islink(path) or not os.path.isfile(path):
-            return None
-        try:
-            with open(path, "rb") as f:
-                return hashlib.sha256(f.read()).hexdigest()
-        except OSError:
-            return None
 
     @staticmethod
     def _contains_legacy_task_instructions(path: str) -> bool:
@@ -457,7 +447,7 @@ class Runtime:
             return
 
         skill_file = os.path.join(skill_dir, "SKILL.md")
-        if cls._regular_file_sha256(skill_file) != _LEGACY_TASKS_SKILL_SHA256:
+        if regular_file_sha256(skill_file) != _LEGACY_TASKS_SKILL_SHA256:
             log.warning(warning, skill_dir)
             return
         try:
@@ -466,6 +456,35 @@ class Runtime:
             log.info("Removed retired bundled skill: tasks")
         except OSError:
             log.warning("Could not remove retired bundled tasks skill", exc_info=True)
+
+    def _retire_legacy_skill_tools(self, skills_dir: str) -> None:
+        """Remove retired pristine bundled tool scripts and their installed copies.
+
+        Removing the skill copy alone is not enough: ``_install_skill_tools``
+        reinstalls any ``.py`` it finds in a skill dir, so the stale
+        ``workspace/tools/`` twin is removed first.
+        """
+        for (skill_name, filename), pristine in _RETIRED_SKILL_TOOL_HASHES.items():
+            skill_copy = os.path.join(skills_dir, skill_name, filename)
+            tool_copy = os.path.join(self.working_dir, "tools", filename)
+            skill_hash = regular_file_sha256(skill_copy)
+            if regular_file_sha256(tool_copy) in pristine:
+                with contextlib.suppress(OSError):
+                    os.remove(tool_copy)
+                    log.info("Removed retired installed tool: %s", filename)
+            if skill_hash in pristine:
+                with contextlib.suppress(OSError):
+                    os.remove(skill_copy)
+                    log.info(
+                        "Removed retired bundled skill tool: %s/%s",
+                        skill_name, filename,
+                    )
+            elif skill_hash is not None:
+                log.warning(
+                    "Preserving customized retired skill tool at %s; the "
+                    "`enso slack` CLI replaced it — update or remove it manually",
+                    skill_copy,
+                )
 
     @classmethod
     def _install_bundled_skills(cls, skills_dir: str) -> None:
@@ -495,7 +514,7 @@ class Runtime:
                 dest_file = os.path.join(dest, f.name)
                 action = "Installed"
                 if os.path.lexists(dest_file):
-                    existing_hash = cls._regular_file_sha256(dest_file)
+                    existing_hash = regular_file_sha256(dest_file)
                     known_pristine = _BUNDLED_SKILL_PRISTINE_HASHES.get(
                         (skill_dir.name, f.name), frozenset()
                     )
@@ -504,7 +523,7 @@ class Runtime:
                     action = "Updated pristine"
                 try:
                     content = f.read_text(encoding="utf-8")
-                    cls._atomic_write_text(dest_file, content)
+                    atomic_write_text(dest_file, content)
                     log.info(
                         "%s bundled skill: %s/%s",
                         action,
@@ -577,23 +596,19 @@ class Runtime:
                 for cid, ts in self._last_active.items()
             },
         }
-        tmp: str | None = None
         try:
-            fd, tmp = tempfile.mkstemp(dir=CONFIG_DIR, suffix=".tmp")
-            with os.fdopen(fd, "w") as f:
-                json.dump(data, f)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, STATE_FILE)
+            atomic_write_text(STATE_FILE, json.dumps(data))
         except Exception:
             log.exception("Failed to save state")
-        finally:
-            if tmp is not None:
-                with contextlib.suppress(OSError):
-                    os.remove(tmp)
 
-    def load_state(self) -> None:
-        """Load persisted state from disk."""
+    def load_state(self, *, persist: bool = True) -> None:
+        """Load persisted state from disk.
+
+        ``persist=False`` (used by secondary processes like the dashboard
+        and the job-run CLI) skips writing pruned or migrated state back,
+        so a stale snapshot can never clobber the serve process's live
+        state.json.
+        """
         if not os.path.exists(STATE_FILE):
             return
         try:
@@ -651,13 +666,13 @@ class Runtime:
                 len(self.active_provider_by_chat),
                 len(self.session_by_chat_provider),
             )
-            self._prune_stale_sessions()
-            if state_changed:
+            self._prune_stale_sessions(persist=persist)
+            if state_changed and persist:
                 self.save_state()
         except Exception:
             log.exception("Failed to load state, starting fresh")
 
-    def _prune_stale_sessions(self) -> None:
+    def _prune_stale_sessions(self, *, persist: bool = True) -> None:
         """Remove state entries for conversations inactive beyond SESSION_TTL_DAYS."""
         cutoff = datetime.now() - timedelta(days=SESSION_TTL_DAYS)
         stale = [cid for cid, ts in self._last_active.items() if ts < cutoff]
@@ -674,7 +689,8 @@ class Runtime:
             self.compact_seed_by_chat.pop(cid, None)
             self._last_active.pop(cid)
         log.info("Pruned %d stale conversation(s) (>%dd)", len(stale), SESSION_TTL_DAYS)
-        self.save_state()
+        if persist:
+            self.save_state()
 
     # -- Accessors --
 
@@ -833,6 +849,29 @@ class Runtime:
             )
             await self._run_request(provider, item.prompt, conv_id, item.ctx)
 
+    def kick_queue(self, conv_id: str) -> None:
+        """Schedule a queue drain outside dispatch (e.g. after /compact).
+
+        Messages queued while a non-dispatch flow held the chat lock would
+        otherwise sit until the next user message.
+        """
+        if not self._queue_by_conversation.get(conv_id):
+            return
+        task = asyncio.create_task(self._resume_queue(conv_id))
+        self._kicked_queue_tasks.add(task)
+        task.add_done_callback(self._kicked_queue_tasks.discard)
+
+    async def _resume_queue(self, conv_id: str) -> None:
+        lock = self.get_chat_lock(conv_id)
+        if lock.locked():
+            # An active dispatch will drain the queue itself.
+            return
+        try:
+            async with lock:
+                await self._drain_queue(conv_id)
+        except Exception:
+            log.exception("Queue drain failed for conv=%s", conv_id)
+
     def get_queue(self, conv_id: str) -> list[str]:
         """Return preview strings for queued items."""
         queue = self._queue_by_conversation.get(conv_id)
@@ -908,8 +947,9 @@ class Runtime:
 
         Called by /compact. Drives ``run_provider`` directly so the user
         sees nothing in chat — no status messages, no ticker, no replies.
-        The caller (cmd_compact_async) holds the chat lock for the duration
-        so no parallel dispatch races us. Returns an empty string on error.
+        Holds the chat lock itself for the duration (bailing out early if a
+        request is already running) and honors ``agent.timeout`` like
+        interactive turns. Returns an empty string on error or timeout.
         """
         lock = self.get_chat_lock(chat_id)
         if lock.locked():
@@ -927,7 +967,10 @@ class Runtime:
             )
 
             response_parts: list[str] = []
-            try:
+            failed = False
+
+            async def consume() -> None:
+                nonlocal failed
                 async for event in self.run_provider(
                     provider, self._COMPACTION_PROMPT, chat_id, model,
                     effort=effort,
@@ -938,11 +981,28 @@ class Runtime:
                         log.warning(
                             "Compaction error in chat %s: %s", chat_id, event.text,
                         )
-                        return ""
+                        failed = True
+                        return
+
+            task = asyncio.create_task(consume())
+            try:
+                done, _ = await asyncio.wait(
+                    {task}, timeout=self.agent_timeout or None,
+                )
+                if task not in done:
+                    await _cancel_and_wait(task)
+                    log.warning(
+                        "Compaction timed out for chat %s after %ss",
+                        chat_id, self.agent_timeout,
+                    )
+                    return ""
+                await task
             except Exception:
                 log.exception("Compaction failed for chat %s", chat_id)
                 return ""
 
+            if failed:
+                return ""
             return provider.format_response(response_parts).strip()
 
     # -- Process control --
@@ -1079,12 +1139,30 @@ class Runtime:
         )
         log.debug("[%s] command=%s", provider.name, _redacted_command(cmd))
 
-        # Strip new: prefix immediately so future calls use --resume
-        # even if this run crashes before emitting a result event.
+        # Strip new: prefix immediately so future calls use --resume even if
+        # this run crashes mid-turn (the CLI has created the session by then).
+        # ``promoted_from`` lets the failure paths below revert when the CLI
+        # never got far enough to create the session, so the next turn does
+        # not --resume a session that never existed.
         key = (chat_id, provider.name)
+        promoted_from: str | None = None
         if session_id and session_id.startswith("new:"):
+            promoted_from = session_id
             self.session_by_chat_provider[key] = session_id.removeprefix("new:")
             self.save_state()
+
+        def revert_unused_session() -> None:
+            if (
+                promoted_from
+                and self.session_by_chat_provider.get(key)
+                == promoted_from.removeprefix("new:")
+            ):
+                self.session_by_chat_provider[key] = promoted_from
+                self.save_state()
+                log.info(
+                    "[%s] Reverted unused session for chat %s",
+                    provider.name, chat_id,
+                )
 
         stderr = (
             asyncio.subprocess.STDOUT
@@ -1116,6 +1194,7 @@ class Runtime:
         try:
             process = await self._spawn_process(*cmd, **kwargs)
         except BaseException:
+            revert_unused_session()
             provider.finalize_events()
             raise
         log.info("[%s] pid=%s", provider.name, process.pid)
@@ -1194,6 +1273,10 @@ class Runtime:
                 for stream_event in provider.finalize_events():
                     remember_session(stream_event)
             rc = process.returncode
+            if rc and not event_count:
+                # The CLI exited immediately (bad path, auth error, invalid
+                # model) without creating the session; don't --resume it.
+                revert_unused_session()
             log.info("[%s] pid=%s exit=%s events=%d", provider.name, process.pid, rc, event_count)
             if self.running_process_by_chat.get(chat_id) is process:
                 self.running_process_by_chat.pop(chat_id, None)
@@ -1458,23 +1541,30 @@ class Runtime:
                 continue
 
             for job in load_jobs():
-                if not job.enabled:
-                    continue
-                if job.dir_name in self._running_job_tasks:
-                    continue
-                if self._should_run_job(job, now):
-                    log.info(
-                        "[job:%s] scheduler dispatch (schedule=%r)",
-                        job.dir_name, job.schedule,
-                    )
-                    self._job_last_run[job.dir_name] = now
-                    self.save_state()
-                    task = asyncio.create_task(self._run_job_task(job))
-                    self._running_job_tasks[job.dir_name] = task
-                    task.add_done_callback(
-                        lambda _task, name=job.dir_name: self._running_job_tasks.pop(
-                            name, None,
+                try:
+                    if not job.enabled:
+                        continue
+                    if job.dir_name in self._running_job_tasks:
+                        continue
+                    if self._should_run_job(job, now):
+                        log.info(
+                            "[job:%s] scheduler dispatch (schedule=%r)",
+                            job.dir_name, job.schedule,
                         )
+                        self._job_last_run[job.dir_name] = now
+                        self.save_state()
+                        task = asyncio.create_task(self._run_job_task(job))
+                        self._running_job_tasks[job.dir_name] = task
+                        task.add_done_callback(
+                            lambda _task, name=job.dir_name: self._running_job_tasks.pop(
+                                name, None,
+                            )
+                        )
+                except Exception:
+                    # One broken job must not stop the others from being
+                    # considered — or kill the scheduler task outright.
+                    log.exception(
+                        "[job:%s] scheduler dispatch failed", job.dir_name,
                     )
 
     def _runs_cfg(self) -> dict:
@@ -1498,8 +1588,17 @@ class Runtime:
             self._job_last_run[job.dir_name] = now
             self.save_state()
             return False
-        cron = croniter(job.schedule, last_run)
-        next_run = cron.get_next(datetime)
+        try:
+            cron = croniter(job.schedule, last_run)
+            next_run = cron.get_next(datetime)
+        except (ValueError, KeyError):
+            # JOB.md schedules are free-form user-edited text; one bad
+            # expression must not take down the scheduler for every job.
+            log.warning(
+                "Job '%s' has an invalid cron schedule %r; skipping",
+                job.name, job.schedule,
+            )
+            return False
         if next_run > now:
             return False
         if (
@@ -1642,7 +1741,9 @@ class Runtime:
         if self.transport is None:
             return False
         try:
-            await self.transport.notify(text[:4096], destination=job.notify)
+            await self.transport.notify(
+                text[: self.transport.message_limit], destination=job.notify,
+            )
         except Exception:
             log.warning("%s could not send job notification", tag, exc_info=True)
             return False
@@ -1747,6 +1848,58 @@ class Runtime:
         self.save_state()
         return sent
 
+    _JOB_LOCK_FILENAME: ClassVar[str] = ".run.lock"
+
+    def _acquire_job_lock(self, job: Job):
+        """Take the cross-process per-job lock, or return ``None`` when held.
+
+        The scheduler, the ``enso job run`` CLI, and the dashboard all run
+        in separate processes with separate Runtimes; an in-memory guard
+        cannot see the others, so overlap protection lives in an flock on
+        a file in the job's directory. Falls back to running unlocked when
+        the lock file cannot be created (the pipeline will then fail with
+        its own clearer diagnostics).
+        """
+        path = os.path.join(job.job_dir, self._JOB_LOCK_FILENAME)
+        try:
+            # Deliberately outlives this scope; released in _execute_job's
+            # finally via close().
+            lock_file = open(path, "a")  # noqa: SIM115
+        except OSError:
+            log.warning(
+                "[job:%s] could not create run lock; continuing unlocked",
+                job.dir_name, exc_info=True,
+            )
+            return "unlocked"
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            lock_file.close()
+            return None
+        return lock_file
+
+    def jobs_running_elsewhere(self) -> list[str]:
+        """Names of jobs whose cross-process run lock is currently held.
+
+        Includes this process's own running jobs; callers that care about
+        the distinction (e.g. the update busy-check) already track those.
+        """
+        held: list[str] = []
+        for job in load_jobs():
+            path = os.path.join(job.job_dir, self._JOB_LOCK_FILENAME)
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path, "a") as probe:
+                    try:
+                        fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
+                    except OSError:
+                        held.append(job.dir_name)
+            except OSError:
+                continue
+        return held
+
     async def _execute_job(
         self,
         job: Job,
@@ -1763,6 +1916,14 @@ class Runtime:
             tag, job.name, job.provider, job.model, job.timeout,
             job.prerun or "-",
         )
+        lock_file = self._acquire_job_lock(job)
+        if lock_file is None:
+            output = (
+                f"Job '{job.name}' is already running (possibly in another "
+                "process); skipped this trigger."
+            )
+            log.warning("%s %s", tag, output)
+            return JobRunResult("error", output=output, exit_code=-1)
         try:
             config_error = job_config_error(job.provider, job.model, self.models)
             if config_error:
@@ -1894,6 +2055,9 @@ class Runtime:
                 status, run_id=run_id, output=output, exit_code=exit_code,
             )
         finally:
+            if lock_file != "unlocked":
+                with contextlib.suppress(OSError):
+                    lock_file.close()
             if trigger == "schedule":
                 self._job_last_run[job.dir_name] = datetime.now()
                 self.save_state()

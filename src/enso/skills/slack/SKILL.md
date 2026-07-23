@@ -70,9 +70,12 @@ enso slack history C0AEWRPJ9LM --count 30
 enso slack thread C0AEWRPJ9LM 1706789234.123456
 ```
 
-`enso slack search` requires a user-token scope (`search:read`) and may
-error with `not_allowed_token_type` on bot-only installations. `history`
-and `thread` work with a standard bot token.
+`enso slack search` uses the bot token with the `search:read.public`
+scope the bundled app manifest grants — it searches public channels only.
+On apps created before that scope was added, it errors with
+`missing_scope`/`not_allowed_token_type` until the app is updated from the
+current manifest and reinstalled. `history` and `thread` work with any
+standard bot token.
 
 ## Notes
 

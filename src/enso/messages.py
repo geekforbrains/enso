@@ -3,12 +3,30 @@
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import json
 import os
-import tempfile
 from datetime import datetime, timezone
 
 from .config import MESSAGES_FILE
+from .fsutil import atomic_write_text
+
+
+@contextlib.contextmanager
+def _queue_lock():
+    """Serialize load-modify-save cycles across processes.
+
+    Writers run concurrently in separate processes (the serve process,
+    ``enso message send`` invoked by agents and hooks), so the whole
+    read-modify-write sequence must be exclusive or appends get lost.
+    """
+    os.makedirs(os.path.dirname(MESSAGES_FILE), exist_ok=True)
+    with open(MESSAGES_FILE + ".lock", "a") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def send(
@@ -17,7 +35,6 @@ def send(
     conversation_id: str | None = None,
 ) -> None:
     """Append a global or conversation-scoped message to the queue."""
-    messages = _load()
     message = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "text": text,
@@ -25,8 +42,10 @@ def send(
     }
     if conversation_id is not None:
         message["conversation_id"] = conversation_id
-    messages.append(message)
-    _save(messages)
+    with _queue_lock():
+        messages = _load()
+        messages.append(message)
+        _save(messages)
 
 
 def pending() -> list[dict]:
@@ -39,25 +58,27 @@ def consume(conversation_id: str | None = None) -> list[dict]:
 
     Omitting ``conversation_id`` retains the original consume-all behavior.
     """
-    queued = _load()
-    if conversation_id is None:
-        consumed, remaining = queued, []
-    else:
-        consumed, remaining = [], []
-        for message in queued:
-            target = message.get("conversation_id")
-            if target in (None, conversation_id):
-                consumed.append(message)
-            else:
-                remaining.append(message)
-    if consumed:
-        _save(remaining)
+    with _queue_lock():
+        queued = _load()
+        if conversation_id is None:
+            consumed, remaining = queued, []
+        else:
+            consumed, remaining = [], []
+            for message in queued:
+                target = message.get("conversation_id")
+                if target in (None, conversation_id):
+                    consumed.append(message)
+                else:
+                    remaining.append(message)
+        if consumed:
+            _save(remaining)
     return consumed
 
 
 def clear() -> None:
     """Clear all pending messages."""
-    _save([])
+    with _queue_lock():
+        _save([])
 
 
 def format_for_injection(messages: list[dict]) -> str:
@@ -93,18 +114,6 @@ def _load() -> list[dict]:
 
 def _save(messages: list[dict]) -> None:
     """Atomically save messages to disk."""
-    directory = os.path.dirname(MESSAGES_FILE)
-    os.makedirs(directory, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(messages, f, indent=2)
-            f.write("\n")
-            f.flush()
-            os.fsync(f.fileno())
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, MESSAGES_FILE)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.remove(tmp)
-        raise
+    atomic_write_text(
+        MESSAGES_FILE, json.dumps(messages, indent=2) + "\n", mode=0o600,
+    )

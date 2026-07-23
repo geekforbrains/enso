@@ -408,3 +408,31 @@ class TestWhois:
         payload = {"ok": False, "error": "user_not_found"}
         with patch("enso.slack_cache.urllib.request.urlopen", return_value=FakeResponse(payload)):
             assert slack_cache.whois("U_NOPE", token="xoxb-fake") is None
+
+
+class TestChannelRenamePreservesFields:
+    def test_minimal_rename_event_keeps_membership_and_privacy(self, tmp_enso):
+        """channel_rename sends only id/name/created — cached fields survive."""
+        _seed_cache(tmp_enso)
+        before = slack_cache.load()["channels"]["items"]["C1"]
+        assert before["is_member"] is True
+
+        slack_cache.apply_channel_upsert(
+            {"id": "C1", "name": "general-renamed", "created": 12345},
+        )
+
+        entry = slack_cache.load()["channels"]["items"]["C1"]
+        assert entry["name"] == "general-renamed"
+        assert entry["is_member"] is True
+        assert entry["is_private"] == before["is_private"]
+        assert entry["num_members"] == before["num_members"]
+        assert entry["topic"] == before["topic"]
+
+    def test_unknown_channel_gets_full_normalised_record(self, tmp_enso):
+        _seed_cache(tmp_enso)
+        slack_cache.apply_channel_upsert({"id": "C9", "name": "brand-new"})
+        entry = slack_cache.load()["channels"]["items"]["C9"]
+        assert entry["name"] == "brand-new"
+        # Schema stays complete even for minimal events on unknown channels.
+        assert entry["is_member"] is False
+        assert entry["topic"] == ""

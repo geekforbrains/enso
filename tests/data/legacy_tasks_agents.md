@@ -23,7 +23,7 @@ You have access to the `enso` CLI for managing background tasks
 and messaging:
 
 ```bash
-# Messages — send to the chat transport and queue as background context
+# Messages — send to Telegram and queue as background context
 enso message send "text"             # send text message
 enso message attach /path/to/file    # send a file (image, video, doc)
 enso message attach /path "caption"  # send file with caption
@@ -35,26 +35,15 @@ enso job list                        # show all jobs with status
 enso job run <name>                  # manual test run
 enso job create --name "Name" --provider claude --model sonnet --schedule "0 9 * * *"
 enso job create --name "Name" --provider codex --model terra --schedule "0 9 * * *"
-enso job create --name "Name" --provider agy --model gemini-3.6-flash-high --schedule "0 9 * * *"
+
+# Tasks — one-off work Enso completes on its own
+enso task create --title "…" --description "…"   # create a one-off task (--notify to be pinged)
+enso task list                       # show tasks and status
+enso task show <slug>                # task detail + result
 
 # For full usage:
 enso --help
 ```
-
-## Who's talking — `ENSO_ORIGIN_*`
-
-Each interactive turn exports these env vars describing the message that
-triggered it (empty when unknown; unset for scheduled jobs):
-
-- `ENSO_ORIGIN_TRANSPORT` — `telegram` or `slack`
-- `ENSO_ORIGIN_USER_ID` / `ENSO_ORIGIN_USER_NAME` — who sent the message
-- `ENSO_ORIGIN_CHANNEL` / `ENSO_ORIGIN_CHANNEL_NAME` — where it came from
-  (`dm` for direct messages)
-- `ENSO_ORIGIN_THREAD_TS` — Slack thread, when applicable
-
-`enso message send`/`attach` already route back to the origin
-automatically; use the vars when you need to know who asked or to
-address them by name.
 
 ## Background Jobs
 
@@ -62,6 +51,14 @@ When creating or editing jobs, **always** use the `jobs` skill — it has
 the full format reference, prerun script guide, and examples.
 
 Schedules use the system's local timezone. Do not convert to UTC.
+
+## Tasks
+
+For one-off work the user wants done *later* or in the background (not
+recurring, and not something to do right now), use the `tasks` skill. It
+covers when to make a task vs a job, and how to write a self-contained
+description the background task-runner can act on without this conversation's
+context — e.g. when the user says "let's make that a task."
 
 ## Deferred updates — use `enso message send`
 

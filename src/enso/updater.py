@@ -29,15 +29,14 @@ from urllib.parse import unquote, urlparse
 
 from . import __version__
 from . import config as config_module
+from .fsutil import atomic_write_text
 
 log = logging.getLogger(__name__)
 
 UPDATE_REPOSITORY = "https://github.com/geekforbrains/enso.git"
 UPDATE_BRANCH = "main"
 _LAUNCHD_AGENT = "com.enso.agent"
-_LAUNCHD_WEB = "com.enso.web"
 _SYSTEMD_AGENT = "enso.service"
-_SYSTEMD_WEB = "enso-web.service"
 
 UpdateStatus = Literal["current", "updated", "blocked", "failed"]
 ProgressCallback = Callable[[str], None]
@@ -86,17 +85,7 @@ def _load_state() -> dict:
 
 def _save_state(state: dict) -> None:
     """Atomically persist updater-owned metadata, separate from config.json."""
-    os.makedirs(config_module.CONFIG_DIR, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(prefix="update-", dir=config_module.CONFIG_DIR)
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(state, f, indent=2)
-            f.write("\n")
-        os.chmod(tmp_path, 0o600)
-        os.replace(tmp_path, _state_path())
-    finally:
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(tmp_path)
+    atomic_write_text(_state_path(), json.dumps(state, indent=2) + "\n", mode=0o600)
 
 
 @contextlib.contextmanager
@@ -483,20 +472,14 @@ def installed_service_names() -> list[str]:
     """Return managed Enso services that should survive an update restart."""
     if sys.platform == "darwin":
         base = os.path.expanduser("~/Library/LaunchAgents")
-        services = []
         if os.path.exists(os.path.join(base, f"{_LAUNCHD_AGENT}.plist")):
-            services.append("agent")
-        if os.path.exists(os.path.join(base, f"{_LAUNCHD_WEB}.plist")):
-            services.append("web")
-        return services
+            return ["agent"]
+        return []
     if sys.platform == "linux":
         base = os.path.expanduser("~/.config/systemd/user")
-        services = []
         if os.path.exists(os.path.join(base, _SYSTEMD_AGENT)):
-            services.append("agent")
-        if os.path.exists(os.path.join(base, _SYSTEMD_WEB)):
-            services.append("web")
-        return services
+            return ["agent"]
+        return []
     return []
 
 
@@ -539,11 +522,12 @@ def clear_update_confirmation(confirmation_id: str) -> None:
 
 def _service_running(service: str) -> bool:
     """Check a managed service without treating the current process specially."""
+    if service != "agent":
+        return False
     try:
         if sys.platform == "darwin":
-            label = _LAUNCHD_AGENT if service == "agent" else _LAUNCHD_WEB
             result = subprocess.run(
-                ["launchctl", "print", f"gui/{os.getuid()}/{label}"],
+                ["launchctl", "print", f"gui/{os.getuid()}/{_LAUNCHD_AGENT}"],
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
@@ -553,9 +537,8 @@ def _service_running(service: str) -> bool:
                 r"^\s*state\s*=\s*running\s*$", result.stdout, re.MULTILINE,
             ) is not None
         if sys.platform == "linux":
-            unit = _SYSTEMD_AGENT if service == "agent" else _SYSTEMD_WEB
             result = subprocess.run(
-                ["systemctl", "--user", "is-active", "--quiet", unit],
+                ["systemctl", "--user", "is-active", "--quiet", _SYSTEMD_AGENT],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=10,
@@ -576,27 +559,28 @@ def update_confirmation_message(pending: dict) -> str:
         names = ", ".join(unhealthy)
         return (
             f"Enso v{version} ({revision}) started, but these services are not healthy: {names}. "
-            "Check ~/.enso/enso.log and ~/.enso/web.log."
+            "Check ~/.enso/enso.log."
         )
     checked = ", ".join(services) if services else "Enso"
     return f"Update complete — Enso v{version} ({revision}) restarted successfully ({checked})."
 
 
 def restart_services() -> None:
-    """Restart dashboard first, then replace the bot process via its manager."""
+    """Replace the bot process via its service manager.
+
+    A dashboard started with ``enso web`` is a separate foreground process
+    that Enso does not manage; it must be restarted manually to pick up an
+    update.
+    """
     if sys.platform == "darwin":
         base = os.path.expanduser("~/Library/LaunchAgents")
-        domain = f"gui/{os.getuid()}"
-        if os.path.exists(os.path.join(base, f"{_LAUNCHD_WEB}.plist")):
-            subprocess.run(
-                ["launchctl", "kickstart", "-k", f"{domain}/{_LAUNCHD_WEB}"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
         if os.path.exists(os.path.join(base, f"{_LAUNCHD_AGENT}.plist")):
             os.execvp(
                 "launchctl",
-                ["launchctl", "kickstart", "-k", f"{domain}/{_LAUNCHD_AGENT}"],
+                [
+                    "launchctl", "kickstart", "-k",
+                    f"gui/{os.getuid()}/{_LAUNCHD_AGENT}",
+                ],
             )
     elif sys.platform == "linux":
         base = os.path.expanduser("~/.config/systemd/user")
@@ -606,13 +590,6 @@ def restart_services() -> None:
             "XDG_RUNTIME_DIR": xdg,
             "DBUS_SESSION_BUS_ADDRESS": f"unix:path={xdg}/bus",
         }
-        if os.path.exists(os.path.join(base, _SYSTEMD_WEB)):
-            subprocess.run(
-                ["systemctl", "--user", "restart", _SYSTEMD_WEB],
-                env=systemd_env,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
         if os.path.exists(os.path.join(base, _SYSTEMD_AGENT)):
             os.execvpe(
                 "systemctl",

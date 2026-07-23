@@ -336,3 +336,22 @@ def test_load_uses_migrated_config_when_persistence_fails(tmp_enso, monkeypatch)
 
     assert loaded["runs"] == {"keep": 17, "max_age_days": 4}
     assert "tasks" not in loaded
+
+
+def test_codex_alias_removal_is_respected(tmp_enso):
+    """A config that already knows the aliases keeps its list verbatim."""
+    config = {
+        "working_dir": "/tmp/test",
+        "transport": "telegram",
+        "transports": {},
+        "providers": {
+            "codex": {
+                "path": "/custom/codex",
+                # User deliberately removed terra/luna and reordered.
+                "models": ["custom-codex-model", "sol"],
+            },
+        },
+    }
+    save_config(config)
+    loaded = load_config()
+    assert loaded["providers"]["codex"]["models"] == ["custom-codex-model", "sol"]
