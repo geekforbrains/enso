@@ -21,7 +21,7 @@ All notable changes to this project will be documented in this file.
 - `enso web` no longer writes pruned session state back to `state.json` on startup, so a dashboard (re)start can no longer clobber the serve process's live state
 - Deliberately removed Codex model aliases (`sol`/`terra`/`luna`) stay removed: the alias backfill now runs only for configs that predate the aliases, and user ordering is preserved
 - The pre-0.12 bundled `slack_search.py` skill tool is now retired on upgrade (pristine-hash gated, like the tasks skill), including its installed `workspace/tools/` copy; customized copies are preserved with a warning
-- The updater no longer claims to restart a dashboard service — no such service is ever installed; docs now note that a foreground `enso web` must be restarted manually after an update
+- The dashboard-service names the updater restarts and health-checks (`com.enso.web` / `enso-web.service`) are now documented — `enso service install` never creates them, but a user-created service under those names is managed by `/update`; a foreground `enso web` still needs a manual restart
 
 ### Changed
 

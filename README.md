@@ -196,10 +196,13 @@ model to modify the installation. It checks the fixed
 installs it in an isolated environment, runs that revision's test suite, and
 only then installs the same wheel and restarts Enso. If the installed commit
 already matches, it reports that there is nothing to update. Successful
-updates are confirmed after the bot service has restarted. A dashboard
-started with `enso web` is a separate foreground process — restart it
-manually after an update. Editable development checkouts that already
-contain stable `main` are recognized as ahead and are never downgraded.
+updates are confirmed after the bot service has restarted. `enso service
+install` only manages the bot service, but if you run the dashboard as your
+own service named `com.enso.web` (launchd) or `enso-web.service` (systemd),
+`/update` restarts and health-checks it too; a dashboard started with a
+foreground `enso web` must be restarted manually after an update. Editable
+development checkouts that already contain stable `main` are recognized as
+ahead and are never downgraded.
 
 Update metadata lives in `~/.enso/update.json`, separate from user settings in
 `config.json`. Enso tracks the commit SHA as well as the package version,
