@@ -1075,6 +1075,48 @@ def _load_transport(name: str, runtime) -> BaseTransport:
     raise typer.Exit(1)
 
 
+SECRETS_DIR = os.path.expanduser("~/.enso/secrets")
+
+
+def _load_secret_env() -> list[str]:
+    """Load ~/.enso/secrets/*.env into os.environ.
+
+    launchd gives the daemon a minimal environment, and jobs (both prerun
+    scripts and the provider process) inherit from it. Secrets that CLIs read
+    from the environment — GOG_KEYRING_PASSWORD, OP_SERVICE_ACCOUNT_TOKEN —
+    have to be injected here or unattended runs fail. Existing values win, so
+    an explicit export still overrides the file.
+    """
+    loaded: list[str] = []
+    if not os.path.isdir(SECRETS_DIR):
+        return loaded
+    for name in sorted(os.listdir(SECRETS_DIR)):
+        if not name.endswith(".env"):
+            continue
+        path = os.path.join(SECRETS_DIR, name)
+        try:
+            with open(path) as f:
+                lines = f.readlines()
+        except OSError:
+            log.warning("Could not read secret env file: %s", path)
+            continue
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            line = line.removeprefix("export ").strip()
+            key, sep, val = line.partition("=")
+            if not sep:
+                continue
+            key = key.strip()
+            val = val.strip().strip("'\"")
+            if not key or key in os.environ:
+                continue
+            os.environ[key] = val
+            loaded.append(key)
+    return loaded
+
+
 @app.command()
 def serve(
     working_dir: Annotated[
@@ -1090,6 +1132,9 @@ def serve(
     config = load_config()
     logging_state = configure_logging(config, force=True)
     log.debug("Logging configured: %s", logging_state)
+    secret_keys = _load_secret_env()
+    if secret_keys:
+        log.info("Loaded secret env keys: %s", ", ".join(secret_keys))
     if working_dir:
         config["working_dir"] = working_dir
 
