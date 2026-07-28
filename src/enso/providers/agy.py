@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import os
 import re
 import tempfile
@@ -30,6 +31,14 @@ AGY_MODELS = [
 _UUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 _ACTIVE_CONVERSATION_RE = re.compile(rf"Print mode: conversation=({_UUID})")
 _CREATED_CONVERSATION_RE = re.compile(rf"Created conversation ({_UUID})")
+
+# Agy has its own five-minute print watchdog but no disable sentinel: zero and
+# negative durations time out immediately. Give finite Enso deadlines a small
+# grace so Enso owns timeout cleanup and user messaging. For agent.timeout=0,
+# Go's largest duration is practical infinity while remaining valid CLI input.
+_PRINT_TIMEOUT_GRACE_SECONDS = 5
+_MAX_GO_DURATION = "2562047h47m16.854775807s"
+_MAX_GO_DURATION_SECONDS = 9_223_372_036
 
 # Antigravity's project catalog. Undocumented storage — if the format moves,
 # lookups miss and fresh conversations fall back to --new-project, which only
@@ -92,11 +101,22 @@ class AgyProvider(BaseProvider):
     streaming_output = False
     default_models: ClassVar[list[str]] = AGY_MODELS
     env_keys: ClassVar[tuple[str, ...]] = ()
-    effort_levels: ClassVar[list[str]] = ["low", "medium", "high"]
-    _default_max_effort = "high"
 
-    def __init__(self, path: str, working_dir: str | None = None):
-        super().__init__(path, working_dir)
+    # Agy's public model catalog already exposes concrete effort-qualified
+    # slugs (for example, gemini-3.6-flash-low). Passing a separate --effort
+    # with one of those slugs is rejected unless it happens to match, and the
+    # Claude models reject --effort entirely. Keep /model as the single,
+    # authoritative selector instead of exposing incompatible combinations.
+    effort_levels: ClassVar[list[str]] = []
+
+    def __init__(
+        self,
+        path: str,
+        working_dir: str | None = None,
+        *,
+        timeout: int | float | None = None,
+    ):
+        super().__init__(path, working_dir, timeout=timeout)
         self._log_path: str | None = None
 
     def _create_log_file(self) -> str:
@@ -108,6 +128,16 @@ class AgyProvider(BaseProvider):
     def _project_args(self) -> list[str]:
         project_id = find_project_id(self.working_dir or os.getcwd())
         return ["--project", project_id] if project_id else ["--new-project"]
+
+    def _print_timeout_args(self) -> list[str]:
+        if self.timeout is None:
+            return []
+        if self.timeout == 0:
+            return ["--print-timeout", _MAX_GO_DURATION]
+        duration = math.ceil(self.timeout) + _PRINT_TIMEOUT_GRACE_SECONDS
+        if duration >= _MAX_GO_DURATION_SECONDS:
+            return ["--print-timeout", _MAX_GO_DURATION]
+        return ["--print-timeout", f"{duration}s"]
 
     def build_command(
         self,
@@ -123,8 +153,7 @@ class AgyProvider(BaseProvider):
             "--log-file", self._create_log_file(),
             "--model", model,
         ]
-        if effort:
-            cmd.extend(["--effort", effort])
+        cmd.extend(self._print_timeout_args())
         if session_id:
             cmd.extend(["--conversation", session_id])
         else:
@@ -140,8 +169,7 @@ class AgyProvider(BaseProvider):
             "--dangerously-skip-permissions",
             "--model", model,
         ]
-        if effort:
-            cmd.extend(["--effort", effort])
+        cmd.extend(self._print_timeout_args())
         cmd.extend(self._project_args())
         cmd.extend(["--prompt", prompt])
         return cmd

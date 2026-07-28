@@ -7,7 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Added
 
 - Interactive agent turns now have a provider-neutral timeout configured through `agent.timeout` (900 seconds by default; `0` disables it). A timed-out Claude, Codex, or Antigravity process tree is stopped, the user sees a concise terminal notice, and durable recovery context is injected only into that conversation's next turn so the agent can inspect partial work before continuing
-- Google Antigravity CLI support through the registry-backed `agy` provider, including its current model catalog, reasoning effort, background jobs, per-chat conversation resume, and automatic migration of existing configs. Enso captures Antigravity's generated conversation ID from a private per-run log and removes that log immediately afterward
+- Google Antigravity CLI support through the registry-backed `agy` provider, including its current effort-qualified model catalog, background jobs, per-chat conversation resume, and automatic migration of existing configs. Enso captures Antigravity's generated conversation ID from a private per-run log and removes that log immediately afterward
 - Existing job prerun scripts can now be viewed and edited below the prompt on the job detail page. Saves are atomic, preserve file permissions, and reject missing, symlinked, or out-of-directory paths
 - Jobs and Enso-owned skills can now be deleted from their dashboard detail pages after confirmation. Entire owned directories are removed, external skills remain read-only, and deleted bundled skills stay deleted across service restarts
 - The web dashboard now shows visible skill counts split into Enso-owned and system-wide tiers
@@ -32,7 +32,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
-- Interactive progress is now provider-neutral: one transient message rotates playful status text every second with elapsed time, while final answers no longer include provider, effort, usage, or duration prefixes. Provider-specific thinking and tool narration are no longer surfaced in chat
+- Interactive progress is now provider-neutral: one transient message rotates playful status text with elapsed time and progressively backs off edits during long requests, while final answers no longer include provider, effort, usage, or duration prefixes. Provider-specific thinking and tool narration are no longer surfaced in chat
 - Dashboard dropdowns now use consistent custom chevrons, spacing, hover and focus
   states, and dark-mode styling instead of browser-default select chrome
 - The web dashboard now uses sidebar-aware breakpoints, readable mobile run cards, compact desktop grids, accessible form controls, simplified job detail views, and searchable deduplicated Skills. Long IDs and upload controls no longer widen phone layouts, and compiled Tailwind plus pinned HTMX assets are vendored for fast offline rendering without CDN requests

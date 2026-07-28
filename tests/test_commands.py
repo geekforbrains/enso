@@ -75,14 +75,14 @@ def test_cmd_effort_unknown_level(sample_config):
     assert options == []
 
 
-def test_cmd_effort_list_options_filters_by_model(sample_config):
-    """Sonnet tops out at high — xhigh/max shouldn't appear in the picker."""
+def test_cmd_effort_list_options_for_sonnet(sample_config):
+    """Current Sonnet supports the full Claude effort range."""
     rt = Runtime(sample_config)
     rt.active_model_by_chat_provider[("1", "claude")] = "sonnet"
     response, options = cmd_effort(rt, "1", None)
     assert response is None
     levels = [name for name, _ in options]
-    assert levels == ["low", "medium", "high"]
+    assert levels == ["low", "medium", "high", "xhigh", "max"]
     # Nothing selected yet
     assert not any(active for _, active in options)
 
@@ -97,13 +97,14 @@ def test_cmd_effort_list_options_marks_active(sample_config):
 
 def test_cmd_effort_clamp_warning_on_set(sample_config):
     """Setting max on a capped model reports the clamped value."""
+    sample_config["providers"]["claude"]["models"].append("haiku")
     rt = Runtime(sample_config)
-    rt.active_model_by_chat_provider[("1", "claude")] = "sonnet"
+    rt.active_model_by_chat_provider[("1", "claude")] = "haiku"
     response, _ = cmd_effort(rt, "1", "max")
     assert response is not None
     assert "clamped to high" in response
     # Raw intent is preserved; accessor does the clamping at read time.
-    assert rt.effort_by_chat_provider_model[("1", "claude", "sonnet")] == "max"
+    assert rt.effort_by_chat_provider_model[("1", "claude", "haiku")] == "max"
 
 
 def test_cmd_effort_codex_set_ultra(sample_config):
@@ -145,6 +146,21 @@ def test_cmd_effort_codex_clamps_ultra_for_luna(sample_config):
     assert response is not None
     assert "clamped to max" in response
     assert rt.effort_by_chat_provider_model[("1", "codex", "luna")] == "ultra"
+
+
+def test_cmd_effort_agy_uses_model_variants(sample_config):
+    sample_config["providers"]["agy"]["models"] = list(AgyProvider.default_models)
+    rt = Runtime(sample_config)
+    rt.active_provider_by_chat["1"] = "agy"
+
+    response, options = cmd_effort(rt, "1", "low")
+
+    assert response == (
+        "Agy effort is selected through /model; choose an "
+        "effort-qualified model variant."
+    )
+    assert options == []
+    assert rt.effort_by_chat_provider_model == {}
 
 
 def test_cmd_status_includes_effort(sample_config):

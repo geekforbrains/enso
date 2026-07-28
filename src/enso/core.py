@@ -59,6 +59,20 @@ def progress_text(elapsed: int) -> str:
     return f"({elapsed}s) {message}"
 
 
+def _status_edit_due(elapsed: int) -> bool:
+    """Return whether the status message should be edited at this tick.
+
+    Edit every second through 10 seconds, every 2 seconds through 60 seconds,
+    then every 5 seconds. This keeps early feedback responsive without
+    continuously consuming transport rate limits during long requests.
+    """
+    if elapsed <= 10:
+        return True
+    if elapsed <= 60:
+        return elapsed % 2 == 0
+    return elapsed % 5 == 0
+
+
 async def _cancel_and_wait(task: asyncio.Task[Any]) -> BaseException | None:
     """Cancel a child task without swallowing cancellation of the caller."""
     task.cancel()
@@ -603,10 +617,15 @@ class Runtime:
                 parts = k.split(":", 2)
                 if len(parts) == 3:
                     cid, provider, model = parts
-                    if model in self.models.get(provider, []):
+                    if (
+                        model in self.models.get(provider, [])
+                        and provider_class(provider).effort_levels
+                    ):
                         self.effort_by_chat_provider_model[(cid, provider, model)] = v
                     else:
                         state_changed = True
+                else:
+                    state_changed = True
             for k, v in data.get("session_by_chat_provider", {}).items():
                 cid, provider = k.split(":", 1)
                 if provider in PROVIDER_NAMES:
@@ -682,9 +701,10 @@ class Runtime:
         see the real value in use.
         """
         stored = self.effort_by_chat_provider_model.get((chat_id, provider, model))
-        if stored is None:
+        provider_cls = provider_class(provider)
+        if stored is None or not provider_cls.effort_levels:
             return None
-        return provider_class(provider).clamp_effort(stored, model)
+        return provider_cls.clamp_effort(stored, model)
 
     def get_chat_lock(self, chat_id: str) -> asyncio.Lock:
         """Get or create a per-chat lock to serialize requests."""
@@ -696,11 +716,16 @@ class Runtime:
 
     # -- Provider management --
 
-    def make_provider(self, provider_name: str) -> BaseProvider:
+    def make_provider(
+        self, provider_name: str, *, timeout: int | float | None = None,
+    ) -> BaseProvider:
         """Create a fresh provider instance using the configured CLI path."""
         provider_cfg = self.config.get("providers", {}).get(provider_name, {})
         path = provider_cfg.get("path", provider_name)
-        return provider_class(provider_name)(path, working_dir=self.working_dir)
+        effective_timeout = self.agent_timeout if timeout is None else timeout
+        return provider_class(provider_name)(
+            path, working_dir=self.working_dir, timeout=effective_timeout,
+        )
 
     # -- Session management --
 
@@ -894,7 +919,7 @@ class Runtime:
         async with lock:
             model = self.get_active_model(chat_id, provider_name)
             effort = self.get_active_effort(chat_id, provider_name, model)
-            provider = self.make_provider(provider_name)
+            provider = self.make_provider(provider_name, timeout=self.agent_timeout)
 
             log.info(
                 "[%s] Compacting chat=%s model=%s effort=%s",
@@ -1067,6 +1092,7 @@ class Runtime:
             else asyncio.subprocess.PIPE
         )
         kwargs: dict[str, Any] = {
+            "stdin": asyncio.subprocess.DEVNULL,
             "stdout": asyncio.subprocess.PIPE,
             "stderr": stderr,
             "cwd": self.working_dir,
@@ -1196,7 +1222,7 @@ class Runtime:
 
         model = self.get_active_model(chat_id, provider_name)
         effort = self.get_active_effort(chat_id, provider_name, model)
-        provider = self.make_provider(provider_name)
+        provider = self.make_provider(provider_name, timeout=self.agent_timeout)
 
         try:
             origin_env = ctx.get_origin_env()
@@ -1356,11 +1382,11 @@ class Runtime:
                 state["elapsed"],
             )
 
-            if response_text:
+            if error_text:
+                await ctx.reply(f"Error: {error_text[:4000]}")
+            elif response_text:
                 for chunk in split_text(response_text, limit=msg_limit):
                     await ctx.reply(chunk)
-            elif error_text:
-                await ctx.reply(f"Error: {error_text[:4000]}")
             else:
                 await ctx.reply("(No response)")
 
@@ -1399,7 +1425,7 @@ class Runtime:
             if stop.is_set():
                 break
             state["elapsed"] += 1
-            if status_updates_enabled:
+            if status_updates_enabled and _status_edit_due(state["elapsed"]):
                 text = progress_text(state["elapsed"])
                 try:
                     await asyncio.wait_for(ctx.edit_status(status_msg, text), timeout=5.0)
@@ -1786,7 +1812,7 @@ class Runtime:
             run_id = self._create_job_run(job, trigger, tag, started_at)
             proc: Process | None = None
             try:
-                provider = self.make_provider(job.provider)
+                provider = self.make_provider(job.provider, timeout=job.timeout)
                 cmd = provider.build_batch_command(prompt, job.model)
                 log.info(
                     "%s spawning provider_class=%s cwd=%s prompt_len=%d",
@@ -1796,6 +1822,7 @@ class Runtime:
                 log.debug("%s command=%s", tag, _redacted_command(cmd))
                 proc = await self._spawn_process(
                     *cmd,
+                    stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,
                     cwd=self.working_dir,

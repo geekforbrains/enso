@@ -114,6 +114,15 @@ def cmd_effort(
     model = runtime.get_active_model(conv_id, provider)
     key = (conv_id, provider, model)
 
+    if not levels:
+        if provider == "agy":
+            return (
+                "Agy effort is selected through /model; choose an "
+                "effort-qualified model variant.",
+                [],
+            )
+        return f"{provider} does not support configurable effort.", []
+
     if choice:
         normalized = choice.strip().lower()
         if normalized == "default":

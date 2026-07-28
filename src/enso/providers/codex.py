@@ -106,8 +106,16 @@ class CodexProvider(BaseProvider):
                 if isinstance(text_value, str) and text_value:
                     events.append(StreamEvent(kind="response", text=text_value))
         elif event_type == "turn.failed":
-            msg = event.get("message", "")
-            if msg:
+            error = event.get("error")
+            if isinstance(error, dict):
+                msg = error.get("message")
+            elif isinstance(error, str):
+                msg = error
+            else:
+                msg = None
+            if not isinstance(msg, str) or not msg:
+                msg = event.get("message")
+            if isinstance(msg, str) and msg:
                 events.append(StreamEvent(kind="error", text=msg))
         elif event_type == "thread.started":
             thread_id = event.get("thread_id")

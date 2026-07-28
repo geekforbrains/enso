@@ -24,6 +24,7 @@ Design docs live in [`docs/`](docs/) and are the source of truth for planned and
 - Python 3.10+
 - At least one of `claude`, `codex`, or `agy` installed and on your PATH
   - Codex CLI 0.144.0 or newer is required for the Sol, Terra, and Luna models
+  - Agy CLI 1.1.5 or newer is required for stable model slugs and project-aware sessions
 - One of:
   - A Telegram bot token ([create one with @BotFather](https://t.me/BotFather)), or
   - A Slack app with a bot token + app-level token (Socket Mode)
@@ -82,7 +83,7 @@ Telegram autocompletes these when you type `/`. On Slack, use `!` instead (e.g. 
 |---------|-------------|
 | `/use` | Switch agent (shows buttons, or `/use claude` / `/use agy`) |
 | `/model` | Switch model (shows buttons, or `/model sonnet` / `/model gemini-3.6-flash-high`) |
-| `/effort` | Set the active provider's reasoning effort (or `default` to clear) |
+| `/effort` | Set Claude/Codex reasoning effort (or `default` to clear) |
 | `/status` | Active agent, model, and effort |
 | `/stop` | Stop process & clear queue |
 | `/queue` | View & manage queued messages |
@@ -93,9 +94,9 @@ Telegram autocompletes these when you type `/`. On Slack, use `!` instead (e.g. 
 | `/logs` | Last 25 log entries |
 | `/help` | Show all commands |
 
-You can also send files — they're downloaded and passed to the active agent. Responses render with per-transport formatting (Telegram HTML; Slack mrkdwn). While a request runs, Enso edits one provider-neutral status message every second with elapsed time and a rotating phrase; the final response contains only the agent's answer. Interactive turns stop after `agent.timeout` seconds (900 by default; set it to `0` to disable). A timeout leaves a conversation-scoped background notice for the next turn so the active provider knows partial work may remain.
+You can also send files — they're downloaded and passed to the active agent. Responses render with per-transport formatting (Telegram HTML; Slack mrkdwn). While a request runs, Enso edits one provider-neutral status message with elapsed time and a rotating phrase, progressively reducing the update rate on long requests; the final response contains only the agent's answer. Interactive turns stop after `agent.timeout` seconds (900 by default; set it to `0` to disable). A timeout leaves a conversation-scoped background notice for the next turn so the active provider knows partial work may remain.
 
-Effort is stored separately for each conversation, provider, and model. Claude supports its existing model-dependent range through `max`. Codex Sol and Terra support `low` through `ultra`; Luna supports `low` through `max`. Antigravity supports `low`, `medium`, and `high`. Enso clamps an unsupported higher choice to the active model's maximum and reports the effective level.
+Effort is stored separately for each conversation, provider, and model. Claude supports its existing model-dependent range through `max`. Codex Sol and Terra support `low` through `ultra`; Luna supports `low` through `max`. Antigravity's concrete model names already encode effort (for example, `gemini-3.6-flash-low`), so choose the desired variant with `/model`. Enso clamps an unsupported higher Claude/Codex choice to the active model's maximum and reports the effective level.
 
 **Slack specifics.** DMs work like Telegram — every message dispatches. In channels, Enso only responds when mentioned (`@bot help me`); once a thread starts, it stays attentive to that thread only if you keep mentioning it. The bot fetches the last few thread/channel messages as context so it knows what's going on.
 
@@ -211,7 +212,7 @@ Everything lives under `~/.enso/`. Config is at `~/.enso/config.json` — the se
 ## Development
 
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[dev,telegram,slack,web]"
 ruff check src/
 pytest
 ```

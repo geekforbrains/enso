@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
-from enso.transports.telegram import _resolve_file
+from enso.transports.telegram import TelegramContext, _resolve_file
 
 
 def _msg(**kwargs):
@@ -36,3 +37,41 @@ def test_resolve_file_missing_audio_name_falls_back_to_generated():
     _obj, name, _desc = _resolve_file(_msg(audio=audio))
     assert name.startswith("audio_")
     assert name.endswith(".mp3")
+
+
+async def test_reply_status_returns_message_handle():
+    handle = object()
+    reply_text = AsyncMock(return_value=handle)
+    context = TelegramContext(SimpleNamespace(message=SimpleNamespace(reply_text=reply_text)))
+
+    result = await context.reply_status("Working…")
+
+    assert result is handle
+    reply_text.assert_awaited_once_with("Working…")
+
+
+async def test_edit_status_updates_message_handle():
+    handle = SimpleNamespace(edit_text=AsyncMock())
+    context = TelegramContext(SimpleNamespace())
+
+    await context.edit_status(handle, "Still working…")
+
+    handle.edit_text.assert_awaited_once_with("Still working…")
+
+
+async def test_delete_status_deletes_message_handle():
+    handle = SimpleNamespace(delete=AsyncMock())
+    context = TelegramContext(SimpleNamespace())
+
+    await context.delete_status(handle)
+
+    handle.delete.assert_awaited_once_with()
+
+
+async def test_delete_status_ignores_telegram_errors():
+    handle = SimpleNamespace(delete=AsyncMock(side_effect=RuntimeError("message is gone")))
+    context = TelegramContext(SimpleNamespace())
+
+    await context.delete_status(handle)
+
+    handle.delete.assert_awaited_once_with()

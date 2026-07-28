@@ -11,6 +11,8 @@ from enso.providers.agy import AGY_MODELS, AgyProvider
 from enso.providers.claude import ClaudeProvider
 from enso.providers.codex import CODEX_MODEL_ALIASES, CodexProvider
 
+CLAUDE_SESSION_ID = "11111111-1111-4111-8111-111111111111"
+
 # -- Registry --
 
 
@@ -53,18 +55,20 @@ def test_claude_build_command_no_session():
 def test_claude_build_command_new_session():
     """New session (new: prefix) uses --session-id."""
     p = ClaudeProvider("claude")
-    cmd = p.build_command("hello", "sonnet", session_id="new:abc-123")
+    cmd = p.build_command(
+        "hello", "sonnet", session_id=f"new:{CLAUDE_SESSION_ID}",
+    )
     assert "--session-id" in cmd
-    assert "abc-123" in cmd
+    assert CLAUDE_SESSION_ID in cmd
     assert "new:" not in " ".join(cmd)
 
 
 def test_claude_build_command_resume():
     """Existing session uses --resume."""
     p = ClaudeProvider("claude")
-    cmd = p.build_command("hello", "sonnet", session_id="abc-123")
+    cmd = p.build_command("hello", "sonnet", session_id=CLAUDE_SESSION_ID)
     assert "--resume" in cmd
-    assert "abc-123" in cmd
+    assert CLAUDE_SESSION_ID in cmd
 
 
 def test_claude_build_batch_command():
@@ -118,14 +122,19 @@ def test_codex_unknown_model_passes_through():
 def test_agy_build_command_creates_resumable_yolo_session_command():
     provider = AgyProvider("agy")
     cmd = provider.build_command(
-        "hello", "gemini-3.6-flash-high", session_id="session-123", effort="low",
+        "hello",
+        "gemini-3.6-flash-high",
+        session_id="33333333-3333-4333-8333-333333333333",
+        effort="low",
     )
     try:
         assert cmd[0] == "agy"
         assert "--dangerously-skip-permissions" in cmd
         assert cmd[cmd.index("--model") + 1] == "gemini-3.6-flash-high"
-        assert cmd[cmd.index("--effort") + 1] == "low"
-        assert cmd[cmd.index("--conversation") + 1] == "session-123"
+        assert "--effort" not in cmd
+        assert cmd[cmd.index("--conversation") + 1] == (
+            "33333333-3333-4333-8333-333333333333"
+        )
         assert cmd[cmd.index("--prompt") + 1] == "hello"
         assert "--log-file" in cmd
     finally:
@@ -149,10 +158,76 @@ def test_agy_batch_command_is_plain_yolo_output():
     assert cmd == [
         "agy", "--dangerously-skip-permissions",
         "--model", "gemini-3.6-flash-low",
-        "--effort", "medium",
         "--new-project",
         "--prompt", "hello",
     ]
+
+
+def test_agy_print_timeout_stays_behind_enso_deadline():
+    provider = AgyProvider("agy", timeout=900)
+    try:
+        interactive = provider.build_command(
+            "hello",
+            AGY_MODELS[0],
+            session_id="55555555-5555-4555-8555-555555555555",
+        )
+        batch = provider.build_batch_command("hello", AGY_MODELS[0])
+    finally:
+        provider.finalize_events()
+
+    for cmd in (interactive, batch):
+        assert cmd[cmd.index("--print-timeout") + 1] == "905s"
+
+
+def test_agy_disabled_enso_timeout_uses_maximum_cli_duration():
+    provider = AgyProvider("agy", timeout=0)
+    try:
+        cmd = provider.build_command(
+            "hello",
+            AGY_MODELS[0],
+            session_id="66666666-6666-4666-8666-666666666666",
+        )
+    finally:
+        provider.finalize_events()
+
+    assert cmd[cmd.index("--print-timeout") + 1] == (
+        "2562047h47m16.854775807s"
+    )
+
+
+def test_agy_timeout_rounds_up_and_clamps_to_cli_maximum():
+    rounded = AgyProvider("agy", timeout=0.01).build_batch_command(
+        "hello", AGY_MODELS[0],
+    )
+    clamped = AgyProvider("agy", timeout=10**20).build_batch_command(
+        "hello", AGY_MODELS[0],
+    )
+
+    assert rounded[rounded.index("--print-timeout") + 1] == "6s"
+    assert clamped[clamped.index("--print-timeout") + 1] == (
+        "2562047h47m16.854775807s"
+    )
+
+
+@pytest.mark.parametrize("model", AGY_MODELS)
+def test_agy_concrete_model_slug_ignores_separate_effort(model):
+    """Agy model slugs already encode every supported effort variant."""
+    provider = AgyProvider("agy")
+    try:
+        interactive = provider.build_command(
+            "hello",
+            model,
+            session_id="44444444-4444-4444-8444-444444444444",
+            effort="low",
+        )
+        batch = provider.build_batch_command("hello", model, effort="high")
+    finally:
+        provider.finalize_events()
+
+    assert interactive[interactive.index("--model") + 1] == model
+    assert batch[batch.index("--model") + 1] == model
+    assert "--effort" not in interactive
+    assert "--effort" not in batch
 
 
 def test_agy_preserves_multiline_final_output():
@@ -347,6 +422,49 @@ def test_claude_parse_result():
     assert events[0].text == "Hello!"
 
 
+def test_claude_parse_api_error_assistant_message():
+    """Claude marks synthetic API failures on the assistant envelope."""
+    p = ClaudeProvider("claude")
+    events = p.parse_event({
+        "type": "assistant",
+        "error": "model_not_found",
+        "is_api_error_message": True,
+        "message": {
+            "model": "<synthetic>",
+            "content": [{"type": "text", "text": "Model is unavailable."}],
+        },
+    })
+    assert [(event.kind, event.text) for event in events] == [
+        ("error", "Model is unavailable."),
+    ]
+
+
+def test_claude_parse_error_result_preserves_session():
+    """A result can fail with no stderr, so its envelope is authoritative."""
+    p = ClaudeProvider("claude")
+    events = p.parse_event({
+        "type": "result",
+        "is_error": True,
+        "terminal_reason": "api_error",
+        "result": "Model is unavailable.",
+        "session_id": CLAUDE_SESSION_ID,
+    })
+    assert [(event.kind, event.text, event.session_id) for event in events] == [
+        ("error", "Model is unavailable.", None),
+        ("session", "", CLAUDE_SESSION_ID),
+    ]
+
+
+def test_claude_parse_error_result_without_text_uses_terminal_reason():
+    p = ClaudeProvider("claude")
+    events = p.parse_event({
+        "type": "result", "is_error": True, "terminal_reason": "api_error",
+    })
+    assert [(event.kind, event.text) for event in events] == [
+        ("error", "api_error"),
+    ]
+
+
 def test_claude_parse_tool_use():
     p = ClaudeProvider("claude")
     events = p.parse_event({
@@ -384,6 +502,24 @@ def test_codex_parse_session():
     assert any(e.kind == "session" and e.session_id == "t_123" for e in events)
 
 
+def test_codex_parse_nested_turn_failure():
+    p = CodexProvider("codex")
+    events = p.parse_event({
+        "type": "turn.failed", "error": {"message": "Model is unavailable."},
+    })
+    assert [(event.kind, event.text) for event in events] == [
+        ("error", "Model is unavailable."),
+    ]
+
+
+def test_codex_parse_turn_failure_legacy_message_fallback():
+    p = CodexProvider("codex")
+    events = p.parse_event({"type": "turn.failed", "message": "Turn failed."})
+    assert [(event.kind, event.text) for event in events] == [
+        ("error", "Turn failed."),
+    ]
+
+
 # -- Stream buffering --
 
 
@@ -394,7 +530,7 @@ def test_stdout_limit_generous_default():
 
 
 def test_agy_effort_levels_and_models():
-    assert AgyProvider.effort_levels == ["low", "medium", "high"]
+    assert AgyProvider.effort_levels == []
     assert AgyProvider.default_models == AGY_MODELS
 
 
@@ -455,25 +591,30 @@ def test_max_effort_opus_is_max():
     assert ClaudeProvider.max_effort_for_model("claude-opus-4-7") == "max"
 
 
+def test_max_effort_sonnet_is_max():
+    assert ClaudeProvider.max_effort_for_model("sonnet") == "max"
+    assert ClaudeProvider.max_effort_for_model("claude-sonnet-5") == "max"
+
+
 def test_max_effort_other_models_capped_at_high():
-    assert ClaudeProvider.max_effort_for_model("sonnet") == "high"
     assert ClaudeProvider.max_effort_for_model("haiku") == "high"
     assert ClaudeProvider.max_effort_for_model("unknown-model") == "high"
 
 
 def test_clamp_effort_within_cap():
-    # Opus supports everything — no clamping.
-    assert ClaudeProvider.clamp_effort("max", "opus") == "max"
-    assert ClaudeProvider.clamp_effort("xhigh", "opus") == "xhigh"
-    assert ClaudeProvider.clamp_effort("low", "opus") == "low"
+    # Opus and Sonnet support everything — no clamping.
+    for model in ("opus", "sonnet"):
+        assert ClaudeProvider.clamp_effort("max", model) == "max"
+        assert ClaudeProvider.clamp_effort("xhigh", model) == "xhigh"
+        assert ClaudeProvider.clamp_effort("low", model) == "low"
 
 
 def test_clamp_effort_degrades_to_cap():
-    # Sonnet caps at high — xhigh/max clamp down.
-    assert ClaudeProvider.clamp_effort("max", "sonnet") == "high"
-    assert ClaudeProvider.clamp_effort("xhigh", "sonnet") == "high"
-    assert ClaudeProvider.clamp_effort("high", "sonnet") == "high"
-    assert ClaudeProvider.clamp_effort("medium", "sonnet") == "medium"
+    # Haiku caps at high — xhigh/max clamp down.
+    assert ClaudeProvider.clamp_effort("max", "haiku") == "high"
+    assert ClaudeProvider.clamp_effort("xhigh", "haiku") == "high"
+    assert ClaudeProvider.clamp_effort("high", "haiku") == "high"
+    assert ClaudeProvider.clamp_effort("medium", "haiku") == "medium"
 
 
 def test_clamp_effort_unknown_level_passthrough():

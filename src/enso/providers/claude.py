@@ -24,12 +24,14 @@ class ClaudeProvider(BaseProvider):
 
     # Levels accepted by `claude --effort`. Models not listed in
     # _model_max_effort default to "high" (safe floor every supported
-    # Claude model accepts); Opus 4.7 is the only family that currently
-    # exposes the full range up through "max".
+    # Claude model accepts). Current Opus and Sonnet families expose the
+    # full range up through "max".
     effort_levels: ClassVar[list[str]] = ["low", "medium", "high", "xhigh", "max"]
     _model_max_effort: ClassVar[dict[str, str]] = {
         "opus": "max",
         "claude-opus-4-7": "max",
+        "sonnet": "max",
+        "claude-sonnet-5": "max",
     }
     _default_max_effort = "high"
 
@@ -82,15 +84,26 @@ class ClaudeProvider(BaseProvider):
 
         if event_type == "assistant":
             message = event.get("message", {})
+            is_api_error = bool(
+                event.get("is_api_error_message")
+                or message.get("is_api_error_message")
+                or event.get("error")
+            )
             for block in message.get("content", []):
                 block_type = block.get("type")
                 if block_type == "text" and block.get("text"):
-                    events.append(StreamEvent(kind="response", text=block["text"]))
+                    kind = "error" if is_api_error else "response"
+                    events.append(StreamEvent(kind=kind, text=block["text"]))
 
         elif event_type == "result":
             result_text = event.get("result", "")
             if isinstance(result_text, str) and result_text:
-                events.append(StreamEvent(kind="response", text=result_text))
+                kind = "error" if event.get("is_error") else "response"
+                events.append(StreamEvent(kind=kind, text=result_text))
+            elif event.get("is_error"):
+                reason = event.get("terminal_reason")
+                text = reason if isinstance(reason, str) and reason else "unknown error"
+                events.append(StreamEvent(kind="error", text=text))
 
             session_id = event.get("session_id")
             if isinstance(session_id, str) and session_id:

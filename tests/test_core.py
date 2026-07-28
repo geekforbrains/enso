@@ -24,6 +24,7 @@ from enso.core import (
 )
 from enso.jobs import Job
 from enso.providers import StreamEvent
+from enso.providers.agy import AgyProvider
 from enso.providers.claude import ClaudeProvider
 
 # -- split_text --
@@ -309,6 +310,7 @@ def test_make_provider_binds_working_dir(sample_config):
     rt = Runtime(sample_config)
     provider = rt.make_provider("agy")
     assert provider.working_dir == rt.working_dir
+    assert provider.timeout == rt.agent_timeout
 
 
 def test_make_provider_unknown_provider_raises(sample_config):
@@ -379,6 +381,26 @@ def test_load_state_removes_entries_for_unconfigured_models(tmp_enso, sample_con
     persisted = json.loads(state_file.read_text())
     assert persisted["active_model_by_chat_provider"] == {"7:claude": "sonnet"}
     assert persisted["effort_by_chat_provider_model"] == {"7:claude:sonnet": "low"}
+
+
+def test_load_state_removes_effort_for_provider_without_effort_control(
+    tmp_enso, sample_config,
+):
+    sample_config["providers"]["agy"]["models"] = list(AgyProvider.default_models)
+    state_file = Path(tmp_enso) / "state.json"
+    model = AgyProvider.default_models[0]
+    state_file.write_text(json.dumps({
+        "active_provider_by_chat": {"7": "agy"},
+        "effort_by_chat_provider_model": {f"7:agy:{model}": "low"},
+    }))
+
+    rt = Runtime(sample_config)
+    rt.load_state()
+
+    assert rt.effort_by_chat_provider_model == {}
+    assert rt.get_active_effort("7", "agy", model) is None
+    persisted = json.loads(state_file.read_text())
+    assert persisted["effort_by_chat_provider_model"] == {}
 
 
 def test_save_state_failure_preserves_existing_file_and_removes_temp(
@@ -483,9 +505,10 @@ def test_get_active_effort_claude(sample_config):
 
 def test_get_active_effort_clamps_to_model_cap(sample_config):
     """Requesting max on a model that caps at high returns high."""
+    sample_config["providers"]["claude"]["models"].append("haiku")
     rt = Runtime(sample_config)
-    rt.effort_by_chat_provider_model[("1", "claude", "sonnet")] = "max"
-    assert rt.get_active_effort("1", "claude", "sonnet") == "high"
+    rt.effort_by_chat_provider_model[("1", "claude", "haiku")] = "max"
+    assert rt.get_active_effort("1", "claude", "haiku") == "high"
 
 
 def test_get_active_effort_codex_clamps_to_model_cap(sample_config):
@@ -505,10 +528,18 @@ def test_effort_state_persistence(tmp_enso, sample_config):
     assert rt2.effort_by_chat_provider_model[("42", "claude", "opus")] == "xhigh"
 
 
+class _EmptyAsyncStream:
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        raise StopAsyncIteration
+
+
 class _FakeSpawnedProcess:
     pid = 42
     returncode = 0
-    stdout = None
+    stdout = _EmptyAsyncStream()
     stderr = None
 
     async def wait(self):
@@ -535,6 +566,7 @@ async def test_run_provider_injects_extra_env(tmp_enso, sample_config, monkeypat
 
     async def fake_spawn(*args, **kwargs):
         captured["env"] = kwargs.get("env")
+        captured["stdin"] = kwargs.get("stdin")
         return _FakeSpawnedProcess()
 
     monkeypatch.setattr("asyncio.create_subprocess_exec", fake_spawn)
@@ -544,14 +576,7 @@ async def test_run_provider_injects_extra_env(tmp_enso, sample_config, monkeypat
         provider, "hi", "1", "opus",
         extra_env={"ENSO_ORIGIN_CHANNEL": "C012345"},
     )
-    # Drain — the fake stdout is None, so the loop exits immediately.
-    try:
-        async for _ in gen:
-            pass
-    except (TypeError, AssertionError):
-        # FakeProcess.stdout is None; the `async for` will blow up on the
-        # assert or the iteration. Either way we only care that env was
-        # captured before that happens.
+    async for _ in gen:
         pass
 
     env = captured["env"]
@@ -559,6 +584,7 @@ async def test_run_provider_injects_extra_env(tmp_enso, sample_config, monkeypat
     assert env["ENSO_ORIGIN_CHANNEL"] == "C012345"
     # Parent env is preserved (PATH always exists on Unix / Windows).
     assert "PATH" in env
+    assert captured["stdin"] == asyncio.subprocess.DEVNULL
 
 
 @pytest.mark.asyncio
@@ -571,19 +597,18 @@ async def test_run_provider_omits_env_when_not_requested(tmp_enso, sample_config
 
     async def fake_spawn(*args, **kwargs):
         captured["env"] = kwargs.get("env", "SENTINEL_UNSET")
+        captured["stdin"] = kwargs.get("stdin")
         return _FakeSpawnedProcess()
 
     monkeypatch.setattr("asyncio.create_subprocess_exec", fake_spawn)
 
     provider = rt.make_provider("claude")
     gen = rt.run_provider(provider, "hi", "1", "opus")
-    try:
-        async for _ in gen:
-            pass
-    except (TypeError, AssertionError):
+    async for _ in gen:
         pass
 
     assert captured["env"] == "SENTINEL_UNSET"
+    assert captured["stdin"] == asyncio.subprocess.DEVNULL
 
 
 @pytest.mark.asyncio
@@ -884,6 +909,33 @@ async def test_process_request_uses_normalized_status_and_plain_final_response(s
 
 
 @pytest.mark.asyncio
+async def test_process_request_terminal_error_wins_over_partial_response(sample_config):
+    rt = Runtime(sample_config)
+
+    class FakeCtx:
+        def __init__(self):
+            self.replies = []
+
+        async def reply(self, text): self.replies.append(text)
+        async def reply_status(self, text): return "handle"
+        async def edit_status(self, handle, text): pass
+        async def delete_status(self, handle): pass
+        async def send_typing(self): pass
+        def get_origin_env(self): return {}
+
+    async def failed_run(*args, **kwargs):
+        yield StreamEvent(kind="response", text="partial output")
+        yield StreamEvent(kind="error", text="provider failed")
+
+    ctx = FakeCtx()
+    rt.run_provider = failed_run
+
+    await rt.process_request("claude", "hello", "1", ctx)
+
+    assert ctx.replies == ["Error: provider failed"]
+
+
+@pytest.mark.asyncio
 async def test_process_request_timeout_stops_provider_and_queues_scoped_notice(
     tmp_enso, sample_config,
 ):
@@ -1064,6 +1116,7 @@ async def test_agy_timeout_captures_session_and_removes_private_log(
     async def fake_spawn(*args, **kwargs):
         log_path = args[args.index("--log-file") + 1]
         captured["log_path"] = log_path
+        captured["print_timeout"] = args[args.index("--print-timeout") + 1]
         Path(log_path).write_text(
             f"Print mode: conversation={session_id}, sending message\n",
         )
@@ -1088,6 +1141,7 @@ async def test_agy_timeout_captures_session_and_removes_private_log(
     )
 
     assert rt.session_by_chat_provider[("chat-a", "agy")] == session_id
+    assert captured["print_timeout"] == "6s"
     assert not Path(captured["log_path"]).exists()
     assert "chat-a" not in rt.running_process_by_chat
 
@@ -1184,7 +1238,7 @@ async def test_manual_cancellation_wins_race_with_timeout_cleanup(
 
 
 @pytest.mark.asyncio
-async def test_ticker_rotates_every_second(sample_config, monkeypatch):
+async def test_ticker_uses_progressive_status_edit_cadence(sample_config, monkeypatch):
     rt = Runtime(sample_config)
     stop = asyncio.Event()
 
@@ -1194,7 +1248,7 @@ async def test_ticker_rotates_every_second(sample_config, monkeypatch):
 
         async def edit_status(self, handle, text):
             self.edits.append(text)
-            if len(self.edits) == 3:
+            if text == progress_text(65):
                 stop.set()
 
         async def send_typing(self): pass
@@ -1208,4 +1262,6 @@ async def test_ticker_rotates_every_second(sample_config, monkeypatch):
 
     await rt._run_ticker(ctx, "handle", state, stop)
 
-    assert ctx.edits == [progress_text(1), progress_text(2), progress_text(3)]
+    expected_seconds = [*range(1, 11), *range(12, 61, 2), 65]
+    assert ctx.edits == [progress_text(elapsed) for elapsed in expected_seconds]
+    assert state["elapsed"] == 65

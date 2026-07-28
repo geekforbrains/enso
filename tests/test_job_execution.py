@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -299,6 +300,8 @@ async def test_scheduled_open_prerun_injects_output_and_runs_provider(
 
     assert result.status == "ok"
     assert provider.prompts == [("Use this: captured context", "sonnet")]
+    runtime.make_provider.assert_called_once_with("claude", timeout=job.timeout)
+    assert runtime._spawn_process.await_args.kwargs["stdin"] == asyncio.subprocess.DEVNULL
     row = runs.get(result.run_id)
     assert row["trigger"] == "schedule"
     assert row["status"] == "ok"
