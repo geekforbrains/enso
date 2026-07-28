@@ -81,9 +81,21 @@ custom models are preserved.
 
 Claude and Codex expose structured event streams. Antigravity's headless mode emits one
 plain-text response, so the shared runner supports both streamed events and completed
-stdout without changing the transport contract. All providers use the same transient
-chat progress ticker; provider-specific tool and reasoning events do not affect the
-user-facing status.
+stdout without changing the transport contract. Every provider reports activity as
+`status` events, whatever the shape of its stdout: Claude derives them from `tool_use`
+blocks (preferring the model-written `description` when a tool supplies one), Codex from
+`item.started`, and Antigravity from `poll_progress` — an optional hook the runner drains
+concurrently with the process, for providers whose stdout carries no progress at all.
+Progress is decorative by contract: whatever `poll_progress` raises is swallowed and the
+status message falls back to the elapsed timer, so a provider may read best-effort
+sources for it.
+
+The transient status message carries a fixed header (provider, model, effort) plus the
+latest reported action. Its elapsed counter is rewritten every second through 30 seconds
+so a new request visibly remains alive, then every five seconds to conserve transport
+rate limits. Each scheduled edit includes the latest action available at that tick. A
+failed edit is retried; status is abandoned only after `STATUS_MAX_EDIT_FAILURES`
+consecutive failures.
 
 Each interactive provider turn has the shared `agent.timeout` budget from `config.json`
 (900 seconds by default; `0` disables it). Queue wait does not count. When the budget is
@@ -97,6 +109,14 @@ Antigravity generates its own ID but exposes it only in diagnostics: each invoca
 uses a private temporary `--log-file`, Enso captures the authoritative active
 conversation ID after the process exits, and the file is immediately removed. `/clear`
 forgets the stored provider session, so the next message starts and captures a new one.
+
+Antigravity's progress comes from the same conversation: its trajectory is a SQLite file
+per conversation whose `steps` table gains rows as the agent works, each tool step
+embedding a model-written `toolAction` label. The poller resolves the conversation ID
+from the session on a resume, or by watching the `--log-file` for it on a fresh
+conversation, then reads the store read-only. Both the catalog and the trajectory are
+undocumented Antigravity internals; if either format moves, progress degrades to the
+elapsed timer and nothing else breaks.
 
 Antigravity additionally pins every conversation to a *project* at creation, and its
 print mode never derives one from the working directory — without an explicit flag,

@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import sqlite3
 
 import pytest
 
-from enso.providers import PROVIDER_CLASSES, PROVIDER_NAMES, provider_class
+from enso.providers import (
+    PROVIDER_CLASSES,
+    PROVIDER_NAMES,
+    STATUS_TEXT_LIMIT,
+    provider_class,
+)
+from enso.providers import agy as agy_module
 from enso.providers.agy import AGY_MODELS, AgyProvider
 from enso.providers.claude import ClaudeProvider
 from enso.providers.codex import CODEX_MODEL_ALIASES, CodexProvider
@@ -475,7 +483,188 @@ def test_claude_parse_tool_use():
             ]
         },
     })
-    assert events == []
+    assert [(e.kind, e.text) for e in events] == [("status", "Reading foo.py")]
+
+
+def test_claude_tool_status_prefers_the_models_own_description():
+    """Bash carries a written description that beats echoing the command."""
+    p = ClaudeProvider("claude")
+    events = p.parse_event({
+        "type": "assistant",
+        "message": {
+            "content": [{
+                "type": "tool_use",
+                "name": "Bash",
+                "input": {
+                    "command": "ls -la | rg foo",
+                    "description": "List files in current directory",
+                },
+            }],
+        },
+    })
+    assert [(e.kind, e.text) for e in events] == [
+        ("status", "List files in current directory")
+    ]
+
+
+def test_claude_reports_thinking_even_when_the_text_is_redacted():
+    """Recent models return empty thinking text; the activity still counts."""
+    p = ClaudeProvider("claude")
+    events = p.parse_event({
+        "type": "assistant",
+        "message": {"content": [{"type": "thinking", "thinking": ""}]},
+    })
+    assert [(e.kind, e.text) for e in events] == [("status", "Thinking")]
+
+
+def test_claude_tool_status_truncates_a_long_command():
+    p = ClaudeProvider("claude")
+    events = p.parse_event({
+        "type": "assistant",
+        "message": {
+            "content": [
+                {"type": "tool_use", "name": "Bash", "input": {"command": "x" * 500}}
+            ]
+        },
+    })
+    assert len(events[0].text) <= STATUS_TEXT_LIMIT
+    assert events[0].text.endswith("…")
+
+
+def test_codex_item_started_reports_the_unwrapped_command():
+    """Codex wraps commands in a login shell; the status shows the real one."""
+    p = CodexProvider("codex")
+    events = p.parse_event({
+        "type": "item.started",
+        "item": {
+            "type": "command_execution",
+            "command": "/bin/zsh -lc \"sed -n '1,240p' notes.txt\"",
+        },
+    })
+    assert [(e.kind, e.text) for e in events] == [
+        ("status", "Running sed -n '1,240p' notes.txt")
+    ]
+
+
+def test_codex_item_started_reports_file_changes():
+    p = CodexProvider("codex")
+    events = p.parse_event({
+        "type": "item.started",
+        "item": {
+            "type": "file_change",
+            "changes": [
+                {"path": "/repo/report.md", "kind": "add"},
+                {"path": "/repo/other.md", "kind": "update"},
+            ],
+        },
+    })
+    assert [(e.kind, e.text) for e in events] == [
+        ("status", "Writing report.md (+1 more)")
+    ]
+
+
+def test_codex_item_started_ignores_items_with_nothing_to_show():
+    p = CodexProvider("codex")
+    assert p.parse_event({"type": "item.started", "item": {"type": "agent_message"}}) == []
+
+
+# -- Antigravity live progress --
+
+
+def _write_trajectory(path, actions):
+    """Build a stand-in for Antigravity's conversation trajectory store."""
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE steps (idx integer PRIMARY KEY, step_payload blob)")
+    for idx, action in enumerate(actions):
+        # The real payload is protobuf with an embedded tool-call JSON blob.
+        payload = (
+            b"\x08\x0f\x20\x03*\x02"
+            + b'{"AbsolutePath":"/x","toolAction":"'
+            + action.encode()
+            + b'","toolSummary":"ignored"}'
+        )
+        con.execute("INSERT INTO steps VALUES (?, ?)", (idx, payload))
+    con.commit()
+    con.close()
+
+
+async def _take(agen, count):
+    collected = []
+    try:
+        for _ in range(count):
+            collected.append(await asyncio.wait_for(agen.__anext__(), timeout=5))
+    finally:
+        await agen.aclose()
+    return collected
+
+
+@pytest.mark.asyncio
+async def test_agy_poll_progress_reports_each_new_tool_action(tmp_path, monkeypatch):
+    """Antigravity prints only a final answer; progress comes from the store."""
+    conversation_id = "11111111-2222-3333-4444-555555555555"
+    # Each tool writes an intent step and an execution step with one label.
+    _write_trajectory(
+        tmp_path / f"{conversation_id}.db",
+        ["Reading notes file", "Reading notes file", "Listing files", "Writing report.md"],
+    )
+    monkeypatch.setattr(agy_module, "_CONVERSATIONS_DIR", tmp_path)
+
+    provider = AgyProvider("agy")
+    provider._session_id = conversation_id
+    events = await _take(provider.poll_progress(), 3)
+
+    assert [(e.kind, e.text) for e in events] == [
+        ("status", "Reading notes file"),
+        ("status", "Listing files"),
+        ("status", "Writing report.md"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_agy_poll_progress_discovers_the_conversation_from_the_log(
+    tmp_path, monkeypatch,
+):
+    """A fresh conversation only learns its ID once the CLI announces it."""
+    conversation_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    _write_trajectory(tmp_path / f"{conversation_id}.db", ["Counting lines"])
+    monkeypatch.setattr(agy_module, "_CONVERSATIONS_DIR", tmp_path)
+
+    log_path = tmp_path / "run.log"
+    log_path.write_text(f"Created conversation {conversation_id.upper()}\n")
+
+    provider = AgyProvider("agy")
+    provider._log_path = str(log_path)
+    events = await _take(provider.poll_progress(), 1)
+
+    assert [e.text for e in events] == ["Counting lines"]
+
+
+@pytest.mark.asyncio
+async def test_agy_poll_progress_ends_quietly_without_a_conversation():
+    """No conversation to watch must end the stream, not raise."""
+    provider = AgyProvider("agy")
+    provider._log_path = None
+    assert [event async for event in provider.poll_progress()] == []
+
+
+@pytest.mark.asyncio
+async def test_agy_poll_progress_waits_out_a_missing_store(tmp_path, monkeypatch):
+    """The trajectory appears a moment after launch; polling must not raise."""
+    conversation_id = "99999999-8888-7777-6666-555555555555"
+    monkeypatch.setattr(agy_module, "_CONVERSATIONS_DIR", tmp_path)
+    monkeypatch.setattr(agy_module, "_PROGRESS_POLL_SECS", 0.01)
+
+    provider = AgyProvider("agy")
+    provider._session_id = conversation_id
+    agen = provider.poll_progress()
+    pending = asyncio.ensure_future(agen.__anext__())
+    await asyncio.sleep(0.05)  # poll against a store that does not exist yet
+    assert not pending.done()
+
+    _write_trajectory(tmp_path / f"{conversation_id}.db", ["Running tests"])
+    event = await asyncio.wait_for(pending, timeout=5)
+    assert event.text == "Running tests"
+    await agen.aclose()
 
 
 # -- Batch (job) output parsing --

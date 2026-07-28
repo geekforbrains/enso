@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import math
 import os
 import re
+import sqlite3
 import tempfile
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import ClassVar
 from urllib.parse import unquote, urlparse
 
-from . import BaseProvider, StreamEvent
+from . import BaseProvider, StreamEvent, truncate_status
 
 AGY_MODELS = [
     "gemini-3.6-flash-high",
@@ -44,6 +47,19 @@ _MAX_GO_DURATION_SECONDS = 9_223_372_036
 # lookups miss and fresh conversations fall back to --new-project, which only
 # costs a duplicate project entry.
 _PROJECTS_DIR = Path("~/.gemini/config/projects")
+
+# Print mode prints only the final answer, so live progress has to come from
+# the conversation's trajectory store: one SQLite file per conversation whose
+# `steps` table gains rows as the agent works. Each tool step embeds a JSON
+# blob carrying a model-written `toolAction` label ("Counting lines"). Also
+# undocumented — every read here is best-effort, and the runtime falls back
+# to a plain elapsed timer when it yields nothing.
+_CONVERSATIONS_DIR = Path("~/.gemini/antigravity-cli/conversations")
+_TOOL_ACTION_RE = re.compile(rb'"toolAction"\s*:\s*"([^"]{1,200})"')
+_PROGRESS_POLL_SECS = 0.5
+# A conversation ID reaches the log a beat after launch; keep watching for it
+# well past that, since a slow cold start delays the whole trajectory.
+_CONVERSATION_WAIT_SECS = 60.0
 
 
 def _resource_uris(data: dict) -> list[str]:
@@ -118,6 +134,7 @@ class AgyProvider(BaseProvider):
     ):
         super().__init__(path, working_dir, timeout=timeout)
         self._log_path: str | None = None
+        self._session_id: str | None = None
 
     def _create_log_file(self) -> str:
         fd, path = tempfile.mkstemp(prefix="enso-agy-", suffix=".log")
@@ -147,6 +164,7 @@ class AgyProvider(BaseProvider):
         *,
         effort: str | None = None,
     ) -> list[str]:
+        self._session_id = session_id
         cmd = [
             self.path,
             "--dangerously-skip-permissions",
@@ -196,3 +214,73 @@ class AgyProvider(BaseProvider):
 
     def parse_event(self, event: dict) -> list[StreamEvent]:
         return []
+
+    # -- Live progress --
+
+    async def _await_conversation_id(self) -> str | None:
+        """Wait for the conversation ID the CLI logs once it starts working.
+
+        A resumed conversation already knows its ID; a fresh one only learns
+        it when the CLI announces the conversation it created.
+        """
+        if self._session_id:
+            return self._session_id
+        deadline = asyncio.get_running_loop().time() + _CONVERSATION_WAIT_SECS
+        while asyncio.get_running_loop().time() < deadline:
+            path = self._log_path
+            if path is None:
+                return None  # the run finished before a conversation appeared
+            try:
+                content = Path(path).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                content = ""
+            for pattern in (_ACTIVE_CONVERSATION_RE, _CREATED_CONVERSATION_RE):
+                found = pattern.findall(content)
+                if found:
+                    return found[-1].lower()
+            await asyncio.sleep(_PROGRESS_POLL_SECS)
+        return None
+
+    @staticmethod
+    def _read_steps(db_path: Path, after_idx: int) -> list[tuple[int, bytes | None]]:
+        """Read trajectory steps newer than ``after_idx``.
+
+        Opened read-only so a concurrent write from the CLI can't be
+        disturbed by the reader.
+        """
+        uri = f"file:{db_path}?mode=ro"
+        with contextlib.closing(sqlite3.connect(uri, uri=True, timeout=1.0)) as con:
+            return con.execute(
+                "SELECT idx, step_payload FROM steps WHERE idx > ? ORDER BY idx",
+                (after_idx,),
+            ).fetchall()
+
+    async def poll_progress(self) -> AsyncIterator[StreamEvent]:
+        """Emit status events by tailing the conversation's trajectory."""
+        conversation_id = await self._await_conversation_id()
+        if not conversation_id:
+            return
+        db_path = _CONVERSATIONS_DIR.expanduser() / f"{conversation_id}.db"
+
+        last_idx = -1
+        last_action: str | None = None
+        while True:
+            try:
+                rows = await asyncio.to_thread(self._read_steps, db_path, last_idx)
+            except (sqlite3.Error, OSError):
+                # The store may not exist yet, or may be mid-write; retry.
+                rows = []
+            for idx, payload in rows:
+                last_idx = max(last_idx, idx)
+                if not payload:
+                    continue
+                match = _TOOL_ACTION_RE.search(payload)
+                if not match:
+                    continue
+                # Each tool writes an intent step and an execution step
+                # carrying the same label; only announce the change.
+                action = truncate_status(match.group(1).decode(errors="replace"))
+                if action and action != last_action:
+                    last_action = action
+                    yield StreamEvent(kind="status", text=action)
+            await asyncio.sleep(_PROGRESS_POLL_SECS)

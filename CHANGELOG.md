@@ -11,8 +11,12 @@ All notable changes to this project will be documented in this file.
 - Agents now see documented `ENSO_ORIGIN_*` environment variables (transport, user id/name, channel id/name, thread) describing who triggered the current turn; previously they were exported but undocumented
 - The four advanced tuning env vars (`ENSO_SESSION_TTL_DAYS`, `ENSO_JOB_CONCURRENCY`, `ENSO_PROCESS_TERMINATE_GRACE_SECS`, `ENSO_JOB_FAILURE_RENOTIFY_SECS`) are documented in the README and are snapshotted into the launchd/systemd service definition by `enso service install`, so they actually reach `enso serve` under a service manager
 
+- Live activity is back in the status message, and now covers every provider: it shows the provider, model, and effort handling the request, the elapsed time, and what the agent is doing right now. Claude reports tool calls (preferring the model's own description over the raw arguments), Codex reports work items as they start, and Antigravity — whose headless mode prints only a final answer — reports activity read from its conversation trajectory. Providers with no progress on stdout can now supply it out of band via `poll_progress`, which the runner drains concurrently and treats as best-effort
+
 ### Fixed
 
+- Status messages now tick every second for the first 30 seconds, then every five seconds, keeping short requests visibly alive without exhausting transport rate limits on long runs; each edit shows the latest agent activity, and a single failed edit no longer silences status for the rest of the request
+- Provider errors that already begin with `Error:` are normalized before display, avoiding duplicated labels such as `Error: Error: Individual quota reached`
 - The background message queue (`messages.json`) now serializes read-modify-write cycles across processes with a file lock, so a job-failure notice can no longer be silently lost when it races an agent's `enso message send`
 - `/compact` now honors `agent.timeout` like interactive turns — a hung provider CLI no longer wedges the chat behind a held lock — and messages queued during compaction are dispatched right after it finishes instead of waiting for the next user message
 - A first turn that fails before the provider CLI creates its session (bad `providers.claude.path`, auth failure, immediate exit) no longer permanently wedges the chat on `--resume` of a session that never existed; the pre-assigned session id is reverted so the next turn starts fresh

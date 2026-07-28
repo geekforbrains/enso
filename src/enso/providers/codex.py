@@ -3,15 +3,61 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 from typing import ClassVar
 
-from . import BaseProvider, StreamEvent
+from . import BaseProvider, StreamEvent, truncate_status
 
 CODEX_MODEL_ALIASES = {
     "sol": "gpt-5.6-sol",
     "terra": "gpt-5.6-terra",
     "luna": "gpt-5.6-luna",
 }
+
+# Codex runs every command through a login shell; the wrapper is noise in a
+# status line, so unwrap it back to what the model actually asked to run.
+_SHELL_WRAPPER_RE = re.compile(r"^/\S*?/(?:ba|z|k)?sh\s+-[a-z]*c\s+(.*)$", re.DOTALL)
+_FILE_CHANGE_VERBS = {"add": "Writing", "delete": "Deleting", "update": "Editing"}
+
+
+def _unwrap_command(command: str) -> str:
+    """Strip Codex's ``/bin/zsh -lc "…"`` wrapper from a command line."""
+    match = _SHELL_WRAPPER_RE.match(command.strip())
+    inner = match.group(1).strip() if match else command.strip()
+    if len(inner) >= 2 and inner[0] == inner[-1] and inner[0] in "\"'":
+        inner = inner[1:-1]
+    return inner
+
+
+def _item_status(item: dict) -> str | None:
+    """Describe a started Codex work item, or None when it isn't worth showing."""
+    match item.get("type"):
+        case "command_execution":
+            command = _unwrap_command(item.get("command", ""))
+            return truncate_status(f"Running {command}") if command else None
+        case "file_change":
+            changes = item.get("changes") or []
+            names = [
+                f"{_FILE_CHANGE_VERBS.get(change.get('kind'), 'Editing')} "
+                f"{os.path.basename(change.get('path', 'file'))}"
+                for change in changes
+                if isinstance(change, dict)
+            ]
+            if not names:
+                return None
+            extra = f" (+{len(names) - 1} more)" if len(names) > 1 else ""
+            return truncate_status(names[0] + extra)
+        case "reasoning":
+            return "Thinking"
+        case "web_search":
+            query = item.get("query", "")
+            return truncate_status(f"Searching: {query}") if query else "Searching"
+        case "mcp_tool_call":
+            tool = item.get("tool") or item.get("name") or "tool"
+            return truncate_status(f"Using {tool}")
+        case _:
+            return None
 
 
 def resolve_codex_model(model: str) -> str:
@@ -99,6 +145,10 @@ class CodexProvider(BaseProvider):
             msg = event.get("message")
             if isinstance(msg, str) and msg:
                 events.append(StreamEvent(kind="error", text=msg))
+        elif event_type == "item.started":
+            status = _item_status(event.get("item", {}))
+            if status:
+                events.append(StreamEvent(kind="status", text=status))
         elif event_type == "item.completed":
             item = event.get("item", {})
             if item.get("type") == "agent_message":

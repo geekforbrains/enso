@@ -4,15 +4,28 @@ from __future__ import annotations
 
 import json
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import ClassVar, Literal
+
+# Status text is shown in a chat bubble alongside a header, so it has to
+# stay on one short line.
+STATUS_TEXT_LIMIT = 80
+
+
+def truncate_status(text: str, limit: int = STATUS_TEXT_LIMIT) -> str:
+    """Collapse status text to a single line that fits a status message."""
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[: limit - 1].rstrip() + "…"
 
 
 @dataclass
 class StreamEvent:
     """Unified event type emitted by all providers."""
 
-    kind: Literal["response", "session", "error"]
+    kind: Literal["response", "session", "error", "status"]
     text: str = ""
     session_id: str | None = None
 
@@ -140,6 +153,18 @@ class BaseProvider(ABC):
     def finalize_events(self) -> list[StreamEvent]:
         """Return metadata discovered outside stdout after a process finishes."""
         return []
+
+    async def poll_progress(self) -> AsyncIterator[StreamEvent]:
+        """Yield ``status`` events discovered outside stdout while running.
+
+        The runtime drains this concurrently with the provider process, so
+        providers whose stdout carries no progress (see ``streaming_output``)
+        can still report activity. Progress is decorative: the runtime
+        swallows whatever this raises and falls back to the elapsed timer,
+        so implementations may read best-effort sources freely.
+        """
+        return
+        yield  # pragma: no cover - makes this an async generator
 
     def clear_session(self, session_id: str | None, working_dir: str) -> str:
         """Clear session data. Returns human-readable summary."""

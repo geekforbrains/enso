@@ -40,38 +40,56 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-PROGRESS_MESSAGES = (
-    "Thinking hard",
-    "Crunching data",
-    "Poking at files",
-    "Grabbing a coffee",
-    "Connecting dots",
-    "Following breadcrumbs",
-    "Turning over rocks",
-    "Untangling things",
-    "Reading the fine print",
-    "Asking electrons nicely",
-)
+_LEADING_ERROR_RE = re.compile(r"^(?:error\s*:\s*)+", re.IGNORECASE)
 
 
-def progress_text(elapsed: int) -> str:
-    """Return the provider-neutral progress text for an elapsed second."""
-    message = PROGRESS_MESSAGES[elapsed % len(PROGRESS_MESSAGES)]
-    return f"({elapsed}s) {message}"
+def _format_error(text: str) -> str:
+    """Return an error message with exactly one leading ``Error:`` label."""
+    body = _LEADING_ERROR_RE.sub("", text.strip()).strip()
+    return f"Error: {body}" if body else "Error:"
+
+
+# Keep the clock visibly alive while most requests are still young, then
+# reduce the edit rate to stay comfortably inside transport limits.
+STATUS_FAST_UPDATE_SECONDS = 30
+STATUS_SLOW_UPDATE_SECONDS = 5
+# Consecutive edit failures tolerated before status updates are abandoned for
+# the rest of the request. One blip (a transient 429) shouldn't cost the user
+# every later update.
+STATUS_MAX_EDIT_FAILURES = 3
+
+
+def format_elapsed(seconds: int) -> str:
+    """Render an elapsed duration compactly: 45s, 2m 05s, 1h 12m."""
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, secs = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m {secs:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes:02d}m"
+
+
+def status_header(provider: str, model: str, effort: str | None = None) -> str:
+    """Return the fixed context line identifying what is handling a request."""
+    parts = [provider, model]
+    if effort:
+        parts.append(effort)
+    return " · ".join(parts)
+
+
+def status_text(header: str, elapsed: int, action: str | None = None) -> str:
+    """Render the status message: context and clock, plus the current action."""
+    line = f"{header} · {format_elapsed(elapsed)}"
+    return f"{line}\n↳ {action}" if action else line
 
 
 def _status_edit_due(elapsed: int) -> bool:
-    """Return whether the status message should be edited at this tick.
-
-    Edit every second through 10 seconds, every 2 seconds through 60 seconds,
-    then every 5 seconds. This keeps early feedback responsive without
-    continuously consuming transport rate limits during long requests.
-    """
-    if elapsed <= 10:
-        return True
-    if elapsed <= 60:
-        return elapsed % 2 == 0
-    return elapsed % 5 == 0
+    """Update every second through 30s, then on five-second boundaries."""
+    return (
+        elapsed <= STATUS_FAST_UPDATE_SECONDS
+        or elapsed % STATUS_SLOW_UPDATE_SECONDS == 0
+    )
 
 
 async def _cancel_and_wait(task: asyncio.Task[Any]) -> BaseException | None:
@@ -1241,9 +1259,50 @@ class Runtime:
                         yield stream_event
                 await process.wait()
             else:
-                stdout_data, stderr_data = await process.communicate()
+                # stdout arrives in one piece at the end, so progress has to
+                # be drained from the provider's own side channel while the
+                # process runs. Both feed one queue; the sentinel marks the
+                # process exiting, never the poller.
+                queue: asyncio.Queue[StreamEvent | None] = asyncio.Queue()
+                captured: dict[str, bytes] = {}
+
+                async def run_to_completion() -> None:
+                    try:
+                        out, err = await process.communicate()
+                        captured["stdout"], captured["stderr"] = out, err
+                    finally:
+                        await queue.put(None)
+
+                async def pump_progress() -> None:
+                    try:
+                        async for status_event in provider.poll_progress():
+                            await queue.put(status_event)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        # Progress is decorative; the elapsed ticker carries on.
+                        log.debug(
+                            "[%s] progress polling stopped early",
+                            provider.name, exc_info=True,
+                        )
+
+                runner = asyncio.create_task(run_to_completion())
+                poller = asyncio.create_task(pump_progress())
+                try:
+                    while True:
+                        queued = await queue.get()
+                        if queued is None:
+                            break
+                        yield queued
+                    await runner
+                finally:
+                    await _cancel_and_wait(poller)
+                    if not runner.done():
+                        await _cancel_and_wait(runner)
+
+                stderr_data = captured.get("stderr")
                 parsed_events = provider.parse_complete_output(
-                    stdout_data.decode(errors="replace")
+                    captured.get("stdout", b"").decode(errors="replace")
                 )
                 event_count += len(parsed_events)
                 for stream_event in parsed_events:
@@ -1329,13 +1388,16 @@ class Runtime:
             log.debug("[%s] full_prompt:\n%s", provider_name, prompt)
 
         await ctx.send_typing()
+        header = status_header(provider_name, model, effort)
         status_msg = None
         try:
-            status_msg = await ctx.reply_status(progress_text(0))
+            status_msg = await ctx.reply_status(status_text(header, 0))
         except Exception:
             log.warning("Failed to send initial status message for chat %s", chat_id, exc_info=True)
-        state = {
+        state: dict[str, Any] = {
             "elapsed": 0,
+            "header": header,
+            "action": None,
         }
         stop = asyncio.Event()
         ticker = asyncio.create_task(self._run_ticker(ctx, status_msg, state, stop))
@@ -1371,6 +1433,9 @@ class Runtime:
                     )
                 if event.kind == "response":
                     response_parts.append(event.text)
+                elif event.kind == "status":
+                    # The ticker owns delivery; this only records the latest.
+                    state["action"] = event.text
                 elif event.kind == "error":
                     error_text = event.text
 
@@ -1466,7 +1531,7 @@ class Runtime:
             )
 
             if error_text:
-                await ctx.reply(f"Error: {error_text[:4000]}")
+                await ctx.reply(_format_error(error_text[:4000]))
             elif response_text:
                 for chunk in split_text(response_text, limit=msg_limit):
                     await ctx.reply(chunk)
@@ -1486,7 +1551,7 @@ class Runtime:
             if status_msg is not None:
                 with contextlib.suppress(Exception):
                     await ctx.delete_status(status_msg)
-            for chunk in split_text(f"Error: {exc}", limit=msg_limit):
+            for chunk in split_text(_format_error(str(exc)), limit=msg_limit):
                 await ctx.reply(chunk)
 
     @staticmethod
@@ -1501,25 +1566,39 @@ class Runtime:
     async def _run_ticker(
         self, ctx: TransportContext, status_msg: Any | None, state: dict, stop: asyncio.Event
     ) -> None:
-        """Background task that updates status and typing indicator."""
+        """Background task that updates status and typing indicator.
+
+        The clock advances visibly every second through the first 30 seconds,
+        then updates every five seconds to conserve transport rate limits.
+        Each edit includes the latest provider activity available at that tick.
+        """
         status_updates_enabled = status_msg is not None
+        failures = 0
         while not stop.is_set():
             await asyncio.sleep(1)
             if stop.is_set():
                 break
             state["elapsed"] += 1
-            if status_updates_enabled and _status_edit_due(state["elapsed"]):
-                text = progress_text(state["elapsed"])
+            elapsed = state["elapsed"]
+            action = state.get("action")
+            if status_updates_enabled and _status_edit_due(elapsed):
+                text = status_text(state["header"], elapsed, action)
                 try:
                     await asyncio.wait_for(ctx.edit_status(status_msg, text), timeout=5.0)
+                    failures = 0
                 except Exception:
-                    status_updates_enabled = False
-                    log.warning(
-                        "Disabling status updates for current request after edit failure",
-                        exc_info=True,
-                    )
+                    failures += 1
+                    if failures >= STATUS_MAX_EDIT_FAILURES:
+                        status_updates_enabled = False
+                        log.warning(
+                            "Disabling status updates for current request after "
+                            "%d consecutive edit failures",
+                            failures, exc_info=True,
+                        )
+                    else:
+                        log.debug("Status edit failed; will retry", exc_info=True)
             # Refresh typing indicator every 4s (expires after 5s)
-            if state["elapsed"] % 4 == 0:
+            if elapsed % 4 == 0:
                 with contextlib.suppress(Exception):
                     await ctx.send_typing()
 

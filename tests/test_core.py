@@ -7,6 +7,7 @@ import hashlib
 import importlib.resources
 import json
 import os
+import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -16,14 +17,15 @@ from enso import core as core_module
 from enso import messages
 from enso.config import SKILL_TOMBSTONES_DIRNAME
 from enso.core import (
-    PROGRESS_MESSAGES,
     Runtime,
     _redacted_command,
-    progress_text,
+    format_elapsed,
     split_text,
+    status_header,
+    status_text,
 )
 from enso.jobs import Job
-from enso.providers import StreamEvent
+from enso.providers import BaseProvider, StreamEvent
 from enso.providers.agy import AgyProvider
 from enso.providers.claude import ClaudeProvider
 
@@ -48,11 +50,26 @@ def test_split_text_long_line():
     assert "".join(chunks) == text
 
 
-def test_progress_text_rotates_with_elapsed_seconds():
-    assert progress_text(0) == f"(0s) {PROGRESS_MESSAGES[0]}"
-    assert progress_text(1) == f"(1s) {PROGRESS_MESSAGES[1]}"
-    elapsed = len(PROGRESS_MESSAGES)
-    assert progress_text(elapsed) == f"({elapsed}s) {PROGRESS_MESSAGES[0]}"
+def test_format_elapsed_switches_units_as_a_run_lengthens():
+    assert format_elapsed(0) == "0s"
+    assert format_elapsed(59) == "59s"
+    assert format_elapsed(60) == "1m 00s"
+    assert format_elapsed(125) == "2m 05s"
+    assert format_elapsed(3600) == "1h 00m"
+    assert format_elapsed(4320) == "1h 12m"
+
+
+def test_status_header_omits_effort_when_the_provider_has_none():
+    assert status_header("claude", "opus", "high") == "claude · opus · high"
+    assert status_header("agy", "gemini-3.6-flash-low") == "agy · gemini-3.6-flash-low"
+
+
+def test_status_text_appends_the_current_action_when_one_is_known():
+    header = "claude · opus · high"
+    assert status_text(header, 12) == "claude · opus · high · 12s"
+    assert status_text(header, 12, "Reading core.py") == (
+        "claude · opus · high · 12s\n↳ Reading core.py"
+    )
 
 
 def test_redacted_command_hides_agy_prompt():
@@ -891,7 +908,7 @@ async def test_process_request_uses_normalized_status_and_plain_final_response(s
     rt.run_provider = fake_run
     await rt.process_request("claude", "hello", "1", ctx)
 
-    assert ctx.statuses == ["(0s) Thinking hard"]
+    assert ctx.statuses == ["claude · opus · high · 0s"]
     assert ctx.deleted == ["handle"]
     assert ctx.replies == ["Done"]
 
@@ -913,7 +930,7 @@ async def test_process_request_terminal_error_wins_over_partial_response(sample_
 
     async def failed_run(*args, **kwargs):
         yield StreamEvent(kind="response", text="partial output")
-        yield StreamEvent(kind="error", text="provider failed")
+        yield StreamEvent(kind="error", text="Error: provider failed")
 
     ctx = FakeCtx()
     rt.run_provider = failed_run
@@ -921,6 +938,32 @@ async def test_process_request_terminal_error_wins_over_partial_response(sample_
     await rt.process_request("claude", "hello", "1", ctx)
 
     assert ctx.replies == ["Error: provider failed"]
+
+
+@pytest.mark.asyncio
+async def test_process_request_collapses_repeated_case_insensitive_error_prefixes(
+    sample_config,
+):
+    rt = Runtime(sample_config)
+
+    class FakeCtx:
+        def __init__(self): self.replies = []
+        async def reply(self, text): self.replies.append(text)
+        async def reply_status(self, text): return "handle"
+        async def edit_status(self, handle, text): pass
+        async def delete_status(self, handle): pass
+        async def send_typing(self): pass
+        def get_origin_env(self): return {}
+
+    async def failed_run(*args, **kwargs):
+        yield StreamEvent(kind="error", text="error: ERROR: quota reached")
+
+    ctx = FakeCtx()
+    rt.run_provider = failed_run
+
+    await rt.process_request("agy", "hello", "1", ctx)
+
+    assert ctx.replies == ["Error: quota reached"]
 
 
 @pytest.mark.asyncio
@@ -963,7 +1006,7 @@ async def test_process_request_timeout_stops_provider_and_queues_scoped_notice(
     )
 
     assert provider_cancelled.is_set()
-    assert ctx.statuses == ["(0s) Thinking hard"]
+    assert ctx.statuses == ["claude · opus · 0s"]
     assert len(ctx.edits) == 1
     assert "timeout" in ctx.edits[0].lower()
     assert ctx.edits[0] != "Stopped."
@@ -1226,17 +1269,199 @@ async def test_manual_cancellation_wins_race_with_timeout_cleanup(
 
 
 @pytest.mark.asyncio
-async def test_ticker_uses_progressive_status_edit_cadence(sample_config, monkeypatch):
+async def test_run_provider_streams_progress_while_a_batch_provider_runs(sample_config):
+    """A provider whose stdout lands only at exit still reports live activity."""
     rt = Runtime(sample_config)
+    finish = asyncio.Event()
+    progress_exhausted = asyncio.Event()
+
+    class FakeProcess:
+        pid = 99
+        returncode = None
+        stdout = object()
+        stderr = object()
+
+        async def communicate(self):
+            await finish.wait()
+            self.returncode = 0
+            return b"the answer", b""
+
+    class BatchProvider(BaseProvider):
+        name = "agy"
+        streaming_output = False
+
+        def build_command(self, prompt, model, session_id=None, *, effort=None):
+            return ["fake"]
+
+        def build_batch_command(self, prompt, model, *, effort=None):
+            return ["fake"]
+
+        def parse_event(self, event):
+            return []
+
+        async def poll_progress(self):
+            for action in ("Reading notes file", "Listing files"):
+                yield StreamEvent(kind="status", text=action)
+            progress_exhausted.set()
+            await asyncio.Event().wait()  # a real poller runs until cancelled
+
+    async def fake_spawn(*args, **kwargs):
+        return FakeProcess()
+
+    rt._spawn_process = fake_spawn
+    collected = []
+
+    async def drain():
+        async for event in rt.run_provider(BatchProvider("fake"), "hi", "chat-a", "m"):
+            collected.append(event)
+            if len(collected) == 2:
+                # Progress must arrive before the process has produced stdout.
+                await progress_exhausted.wait()
+                finish.set()
+
+    await asyncio.wait_for(drain(), timeout=2)
+
+    assert [(e.kind, e.text) for e in collected] == [
+        ("status", "Reading notes file"),
+        ("status", "Listing files"),
+        ("response", "the answer"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_provider_survives_a_failing_progress_poller(sample_config):
+    """Best-effort progress must never break the actual request."""
+    rt = Runtime(sample_config)
+
+    class FakeProcess:
+        pid = 100
+        returncode = 0
+        stdout = object()
+        stderr = object()
+
+        async def communicate(self):
+            return b"still fine", b""
+
+    class BrokenProgressProvider(BaseProvider):
+        name = "agy"
+        streaming_output = False
+
+        def build_command(self, prompt, model, session_id=None, *, effort=None):
+            return ["fake"]
+
+        def build_batch_command(self, prompt, model, *, effort=None):
+            return ["fake"]
+
+        def parse_event(self, event):
+            return []
+
+        async def poll_progress(self):
+            raise sqlite3.DatabaseError("trajectory schema moved")
+            yield  # pragma: no cover
+
+    async def fake_spawn(*args, **kwargs):
+        return FakeProcess()
+
+    rt._spawn_process = fake_spawn
+    collected = [
+        event
+        async for event in rt.run_provider(
+            BrokenProgressProvider("fake"), "hi", "chat-a", "m",
+        )
+    ]
+
+    assert [(e.kind, e.text) for e in collected] == [("response", "still fine")]
+
+
+class _EditRecorder:
+    """Ticker context that stops the loop once it has seen enough edits."""
+
+    def __init__(self, stop, stop_after):
+        self._stop = stop
+        self._stop_after = stop_after
+        self.edits = []
+
+    async def edit_status(self, handle, text):
+        self.edits.append(text)
+        if len(self.edits) >= self._stop_after:
+            self._stop.set()
+
+    async def send_typing(self): pass
+
+
+@pytest.mark.asyncio
+async def test_ticker_updates_every_second_with_latest_action(sample_config, monkeypatch):
+    rt = Runtime(sample_config)
+    actions = ["Reading core.py", "Running pytest", "Writing report.md"]
+    state = {"elapsed": 0, "header": "claude · opus · high", "action": None}
+    stop = asyncio.Event()
+    ticks = {"n": 0}
+
+    async def no_wait(_seconds):
+        # Stand in for the provider reporting a new action every second.
+        if ticks["n"] < len(actions):
+            state["action"] = actions[ticks["n"]]
+        ticks["n"] += 1
+        return None
+
+    monkeypatch.setattr(core_module.asyncio, "sleep", no_wait)
+    ctx = _EditRecorder(stop, stop_after=len(actions))
+    await rt._run_ticker(ctx, "handle", state, stop)
+
+    assert ctx.edits == [
+        "claude · opus · high · 1s\n↳ Reading core.py",
+        "claude · opus · high · 2s\n↳ Running pytest",
+        "claude · opus · high · 3s\n↳ Writing report.md",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ticker_switches_from_one_second_to_five_second_updates(
+    sample_config, monkeypatch,
+):
+    rt = Runtime(sample_config)
+    state = {"elapsed": 0, "header": "agy · gemini-3.6-flash", "action": None}
+    stop = asyncio.Event()
+    ticks = {"n": 0}
+
+    async def no_wait(_seconds):
+        ticks["n"] += 1
+        if ticks["n"] == 33:
+            state["action"] = "Reading trajectory"
+        return None
+
+    monkeypatch.setattr(core_module.asyncio, "sleep", no_wait)
+    ctx = _EditRecorder(stop, stop_after=32)
+    await rt._run_ticker(ctx, "handle", state, stop)
+
+    assert ctx.edits[:30] == [
+        f"agy · gemini-3.6-flash · {second}s" for second in range(1, 31)
+    ]
+    assert ctx.edits[30:] == [
+        "agy · gemini-3.6-flash · 35s\n↳ Reading trajectory",
+        "agy · gemini-3.6-flash · 40s\n↳ Reading trajectory",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ticker_survives_a_transient_edit_failure(sample_config, monkeypatch):
+    """One failed edit must not silence status for the rest of the request."""
+    rt = Runtime(sample_config)
+    state = {"elapsed": 0, "header": "codex · terra", "action": "Running ls"}
     stop = asyncio.Event()
 
-    class FakeCtx:
+    class FlakyCtx:
         def __init__(self):
             self.edits = []
+            self.attempts = 0
 
         async def edit_status(self, handle, text):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise RuntimeError("429 slow down")
             self.edits.append(text)
-            if text == progress_text(65):
+            state["action"] = f"step {len(self.edits)}"
+            if len(self.edits) == 2:
                 stop.set()
 
         async def send_typing(self): pass
@@ -1245,14 +1470,11 @@ async def test_ticker_uses_progressive_status_edit_cadence(sample_config, monkey
         return None
 
     monkeypatch.setattr(core_module.asyncio, "sleep", no_wait)
-    ctx = FakeCtx()
-    state = {"elapsed": 0}
-
+    ctx = FlakyCtx()
     await rt._run_ticker(ctx, "handle", state, stop)
 
-    expected_seconds = [*range(1, 11), *range(12, 61, 2), 65]
-    assert ctx.edits == [progress_text(elapsed) for elapsed in expected_seconds]
-    assert state["elapsed"] == 65
+    assert ctx.attempts == 3
+    assert len(ctx.edits) == 2
 
 
 def test_should_run_job_invalid_schedule_is_skipped(sample_config):

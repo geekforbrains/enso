@@ -6,7 +6,41 @@ import os
 from pathlib import Path
 from typing import ClassVar
 
-from . import BaseProvider, StreamEvent
+from . import BaseProvider, StreamEvent, truncate_status
+
+
+def _tool_status(tool_name: str, tool_input: dict) -> str:
+    """Describe a tool call in one human-readable line.
+
+    Some tools (Bash, Task) carry a model-written ``description``, which
+    reads better than anything derived from the raw arguments; fall back to
+    formatting the arguments for the tools that don't.
+    """
+    description = tool_input.get("description")
+    if isinstance(description, str) and description.strip():
+        return truncate_status(description)
+
+    match tool_name:
+        case "Read":
+            return f"Reading {os.path.basename(tool_input.get('file_path', 'file'))}"
+        case "Write":
+            return f"Writing {os.path.basename(tool_input.get('file_path', 'file'))}"
+        case "Edit" | "NotebookEdit":
+            return f"Editing {os.path.basename(tool_input.get('file_path', 'file'))}"
+        case "Bash":
+            return truncate_status(f"Running {tool_input.get('command', '')}")
+        case "Glob":
+            return f"Finding {truncate_status(tool_input.get('pattern', ''))}"
+        case "Grep":
+            return f"Searching for {truncate_status(tool_input.get('pattern', ''))}"
+        case "WebFetch":
+            return f"Fetching {truncate_status(tool_input.get('url', ''), 40)}"
+        case "WebSearch":
+            return f"Searching: {truncate_status(tool_input.get('query', ''))}"
+        case "Agent" | "Task":
+            return "Running subagent"
+        case _:
+            return f"Using {truncate_status(tool_name, 40)}"
 
 
 def _get_project_dir(working_dir: str) -> str:
@@ -91,7 +125,19 @@ class ClaudeProvider(BaseProvider):
             )
             for block in message.get("content", []):
                 block_type = block.get("type")
-                if block_type == "text" and block.get("text"):
+                if block_type == "thinking":
+                    # Recent models return the thinking text redacted, so
+                    # only the fact that it happened is reliably available.
+                    summary = truncate_status(block.get("thinking", "") or "")
+                    events.append(
+                        StreamEvent(kind="status", text=summary or "Thinking")
+                    )
+                elif block_type == "tool_use":
+                    events.append(StreamEvent(
+                        kind="status",
+                        text=_tool_status(block.get("name", ""), block.get("input", {})),
+                ))
+                elif block_type == "text" and block.get("text"):
                     kind = "error" if is_api_error else "response"
                     events.append(StreamEvent(kind=kind, text=block["text"]))
 
