@@ -5,7 +5,7 @@
    markup so autoescaping stays on. #}
 {% macro delete_control(action, kind, label, cancel_url, csrf_token,
                         hidden_name="", hidden_value="", detail="") %}
-  <details class="relative">
+  <details class="relative ml-auto sm:ml-0">
     <summary class="touch-target inline-flex cursor-pointer list-none items-center rounded-md border
                     border-red-300 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50
                     focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500
@@ -13,12 +13,12 @@
                     dark:hover:bg-red-950/40">
       Delete
     </summary>
-    <div class="absolute right-0 z-10 mt-2 w-72 rounded-lg border border-gray-200 bg-white
-                p-4 text-left shadow-xl dark:border-neutral-700 dark:bg-neutral-800">
+    <div class="absolute right-0 z-10 mt-2 w-72 rounded-xl border border-border bg-surface
+                p-4 text-left shadow-xl">
       <p id="{{ kind }}-delete-warning" class="text-sm font-medium">
         Delete “{{ label }}” from disk?
       </p>
-      <p class="mt-1 text-sm text-gray-500 dark:text-neutral-400">
+      <p class="mt-1 text-sm text-muted">
         {{ detail or "Every file in its directory will be removed. This cannot be undone." }}
       </p>
       <div class="mt-3 flex items-center gap-2">
@@ -34,8 +34,8 @@
         </form>
         <a href="{{ cancel_url }}"
            class="touch-target inline-flex items-center rounded-md px-3 py-2 text-sm font-medium
-                  text-gray-600 hover:bg-gray-100 focus:outline-none focus-visible:ring-2
-                  focus-visible:ring-indigo-500 dark:text-neutral-300 dark:hover:bg-neutral-700">
+                  text-muted hover:bg-surface-muted hover:text-ink focus:outline-none
+                  focus-visible:ring-2 focus-visible:ring-focus">
           Cancel
         </a>
       </div>
@@ -52,11 +52,32 @@
 
 {% macro btn_primary(label) %}
   <button type="submit"
-          class="touch-target rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white
-                 hover:bg-indigo-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500
-                 focus-visible:ring-offset-2">
+          class="touch-target rounded-md bg-action px-4 py-2 text-sm font-medium text-action-text
+                 hover:bg-action-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-focus
+                 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas">
     {{ label }}
   </button>
+{% endmacro %}
+
+{% macro btn_secondary(label) %}
+  <button type="submit"
+          class="touch-target rounded-md border border-border-strong bg-surface px-4 py-2
+                 text-sm font-medium text-ink transition-colors hover:bg-surface-muted
+                 focus:outline-none focus-visible:ring-2 focus-visible:ring-focus">
+    {{ label }}
+  </button>
+{% endmacro %}
+
+{% macro back_link(href, label) %}
+  <a href="{{ href }}"
+     class="text-sm font-medium text-muted transition-colors hover:text-ink hover:underline
+            hover:decoration-border-strong hover:underline-offset-4">&larr; {{ label }}</a>
+{% endmacro %}
+
+{% macro text_link(href, label) %}
+  <a href="{{ href }}"
+     class="text-sm font-medium text-ink underline decoration-border-strong underline-offset-4
+            transition-colors hover:decoration-ink">{{ label }}</a>
 {% endmacro %}
 
 {# Card-styled POST form with a monospace textarea and a save button.
@@ -64,16 +85,15 @@
 {% macro editor_form(action, field_id, label, content, button_label, rows, csrf_token,
                      extra="", hidden_name="", hidden_value="") %}
   <form method="post" action="{{ action }}"
-        class="rounded-lg border border-gray-200 bg-white p-4 shadow-sm
-               dark:border-neutral-700 dark:bg-neutral-800 {{ extra }}">
+        class="rounded-xl border border-border bg-surface p-5 {{ extra }}">
     <input type="hidden" name="_csrf" value="{{ csrf_token }}">
     {% if hidden_name %}<input type="hidden" name="{{ hidden_name }}" value="{{ hidden_value }}">{% endif %}
     {% if caller %}{{ caller() }}{% endif %}
     <label for="{{ field_id }}" class="sr-only">{{ label }}</label>
     <textarea id="{{ field_id }}" name="content" rows="{{ rows }}" spellcheck="false"
-              class="w-full rounded-md border border-gray-300 bg-white px-3 py-2 font-mono text-sm
-                     focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500
-                     dark:border-neutral-600 dark:bg-neutral-900 dark:text-gray-100">{{ content }}</textarea>
+              class="w-full rounded-lg border border-border-strong bg-canvas px-3 py-2 font-mono
+                     text-sm text-ink focus:border-focus focus:outline-none focus:ring-1
+                     focus:ring-focus">{{ content }}</textarea>
     <div class="mt-3">
       {{ btn_primary(button_label) }}
     </div>
@@ -81,37 +101,37 @@
 {% endmacro %}
 
 {% macro run_row(r, show_id=true) %}
-  <tr class="border-t border-gray-100 dark:border-neutral-700">
+  <tr class="border-t border-border">
     {% if show_id %}
       <td class="py-3 pr-4">
-        <a href="/runs/{{ r.id }}" class="font-mono text-xs text-indigo-600 hover:underline
-                                           dark:text-indigo-400">{{ r.id[:8] }}</a>
+        <a href="/runs/{{ r.id }}" class="font-mono text-xs text-muted hover:text-ink
+                                           hover:underline">{{ r.id[:8] }}</a>
       </td>
     {% endif %}
     <td class="whitespace-nowrap py-3 pr-4 text-sm">{{ r.kind }}</td>
     <td class="min-w-48 py-3 pr-4 text-sm font-medium">
-      <a href="/runs/{{ r.id }}" class="hover:text-indigo-600 dark:hover:text-indigo-400">
+      <a href="/runs/{{ r.id }}" class="hover:underline">
         {{ r.title or r.name }}
       </a>
     </td>
     <td class="whitespace-nowrap py-3 pr-4">{{ run_badge(r.status) }}</td>
-    <td class="whitespace-nowrap py-3 pr-4 text-sm text-gray-500 dark:text-neutral-400">{{ r.trigger }}</td>
-    <td class="whitespace-nowrap py-3 pr-4 text-sm text-gray-500 dark:text-neutral-400">{{ r.started_at | fmt_ts }}</td>
-    <td class="whitespace-nowrap py-3 text-sm text-gray-500 dark:text-neutral-400">{{ r.duration_ms | fmt_duration }}</td>
+    <td class="whitespace-nowrap py-3 pr-4 text-sm text-muted">{{ r.trigger }}</td>
+    <td class="whitespace-nowrap py-3 pr-4 text-sm text-muted">{{ r.started_at | fmt_ts }}</td>
+    <td class="whitespace-nowrap py-3 text-sm text-muted">{{ r.duration_ms | fmt_duration }}</td>
   </tr>
 {% endmacro %}
 
 {% macro run_card(r, show_provider=false) %}
   <a href="/runs/{{ r.id }}"
-     class="block py-4 transition first:pt-0 last:pb-0 hover:text-indigo-700
-            dark:hover:text-indigo-300">
+     class="-mx-3 block rounded-lg px-3 py-4 transition-colors first:pt-0 last:pb-0
+            hover:bg-surface-muted">
     <div class="flex min-w-0 items-start justify-between gap-3">
       <div class="min-w-0">
-        <p class="break-words text-sm font-semibold text-gray-900 dark:text-gray-100">
+        <p class="break-words text-sm font-semibold text-ink">
           {{ r.title or r.name }}
         </p>
         <div class="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs
-                    text-gray-500 dark:text-neutral-400">
+                    text-muted">
           <span>{{ r.kind }}</span><span aria-hidden="true">·</span><span>{{ r.trigger }}</span>
           {% if show_provider and r.provider %}
             <span aria-hidden="true">·</span>
@@ -122,8 +142,8 @@
       {{ run_badge(r.status) }}
     </div>
     <div class="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs
-                text-gray-500 dark:text-neutral-400">
-      <span class="font-mono text-indigo-600 dark:text-indigo-400">{{ r.id[:8] }}</span>
+                text-muted">
+      <span class="font-mono text-ink">{{ r.id[:8] }}</span>
       <span aria-hidden="true">·</span><span>{{ r.started_at | fmt_ts }}</span>
       {% if r.duration_ms is not none %}
         <span aria-hidden="true">·</span><span>{{ r.duration_ms | fmt_duration }}</span>
@@ -138,19 +158,19 @@
 {% macro related_run(r) %}
   <a href="/runs/{{ r.id }}"
      class="flex min-w-0 items-center justify-between gap-3 py-3 first:pt-0 last:pb-0
-            hover:text-indigo-700 dark:hover:text-indigo-300">
+            hover:underline">
     <div class="min-w-0">
       <div class="flex flex-wrap items-center gap-2">
         {{ run_badge(r.status) }}
-        <span class="text-sm text-gray-700 dark:text-neutral-300">{{ r.started_at | fmt_ts }}</span>
+        <span class="text-sm text-ink">{{ r.started_at | fmt_ts }}</span>
       </div>
-      <div class="mt-1 flex flex-wrap items-center gap-x-1.5 text-xs text-gray-500 dark:text-neutral-400">
+      <div class="mt-1 flex flex-wrap items-center gap-x-1.5 text-xs text-muted">
         <span>{{ r.trigger }}</span><span aria-hidden="true">·</span>
         <span class="font-mono">{{ r.id[:8] }}</span>
       </div>
     </div>
     {% if r.duration_ms is not none %}
-      <span class="shrink-0 text-xs text-gray-500 dark:text-neutral-400">
+      <span class="shrink-0 text-xs text-muted">
         {{ r.duration_ms | fmt_duration }}
       </span>
     {% endif %}

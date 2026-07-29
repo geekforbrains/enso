@@ -5,8 +5,8 @@
 {% block content %}
 <div class="mb-4">
   <h1 class="text-2xl font-semibold tracking-tight">AGENTS.md</h1>
-  <p class="mt-1 text-sm text-gray-500 dark:text-neutral-400">Shared instructions for every agent in this workspace.</p>
-  <div class="break-anywhere mt-2 font-mono text-xs text-gray-400 dark:text-neutral-500">{{ path }}</div>
+  <p class="mt-1 text-sm text-muted">Shared instructions for every agent in this workspace.</p>
+  <div class="break-anywhere mt-2 font-mono text-xs text-faint">{{ path }}</div>
 </div>
 
 {{ editor_form("/agents/edit", "agents-content", "AGENTS.md content",

@@ -1,13 +1,13 @@
 {% extends "base.html" %}
-{% from "macros.html" import delete_control, editor_form %}
+{% from "macros.html" import back_link, delete_control, editor_form %}
 {% block title %}{{ doc.name }} · Docs · enso{% endblock %}
 
 {% block content %}
 <div class="mb-4 flex flex-wrap items-center gap-2">
-  <a href="/docs" class="text-sm text-indigo-600 hover:underline dark:text-indigo-400">&larr; Docs</a>
+  {{ back_link("/docs", "Docs") }}
   {% for title in breadcrumb %}
-    <span class="text-sm text-gray-400 dark:text-neutral-500" aria-hidden="true">/</span>
-    <span class="text-sm text-gray-500 dark:text-neutral-400">{{ title }}</span>
+    <span class="text-sm text-faint" aria-hidden="true">/</span>
+    <span class="text-sm text-muted">{{ title }}</span>
   {% endfor %}
 </div>
 
@@ -20,7 +20,7 @@
                      text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">needs frontmatter</span>
       {% endif %}
     </div>
-    <div class="break-anywhere mt-2 font-mono text-xs text-gray-400 dark:text-neutral-500">{{ doc.rel_path }}</div>
+    <div class="break-anywhere mt-2 font-mono text-xs text-faint">{{ doc.rel_path }}</div>
   </div>
   {{ delete_control("/docs/delete", "doc", doc.rel_path, "/docs/" ~ doc.rel_path, csrf_token,
                     "path", doc.rel_path,

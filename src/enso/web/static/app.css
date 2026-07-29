@@ -1,5 +1,41 @@
 /* Supplemental styles for behaviour outside the vendored Tailwind utilities. */
 
+/* Semantic neutrals keep templates independent of a particular palette step.
+   Values are stored as channels so Tailwind's opacity modifiers still work. */
+:root {
+  --enso-canvas: 250 250 250;
+  --enso-surface: 255 255 255;
+  --enso-surface-muted: 245 245 245;
+  --enso-surface-hover: 238 238 238;
+  --enso-border: 229 229 229;
+  --enso-border-strong: 212 212 212;
+  --enso-ink: 23 23 23;
+  --enso-muted: 82 82 82;
+  --enso-faint: 105 105 105;
+  --enso-action: 38 38 38;
+  --enso-action-hover: 64 64 64;
+  --enso-action-text: 250 250 250;
+  --enso-focus: 82 82 82;
+  --enso-overlay: 23 23 23;
+}
+
+html.dark {
+  --enso-canvas: 23 23 23;
+  --enso-surface: 31 31 31;
+  --enso-surface-muted: 38 38 38;
+  --enso-surface-hover: 47 47 47;
+  --enso-border: 64 64 64;
+  --enso-border-strong: 82 82 82;
+  --enso-ink: 250 250 250;
+  --enso-muted: 163 163 163;
+  --enso-faint: 150 150 150;
+  --enso-action: 245 245 245;
+  --enso-action-hover: 229 229 229;
+  --enso-action-text: 23 23 23;
+  --enso-focus: 212 212 212;
+  --enso-overlay: 23 23 23;
+}
+
 /* Keep native controls aligned with the effective color scheme. */
 html {
   color-scheme: light;
@@ -12,23 +48,23 @@ html.dark {
 /* The active theme state is driven by aria-pressed so the selector remains
    visually and semantically in sync after HTMX navigation. */
 .theme-option[aria-pressed="true"] {
-  background: #fff;
-  color: #4338ca;
+  background: rgb(var(--enso-surface));
+  color: rgb(var(--enso-ink));
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.08);
 }
 
 .dark .theme-option[aria-pressed="true"] {
-  background: #404040;
-  color: #c7d2fe;
+  background: rgb(var(--enso-surface-hover));
+  color: rgb(var(--enso-ink));
 }
 
 .theme-option:focus-visible {
-  outline: 2px solid #6366f1;
+  outline: 2px solid rgb(var(--enso-focus));
   outline-offset: 1px;
 }
 
 :where(a, button, summary):focus-visible {
-  outline: 2px solid #6366f1;
+  outline: 2px solid rgb(var(--enso-focus));
   outline-offset: 2px;
 }
 
@@ -37,7 +73,7 @@ select:not([multiple]) {
   -webkit-appearance: none;
   appearance: none;
   cursor: pointer;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%236b7280' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 8 4 4 4-4'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23696969' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 8 4 4 4-4'/%3E%3C/svg%3E");
   background-position: right 0.875rem center;
   background-repeat: no-repeat;
   background-size: 1.125rem;
@@ -46,12 +82,12 @@ select:not([multiple]) {
 }
 
 select:not([multiple]):hover:not(:disabled) {
-  border-color: #9ca3af;
+  border-color: rgb(var(--enso-border-strong));
 }
 
 select:not([multiple]):focus {
-  border-color: #6366f1;
-  box-shadow: 0 0 0 3px rgb(99 102 241 / 0.16);
+  border-color: rgb(var(--enso-focus));
+  box-shadow: 0 0 0 3px rgb(var(--enso-focus) / 0.16);
   outline: none;
 }
 
@@ -65,12 +101,12 @@ select:not([multiple]):disabled {
 }
 
 .dark select:not([multiple]):hover:not(:disabled) {
-  border-color: #737373;
+  border-color: rgb(var(--enso-border-strong));
 }
 
 .dark select:not([multiple]):focus {
-  border-color: #818cf8;
-  box-shadow: 0 0 0 3px rgb(129 140 248 / 0.2);
+  border-color: rgb(var(--enso-focus));
+  box-shadow: 0 0 0 3px rgb(var(--enso-focus) / 0.2);
 }
 
 /* Smooth the HTMX fragment swaps used for inline status/toggle actions. */

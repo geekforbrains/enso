@@ -281,6 +281,11 @@ def test_dashboard_shows_visible_skill_total_and_tier_counts(tmp_path, monkeypat
     assert "enso / 1 system" in response.text
     assert 'href="/skills"' in response.text
     assert '<body hx-boost="true"' in response.text
+    assert 'class="min-h-full bg-canvas text-ink antialiased"' in response.text
+    assert "indigo-" not in response.text
+    favicon = '<link rel="icon" type="image/svg+xml" href="/static/enso-mark.svg?v=1">'
+    assert favicon in response.text
+    assert response.text.count('src="/static/enso-mark.svg?v=1"') == 3
     assert response.text.count('<nav aria-label="Primary" hx-boost="false"') == 2
     assert '<main id="main-content" class="max-w-6xl ' in response.text
     assert 'class="mx-auto max-w-6xl' not in response.text
@@ -338,11 +343,22 @@ def test_run_filter_dropdowns_use_shared_select_styling(tmp_path, monkeypatch):
     assert page.status_code == 200
     assert page.text.count("<select ") == 1
     assert 'id="run-status"' in page.text
-    assert page.text.count("rounded-lg border border-gray-300") == 1
+    assert "rounded-lg border border-border-strong" in page.text
     assert styles.status_code == 200
+    assert "--enso-canvas: 250 250 250" in styles.text
+    assert "--enso-surface: 31 31 31" in styles.text
     assert "select:not([multiple])" in styles.text
     assert "-webkit-appearance: none" in styles.text
     assert ".dark select:not([multiple])" in styles.text
+
+
+def test_web_templates_do_not_reintroduce_the_retired_indigo_accent():
+    """Ordinary dashboard interactions stay on the semantic neutral palette."""
+    web_dir = Path(web_app.__file__).parent
+    sources = [*sorted((web_dir / "templates").glob("*.html")), web_dir / "app.py"]
+
+    for source in sources:
+        assert "indigo-" not in source.read_text(encoding="utf-8"), source
 
 
 def test_job_delete_removes_entire_directory_and_preserves_link_targets(

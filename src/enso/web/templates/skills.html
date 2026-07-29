@@ -3,12 +3,12 @@
 
 {% macro skill_card(s) %}
   <a href="/skills/{{ s.name }}" data-skill-card
-     class="block min-w-0 rounded-lg border border-gray-200 bg-white p-4 shadow-sm transition
-            hover:border-indigo-300 hover:shadow dark:border-neutral-700 dark:bg-neutral-800
-            dark:hover:border-indigo-700">
-    <div class="break-words font-medium">{{ s.name }}</div>
+     class="block min-w-0 rounded-xl border border-border bg-surface p-5 transition-colors
+            hover:border-border-strong hover:bg-surface-hover focus:outline-none
+            focus-visible:ring-2 focus-visible:ring-focus">
+    <div class="break-words font-medium text-ink">{{ s.name }}</div>
     {% if s.description %}
-      <div class="mt-1 line-clamp-2 text-sm leading-5 text-gray-500 dark:text-neutral-400">
+      <div class="mt-1 line-clamp-2 text-sm leading-5 text-muted">
         {{ s.description }}
       </div>
     {% endif %}
@@ -18,16 +18,18 @@
 {% block content %}
 <div class="mb-6">
   <h1 class="text-2xl font-semibold tracking-tight">Skills</h1>
-  <p class="mt-1 text-sm text-gray-500 dark:text-neutral-400">Reusable capabilities available to your agents.</p>
+  <p class="mt-1 text-sm text-muted">Reusable capabilities available to your agents.</p>
 </div>
 
 <div class="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
   <div class="filter-strip -mx-4 flex items-center gap-2 overflow-x-auto px-4 pb-1 sm:mx-0 sm:flex-wrap sm:px-0">
     {% for key, label in [('all', 'All'), ('enso', 'Enso'), ('system', 'System')] %}
       <a href="/skills{% if key != 'all' %}?show={{ key }}{% endif %}"
+         {% if active_show == key %}aria-current="page"{% endif %}
          class="touch-target inline-flex shrink-0 items-center whitespace-nowrap rounded-full px-3 py-1 text-xs font-medium
-                {% if active_show == key %}bg-indigo-600 text-white
-                {% else %}bg-gray-100 text-gray-600 dark:bg-neutral-700 dark:text-neutral-300{% endif %}">
+                transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-focus
+                {% if active_show == key %}bg-action text-action-text
+                {% else %}bg-surface-muted text-muted hover:bg-surface-hover hover:text-ink{% endif %}">
         {{ label }} <span class="ml-1 opacity-70">{{ counts[key] }}</span>
       </a>
     {% endfor %}
@@ -36,13 +38,13 @@
     <label for="skill-search" class="sr-only">Search skills</label>
     <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor"
          stroke-width="2" class="pointer-events-none absolute left-3 top-1/2 h-4 w-4
-                                 -translate-y-1/2 text-gray-400">
+                                 -translate-y-1/2 text-faint">
       <circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path>
     </svg>
     <input id="skill-search" type="search" placeholder="Search skills…"
-           class="w-full rounded-md border border-gray-300 bg-white py-2 pl-9 pr-3 text-sm
-                  focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500
-                  dark:border-neutral-600 dark:bg-neutral-800 dark:text-gray-100">
+           class="w-full rounded-lg border border-border-strong bg-surface py-2 pl-9 pr-3 text-sm
+                  text-ink placeholder:text-faint focus:border-focus focus:outline-none focus:ring-1
+                  focus:ring-focus">
   </div>
 </div>
 
@@ -50,14 +52,14 @@
 <section class="mb-8" data-skill-section>
   <div class="mb-3 flex items-baseline gap-2">
     <h2 class="text-lg font-semibold">Enso skills</h2>
-    <span class="text-xs text-gray-500 dark:text-neutral-400">Editable</span>
+    <span class="text-xs text-muted">Editable</span>
   </div>
   {% if enso_skills %}
     <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
       {% for s in enso_skills %}{{ skill_card(s) }}{% endfor %}
     </div>
   {% else %}
-    <p class="text-sm text-gray-500 dark:text-neutral-400">No Enso-owned skills.</p>
+    <p class="text-sm text-muted">No Enso-owned skills.</p>
   {% endif %}
 </section>
 {% endif %}
@@ -66,21 +68,20 @@
 <section data-skill-section>
   <div class="mb-3 flex items-baseline gap-2">
     <h2 class="text-lg font-semibold">System skills</h2>
-    <span class="text-xs text-gray-500 dark:text-neutral-400">Read-only</span>
+    <span class="text-xs text-muted">Read-only</span>
   </div>
   {% if external_skills %}
     <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
       {% for s in external_skills %}{{ skill_card(s) }}{% endfor %}
     </div>
   {% else %}
-    <p class="text-sm text-gray-500 dark:text-neutral-400">No system skill roots configured.</p>
+    <p class="text-sm text-muted">No system skill roots configured.</p>
   {% endif %}
 </section>
 {% endif %}
 
-<p id="skill-search-empty" class="hidden rounded-lg border border-dashed border-gray-300 px-4 py-8
-                                  text-center text-sm text-gray-500 dark:border-neutral-700
-                                  dark:text-neutral-400">
+<p id="skill-search-empty" class="hidden rounded-xl border border-dashed border-border-strong
+                                  bg-surface px-4 py-8 text-center text-sm text-muted">
   No skills match that search.
 </p>
 

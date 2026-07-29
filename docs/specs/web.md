@@ -175,6 +175,9 @@ outside `~/.enso/`.
   the small hand-written layer in `web/static/app.css`. Rebuild the generated file with
   `cd src/enso/web && npx tailwindcss@3.4.17 -c tailwind.config.js -i tailwind.input.css
   -o static/tailwind.css --minify`. Light, dark, and system themes are user-selectable.
+  Templates use semantic neutral tokens (`canvas`, `surface`, `border`, `ink`, `muted`,
+  `action`, and related states) backed by CSS variables in `app.css`; green, amber, and red
+  are reserved for success, warning, and destructive states rather than ordinary actions.
 - **No external requests**: compiled CSS and the pinned HTMX runtime are vendored under
   `web/static/`, so the UI works offline and over a locked-down tailnet with no CDN trust
   or flash of unstyled content.

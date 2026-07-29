@@ -1,16 +1,16 @@
 {% extends "base.html" %}
-{% from "macros.html" import btn_primary, delete_control, editor_form, related_run %}
+{% from "macros.html" import back_link, btn_primary, delete_control, editor_form, related_run, text_link %}
 {% block title %}{{ job.name }} · enso{% endblock %}
 
 {% block content %}
 <div class="mb-4 flex items-center gap-3">
-  <a href="/jobs" class="text-sm text-indigo-600 hover:underline dark:text-indigo-400">&larr; Jobs</a>
+  {{ back_link("/jobs", "Jobs") }}
 </div>
 
 <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
   <div class="min-w-0 flex-1">
-    <h1 class="break-words text-2xl font-semibold tracking-tight">{{ job.name }}</h1>
-    <div class="break-anywhere mt-1 font-mono text-xs text-gray-500 dark:text-neutral-400">
+    <h1 class="break-words text-2xl font-semibold tracking-tight text-ink">{{ job.name }}</h1>
+    <div class="break-anywhere mt-1 font-mono text-xs text-muted">
       {{ job.dir_name }}
     </div>
   </div>
@@ -26,21 +26,20 @@
 </div>
 
 <div class="mb-6 grid grid-cols-1 gap-6 xl:grid-cols-2">
-  <div class="rounded-lg border border-gray-200 bg-white p-4 shadow-sm
-              dark:border-neutral-700 dark:bg-neutral-800">
+  <div class="rounded-xl border border-border bg-surface p-5">
     <h2 class="mb-4 text-lg font-semibold">Configuration</h2>
     <dl class="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
       <div>
-        <dt class="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-neutral-400">Schedule</dt>
+        <dt class="text-xs font-medium uppercase tracking-wide text-faint">Schedule</dt>
         <dd class="mt-1 font-medium">{{ job.schedule | humanize_cron }}</dd>
-        <dd class="break-anywhere mt-0.5 font-mono text-xs text-gray-500 dark:text-neutral-400">{{ job.schedule }}</dd>
+        <dd class="break-anywhere mt-0.5 font-mono text-xs text-muted">{{ job.schedule }}</dd>
       </div>
       <div>
-        <dt class="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-neutral-400">Agent</dt>
+        <dt class="text-xs font-medium uppercase tracking-wide text-faint">Agent</dt>
         <dd class="break-anywhere mt-1 font-medium">{{ job.provider }}/{{ job.model }}</dd>
       </div>
       <div>
-        <dt class="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-neutral-400">Timeout</dt>
+        <dt class="text-xs font-medium uppercase tracking-wide text-faint">Timeout</dt>
         <dd class="mt-1">
           {% if job.timeout and job.timeout % 60 == 0 %}
             {% set timeout_minutes = job.timeout // 60 %}
@@ -53,11 +52,11 @@
         </dd>
       </div>
       <div>
-        <dt class="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-neutral-400">Notifications</dt>
+        <dt class="text-xs font-medium uppercase tracking-wide text-faint">Notifications</dt>
         <dd class="break-anywhere mt-1">{{ job.notify or "Off" }}</dd>
       </div>
       <div class="sm:col-span-2">
-        <dt class="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-neutral-400">Pre-run check</dt>
+        <dt class="text-xs font-medium uppercase tracking-wide text-faint">Pre-run check</dt>
         <dd class="break-anywhere mt-1">
           {% if job.prerun %}
             <span class="font-mono">{{ job.prerun }}</span>
@@ -71,19 +70,17 @@
     </dl>
   </div>
 
-  <div class="rounded-lg border border-gray-200 bg-white p-4 shadow-sm
-              dark:border-neutral-700 dark:bg-neutral-800">
+  <div class="rounded-xl border border-border bg-surface p-5">
     <div class="mb-3 flex items-center justify-between">
       <h2 class="text-lg font-semibold">Runs</h2>
-      <a href="/runs?kind=job&name={{ job.dir_name }}"
-         class="text-sm text-indigo-600 hover:underline dark:text-indigo-400">All &rarr;</a>
+      {{ text_link("/runs?kind=job&name=" ~ job.dir_name, "All →") }}
     </div>
     {% if job_runs %}
-      <div class="divide-y divide-gray-100 dark:divide-neutral-700">
+      <div class="divide-y divide-border">
         {% for r in job_runs %}{{ related_run(r) }}{% endfor %}
       </div>
     {% else %}
-      <p class="text-sm text-gray-500 dark:text-neutral-400">No runs yet.</p>
+      <p class="text-sm text-muted">No runs yet.</p>
     {% endif %}
   </div>
 </div>
@@ -99,17 +96,16 @@
                         prerun_content, "Save pre-run script", 18, csrf_token, extra="mt-6") %}
       <div class="mb-3 flex flex-wrap items-baseline justify-between gap-2">
         <h2 class="text-lg font-semibold">Pre-run script</h2>
-        <span class="break-anywhere font-mono text-xs text-gray-500 dark:text-neutral-400">
+        <span class="break-anywhere font-mono text-xs text-muted">
           {{ job.prerun }}
         </span>
       </div>
     {% endcall %}
   {% else %}
-    <section class="mt-6 rounded-lg border border-gray-200 bg-white p-4 shadow-sm
-                    dark:border-neutral-700 dark:bg-neutral-800">
+    <section class="mt-6 rounded-xl border border-border bg-surface p-5">
       <div class="flex flex-wrap items-baseline justify-between gap-2">
         <h2 class="text-lg font-semibold">Pre-run script</h2>
-        <span class="break-anywhere font-mono text-xs text-gray-500 dark:text-neutral-400">
+        <span class="break-anywhere font-mono text-xs text-muted">
           {{ job.prerun }}
         </span>
       </div>

@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#111827" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#171717" media="(prefers-color-scheme: dark)">
   <title>{% block title %}enso{% endblock %}</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234f46e5'/%3E%3Ccircle cx='16' cy='16' r='8' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-dasharray='43 8'/%3E%3C/svg%3E">
+  <link rel="icon" type="image/svg+xml" href="/static/enso-mark.svg?v=1">
   <script>
     // Apply the saved/system theme before paint, then keep every theme control in sync.
     (function () {
@@ -92,10 +92,10 @@
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body hx-boost="true"
-      class="min-h-full bg-gray-50 text-gray-900 antialiased dark:bg-neutral-900 dark:text-gray-100">
+      class="min-h-full bg-canvas text-ink antialiased">
   <a href="#main-content"
-     class="fixed left-4 top-3 z-[60] -translate-y-20 rounded-md bg-indigo-600 px-3 py-2
-            text-sm font-medium text-white transition focus:translate-y-0">
+     class="fixed left-4 top-3 z-[60] -translate-y-20 rounded-md bg-action px-3 py-2
+            text-sm font-medium text-action-text transition focus:translate-y-0">
     Skip to content
   </a>
   {% set nav = [
@@ -107,6 +107,16 @@
     ("/agents", "AGENTS.md"),
   ] %}
 
+  {% macro brand(extra_classes="", onclick="") %}
+    <a href="/" {% if onclick %}onclick="{{ onclick }}"{% endif %}
+       class="inline-flex items-center gap-2.5 rounded-lg {{ extra_classes }}
+              focus:outline-none focus-visible:ring-2 focus-visible:ring-focus">
+      <img src="/static/enso-mark.svg?v=1" alt="" width="28" height="28"
+           class="h-7 w-7 shrink-0">
+      <span class="text-lg font-semibold tracking-tight">enso</span>
+    </a>
+  {% endmacro %}
+
   {% macro nav_links(mobile=false) %}
     <nav aria-label="Primary" hx-boost="false" class="space-y-1">
       {% for href, label in nav %}
@@ -115,11 +125,10 @@
         <a href="{{ href }}"
            {% if mobile %}onclick="setMobileNav(false)"{% endif %}
            {% if active %}aria-current="page"{% endif %}
-           class="block rounded-lg px-3 py-2.5 text-sm font-medium transition
-                  focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500
-                  {% if active %}bg-indigo-50 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300
-                  {% else %}text-gray-600 hover:bg-gray-100 hover:text-gray-900
-                             dark:text-neutral-300 dark:hover:bg-neutral-800 dark:hover:text-white{% endif %}">
+           class="block rounded-lg px-3 py-2.5 text-sm font-medium transition-colors
+                  focus:outline-none focus-visible:ring-2 focus-visible:ring-focus
+                  {% if active %}bg-surface-muted text-ink
+                  {% else %}text-muted hover:bg-surface-muted hover:text-ink{% endif %}">
           {{ label }}
         </a>
       {% endfor %}
@@ -129,14 +138,14 @@
   {% macro theme_picker() %}
     <div>
       <p class="mb-2 px-1 text-xs font-medium uppercase tracking-wider
-                text-gray-400 dark:text-neutral-500">Appearance</p>
+                text-faint">Appearance</p>
       <div role="group" aria-label="Color theme"
-           class="grid grid-cols-3 gap-1 rounded-lg bg-gray-100 p-1 dark:bg-neutral-800">
+           class="grid grid-cols-3 gap-1 rounded-lg bg-surface-muted p-1">
         {% for value, label in [("system", "System"), ("light", "Light"), ("dark", "Dark")] %}
           <button type="button" data-theme-option="{{ value }}" aria-pressed="false"
                   onclick="setTheme('{{ value }}')"
                   class="theme-option rounded-md px-2 py-2 text-xs font-medium
-                         text-gray-500 transition dark:text-neutral-400">
+                         text-muted transition-colors">
             {{ label }}
           </button>
         {% endfor %}
@@ -144,33 +153,31 @@
     </div>
   {% endmacro %}
 
-  <header class="sticky top-0 z-30 flex h-14 items-center border-b border-gray-200
-                 bg-white/95 px-4 backdrop-blur dark:border-neutral-800 dark:bg-neutral-900/95 lg:hidden">
+  <header class="sticky top-0 z-30 flex h-14 items-center border-b border-border
+                 bg-canvas/95 px-4 backdrop-blur lg:hidden">
     <button id="mobile-nav-trigger" type="button" aria-label="Open navigation"
             aria-controls="mobile-nav" aria-expanded="false" onclick="setMobileNav()"
-            class="-ml-2 rounded-lg p-2 text-gray-600 hover:bg-gray-100 hover:text-gray-900
-                   focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500
-                   dark:text-neutral-300 dark:hover:bg-neutral-800 dark:hover:text-white">
+            class="-ml-2 rounded-lg p-2 text-muted hover:bg-surface-muted hover:text-ink
+                   focus:outline-none focus-visible:ring-2 focus-visible:ring-focus">
       <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor"
            stroke-width="2" stroke-linecap="round" class="h-5 w-5">
         <path d="M4 6h16M4 12h16M4 18h16"></path>
       </svg>
     </button>
-    <a href="/" class="ml-3 text-lg font-semibold tracking-tight">enso</a>
+    {{ brand("ml-3") }}
   </header>
 
-  <div id="mobile-nav-backdrop" class="fixed inset-0 z-40 hidden bg-gray-950/50 backdrop-blur-sm lg:hidden"
+  <div id="mobile-nav-backdrop" class="fixed inset-0 z-40 hidden bg-overlay/60 backdrop-blur-sm lg:hidden"
        aria-hidden="true" onclick="setMobileNav(false, true)"></div>
   <aside id="mobile-nav" aria-label="Mobile navigation" aria-hidden="true"
-         class="fixed inset-y-0 left-0 z-50 hidden w-72 max-w-[85vw] border-r border-gray-200
-                bg-white p-4 shadow-xl dark:border-neutral-800 dark:bg-neutral-900 lg:hidden">
+         class="fixed inset-y-0 left-0 z-50 hidden w-72 max-w-[85vw] border-r border-border
+                bg-surface p-4 shadow-xl lg:hidden">
     <div class="flex h-full flex-col">
       <div class="mb-6 flex h-10 items-center justify-between px-2">
-        <a href="/" onclick="setMobileNav(false)" class="text-lg font-semibold tracking-tight">enso</a>
+        {{ brand(onclick="setMobileNav(false)") }}
         <button type="button" aria-label="Close navigation" onclick="setMobileNav(false, true)"
-                class="rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-900
-                       focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500
-                       dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-white">
+                class="rounded-lg p-2 text-muted hover:bg-surface-muted hover:text-ink
+                       focus:outline-none focus-visible:ring-2 focus-visible:ring-focus">
           <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                stroke-width="2" stroke-linecap="round" class="h-5 w-5">
             <path d="M6 6l12 12M18 6L6 18"></path>
@@ -178,30 +185,27 @@
         </button>
       </div>
       {{ nav_links(true) }}
-      <div class="mt-auto border-t border-gray-200 pt-4 dark:border-neutral-800">
+      <div class="mt-auto border-t border-border pt-4">
         {{ theme_picker() }}
       </div>
     </div>
   </aside>
 
-  <aside class="fixed inset-y-0 left-0 z-30 hidden w-64 border-r border-gray-200 bg-white
-                dark:border-neutral-800 dark:bg-neutral-900 lg:flex lg:flex-col">
-    <div class="flex h-20 items-center border-b border-gray-100 px-6 dark:border-neutral-800">
-      <div>
-        <a href="/" class="text-xl font-semibold tracking-tight">enso</a>
-        <p class="mt-0.5 text-xs text-gray-400 dark:text-neutral-500">Control center</p>
-      </div>
+  <aside class="fixed inset-y-0 left-0 z-30 hidden w-64 border-r border-border bg-surface
+                lg:flex lg:flex-col">
+    <div class="flex h-20 items-center border-b border-border px-6">
+      {{ brand() }}
     </div>
     <div class="flex min-h-0 flex-1 flex-col px-4 py-5">
       {{ nav_links() }}
-      <div class="mt-auto border-t border-gray-200 pt-4 dark:border-neutral-800">
+      <div class="mt-auto border-t border-border pt-4">
         {{ theme_picker() }}
       </div>
     </div>
   </aside>
 
   <div class="lg:pl-64">
-    <main id="main-content" class="max-w-6xl px-4 py-7 sm:px-6 lg:px-8 lg:py-9">
+    <main id="main-content" class="max-w-6xl px-4 py-8 sm:px-6 lg:px-8 lg:py-10">
       {% if flash %}
         <div role="status" class="mb-5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm
                     text-amber-800 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-300">

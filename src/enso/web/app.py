@@ -251,10 +251,7 @@ templates.env.filters["humanize_cron"] = _humanize_cron
 
 # Tailwind class pairs for status badges, shared with templates.
 RUN_BADGES = {
-    "running": (
-        "bg-indigo-100 text-indigo-800 animate-pulse "
-        "dark:bg-indigo-900/40 dark:text-indigo-300"
-    ),
+    "running": "bg-surface-muted text-ink animate-pulse",
     "ok": "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300",
     "error": "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300",
     "timeout": "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300",
