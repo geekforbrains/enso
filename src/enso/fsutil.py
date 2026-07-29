@@ -39,6 +39,13 @@ def atomic_write_text(
         raise
 
 
+def is_within(base: str, target: str) -> bool:
+    """True when ``target`` resolves to ``base`` or a path beneath it."""
+    base_r = os.path.realpath(base)
+    tgt_r = os.path.realpath(target)
+    return tgt_r == base_r or tgt_r.startswith(base_r + os.sep)
+
+
 def regular_file_sha256(path: str) -> str | None:
     """Hash a regular, non-symlink file, or return ``None`` safely."""
     if os.path.islink(path) or not os.path.isfile(path):

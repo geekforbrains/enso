@@ -20,6 +20,9 @@ are append-only telemetry no one edits by hand — the one dataset that earns a 
 ├── enso.db              # SQLite: the runs table
 ├── cache/
 │   └── slack.json       # Slack name↔ID directory cache (`enso slack`)
+├── docs/                # operator reference docs, nested to any depth.
+│   ├── homelab.md       #   Markdown + frontmatter; identity is the relative path.
+│   └── stuff/sub_stuff.md   #   See [docs.md](docs.md)
 ├── jobs/                # user jobs
 │   └── <name>/JOB.md    # plus a .run.lock twin while a run is in flight
 ├── runs/                # captured output, one file per run
@@ -38,6 +41,10 @@ Custom and external skill names do not receive markers; external skills cannot b
 by the dashboard.
 
 `runs/` mirrors a convention already in place: it is a flat blob store keyed by run id.
+
+`docs/` is the one file-backed kind identified by a **relative path** rather than a
+directory name, and the only one Enso ships no starter content for — so it needs neither
+seeding nor deletion markers. Deleting a doc prunes the empty parents it leaves behind.
 
 ## Runs (SQLite)
 
@@ -162,7 +169,7 @@ Notes:
 - **IDs**: run ids are uuid4 hex. Job identity is the dir name.
 - **Atomic dashboard writes**: edits to `JOB.md`, Enso-owned `SKILL.md`, and `AGENTS.md`
   use a temp file plus `os.replace`, so a concurrent reader sees old-or-new, never a
-  partial write.
+  partial write. Doc edits follow the same rule.
 - **Frontmatter compatibility**: `jobs.py` parses valid YAML mappings with PyYAML's
   `BaseLoader`, keeping scalar values as strings, then falls back to the legacy line
   parser for malformed older headers such as an unquoted `name: Daily: Review`.

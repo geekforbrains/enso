@@ -20,9 +20,11 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
+from rich.text import Text
 
 from . import __version__, slack_cache
 from .config import CONFIG_FILE, detect_providers, load_config, resolve_providers, save_config
+from .docs import MAX_DOCS, create_doc, load_docs
 from .jobs import create_job, load_jobs
 from .logging_config import configure_logging
 from .messages import clear as msg_clear
@@ -35,10 +37,12 @@ log = logging.getLogger(__name__)
 
 app = typer.Typer(help="Enso — AI agents from your phone", no_args_is_help=True)
 job_app = typer.Typer(help="Manage background jobs")
+doc_app = typer.Typer(help="Manage reference docs")
 message_app = typer.Typer(help="Send messages and files via the configured transport")
 service_app = typer.Typer(help="Manage the background service")
 slack_app = typer.Typer(help="Slack directory lookups and message search")
 app.add_typer(job_app, name="job")
+app.add_typer(doc_app, name="doc")
 app.add_typer(message_app, name="message")
 app.add_typer(service_app, name="service")
 app.add_typer(slack_app, name="slack")
@@ -1277,6 +1281,53 @@ def job_run(
         console.print(result.output, markup=False)
     if result.status in {"error", "timeout"}:
         raise typer.Exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Doc subcommands
+# ---------------------------------------------------------------------------
+
+@doc_app.command("list")
+def doc_list() -> None:
+    """List reference docs under ~/.enso/docs/."""
+    listing = load_docs()
+    if not listing.docs:
+        console.print("No docs found. Create one with: enso doc create <path>.md")
+        return
+    table = Table(box=None, padding=(0, 2))
+    table.add_column("Path")
+    table.add_column("Name")
+    table.add_column("Description")
+    for doc in listing.docs:
+        # Frontmatter is operator text: render it literally so square brackets
+        # cannot be read as Rich markup and drop the whole listing.
+        table.add_row(
+            Text(doc.rel_path),
+            Text(doc.name),
+            Text(doc.description) if doc.has_frontmatter else "[yellow]needs frontmatter[/]",
+        )
+    console.print(table)
+    if listing.truncated:
+        console.print(f"[yellow]Listing truncated at {MAX_DOCS} docs; some docs are not shown.[/]")
+
+
+@doc_app.command("create")
+def doc_create(
+    path: Annotated[
+        str, typer.Argument(help="Relative path under ~/.enso/docs (e.g. stuff/sub_stuff.md)")
+    ],
+    name: Annotated[
+        str, typer.Option("--name", help="Display name (defaults to the filename)")
+    ] = "",
+) -> None:
+    """Create a reference doc with scaffolded frontmatter."""
+    try:
+        doc = create_doc(path, name)
+    except (OSError, ValueError) as exc:
+        console.print(f"[red]Could not create doc:[/] {exc}")
+        raise typer.Exit(1) from None
+    console.print(f"[green]✓[/] Doc created: {doc.path}")
+    console.print("  Fill in the description and body.")
 
 
 # ---------------------------------------------------------------------------

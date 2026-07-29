@@ -1,6 +1,10 @@
 {# Reusable UI fragments. #}
 
-{% macro delete_control(action, kind, label, cancel_url, csrf_token) %}
+{# ``hidden_name``/``hidden_value`` carry the record's identity in the POST body
+   for routes that don't take it in the URL. A name/value pair rather than raw
+   markup so autoescaping stays on. #}
+{% macro delete_control(action, kind, label, cancel_url, csrf_token,
+                        hidden_name="", hidden_value="", detail="") %}
   <details class="relative">
     <summary class="touch-target inline-flex cursor-pointer list-none items-center rounded-md border
                     border-red-300 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50
@@ -15,11 +19,12 @@
         Delete “{{ label }}” from disk?
       </p>
       <p class="mt-1 text-sm text-gray-500 dark:text-neutral-400">
-        Every file in its directory will be removed. This cannot be undone.
+        {{ detail or "Every file in its directory will be removed. This cannot be undone." }}
       </p>
       <div class="mt-3 flex items-center gap-2">
         <form method="post" action="{{ action }}">
           <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+          {% if hidden_name %}<input type="hidden" name="{{ hidden_name }}" value="{{ hidden_value }}">{% endif %}
           <button type="submit" aria-describedby="{{ kind }}-delete-warning"
                   class="touch-target rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white
                          hover:bg-red-500 focus:outline-none focus-visible:ring-2
@@ -56,11 +61,13 @@
 
 {# Card-styled POST form with a monospace textarea and a save button.
    Use {% call editor_form(...) %} to add a heading above the textarea. #}
-{% macro editor_form(action, field_id, label, content, button_label, rows, csrf_token, extra="") %}
+{% macro editor_form(action, field_id, label, content, button_label, rows, csrf_token,
+                     extra="", hidden_name="", hidden_value="") %}
   <form method="post" action="{{ action }}"
         class="rounded-lg border border-gray-200 bg-white p-4 shadow-sm
                dark:border-neutral-700 dark:bg-neutral-800 {{ extra }}">
     <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    {% if hidden_name %}<input type="hidden" name="{{ hidden_name }}" value="{{ hidden_value }}">{% endif %}
     {% if caller %}{{ caller() }}{% endif %}
     <label for="{{ field_id }}" class="sr-only">{{ label }}</label>
     <textarea id="{{ field_id }}" name="content" rows="{{ rows }}" spellcheck="false"

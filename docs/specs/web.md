@@ -50,6 +50,11 @@ policy, and prevent HTML caching. Host filtering is not authentication: an empty
 | `/skills/{name}` | GET | Implemented | View `SKILL.md`; edit controls appear for Enso-owned skills |
 | `/skills/{name}/edit` | POST | Implemented | Replace an Enso-owned skill's `SKILL.md` |
 | `/skills/{name}/delete` | POST | Implemented | Delete an Enso-owned skill directory after confirmation |
+| `/docs` | GET | Implemented | Reference-doc list — name, description, relative path |
+| `/docs/new` | GET, POST | Implemented | Create a doc and scaffold its frontmatter |
+| `/docs/{path:path}` | GET | Implemented | View and edit one doc |
+| `/docs/edit` | POST | Implemented | Replace a doc's contents atomically |
+| `/docs/delete` | POST | Implemented | Delete a doc after confirmation |
 | `/agents` | GET | Implemented | View the working-directory `AGENTS.md` |
 | `/agents/edit` | POST | Implemented | Save `AGENTS.md` atomically |
 | `/static/*` | GET | Implemented | Vendored HTMX and CSS assets |
@@ -119,6 +124,24 @@ Two tiers, split by the `~/.enso/` write boundary:
   configured external root.
 - **Planned:** create controls and tool-script editing for Enso-owned skills.
 
+### Reference docs (`/docs`, `/docs/{path}`)
+
+Operator-authored reference material under `~/.enso/docs/`, nested to any depth. Unlike
+skills there is a single tier: docs are Enso-owned, always editable, never discovered from
+outside `~/.enso/`.
+
+- Rows show the frontmatter `name` and `description`, with the relative path as a small
+  mono secondary line, grouped under their parent directory. Directory headings are
+  derived from the path segment (`some_thing` → "Some Thing") because directories carry no
+  frontmatter.
+- Detail reuses the same whole-file textarea as `/skills/{name}`, plus confirmed deletion
+  that prunes emptied parent directories.
+- Docs are identified by **relative path**, so they need path-segment validation and a
+  symlink-skipping walk rather than the single-segment `_safe_name` check. Mutations carry
+  the path in the POST body.
+- Full behaviour, including the CLI and the bundled `docs` skill that teaches the agent to
+  consult them, is specified in [docs.md](docs.md).
+
 ### AGENTS.md (`/agents`)
 
 - Renders the system prompt (`AGENTS.md` from the working dir).
@@ -143,8 +166,8 @@ Two tiers, split by the `~/.enso/` write boundary:
   relying on hidden horizontal scrolling. The capped main column stays left-aligned
   beside the sidebar on wide screens, and long IDs, paths, upload controls, and metadata
   must never widen the document.
-- **Text editing**: Enso-owned `SKILL.md`, job prompts, and `AGENTS.md` use plain
-  textareas; read-only external skills use escaped preformatted text. Rich Markdown
+- **Text editing**: Enso-owned `SKILL.md`, job prompts, `AGENTS.md`, and reference docs use
+  plain textareas; read-only external skills use escaped preformatted text. Rich Markdown
   rendering is not implemented.
 - **Form controls**: native single-select dropdowns share consistent spacing, focus
   states, and chevrons across browsers and themes.

@@ -152,6 +152,13 @@ _LEGACY_TASKS_AGENTS_SHA256 = (
 )
 _LEGACY_TASK_RUNNER_STATE_KEY = "__task_runner__"
 
+# Pristine bundled AGENTS.md hashes from prior releases. Exact matches follow
+# the bundled template forward; customized copies are preserved.
+_PRISTINE_AGENTS_SHA256: frozenset[str] = frozenset({
+    _LEGACY_TASKS_AGENTS_SHA256,
+    "18e29e570f07237eea24a2b329090ccae9b572cdbc7e35f38e22916f3e5acf7f",
+})
+
 # Known hashes of pristine bundled skills from prior releases. Exact matches
 # can follow the bundled copy forward without overwriting user-customized files.
 _BUNDLED_SKILL_PRISTINE_HASHES: dict[tuple[str, str], frozenset[str]] = {
@@ -289,7 +296,7 @@ class Runtime:
         """Set up working directory, system prompts, skills, hooks, and config dirs.
 
         Creates:
-        - ~/.enso/jobs/ and ~/.enso/skills/
+        - ~/.enso/docs/, ~/.enso/jobs/, and ~/.enso/skills/
         - Bundled skills seeded into ~/.enso/skills/
         - AGENTS.md in working_dir (from bundled template on first install)
         - CLAUDE.md as a symlink to AGENTS.md (Claude reads CLAUDE.md;
@@ -298,10 +305,10 @@ class Runtime:
           (so Claude and Codex auto-discover skills)
         - Auto-compact notification hooks for Claude
         """
-        from .config import JOBS_DIR
+        from .config import DOCS_DIR, JOBS_DIR
 
         skills_dir = os.path.join(CONFIG_DIR, "skills")
-        for d in (JOBS_DIR, skills_dir):
+        for d in (DOCS_DIR, JOBS_DIR, skills_dir):
             os.makedirs(d, exist_ok=True)
 
         self._retire_legacy_tasks_skill(skills_dir)
@@ -316,13 +323,11 @@ class Runtime:
         content = source.read_text(encoding="utf-8")
 
         canonical = os.path.join(self.working_dir, "AGENTS.md")
-        is_legacy_template = (
-            regular_file_sha256(canonical) == _LEGACY_TASKS_AGENTS_SHA256
-        )
-        if not os.path.lexists(canonical) or is_legacy_template:
+        is_pristine_template = regular_file_sha256(canonical) in _PRISTINE_AGENTS_SHA256
+        if not os.path.lexists(canonical) or is_pristine_template:
             try:
                 atomic_write_text(canonical, content)
-                action = "Updated" if is_legacy_template else "Wrote"
+                action = "Updated" if is_pristine_template else "Wrote"
                 log.info("%s AGENTS.md in %s", action, self.working_dir)
             except OSError:
                 log.warning("Could not write AGENTS.md", exc_info=True)

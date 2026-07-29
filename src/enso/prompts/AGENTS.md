@@ -37,9 +37,16 @@ enso job create --name "Name" --provider claude --model sonnet --schedule "0 9 *
 enso job create --name "Name" --provider codex --model terra --schedule "0 9 * * *"
 enso job create --name "Name" --provider agy --model gemini-3.6-flash-high --schedule "0 9 * * *"
 
+# Docs — operator reference notes the agent consults on demand
+enso doc list                        # path, name, description for every doc
+enso doc create stuff/sub_stuff.md   # scaffold a doc (parent dirs created)
+
 # For full usage:
 enso --help
 ```
+
+Reference docs live in `~/.enso/docs/`. Check them before answering from
+memory about this setup — see the `docs` skill.
 
 ## Who's talking — `ENSO_ORIGIN_*`
 

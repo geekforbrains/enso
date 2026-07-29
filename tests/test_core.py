@@ -142,6 +142,61 @@ def test_install_system_prompts_preserves_customized_template(sample_config, cap
     assert "contains retired task instructions" in caplog.text
 
 
+def test_install_system_prompts_updates_any_known_pristine_template(
+    sample_config, monkeypatch,
+):
+    """An untouched prompt from an earlier release follows the bundle forward."""
+    current, _ = _legacy_agents_prompt()
+    previous = "# Enso\n\nformer pristine bundled prompt\n"
+    agents_file = Path(sample_config["working_dir"], "AGENTS.md")
+    agents_file.write_text(previous)
+    monkeypatch.setattr(
+        core_module,
+        "_PRISTINE_AGENTS_SHA256",
+        frozenset({hashlib.sha256(previous.encode()).hexdigest()}),
+    )
+
+    Runtime(sample_config).install_system_prompts()
+
+    assert agents_file.read_text() == current
+
+
+def test_install_system_prompts_preserves_unknown_template(sample_config, caplog):
+    """A prompt whose hash is unknown is customized — leave it entirely alone."""
+    agents_file = Path(sample_config["working_dir"], "AGENTS.md")
+    customized = "# Enso\n\nMy own prompt.\n"
+    agents_file.write_text(customized)
+
+    Runtime(sample_config).install_system_prompts()
+
+    assert agents_file.read_text() == customized
+    assert "retired task instructions" not in caplog.text
+
+
+def test_install_system_prompts_creates_docs_dir(tmp_enso, sample_config):
+    Runtime(sample_config).install_system_prompts()
+
+    assert Path(tmp_enso, "docs").is_dir()
+    assert Path(tmp_enso, "jobs").is_dir()
+
+
+def test_docs_skill_is_bundled(tmp_path):
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+
+    Runtime._install_bundled_skills(str(skills_dir))
+
+    assert (skills_dir / "docs" / "SKILL.md").is_file()
+
+
+def test_bundled_prompt_documents_the_doc_commands():
+    """AGENTS.md is always in context; the doc surface has to appear there."""
+    current, _ = _legacy_agents_prompt()
+    assert "enso doc list" in current
+    assert "enso doc create" in current
+    assert "`docs` skill" in current
+
+
 def test_bundled_skills_are_seeded_once(tmp_path):
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()

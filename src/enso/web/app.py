@@ -37,9 +37,9 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
-from .. import frontmatter, runs
+from .. import docs, frontmatter, runs
 from ..config import CONFIG_DIR, JOBS_DIR, SKILL_TOMBSTONES_DIRNAME
-from ..fsutil import atomic_write_text, regular_file_sha256
+from ..fsutil import atomic_write_text, is_within, regular_file_sha256
 from ..jobs import Job, load_jobs
 
 log = logging.getLogger(__name__)
@@ -332,13 +332,6 @@ def _allowed_web_hosts(web_cfg: dict) -> frozenset[str]:
             if (host := _normalize_host(value)) and host != "*"
         )
     return frozenset(allowed)
-
-
-def _within(base: str, target: str) -> bool:
-    """True when ``target`` resolves to ``base`` or a path beneath it."""
-    base_r = os.path.realpath(base)
-    tgt_r = os.path.realpath(target)
-    return tgt_r == base_r or tgt_r.startswith(base_r + os.sep)
 
 
 def _find_job(name: str) -> Job | None:
@@ -729,6 +722,7 @@ async def dashboard(request):
         skills_total=len(enso_skills) + len(system_skills),
         skills_enso=len(enso_skills),
         skills_system=len(system_skills),
+        docs_total=len(docs.load_docs().docs),
         latest_runs=latest,
     )
 
@@ -822,7 +816,7 @@ async def job_toggle(request):
     if job is None:
         return PlainTextResponse("Job not found", status_code=404)
     # Defence in depth: a JOB.md symlink must not escape the jobs directory.
-    if not _within(JOBS_DIR, job.path):
+    if not is_within(JOBS_DIR, job.path):
         return PlainTextResponse("Forbidden", status_code=403)
     # Change only the scalar. Re-serializing the whole block would erase
     # comments and would corrupt legacy jobs whose YAML-like values contain an
@@ -861,7 +855,7 @@ async def job_edit_prompt(request):
     if job is None:
         return PlainTextResponse("Job not found", status_code=404)
     # Defence in depth: the resolved JOB.md must live under JOBS_DIR.
-    if not _within(JOBS_DIR, job.path):
+    if not is_within(JOBS_DIR, job.path):
         return PlainTextResponse("Forbidden", status_code=403)
     form = await request.form()
     content = (form.get("content") or "").replace("\r\n", "\n")
@@ -1015,7 +1009,7 @@ async def skill_edit(request):
     if path is None or not editable:
         return PlainTextResponse("Not editable", status_code=403)
     # Defence in depth: the resolved path must live under CONFIG_DIR/skills.
-    if not _within(_skills_base(), path):
+    if not is_within(_skills_base(), path):
         return PlainTextResponse("Forbidden", status_code=403)
     form = await request.form()
     content = (form.get("content") or "").replace("\r\n", "\n")
@@ -1049,6 +1043,95 @@ async def skill_delete(request):
         return PlainTextResponse("Deletion unavailable", status_code=503)
     _remove_installed_skill_tools(tool_candidates)
     return _redirect("/skills?msg=Skill+deleted+from+disk")
+
+
+# ---------------------------------------------------------------------------
+# Routes — docs
+# ---------------------------------------------------------------------------
+#
+# Every handler is a thin caller of ``enso.docs``: it owns path validation
+# (including symlink containment), listing, and the atomic writes. A rejected
+# path is a refused request (403), a missing file is a 404.
+
+
+async def docs_list(request):
+    listing = docs.load_docs()
+    return _render(
+        request,
+        "docs.html",
+        groups=docs.group_docs(listing.docs),
+        total=len(listing.docs),
+        truncated=listing.truncated,
+        max_docs=docs.MAX_DOCS,
+    )
+
+
+async def doc_new(request):
+    return _render(request, "doc_new.html", path="", name="", error="")
+
+
+async def doc_create(request):
+    form = await request.form()
+    path = form.get("path") or ""
+    name = form.get("name") or ""
+    try:
+        doc = docs.create_doc(path, name)
+    except (FileExistsError, ValueError) as exc:
+        return _render(request, "doc_new.html", path=path, name=name, error=str(exc))
+    except OSError:
+        log.warning("Could not create doc %s", path, exc_info=True)
+        return PlainTextResponse("Doc unavailable", status_code=503)
+    return _redirect(f"/docs/{doc.rel_path}")
+
+
+async def doc_detail(request):
+    rel = request.path_params["path"]
+    try:
+        doc = docs.load_doc(rel)
+        content = docs.read_doc(rel)
+    except docs.DocPathError:
+        return PlainTextResponse("Forbidden", status_code=403)
+    except FileNotFoundError:
+        return PlainTextResponse("Doc not found", status_code=404)
+    except (OSError, UnicodeError):
+        return PlainTextResponse("Doc not readable", status_code=404)
+    return _render(
+        request,
+        "doc_detail.html",
+        doc=doc,
+        content=content,
+        breadcrumb=docs.parent_titles(doc.rel_path),
+    )
+
+
+async def doc_edit(request):
+    form = await request.form()
+    path = form.get("path") or ""
+    try:
+        rel = docs.write_doc(path, form.get("content") or "")
+    except docs.DocPathError:
+        return PlainTextResponse("Forbidden", status_code=403)
+    except FileNotFoundError:
+        return PlainTextResponse("Doc not found", status_code=404)
+    except OSError:
+        log.warning("Could not edit doc %s", path, exc_info=True)
+        return PlainTextResponse("Doc unavailable", status_code=503)
+    return _redirect(f"/docs/{rel}")
+
+
+async def doc_delete(request):
+    form = await request.form()
+    path = form.get("path") or ""
+    try:
+        docs.delete_doc(path)
+    except docs.DocPathError:
+        return PlainTextResponse("Forbidden", status_code=403)
+    except FileNotFoundError:
+        return PlainTextResponse("Doc not found", status_code=404)
+    except OSError:
+        log.warning("Could not delete doc %s", path, exc_info=True)
+        return PlainTextResponse("Doc unavailable", status_code=503)
+    return _redirect("/docs?msg=Doc+deleted+from+disk")
 
 
 # ---------------------------------------------------------------------------
@@ -1203,6 +1286,15 @@ def create_app(runtime) -> Starlette:
             _csrf_protected(skill_delete),
             methods=["POST"],
         ),
+        Route("/docs", docs_list),
+        # Split GET/POST on /docs/new keeps the CSRF wrapper (which awaits the
+        # form) off the GET; the catch-all stays last so it never shadows a
+        # mutation route.
+        Route("/docs/new", doc_new),
+        Route("/docs/new", _csrf_protected(doc_create), methods=["POST"]),
+        Route("/docs/edit", _csrf_protected(doc_edit), methods=["POST"]),
+        Route("/docs/delete", _csrf_protected(doc_delete), methods=["POST"]),
+        Route("/docs/{path:path}", doc_detail),
         Route("/agents", agents_view),
         Route("/agents/edit", _csrf_protected(agents_edit), methods=["POST"]),
         Mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static"),
