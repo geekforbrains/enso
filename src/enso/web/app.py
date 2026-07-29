@@ -5,7 +5,7 @@ Exposes ``create_app(runtime) -> Starlette``. The runtime is stashed on
 ``runtime.config`` and the working directory via ``runtime.working_dir``.
 
 Data comes from the file/DB-backed modules (``enso.jobs``, ``enso.runs``,
-``enso.frontmatter``); this module only renders and mutates — it never owns
+``enso.tables``, ``enso.frontmatter``); this module only renders and mutates — it never owns
 any storage of its own. All file writes that target skills, jobs, or
 AGENTS.md are path-guarded so a crafted name can never escape the allowed
 directory.
@@ -21,6 +21,7 @@ import logging
 import os
 import secrets
 import shutil
+import sqlite3
 import stat
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -37,7 +38,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
-from .. import docs, frontmatter, runs
+from .. import docs, frontmatter, runs, tables
 from ..config import CONFIG_DIR, JOBS_DIR, SKILL_TOMBSTONES_DIRNAME
 from ..fsutil import atomic_write_text, is_within, regular_file_sha256
 from ..jobs import Job, load_jobs
@@ -51,6 +52,11 @@ _STATIC_DIR = _HERE / "static"
 # Cap the run output we inline into a page so a giant transcript can't OOM the
 # renderer; the row's ``output_bytes`` still reports the true size.
 _OUTPUT_VIEW_CAP = 200_000
+_TABLE_PAGE_SIZE = tables.DEFAULT_PAGE_SIZE
+_MAX_TABLE_PAGE = tables.MAX_OFFSET // _TABLE_PAGE_SIZE + 1
+_MAX_TABLE_SCHEMA_SQL_CHARS = 20_000
+_MAX_TABLE_INDEXES = 25
+_MAX_TABLE_INDEX_SQL_CHARS = 4_000
 
 
 # ---------------------------------------------------------------------------
@@ -711,6 +717,12 @@ async def dashboard(request):
     jobs_enabled = sum(1 for j in jobs if j.enabled)
     enso_skills, system_skills = _skill_inventory(request)
     latest = runs.list_runs(limit=6)
+    try:
+        table_listing = tables.list_tables()
+        tables_total = sum(1 for item in table_listing.tables if item.available)
+    except (OSError, sqlite3.Error):
+        log.warning("Could not load table count", exc_info=True)
+        tables_total = 0
     return _render(
         request,
         "index.html",
@@ -720,6 +732,7 @@ async def dashboard(request):
         skills_enso=len(enso_skills),
         skills_system=len(system_skills),
         docs_total=len(docs.load_docs().docs),
+        tables_total=tables_total,
         latest_runs=latest,
     )
 
@@ -1132,6 +1145,76 @@ async def doc_delete(request):
 
 
 # ---------------------------------------------------------------------------
+# Routes — registered data tables (read-only)
+# ---------------------------------------------------------------------------
+
+
+async def tables_list(request):
+    try:
+        listing = tables.list_tables()
+    except (OSError, sqlite3.Error):
+        log.warning("Could not list registered data tables", exc_info=True)
+        return PlainTextResponse("Tables unavailable", status_code=503)
+    return _render(
+        request,
+        "tables.html",
+        tables=listing.tables,
+        total=len(listing.tables),
+        available_total=sum(1 for item in listing.tables if item.available),
+        truncated=listing.truncated,
+        max_tables=tables.MAX_TABLES,
+    )
+
+
+async def table_detail(request):
+    table_name = request.path_params["name"]
+    page = _bounded_table_page(request.query_params.get("page"))
+    offset = (page - 1) * _TABLE_PAGE_SIZE
+    try:
+        preview = tables.preview_table(
+            table_name,
+            offset=offset,
+            limit=_TABLE_PAGE_SIZE,
+        )
+    except (tables.TableNameError, tables.TableNotFoundError):
+        return PlainTextResponse("Table not found", status_code=404)
+    except (OSError, sqlite3.Error):
+        log.warning("Could not preview data table %s", table_name, exc_info=True)
+        return PlainTextResponse("Table unavailable", status_code=503)
+    rendered_indexes = [
+        {
+            "sql": index.sql[:_MAX_TABLE_INDEX_SQL_CHARS],
+            "sql_truncated": len(index.sql) > _MAX_TABLE_INDEX_SQL_CHARS,
+        }
+        for index in preview.table.indexes[:_MAX_TABLE_INDEXES]
+    ]
+    preview_limit_reached = preview.has_next and page >= _MAX_TABLE_PAGE
+    return _render(
+        request,
+        "table_detail.html",
+        preview=preview,
+        page=page,
+        previous_page=page - 1 if preview.has_previous else None,
+        next_page=page + 1 if preview.has_next and page < _MAX_TABLE_PAGE else None,
+        preview_limit_reached=preview_limit_reached,
+        schema_columns=preview.table.columns[:tables.MAX_COLUMNS],
+        table_sql=preview.table.sql[:_MAX_TABLE_SCHEMA_SQL_CHARS],
+        table_sql_truncated=len(preview.table.sql) > _MAX_TABLE_SCHEMA_SQL_CHARS,
+        table_indexes=rendered_indexes,
+        table_indexes_truncated=len(preview.table.indexes) > _MAX_TABLE_INDEXES,
+        hidden_index_count=max(len(preview.table.indexes) - _MAX_TABLE_INDEXES, 0),
+    )
+
+
+def _bounded_table_page(value: object) -> int:
+    try:
+        page = int(str(value)) if value is not None else 1
+    except (TypeError, ValueError):
+        return 1
+    return min(max(page, 1), _MAX_TABLE_PAGE)
+
+
+# ---------------------------------------------------------------------------
 # Routes — AGENTS.md
 # ---------------------------------------------------------------------------
 
@@ -1292,6 +1375,8 @@ def create_app(runtime) -> Starlette:
         Route("/docs/edit", _csrf_protected(doc_edit), methods=["POST"]),
         Route("/docs/delete", _csrf_protected(doc_delete), methods=["POST"]),
         Route("/docs/{path:path}", doc_detail),
+        Route("/tables", tables_list),
+        Route("/tables/{name}", table_detail),
         Route("/agents", agents_view),
         Route("/agents/edit", _csrf_protected(agents_edit), methods=["POST"]),
         Mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static"),

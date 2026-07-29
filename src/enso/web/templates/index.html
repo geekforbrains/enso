@@ -8,25 +8,30 @@
   <p class="mt-1 text-sm text-muted">A quick look at what Enso is doing.</p>
 </div>
 
-<div class="mb-6 overflow-hidden rounded-xl border border-border bg-surface">
-  <div class="grid grid-cols-1 divide-y divide-border sm:grid-cols-3 sm:divide-x sm:divide-y-0">
-    <div class="p-5 sm:p-6">
+<div class="mb-6 overflow-hidden rounded-xl border border-border bg-border">
+  <div class="grid grid-cols-1 gap-px sm:grid-cols-2 xl:grid-cols-4">
+    <div class="bg-surface p-5 sm:p-6">
       <div class="text-xs font-medium uppercase tracking-wider text-faint">Jobs enabled</div>
       <div class="mt-2 text-3xl font-semibold tracking-tight">{{ jobs_enabled }}<span
           class="text-base font-normal text-muted"> / {{ jobs_total }}</span></div>
       <div class="mt-3">{{ text_link("/jobs", "View all →") }}</div>
     </div>
     <div data-skills-total="{{ skills_total }}" data-skills-enso="{{ skills_enso }}"
-         data-skills-system="{{ skills_system }}" class="p-5 sm:p-6">
+         data-skills-system="{{ skills_system }}" class="bg-surface p-5 sm:p-6">
       <div class="text-xs font-medium uppercase tracking-wider text-faint">Skills</div>
       <div class="mt-2 text-3xl font-semibold tracking-tight">{{ skills_enso }}<span
           class="text-base font-normal text-muted"> enso / {{ skills_system }} system</span></div>
       <div class="mt-3">{{ text_link("/skills", "View all →") }}</div>
     </div>
-    <div class="p-5 sm:p-6">
+    <div class="bg-surface p-5 sm:p-6">
       <div class="text-xs font-medium uppercase tracking-wider text-faint">Docs</div>
       <div class="mt-2 text-3xl font-semibold tracking-tight">{{ docs_total }}</div>
       <div class="mt-3">{{ text_link("/docs", "View all →") }}</div>
+    </div>
+    <div data-tables-total="{{ tables_total }}" class="bg-surface p-5 sm:p-6">
+      <div class="text-xs font-medium uppercase tracking-wider text-faint">Tables</div>
+      <div class="mt-2 text-3xl font-semibold tracking-tight">{{ tables_total }}</div>
+      <div class="mt-3">{{ text_link("/tables", "View all →") }}</div>
     </div>
   </div>
 </div>

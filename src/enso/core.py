@@ -157,6 +157,7 @@ _LEGACY_TASK_RUNNER_STATE_KEY = "__task_runner__"
 _PRISTINE_AGENTS_SHA256: frozenset[str] = frozenset({
     _LEGACY_TASKS_AGENTS_SHA256,
     "18e29e570f07237eea24a2b329090ccae9b572cdbc7e35f38e22916f3e5acf7f",
+    "b5676b7f1b571a813554c0c580c93a6c9269d82625161f01f2c00e205888da20",
 })
 
 # Known hashes of pristine bundled skills from prior releases. Exact matches

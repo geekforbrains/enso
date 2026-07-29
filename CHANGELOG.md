@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Registered data tables in the existing `~/.enso/enso.db`: `enso table list/schema/register`, an explicitly catalogued and reserved-name-safe storage layer, owner-only database/WAL files, a bundled `tables` skill for consistent agent writes, and bounded read-only Tables pages in the dashboard with schema inspection, pagination, safe NULL/BLOB/truncation rendering, and responsive overflow containment
 - Cron schedules are validated when a job is created (`enso job create` rejects malformed expressions), and the scheduler now skips — with a log warning — any job whose hand-edited schedule has become invalid instead of dying silently and stopping all scheduled jobs. Background scheduler/task deaths are now logged instead of vanishing
 - A cross-process per-job run lock: the scheduler, `enso job run`, and the dashboard's "Run now" can no longer run the same job concurrently. `/update` also refuses to proceed while a dashboard- or CLI-triggered job is mid-run
 - Agents now see documented `ENSO_ORIGIN_*` environment variables (transport, user id/name, channel id/name, thread) describing who triggered the current turn; previously they were exported but undocumented

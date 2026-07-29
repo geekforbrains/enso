@@ -1,11 +1,14 @@
 # Data model
 
-The storage layer for jobs (files), runs (SQLite + log files), and the config that
-governs both. See [architecture.md](architecture.md) for how these are written.
+The storage layer for jobs and reference material (files), runs (SQLite + log files),
+registered data tables (SQLite), and the config that governs them. See
+[architecture.md](architecture.md) for how these are written and
+[tables.md](tables.md) for the data-table contract.
 
-The governing split: **authored intent is files, machine-generated history is SQLite.**
-Jobs are hand/agent-edited Markdown you want to grep, diff, and back up. Runs
-are append-only telemetry no one edits by hand — the one dataset that earns a database.
+The governing split: **authored prose and procedure are files; structured, queryable
+records are SQLite.** Jobs, skills, and docs are hand/agent-edited Markdown you want to
+grep, diff, and back up. Runs are append-only telemetry, while user data tables hold facts
+whose value comes from filtering, joining, and aggregation.
 
 ## Directory layout under `~/.enso/`
 
@@ -17,7 +20,7 @@ are append-only telemetry no one edits by hand — the one dataset that earns a 
 ├── update.json          # updater-owned metadata (installed revision, pending confirmation)
 ├── slack-app-manifest.yaml  # copy of the bundled Slack app manifest (written by `enso setup`)
 ├── enso.log             # service log
-├── enso.db              # SQLite: the runs table
+├── enso.db              # SQLite: run history plus registered user data tables
 ├── cache/
 │   └── slack.json       # Slack name↔ID directory cache (`enso slack`)
 ├── docs/                # operator reference docs, nested to any depth.
@@ -46,11 +49,20 @@ by the dashboard.
 directory name, and the only one Enso ships no starter content for — so it needs neither
 seeding nor deletion markers. Deleting a doc prunes the empty parents it leaves behind.
 
-## Runs (SQLite)
+## Shared SQLite database
 
 `~/.enso/enso.db`, opened in **WAL mode** (concurrent readers never block the writer).
-One table. Created lazily via `CREATE TABLE IF NOT EXISTS` on first use — no migration
-tooling, consistent with Enso's zero-ceremony config files.
+Internal tables are created lazily via `CREATE TABLE IF NOT EXISTS` on first use — no
+migration tooling, consistent with Enso's zero-ceremony config files. `runs` and every
+name beginning `_enso_` or `sqlite_` are reserved for Enso/SQLite; registered user tables
+must use a lowercase `snake_case` name. See [tables.md](tables.md) for validation and
+registration behaviour.
+
+The database plus its `-wal`, `-shm`, and rollback-journal sidecars are forced to `0600`.
+Creation uses an owner-only placeholder before SQLite opens the path, avoiding a
+permissive-umask window; later opens also repair looser modes from existing installs.
+
+## Runs
 
 ```sql
 CREATE TABLE IF NOT EXISTS runs (
@@ -108,6 +120,36 @@ Prerun notification suppression lives in `state.json` under
 `job_failure_alerts`. It stores only a fingerprint, transport/destination metadata,
 timestamps, and a suppression count — never the diagnostic or prerun source output.
 
+## Registered data tables
+
+User-defined data tables share `enso.db` with run history but remain explicitly separated
+through a small Enso-owned catalog:
+
+```sql
+CREATE TABLE IF NOT EXISTS _enso_tables (
+    table_name  TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    description TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+```
+
+Only an existing ordinary, non-virtual table with a valid row in `_enso_tables` is an Enso
+Table; views and virtual tables are excluded. This explicit registration boundary keeps
+internal tables and unrelated SQLite experiments out of CLI and dashboard discovery. A
+catalog entry whose table later disappears remains visible as unavailable for diagnosis.
+The physical `table_name` is stable identity; `name` and the required non-empty
+`description` are display/discovery metadata.
+`created_at` and `updated_at` are ISO 8601 UTC catalog timestamps; updating registration
+metadata preserves the former and advances the latter.
+
+Enso does not own the schemas or rows of registered tables. Agents create, migrate,
+query, and update them using standard SQLite, guided by the bundled `tables` skill. The
+dashboard opens them read-only and fetches bounded previews. Run pruning is scoped to
+`runs` and its log files; user tables have no automatic retention or deletion. Full
+behaviour is specified in [tables.md](tables.md).
+
 ## Config blocks
 
 The three defaulted blocks documented here are backfilled by
@@ -163,9 +205,11 @@ Notes:
 
 ## Cross-cutting rules
 
-- **Timestamps** are ISO 8601 **UTC** everywhere in stored data (run times). The UI
-  localises for display; cron **schedules** stay in the system's local timezone, matching
-  existing job behaviour (do not convert schedules to UTC).
+- **Timestamps** are ISO 8601 **UTC** in Enso-owned stored data (run times). The tables
+  skill applies the same convention to user schemas unless their domain requires
+  something else. The UI localises run times for display; cron **schedules** stay in the
+  system's local timezone, matching existing job behaviour (do not convert schedules to
+  UTC).
 - **IDs**: run ids are uuid4 hex. Job identity is the dir name.
 - **Atomic dashboard writes**: edits to `JOB.md`, Enso-owned `SKILL.md`, and `AGENTS.md`
   use a temp file plus `os.replace`, so a concurrent reader sees old-or-new, never a

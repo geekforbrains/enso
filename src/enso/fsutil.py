@@ -5,7 +5,11 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import os
+import stat
 import tempfile
+
+_PRIVATE_SQLITE_MODE = 0o600
+_SQLITE_FILE_SUFFIXES = ("", "-wal", "-shm", "-journal")
 
 
 def atomic_write_text(
@@ -58,3 +62,41 @@ def regular_file_sha256(path: str) -> str | None:
     except OSError:
         return None
     return digest.hexdigest()
+
+
+def prepare_private_sqlite_file(path: str) -> None:
+    """Create a SQLite database placeholder privately, or harden an existing one.
+
+    Pre-creating with ``O_EXCL`` avoids the brief world-readable window that
+    ``sqlite3.connect`` would otherwise introduce under a permissive umask.
+    """
+    flags = os.O_CREAT | os.O_EXCL | os.O_RDWR
+    flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags, _PRIVATE_SQLITE_MODE)
+    except FileExistsError:
+        pass
+    else:
+        try:
+            os.fchmod(fd, _PRIVATE_SQLITE_MODE)
+        finally:
+            os.close(fd)
+    harden_sqlite_files(path)
+
+
+def harden_sqlite_files(path: str) -> None:
+    """Set a SQLite database and its data-bearing sidecars to owner-only access."""
+    for suffix in _SQLITE_FILE_SUFFIXES:
+        candidate = f"{path}{suffix}"
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(candidate, flags)
+        except FileNotFoundError:
+            continue
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError(f"SQLite path is not a regular file: {candidate}")
+            os.fchmod(fd, _PRIVATE_SQLITE_MODE)
+        finally:
+            os.close(fd)

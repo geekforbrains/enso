@@ -11,8 +11,10 @@ Design docs live in [`docs/`](docs/) and are the source of truth for planned and
 | Doc | Owns |
 |---|---|
 | [`docs/PRD.md`](docs/PRD.md) | **Web UI** — product requirements, shipped scope, and planned extensions |
-| [`docs/specs/architecture.md`](docs/specs/architecture.md) | Dashboard/bot process boundaries and shared run storage |
-| [`docs/specs/data-model.md`](docs/specs/data-model.md) | The runs SQLite schema, config, `~/.enso/` layout |
+| [`docs/specs/architecture.md`](docs/specs/architecture.md) | Dashboard/bot process boundaries and shared storage |
+| [`docs/specs/data-model.md`](docs/specs/data-model.md) | SQLite schemas, config, and the `~/.enso/` layout |
+| [`docs/specs/docs.md`](docs/specs/docs.md) | Operator-authored reference docs and their dashboard/CLI workflow |
+| [`docs/specs/tables.md`](docs/specs/tables.md) | Registered SQLite data tables, discovery, and bounded read-only views |
 | [`docs/specs/web.md`](docs/specs/web.md) | The web UI: routes, pages, read/write flows |
 | [`CHANGELOG.md`](CHANGELOG.md) | What has actually shipped, per version |
 
@@ -180,6 +182,27 @@ Each job has a `JOB.md` with a cron schedule, provider, model, and prompt. Sched
 Codex models use the short names `sol`, `terra`, and `luna` in chat commands and job files. Enso translates them to the CLI model IDs `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` when spawning Codex. Full or custom model IDs remain supported.
 
 A job's `provider` and `model` are validated against your configured providers — jobs naming unknown values fail with a clear error instead of running. Each job's whole lifecycle — dispatch, prerun gate, spawn, completion or timeout — is logged under a `[job:<name>]` tag for easy tracing.
+
+## Data Tables
+
+Enso uses the existing `~/.enso/enso.db` for user-owned, queryable records such as
+measurements, inventories, and metrics. Agents create and update ordinary SQLite tables;
+a bundled skill keeps schemas, units, timestamps, transactions, and destructive
+changes consistent.
+
+```bash
+enso table list
+enso table schema weight_entries
+enso table register weight_entries \
+  --name "Weight" \
+  --description "One body-weight measurement per row, recorded in kilograms."
+```
+
+Registration is the visibility boundary: only catalogued user tables appear under
+**Tables** in the dashboard. Internal `runs`, `_enso_*`, and `sqlite_*` names stay hidden
+and reserved. The web UI shows schema plus a bounded, paginated row preview; table and
+row edits remain standard SQLite operations rather than a custom Enso query language.
+See [`docs/specs/tables.md`](docs/specs/tables.md) for the full design.
 
 ## Service Management
 

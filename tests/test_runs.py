@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import stat
 from datetime import datetime, timedelta, timezone
 
 from enso import runs
@@ -14,6 +15,19 @@ def _backdate(run_id: str, days: int) -> None:
     conn = runs._connect()
     conn.execute("UPDATE runs SET started_at=? WHERE id=?", (old, run_id))
     conn.commit()
+
+
+def test_database_and_wal_files_are_created_private(tmp_enso):
+    previous_umask = os.umask(0)
+    try:
+        runs.create("job", "private-store")
+    finally:
+        os.umask(previous_umask)
+
+    database = runs._db_path()
+    sqlite_files = [database, f"{database}-wal", f"{database}-shm"]
+    assert all(os.path.isfile(path) for path in sqlite_files)
+    assert all(stat.S_IMODE(os.stat(path).st_mode) == 0o600 for path in sqlite_files)
 
 
 def test_create_finish_lifecycle(tmp_enso):

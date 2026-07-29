@@ -1,8 +1,8 @@
 # Architecture
 
-How the web UI and run recording fit into Enso as it exists today.
+How the web UI, run recording, and registered data tables fit into Enso.
 Read [PRD.md](../PRD.md) first for the what & why. Sibling specs:
-[data-model.md](data-model.md), [web.md](web.md).
+[data-model.md](data-model.md), [tables.md](tables.md), [web.md](web.md).
 
 ## Runtime and process layout
 
@@ -12,7 +12,7 @@ loads `JOB.md` files every 60 seconds and fires due jobs through `_execute_job`.
 
 `enso web` builds its own `Runtime` and runs Starlette/Uvicorn as a separate process.
 The dashboard and bot therefore do not share memory or an event loop. They coordinate
-through the same files under `~/.enso/`, the configured workspace, and the runs SQLite
+through the same files under `~/.enso/`, the configured workspace, and the shared SQLite
 database. Starting `enso serve` does not start the dashboard.
 
 ```
@@ -47,7 +47,7 @@ pulled into the base install.
 | Templates | **Jinja2** | Server-rendered HTML; the UI is views + forms, not an SPA |
 | Interactivity | **HTMX** (vendored; no runtime build) | Inline toggle/run actions without a client application bundle |
 | Forms | urlencoded posts (Starlette built-in) | No uploads/multipart in the UI, so no extra parser dependency |
-| Run store | **`sqlite3`** (stdlib) | No dependency; WAL mode for concurrent readers; see [data-model.md](data-model.md) |
+| SQLite store | **`sqlite3`** (stdlib) | Run history and registered user tables without another dependency; WAL mode for concurrent readers |
 | Job frontmatter | **PyYAML `BaseLoader` + legacy fallback** | Valid YAML scalars stay strings; malformed older headers remain loadable; raw web edits avoid reserialization |
 
 `pyproject.toml` defines:
@@ -71,6 +71,25 @@ for background work:
 
 Interactive **chat** requests are *not* runs — they are session-based and ephemeral, and
 belong to the transport, not the run log.
+
+## Registered data tables
+
+Agents and the operator use ordinary SQLite tools to define and populate user tables in
+`~/.enso/enso.db`. Enso adds only the product-specific layer around them:
+
+- `tables.py` owns validation, the `_enso_tables` discovery catalog, schema inspection,
+  and bounded row previews.
+- `enso table list`, `schema`, and `register` expose catalog operations without wrapping
+  general SQL.
+- The bundled `tables` skill teaches agents to inspect before writing, use transactions,
+  preserve explicit units/timestamps, and confirm destructive changes.
+- The web process lists registered tables through short-lived connections with a bounded
+  busy timeout. Its routes cannot create a table, mutate a row, or accept arbitrary SQL.
+
+The catalog is the trust and visibility boundary. Merely creating a SQLite table does not
+publish it in Enso, and reserved `runs`, `_enso_*`, and `sqlite_*` names cannot cross that
+boundary. Detail queries resolve a validated catalog entry, quote the identifier, and cap
+rows, columns, and rendered cell sizes. See [tables.md](tables.md) for the full contract.
 
 ## Provider execution
 
@@ -155,8 +174,11 @@ At personal scale the model is deliberately simple:
   A reader never sees a half-written `JOB.md`, `SKILL.md`, or `AGENTS.md` from a web edit.
 - **Last write wins.** Optimistic locking and conflict resolution are out of scope for
   this single-operator tool.
-- **SQLite in WAL mode** allows the bot, dashboard, and CLI processes to read and write
-  run history without blocking readers.
+- **SQLite in WAL mode** allows the bot, dashboard, CLI, and agent subprocesses to share
+  run history and registered data without blocking readers. Table previews use
+  short-lived connections and a bounded busy timeout, with no web mutation path.
+- **SQLite files are private.** The database and data-bearing sidecars are created and
+  repaired to owner-only `0600`, including databases from older installations.
 
 ## Access & security
 
@@ -188,6 +210,8 @@ internet and the PRD makes that a non-goal.
   `AGENTS.md` is edited at its fixed path in the configured working directory.
   External/"parent" skills discovered from other CLI roots are read-only. User-selected
   job and skill paths are resolved and checked against their owning root before writes.
+  The Tables web surface is read-only; agents may write only validated, non-reserved user
+  tables through standard SQLite tooling.
 
 ## Implementation map
 
@@ -199,6 +223,8 @@ internet and the PRD makes that a non-goal.
 | `jobs.py` | Loads YAML scalars with `BaseLoader`, then falls back for malformed legacy headers |
 | `frontmatter.py` | Provides fence-aware raw edits plus YAML serialization and atomic writes |
 | `runs.py` | Owns SQLite `create`/`finish`/`list`/`get`/`prune` operations |
+| `tables.py` | Owns the registration catalog, identifier validation, schema inspection, and bounded previews |
+| `skills/tables/SKILL.md` | Guides safe, consistent agent table creation and data access |
 | `web/` | Contains the Starlette app, current routes/templates, discovery, and vendored assets |
 | `pyproject.toml` | Defines the `web` extra, base `pyyaml` dependency, and package data |
 

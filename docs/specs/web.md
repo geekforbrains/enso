@@ -10,10 +10,10 @@ A small **server-rendered** app (Starlette + Jinja2), sprinkled with **HTMX** fo
 updates. There is no SPA, runtime build, or external CDN: compiled CSS and HTMX are
 vendored under `web/static/`. Forms and links remain usable when JavaScript is off.
 
-The whole UI is a thin skin over the file model and the runs DB: pages read `JOB.md` /
-`SKILL.md` / `AGENTS.md` and the `runs` table, and writes go straight back to
-those files (atomic replace) and to SQLite. There is no separate web database or cache —
-the files are the model (see [data-model.md](data-model.md)).
+The whole UI is a thin skin over the file model and the shared DB: pages read `JOB.md` /
+`SKILL.md` / `AGENTS.md`, run history, and registered user tables. Writes go straight
+back to owned files (atomic replace) and the run store; user-table pages are read-only.
+There is no separate web database or cache (see [data-model.md](data-model.md)).
 
 **Write boundary.** Every write the UI makes lands inside `~/.enso/` (jobs,
 Enso-owned skills) or the working-dir `AGENTS.md`. It never writes outside that tree —
@@ -55,6 +55,8 @@ policy, and prevent HTML caching. Host filtering is not authentication: an empty
 | `/docs/{path:path}` | GET | Implemented | View and edit one doc |
 | `/docs/edit` | POST | Implemented | Replace a doc's contents atomically |
 | `/docs/delete` | POST | Implemented | Delete a doc after confirmation |
+| `/tables` | GET | Implemented | Registered data-table list with discovery metadata |
+| `/tables/{name}` | GET | Implemented | Schema summary and bounded, read-only row preview |
 | `/agents` | GET | Implemented | View the working-directory `AGENTS.md` |
 | `/agents/edit` | POST | Implemented | Save `AGENTS.md` atomically |
 | `/static/*` | GET | Implemented | Vendored HTMX and CSS assets |
@@ -74,6 +76,7 @@ The dashboard shows:
 - **Jobs enabled** — the enabled and total job counts, linking to the job list.
 - **Skills** — deduplicated Enso-owned and visible system counts, linking to the skill
   list.
+- **Tables** — available registered user-table count, linking to the read-only table list.
 
 ### Jobs (`/jobs`, `/jobs/{name}`)
 
@@ -142,6 +145,33 @@ outside `~/.enso/`.
 - Full behaviour, including the CLI and the bundled `docs` skill that teaches the agent to
   consult them, is specified in [docs.md](docs.md).
 
+### Data tables (`/tables`, `/tables/{name}`)
+
+Registered user-owned SQLite tables are an inspection surface, not a database editor.
+The list shows the display name, discovery description, physical table name, availability,
+and column count for every valid catalog entry in `_enso_tables`. A stale entry remains
+visible as unavailable, while internal and unregistered tables never appear.
+An absent catalog renders as an empty list; the web surface never creates it or mutates a
+registered user table's schema or rows.
+
+Detail shows a compact schema summary followed by a horizontally scrollable grid:
+
+- one bounded page is fetched with `LIMIT`/`OFFSET`; page size is capped server-side
+- the number of displayed columns and rendered length of each cell are capped
+- schema columns, CREATE SQL, index count, and index SQL are independently capped, with
+  explicit truncation notices
+- `NULL`, BLOBs, and truncated values are visually explicit
+- identifiers come from validated registrations and are still quoted
+- cell content is escaped as untrusted data
+- no unconditional `COUNT(*)` is needed to render a preview
+- reaching the maximum allowed offset suppresses further forward navigation
+
+The page uses a short-lived SQLite connection with a busy timeout and fails clearly if the
+table was removed after registration or the database cannot be read. The route exposes no
+write operation, SQL input, filter/sort expression, schema control, row editing, or delete
+action. The catalog, CLI, agent workflow, and failure semantics are specified in
+[tables.md](tables.md).
+
 ### AGENTS.md (`/agents`)
 
 - Renders the system prompt (`AGENTS.md` from the working dir).
@@ -169,6 +199,8 @@ outside `~/.enso/`.
 - **Text editing**: Enso-owned `SKILL.md`, job prompts, `AGENTS.md`, and reference docs use
   plain textareas; read-only external skills use escaped preformatted text. Rich Markdown
   rendering is not implemented.
+- **Table grids**: schema and row values remain readable on narrow screens via
+  bounded, horizontal overflow; long values cannot widen the whole document.
 - **Form controls**: native single-select dropdowns share consistent spacing, focus
   states, and chevrons across browsers and themes.
 - **Styling**: compiled Tailwind utilities are vendored as `web/static/tailwind.css`, with
@@ -187,5 +219,5 @@ outside `~/.enso/`.
 ## Non-goals (recap)
 
 No chat, no login/accounts, no writes outside Enso-owned paths (`~/.enso/` plus the
-working-directory `AGENTS.md`), no live output streaming, and no public exposure. See
-[PRD.md](../PRD.md) § Non-goals.
+working-directory `AGENTS.md`), no table-row/schema editor, no arbitrary SQL, no live
+output streaming, and no public exposure. See [PRD.md](../PRD.md) § Non-goals.

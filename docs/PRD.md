@@ -10,7 +10,8 @@
 Enso's conversational surface remains chat (Telegram/Slack): you message an agent, it
 works on your machine, and the reply comes back to the thread. The shipped **local web
 UI** provides a place to *see* the system rather than converse with it, backed by
-persisted **run history** for jobs.
+persisted **run history** for jobs and registered **data tables** for
+structured records the operator asks Enso to track.
 
 The web UI is a read/write dashboard for:
 
@@ -18,6 +19,9 @@ The web UI is a read/write dashboard for:
   enable or disable it, and edit its prompt body or configured prerun script; full job
   CRUD is planned.
 - **Skills** — browse the bundled/installed skills; edit Enso's own.
+- **Reference docs** — browse, create, edit, and delete operator knowledge.
+- **Data tables** — discover registered SQLite tables and inspect their schema
+  and a bounded row preview. Agents manage their schemas and rows outside the web UI.
 - **AGENTS.md** — read (and edit) the system prompt.
 
 There is **no chat in the web UI** — chat lives in Telegram/Slack. The web UI is for
@@ -29,9 +33,12 @@ overview, organisation, and managing the scheduled work Enso already runs.
   runs — that chat can't provide.
 - Make jobs **editable in place**. Prompt and configured prerun-script editing ship
   today; schedule, provider/model, prerun configuration, and create forms are planned.
-- Keep Enso **file-first**: authored intent (jobs, skills) stays as inspectable,
-  greppable, git-friendly Markdown. Only machine-generated history (runs) goes in a DB.
+- Keep Enso **file-first where content is authored prose or procedure**: jobs, skills,
+  and reference docs stay inspectable, greppable Markdown. Structured records and run
+  history use SQLite because their value comes from querying them.
 - Surface run history in the web UI. A matching `enso runs` CLI is planned.
+- Give agents one consistent way to discover and document user-owned data tables without
+  inventing a custom SQL layer.
 
 ## Non-goals (v1)
 
@@ -45,6 +52,8 @@ overview, organisation, and managing the scheduled work Enso already runs.
   **job**; one-off work is handled from chat or an external tracker (Todoist), not a
   managed task object inside Enso.
 - **No rich text editor / WYSIWYG.** Prompts are Markdown in a textarea.
+- **No database editor.** The Tables UI is a read-only preview: no arbitrary SQL, schema
+  builder, spreadsheet editing, or destructive actions.
 
 ## Vocabulary
 
@@ -53,6 +62,9 @@ overview, organisation, and managing the scheduled work Enso already runs.
   from the web UI.
 - **Run** — one execution of a job: when it started/ended, its exit status,
   and its captured output. Recorded in SQLite. See [data-model.md](specs/data-model.md).
+- **Table** — a registered, user-owned SQLite table containing structured facts an agent
+  or operator needs to query. Registration supplies discovery metadata and UI visibility;
+  it does not transfer schema/row ownership to Enso. See [tables.md](specs/tables.md).
 - **Transport / notify** — the existing chat delivery layer (Telegram/Slack). Job
   completion and failure notifications ride it, unchanged.
 
@@ -61,11 +73,13 @@ overview, organisation, and managing the scheduled work Enso already runs.
 | Decision | Choice |
 | --- | --- |
 | Authored intent (jobs, skills) | **Files** — Markdown + YAML frontmatter, source of truth, edited by human and agent alike |
-| Run history | **SQLite** (`~/.enso/enso.db`) for metadata; **output blobs on disk** (`~/.enso/runs/<id>.log`). The one genuinely DB-shaped, append-only dataset |
+| Structured storage | **SQLite** (`~/.enso/enso.db`) for run metadata and explicitly registered user data tables; **run output blobs on disk** (`~/.enso/runs/<id>.log`) |
+| Table discovery | `_enso_tables` is an explicit catalog; only valid registered tables appear in the CLI/UI, while agents use standard SQLite for schema and row operations |
 | Frontmatter | PyYAML `BaseLoader` for valid job metadata, with a legacy line-parser fallback for malformed older files; raw web edits preserve formatting |
 | Web server | **Starlette + Uvicorn + Jinja2 + HTMX**, run separately with `enso web` and sharing the file/SQLite model with `enso serve` |
 | Web access | Bind **localhost** by default; Tailscale for remote; Host allowlist and optional shared token. No login |
 | Web capability | **Read/write, scoped to owned files** — edit job prompts, toggle/run jobs, edit Enso-owned skills and `AGENTS.md`; full job/skill CRUD is planned. External skills are read-only |
+| Tables web capability | **Read-only, bounded inspection** — list metadata, show schema, and page through capped previews; no SQL or row/schema mutations |
 | Notifications | Reuse `transport.notify` / `enso message send`; job pings ride your existing chat |
 
 ## Personas
@@ -127,11 +141,29 @@ been doing — without turning Enso into a hosted product.
 - `/agents` — renders `AGENTS.md` (the system prompt); editable, writing back to the file
   in the working directory (with its `CLAUDE.md` symlink intact).
 
+### F5 — Registered data tables
+
+- User tables live in the existing WAL-mode `~/.enso/enso.db`; `runs`, `_enso_*`, and
+  `sqlite_*` remain reserved internal namespaces.
+- A small `_enso_tables` catalog records the physical name, display name, and discovery
+  description. Unregistered SQLite tables are not surfaced.
+- `enso table list`, `enso table schema <name>`, and `enso table register <name>` provide
+  the Enso-specific discovery layer. Agents use ordinary SQLite for creation, queries,
+  writes, and migrations.
+- A bundled `tables` skill teaches agents to inspect first, store well-typed raw facts,
+  use explicit timestamps/units and safe transactions, verify writes, and confirm before
+  destructive changes.
+- `/tables` lists registrations; `/tables/{name}` shows schema and one bounded,
+  horizontally scrollable page of escaped values. The web UI never writes table data.
+- Enso applies no automatic retention or deletion to user tables.
+
 ## Success criteria (v1 target)
 
 - Editing a job's schedule, prompt body, or prerun from the web UI writes back to
   `~/.enso/jobs/<name>/` and the next scheduled run uses the new definition.
 - Every job execution leaves a run row with retrievable output, visible in the web UI.
+- A registered data table can be discovered consistently by an agent and inspected in a
+  bounded web view without exposing internal or unrelated SQLite tables.
 - The web UI runs via `enso web`, reachable at `http://localhost:<port>` and, when
   deliberately bound there, over the tailnet.
 - Existing chat, jobs, and messaging behaviour are unchanged.
@@ -140,4 +172,5 @@ been doing — without turning Enso into a hosted product.
 
 Editing external "parent" skills in place (v1 keeps them read-only); run output streaming
 (live tail) rather than post-hoc; a proper auth layer if Enso ever goes multi-operator;
-full-text search over runs.
+full-text search over runs; table row/schema editing, import/export, charts, saved queries,
+and first-class SQLite views.

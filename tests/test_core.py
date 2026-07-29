@@ -189,12 +189,38 @@ def test_docs_skill_is_bundled(tmp_path):
     assert (skills_dir / "docs" / "SKILL.md").is_file()
 
 
+def test_tables_skill_is_bundled(tmp_path):
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+
+    Runtime._install_bundled_skills(str(skills_dir))
+
+    skill = skills_dir / "tables" / "SKILL.md"
+    assert skill.is_file()
+    content = skill.read_text(encoding="utf-8")
+    assert "enso table list" in content
+    assert "sqlite3 ~/.enso/enso.db" in content
+    assert "runs" in content
+    assert "_enso_" in content
+    assert ".bail on" in content
+    assert "PRAGMA foreign_keys = ON;" in content
+
+
 def test_bundled_prompt_documents_the_doc_commands():
     """AGENTS.md is always in context; the doc surface has to appear there."""
     current, _ = _legacy_agents_prompt()
     assert "enso doc list" in current
     assert "enso doc create" in current
     assert "`docs` skill" in current
+
+
+def test_bundled_prompt_documents_the_table_commands():
+    """AGENTS.md keeps the data-table discovery surface always available."""
+    current, _ = _legacy_agents_prompt()
+    assert "enso table list" in current
+    assert "enso table schema" in current
+    assert "enso table register" in current
+    assert "`tables` skill" in current
 
 
 def test_bundled_skills_are_seeded_once(tmp_path):

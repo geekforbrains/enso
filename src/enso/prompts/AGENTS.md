@@ -41,12 +41,20 @@ enso job create --name "Name" --provider agy --model gemini-3.6-flash-high --sch
 enso doc list                        # path, name, description for every doc
 enso doc create stuff/sub_stuff.md   # scaffold a doc (parent dirs created)
 
+# Tables — durable structured data in ~/.enso/enso.db
+enso table list                      # registered table names and descriptions
+enso table schema <name>             # columns, constraints, indexes, CREATE SQL
+enso table register <name> --description "What it contains"
+
 # For full usage:
 enso --help
 ```
 
 Reference docs live in `~/.enso/docs/`. Check them before answering from
 memory about this setup — see the `docs` skill.
+
+Queryable user data lives in registered SQLite tables. Always use the
+`tables` skill when tracking, querying, or changing structured data.
 
 ## Who's talking — `ENSO_ORIGIN_*`
 

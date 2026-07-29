@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
@@ -22,7 +23,7 @@ from rich.prompt import Confirm, Prompt
 from rich.table import Table
 from rich.text import Text
 
-from . import __version__, slack_cache
+from . import __version__, slack_cache, tables
 from .config import CONFIG_FILE, detect_providers, load_config, resolve_providers, save_config
 from .docs import MAX_DOCS, create_doc, load_docs
 from .jobs import create_job, load_jobs
@@ -38,11 +39,13 @@ log = logging.getLogger(__name__)
 app = typer.Typer(help="Enso — AI agents from your phone", no_args_is_help=True)
 job_app = typer.Typer(help="Manage background jobs")
 doc_app = typer.Typer(help="Manage reference docs")
+table_app = typer.Typer(help="Manage registered SQLite data tables")
 message_app = typer.Typer(help="Send messages and files via the configured transport")
 service_app = typer.Typer(help="Manage the background service")
 slack_app = typer.Typer(help="Slack directory lookups and message search")
 app.add_typer(job_app, name="job")
 app.add_typer(doc_app, name="doc")
+app.add_typer(table_app, name="table")
 app.add_typer(message_app, name="message")
 app.add_typer(service_app, name="service")
 app.add_typer(slack_app, name="slack")
@@ -1328,6 +1331,115 @@ def doc_create(
         raise typer.Exit(1) from None
     console.print(f"[green]✓[/] Doc created: {doc.path}")
     console.print("  Fill in the description and body.")
+
+
+# ---------------------------------------------------------------------------
+# Table subcommands
+# ---------------------------------------------------------------------------
+
+@table_app.command("list")
+def table_list() -> None:
+    """List registered user data tables in ~/.enso/enso.db."""
+    try:
+        listing = tables.list_tables()
+    except (OSError, sqlite3.Error) as exc:
+        console.print("[red]Could not list tables:[/] ", end="")
+        console.print(str(exc), markup=False)
+        raise typer.Exit(1) from None
+    if not listing.tables:
+        console.print(
+            "No registered tables found. Register one with: "
+            "enso table register <table> --description <description>"
+        )
+        return
+
+    output = Table(box=None, padding=(0, 2))
+    output.add_column("Table")
+    output.add_column("Name")
+    output.add_column("Columns", justify="right")
+    output.add_column("Description")
+    for item in listing.tables:
+        output.add_row(
+            Text(item.table_name),
+            Text(item.name),
+            str(item.column_count) if item.available else "[yellow]missing[/]",
+            Text(item.description),
+        )
+    console.print(output)
+    if listing.truncated:
+        console.print(
+            f"[yellow]Listing truncated at {tables.MAX_TABLES} tables; "
+            "some tables are not shown.[/]"
+        )
+
+
+@table_app.command("register")
+def table_register(
+    table_name: Annotated[
+        str, typer.Argument(help="Existing SQLite table name")
+    ],
+    description: Annotated[
+        str, typer.Option("--description", "-d", help="What the table contains and when to use it")
+    ],
+    name: Annotated[
+        str, typer.Option("--name", help="Display name (defaults to the table name)")
+    ] = "",
+) -> None:
+    """Register an existing SQLite table for Enso discovery."""
+    try:
+        item = tables.register_table(table_name, name=name, description=description)
+    except (OSError, sqlite3.Error, ValueError, tables.TableNotFoundError) as exc:
+        console.print("[red]Could not register table:[/] ", end="")
+        console.print(str(exc), markup=False)
+        raise typer.Exit(1) from None
+    console.print(f"[green]✓[/] Table registered: {item.table_name}")
+
+
+@table_app.command("schema")
+def table_schema(
+    table_name: Annotated[str, typer.Argument(help="Registered SQLite table name")],
+) -> None:
+    """Show the columns, indexes, and CREATE SQL for a registered table."""
+    try:
+        item = tables.get_table(table_name)
+    except tables.TableNotFoundError:
+        console.print(f"[red]Table not found:[/] {table_name}")
+        raise typer.Exit(1) from None
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        console.print("[red]Could not read table schema:[/] ", end="")
+        console.print(str(exc), markup=False)
+        raise typer.Exit(1) from None
+
+    console.print(Text(f"{item.name} ({item.table_name})"), style="bold")
+    console.print(Text(item.description))
+    output = Table(box=None, padding=(0, 2))
+    output.add_column("Column")
+    output.add_column("Type")
+    output.add_column("Constraints")
+    for column in item.columns:
+        constraints: list[str] = []
+        if column.primary_key:
+            constraints.append(
+                "PRIMARY KEY"
+                if column.primary_key == 1
+                else f"PRIMARY KEY {column.primary_key}"
+            )
+        if column.not_null:
+            constraints.append("NOT NULL")
+        if column.default_value is not None:
+            constraints.append(f"DEFAULT {column.default_value}")
+        output.add_row(
+            Text(column.name),
+            Text(column.declared_type or "untyped"),
+            Text(", ".join(constraints)),
+        )
+    console.print(output)
+    console.print("\nCREATE SQL", style="bold")
+    console.print(Text(item.sql))
+    if item.indexes:
+        console.print("\nIndexes", style="bold")
+        for index in item.indexes:
+            console.print(Text(index.sql))
 
 
 # ---------------------------------------------------------------------------

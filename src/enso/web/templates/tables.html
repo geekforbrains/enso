@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Tables · enso{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+  <h1 class="text-2xl font-semibold tracking-tight">Tables</h1>
+  <p class="mt-1 text-sm text-muted">Structured data your agents can query and maintain.</p>
+</div>
+
+{% if truncated %}
+  <div role="status" class="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm
+              text-amber-800 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-300">
+    Showing the first {{ max_tables }} registrations — this listing is incomplete.
+  </div>
+{% endif %}
+
+{% if tables %}
+  <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+    {% for item in tables %}
+      {% if item.available %}
+        <a href="/tables/{{ item.table_name }}" data-table-card
+           class="block min-w-0 rounded-xl border border-border bg-surface p-5 transition-colors
+                  hover:border-border-strong hover:bg-surface-hover focus:outline-none
+                  focus-visible:ring-2 focus-visible:ring-focus">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <span class="break-words font-medium text-ink">{{ item.name }}</span>
+            <span class="rounded-full bg-surface-muted px-2 py-0.5 text-xs text-muted">
+              {{ item.column_count }} column{% if item.column_count != 1 %}s{% endif %}
+            </span>
+          </div>
+          <div class="mt-1 line-clamp-2 text-sm leading-5 text-muted">{{ item.description }}</div>
+          <div class="break-anywhere mt-3 font-mono text-xs text-faint">{{ item.table_name }}</div>
+        </a>
+      {% else %}
+        <div data-table-card data-table-unavailable
+             class="min-w-0 rounded-xl border border-border bg-surface p-5 opacity-75">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="break-words font-medium text-ink">{{ item.name }}</span>
+            <span class="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium
+                         text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">unavailable</span>
+          </div>
+          <div class="mt-1 line-clamp-2 text-sm leading-5 text-muted">{{ item.description }}</div>
+          <div class="break-anywhere mt-3 font-mono text-xs text-faint">{{ item.table_name }}</div>
+        </div>
+      {% endif %}
+    {% endfor %}
+  </div>
+{% else %}
+  <div class="rounded-xl border border-dashed border-border-strong bg-surface px-4 py-8 text-center">
+    <p class="font-medium">No tables yet</p>
+    <p class="mt-1 text-sm text-muted">
+      Create a SQLite table, then publish it with
+      <span class="font-mono text-xs">enso table register &lt;table&gt; --description "…"</span>.
+    </p>
+  </div>
+{% endif %}
+{% endblock %}

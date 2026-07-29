@@ -23,6 +23,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from . import config
+from .fsutil import harden_sqlite_files, prepare_private_sqlite_file
 
 log = logging.getLogger(__name__)
 
@@ -84,14 +85,21 @@ def _connect() -> sqlite3.Connection:
     path = _db_path()
     conn = _connections.get(path)
     if conn is not None:
+        harden_sqlite_files(path)
         return conn
-    os.makedirs(config.CONFIG_DIR, exist_ok=True)
+    os.makedirs(config.CONFIG_DIR, mode=0o700, exist_ok=True)
+    prepare_private_sqlite_file(path)
     conn = sqlite3.connect(path, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.executescript(_SCHEMA)
-    conn.commit()
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.executescript(_SCHEMA)
+        conn.commit()
+        harden_sqlite_files(path)
+    except BaseException:
+        conn.close()
+        raise
     _connections[path] = conn
     log.debug("Opened runs DB at %s", path)
     return conn
