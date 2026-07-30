@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+{% extends "fragment.html" if is_hx_fragment else "base.html" %}
 {% block title %}Tables · enso{% endblock %}
 
 {% block content %}

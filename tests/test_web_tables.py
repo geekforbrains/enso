@@ -195,6 +195,31 @@ def test_table_detail_paginates_without_counting_all_rows(tmp_path, monkeypatch)
     assert 'href="/tables/samples?page=1"' in second.text
     assert 'href="/tables/samples?page=3"' not in second.text
 
+    fragment = client.get(
+        "/tables/samples?page=2",
+        headers={"HX-Request": "true", "HX-Target": "table-data"},
+    )
+    assert fragment.status_code == 200
+    assert fragment.text.lstrip().startswith('<section id="table-data"')
+    assert 'hx-target="#table-data"' in fragment.text
+    assert 'hx-select="#table-data"' in fragment.text
+    assert 'hx-push-url="true"' in fragment.text
+    assert "<!doctype html>" not in fragment.text
+    assert '<main id="main-content"' not in fragment.text
+    assert "Table schema" not in fragment.text
+    assert fragment.text.count("data-table-row") == 5
+
+    history_restore = client.get(
+        "/tables/samples?page=2",
+        headers={
+            "HX-Request": "true",
+            "HX-Target": "table-data",
+            "HX-History-Restore-Request": "true",
+        },
+    )
+    assert "<!doctype html>" in history_restore.text
+    assert "Table schema" in history_restore.text
+
 
 def test_table_detail_suppresses_next_link_at_maximum_page(tmp_path, monkeypatch):
     config_dir, client = _tables_web_app(tmp_path, monkeypatch)

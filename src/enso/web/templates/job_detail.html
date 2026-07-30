@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+{% extends "fragment.html" if is_hx_fragment else "base.html" %}
 {% from "macros.html" import back_link, btn_primary, delete_control, editor_form, related_run, text_link %}
 {% block title %}{{ job.name }} · enso{% endblock %}
 
@@ -73,7 +73,7 @@
   <div class="rounded-xl border border-border bg-surface p-5">
     <div class="mb-3 flex items-center justify-between">
       <h2 class="text-lg font-semibold">Runs</h2>
-      {{ text_link("/runs?kind=job&name=" ~ job.dir_name, "All →") }}
+      {{ text_link("/runs?name=" ~ job.dir_name, "All →") }}
     </div>
     {% if job_runs %}
       <div class="divide-y divide-border">

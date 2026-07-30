@@ -6,9 +6,11 @@ See [architecture.md](architecture.md) for how the server runs and is secured, a
 
 ## Shape
 
-A small **server-rendered** app (Starlette + Jinja2), sprinkled with **HTMX** for inline
-updates. There is no SPA, runtime build, or external CDN: compiled CSS and HTMX are
-vendored under `web/static/`. Forms and links remain usable when JavaScript is off.
+A small **server-rendered** app (Starlette + Jinja2) using **HTMX** for partial page and
+inline updates. There is no SPA, runtime build, or external CDN: compiled CSS and the
+latest stable HTMX 2.0 runtime are vendored under `web/static/`. Every navigable URL still
+returns a complete document when opened directly, and forms and links remain usable when
+JavaScript is off.
 
 The whole UI is a thin skin over the file model and the shared DB: pages read `JOB.md` /
 `SKILL.md` / `AGENTS.md`, run history, and registered user tables. Writes go straight
@@ -43,7 +45,7 @@ policy, and prevent HTML caching. Host filtering is not authentication: an empty
 | `/jobs/{name}/toggle` | POST | Implemented | Enable or disable a job |
 | `/jobs/{name}/delete` | POST | Implemented | Delete a job directory after confirmation |
 | `/jobs/{name}/run` | POST | Implemented | Run now and record a `manual` run |
-| `/runs` | GET | Implemented | Run feed; filter by `?name=`, `?status=` |
+| `/runs` | GET | Implemented | Paginated run feed; filter by `?name=`, `?status=` |
 | `/runs/{id}` | GET | Implemented | Run metadata and captured log output |
 | `/skills` | GET | Implemented | Enso-owned and external read-only skill tiers |
 | `/skills/new` | GET, POST | **Planned** | Create an Enso-owned skill |
@@ -61,8 +63,11 @@ policy, and prevent HTML caching. Host filtering is not authentication: an empty
 | `/agents/edit` | POST | Implemented | Save `AGENTS.md` atomically |
 | `/static/*` | GET | Implemented | Vendored HTMX and CSS assets |
 
-The toggle endpoint returns an updated HTMX fragment when requested that way; other
-writes redirect to their resulting detail page.
+The toggle endpoint returns its control fragment when targeted by HTMX. Page requests
+return the stable main-content fragment for HTMX and a complete document otherwise;
+table pagination and the Runs browser have smaller focused fragments. Other writes use
+`HX-Location` to navigate to their resulting page without reloading the shell and retain
+ordinary `303` redirects when JavaScript is unavailable.
 
 ## Pages
 
@@ -105,6 +110,12 @@ The dashboard shows:
 - Output: up to the first 200,000 bytes of `runs/{id}.log`, monospace and wrapped. If
   truncated, the page shows the full byte count and on-disk path.
 - A run with no captured output displays an empty-state message.
+
+The `/runs` feed fetches at most 51 records to render a 50-record page and determine
+whether a next page exists without `COUNT(*)`. Filters and page state stay in the URL;
+HTMX swaps only the filter/results browser while direct requests return the full page.
+Each record has one responsive DOM representation rather than separate hidden mobile and
+desktop copies.
 
 ### Skills (`/skills`, `/skills/{name}`)
 
@@ -165,6 +176,8 @@ Detail shows a compact schema summary followed by a horizontally scrollable grid
 - cell content is escaped as untrusted data
 - no unconditional `COUNT(*)` is needed to render a preview
 - reaching the maximum allowed offset suppresses further forward navigation
+- Previous/Next requests replace only the data section and push a shareable page URL when
+  HTMX is available; the same links perform ordinary full navigation without JavaScript
 
 The page uses a short-lived SQLite connection with a busy timeout and fails clearly if the
 table was removed after registration or the database cannot be read. The route exposes no
@@ -192,10 +205,11 @@ action. The catalog, CLI, agent workflow, and failure semantics are specified in
 ## Rendering & assets
 
 - **Responsive layout**: the sidebar appears only when the viewport has room for it
-  (1024px+). Run history becomes readable cards below wide desktop sizes instead of
-  relying on hidden horizontal scrolling. The capped main column stays left-aligned
-  beside the sidebar on wide screens, and long IDs, paths, upload controls, and metadata
-  must never widen the document.
+  (1024px+). The Runs feed uses one record representation that changes from compact cards
+  to a wide grid instead of duplicating hidden markup; the dashboard's short "Latest runs"
+  list still keeps separate card and table markup. The capped main column stays
+  left-aligned beside the sidebar on wide screens, and long IDs, paths, upload controls,
+  and metadata must never widen the document.
 - **Text editing**: Enso-owned `SKILL.md`, job prompts, `AGENTS.md`, and reference docs use
   plain textareas; read-only external skills use escaped preformatted text. Rich Markdown
   rendering is not implemented.
@@ -210,11 +224,18 @@ action. The catalog, CLI, agent workflow, and failure semantics are specified in
   Templates use semantic neutral tokens (`canvas`, `surface`, `border`, `ink`, `muted`,
   `action`, and related states) backed by CSS variables in `app.css`; green, amber, and red
   are reserved for success, warning, and destructive states rather than ordinary actions.
-- **No external requests**: compiled CSS and the pinned HTMX runtime are vendored under
-  `web/static/`, so the UI works offline and over a locked-down tailnet with no CDN trust
-  or flash of unstyled content.
-- **Navigation**: primary sidebar and mobile-menu links use full page loads so responsive
-  layouts are recalculated consistently. Explicit HTMX controls still update in place.
+- **No external requests**: compiled CSS and HTMX 2.0.10 (the latest stable release) are
+  vendored under `web/static/`, so the UI works offline and over a locked-down tailnet
+  with no CDN trust or flash of unstyled content.
+- **Navigation**: links are progressively boosted toward a stable `#main-content` target,
+  leaving the sidebar, mobile drawer, theme controls, and responsive shell mounted.
+  Focused table/run controls target smaller stable sections. Request indicators are
+  persistent, overlapping requests replace stale ones, and mutation forms temporarily
+  disable their submit button.
+- **History and variants**: HTMX history snapshots use the stable main element. History
+  cache misses explicitly request a full document (`historyRestoreAsHxRequest: false`),
+  and HTML responses vary on `HX-Request` and `HX-Target`. HTML remains `no-store` because
+  pages contain a process CSRF token and local operational data.
 
 ## Non-goals (recap)
 

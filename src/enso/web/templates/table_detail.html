@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+{% extends "fragment.html" if is_hx_fragment else "base.html" %}
 {% from "macros.html" import back_link %}
 {% block title %}{{ preview.table.name }} · Tables · enso{% endblock %}
 
@@ -66,75 +66,5 @@
   </details>
 </section>
 
-<section class="rounded-xl border border-border bg-surface p-4 sm:p-5">
-  <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
-    <div>
-      <h2 class="text-lg font-semibold">Data</h2>
-      <p class="mt-1 text-xs text-muted">Page {{ page }} · up to {{ preview.limit }} rows</p>
-    </div>
-    {% if preview.columns_truncated %}
-      <p role="status" class="text-xs text-amber-700 dark:text-amber-300">
-        Showing the first {{ preview.columns | length }} of {{ preview.table.column_count }} columns.
-      </p>
-    {% endif %}
-  </div>
-
-  <div data-table-grid class="max-w-full overflow-x-auto" tabindex="0"
-       aria-label="{{ preview.table.name }} data">
-    <table class="min-w-max text-left text-sm">
-      <caption class="sr-only">Rows from {{ preview.table.name }}</caption>
-      <thead class="text-xs uppercase tracking-wide text-faint">
-        <tr>
-          {% for column in preview.columns %}
-            <th scope="col" class="whitespace-nowrap py-2 pr-6 font-medium">{{ column.name }}</th>
-          {% endfor %}
-        </tr>
-      </thead>
-      <tbody>
-        {% for row in preview.rows %}
-          <tr data-table-row class="border-t border-border align-top">
-            {% for cell in row %}
-              <td data-cell-kind="{{ cell.kind }}"
-                  {% if cell.truncated %}data-cell-truncated="true"{% endif %}
-                  class="max-w-xs whitespace-pre-wrap break-words py-3 pr-6 font-mono text-xs
-                         {% if cell.kind in ['null', 'blob'] %}text-faint{% else %}text-ink{% endif %}">
-                {% if cell.kind == "null" %}<span class="italic">NULL</span>
-                {% elif cell.kind == "blob" %}BLOB · {{ cell.text }}
-                {% elif cell.kind == "text" and cell.text == "" %}<span class="text-faint">""</span>
-                {% else %}{{ cell.text }}{% if cell.truncated %}<span aria-label="value truncated">…</span>{% endif %}
-                {% endif %}
-              </td>
-            {% endfor %}
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-
-  {% if not preview.rows %}
-    <p class="border-t border-border py-6 text-center text-sm text-muted">
-      {% if page == 1 %}No rows yet{% else %}No rows on this page{% endif %}.
-    </p>
-  {% endif %}
-
-  {% if preview_limit_reached %}
-    <p role="status" class="mt-4 border-t border-border pt-4 text-sm text-amber-700
-              dark:text-amber-300">
-      Preview limit reached. Use SQLite directly to inspect later rows.
-    </p>
-  {% endif %}
-
-  {% if previous_page or next_page %}
-    <nav aria-label="Table pages" class="mt-4 flex items-center justify-between border-t border-border pt-4">
-      {% if previous_page %}
-        <a href="/tables/{{ preview.table.table_name }}?page={{ previous_page }}"
-           class="text-sm font-medium text-ink underline decoration-border-strong underline-offset-4">← Previous</a>
-      {% else %}<span></span>{% endif %}
-      {% if next_page %}
-        <a href="/tables/{{ preview.table.table_name }}?page={{ next_page }}"
-           class="text-sm font-medium text-ink underline decoration-border-strong underline-offset-4">Next →</a>
-      {% endif %}
-    </nav>
-  {% endif %}
-</section>
+{% include "_table_data.html" %}
 {% endblock %}

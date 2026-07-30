@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+{% extends "fragment.html" if is_hx_fragment else "base.html" %}
 {% from "macros.html" import run_card, run_row, text_link %}
 {% block title %}Dashboard · enso{% endblock %}
 

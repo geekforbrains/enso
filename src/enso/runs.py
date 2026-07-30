@@ -214,8 +214,9 @@ def list_runs(
     name: str | None = None,
     status: str | None = None,
     limit: int = 100,
+    offset: int = 0,
 ) -> list[dict]:
-    """Return run rows newest first, optionally filtered by kind/name/status."""
+    """Return a bounded run page newest first, optionally filtered."""
     conn = _connect()
     clauses: list[str] = []
     params: list[object] = []
@@ -229,9 +230,10 @@ def list_runs(
         clauses.append("status=?")
         params.append(status)
     where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
-    params.append(limit)
+    params.extend((limit, offset))
     cur = conn.execute(
-        f"SELECT * FROM runs{where} ORDER BY started_at DESC, rowid DESC LIMIT ?",
+        f"SELECT * FROM runs{where} "
+        "ORDER BY started_at DESC, rowid DESC LIMIT ? OFFSET ?",
         params,
     )
     return [dict(r) for r in cur.fetchall()]

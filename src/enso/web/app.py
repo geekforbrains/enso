@@ -17,6 +17,7 @@ import contextlib
 import errno
 import functools
 import importlib.resources
+import json
 import logging
 import os
 import secrets
@@ -25,6 +26,7 @@ import sqlite3
 import stat
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlencode
 
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
@@ -52,6 +54,8 @@ _STATIC_DIR = _HERE / "static"
 # Cap the run output we inline into a page so a giant transcript can't OOM the
 # renderer; the row's ``output_bytes`` still reports the true size.
 _OUTPUT_VIEW_CAP = 200_000
+_RUNS_PAGE_SIZE = 50
+_MAX_RUNS_PAGE = 100
 _TABLE_PAGE_SIZE = tables.DEFAULT_PAGE_SIZE
 _MAX_TABLE_PAGE = tables.MAX_OFFSET // _TABLE_PAGE_SIZE + 1
 _MAX_TABLE_SCHEMA_SQL_CHARS = 20_000
@@ -274,22 +278,67 @@ templates.env.globals["run_badges"] = RUN_BADGES
 # ---------------------------------------------------------------------------
 
 
-def _render(request, template: str, **ctx) -> Response:
-    """Render a template with the request bound (Jinja2Templates convention)."""
+def _render(
+    request,
+    template: str,
+    *,
+    htmx_template: str | None = None,
+    htmx_target: str | None = None,
+    **ctx,
+) -> Response:
+    """Render a full page, a main fragment, or a focused HTMX fragment."""
     ctx["current_path"] = request.url.path
     ctx["flash"] = request.query_params.get("msg")
     ctx["csrf_token"] = request.app.state.csrf_token
-    return templates.TemplateResponse(request, template, ctx)
+    focused_fragment = (
+        htmx_template is not None
+        and htmx_target is not None
+        and _is_hx_page_request(request)
+        and request.headers.get("HX-Target") == htmx_target
+    )
+    ctx["is_hx_fragment"] = _is_hx_page_request(request) and not focused_fragment
+    return templates.TemplateResponse(
+        request,
+        htmx_template if focused_fragment else template,
+        ctx,
+    )
 
 
 def _is_hx(request) -> bool:
-    """True when the request came from HTMX (wants a fragment, not a redirect)."""
+    """True when the request came from HTMX."""
     return request.headers.get("HX-Request") == "true"
 
 
-def _redirect(url: str) -> RedirectResponse:
-    """303 redirect (so a POST turns into a GET)."""
+def _is_hx_page_request(request) -> bool:
+    """Return whether a page request may safely receive a partial response."""
+    return _is_hx(request) and request.headers.get("HX-History-Restore-Request") != "true"
+
+
+def _redirect(request, url: str) -> Response:
+    """Navigate after a write, preserving no-JS and HTMX URL semantics."""
+    if _is_hx(request):
+        location = json.dumps(
+            {
+                "path": url,
+                "target": "#main-content",
+                "select": "#main-content",
+                "swap": "outerHTML show:window:top",
+            },
+            separators=(",", ":"),
+        )
+        return Response(
+            status_code=200,
+            headers={"HX-Location": location, "Cache-Control": "no-store"},
+        )
     return RedirectResponse(url, status_code=303)
+
+
+def _page_url(path: str, page: int, **filters: str | None) -> str:
+    """Build a shareable filtered pagination URL, omitting default values."""
+    query = [(key, value) for key, value in filters.items() if value]
+    if page > 1:
+        query.append(("page", str(page)))
+    return f"{path}?{urlencode(query)}" if query else path
 
 
 def _csrf_protected(handler):
@@ -839,24 +888,24 @@ async def job_toggle(request):
             "_job_toggle.html",
             {"job": fresh, "csrf_token": request.app.state.csrf_token},
         )
-    return _redirect(f"/jobs/{name}")
+    return _redirect(request, f"/jobs/{name}")
 
 
 async def job_run(request):
     name = request.path_params["name"]
     runtime = request.app.state.runtime
     if runtime is None or not hasattr(runtime, "run_job_now"):
-        return _redirect(f"/jobs/{name}?msg=Run+now+is+unavailable")
+        return _redirect(request, f"/jobs/{name}?msg=Run+now+is+unavailable")
     try:
         result = await runtime.run_job_now(name)
     except Exception as exc:
         log.warning("run_job_now failed for %s", name, exc_info=True)
-        return _redirect(f"/jobs/{name}?msg=Run+failed:+{exc}")
+        return _redirect(request, f"/jobs/{name}?msg=Run+failed:+{exc}")
     if result.run_id:
-        return _redirect(f"/runs/{result.run_id}")
+        return _redirect(request, f"/runs/{result.run_id}")
     if result.status == "no_work":
-        return _redirect(f"/jobs/{name}?msg=No+work;+provider+was+not+run")
-    return _redirect(f"/jobs/{name}")
+        return _redirect(request, f"/jobs/{name}?msg=No+work;+provider+was+not+run")
+    return _redirect(request, f"/jobs/{name}")
 
 
 async def job_edit_prompt(request):
@@ -872,7 +921,7 @@ async def job_edit_prompt(request):
     # Keep the fenced prefix byte-for-byte and swap only the prompt body. This
     # remains safe for legacy YAML-like frontmatter accepted by the job loader.
     frontmatter.write_body(job.path, content)
-    return _redirect(f"/jobs/{name}")
+    return _redirect(request, f"/jobs/{name}")
 
 
 async def job_edit_prerun(request):
@@ -907,7 +956,7 @@ async def job_edit_prerun(request):
         except OSError:
             log.warning("Could not edit prerun for job %s", name, exc_info=True)
             return PlainTextResponse("Prerun script unavailable", status_code=503)
-        return _redirect(f"/jobs/{name}")
+        return _redirect(request, f"/jobs/{name}")
     finally:
         if file_fd >= 0:
             with contextlib.suppress(OSError):
@@ -929,7 +978,7 @@ async def job_delete(request):
     except OSError:
         log.warning("Could not safely delete job %s", name, exc_info=True)
         return PlainTextResponse("Deletion unavailable", status_code=503)
-    return _redirect("/jobs?msg=Job+deleted+from+disk")
+    return _redirect(request, "/jobs?msg=Job+deleted+from+disk")
 
 
 # ---------------------------------------------------------------------------
@@ -940,11 +989,26 @@ async def job_delete(request):
 async def runs_list(request):
     name = request.query_params.get("name") or None
     status = request.query_params.get("status") or None
-    rows = runs.list_runs(name=name, status=status, limit=200)
+    page = _bounded_page(request.query_params.get("page"), _MAX_RUNS_PAGE)
+    offset = (page - 1) * _RUNS_PAGE_SIZE
+    fetched = runs.list_runs(
+        name=name,
+        status=status,
+        limit=_RUNS_PAGE_SIZE + 1,
+        offset=offset,
+    )
+    has_next = len(fetched) > _RUNS_PAGE_SIZE and page < _MAX_RUNS_PAGE
+    rows = fetched[:_RUNS_PAGE_SIZE]
+    filters = {"name": name, "status": status}
     return _render(
         request,
         "runs.html",
+        htmx_template="_runs_browser.html",
+        htmx_target="runs-browser",
         runs=rows,
+        page=page,
+        previous_url=_page_url("/runs", page - 1, **filters) if page > 1 else None,
+        next_url=_page_url("/runs", page + 1, **filters) if has_next else None,
         active_status=status or "",
         active_name=name or "",
     )
@@ -1024,7 +1088,7 @@ async def skill_edit(request):
     form = await request.form()
     content = (form.get("content") or "").replace("\r\n", "\n")
     atomic_write_text(path, content)
-    return _redirect(f"/skills/{name}")
+    return _redirect(request, f"/skills/{name}")
 
 
 async def skill_delete(request):
@@ -1052,7 +1116,7 @@ async def skill_delete(request):
         log.warning("Could not safely delete skill %s", name, exc_info=True)
         return PlainTextResponse("Deletion unavailable", status_code=503)
     _remove_installed_skill_tools(tool_candidates)
-    return _redirect("/skills?msg=Skill+deleted+from+disk")
+    return _redirect(request, "/skills?msg=Skill+deleted+from+disk")
 
 
 # ---------------------------------------------------------------------------
@@ -1091,7 +1155,7 @@ async def doc_create(request):
     except OSError:
         log.warning("Could not create doc %s", path, exc_info=True)
         return PlainTextResponse("Doc unavailable", status_code=503)
-    return _redirect(f"/docs/{doc.rel_path}")
+    return _redirect(request, f"/docs/{doc.rel_path}")
 
 
 async def doc_detail(request):
@@ -1126,7 +1190,7 @@ async def doc_edit(request):
     except OSError:
         log.warning("Could not edit doc %s", path, exc_info=True)
         return PlainTextResponse("Doc unavailable", status_code=503)
-    return _redirect(f"/docs/{rel}")
+    return _redirect(request, f"/docs/{rel}")
 
 
 async def doc_delete(request):
@@ -1141,7 +1205,7 @@ async def doc_delete(request):
     except OSError:
         log.warning("Could not delete doc %s", path, exc_info=True)
         return PlainTextResponse("Doc unavailable", status_code=503)
-    return _redirect("/docs?msg=Doc+deleted+from+disk")
+    return _redirect(request, "/docs?msg=Doc+deleted+from+disk")
 
 
 # ---------------------------------------------------------------------------
@@ -1168,7 +1232,7 @@ async def tables_list(request):
 
 async def table_detail(request):
     table_name = request.path_params["name"]
-    page = _bounded_table_page(request.query_params.get("page"))
+    page = _bounded_page(request.query_params.get("page"), _MAX_TABLE_PAGE)
     offset = (page - 1) * _TABLE_PAGE_SIZE
     try:
         preview = tables.preview_table(
@@ -1192,6 +1256,8 @@ async def table_detail(request):
     return _render(
         request,
         "table_detail.html",
+        htmx_template="_table_data.html",
+        htmx_target="table-data",
         preview=preview,
         page=page,
         previous_page=page - 1 if preview.has_previous else None,
@@ -1206,12 +1272,13 @@ async def table_detail(request):
     )
 
 
-def _bounded_table_page(value: object) -> int:
+def _bounded_page(value: object, maximum: int) -> int:
+    """Clamp an untrusted ``?page=`` value into ``1..maximum``."""
     try:
         page = int(str(value)) if value is not None else 1
     except (TypeError, ValueError):
         return 1
-    return min(max(page, 1), _MAX_TABLE_PAGE)
+    return min(max(page, 1), maximum)
 
 
 # ---------------------------------------------------------------------------
@@ -1243,7 +1310,7 @@ async def agents_edit(request):
     # Write the symlink target directly; the CLAUDE.md -> AGENTS.md symlink is
     # left untouched (os.replace onto the resolved regular file).
     atomic_write_text(path, content)
-    return _redirect("/agents")
+    return _redirect(request, "/agents")
 
 
 # ---------------------------------------------------------------------------
@@ -1271,6 +1338,13 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Referrer-Policy"] = "no-referrer"
         if response.headers.get("content-type", "").startswith("text/html"):
             response.headers["Cache-Control"] = "no-store"
+            vary = {
+                item.strip()
+                for item in response.headers.get("Vary", "").split(",")
+                if item.strip()
+            }
+            vary.update(("HX-Request", "HX-Target"))
+            response.headers["Vary"] = ", ".join(sorted(vary))
         return response
 
 

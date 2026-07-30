@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Main-content HTMX navigation with full-page fallbacks, correct history restoration and POST URL transitions, persistent loading feedback, focused table/run fragments, and race-safe request replacement. Runs are now paginated at 50 records and rendered once across responsive layouts instead of duplicating every row
 - Registered data tables in the existing `~/.enso/enso.db`: `enso table list/schema/register`, an explicitly catalogued and reserved-name-safe storage layer, owner-only database/WAL files, a bundled `tables` skill for consistent agent writes, and bounded read-only Tables pages in the dashboard with schema inspection, pagination, safe NULL/BLOB/truncation rendering, and responsive overflow containment
 - Cron schedules are validated when a job is created (`enso job create` rejects malformed expressions), and the scheduler now skips — with a log warning — any job whose hand-edited schedule has become invalid instead of dying silently and stopping all scheduled jobs. Background scheduler/task deaths are now logged instead of vanishing
 - A cross-process per-job run lock: the scheduler, `enso job run`, and the dashboard's "Run now" can no longer run the same job concurrently. `/update` also refuses to proceed while a dashboard- or CLI-triggered job is mid-run
@@ -57,8 +58,9 @@ All notable changes to this project will be documented in this file.
 - Antigravity conversations now run inside the project mapped to the Enso workspace instead of Antigravity's default scratch project, so workspace files, skills, and context resolve correctly. Fresh conversations reuse the project already catalogued for the working directory (including one created by interactive Antigravity use) and create one only when none exists; background jobs pin the same way. Chats whose stored conversation predates this fix stay pinned to scratch until `/clear` starts a fresh conversation
 - Wide dashboard layouts now keep the capped main content aligned beside the sidebar
   instead of centering it farther away as the viewport grows
-- Primary dashboard navigation now uses full page loads, preventing HTMX swaps from
-  intermittently leaving the Jobs grid in its single-column layout
+- Primary dashboard navigation now keeps the responsive application shell mounted and
+  swaps only the stable main-content fragment, preventing the old whole-body HTMX swap
+  from leaving the Jobs grid in its single-column layout
 - Dashboard requests now reject unlisted Host headers; wildcard binds require explicit `web.allowed_hosts`. Writes require a process-scoped CSRF token, and responses send browser-hardening headers
 - Job metadata now loads through PyYAML's string-preserving `BaseLoader` with a fallback for malformed legacy headers. Prompt and enable/disable edits preserve the raw frontmatter text
 - Upgrades migrate legacy task run-retention settings, remove only pristine retired task artifacts, and preserve customized copies with a cleanup warning

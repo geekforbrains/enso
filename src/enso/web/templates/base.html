@@ -3,6 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="htmx-config"
+        content='{"historyRestoreAsHxRequest":false,"includeIndicatorStyles":false,"reportValidityOfForms":true}'>
   <meta name="theme-color" content="#171717" media="(prefers-color-scheme: dark)">
   <title>{% block title %}enso{% endblock %}</title>
   <link rel="icon" type="image/svg+xml" href="/static/enso-mark.svg?v=1">
@@ -25,6 +27,16 @@
       function syncThemeControls(theme) {
         document.querySelectorAll("[data-theme-option]").forEach(function (button) {
           button.setAttribute("aria-pressed", String(button.dataset.themeOption === theme));
+        });
+      }
+
+      function syncPrimaryNavigation() {
+        var path = window.location.pathname;
+        document.querySelectorAll("[data-nav-path]").forEach(function (link) {
+          var href = link.dataset.navPath;
+          var active = href === "/" ? path === "/" : path === href || path.indexOf(href + "/") === 0;
+          if (active) link.setAttribute("aria-current", "page");
+          else link.removeAttribute("aria-current");
         });
       }
 
@@ -71,10 +83,30 @@
       });
       document.addEventListener("DOMContentLoaded", function () {
         syncThemeControls(savedTheme());
+        syncPrimaryNavigation();
       });
-      document.addEventListener("htmx:afterSwap", function () {
+      document.addEventListener("htmx:afterSwap", function (event) {
         syncThemeControls(savedTheme());
+        syncPrimaryNavigation();
         window.setMobileNav(false);
+        var main = document.getElementById("main-content");
+        if (main && event.detail.target && event.detail.target.id === "main-content") {
+          main.focus({ preventScroll: true });
+        }
+      });
+      document.addEventListener("htmx:historyRestore", function () {
+        syncThemeControls(savedTheme());
+        syncPrimaryNavigation();
+        window.setMobileNav(false);
+      });
+      document.addEventListener("htmx:pushedIntoHistory", syncPrimaryNavigation);
+      document.addEventListener("htmx:beforeRequest", function () {
+        var main = document.getElementById("main-content");
+        if (main) main.setAttribute("aria-busy", "true");
+      });
+      document.addEventListener("htmx:afterRequest", function () {
+        var main = document.getElementById("main-content");
+        if (main) main.removeAttribute("aria-busy");
       });
       document.addEventListener("keydown", function (event) {
         var drawer = document.getElementById("mobile-nav");
@@ -88,11 +120,16 @@
     })();
   </script>
   <link rel="stylesheet" href="/static/tailwind.css">
-  <script defer src="/static/htmx.min.js"></script>
+  <script defer src="/static/htmx.min.js?v=2.0.10"></script>
   <link rel="stylesheet" href="/static/app.css">
 </head>
-<body hx-boost="true"
+<body hx-boost="true" hx-target="#main-content"
+      hx-swap="outerHTML show:window:top" hx-indicator="#page-loading"
+      hx-sync="#main-content:replace" hx-disabled-elt="find button"
       class="min-h-full bg-canvas text-ink antialiased">
+  <div id="page-loading" class="page-loading htmx-indicator" role="status" aria-live="polite">
+    <span class="sr-only">Loading</span>
+  </div>
   <a href="#main-content"
      class="fixed left-4 top-3 z-[60] -translate-y-20 rounded-md bg-action px-3 py-2
             text-sm font-medium text-action-text transition focus:translate-y-0">
@@ -119,17 +156,16 @@
   {% endmacro %}
 
   {% macro nav_links(mobile=false) %}
-    <nav aria-label="Primary" hx-boost="false" class="space-y-1">
+    <nav aria-label="Primary" class="space-y-1">
       {% for href, label in nav %}
         {% set active = (href == "/" and current_path == "/")
              or (href != "/" and current_path.startswith(href)) %}
-        <a href="{{ href }}"
+        <a href="{{ href }}" data-nav-path="{{ href }}"
            {% if mobile %}onclick="setMobileNav(false)"{% endif %}
            {% if active %}aria-current="page"{% endif %}
-           class="block rounded-lg px-3 py-2.5 text-sm font-medium transition-colors
+           class="primary-nav-link block rounded-lg px-3 py-2.5 text-sm font-medium text-muted transition-colors
                   focus:outline-none focus-visible:ring-2 focus-visible:ring-focus
-                  {% if active %}bg-surface-muted text-ink
-                  {% else %}text-muted hover:bg-surface-muted hover:text-ink{% endif %}">
+                  hover:bg-surface-muted hover:text-ink">
           {{ label }}
         </a>
       {% endfor %}
@@ -206,7 +242,8 @@
   </aside>
 
   <div class="lg:pl-64">
-    <main id="main-content" class="max-w-6xl px-4 py-8 sm:px-6 lg:px-8 lg:py-10">
+    <main id="main-content" hx-history-elt tabindex="-1"
+          class="max-w-6xl px-4 py-8 sm:px-6 lg:px-8 lg:py-10">
       {% if flash %}
         <div role="status" class="mb-5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm
                     text-amber-800 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-300">

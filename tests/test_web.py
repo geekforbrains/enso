@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import stat
 from pathlib import Path
 from types import SimpleNamespace
@@ -280,15 +281,48 @@ def test_dashboard_shows_visible_skill_total_and_tier_counts(tmp_path, monkeypat
     assert "2<span" in response.text
     assert "enso / 1 system" in response.text
     assert 'href="/skills"' in response.text
-    assert '<body hx-boost="true"' in response.text
+    assert '<body hx-boost="true" hx-target="#main-content"' in response.text
+    assert 'hx-swap="outerHTML show:window:top"' in response.text
+    assert 'hx-sync="#main-content:replace"' in response.text
     assert 'class="min-h-full bg-canvas text-ink antialiased"' in response.text
     assert "indigo-" not in response.text
     favicon = '<link rel="icon" type="image/svg+xml" href="/static/enso-mark.svg?v=1">'
     assert favicon in response.text
     assert response.text.count('src="/static/enso-mark.svg?v=1"') == 3
-    assert response.text.count('<nav aria-label="Primary" hx-boost="false"') == 2
-    assert '<main id="main-content" class="max-w-6xl ' in response.text
+    assert response.text.count('<nav aria-label="Primary" class="space-y-1">') == 2
+    assert 'hx-boost="false"' not in response.text
+    assert 'historyRestoreAsHxRequest":false' in response.text
+    assert 'src="/static/htmx.min.js?v=2.0.10"' in response.text
+    assert '<main id="main-content" hx-history-elt tabindex="-1"' in response.text
     assert 'class="mx-auto max-w-6xl' not in response.text
+    assert 'version:"2.0.10"' in client.get("/static/htmx.min.js?v=2.0.10").text
+
+    fragment = client.get(
+        "/",
+        headers={"HX-Request": "true", "HX-Target": "main-content"},
+    )
+    assert fragment.status_code == 200
+    assert fragment.text.lstrip().startswith("<title>Dashboard · enso</title>")
+    assert fragment.text.count('<main id="main-content"') == 1
+    assert "<!doctype html>" not in fragment.text
+    assert "<body" not in fragment.text
+    assert 'aria-label="Primary"' not in fragment.text
+    assert fragment.headers["cache-control"] == "no-store"
+    assert {part.strip() for part in fragment.headers["vary"].split(",")} == {
+        "HX-Request",
+        "HX-Target",
+    }
+
+    history_restore = client.get(
+        "/",
+        headers={
+            "HX-Request": "true",
+            "HX-Target": "main-content",
+            "HX-History-Restore-Request": "true",
+        },
+    )
+    assert "<!doctype html>" in history_restore.text
+    assert history_restore.text.count('aria-label="Primary"') == 2
 
 
 def _write_job(
@@ -350,6 +384,124 @@ def test_run_filter_dropdowns_use_shared_select_styling(tmp_path, monkeypatch):
     assert "select:not([multiple])" in styles.text
     assert "-webkit-appearance: none" in styles.text
     assert ".dark select:not([multiple])" in styles.text
+
+
+def _run_row(index: int, *, name: str = "demo", status: str = "ok") -> dict:
+    return {
+        "id": f"{index:032x}",
+        "kind": "job",
+        "name": name,
+        "title": f"Run {index}",
+        "trigger": "schedule",
+        "status": status,
+        "provider": "codex",
+        "model": "gpt-test",
+        "started_at": "2026-07-29T12:00:00+00:00",
+        "ended_at": "2026-07-29T12:00:01+00:00",
+        "duration_ms": 1000,
+        "exit_code": 0,
+        "output_bytes": 1024,
+        "output_path": "/tmp/test-output.txt",
+    }
+
+
+def test_runs_use_bounded_htmx_pagination_and_preserve_filters(tmp_path, monkeypatch):
+    _, client = _job_web_app(tmp_path, monkeypatch)
+    calls = []
+
+    def fake_list_runs(**kwargs):
+        calls.append(kwargs)
+        offset = kwargs["offset"]
+        return [_run_row(i, name="daily review") for i in range(offset, offset + 51)]
+
+    monkeypatch.setattr(web_app.runs, "list_runs", fake_list_runs)
+
+    first = client.get("/runs?name=daily%20review&status=ok")
+
+    assert first.status_code == 200
+    assert calls[-1] == {
+        "name": "daily review",
+        "status": "ok",
+        "limit": web_app._RUNS_PAGE_SIZE + 1,
+        "offset": 0,
+    }
+    assert first.text.count("data-run-item") == web_app._RUNS_PAGE_SIZE
+    assert 'id="runs-browser"' in first.text
+    assert 'hx-target="#runs-browser"' in first.text
+    assert 'hx-select="#runs-browser"' in first.text
+    assert 'hx-push-url="true"' in first.text
+    section_start = first.text.index('<section id="runs-browser"')
+    section_tag = first.text[section_start : first.text.index(">", section_start)]
+    assert "hx-target" not in section_tag
+    assert "hx-select" not in section_tag
+    form_start = first.text.index('<form method="get" action="/runs"', section_start)
+    form_tag = first.text[form_start : first.text.index(">", form_start)]
+    assert 'hx-target="#runs-browser"' in form_tag
+    assert 'hx-select="#runs-browser"' in form_tag
+    pagination_start = first.text.index('<nav aria-label="Run pages"', section_start)
+    pagination_tag = first.text[
+        pagination_start : first.text.index(">", pagination_start)
+    ]
+    assert 'hx-target="#runs-browser"' in pagination_tag
+    assert 'hx-select="#runs-browser"' in pagination_tag
+    assert 'href="/runs?name=daily+review&amp;status=ok&amp;page=2"' in first.text
+    assert first.text.count("Run 0") == 1
+
+    fragment = client.get(
+        "/runs?name=daily%20review&status=ok&page=2",
+        headers={"HX-Request": "true", "HX-Target": "runs-browser"},
+    )
+
+    assert fragment.status_code == 200
+    assert calls[-1]["offset"] == web_app._RUNS_PAGE_SIZE
+    assert fragment.text.lstrip().startswith('<section id="runs-browser"')
+    assert "<!doctype html>" not in fragment.text
+    assert '<main id="main-content"' not in fragment.text
+    assert "<h1" not in fragment.text
+    assert 'href="/runs?name=daily+review&amp;status=ok"' in fragment.text
+
+
+def test_run_detail_boosted_link_returns_main_fragment(tmp_path, monkeypatch):
+    _, client = _job_web_app(tmp_path, monkeypatch)
+    run = _run_row(1)
+    monkeypatch.setattr(web_app.runs, "get", lambda run_id: run if run_id == run["id"] else None)
+    monkeypatch.setattr(web_app.runs, "read_output", lambda *_args, **_kwargs: "done")
+
+    response = client.get(
+        f'/runs/{run["id"]}',
+        headers={
+            "HX-Request": "true",
+            "HX-Boosted": "true",
+            "HX-Target": "main-content",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.text.lstrip().startswith("<title>Run 00000000 · enso</title>")
+    assert response.text.count('<main id="main-content"') == 1
+    assert 'id="runs-browser"' not in response.text
+    assert "<!doctype html>" not in response.text
+    assert "<body" not in response.text
+
+
+def test_htmx_post_uses_client_navigation_with_correct_target(tmp_path, monkeypatch):
+    jobs_dir, client = _job_web_app(tmp_path, monkeypatch)
+    _write_job(jobs_dir, "demo", "Original prompt.")
+
+    response = client.post(
+        "/jobs/demo/prompt",
+        data={"content": "Edited prompt.", "_csrf": client.app.state.csrf_token},
+        headers={"HX-Request": "true", "HX-Target": "main-content"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert json.loads(response.headers["HX-Location"]) == {
+        "path": "/jobs/demo",
+        "target": "#main-content",
+        "select": "#main-content",
+        "swap": "outerHTML show:window:top",
+    }
 
 
 def test_web_templates_do_not_reintroduce_the_retired_indigo_accent():

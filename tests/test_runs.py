@@ -127,6 +127,9 @@ def test_list_filters_and_ordering(tmp_enso):
     limited = runs.list_runs(limit=1)
     assert [r["id"] for r in limited] == [c]
 
+    second = runs.list_runs(limit=1, offset=1)
+    assert [r["id"] for r in second] == [b]
+
 
 def test_output_append_and_read(tmp_enso):
     """Output appends accumulate; read honours max_bytes."""
