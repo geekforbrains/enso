@@ -221,8 +221,10 @@ internet and the PRD makes that a non-goal.
 | `cli.py` | Provides standalone `enso web` and manual job-run commands |
 | `config.py` | Backfills `web` (including `allowed_hosts` / `external_skill_roots`) and `runs` defaults |
 | `jobs.py` | Loads YAML scalars with `BaseLoader`, then falls back for malformed legacy headers |
-| `frontmatter.py` | Provides fence-aware raw edits plus YAML serialization and atomic writes |
-| `runs.py` | Owns SQLite `create`/`finish`/`list`/`get`/`prune` operations |
+| `frontmatter.py` | Provides fence-aware raw edits and YAML serialization, writing through `fsutil` |
+| `fsutil.py` | Owns atomic text writes, containment checks, pristine-file hashing, and SQLite file hardening |
+| `docs.py` | Owns reference-doc path validation, the bounded recursive listing, scaffolding, and deletion |
+| `runs.py` | Owns SQLite `create`/`finish`/`list_runs`/`get`/`prune` operations |
 | `tables.py` | Owns the registration catalog, identifier validation, schema inspection, and bounded previews |
 | `skills/tables/SKILL.md` | Guides safe, consistent agent table creation and data access |
 | `web/` | Contains the Starlette app, current routes/templates, discovery, and vendored assets |

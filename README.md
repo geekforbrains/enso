@@ -85,7 +85,7 @@ Telegram autocompletes these when you type `/`. On Slack, use `!` instead (e.g. 
 |---------|-------------|
 | `/use` | Switch agent (shows buttons, or `/use claude` / `/use agy`) |
 | `/model` | Switch model (shows buttons, or `/model sonnet` / `/model gemini-3.6-flash-high`) |
-| `/effort` | Set Claude/Codex reasoning effort (or `default` to clear) |
+| `/effort` | Set the active provider's reasoning effort (or `default` to clear) |
 | `/status` | Active agent, model, and effort |
 | `/stop` | Stop process & clear queue |
 | `/queue` | View & manage queued messages (Telegram only) |
@@ -183,6 +183,25 @@ Codex models use the short names `sol`, `terra`, and `luna` in chat commands and
 
 A job's `provider` and `model` are validated against your configured providers — jobs naming unknown values fail with a clear error instead of running. Each job's whole lifecycle — dispatch, prerun gate, spawn, completion or timeout — is logged under a `[job:<name>]` tag for easy tracing.
 
+## Reference Docs
+
+Standing knowledge about your setup — how a machine is wired, a deploy runbook, account
+conventions — lives as Markdown under `~/.enso/docs/`, nested to any depth. Nothing loads
+docs automatically; the agent consults them when a task calls for one.
+
+```bash
+enso doc list                       # path, name, and description for every doc
+enso doc create stuff/homelab.md    # creates parent dirs, scaffolds frontmatter
+```
+
+Each doc carries `name` and `description` frontmatter, and identity is the path relative
+to `~/.enso/docs/` rather than a slug. `enso doc list` *is* the index — it is computed
+from frontmatter on every call, so it can never drift from what is on disk, which is why
+there is no `INDEX.md` to maintain. The bundled `docs` skill teaches agents to check docs
+before answering from memory about your setup. Browse, create, edit, and delete them under
+**Docs** in the dashboard. See [`docs/specs/docs.md`](docs/specs/docs.md) for the full
+design.
+
 ## Data Tables
 
 Enso uses the existing `~/.enso/enso.db` for user-owned, queryable records such as
@@ -236,6 +255,27 @@ development is in progress.
 
 Everything lives under `~/.enso/`. Config is at `~/.enso/config.json` — the setup wizard writes it for you, but you can edit it directly to add models, change the working directory, or set the interactive timeout through `agent.timeout` (whole seconds). Upgrades backfill newly supported providers without replacing existing paths or custom model lists. Set `notify_channel` to give `enso message send`, job alerts, and autocompact hooks a default destination (required for Slack; on Telegram it's optional — without it, sends broadcast to `allowed_users`).
 
+### Secrets
+
+`enso serve` loads every `~/.enso/secrets/*.env` file into its own environment at startup,
+and background jobs — prerun scripts and the provider process alike — inherit it. This
+exists because a service manager hands the daemon a minimal environment, so a CLI that
+reads a credential from the environment (a keyring password, a service-account token) has
+no other way to receive one under launchd or systemd.
+
+```bash
+mkdir -p ~/.enso/secrets && chmod 700 ~/.enso/secrets
+printf 'OP_SERVICE_ACCOUNT_TOKEN=ops_...\n' > ~/.enso/secrets/1password.env
+```
+
+Files are read in filename order. Blank lines and `#` comments are skipped, a leading
+`export ` is tolerated, and surrounding quotes are stripped. **A variable already present
+in the environment always wins**, so an explicit export still overrides the file. Loading
+happens in `enso serve` only — the dashboard process does not read these files. Restart
+the service after editing them.
+
+### Environment variables
+
 A few advanced knobs are environment variables rather than config keys: `ENSO_SESSION_TTL_DAYS` (prune idle conversations, default 30), `ENSO_JOB_CONCURRENCY` (parallel scheduled jobs, default 2), `ENSO_PROCESS_TERMINATE_GRACE_SECS` (SIGTERM grace before SIGKILL, default 5), and `ENSO_JOB_FAILURE_RENOTIFY_SECS` (duplicate-alert cooldown, default 86400). `enso service install` snapshots any that are set into the service definition — re-run it after changing them.
 
 ## Development
@@ -263,8 +303,8 @@ pytest
 
 ### Versioning
 
-Version lives in `pyproject.toml`. When cutting a release: bump the version, change the `CHANGELOG.md` heading from `[Unreleased]` to `[X.Y.Z] - YYYY-MM-DD`, commit as `chore: release vX.Y.Z`, merge `dev` → `main`, and tag `vX.Y.Z`.
+Version lives in `pyproject.toml` and is the single source of truth — the package reads it back through `importlib.metadata`, so nothing else needs bumping. When cutting a release: bump the version, change the `CHANGELOG.md` heading from `[Unreleased]` to `[X.Y.Z] - YYYY-MM-DD`, commit as `chore(release): X.Y.Z`, merge `dev` → `main`, and tag `vX.Y.Z` (annotated).
 
 ### Changelog
 
-`CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.com/). The `dev` branch always has an `[Unreleased]` section at the top. Add entries there as you merge features — don't wait until release time.
+`CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.com/). Add entries to the `[Unreleased]` section as you merge features — don't wait until release time. Cutting a release renames that heading to the version, so `dev` carries no `[Unreleased]` section until the next change adds one back.

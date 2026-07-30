@@ -23,6 +23,9 @@ whose value comes from filtering, joining, and aggregation.
 ├── enso.db              # SQLite: run history plus registered user data tables
 ├── cache/
 │   └── slack.json       # Slack name↔ID directory cache (`enso slack`)
+├── secrets/             # *.env files loaded into the `enso serve` environment at
+│   └── 1password.env    #   startup, so jobs inherit credentials a service manager
+│                        #   would not otherwise pass through. Existing vars win.
 ├── docs/                # operator reference docs, nested to any depth.
 │   ├── homelab.md       #   Markdown + frontmatter; identity is the relative path.
 │   └── stuff/sub_stuff.md   #   See [docs.md](docs.md)
@@ -44,6 +47,12 @@ Custom and external skill names do not receive markers; external skills cannot b
 by the dashboard.
 
 `runs/` mirrors a convention already in place: it is a flat blob store keyed by run id.
+
+`secrets/` is read, never written. `enso serve` parses each `*.env` in filename order at
+startup — skipping blanks and `#` comments, tolerating a leading `export `, and stripping
+surrounding quotes — and sets only keys absent from the environment, so an explicit export
+still wins. The dashboard process does not read it. Values are never logged; only the key
+names that were loaded are.
 
 `docs/` is the one file-backed kind identified by a **relative path** rather than a
 directory name, and the only one Enso ships no starter content for — so it needs neither

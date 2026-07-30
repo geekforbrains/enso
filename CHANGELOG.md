@@ -2,10 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- Documentation caught up with what 0.18.0 actually shipped: `~/.enso/secrets/*.env` is now documented in the README and the `~/.enso/` layout (it had no coverage at all), the README gained a Reference Docs section for `enso doc`, the architecture implementation map gained `fsutil.py` and `docs.py`, the web spec's dashboard now lists the doc count it renders, and the docs spec's `AGENTS.md` delivery section no longer reads as an unimplemented proposal. Also corrects the `/effort` command description, the HTMX "latest stable" phrasing, the Run-now navigation description, and the documented release-commit convention
+
 ## [0.18.0] - 2026-07-30
 
 ### Added
 
+- `enso serve` loads every `~/.enso/secrets/*.env` file into its own environment at startup, so background jobs — prerun scripts and the provider process alike — inherit credentials that a launchd or systemd environment would otherwise withhold. Files are read in filename order, `#` comments and a leading `export ` are tolerated, and a variable already present in the environment always wins
 - Main-content HTMX navigation with full-page fallbacks, correct history restoration and POST URL transitions, persistent loading feedback, focused table/run fragments, and race-safe request replacement. Runs are now paginated at 50 records and rendered once across responsive layouts instead of duplicating every row
 - Registered data tables in the existing `~/.enso/enso.db`: `enso table list/schema/register`, an explicitly catalogued and reserved-name-safe storage layer, owner-only database/WAL files, a bundled `tables` skill for consistent agent writes, and bounded read-only Tables pages in the dashboard with schema inspection, pagination, safe NULL/BLOB/truncation rendering, and responsive overflow containment
 - Cron schedules are validated when a job is created (`enso job create` rejects malformed expressions), and the scheduler now skips — with a log warning — any job whose hand-edited schedule has become invalid instead of dying silently and stopping all scheduled jobs. Background scheduler/task deaths are now logged instead of vanishing

@@ -7,9 +7,9 @@ See [architecture.md](architecture.md) for how the server runs and is secured, a
 ## Shape
 
 A small **server-rendered** app (Starlette + Jinja2) using **HTMX** for partial page and
-inline updates. There is no SPA, runtime build, or external CDN: compiled CSS and the
-latest stable HTMX 2.0 runtime are vendored under `web/static/`. Every navigable URL still
-returns a complete document when opened directly, and forms and links remain usable when
+inline updates. There is no SPA, runtime build, or external CDN: compiled CSS and a pinned
+HTMX 2.0 runtime are vendored under `web/static/`. Every navigable URL still returns a
+complete document when opened directly, and forms and links remain usable when
 JavaScript is off.
 
 The whole UI is a thin skin over the file model and the shared DB: pages read `JOB.md` /
@@ -34,7 +34,7 @@ policy, and prevent HTML caching. Host filtering is not authentication: an empty
 
 | Route | Method | Status | Purpose |
 | --- | --- | --- | --- |
-| `/` | GET | Implemented | Dashboard — recent runs plus job and skill counts |
+| `/` | GET | Implemented | Dashboard — recent runs plus job, skill, doc, and table counts |
 | `/health` | GET | Implemented | Unauthenticated process-health probe |
 | `/jobs` | GET | Implemented | Job list — schedule, provider/model, enabled state |
 | `/jobs/new` | GET, POST | **Planned** | Create-job form and `JOB.md` scaffold |
@@ -81,6 +81,7 @@ The dashboard shows:
 - **Jobs enabled** — the enabled and total job counts, linking to the job list.
 - **Skills** — deduplicated Enso-owned and visible system counts, linking to the skill
   list.
+- **Docs** — the reference-doc count, linking to the doc list.
 - **Tables** — available registered user-table count, linking to the read-only table list.
 
 ### Jobs (`/jobs`, `/jobs/{name}`)
@@ -199,8 +200,9 @@ action. The catalog, CLI, agent workflow, and failure semantics are specified in
 
 - It uses the same prerun/provider pipeline as `enso job run` and records
   `trigger='manual'` in run history.
-- The POST waits for the run to finish, then redirects to its run detail page. Live
-  progress polling and output streaming are future work.
+- The POST waits for the run to finish, then navigates to its run detail page — by
+  `HX-Location` under HTMX and an ordinary `303` without it. Live progress polling and
+  output streaming are future work.
 
 ## Rendering & assets
 
@@ -224,9 +226,9 @@ action. The catalog, CLI, agent workflow, and failure semantics are specified in
   Templates use semantic neutral tokens (`canvas`, `surface`, `border`, `ink`, `muted`,
   `action`, and related states) backed by CSS variables in `app.css`; green, amber, and red
   are reserved for success, warning, and destructive states rather than ordinary actions.
-- **No external requests**: compiled CSS and HTMX 2.0.10 (the latest stable release) are
-  vendored under `web/static/`, so the UI works offline and over a locked-down tailnet
-  with no CDN trust or flash of unstyled content.
+- **No external requests**: compiled CSS and HTMX (pinned at 2.0.10) are vendored under
+  `web/static/`, so the UI works offline and over a locked-down tailnet with no CDN trust
+  or flash of unstyled content.
 - **Navigation**: links are progressively boosted toward a stable `#main-content` target,
   leaving the sidebar, mobile drawer, theme controls, and responsive shell mounted.
   Focused table/run controls target smaller stable sections. Request indicators are

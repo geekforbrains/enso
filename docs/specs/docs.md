@@ -154,23 +154,21 @@ either: `pyproject.toml` already globs `skills/**/*.md`.
 
 ### AGENTS.md and existing installs
 
-`AGENTS.md` gains a short `enso doc` block in its CLI section, matching how `enso job`
-appears today, plus one line pointing at the skill.
+`AGENTS.md` carries a short `enso doc` block in its CLI section, matching how `enso job`
+appears, plus one line pointing at the skill.
 
-That block only reaches **new** installs as things stand. `install_system_prompts` writes
-`AGENTS.md` only when the file is absent or its hash matches
-`_LEGACY_TASKS_AGENTS_SHA256`; every other copy is treated as customized and preserved. So
-existing users would keep an `AGENTS.md` that never mentions docs.
+That block would have reached **new** installs only. `install_system_prompts` writes
+`AGENTS.md` when the file is absent or its hash matches a known-pristine copy; every other
+copy is treated as customized and preserved. Against a single legacy constant, existing
+users would have kept an `AGENTS.md` that never mentions docs.
 
-The fix is one Enso already uses for skills: generalize that single constant into a
-**set of known-pristine `AGENTS.md` hashes**, exactly like
-`_BUNDLED_SKILL_PRISTINE_HASHES`. Untouched copies then follow the bundled template
-forward while customized ones stay untouched. This is worth doing here rather than routing
-around it — it repairs the delivery path for every future system-prompt change, not just
-this one.
+So that constant was generalized into a **set of known-pristine `AGENTS.md` hashes**,
+exactly like `_BUNDLED_SKILL_PRISTINE_HASHES`. Untouched copies now follow the bundled
+template forward while customized ones stay untouched. This repairs the delivery path for
+every future system-prompt change, not just this one.
 
-The bundled skill is what makes the feature safe in the meantime: operators with a
-genuinely customized `AGENTS.md` still get docs support through the skill.
+The bundled skill is the backstop: operators with a genuinely customized `AGENTS.md` still
+get docs support through the skill.
 
 ## Web UI
 
@@ -237,5 +235,5 @@ The doc count joins the existing job and skill counts, linking to `/docs`.
 | `web/app.py` | Adds doc routes, path-safe resolution, and the dashboard count |
 | `web/templates/` | Adds `docs.html`, `doc_detail.html`, and `doc_new.html` |
 
-`frontmatter.py` needs no change — `read`, `parse`, `dumps`, and the atomic writers
-already cover what docs require.
+`frontmatter.py` needed no change — `read`, `parse`, `dumps`, and its `fsutil`-backed
+atomic writers already covered what docs require.
