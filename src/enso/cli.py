@@ -32,6 +32,11 @@ from .messages import clear as msg_clear
 from .messages import pending as msg_pending
 from .messages import send as msg_send
 from .providers import PROVIDER_CLASSES, PROVIDER_NAMES
+from .secret_refs import (
+    SecretResolutionError,
+    resolve_config_secret,
+    update_config_secret_reference,
+)
 from .transports import BaseTransport
 
 log = logging.getLogger(__name__)
@@ -580,7 +585,11 @@ def _setup_transport(config: dict) -> int | None:
 def _setup_telegram(config: dict) -> int | None:
     """Configure Telegram bot and capture user. Returns chat_id or None."""
     tg_cfg = config.get("transports", {}).get("telegram", {})
-    current_token = tg_cfg.get("bot_token", "")
+    try:
+        current_token = resolve_config_secret(tg_cfg, "bot_token")
+    except SecretResolutionError as exc:
+        console.print(f"[yellow]  Existing Telegram token could not be loaded: {exc}[/]")
+        current_token = ""
     current_users = _tg_allowed_users(tg_cfg)
     bot_info = None
 
@@ -603,7 +612,7 @@ def _setup_telegram(config: dict) -> int | None:
     console.print("  3. Copy the token BotFather gives you\n")
 
     while True:
-        token = Prompt.ask("  Bot token")
+        token = Prompt.ask("  Bot token", password=True)
         if not token:
             console.print("[red]  Token is required.[/]")
             continue
@@ -611,10 +620,20 @@ def _setup_telegram(config: dict) -> int | None:
             bot_info = _tg_validate_token(token)
         if bot_info:
             console.print(f"  [green]\u2713[/] Connected to @{bot_info.get('username', '?')}")
-            config.setdefault("transports", {})["telegram"] = {
-                "bot_token": token,
-                "allowed_users": current_users,
-            }
+            is_reference = _update_referenced_secret_or_exit(
+                tg_cfg, "bot_token", token, "Telegram bot token",
+            )
+            if is_reference:
+                next_cfg = dict(tg_cfg)
+                next_cfg.pop("bot_token", None)
+                next_cfg.pop("allowed_user_ids", None)
+                next_cfg["allowed_users"] = current_users
+            else:
+                next_cfg = {
+                    "bot_token": token,
+                    "allowed_users": current_users,
+                }
+            config.setdefault("transports", {})["telegram"] = next_cfg
             current_token = token
             break
         console.print("[red]  \u2717 Invalid token. Try again.[/]")
@@ -700,6 +719,92 @@ def _tg_allowed_users(tg_cfg: dict) -> list[str]:
     return [str(u) for u in raw]
 
 
+def _resolve_transport_secret_or_exit(
+    transport_cfg: dict, key: str, transport_name: str,
+) -> str:
+    """Resolve a transport credential and turn reference errors into CLI output."""
+    try:
+        return resolve_config_secret(transport_cfg, key)
+    except SecretResolutionError as exc:
+        console.print(f"[red]✗[/] Could not load {transport_name} credentials: {exc}")
+        raise typer.Exit(1) from None
+
+
+def _update_referenced_secret_or_exit(
+    transport_cfg: dict,
+    key: str,
+    value: str,
+    label: str,
+) -> bool:
+    """Update an existing secret reference or exit without adding plaintext."""
+    try:
+        return update_config_secret_reference(transport_cfg, key, value)
+    except SecretResolutionError as exc:
+        console.print(f"[red]✗[/] Could not save {label}: {exc}")
+        raise typer.Exit(1) from None
+
+
+def _update_referenced_secrets_with_rollback_or_exit(
+    transport_cfg: dict,
+    updates: list[tuple[str, str, str]],
+) -> dict[str, bool]:
+    """Update a credential set, restoring earlier referenced writes on failure."""
+    referenced = [
+        (key, label)
+        for key, _value, label in updates
+        if f"{key}_1password" in transport_cfg
+    ]
+    previous: dict[str, str] = {}
+    for key, label in referenced:
+        try:
+            previous[key] = resolve_config_secret(transport_cfg, key)
+        except SecretResolutionError:
+            console.print(
+                f"[red]✗[/] Could not prepare credential update:"
+                f" existing {label} could not be loaded."
+            )
+            raise typer.Exit(1) from None
+
+    results: dict[str, bool] = {}
+    updated: list[tuple[str, str]] = []
+    for key, value, label in updates:
+        try:
+            is_reference = update_config_secret_reference(
+                transport_cfg,
+                key,
+                value,
+            )
+        except SecretResolutionError:
+            rollback_failures: list[str] = []
+            for updated_key, updated_label in reversed(updated):
+                try:
+                    update_config_secret_reference(
+                        transport_cfg,
+                        updated_key,
+                        previous[updated_key],
+                    )
+                except SecretResolutionError:
+                    rollback_failures.append(updated_label)
+            console.print(
+                f"[red]✗[/] Could not save {label} through 1Password."
+            )
+            if rollback_failures:
+                console.print(
+                    "[red]✗[/] Rollback also failed for:"
+                    f" {', '.join(rollback_failures)}."
+                    " Referenced credentials may be inconsistent."
+                )
+            elif updated:
+                console.print(
+                    "[yellow]Earlier referenced credential updates were restored.[/]"
+                )
+            raise typer.Exit(1) from None
+        results[key] = is_reference
+        if is_reference:
+            updated.append((key, label))
+    return results
+
+
 def _resolve_send_targets(cfg: dict, to: str) -> tuple[str, str, list[str], str]:
     """Resolve delivery for ``message send``/``attach``.
 
@@ -711,7 +816,7 @@ def _resolve_send_targets(cfg: dict, to: str) -> tuple[str, str, list[str], str]
 
     if transport == "slack":
         slack_cfg = cfg.get("transports", {}).get("slack", {})
-        token = slack_cfg.get("bot_token", "")
+        token = _resolve_transport_secret_or_exit(slack_cfg, "bot_token", "Slack")
         if not token:
             console.print(
                 "[red]✗[/] Slack not configured."
@@ -730,7 +835,7 @@ def _resolve_send_targets(cfg: dict, to: str) -> tuple[str, str, list[str], str]
         return transport, token, [target], thread_ts
 
     tg_cfg = cfg.get("transports", {}).get("telegram", {})
-    token = tg_cfg.get("bot_token", "")
+    token = _resolve_transport_secret_or_exit(tg_cfg, "bot_token", "Telegram")
     users = _tg_allowed_users(tg_cfg)
     if not token or not users:
         console.print(
@@ -854,7 +959,11 @@ def _write_slack_manifest_copy() -> str:
 def _setup_slack(config: dict) -> None:
     """Configure Slack bot tokens and allowed users."""
     slack_cfg = config.get("transports", {}).get("slack", {})
-    current_bot = slack_cfg.get("bot_token", "")
+    try:
+        current_bot = resolve_config_secret(slack_cfg, "bot_token")
+    except SecretResolutionError as exc:
+        console.print(f"[yellow]  Existing Slack token could not be loaded: {exc}[/]")
+        current_bot = ""
 
     if current_bot:
         auth = _slack_validate_token(current_bot)
@@ -898,7 +1007,7 @@ def _setup_slack(config: dict) -> None:
     )
 
     while True:
-        bot_token = Prompt.ask("  Bot Token (xoxb-...)")
+        bot_token = Prompt.ask("  Bot Token (xoxb-...)", password=True)
         if not bot_token:
             console.print("[red]  Token is required.[/]")
             continue
@@ -914,7 +1023,7 @@ def _setup_slack(config: dict) -> None:
         console.print("[red]  \u2717 Invalid token. Try again.[/]")
 
     # App Token (for Socket Mode — no validation API)
-    app_token = Prompt.ask("  App Token (xapp-...)")
+    app_token = Prompt.ask("  App Token (xapp-...)", password=True)
 
     # Allowed users
     console.print(
@@ -950,13 +1059,30 @@ def _setup_slack(config: dict) -> None:
             " ~/.enso/config.json or re-running `enso setup`."
         )
 
-    config.setdefault("transports", {})["slack"] = {
-        "bot_token": bot_token,
-        "app_token": app_token,
+    reference_updates = _update_referenced_secrets_with_rollback_or_exit(
+        slack_cfg,
+        [
+            ("bot_token", bot_token, "Slack bot token"),
+            ("app_token", app_token, "Slack app token"),
+        ],
+    )
+    bot_is_reference = reference_updates["bot_token"]
+    app_is_reference = reference_updates["app_token"]
+    next_cfg = dict(slack_cfg)
+    if bot_is_reference:
+        next_cfg.pop("bot_token", None)
+    else:
+        next_cfg["bot_token"] = bot_token
+    if app_is_reference:
+        next_cfg.pop("app_token", None)
+    else:
+        next_cfg["app_token"] = app_token
+    next_cfg.update({
         "bot_user_id": bot_user_id,
         "allowed_users": allowed,
         "notify_channel": notify,
-    }
+    })
+    config.setdefault("transports", {})["slack"] = next_cfg
 
 
 # ---------------------------------------------------------------------------
@@ -991,7 +1117,11 @@ def setup() -> None:
     # Send test message
     if config.get("transport") == "telegram":
         tg = config.get("transports", {}).get("telegram", {})
-        token = tg.get("bot_token", "")
+        try:
+            token = resolve_config_secret(tg, "bot_token")
+        except SecretResolutionError as exc:
+            console.print(f"[yellow]Skipping test message: {exc}[/]")
+            token = ""
         users = tg.get("allowed_users", [])
         chat_id = captured_chat_id or (
             users[0] if users else None
@@ -1010,7 +1140,11 @@ def setup() -> None:
                 )
     elif config.get("transport") == "slack":
         slack_cfg = config.get("transports", {}).get("slack", {})
-        token = slack_cfg.get("bot_token", "")
+        try:
+            token = resolve_config_secret(slack_cfg, "bot_token")
+        except SecretResolutionError as exc:
+            console.print(f"[yellow]Skipping test message: {exc}[/]")
+            token = ""
         target = slack_cfg.get("notify_channel", "")
         if not target:
             console.print(
@@ -1196,14 +1330,18 @@ def web(
 
     # Lazy import so missing optional web deps never break other commands.
     try:
-        from .web.app import create_app
-
-        app_ = create_app(runtime)
         import uvicorn
+
+        from .web.app import create_app
     except Exception as exc:
         console.print(f"[red]✗[/] Web dependencies missing: {exc}")
         console.print("Install them with: [bold]pip install 'enso[web]'[/]")
         raise typer.Exit(1) from exc
+    try:
+        app_ = create_app(runtime)
+    except SecretResolutionError as exc:
+        console.print(f"[red]✗[/] Could not load web credentials: {exc}")
+        raise typer.Exit(1) from None
 
     url = f"http://{bind_host}:{bind_port}"
     console.print(f"[green]✓[/] Enso web serving at [bold]{url}[/]")
@@ -1674,7 +1812,8 @@ def service_logs_cmd(
 def _slack_token_or_exit() -> str:
     """Load the Slack bot token or exit with a clear error."""
     cfg = load_config()
-    token = cfg.get("transports", {}).get("slack", {}).get("bot_token", "")
+    slack_cfg = cfg.get("transports", {}).get("slack", {})
+    token = _resolve_transport_secret_or_exit(slack_cfg, "bot_token", "Slack")
     if not token:
         console.print(
             "[red]\u2717[/] Slack not configured. Run [bold]enso setup[/]."

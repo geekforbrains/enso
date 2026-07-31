@@ -28,7 +28,12 @@ name/IP in `web.allowed_hosts`; wildcard binds do not disable this check. All PO
 also require a random, process-scoped CSRF token supplied by the rendered form or an
 `X-CSRF-Token` header. Responses deny framing, disable MIME sniffing, use a no-referrer
 policy, and prevent HTML caching. Host filtering is not authentication: an empty
-`web.token` accepts every reachable client.
+`web.token`, with no `web.token_1password` reference, accepts every reachable client.
+`web.token_1password` uses the same `{item, field}` shape as transport credentials and
+is resolved through `~/.enso/lib/1password.sh` when the app is created. The resolved
+token stays process-local. A present reference takes precedence over `web.token` and
+fails app creation if it is malformed, unavailable, or empty. A configured literal
+`web.token` must be a string; malformed JSON types also fail app creation.
 
 ## Routes
 

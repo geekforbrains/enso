@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Telegram and Slack transport tokens, Slack Socket Mode app tokens, and the dashboard shared token can now use direct 1Password references in config. Enso resolves each reference through the machine-local `op_secret` helper at process startup or CLI use, keeps resolved values out of config and environment projections, preserves valid legacy literal keys, and fails closed on malformed or unavailable credentials. Reconfiguring a referenced transport through `enso setup` supplies replacement values over stdin, preserves the references, and never writes a plaintext fallback. Slack credential-pair updates prevalidate both old values and best-effort roll back an earlier write if the second fails.
+
 ## [0.18.1] - 2026-07-30
 
 ### Fixed

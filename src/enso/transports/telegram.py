@@ -41,6 +41,7 @@ from ..commands import (
     cmd_use,
 )
 from ..formatting import md_to_html
+from ..secret_refs import resolve_config_secret
 from . import BaseTransport, TransportContext, safe_filename
 
 if TYPE_CHECKING:
@@ -153,7 +154,7 @@ class TelegramTransport(BaseTransport):
     def __init__(self, runtime: Runtime):
         self.runtime = runtime
         tg_cfg = runtime.config.get("transports", {}).get("telegram", {})
-        self.bot_token: str = tg_cfg.get("bot_token", "")
+        self.bot_token = resolve_config_secret(tg_cfg, "bot_token")
         # Backward compat: read allowed_users (str list) or allowed_user_ids (int list)
         raw = tg_cfg.get("allowed_users") or tg_cfg.get("allowed_user_ids", [])
         self.allowed_users: list[str] = [str(u) for u in raw]

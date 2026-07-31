@@ -12,6 +12,7 @@ pytest.importorskip("jinja2")
 
 from starlette.testclient import TestClient
 
+from enso.secret_refs import SecretResolutionError
 from enso.web import app as web_app
 
 
@@ -108,6 +109,59 @@ def test_shared_token_bootstraps_http_only_cookie(tmp_path):
     assert "HttpOnly" in login.headers["set-cookie"]
     assert "SameSite=lax" in login.headers["set-cookie"]
     assert client.get("/agents").status_code == 200
+
+
+def test_1password_web_token_takes_precedence_over_literal(
+    tmp_path, monkeypatch,
+):
+    helper = tmp_path / "1password.sh"
+    helper.write_text(
+        'op_secret() { printf "resolved-web-token\\n"; }\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("enso.secret_refs.ONEPASSWORD_HELPER", str(helper))
+    client = _client(
+        tmp_path,
+        {
+            "token": "stale-literal-token",
+            "token_1password": {
+                "item": "Enso - Web - Dashboard",
+                "field": "WEB_TOKEN",
+            },
+        },
+    )
+
+    assert client.get("/agents?token=stale-literal-token").status_code == 401
+    assert client.get("/agents?token=resolved-web-token").status_code == 200
+
+
+def test_invalid_1password_web_token_reference_fails_app_creation(tmp_path):
+    runtime = SimpleNamespace(
+        config={
+            "web": {
+                "token": "stale-literal-token",
+                "token_1password": {
+                    "item": "Enso - Web - Dashboard",
+                    "field": "",
+                },
+            },
+        },
+        working_dir=str(tmp_path),
+    )
+
+    with pytest.raises(SecretResolutionError, match=r"token_1password\.field"):
+        web_app.create_app(runtime)
+
+
+@pytest.mark.parametrize("token", [None, True, 123, {}, ["token"]])
+def test_invalid_literal_web_token_fails_app_creation(tmp_path, token):
+    runtime = SimpleNamespace(
+        config={"web": {"token": token}},
+        working_dir=str(tmp_path),
+    )
+
+    with pytest.raises(SecretResolutionError, match="token must be a string"):
+        web_app.create_app(runtime)
 
 
 @pytest.mark.parametrize("token", [None, "wrong-token"])

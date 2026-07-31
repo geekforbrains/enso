@@ -5,7 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from enso.transports.telegram import TelegramContext, _resolve_file
+from enso.transports.telegram import TelegramContext, TelegramTransport, _resolve_file
 
 
 def _msg(**kwargs):
@@ -37,6 +37,31 @@ def test_resolve_file_missing_audio_name_falls_back_to_generated():
     _obj, name, _desc = _resolve_file(_msg(audio=audio))
     assert name.startswith("audio_")
     assert name.endswith(".mp3")
+
+
+def test_transport_resolves_1password_token_reference(monkeypatch):
+    runtime = SimpleNamespace(
+        config={
+            "transports": {
+                "telegram": {
+                    "bot_token_1password": {
+                        "item": "Telegram",
+                        "field": "TOKEN",
+                    },
+                    "allowed_users": ["123"],
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "enso.transports.telegram.resolve_config_secret",
+        lambda cfg, key: "resolved-telegram-token",
+    )
+
+    transport = TelegramTransport(runtime)
+
+    assert transport.bot_token == "resolved-telegram-token"
+    assert transport.allowed_users == ["123"]
 
 
 async def test_reply_status_returns_message_handle():

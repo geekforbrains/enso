@@ -1271,6 +1271,26 @@ class TestTransportInit:
         assert transport.bot_token == ""
         assert transport.allowed_users == []
 
+    def test_1password_token_references(self, monkeypatch):
+        rt = _make_runtime()
+        rt.config["transports"]["slack"] = {
+            "bot_token_1password": {"item": "Slack", "field": "BOT_TOKEN"},
+            "app_token_1password": {"item": "Slack", "field": "APP_TOKEN"},
+        }
+        values = {
+            "bot_token": "resolved-bot-token",
+            "app_token": "resolved-app-token",
+        }
+        monkeypatch.setattr(
+            "enso.transports.slack.resolve_config_secret",
+            lambda cfg, key: values[key],
+        )
+
+        transport = SlackTransport(rt)
+
+        assert transport.bot_token == "resolved-bot-token"
+        assert transport.app_token == "resolved-app-token"
+
 
 # ---------------------------------------------------------------------------
 # SlackContext — origin env vars

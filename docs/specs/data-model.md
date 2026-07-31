@@ -54,6 +54,59 @@ surrounding quotes — and sets only keys absent from the environment, so an exp
 still wins. The dashboard process does not read it. Values are never logged; only the key
 names that were loaded are.
 
+Transport and dashboard credentials do not have to be environment projections. A
+supported config value can use a direct 1Password reference named
+`<key>_1password`:
+
+```jsonc
+{
+  "transports": {
+    "telegram": {
+      "bot_token_1password": {
+        "item": "Enso - Transport - Telegram",
+        "field": "TELEGRAM_BOT_TOKEN"
+      }
+    },
+    "slack": {
+      "bot_token_1password": {
+        "item": "Enso - Transport - Slack",
+        "field": "SLACK_BOT_TOKEN"
+      },
+      "app_token_1password": {
+        "item": "Enso - Transport - Slack",
+        "field": "SLACK_APP_TOKEN"
+      }
+    }
+  },
+  "web": {
+    "token_1password": {
+      "item": "Enso - Web - Dashboard",
+      "field": "WEB_TOKEN"
+    }
+  }
+}
+```
+
+At daemon or dashboard construction, setup validation, or a token-dependent CLI
+invocation, Enso sources `~/.enso/lib/1password.sh` and calls its `op_secret` function
+with the configured item and field as positional arguments. The resolved value remains
+process-local and is not written back to config or exported. Literal `bot_token`,
+`app_token`, and `web.token` keys are the backward-compatible fallback only when the
+matching reference key is absent. A present but malformed, unavailable, or empty
+reference fails closed. Literal credentials must be strings; other JSON types are
+rejected rather than normalized to empty values. The helper's own service-account credential can still be
+bootstrapped through `secrets/1password.env`; referenced transport reconfiguration also
+requires the helper's `op_set_secret` function.
+
+The setup wizard preserves this storage choice. Reconfiguring a referenced Telegram bot
+token or Slack bot/app token updates the existing 1Password field through
+`op_set_secret`; the replacement value reaches the helper shell over stdin and is never
+placed in process argv. Enso keeps the reference object, removes any stale literal for
+that key, and aborts without writing a plaintext fallback if the helper update fails.
+Slack prevalidates both previous referenced values before changing either field and
+best-effort restores an earlier field if a later update fails. Sections with no
+reference retain the legacy literal setup flow.
+
 `docs/` is the one file-backed kind identified by a **relative path** rather than a
 directory name, and the only one Enso ships no starter content for — so it needs neither
 seeding nor deletion markers. Deleting a doc prunes the empty parents it leaves behind.
@@ -173,7 +226,7 @@ The three defaulted blocks documented here are backfilled by
     "enabled": true,
     "host": "127.0.0.1",     // bind localhost; set tailnet IP / 0.0.0.0 for remote
     "port": 1337,
-    "token": "",             // optional shared token; empty = no authentication
+    "token": "",             // optional shared token; see token_1password below
     "allowed_hosts": [],      // extra accepted Host names/IPs for remote access
     "external_skill_roots": ["~/.claude/skills"]  // read-only "parent" skills to surface
   },
@@ -199,9 +252,10 @@ Notes:
   names or IPs to `web.allowed_hosts`. Binding `0.0.0.0` or `::` changes only the listen
   interface; it does not allow arbitrary request hosts, and `"*"` is not accepted as an
   allowlist entry.
-- An empty `web.token` disables authentication; `allowed_hosts` is a DNS-rebinding guard,
-  not an identity check. Protect any remotely reachable dashboard with a strong token or
-  trusted tailnet/reverse-proxy access controls.
+- With neither `web.token` nor `web.token_1password`, authentication is disabled;
+  `allowed_hosts` is a DNS-rebinding guard, not an identity check. Protect any remotely
+  reachable dashboard with a strong token or trusted tailnet/reverse-proxy access
+  controls.
 - `web.external_skill_roots` are scanned **read-only** to surface skills the agent can use
   that live outside `~/.enso/` (the CLIs' user-level skill dirs). The UI lists them with
   their path and never writes to them. Defaults to Claude's user skills; add Codex roots

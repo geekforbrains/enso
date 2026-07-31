@@ -68,14 +68,18 @@ does not accept arbitrary `Host` headers. For example:
   "web": {
     "host": "0.0.0.0",
     "allowed_hosts": ["enso.example.ts.net", "100.64.0.10"],
-    "token": "replace-with-a-long-random-secret"
+    "token_1password": {
+      "item": "Enso - Web - Dashboard",
+      "field": "WEB_TOKEN"
+    }
   }
 }
 ```
 
-The host allowlist prevents DNS-rebinding requests; it is not authentication. An empty
-`web.token` disables authentication entirely. Any remotely reachable dashboard should
-use a strong token or sit behind trusted tailnet/reverse-proxy access controls.
+The host allowlist prevents DNS-rebinding requests; it is not authentication. With
+neither `web.token` nor `web.token_1password`, authentication is disabled entirely.
+Any remotely reachable dashboard should use a strong token or sit behind trusted
+tailnet/reverse-proxy access controls.
 
 ## Chat Commands
 
@@ -273,6 +277,59 @@ Files are read in filename order. Blank lines and `#` comments are skipped, a le
 in the environment always wins**, so an explicit export still overrides the file. Loading
 happens in `enso serve` only — the dashboard process does not read these files. Restart
 the service after editing them.
+
+Transport and dashboard credentials can instead be resolved directly from 1Password at
+each process start or CLI invocation, without copying the token into `config.json` or
+projecting it into the environment. This opt-in integration expects
+`~/.enso/lib/1password.sh` to define `op_secret "<item>" "<field>"`; Enso calls that
+helper and never invokes the 1Password CLI directly. Reconfiguring an existing
+reference also requires the helper's `op_set_secret` function.
+
+```json
+{
+  "transports": {
+    "telegram": {
+      "bot_token_1password": {
+        "item": "Enso - Transport - Telegram",
+        "field": "TELEGRAM_BOT_TOKEN"
+      },
+      "allowed_users": ["123456789"]
+    },
+    "slack": {
+      "bot_token_1password": {
+        "item": "Enso - Transport - Slack",
+        "field": "SLACK_BOT_TOKEN"
+      },
+      "app_token_1password": {
+        "item": "Enso - Transport - Slack",
+        "field": "SLACK_APP_TOKEN"
+      },
+      "allowed_users": ["U12345678"],
+      "notify_channel": "C12345678"
+    }
+  },
+  "web": {
+    "token_1password": {
+      "item": "Enso - Web - Dashboard",
+      "field": "WEB_TOKEN"
+    }
+  }
+}
+```
+
+The service-account credential needed by the helper may still use the bootstrap
+`~/.enso/secrets/1password.env` file. Existing literal `bot_token` and `app_token`
+keys and `web.token` remain supported. If a matching `*_1password` key is present, it
+takes precedence and a malformed or unavailable reference fails closed instead of
+falling back to a possibly stale literal. Legacy literal values must still be strings;
+malformed values are rejected rather than treated as empty credentials. `enso setup`, `enso message`, `enso slack`,
+both transport daemons, and the dashboard app factory all use the same resolution path.
+When `enso setup` reconfigures a transport that already uses a reference, it validates
+the replacement token, sends the new value to `op_set_secret` over stdin, and preserves
+the reference in config. A helper failure aborts setup instead of adding a plaintext
+fallback. Slack preloads both previous referenced values before writing either one and
+restores an earlier write if the second update fails. Literal-only transport configs
+keep the original setup behavior.
 
 ### Environment variables
 

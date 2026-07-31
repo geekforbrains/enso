@@ -44,6 +44,7 @@ from .. import docs, frontmatter, runs, tables
 from ..config import CONFIG_DIR, JOBS_DIR, SKILL_TOMBSTONES_DIRNAME
 from ..fsutil import atomic_write_text, is_within, regular_file_sha256
 from ..jobs import Job, load_jobs
+from ..secret_refs import resolve_config_secret
 
 log = logging.getLogger(__name__)
 
@@ -1363,7 +1364,7 @@ class HostGuardMiddleware(BaseHTTPMiddleware):
 
 
 class TokenAuthMiddleware(BaseHTTPMiddleware):
-    """Gate every request behind ``web.token`` when one is configured.
+    """Gate every request behind the resolved web token when one is configured.
 
     An empty token disables auth entirely, so non-loopback deployments need a
     trusted external access boundary. A matching ``?token=`` sets a cookie so
@@ -1403,7 +1404,7 @@ def create_app(runtime) -> Starlette:
     web_cfg = cfg.get("web", {}) if isinstance(cfg, dict) else {}
     if not isinstance(web_cfg, dict):
         web_cfg = {}
-    token = web_cfg.get("token", "")
+    token = resolve_config_secret(web_cfg, "token")
     allowed_hosts = _allowed_web_hosts(web_cfg)
 
     routes = [

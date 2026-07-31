@@ -2,7 +2,19 @@
 
 from __future__ import annotations
 
-from enso.cli import _resolve_slack_target
+import copy
+
+import pytest
+import typer
+
+from enso.cli import (
+    _resolve_send_targets,
+    _resolve_slack_target,
+    _setup_slack,
+    _setup_telegram,
+    _update_referenced_secrets_with_rollback_or_exit,
+)
+from enso.secret_refs import SecretResolutionError
 
 
 def test_explicit_to_wins_and_clears_thread(monkeypatch):
@@ -48,6 +60,406 @@ def test_nothing_configured(monkeypatch):
     channel, thread_ts = _resolve_slack_target("", "")
     assert channel == ""
     assert thread_ts == ""
+
+
+def test_telegram_send_target_resolves_1password_reference(monkeypatch):
+    monkeypatch.delenv("ENSO_ORIGIN_CHANNEL", raising=False)
+    config = {
+        "transport": "telegram",
+        "transports": {
+            "telegram": {
+                "bot_token_1password": {
+                    "item": "Telegram",
+                    "field": "TOKEN",
+                },
+                "allowed_users": ["123"],
+            },
+        },
+    }
+    monkeypatch.setattr(
+        "enso.cli.resolve_config_secret",
+        lambda cfg, key: "resolved-telegram-token",
+    )
+
+    transport, token, targets, thread_ts = _resolve_send_targets(config, "")
+
+    assert (transport, token, targets, thread_ts) == (
+        "telegram",
+        "resolved-telegram-token",
+        ["123"],
+        "",
+    )
+
+
+def test_slack_send_target_resolves_1password_reference(monkeypatch):
+    monkeypatch.delenv("ENSO_ORIGIN_CHANNEL", raising=False)
+    config = {
+        "transport": "slack",
+        "transports": {
+            "slack": {
+                "bot_token_1password": {
+                    "item": "Slack",
+                    "field": "BOT_TOKEN",
+                },
+                "notify_channel": "C123",
+            },
+        },
+    }
+    monkeypatch.setattr(
+        "enso.cli.resolve_config_secret",
+        lambda cfg, key: "resolved-slack-token",
+    )
+
+    transport, token, targets, thread_ts = _resolve_send_targets(config, "")
+
+    assert (transport, token, targets, thread_ts) == (
+        "slack",
+        "resolved-slack-token",
+        ["C123"],
+        "",
+    )
+
+
+def test_telegram_setup_validates_resolved_existing_token(monkeypatch):
+    config = {
+        "transports": {
+            "telegram": {
+                "bot_token_1password": {
+                    "item": "Telegram",
+                    "field": "TOKEN",
+                },
+                "allowed_users": ["123"],
+            },
+        },
+    }
+    monkeypatch.setattr(
+        "enso.cli.resolve_config_secret",
+        lambda cfg, key: "resolved-telegram-token",
+    )
+    monkeypatch.setattr(
+        "enso.cli._tg_validate_token",
+        lambda token: {"username": "enso_test"} if token == "resolved-telegram-token" else None,
+    )
+    monkeypatch.setattr("enso.cli.Confirm.ask", lambda *args, **kwargs: False)
+
+    assert _setup_telegram(config) is None
+    assert "bot_token" not in config["transports"]["telegram"]
+
+
+def test_slack_setup_validates_resolved_existing_token(monkeypatch):
+    config = {
+        "transports": {
+            "slack": {
+                "bot_token_1password": {
+                    "item": "Slack",
+                    "field": "BOT_TOKEN",
+                },
+                "allowed_users": ["U123"],
+            },
+        },
+    }
+    monkeypatch.setattr(
+        "enso.cli.resolve_config_secret",
+        lambda cfg, key: "resolved-slack-token",
+    )
+    monkeypatch.setattr(
+        "enso.cli._slack_validate_token",
+        lambda token: {"user": "enso"} if token == "resolved-slack-token" else None,
+    )
+    monkeypatch.setattr("enso.cli.Confirm.ask", lambda *args, **kwargs: False)
+
+    assert _setup_slack(config) is None
+    assert "bot_token" not in config["transports"]["slack"]
+
+
+def test_telegram_setup_reconfiguration_updates_reference_without_plaintext(
+    monkeypatch,
+):
+    reference = {"item": "Telegram", "field": "TOKEN"}
+    config = {
+        "transports": {
+            "telegram": {
+                "bot_token_1password": reference,
+                "bot_token": "stale-literal",
+                "allowed_users": ["123"],
+            },
+        },
+    }
+    updates = []
+    monkeypatch.setattr(
+        "enso.cli.resolve_config_secret",
+        lambda cfg, key: "old-token",
+    )
+    monkeypatch.setattr(
+        "enso.cli._tg_validate_token",
+        lambda token: {
+            "username": "old_bot" if token == "old-token" else "new_bot",
+        },
+    )
+    monkeypatch.setattr("enso.cli.Confirm.ask", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        "enso.cli.Prompt.ask",
+        lambda *args, **kwargs: "new-token",
+    )
+    monkeypatch.setattr(
+        "enso.cli.update_config_secret_reference",
+        lambda cfg, key, value: updates.append((cfg, key, value)) or True,
+    )
+    monkeypatch.setattr(
+        "enso.cli._tg_wait_for_message",
+        lambda token, timeout: {
+            "user_id": 456,
+            "first_name": "Tester",
+            "chat_id": 456,
+        },
+    )
+
+    assert _setup_telegram(config) == 456
+    telegram = config["transports"]["telegram"]
+    assert telegram["bot_token_1password"] is reference
+    assert "bot_token" not in telegram
+    assert telegram["allowed_users"] == ["456"]
+    assert updates == [
+        (
+            {
+                "bot_token_1password": reference,
+                "bot_token": "stale-literal",
+                "allowed_users": ["123"],
+            },
+            "bot_token",
+            "new-token",
+        ),
+    ]
+
+
+def test_slack_setup_reconfiguration_updates_references_without_plaintext(
+    monkeypatch,
+):
+    bot_reference = {"item": "Slack", "field": "BOT_TOKEN"}
+    app_reference = {"item": "Slack", "field": "APP_TOKEN"}
+    config = {
+        "transports": {
+            "slack": {
+                "bot_token_1password": bot_reference,
+                "app_token_1password": app_reference,
+                "bot_token": "stale-bot-literal",
+                "app_token": "stale-app-literal",
+                "allowed_users": ["UOLD"],
+                "notify_channel": "COLD",
+            },
+        },
+    }
+    updates = []
+    monkeypatch.setattr(
+        "enso.cli.resolve_config_secret",
+        lambda cfg, key: "old-bot-token",
+    )
+
+    def validate(token):
+        if token == "old-bot-token":
+            return {"user": "old-bot", "user_id": "UOLD"}
+        return {"user": "new-bot", "user_id": "UNEWBOT"}
+
+    def prompt(label, **kwargs):
+        if "Bot Token" in label:
+            return "new-bot-token"
+        if "App Token" in label:
+            return "new-app-token"
+        if "Allowed users" in label:
+            return "UNEW"
+        if "Notify channel" in label:
+            return "CNEW"
+        raise AssertionError(f"Unexpected prompt: {label}")
+
+    monkeypatch.setattr("enso.cli._slack_validate_token", validate)
+    monkeypatch.setattr("enso.cli.Confirm.ask", lambda *args, **kwargs: True)
+    monkeypatch.setattr("enso.cli.Prompt.ask", prompt)
+    monkeypatch.setattr(
+        "enso.cli._write_slack_manifest_copy",
+        lambda: "/tmp/slack-manifest.yaml",
+    )
+    monkeypatch.setattr(
+        "enso.cli.update_config_secret_reference",
+        lambda cfg, key, value: updates.append((key, value)) or True,
+    )
+
+    assert _setup_slack(config) is None
+    slack = config["transports"]["slack"]
+    assert slack["bot_token_1password"] is bot_reference
+    assert slack["app_token_1password"] is app_reference
+    assert "bot_token" not in slack
+    assert "app_token" not in slack
+    assert slack["bot_user_id"] == "UNEWBOT"
+    assert slack["allowed_users"] == ["UNEW"]
+    assert slack["notify_channel"] == "CNEW"
+    assert updates == [
+        ("bot_token", "new-bot-token"),
+        ("app_token", "new-app-token"),
+    ]
+
+
+def test_reconfiguration_write_failure_keeps_config_and_exits_clearly(
+    monkeypatch, capsys,
+):
+    config = {
+        "transports": {
+            "telegram": {
+                "bot_token_1password": {
+                    "item": "Telegram",
+                    "field": "TOKEN",
+                },
+                "allowed_users": ["123"],
+            },
+        },
+    }
+    original = copy.deepcopy(config)
+    monkeypatch.setattr(
+        "enso.cli.resolve_config_secret",
+        lambda cfg, key: "old-token",
+    )
+    monkeypatch.setattr(
+        "enso.cli._tg_validate_token",
+        lambda token: {"username": "enso_bot"},
+    )
+    monkeypatch.setattr("enso.cli.Confirm.ask", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        "enso.cli.Prompt.ask",
+        lambda *args, **kwargs: "new-token",
+    )
+
+    def fail(*args, **kwargs):
+        raise SecretResolutionError("helper exit 9")
+
+    monkeypatch.setattr("enso.cli.update_config_secret_reference", fail)
+
+    with pytest.raises(typer.Exit):
+        _setup_telegram(config)
+
+    assert config == original
+    assert "Could not save Telegram bot token" in capsys.readouterr().out
+
+
+def test_slack_reference_updates_prevalidate_every_old_value(monkeypatch, capsys):
+    config = {
+        "bot_token_1password": {"item": "Slack", "field": "BOT"},
+        "app_token_1password": {"item": "Slack", "field": "APP"},
+    }
+    writes = []
+
+    def resolve(_config, key):
+        if key == "app_token":
+            raise SecretResolutionError("sensitive helper output")
+        return "old-bot-secret"
+
+    monkeypatch.setattr("enso.cli.resolve_config_secret", resolve)
+    monkeypatch.setattr(
+        "enso.cli.update_config_secret_reference",
+        lambda *args: writes.append(args) or True,
+    )
+
+    with pytest.raises(typer.Exit):
+        _update_referenced_secrets_with_rollback_or_exit(
+            config,
+            [
+                ("bot_token", "new-bot-secret", "Slack bot token"),
+                ("app_token", "new-app-secret", "Slack app token"),
+            ],
+        )
+
+    output = " ".join(capsys.readouterr().out.split())
+    assert writes == []
+    assert "existing Slack app token could not be loaded" in output
+    assert "sensitive helper output" not in output
+    assert "old-bot-secret" not in output
+
+
+def test_slack_reference_update_rolls_back_earlier_write(monkeypatch, capsys):
+    config = {
+        "bot_token_1password": {"item": "Slack", "field": "BOT"},
+        "app_token_1password": {"item": "Slack", "field": "APP"},
+    }
+    old_values = {
+        "bot_token": "old-bot-secret",
+        "app_token": "old-app-secret",
+    }
+    writes = []
+
+    monkeypatch.setattr(
+        "enso.cli.resolve_config_secret",
+        lambda _config, key: old_values[key],
+    )
+
+    def update(_config, key, value):
+        writes.append((key, value))
+        if key == "app_token":
+            raise SecretResolutionError("new-app-secret must not leak")
+        return True
+
+    monkeypatch.setattr("enso.cli.update_config_secret_reference", update)
+
+    with pytest.raises(typer.Exit):
+        _update_referenced_secrets_with_rollback_or_exit(
+            config,
+            [
+                ("bot_token", "new-bot-secret", "Slack bot token"),
+                ("app_token", "new-app-secret", "Slack app token"),
+            ],
+        )
+
+    output = " ".join(capsys.readouterr().out.split())
+    assert writes == [
+        ("bot_token", "new-bot-secret"),
+        ("app_token", "new-app-secret"),
+        ("bot_token", "old-bot-secret"),
+    ]
+    assert "Earlier referenced credential updates were restored" in output
+    assert "new-app-secret" not in output
+    assert "old-bot-secret" not in output
+
+
+def test_slack_reference_update_reports_rollback_failure_without_secrets(
+    monkeypatch, capsys,
+):
+    config = {
+        "bot_token_1password": {"item": "Slack", "field": "BOT"},
+        "app_token_1password": {"item": "Slack", "field": "APP"},
+    }
+    old_values = {
+        "bot_token": "old-bot-secret",
+        "app_token": "old-app-secret",
+    }
+    writes = []
+
+    monkeypatch.setattr(
+        "enso.cli.resolve_config_secret",
+        lambda _config, key: old_values[key],
+    )
+
+    def update(_config, key, value):
+        writes.append((key, value))
+        if key == "app_token":
+            raise SecretResolutionError("new-app-secret must not leak")
+        if value == "old-bot-secret":
+            raise SecretResolutionError("old-bot-secret must not leak")
+        return True
+
+    monkeypatch.setattr("enso.cli.update_config_secret_reference", update)
+
+    with pytest.raises(typer.Exit):
+        _update_referenced_secrets_with_rollback_or_exit(
+            config,
+            [
+                ("bot_token", "new-bot-secret", "Slack bot token"),
+                ("app_token", "new-app-secret", "Slack app token"),
+            ],
+        )
+
+    output = " ".join(capsys.readouterr().out.split())
+    assert writes[-1] == ("bot_token", "old-bot-secret")
+    assert "Rollback also failed for: Slack bot token" in output
+    assert "Referenced credentials may be inconsistent" in output
+    for secret in (*old_values.values(), "new-bot-secret", "new-app-secret"):
+        assert secret not in output
 
 
 # ---------------------------------------------------------------------------

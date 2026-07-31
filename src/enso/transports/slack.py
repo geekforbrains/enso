@@ -36,6 +36,7 @@ from ..commands import (
     cmd_use,
 )
 from ..formatting import md_to_mrkdwn
+from ..secret_refs import resolve_config_secret
 from . import BaseTransport, TransportContext, safe_filename
 
 if TYPE_CHECKING:
@@ -298,8 +299,8 @@ class SlackTransport(BaseTransport):
     def __init__(self, runtime: Runtime):
         self.runtime = runtime
         slack_cfg = runtime.config.get("transports", {}).get("slack", {})
-        self.bot_token: str = slack_cfg.get("bot_token", "")
-        self.app_token: str = slack_cfg.get("app_token", "")
+        self.bot_token = resolve_config_secret(slack_cfg, "bot_token")
+        self.app_token = resolve_config_secret(slack_cfg, "app_token")
         raw = slack_cfg.get("allowed_users", [])
         self.allowed_users: list[str] = [str(u) for u in raw]
         self.bot_user_id: str = slack_cfg.get("bot_user_id", "")
