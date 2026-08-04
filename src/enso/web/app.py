@@ -17,7 +17,6 @@ import contextlib
 import errno
 import functools
 import importlib.resources
-import json
 import logging
 import os
 import secrets
@@ -153,12 +152,24 @@ def _fmt_bytes(size: object) -> str:
 
 
 _DOW_NAMES = {
-    "0": "Sunday", "1": "Monday", "2": "Tuesday", "3": "Wednesday",
-    "4": "Thursday", "5": "Friday", "6": "Saturday", "7": "Sunday",
+    "0": "Sunday",
+    "1": "Monday",
+    "2": "Tuesday",
+    "3": "Wednesday",
+    "4": "Thursday",
+    "5": "Friday",
+    "6": "Saturday",
+    "7": "Sunday",
 }
 _DOW_ABBR = {
-    "0": "Sun", "1": "Mon", "2": "Tue", "3": "Wed",
-    "4": "Thu", "5": "Fri", "6": "Sat", "7": "Sun",
+    "0": "Sun",
+    "1": "Mon",
+    "2": "Tue",
+    "3": "Wed",
+    "4": "Thu",
+    "5": "Fri",
+    "6": "Sat",
+    "7": "Sun",
 }
 
 
@@ -267,9 +278,7 @@ RUN_BADGES = {
     "error": "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300",
     "timeout": "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300",
     "prerun_error": "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300",
-    "prerun_timeout": (
-        "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
-    ),
+    "prerun_timeout": ("bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"),
 }
 templates.env.globals["run_badges"] = RUN_BADGES
 
@@ -279,58 +288,21 @@ templates.env.globals["run_badges"] = RUN_BADGES
 # ---------------------------------------------------------------------------
 
 
-def _render(
-    request,
-    template: str,
-    *,
-    htmx_template: str | None = None,
-    htmx_target: str | None = None,
-    **ctx,
-) -> Response:
-    """Render a full page, a main fragment, or a focused HTMX fragment."""
+def _render(request, template: str, *, status_code: int = 200, **ctx) -> Response:
+    """Render a complete server-side page."""
     ctx["current_path"] = request.url.path
     ctx["flash"] = request.query_params.get("msg")
     ctx["csrf_token"] = request.app.state.csrf_token
-    focused_fragment = (
-        htmx_template is not None
-        and htmx_target is not None
-        and _is_hx_page_request(request)
-        and request.headers.get("HX-Target") == htmx_target
-    )
-    ctx["is_hx_fragment"] = _is_hx_page_request(request) and not focused_fragment
     return templates.TemplateResponse(
         request,
-        htmx_template if focused_fragment else template,
+        template,
         ctx,
+        status_code=status_code,
     )
 
 
-def _is_hx(request) -> bool:
-    """True when the request came from HTMX."""
-    return request.headers.get("HX-Request") == "true"
-
-
-def _is_hx_page_request(request) -> bool:
-    """Return whether a page request may safely receive a partial response."""
-    return _is_hx(request) and request.headers.get("HX-History-Restore-Request") != "true"
-
-
-def _redirect(request, url: str) -> Response:
-    """Navigate after a write, preserving no-JS and HTMX URL semantics."""
-    if _is_hx(request):
-        location = json.dumps(
-            {
-                "path": url,
-                "target": "#main-content",
-                "select": "#main-content",
-                "swap": "outerHTML show:window:top",
-            },
-            separators=(",", ":"),
-        )
-        return Response(
-            status_code=200,
-            headers={"HX-Location": location, "Cache-Control": "no-store"},
-        )
+def _redirect(url: str) -> Response:
+    """Redirect to the result of a successful write."""
     return RedirectResponse(url, status_code=303)
 
 
@@ -350,9 +322,7 @@ def _csrf_protected(handler):
         form = await request.form()
         supplied = request.headers.get("X-CSRF-Token") or form.get("_csrf")
         expected = request.app.state.csrf_token
-        if not isinstance(supplied, str) or not secrets.compare_digest(
-            supplied, expected
-        ):
+        if not isinstance(supplied, str) or not secrets.compare_digest(supplied, expected):
             return PlainTextResponse("Forbidden", status_code=403)
         return await handler(request)
 
@@ -380,9 +350,7 @@ def _allowed_web_hosts(web_cfg: dict) -> frozenset[str]:
     configured = web_cfg.get("allowed_hosts", [])
     if isinstance(configured, list):
         allowed.update(
-            host
-            for value in configured
-            if (host := _normalize_host(value)) and host != "*"
+            host for value in configured if (host := _normalize_host(value)) and host != "*"
         )
     return frozenset(allowed)
 
@@ -495,9 +463,9 @@ def _atomic_write_text_at(
             os.fsync(stream.fileno())
 
         current = os.stat(filename, dir_fd=parent_fd, follow_symlinks=False)
-        if (
-            not stat.S_ISREG(current.st_mode)
-            or (current.st_dev, current.st_ino) != (expected.st_dev, expected.st_ino)
+        if not stat.S_ISREG(current.st_mode) or (current.st_dev, current.st_ino) != (
+            expected.st_dev,
+            expected.st_ino,
         ):
             raise OSError(errno.EBUSY, "Prerun script changed during save")
         os.replace(
@@ -535,9 +503,7 @@ def _remove_owned_tree(base: str, name: str) -> None:
         os.rename(name, detached, src_dir_fd=base_fd, dst_dir_fd=base_fd)
         detached_path = os.path.join(base_abs, detached)
         try:
-            mode = os.stat(
-                detached, dir_fd=base_fd, follow_symlinks=False
-            ).st_mode
+            mode = os.stat(detached, dir_fd=base_fd, follow_symlinks=False).st_mode
             if stat.S_ISLNK(mode):
                 os.unlink(detached, dir_fd=base_fd)
             elif stat.S_ISDIR(mode):
@@ -583,9 +549,7 @@ def _create_skill_tombstone(name: str) -> None:
     if nofollow is None or directory is None:
         raise OSError("Secure tombstone creation is unavailable")
 
-    skills_fd = os.open(
-        _skills_base(), os.O_RDONLY | nofollow | directory
-    )
+    skills_fd = os.open(_skills_base(), os.O_RDONLY | nofollow | directory)
     try:
         with contextlib.suppress(FileExistsError):
             os.mkdir(SKILL_TOMBSTONES_DIRNAME, mode=0o700, dir_fd=skills_fd)
@@ -646,8 +610,7 @@ def _skill_tool_cleanup_candidates(request, name: str) -> list[tuple[str, str]]:
         if source_hash is None:
             continue
         if any(
-            os.path.isfile(os.path.join(_skills_base(), other, filename))
-            for other in other_skills
+            os.path.isfile(os.path.join(_skills_base(), other, filename)) for other in other_skills
         ):
             continue
         installed = os.path.join(tools_dir, filename)
@@ -707,9 +670,7 @@ def _external_skills(request, owned_names: set[str] | None = None) -> list[dict]
     # precedence here so every listed card resolves back to the source it shows:
     # Enso-owned skills win, followed by the first configured external root.
     seen = (
-        set(owned_names)
-        if owned_names is not None
-        else {skill["name"] for skill in _enso_skills()}
+        set(owned_names) if owned_names is not None else {skill["name"] for skill in _enso_skills()}
     )
     for root in _external_skill_roots(request):
         if not os.path.isdir(root):
@@ -766,13 +727,21 @@ async def dashboard(request):
     jobs = load_jobs()
     jobs_enabled = sum(1 for j in jobs if j.enabled)
     enso_skills, system_skills = _skill_inventory(request)
-    latest = runs.list_runs(limit=6)
+    try:
+        latest = runs.list_runs(limit=6)
+        runs_available = True
+    except (OSError, sqlite3.Error):
+        log.warning("Could not load recent run history", exc_info=True)
+        latest = []
+        runs_available = False
     try:
         table_listing = tables.list_tables()
         tables_total = sum(1 for item in table_listing.tables if item.available)
+        tables_available = True
     except (OSError, sqlite3.Error):
         log.warning("Could not load table count", exc_info=True)
-        tables_total = 0
+        tables_total = None
+        tables_available = False
     return _render(
         request,
         "index.html",
@@ -783,7 +752,9 @@ async def dashboard(request):
         skills_system=len(system_skills),
         docs_total=len(docs.load_docs().docs),
         tables_total=tables_total,
+        tables_available=tables_available,
         latest_runs=latest,
+        runs_available=runs_available,
     )
 
 
@@ -831,9 +802,7 @@ async def job_detail(request):
                 "directory, so it can't be edited here."
             )
         except FileNotFoundError:
-            prerun_error = (
-                "Configured script not found. Create it on disk before editing it here."
-            )
+            prerun_error = "Configured script not found. Create it on disk before editing it here."
         except OSError as exc:
             if exc.errno in (errno.ELOOP, errno.ENOTDIR):
                 prerun_error = (
@@ -882,31 +851,24 @@ async def job_toggle(request):
     # comments and would corrupt legacy jobs whose YAML-like values contain an
     # unquoted colon (which the job loader intentionally still accepts).
     frontmatter.write_scalar(job.path, "enabled", str(not job.enabled).lower())
-    if _is_hx(request):
-        fresh = _find_job(name)
-        return templates.TemplateResponse(
-            request,
-            "_job_toggle.html",
-            {"job": fresh, "csrf_token": request.app.state.csrf_token},
-        )
-    return _redirect(request, f"/jobs/{name}")
+    return _redirect(f"/jobs/{name}")
 
 
 async def job_run(request):
     name = request.path_params["name"]
     runtime = request.app.state.runtime
     if runtime is None or not hasattr(runtime, "run_job_now"):
-        return _redirect(request, f"/jobs/{name}?msg=Run+now+is+unavailable")
+        return _redirect(f"/jobs/{name}?msg=Run+now+is+unavailable")
     try:
         result = await runtime.run_job_now(name)
     except Exception as exc:
         log.warning("run_job_now failed for %s", name, exc_info=True)
-        return _redirect(request, f"/jobs/{name}?msg=Run+failed:+{exc}")
+        return _redirect(f"/jobs/{name}?msg=Run+failed:+{exc}")
     if result.run_id:
-        return _redirect(request, f"/runs/{result.run_id}")
+        return _redirect(f"/runs/{result.run_id}")
     if result.status == "no_work":
-        return _redirect(request, f"/jobs/{name}?msg=No+work;+provider+was+not+run")
-    return _redirect(request, f"/jobs/{name}")
+        return _redirect(f"/jobs/{name}?msg=No+work;+provider+was+not+run")
+    return _redirect(f"/jobs/{name}")
 
 
 async def job_edit_prompt(request):
@@ -922,7 +884,7 @@ async def job_edit_prompt(request):
     # Keep the fenced prefix byte-for-byte and swap only the prompt body. This
     # remains safe for legacy YAML-like frontmatter accepted by the job loader.
     frontmatter.write_body(job.path, content)
-    return _redirect(request, f"/jobs/{name}")
+    return _redirect(f"/jobs/{name}")
 
 
 async def job_edit_prerun(request):
@@ -957,7 +919,7 @@ async def job_edit_prerun(request):
         except OSError:
             log.warning("Could not edit prerun for job %s", name, exc_info=True)
             return PlainTextResponse("Prerun script unavailable", status_code=503)
-        return _redirect(request, f"/jobs/{name}")
+        return _redirect(f"/jobs/{name}")
     finally:
         if file_fd >= 0:
             with contextlib.suppress(OSError):
@@ -979,7 +941,7 @@ async def job_delete(request):
     except OSError:
         log.warning("Could not safely delete job %s", name, exc_info=True)
         return PlainTextResponse("Deletion unavailable", status_code=503)
-    return _redirect(request, "/jobs?msg=Job+deleted+from+disk")
+    return _redirect("/jobs?msg=Job+deleted+from+disk")
 
 
 # ---------------------------------------------------------------------------
@@ -1004,8 +966,6 @@ async def runs_list(request):
     return _render(
         request,
         "runs.html",
-        htmx_template="_runs_browser.html",
-        htmx_target="runs-browser",
         runs=rows,
         page=page,
         previous_url=_page_url("/runs", page - 1, **filters) if page > 1 else None,
@@ -1089,7 +1049,7 @@ async def skill_edit(request):
     form = await request.form()
     content = (form.get("content") or "").replace("\r\n", "\n")
     atomic_write_text(path, content)
-    return _redirect(request, f"/skills/{name}")
+    return _redirect(f"/skills/{name}")
 
 
 async def skill_delete(request):
@@ -1117,7 +1077,7 @@ async def skill_delete(request):
         log.warning("Could not safely delete skill %s", name, exc_info=True)
         return PlainTextResponse("Deletion unavailable", status_code=503)
     _remove_installed_skill_tools(tool_candidates)
-    return _redirect(request, "/skills?msg=Skill+deleted+from+disk")
+    return _redirect("/skills?msg=Skill+deleted+from+disk")
 
 
 # ---------------------------------------------------------------------------
@@ -1156,7 +1116,7 @@ async def doc_create(request):
     except OSError:
         log.warning("Could not create doc %s", path, exc_info=True)
         return PlainTextResponse("Doc unavailable", status_code=503)
-    return _redirect(request, f"/docs/{doc.rel_path}")
+    return _redirect(f"/docs/{doc.rel_path}")
 
 
 async def doc_detail(request):
@@ -1191,7 +1151,7 @@ async def doc_edit(request):
     except OSError:
         log.warning("Could not edit doc %s", path, exc_info=True)
         return PlainTextResponse("Doc unavailable", status_code=503)
-    return _redirect(request, f"/docs/{rel}")
+    return _redirect(f"/docs/{rel}")
 
 
 async def doc_delete(request):
@@ -1206,7 +1166,7 @@ async def doc_delete(request):
     except OSError:
         log.warning("Could not delete doc %s", path, exc_info=True)
         return PlainTextResponse("Doc unavailable", status_code=503)
-    return _redirect(request, "/docs?msg=Doc+deleted+from+disk")
+    return _redirect("/docs?msg=Doc+deleted+from+disk")
 
 
 # ---------------------------------------------------------------------------
@@ -1214,18 +1174,26 @@ async def doc_delete(request):
 # ---------------------------------------------------------------------------
 
 
+def _tables_unavailable(request) -> Response:
+    return _render(
+        request,
+        "tables.html",
+        status_code=503,
+        database_available=False,
+    )
+
+
 async def tables_list(request):
     try:
         listing = tables.list_tables()
     except (OSError, sqlite3.Error):
         log.warning("Could not list registered data tables", exc_info=True)
-        return PlainTextResponse("Tables unavailable", status_code=503)
+        return _tables_unavailable(request)
     return _render(
         request,
         "tables.html",
+        database_available=True,
         tables=listing.tables,
-        total=len(listing.tables),
-        available_total=sum(1 for item in listing.tables if item.available),
         truncated=listing.truncated,
         max_tables=tables.MAX_TABLES,
     )
@@ -1245,7 +1213,7 @@ async def table_detail(request):
         return PlainTextResponse("Table not found", status_code=404)
     except (OSError, sqlite3.Error):
         log.warning("Could not preview data table %s", table_name, exc_info=True)
-        return PlainTextResponse("Table unavailable", status_code=503)
+        return _tables_unavailable(request)
     rendered_indexes = [
         {
             "sql": index.sql[:_MAX_TABLE_INDEX_SQL_CHARS],
@@ -1257,14 +1225,12 @@ async def table_detail(request):
     return _render(
         request,
         "table_detail.html",
-        htmx_template="_table_data.html",
-        htmx_target="table-data",
         preview=preview,
         page=page,
         previous_page=page - 1 if preview.has_previous else None,
         next_page=page + 1 if preview.has_next and page < _MAX_TABLE_PAGE else None,
         preview_limit_reached=preview_limit_reached,
-        schema_columns=preview.table.columns[:tables.MAX_COLUMNS],
+        schema_columns=preview.table.columns[: tables.MAX_COLUMNS],
         table_sql=preview.table.sql[:_MAX_TABLE_SCHEMA_SQL_CHARS],
         table_sql_truncated=len(preview.table.sql) > _MAX_TABLE_SCHEMA_SQL_CHARS,
         table_indexes=rendered_indexes,
@@ -1311,7 +1277,7 @@ async def agents_edit(request):
     # Write the symlink target directly; the CLAUDE.md -> AGENTS.md symlink is
     # left untouched (os.replace onto the resolved regular file).
     atomic_write_text(path, content)
-    return _redirect(request, "/agents")
+    return _redirect("/agents")
 
 
 # ---------------------------------------------------------------------------
@@ -1339,13 +1305,6 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Referrer-Policy"] = "no-referrer"
         if response.headers.get("content-type", "").startswith("text/html"):
             response.headers["Cache-Control"] = "no-store"
-            vary = {
-                item.strip()
-                for item in response.headers.get("Vary", "").split(",")
-                if item.strip()
-            }
-            vary.update(("HX-Request", "HX-Target"))
-            response.headers["Vary"] = ", ".join(sorted(vary))
         return response
 
 
@@ -1386,9 +1345,7 @@ class TokenAuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         if request.query_params.get("token") == self.token:
             response = await call_next(request)
-            response.set_cookie(
-                "enso_token", self.token, httponly=True, samesite="lax"
-            )
+            response.set_cookie("enso_token", self.token, httponly=True, samesite="lax")
             return response
         return PlainTextResponse("Unauthorized", status_code=401)
 
@@ -1412,9 +1369,7 @@ def create_app(runtime) -> Starlette:
         Route("/health", health),
         Route("/jobs", jobs_list),
         Route("/jobs/{name}", job_detail),
-        Route(
-            "/jobs/{name}/toggle", _csrf_protected(job_toggle), methods=["POST"]
-        ),
+        Route("/jobs/{name}/toggle", _csrf_protected(job_toggle), methods=["POST"]),
         Route("/jobs/{name}/run", _csrf_protected(job_run), methods=["POST"]),
         Route(
             "/jobs/{name}/prompt",

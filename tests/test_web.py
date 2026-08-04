@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import stat
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,9 +29,7 @@ def _request_with_skill_roots(*roots: Path) -> SimpleNamespace:
     runtime = SimpleNamespace(
         config={"web": {"external_skill_roots": [str(root) for root in roots]}}
     )
-    return SimpleNamespace(
-        app=SimpleNamespace(state=SimpleNamespace(runtime=runtime))
-    )
+    return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(runtime=runtime)))
 
 
 def _skill_web_app(tmp_path, monkeypatch, *external_roots: Path):
@@ -46,15 +43,9 @@ def _skill_web_app(tmp_path, monkeypatch, *external_roots: Path):
     monkeypatch.setattr(web_app, "CONFIG_DIR", str(config_dir))
     runtime = SimpleNamespace(
         working_dir=str(working_dir),
-        config={
-            "web": {
-                "external_skill_roots": [str(root) for root in external_roots]
-            }
-        }
+        config={"web": {"external_skill_roots": [str(root) for root in external_roots]}},
     )
-    return skills_dir, TestClient(
-        web_app.create_app(runtime), base_url="http://127.0.0.1"
-    )
+    return skills_dir, TestClient(web_app.create_app(runtime), base_url="http://127.0.0.1")
 
 
 def test_external_skills_exclude_enso_owned_names(tmp_path, monkeypatch):
@@ -98,14 +89,10 @@ def test_external_skills_keep_first_root_for_duplicate_names(tmp_path, monkeypat
         )
 
 
-def test_skill_delete_removes_owned_tree_and_reveals_external_copy(
-    tmp_path, monkeypatch
-):
+def test_skill_delete_removes_owned_tree_and_reveals_external_copy(tmp_path, monkeypatch):
     external_root = tmp_path / "external"
     external_path = _write_skill(external_root, "shared", "External copy")
-    skills_dir, client = _skill_web_app(
-        tmp_path, monkeypatch, external_root
-    )
+    skills_dir, client = _skill_web_app(tmp_path, monkeypatch, external_root)
     enso_path = _write_skill(skills_dir, "shared", "Enso copy")
     asset = enso_path.parent / "assets" / "notes.txt"
     asset.parent.mkdir()
@@ -175,9 +162,7 @@ def test_skill_delete_rejects_external_and_missing_skills(tmp_path, monkeypatch)
     assert missing_delete.status_code == 404
 
 
-def test_skill_delete_unlinks_directory_symlink_without_touching_target(
-    tmp_path, monkeypatch
-):
+def test_skill_delete_unlinks_directory_symlink_without_touching_target(tmp_path, monkeypatch):
     skills_dir, client = _skill_web_app(tmp_path, monkeypatch)
     target_path = _write_skill(tmp_path / "outside-skills", "linked")
     link = skills_dir / "linked"
@@ -215,9 +200,7 @@ def test_skill_delete_preserves_modified_installed_tool(tmp_path, monkeypatch):
     assert installed_tool.read_text(encoding="utf-8") == "print('locally modified')\n"
 
 
-def test_skill_delete_tombstone_prevents_bundled_skill_reseed(
-    tmp_path, monkeypatch
-):
+def test_skill_delete_tombstone_prevents_bundled_skill_reseed(tmp_path, monkeypatch):
     from enso.core import Runtime
 
     skills_dir, client = _skill_web_app(tmp_path, monkeypatch)
@@ -235,9 +218,7 @@ def test_skill_delete_tombstone_prevents_bundled_skill_reseed(
     assert not skill_path.parent.exists()
 
 
-def test_skill_delete_rejects_symlinked_tombstone_directory(
-    tmp_path, monkeypatch
-):
+def test_skill_delete_rejects_symlinked_tombstone_directory(tmp_path, monkeypatch):
     skills_dir, client = _skill_web_app(tmp_path, monkeypatch)
     skill_path = _write_skill(skills_dir, "jobs")
     outside = tmp_path / "outside-tombstones"
@@ -264,9 +245,7 @@ def test_dashboard_shows_visible_skill_total_and_tier_counts(tmp_path, monkeypat
     external_root = tmp_path / "external"
     _write_skill(external_root, "shared", "Shadowed external copy")
     _write_skill(external_root, "system-only")
-    runtime = SimpleNamespace(
-        config={"web": {"external_skill_roots": [str(external_root)]}}
-    )
+    runtime = SimpleNamespace(config={"web": {"external_skill_roots": [str(external_root)]}})
     monkeypatch.setattr(web_app, "CONFIG_DIR", str(config_dir))
     monkeypatch.setattr(web_app, "load_jobs", lambda: [])
     monkeypatch.setattr(web_app.runs, "list_runs", lambda **_kwargs: [])
@@ -281,48 +260,18 @@ def test_dashboard_shows_visible_skill_total_and_tier_counts(tmp_path, monkeypat
     assert "2<span" in response.text
     assert "enso / 1 system" in response.text
     assert 'href="/skills"' in response.text
-    assert '<body hx-boost="true" hx-target="#main-content"' in response.text
-    assert 'hx-swap="outerHTML show:window:top"' in response.text
-    assert 'hx-sync="#main-content:replace"' in response.text
+    assert '<body class="min-h-full bg-canvas text-ink antialiased">' in response.text
     assert 'class="min-h-full bg-canvas text-ink antialiased"' in response.text
     assert "indigo-" not in response.text
     favicon = '<link rel="icon" type="image/svg+xml" href="/static/enso-mark.svg?v=1">'
     assert favicon in response.text
     assert response.text.count('src="/static/enso-mark.svg?v=1"') == 3
     assert response.text.count('<nav aria-label="Primary" class="space-y-1">') == 2
-    assert 'hx-boost="false"' not in response.text
-    assert 'historyRestoreAsHxRequest":false' in response.text
-    assert 'src="/static/htmx.min.js?v=2.0.10"' in response.text
-    assert '<main id="main-content" hx-history-elt tabindex="-1"' in response.text
+    assert "hx-" not in response.text.lower()
+    assert "htmx" not in response.text.lower()
+    assert '<main id="main-content" tabindex="-1"' in response.text
     assert 'class="mx-auto max-w-6xl' not in response.text
-    assert 'version:"2.0.10"' in client.get("/static/htmx.min.js?v=2.0.10").text
-
-    fragment = client.get(
-        "/",
-        headers={"HX-Request": "true", "HX-Target": "main-content"},
-    )
-    assert fragment.status_code == 200
-    assert fragment.text.lstrip().startswith("<title>Dashboard · enso</title>")
-    assert fragment.text.count('<main id="main-content"') == 1
-    assert "<!doctype html>" not in fragment.text
-    assert "<body" not in fragment.text
-    assert 'aria-label="Primary"' not in fragment.text
-    assert fragment.headers["cache-control"] == "no-store"
-    assert {part.strip() for part in fragment.headers["vary"].split(",")} == {
-        "HX-Request",
-        "HX-Target",
-    }
-
-    history_restore = client.get(
-        "/",
-        headers={
-            "HX-Request": "true",
-            "HX-Target": "main-content",
-            "HX-History-Restore-Request": "true",
-        },
-    )
-    assert "<!doctype html>" in history_restore.text
-    assert history_restore.text.count('aria-label="Primary"') == 2
+    assert client.get("/static/htmx.min.js").status_code == 404
 
 
 def _write_job(
@@ -363,9 +312,7 @@ def _job_web_app(tmp_path, monkeypatch):
         monkeypatch.setattr(mod, "JOBS_DIR", str(jobs_dir))
     monkeypatch.setattr(web_app.runs, "list_runs", lambda **_kwargs: [])
     runtime = SimpleNamespace(config={"web": {}})
-    return jobs_dir, TestClient(
-        web_app.create_app(runtime), base_url="http://127.0.0.1"
-    )
+    return jobs_dir, TestClient(web_app.create_app(runtime), base_url="http://127.0.0.1")
 
 
 def test_run_filter_dropdowns_use_shared_select_styling(tmp_path, monkeypatch):
@@ -405,7 +352,7 @@ def _run_row(index: int, *, name: str = "demo", status: str = "ok") -> dict:
     }
 
 
-def test_runs_use_bounded_htmx_pagination_and_preserve_filters(tmp_path, monkeypatch):
+def test_runs_use_bounded_full_page_pagination_and_preserve_filters(tmp_path, monkeypatch):
     _, client = _job_web_app(tmp_path, monkeypatch)
     calls = []
 
@@ -427,81 +374,58 @@ def test_runs_use_bounded_htmx_pagination_and_preserve_filters(tmp_path, monkeyp
     }
     assert first.text.count("data-run-item") == web_app._RUNS_PAGE_SIZE
     assert 'id="runs-browser"' in first.text
-    assert 'hx-target="#runs-browser"' in first.text
-    assert 'hx-select="#runs-browser"' in first.text
-    assert 'hx-push-url="true"' in first.text
+    assert "hx-" not in first.text.lower()
+    assert "htmx" not in first.text.lower()
     section_start = first.text.index('<section id="runs-browser"')
     section_tag = first.text[section_start : first.text.index(">", section_start)]
-    assert "hx-target" not in section_tag
-    assert "hx-select" not in section_tag
+    assert section_tag == '<section id="runs-browser"'
     form_start = first.text.index('<form method="get" action="/runs"', section_start)
     form_tag = first.text[form_start : first.text.index(">", form_start)]
-    assert 'hx-target="#runs-browser"' in form_tag
-    assert 'hx-select="#runs-browser"' in form_tag
+    assert "hx-" not in form_tag
     pagination_start = first.text.index('<nav aria-label="Run pages"', section_start)
-    pagination_tag = first.text[
-        pagination_start : first.text.index(">", pagination_start)
-    ]
-    assert 'hx-target="#runs-browser"' in pagination_tag
-    assert 'hx-select="#runs-browser"' in pagination_tag
+    pagination_tag = first.text[pagination_start : first.text.index(">", pagination_start)]
+    assert "hx-" not in pagination_tag
     assert 'href="/runs?name=daily+review&amp;status=ok&amp;page=2"' in first.text
     assert first.text.count("Run 0") == 1
 
-    fragment = client.get(
-        "/runs?name=daily%20review&status=ok&page=2",
-        headers={"HX-Request": "true", "HX-Target": "runs-browser"},
-    )
+    second = client.get("/runs?name=daily%20review&status=ok&page=2")
 
-    assert fragment.status_code == 200
+    assert second.status_code == 200
     assert calls[-1]["offset"] == web_app._RUNS_PAGE_SIZE
-    assert fragment.text.lstrip().startswith('<section id="runs-browser"')
-    assert "<!doctype html>" not in fragment.text
-    assert '<main id="main-content"' not in fragment.text
-    assert "<h1" not in fragment.text
-    assert 'href="/runs?name=daily+review&amp;status=ok"' in fragment.text
+    assert "<!doctype html>" in second.text
+    assert '<main id="main-content"' in second.text
+    assert "<h1" in second.text
+    assert 'href="/runs?name=daily+review&amp;status=ok"' in second.text
 
 
-def test_run_detail_boosted_link_returns_main_fragment(tmp_path, monkeypatch):
+def test_run_detail_returns_complete_page(tmp_path, monkeypatch):
     _, client = _job_web_app(tmp_path, monkeypatch)
     run = _run_row(1)
     monkeypatch.setattr(web_app.runs, "get", lambda run_id: run if run_id == run["id"] else None)
     monkeypatch.setattr(web_app.runs, "read_output", lambda *_args, **_kwargs: "done")
 
-    response = client.get(
-        f'/runs/{run["id"]}',
-        headers={
-            "HX-Request": "true",
-            "HX-Boosted": "true",
-            "HX-Target": "main-content",
-        },
-    )
+    response = client.get(f"/runs/{run['id']}")
 
     assert response.status_code == 200
-    assert response.text.lstrip().startswith("<title>Run 00000000 · enso</title>")
     assert response.text.count('<main id="main-content"') == 1
     assert 'id="runs-browser"' not in response.text
-    assert "<!doctype html>" not in response.text
-    assert "<body" not in response.text
+    assert "<!doctype html>" in response.text
+    assert "<body" in response.text
 
 
-def test_htmx_post_uses_client_navigation_with_correct_target(tmp_path, monkeypatch):
+def test_post_uses_see_other_redirect(tmp_path, monkeypatch):
     jobs_dir, client = _job_web_app(tmp_path, monkeypatch)
     _write_job(jobs_dir, "demo", "Original prompt.")
 
     response = client.post(
         "/jobs/demo/prompt",
         data={"content": "Edited prompt.", "_csrf": client.app.state.csrf_token},
-        headers={"HX-Request": "true", "HX-Target": "main-content"},
+        follow_redirects=False,
     )
 
-    assert response.status_code == 200
-    assert response.headers["cache-control"] == "no-store"
-    assert json.loads(response.headers["HX-Location"]) == {
-        "path": "/jobs/demo",
-        "target": "#main-content",
-        "select": "#main-content",
-        "swap": "outerHTML show:window:top",
-    }
+    assert response.status_code == 303
+    assert response.headers["location"] == "/jobs/demo"
+    assert "Edited prompt." in (jobs_dir / "demo" / "JOB.md").read_text()
 
 
 def test_web_templates_do_not_reintroduce_the_retired_indigo_accent():
@@ -513,9 +437,7 @@ def test_web_templates_do_not_reintroduce_the_retired_indigo_accent():
         assert "indigo-" not in source.read_text(encoding="utf-8"), source
 
 
-def test_job_delete_removes_entire_directory_and_preserves_link_targets(
-    tmp_path, monkeypatch
-):
+def test_job_delete_removes_entire_directory_and_preserves_link_targets(tmp_path, monkeypatch):
     jobs_dir, client = _job_web_app(tmp_path, monkeypatch)
     job_md = _write_job(jobs_dir, "demo", "Delete this job.")
     companion = job_md.parent / "scripts" / "prerun.py"
@@ -549,9 +471,7 @@ def test_job_delete_removes_entire_directory_and_preserves_link_targets(
     assert sibling.is_file()
 
 
-def test_job_delete_unlinks_directory_symlink_without_touching_target(
-    tmp_path, monkeypatch
-):
+def test_job_delete_unlinks_directory_symlink_without_touching_target(tmp_path, monkeypatch):
     jobs_dir, client = _job_web_app(tmp_path, monkeypatch)
     target_path = _write_job(tmp_path, "outside-job", "Outside prompt.")
     link = jobs_dir / "linked"
@@ -596,9 +516,7 @@ def test_remove_owned_tree_rejects_unsafe_names(tmp_path, name):
     assert outside.is_dir()
 
 
-def test_job_prerun_edit_round_trips_below_prompt_and_preserves_mode(
-    tmp_path, monkeypatch
-):
+def test_job_prerun_edit_round_trips_below_prompt_and_preserves_mode(tmp_path, monkeypatch):
     jobs_dir, client = _job_web_app(tmp_path, monkeypatch)
     job_md = _write_job(
         jobs_dir,
@@ -639,9 +557,7 @@ def test_job_prerun_edit_round_trips_below_prompt_and_preserves_mode(
     assert job_md.read_bytes() == original_job
 
 
-def test_job_prerun_editor_requires_existing_configured_script(
-    tmp_path, monkeypatch
-):
+def test_job_prerun_editor_requires_existing_configured_script(tmp_path, monkeypatch):
     jobs_dir, client = _job_web_app(tmp_path, monkeypatch)
     _write_job(jobs_dir, "none", "No prerun.")
     missing_job = _write_job(
@@ -679,9 +595,7 @@ def test_job_prerun_editor_requires_existing_configured_script(
     assert not (missing_job.parent / "scripts" / "missing.sh").exists()
 
 
-def test_job_prerun_editor_rejects_unsafe_paths_and_all_symlinks(
-    tmp_path, monkeypatch
-):
+def test_job_prerun_editor_rejects_unsafe_paths_and_all_symlinks(tmp_path, monkeypatch):
     jobs_dir, client = _job_web_app(tmp_path, monkeypatch)
     outside = tmp_path / "outside.sh"
     outside.write_text("SENTINEL OUTSIDE CONTENT\n", encoding="utf-8")
@@ -736,9 +650,7 @@ def test_job_prerun_editor_rejects_unsafe_paths_and_all_symlinks(
     assert outside.read_bytes() == original
 
 
-def test_job_prerun_save_cannot_escape_when_parent_path_is_swapped(
-    tmp_path, monkeypatch
-):
+def test_job_prerun_save_cannot_escape_when_parent_path_is_swapped(tmp_path, monkeypatch):
     jobs_dir, client = _job_web_app(tmp_path, monkeypatch)
     job_md = _write_job(
         jobs_dir,
@@ -779,9 +691,7 @@ def test_job_prerun_save_cannot_escape_when_parent_path_is_swapped(
     )
 
     assert response.status_code == 303
-    assert (held_scripts / "prerun.sh").read_text(encoding="utf-8") == (
-        "echo safely edited\n"
-    )
+    assert (held_scripts / "prerun.sh").read_text(encoding="utf-8") == ("echo safely edited\n")
     assert outside_script.read_text(encoding="utf-8") == "SENTINEL OUTSIDE\n"
 
 
@@ -894,7 +804,7 @@ def test_job_prompt_edit_rejects_job_file_symlink_escape(tmp_path, monkeypatch):
     assert outside.read_bytes() == original
 
 
-def test_job_toggle_preserves_legacy_frontmatter_and_htmx_csrf(tmp_path, monkeypatch):
+def test_job_toggle_preserves_legacy_frontmatter_and_redirects(tmp_path, monkeypatch):
     jobs_dir, client = _job_web_app(tmp_path, monkeypatch)
     job_dir = jobs_dir / "daily-review"
     job_dir.mkdir()
@@ -916,11 +826,11 @@ def test_job_toggle_preserves_legacy_frontmatter_and_htmx_csrf(tmp_path, monkeyp
     response = client.post(
         "/jobs/daily-review/toggle",
         data={"_csrf": client.app.state.csrf_token},
-        headers={"HX-Request": "true"},
+        follow_redirects=False,
     )
 
-    assert response.status_code == 200
-    assert client.app.state.csrf_token in response.text
+    assert response.status_code == 303
+    assert response.headers["location"] == "/jobs/daily-review"
     assert job_md.read_text(encoding="utf-8") == original.replace(
         "enabled : false  #", "enabled : true  #"
     )

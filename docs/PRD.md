@@ -76,7 +76,7 @@ overview, organisation, and managing the scheduled work Enso already runs.
 | Structured storage | **SQLite** (`~/.enso/enso.db`) for run metadata and explicitly registered user data tables; **run output blobs on disk** (`~/.enso/runs/<id>.log`) |
 | Table discovery | `_enso_tables` is an explicit catalog; only valid registered tables appear in the CLI/UI, while agents use standard SQLite for schema and row operations |
 | Frontmatter | PyYAML `BaseLoader` for valid job metadata, with a legacy line-parser fallback for malformed older files; raw web edits preserve formatting |
-| Web server | **Starlette + Uvicorn + Jinja2 + HTMX**, run separately with `enso web` and sharing the file/SQLite model with `enso serve` |
+| Web server | **Starlette + Uvicorn + Jinja2**, run separately with `enso web` and sharing the file/SQLite model with `enso serve` |
 | Web access | Bind **localhost** by default; Tailscale for remote; Host allowlist and optional shared token. No login |
 | Web capability | **Read/write, scoped to owned files** — edit job prompts, toggle/run jobs, edit Enso-owned skills and `AGENTS.md`; full job/skill CRUD is planned. External skills are read-only |
 | Tables web capability | **Read-only, bounded inspection** — list metadata, show schema, and page through capped previews; no SQL or row/schema mutations |

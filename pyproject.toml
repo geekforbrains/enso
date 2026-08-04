@@ -29,7 +29,7 @@ Issues = "https://github.com/geekforbrains/enso/issues"
 [project.optional-dependencies]
 telegram = ["python-telegram-bot>=22.6"]
 slack = ["slack-bolt>=1.28", "aiohttp>=3.9"]
-web = ["starlette>=0.37", "uvicorn>=0.30", "jinja2>=3.1"]
+web = ["starlette>=0.37", "uvicorn>=0.30", "jinja2>=3.1", "python-multipart>=0.0.18"]
 dev = ["ruff>=0.15.0", "pytest>=8.0", "pytest-asyncio>=0.23"]
 
 [project.scripts]

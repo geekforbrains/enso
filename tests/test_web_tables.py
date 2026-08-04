@@ -97,10 +97,15 @@ def test_tables_list_empty_state_points_to_registration_cli(tmp_path, monkeypatc
     _, client = _tables_web_app(tmp_path, monkeypatch)
 
     response = client.get("/tables")
+    dashboard = client.get("/")
 
     assert response.status_code == 200
     assert "No tables yet" in response.text
     assert "enso table register" in response.text
+    assert dashboard.status_code == 200
+    assert 'data-tables-status="available"' in dashboard.text
+    assert 'data-tables-total="0"' in dashboard.text
+    assert "Database unavailable" not in dashboard.text
 
 
 def test_table_detail_shows_schema_and_empty_state(tmp_path, monkeypatch):
@@ -167,7 +172,7 @@ def test_table_detail_renders_bounded_cell_kinds_and_escapes_html(tmp_path, monk
     assert "BLOB · 3 bytes" in response.text
     assert "BLOB · 0 bytes" in response.text
     assert 'data-cell-truncated="true"' in response.text
-    assert 'data-table-row' in response.text
+    assert "data-table-row" in response.text
 
 
 def test_table_detail_paginates_without_counting_all_rows(tmp_path, monkeypatch):
@@ -194,31 +199,6 @@ def test_table_detail_paginates_without_counting_all_rows(tmp_path, monkeypatch)
     assert "row-55" in second.text
     assert 'href="/tables/samples?page=1"' in second.text
     assert 'href="/tables/samples?page=3"' not in second.text
-
-    fragment = client.get(
-        "/tables/samples?page=2",
-        headers={"HX-Request": "true", "HX-Target": "table-data"},
-    )
-    assert fragment.status_code == 200
-    assert fragment.text.lstrip().startswith('<section id="table-data"')
-    assert 'hx-target="#table-data"' in fragment.text
-    assert 'hx-select="#table-data"' in fragment.text
-    assert 'hx-push-url="true"' in fragment.text
-    assert "<!doctype html>" not in fragment.text
-    assert '<main id="main-content"' not in fragment.text
-    assert "Table schema" not in fragment.text
-    assert fragment.text.count("data-table-row") == 5
-
-    history_restore = client.get(
-        "/tables/samples?page=2",
-        headers={
-            "HX-Request": "true",
-            "HX-Target": "table-data",
-            "HX-History-Restore-Request": "true",
-        },
-    )
-    assert "<!doctype html>" in history_restore.text
-    assert "Table schema" in history_restore.text
 
 
 def test_table_detail_suppresses_next_link_at_maximum_page(tmp_path, monkeypatch):
@@ -251,9 +231,7 @@ def test_table_detail_bounds_invalid_page_numbers(tmp_path, monkeypatch, page):
 
 
 @pytest.mark.parametrize("name", ["hidden", "runs", "_enso_tables", "bad%3Bname"])
-def test_table_detail_404s_unregistered_reserved_and_hostile_names(
-    tmp_path, monkeypatch, name
-):
+def test_table_detail_404s_unregistered_reserved_and_hostile_names(tmp_path, monkeypatch, name):
     config_dir, client = _tables_web_app(tmp_path, monkeypatch)
     _execute(config_dir, "CREATE TABLE hidden (id INTEGER PRIMARY KEY)")
 
@@ -273,7 +251,60 @@ def test_table_detail_maps_sqlite_failures_to_503(tmp_path, monkeypatch):
     response = client.get("/tables/samples")
 
     assert response.status_code == 503
-    assert response.text == "Table unavailable"
+    assert "<!doctype html>" in response.text
+    assert "data-database-unavailable" in response.text
+    assert "Database unavailable" in response.text
+    assert "sentinel" not in response.text
+
+
+def test_tables_list_maps_sqlite_failures_to_visible_503(tmp_path, monkeypatch):
+    _, client = _tables_web_app(tmp_path, monkeypatch)
+
+    def fail():
+        raise sqlite3.OperationalError("sentinel database path")
+
+    monkeypatch.setattr(web_app.tables, "list_tables", fail)
+    response = client.get("/tables")
+
+    assert response.status_code == 503
+    assert "<!doctype html>" in response.text
+    assert "data-database-unavailable" in response.text
+    assert "Database unavailable" in response.text
+    assert "No tables yet" not in response.text
+    assert "sentinel" not in response.text
+
+
+def test_dashboard_distinguishes_database_failure_from_zero_tables(tmp_path, monkeypatch):
+    _, client = _tables_web_app(tmp_path, monkeypatch)
+
+    def fail():
+        raise sqlite3.OperationalError("sentinel database path")
+
+    monkeypatch.setattr(web_app.tables, "list_tables", fail)
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert 'data-tables-status="unavailable"' in response.text
+    assert "data-tables-unavailable" in response.text
+    assert "Database unavailable" in response.text
+    assert 'data-tables-total="0"' not in response.text
+    assert "sentinel" not in response.text
+
+
+def test_dashboard_surfaces_run_history_database_failure(tmp_path, monkeypatch):
+    _, client = _tables_web_app(tmp_path, monkeypatch)
+
+    def fail(**_kwargs):
+        raise sqlite3.OperationalError("sentinel run history path")
+
+    monkeypatch.setattr(web_app.runs, "list_runs", fail)
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "data-runs-unavailable" in response.text
+    assert "Database unavailable" in response.text
+    assert "Enso could not load run history" in response.text
+    assert "No runs yet" not in response.text
     assert "sentinel" not in response.text
 
 
@@ -289,6 +320,7 @@ def test_dashboard_and_navigation_surface_table_count(tmp_path, monkeypatch):
     listing = client.get("/tables")
 
     assert dashboard.status_code == 200
+    assert 'data-tables-status="available"' in dashboard.text
     assert 'data-tables-total="1"' in dashboard.text
     assert 'href="/tables"' in dashboard.text
     assert "Tables" in dashboard.text
@@ -298,9 +330,7 @@ def test_dashboard_and_navigation_surface_table_count(tmp_path, monkeypatch):
 
 def test_table_detail_reports_hidden_columns_cap(tmp_path, monkeypatch):
     config_dir, client = _tables_web_app(tmp_path, monkeypatch)
-    definitions = ", ".join(
-        f"column_{index} TEXT" for index in range(tables_mod.MAX_COLUMNS + 1)
-    )
+    definitions = ", ".join(f"column_{index} TEXT" for index in range(tables_mod.MAX_COLUMNS + 1))
     _execute(config_dir, f"CREATE TABLE wide_table ({definitions})")
     _register("wide_table", description="Wide data.")
 
@@ -308,7 +338,7 @@ def test_table_detail_reports_hidden_columns_cap(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     assert f"Showing the first {tables_mod.MAX_COLUMNS}" in response.text
-    assert 'data-table-grid' in response.text
+    assert "data-table-grid" in response.text
     assert response.text.count("data-schema-column") == tables_mod.MAX_COLUMNS
 
 

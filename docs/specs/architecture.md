@@ -45,8 +45,8 @@ pulled into the base install.
 | ASGI framework | **Starlette** | Minimal, async-native, and well suited to server-rendered pages |
 | Server | **Uvicorn** | Serves the standalone dashboard process |
 | Templates | **Jinja2** | Server-rendered HTML; the UI is views + forms, not an SPA |
-| Interactivity | **HTMX** (vendored; no runtime build) | Inline toggle/run actions without a client application bundle |
-| Forms | urlencoded posts (Starlette built-in) | No uploads/multipart in the UI, so no extra parser dependency |
+| Navigation | **Native browser links and forms** | Full-page requests and redirects without a client application bundle |
+| Forms | **Starlette `request.form()` + python-multipart** | Parses CSRF-protected URL-encoded writes |
 | SQLite store | **`sqlite3`** (stdlib) | Run history and registered user tables without another dependency; WAL mode for concurrent readers |
 | Job frontmatter | **PyYAML `BaseLoader` + legacy fallback** | Valid YAML scalars stay strings; malformed older headers remain loadable; raw web edits avoid reserialization |
 
@@ -54,12 +54,12 @@ pulled into the base install.
 
 ```toml
 [project.optional-dependencies]
-web = ["starlette>=0.37", "uvicorn>=0.30", "jinja2>=3.1"]
+web = ["starlette>=0.37", "uvicorn>=0.30", "jinja2>=3.1", "python-multipart>=0.0.18"]
 ```
 
-`pyyaml` is a base dependency (jobs need it independently of the web UI). HTMX and the
-compiled Tailwind stylesheet are vendored, so the UI has **no external CDN dependency**
-and works offline. Package data includes `web/templates/**` and `web/static/**`.
+`python-multipart` is required by Starlette's form parser even though the current UI does not upload files. `pyyaml` is a base dependency (jobs need it independently of the web UI). The compiled
+Tailwind stylesheet is vendored, so the UI has **no external CDN dependency** and works
+offline. Package data includes `web/templates/**` and `web/static/**`.
 
 ## Run recording
 
@@ -178,7 +178,8 @@ At personal scale the model is deliberately simple:
   run history and registered data without blocking readers. Table previews use
   short-lived connections and a bounded busy timeout, with no web mutation path.
 - **SQLite files are private.** The database and data-bearing sidecars are created and
-  repaired to owner-only `0600`, including databases from older installations.
+  repaired to owner-only `0600`, including databases from older installations. Repairs
+  never open and close a live SQLite file, which would release process-scoped POSIX locks.
 
 ## Access & security
 

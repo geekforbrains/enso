@@ -85,18 +85,33 @@ def prepare_private_sqlite_file(path: str) -> None:
 
 
 def harden_sqlite_files(path: str) -> None:
-    """Set a SQLite database and its data-bearing sidecars to owner-only access."""
+    """Set SQLite files owner-only without disturbing active SQLite locks.
+
+    POSIX record locks are process-scoped: closing *any* descriptor for a file
+    releases every record lock that process holds for it.  SQLite relies on
+    those locks, so hardening an active database must use path metadata calls
+    rather than briefly opening each file.
+    """
     for suffix in _SQLITE_FILE_SUFFIXES:
         candidate = f"{path}{suffix}"
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-        flags |= getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
         try:
-            fd = os.open(candidate, flags)
+            file_stat = os.stat(candidate, follow_symlinks=False)
         except FileNotFoundError:
             continue
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise OSError(f"SQLite path is not a regular file: {candidate}")
+
         try:
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
-                raise OSError(f"SQLite path is not a regular file: {candidate}")
-            os.fchmod(fd, _PRIVATE_SQLITE_MODE)
-        finally:
-            os.close(fd)
+            if os.chmod in os.supports_follow_symlinks:
+                os.chmod(candidate, _PRIVATE_SQLITE_MODE, follow_symlinks=False)
+            else:
+                # Linux does not expose a no-follow chmod through CPython. Enso
+                # stores SQLite files in its owner-controlled config directory;
+                # the non-following stat is a best-effort symlink guard, while
+                # path chmod avoids disturbing process-scoped SQLite locks.
+                os.chmod(candidate, _PRIVATE_SQLITE_MODE)
+        except FileNotFoundError:
+            # Sidecar files may disappear after the metadata check when
+            # another SQLite connection closes. A later call will harden any
+            # replacement.
+            continue

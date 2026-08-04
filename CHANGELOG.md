@@ -8,6 +8,20 @@ All notable changes to this project will be documented in this file.
 
 - Telegram and Slack transport tokens, Slack Socket Mode app tokens, and the dashboard shared token can now use direct 1Password references in config. Enso resolves each reference through the machine-local `op_secret` helper at process startup or CLI use, keeps resolved values out of config and environment projections, preserves valid legacy literal keys, and fails closed on malformed or unavailable credentials. Reconfiguring a referenced transport through `enso setup` supplies replacement values over stdin, preserves the references, and never writes a plaintext fallback. Slack credential-pair updates prevalidate both old values and best-effort roll back an earlier write if the second fails.
 
+### Fixed
+
+- SQLite permission hardening no longer opens and closes live database or sidecar files, which could silently release every SQLite lock held by the process and disconnect active connections from their WAL files.
+- The dashboard distinguishes database failures from healthy empty run history or zero registered tables, and Tables failures now render a visible full-page `503` instead of an inert navigation result.
+- The `web` extra once again installs `python-multipart`, which Starlette requires to parse dashboard forms.
+
+### Changed
+
+- Dashboard navigation, filters, pagination, and writes now use ordinary full-page links, forms, and `303` redirects.
+
+### Removed
+
+- The vendored HTMX runtime, fragment templates, request branches, loading indicators, and related client-side behavior.
+
 ## [0.18.1] - 2026-07-30
 
 ### Fixed

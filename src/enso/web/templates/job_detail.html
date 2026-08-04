@@ -1,5 +1,5 @@
-{% extends "fragment.html" if is_hx_fragment else "base.html" %}
-{% from "macros.html" import back_link, btn_primary, delete_control, editor_form, related_run, text_link %}
+{% extends "base.html" %}
+{% from "macros.html" import back_link, btn_primary, btn_secondary, delete_control, editor_form, related_run, text_link %}
 {% block title %}{{ job.name }} · enso{% endblock %}
 
 {% block content %}
@@ -15,7 +15,19 @@
     </div>
   </div>
   <div class="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:shrink-0">
-    {% include "_job_toggle.html" %}
+    <div id="job-toggle" class="flex items-center gap-2">
+      {% if job.enabled %}
+        <span class="inline-flex shrink-0 items-center whitespace-nowrap rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium
+                     text-green-800 dark:bg-green-900/40 dark:text-green-300">enabled</span>
+      {% else %}
+        <span class="inline-flex shrink-0 items-center whitespace-nowrap rounded-full bg-surface-muted
+                     px-2 py-0.5 text-xs font-medium text-muted">disabled</span>
+      {% endif %}
+      <form method="post" action="/jobs/{{ job.dir_name }}/toggle">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+        {{ btn_secondary("Disable" if job.enabled else "Enable") }}
+      </form>
+    </div>
     <form method="post" action="/jobs/{{ job.dir_name }}/run">
       <input type="hidden" name="_csrf" value="{{ csrf_token }}">
       {{ btn_primary("Run now") }}

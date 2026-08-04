@@ -1,4 +1,4 @@
-{% extends "fragment.html" if is_hx_fragment else "base.html" %}
+{% extends "base.html" %}
 {% from "macros.html" import run_card, run_row, text_link %}
 {% block title %}Dashboard · enso{% endblock %}
 
@@ -28,9 +28,18 @@
       <div class="mt-2 text-3xl font-semibold tracking-tight">{{ docs_total }}</div>
       <div class="mt-3">{{ text_link("/docs", "View all →") }}</div>
     </div>
-    <div data-tables-total="{{ tables_total }}" class="bg-surface p-5 sm:p-6">
+    <div data-tables-status="{{ 'available' if tables_available else 'unavailable' }}"
+         {% if tables_available %}data-tables-total="{{ tables_total }}"{% endif %}
+         class="bg-surface p-5 sm:p-6">
       <div class="text-xs font-medium uppercase tracking-wider text-faint">Tables</div>
-      <div class="mt-2 text-3xl font-semibold tracking-tight">{{ tables_total }}</div>
+      {% if tables_available %}
+        <div class="mt-2 text-3xl font-semibold tracking-tight">{{ tables_total }}</div>
+      {% else %}
+        <div role="status" data-tables-unavailable
+             class="mt-2 text-sm font-semibold text-red-700 dark:text-red-300">
+          Database unavailable
+        </div>
+      {% endif %}
       <div class="mt-3">{{ text_link("/tables", "View all →") }}</div>
     </div>
   </div>
@@ -41,7 +50,14 @@
     <h2 class="text-lg font-semibold">Latest runs</h2>
     {{ text_link("/runs", "All runs →") }}
   </div>
-  {% if latest_runs %}
+  {% if not runs_available %}
+    <div role="alert" data-runs-unavailable
+         class="rounded-lg border border-red-200 bg-red-50 px-4 py-4 text-sm
+                text-red-800 dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-300">
+      <p class="font-semibold">Database unavailable</p>
+      <p class="mt-1">Enso could not load run history. Check the service logs, then restart both Enso services.</p>
+    </div>
+  {% elif latest_runs %}
     <div class="divide-y divide-border xl:hidden">
       {% for r in latest_runs %}{{ run_card(r) }}{% endfor %}
     </div>

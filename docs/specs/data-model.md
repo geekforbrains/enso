@@ -123,6 +123,8 @@ registration behaviour.
 The database plus its `-wal`, `-shm`, and rollback-journal sidecars are forced to `0600`.
 Creation uses an owner-only placeholder before SQLite opens the path, avoiding a
 permissive-umask window; later opens also repair looser modes from existing installs.
+Permission repair uses descriptor-free metadata calls: opening and closing a live SQLite
+file in the same process can release that process's POSIX record locks.
 
 ## Runs
 

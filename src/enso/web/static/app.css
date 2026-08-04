@@ -45,8 +45,7 @@ html.dark {
   color-scheme: dark;
 }
 
-/* The active theme state is driven by aria-pressed so the selector remains
-   visually and semantically in sync after HTMX navigation. */
+/* The active theme state is driven by aria-pressed. */
 .theme-option[aria-pressed="true"] {
   background: rgb(var(--enso-surface));
   color: rgb(var(--enso-ink));
@@ -112,48 +111,6 @@ select:not([multiple]):disabled {
 .dark select:not([multiple]):focus {
   border-color: rgb(var(--enso-focus));
   box-shadow: 0 0 0 3px rgb(var(--enso-focus) / 0.2);
-}
-
-/* Persistent request feedback for page and focused fragment navigation. */
-.htmx-indicator {
-  visibility: hidden;
-  opacity: 0;
-  transition: opacity 120ms ease-out;
-}
-
-.htmx-request .htmx-indicator,
-.htmx-request.htmx-indicator {
-  visibility: visible;
-  opacity: 1;
-}
-
-.page-loading {
-  position: fixed;
-  inset: 0 0 auto;
-  z-index: 70;
-  height: 3px;
-  background: rgb(var(--enso-focus));
-  box-shadow: 0 0 8px rgb(var(--enso-focus) / 0.45);
-  transform-origin: left;
-}
-
-.page-loading.htmx-request {
-  animation: enso-loading 900ms ease-in-out infinite alternate;
-}
-
-@keyframes enso-loading {
-  from { transform: scaleX(0.2); }
-  to { transform: scaleX(0.85); }
-}
-
-/* Smooth only the fragment being replaced; the application shell stays put. */
-.htmx-swapping {
-  opacity: 0.65;
-  transition: opacity 120ms ease-out;
-}
-
-#main-content[aria-busy="true"] {
-  cursor: progress;
 }
 
 #main-content:focus {
@@ -256,18 +213,6 @@ pre {
   .run-field-started { grid-column: 6; grid-row: 1; }
   .run-field-duration { grid-column: 7; grid-row: 1; }
   .run-field-size { grid-column: 8; grid-row: 1; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .htmx-indicator,
-  .htmx-swapping {
-    transition: none;
-  }
-
-  .page-loading.htmx-request {
-    animation: none;
-    transform: none;
-  }
 }
 
 @media (max-width: 639px) {

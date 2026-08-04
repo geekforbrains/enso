@@ -6,11 +6,9 @@ See [architecture.md](architecture.md) for how the server runs and is secured, a
 
 ## Shape
 
-A small **server-rendered** app (Starlette + Jinja2) using **HTMX** for partial page and
-inline updates. There is no SPA, runtime build, or external CDN: compiled CSS and a pinned
-HTMX 2.0 runtime are vendored under `web/static/`. Every navigable URL still returns a
-complete document when opened directly, and forms and links remain usable when
-JavaScript is off.
+A small **server-rendered** app (Starlette + Jinja2). There is no SPA, runtime build, or
+external CDN: compiled CSS is vendored under `web/static/`. Every navigable URL returns a
+complete document, and forms and links use ordinary browser requests and redirects.
 
 The whole UI is a thin skin over the file model and the shared DB: pages read `JOB.md` /
 `SKILL.md` / `AGENTS.md`, run history, and registered user tables. Writes go straight
@@ -66,13 +64,11 @@ fails app creation if it is malformed, unavailable, or empty. A configured liter
 | `/tables/{name}` | GET | Implemented | Schema summary and bounded, read-only row preview |
 | `/agents` | GET | Implemented | View the working-directory `AGENTS.md` |
 | `/agents/edit` | POST | Implemented | Save `AGENTS.md` atomically |
-| `/static/*` | GET | Implemented | Vendored HTMX and CSS assets |
+| `/static/*` | GET | Implemented | Vendored CSS and image assets |
 
-The toggle endpoint returns its control fragment when targeted by HTMX. Page requests
-return the stable main-content fragment for HTMX and a complete document otherwise;
-table pagination and the Runs browser have smaller focused fragments. Other writes use
-`HX-Location` to navigate to their resulting page without reloading the shell and retain
-ordinary `303` redirects when JavaScript is unavailable.
+Every page request returns a complete document. Successful writes use ordinary `303`
+redirects to their resulting page. Table pagination and the Runs browser use normal links
+and GET forms, keeping filter and page state in shareable URLs.
 
 ## Pages
 
@@ -82,12 +78,13 @@ The dashboard shows:
 
 - **Recent runs** — the last six rows from `runs`, newest first: kind, name,
   status pill (running/ok/error/timeout/prerun error/prerun timeout), trigger, duration,
-  relative time; each links to `/runs/{id}`.
+  relative time; each links to `/runs/{id}`. A database read failure is shown explicitly
+  instead of looking like an empty run history.
 - **Jobs enabled** — the enabled and total job counts, linking to the job list.
 - **Skills** — deduplicated Enso-owned and visible system counts, linking to the skill
   list.
 - **Docs** — the reference-doc count, linking to the doc list.
-- **Tables** — available registered user-table count, linking to the read-only table list.
+- **Tables** — available registered user-table count, linking to the read-only table list. A database read failure is shown as **Database unavailable**, never as a misleading zero.
 
 ### Jobs (`/jobs`, `/jobs/{name}`)
 
@@ -118,10 +115,9 @@ The dashboard shows:
 - A run with no captured output displays an empty-state message.
 
 The `/runs` feed fetches at most 51 records to render a 50-record page and determine
-whether a next page exists without `COUNT(*)`. Filters and page state stay in the URL;
-HTMX swaps only the filter/results browser while direct requests return the full page.
-Each record has one responsive DOM representation rather than separate hidden mobile and
-desktop copies.
+whether a next page exists without `COUNT(*)`. Filters and page state stay in the URL,
+and each request returns the full page. Each record has one responsive DOM representation
+rather than separate hidden mobile and desktop copies.
 
 ### Skills (`/skills`, `/skills/{name}`)
 
@@ -182,11 +178,9 @@ Detail shows a compact schema summary followed by a horizontally scrollable grid
 - cell content is escaped as untrusted data
 - no unconditional `COUNT(*)` is needed to render a preview
 - reaching the maximum allowed offset suppresses further forward navigation
-- Previous/Next requests replace only the data section and push a shareable page URL when
-  HTMX is available; the same links perform ordinary full navigation without JavaScript
+- Previous/Next links perform ordinary full-page navigation to a shareable page URL
 
-The page uses a short-lived SQLite connection with a busy timeout and fails clearly if the
-table was removed after registration or the database cannot be read. The route exposes no
+The page uses a short-lived SQLite connection with a busy timeout and returns a full-page `503` with a visible **Database unavailable** alert if the database cannot be read. The route exposes no
 write operation, SQL input, filter/sort expression, schema control, row editing, or delete
 action. The catalog, CLI, agent workflow, and failure semantics are specified in
 [tables.md](tables.md).
@@ -205,9 +199,8 @@ action. The catalog, CLI, agent workflow, and failure semantics are specified in
 
 - It uses the same prerun/provider pipeline as `enso job run` and records
   `trigger='manual'` in run history.
-- The POST waits for the run to finish, then navigates to its run detail page — by
-  `HX-Location` under HTMX and an ordinary `303` without it. Live progress polling and
-  output streaming are future work.
+- The POST waits for the run to finish, then uses a `303` redirect to its run detail page.
+  Live progress polling and output streaming are future work.
 
 ## Rendering & assets
 
@@ -231,18 +224,13 @@ action. The catalog, CLI, agent workflow, and failure semantics are specified in
   Templates use semantic neutral tokens (`canvas`, `surface`, `border`, `ink`, `muted`,
   `action`, and related states) backed by CSS variables in `app.css`; green, amber, and red
   are reserved for success, warning, and destructive states rather than ordinary actions.
-- **No external requests**: compiled CSS and HTMX (pinned at 2.0.10) are vendored under
-  `web/static/`, so the UI works offline and over a locked-down tailnet with no CDN trust
-  or flash of unstyled content.
-- **Navigation**: links are progressively boosted toward a stable `#main-content` target,
-  leaving the sidebar, mobile drawer, theme controls, and responsive shell mounted.
-  Focused table/run controls target smaller stable sections. Request indicators are
-  persistent, overlapping requests replace stale ones, and mutation forms temporarily
-  disable their submit button.
-- **History and variants**: HTMX history snapshots use the stable main element. History
-  cache misses explicitly request a full document (`historyRestoreAsHxRequest: false`),
-  and HTML responses vary on `HX-Request` and `HX-Target`. HTML remains `no-store` because
-  pages contain a process CSRF token and local operational data.
+- **No external requests**: compiled CSS and image assets are vendored under `web/static/`,
+  so the UI works offline and over a locked-down tailnet with no CDN trust or flash of
+  unstyled content.
+- **Navigation**: links, filters, pagination, and mutation forms use ordinary browser
+  navigation. Successful mutations use `303` redirects to avoid resubmission on refresh.
+- **Caching**: HTML remains `no-store` because pages contain a process CSRF token and local
+  operational data.
 
 ## Non-goals (recap)
 
