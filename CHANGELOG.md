@@ -11,6 +11,8 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 
 - SQLite permission hardening no longer opens and closes live database or sidecar files, which could silently release every SQLite lock held by the process and disconnect active connections from their WAL files.
+- `enso serve` reports unresolvable transport credentials as a clean one-line error and exits, matching the other commands, instead of surfacing a raw traceback.
+- Slack setup insists on a Socket Mode app token at the prompt instead of accepting a blank value that either broke Socket Mode later or aborted a referenced credential update with a misleading 1Password error.
 - Database lock contention no longer stalls the bot or web event loop or masquerades as empty data: Runs and Tables database-only pages return safe `503` busy/unavailable states, while dashboard and job pages preserve unaffected content.
 - The `web` extra once again installs `python-multipart`, which Starlette requires to parse dashboard forms.
 

@@ -13,6 +13,7 @@ from enso.cli import (
     _setup_slack,
     _setup_telegram,
     _update_referenced_secrets_with_rollback_or_exit,
+    serve,
 )
 from enso.secret_refs import SecretResolutionError
 
@@ -460,6 +461,85 @@ def test_slack_reference_update_reports_rollback_failure_without_secrets(
     assert "Referenced credentials may be inconsistent" in output
     for secret in (*old_values.values(), "new-bot-secret", "new-app-secret"):
         assert secret not in output
+
+
+def test_slack_setup_reprompts_until_app_token_provided(monkeypatch, capsys):
+    """A blank app token silently breaks Socket Mode later (or aborts a
+    referenced update with a misleading 1Password error), so setup must
+    insist on one just like it does for the bot token."""
+    config: dict = {}
+    app_prompts = 0
+
+    def prompt(label, **kwargs):
+        nonlocal app_prompts
+        if "Bot Token" in label:
+            return "xoxb-new"
+        if "App Token" in label:
+            app_prompts += 1
+            return "" if app_prompts == 1 else "xapp-new"
+        if "Allowed users" in label:
+            return "*"
+        if "Notify channel" in label:
+            return "C123"
+        raise AssertionError(f"Unexpected prompt: {label}")
+
+    monkeypatch.setattr("enso.cli.Prompt.ask", prompt)
+    monkeypatch.setattr(
+        "enso.cli._slack_validate_token",
+        lambda token: {"user": "enso", "user_id": "UBOT"},
+    )
+    monkeypatch.setattr(
+        "enso.cli._write_slack_manifest_copy",
+        lambda: "/tmp/slack-manifest.yaml",
+    )
+
+    _setup_slack(config)
+
+    slack = config["transports"]["slack"]
+    assert app_prompts == 2
+    assert slack["app_token"] == "xapp-new"
+    assert "Token is required" in capsys.readouterr().out
+
+
+def test_serve_reports_secret_resolution_failure_cleanly(
+    monkeypatch, tmp_path, capsys,
+):
+    """`enso serve` must exit with a one-line credential error like every
+    other command instead of surfacing a raw traceback."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "enso.cli.load_config",
+        lambda: {"transport": "slack", "working_dir": str(tmp_path)},
+    )
+    monkeypatch.setattr("enso.cli.configure_logging", lambda *a, **k: {})
+    monkeypatch.setattr("enso.cli._load_secret_env", lambda: [])
+
+    class FakeRuntime:
+        def __init__(self, config):
+            pass
+
+        def install_system_prompts(self):
+            pass
+
+        def load_state(self):
+            pass
+
+    monkeypatch.setattr("enso.core.Runtime", FakeRuntime)
+
+    def fail(name, runtime):
+        raise SecretResolutionError(
+            "Could not resolve bot_token from 1Password (helper exit 1)"
+        )
+
+    monkeypatch.setattr("enso.cli._load_transport", fail)
+
+    with pytest.raises(typer.Exit) as excinfo:
+        serve(working_dir=None, transport=None)
+
+    assert excinfo.value.exit_code == 1
+    out = capsys.readouterr().out
+    assert "Could not load transport credentials" in out
+    assert "helper exit 1" in out
 
 
 # ---------------------------------------------------------------------------

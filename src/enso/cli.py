@@ -1022,8 +1022,12 @@ def _setup_slack(config: dict) -> None:
             break
         console.print("[red]  \u2717 Invalid token. Try again.[/]")
 
-    # App Token (for Socket Mode — no validation API)
-    app_token = Prompt.ask("  App Token (xapp-...)", password=True)
+    # App Token (for Socket Mode — required, but there is no validation API)
+    while True:
+        app_token = Prompt.ask("  App Token (xapp-...)", password=True)
+        if app_token:
+            break
+        console.print("[red]  Token is required.[/]")
 
     # Allowed users
     console.print(
@@ -1297,7 +1301,11 @@ def serve(
     log.info("Starting Enso v%s", __version__)
     log.info("  working_dir=%s transport=%s", wd, transport_name)
 
-    tp = _load_transport(transport_name, runtime)
+    try:
+        tp = _load_transport(transport_name, runtime)
+    except SecretResolutionError as exc:
+        console.print(f"[red]✗[/] Could not load transport credentials: {exc}")
+        raise typer.Exit(1) from None
     runtime.transport = tp
     tp.start()
 
