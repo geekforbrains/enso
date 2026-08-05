@@ -113,12 +113,24 @@ seeding nor deletion markers. Deleting a doc prunes the empty parents it leaves 
 
 ## Shared SQLite database
 
-`~/.enso/enso.db`, opened in **WAL mode** (concurrent readers never block the writer).
+`~/.enso/enso.db`, opened in **WAL mode** (readers normally continue while a writer commits).
 Internal tables are created lazily via `CREATE TABLE IF NOT EXISTS` on first use — no
 migration tooling, consistent with Enso's zero-ceremony config files. `runs` and every
 name beginning `_enso_` or `sqlite_` are reserved for Enso/SQLite; registered user tables
 must use a lowercase `snake_case` name. See [tables.md](tables.md) for validation and
 registration behaviour.
+
+Enso does not cache or share SQLite connection objects. Each storage operation opens and
+closes its own connection on the thread that uses it. Read connections are read-only and
+wait at most 500 ms for a lock; writes have a five-second writer-acquisition budget and
+use an explicit `BEGIN IMMEDIATE` / `COMMIT` transaction with rollback on every failure. WAL improves
+read/write concurrency, but SQLite still has one writer at a time, so bounded waits and
+clean transaction ownership remain necessary.
+
+Async runtimes execute each complete SQLite operation in a worker thread. This keeps a
+busy wait out of the bot and web event loops while preserving `sqlite3`'s simple,
+synchronous transaction boundary. A lock timeout is classified as **busy** (retryable);
+open, permission, corruption, and other database failures are **unavailable**.
 
 The database plus its `-wal`, `-shm`, and rollback-journal sidecars are forced to `0600`.
 Creation uses an owner-only placeholder before SQLite opens the path, avoiding a
@@ -172,6 +184,10 @@ path to the full log.
    creates no row. Set `output_bytes` from the log size.
 3. A row left in `running` after a process restart remains as a **crash marker**. There
    is currently no automatic stale-run reconciliation.
+
+The runtime offloads create, finish, output bookkeeping, and retention as complete
+worker-thread operations. Run-history telemetry remains best-effort and cannot abort the
+job being observed.
 
 ### Retention
 

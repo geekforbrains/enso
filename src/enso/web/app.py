@@ -28,6 +28,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import (
@@ -39,7 +40,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
-from .. import docs, frontmatter, runs, tables
+from .. import docs, frontmatter, runs, sqlite_store, tables
 from ..config import CONFIG_DIR, JOBS_DIR, SKILL_TOMBSTONES_DIRNAME
 from ..fsutil import atomic_write_text, is_within, regular_file_sha256
 from ..jobs import Job, load_jobs
@@ -728,20 +729,20 @@ async def dashboard(request):
     jobs_enabled = sum(1 for j in jobs if j.enabled)
     enso_skills, system_skills = _skill_inventory(request)
     try:
-        latest = runs.list_runs(limit=6)
-        runs_available = True
-    except (OSError, sqlite3.Error):
+        latest = await run_in_threadpool(runs.list_runs, limit=6)
+        runs_error = None
+    except (OSError, sqlite3.Error) as exc:
         log.warning("Could not load recent run history", exc_info=True)
         latest = []
-        runs_available = False
+        runs_error = sqlite_store.database_error_kind(exc)
     try:
-        table_listing = tables.list_tables()
+        table_listing = await run_in_threadpool(tables.list_tables)
         tables_total = sum(1 for item in table_listing.tables if item.available)
-        tables_available = True
-    except (OSError, sqlite3.Error):
+        tables_error = None
+    except (OSError, sqlite3.Error) as exc:
         log.warning("Could not load table count", exc_info=True)
         tables_total = None
-        tables_available = False
+        tables_error = sqlite_store.database_error_kind(exc)
     return _render(
         request,
         "index.html",
@@ -752,9 +753,11 @@ async def dashboard(request):
         skills_system=len(system_skills),
         docs_total=len(docs.load_docs().docs),
         tables_total=tables_total,
-        tables_available=tables_available,
+        tables_available=tables_error is None,
+        tables_error=tables_error,
         latest_runs=latest,
-        runs_available=runs_available,
+        runs_available=runs_error is None,
+        runs_error=runs_error,
     )
 
 
@@ -826,7 +829,18 @@ async def job_detail(request):
                         os.close(file_fd)
                 with contextlib.suppress(OSError):
                     os.close(parent_fd)
-    job_runs = runs.list_runs(kind="job", name=name, limit=50)
+    try:
+        job_runs = await run_in_threadpool(
+            runs.list_runs,
+            kind="job",
+            name=name,
+            limit=50,
+        )
+        runs_error = None
+    except (OSError, sqlite3.Error) as exc:
+        log.warning("Could not load run history for job %s", name, exc_info=True)
+        job_runs = []
+        runs_error = sqlite_store.database_error_kind(exc)
     return _render(
         request,
         "job_detail.html",
@@ -836,6 +850,7 @@ async def job_detail(request):
         prerun_content=prerun_content,
         prerun_error=prerun_error,
         job_runs=job_runs,
+        runs_error=runs_error,
     )
 
 
@@ -954,15 +969,31 @@ async def runs_list(request):
     status = request.query_params.get("status") or None
     page = _bounded_page(request.query_params.get("page"), _MAX_RUNS_PAGE)
     offset = (page - 1) * _RUNS_PAGE_SIZE
-    fetched = runs.list_runs(
-        name=name,
-        status=status,
-        limit=_RUNS_PAGE_SIZE + 1,
-        offset=offset,
-    )
+    filters = {"name": name, "status": status}
+    try:
+        fetched = await run_in_threadpool(
+            runs.list_runs,
+            name=name,
+            status=status,
+            limit=_RUNS_PAGE_SIZE + 1,
+            offset=offset,
+        )
+    except (OSError, sqlite3.Error) as exc:
+        log.warning("Could not load run history", exc_info=True)
+        return _render(
+            request,
+            "runs.html",
+            status_code=503,
+            database_error=sqlite_store.database_error_kind(exc),
+            runs=[],
+            page=page,
+            previous_url=None,
+            next_url=None,
+            active_status=status or "",
+            active_name=name or "",
+        )
     has_next = len(fetched) > _RUNS_PAGE_SIZE and page < _MAX_RUNS_PAGE
     rows = fetched[:_RUNS_PAGE_SIZE]
-    filters = {"name": name, "status": status}
     return _render(
         request,
         "runs.html",
@@ -972,15 +1003,29 @@ async def runs_list(request):
         next_url=_page_url("/runs", page + 1, **filters) if has_next else None,
         active_status=status or "",
         active_name=name or "",
+        database_error=None,
     )
 
 
 async def run_detail(request):
     run_id = request.path_params["id"]
-    run = runs.get(run_id)
+    try:
+        run = await run_in_threadpool(runs.get, run_id)
+    except (OSError, sqlite3.Error) as exc:
+        log.warning("Could not load run %s", run_id, exc_info=True)
+        return _database_error_response(
+            request,
+            sqlite_store.database_error_kind(exc),
+            back_url="/runs",
+            back_label="Runs",
+        )
     if run is None:
         return PlainTextResponse("Run not found", status_code=404)
-    output = runs.read_output(run_id, max_bytes=_OUTPUT_VIEW_CAP)
+    output = await run_in_threadpool(
+        runs.read_output,
+        run_id,
+        max_bytes=_OUTPUT_VIEW_CAP,
+    )
     total = run.get("output_bytes") or 0
     truncated = bool(total) and total > _OUTPUT_VIEW_CAP
     return _render(
@@ -1174,25 +1219,47 @@ async def doc_delete(request):
 # ---------------------------------------------------------------------------
 
 
-def _tables_unavailable(request) -> Response:
+def _database_error_response(
+    request,
+    database_error: sqlite_store.DatabaseErrorKind,
+    *,
+    back_url: str,
+    back_label: str,
+) -> Response:
+    return _render(
+        request,
+        "database_error.html",
+        status_code=503,
+        database_error=database_error,
+        back_url=back_url,
+        back_label=back_label,
+    )
+
+
+def _tables_unavailable(
+    request,
+    database_error: sqlite_store.DatabaseErrorKind,
+) -> Response:
     return _render(
         request,
         "tables.html",
         status_code=503,
         database_available=False,
+        database_error=database_error,
     )
 
 
 async def tables_list(request):
     try:
-        listing = tables.list_tables()
-    except (OSError, sqlite3.Error):
+        listing = await run_in_threadpool(tables.list_tables)
+    except (OSError, sqlite3.Error) as exc:
         log.warning("Could not list registered data tables", exc_info=True)
-        return _tables_unavailable(request)
+        return _tables_unavailable(request, sqlite_store.database_error_kind(exc))
     return _render(
         request,
         "tables.html",
         database_available=True,
+        database_error=None,
         tables=listing.tables,
         truncated=listing.truncated,
         max_tables=tables.MAX_TABLES,
@@ -1204,16 +1271,17 @@ async def table_detail(request):
     page = _bounded_page(request.query_params.get("page"), _MAX_TABLE_PAGE)
     offset = (page - 1) * _TABLE_PAGE_SIZE
     try:
-        preview = tables.preview_table(
+        preview = await run_in_threadpool(
+            tables.preview_table,
             table_name,
             offset=offset,
             limit=_TABLE_PAGE_SIZE,
         )
     except (tables.TableNameError, tables.TableNotFoundError):
         return PlainTextResponse("Table not found", status_code=404)
-    except (OSError, sqlite3.Error):
+    except (OSError, sqlite3.Error) as exc:
         log.warning("Could not preview data table %s", table_name, exc_info=True)
-        return _tables_unavailable(request)
+        return _tables_unavailable(request, sqlite_store.database_error_kind(exc))
     rendered_indexes = [
         {
             "sql": index.sql[:_MAX_TABLE_INDEX_SQL_CHARS],

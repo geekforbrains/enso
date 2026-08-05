@@ -79,12 +79,13 @@ The dashboard shows:
 - **Recent runs** — the last six rows from `runs`, newest first: kind, name,
   status pill (running/ok/error/timeout/prerun error/prerun timeout), trigger, duration,
   relative time; each links to `/runs/{id}`. A database read failure is shown explicitly
-  instead of looking like an empty run history.
+  as **Database busy** or **Database unavailable** instead of looking like an empty run
+  history.
 - **Jobs enabled** — the enabled and total job counts, linking to the job list.
 - **Skills** — deduplicated Enso-owned and visible system counts, linking to the skill
   list.
 - **Docs** — the reference-doc count, linking to the doc list.
-- **Tables** — available registered user-table count, linking to the read-only table list. A database read failure is shown as **Database unavailable**, never as a misleading zero.
+- **Tables** — available registered user-table count, linking to the read-only table list. A database read failure is shown as **Database busy** or **Database unavailable**, never as a misleading zero.
 
 ### Jobs (`/jobs`, `/jobs/{name}`)
 
@@ -102,7 +103,8 @@ The dashboard shows:
 - **Delete** (`/jobs/{name}/delete`): a native disclosure confirms the destructive
   action before removing the entire job directory, including prerun and companion files.
   Existing run history remains available.
-- Recent runs for this job, linking to `/runs/{id}`.
+- Recent runs for this job, linking to `/runs/{id}`. If run history is busy or unavailable,
+  the configuration and editors remain usable and the failure is shown only in the Runs card.
 - **Planned:** browser forms for create and full metadata editing, including choosing the
   prerun path. Until then use `enso job create` or edit the job files directly.
 
@@ -118,6 +120,11 @@ The `/runs` feed fetches at most 51 records to render a 50-record page and deter
 whether a next page exists without `COUNT(*)`. Filters and page state stay in the URL,
 and each request returns the full page. Each record has one responsive DOM representation
 rather than separate hidden mobile and desktop copies.
+
+Run list/detail reads execute outside the ASGI event loop with a 500 ms SQLite busy
+timeout. A timeout returns a retryable full-page `503` **Database busy** state; open,
+permission, corruption, and other access failures return a full-page `503` **Database
+unavailable** state. Neither response includes the raw exception text.
 
 ### Skills (`/skills`, `/skills/{name}`)
 
@@ -180,10 +187,14 @@ Detail shows a compact schema summary followed by a horizontally scrollable grid
 - reaching the maximum allowed offset suppresses further forward navigation
 - Previous/Next links perform ordinary full-page navigation to a shareable page URL
 
-The page uses a short-lived SQLite connection with a busy timeout and returns a full-page `503` with a visible **Database unavailable** alert if the database cannot be read. The route exposes no
-write operation, SQL input, filter/sort expression, schema control, row editing, or delete
-action. The catalog, CLI, agent workflow, and failure semantics are specified in
-[tables.md](tables.md).
+The page uses a short-lived SQLite connection outside the ASGI event loop with a 500 ms
+busy timeout. It returns a full-page `503` with **Database busy** for lock contention or
+**Database unavailable** for other access failures. The route exposes no write operation,
+SQL input, filter/sort expression, schema control, row editing, or delete action. The
+catalog, CLI, agent workflow, and failure semantics are specified in [tables.md](tables.md).
+
+`/health` is a process-liveness probe and never opens SQLite. A database request waiting
+for its bounded timeout therefore cannot delay health checks or unrelated web requests.
 
 ### AGENTS.md (`/agents`)
 

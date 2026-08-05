@@ -1,15 +1,16 @@
 """SQLite-backed run history for jobs.
 
 Machine-generated run telemetry lives in a single ``runs`` table at
-``CONFIG_DIR/enso.db`` (WAL mode so concurrent readers never block the
-writer), while the captured output for each run is an append-only log file
+``CONFIG_DIR/enso.db`` (WAL mode so readers normally continue during a
+write), while the captured output for each run is an append-only log file
 at ``CONFIG_DIR/runs/<id>.log``. Keeping the transcript on disk keeps the
 DB small, keeps output greppable, and makes retention a matter of deleting
 a row and unlinking a file.
 
-The DB is opened lazily and the schema is created with
-``CREATE TABLE IF NOT EXISTS`` on connect, so existing installs need no
-migration. See docs/specs/data-model.md for the governing design.
+Every operation owns a short-lived connection. Writes create the schema with
+``IF NOT EXISTS`` inside an explicit transaction, so existing installs need no
+migration and failed operations cannot poison a process-wide connection. See
+docs/specs/data-model.md for the governing design.
 """
 
 from __future__ import annotations
@@ -18,17 +19,16 @@ import contextlib
 import logging
 import os
 import sqlite3
-import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 
 from . import config
-from .fsutil import harden_sqlite_files, prepare_private_sqlite_file
+from .sqlite_store import database_exists, read_connection, write_connection
 
 log = logging.getLogger(__name__)
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS runs (
+_SCHEMA_STATEMENTS = (
+    """CREATE TABLE IF NOT EXISTS runs (
     id           TEXT PRIMARY KEY,
     kind         TEXT NOT NULL,
     name         TEXT NOT NULL,
@@ -43,17 +43,11 @@ CREATE TABLE IF NOT EXISTS runs (
     duration_ms  INTEGER,
     output_path  TEXT,
     output_bytes INTEGER
-);
-
-CREATE INDEX IF NOT EXISTS idx_runs_started   ON runs (started_at DESC);
-CREATE INDEX IF NOT EXISTS idx_runs_kind_name ON runs (kind, name, started_at DESC);
-CREATE INDEX IF NOT EXISTS idx_runs_status    ON runs (status);
-"""
-
-# One cached connection per DB path. Keying by path (rather than a single
-# global) keeps tests isolated: each temp ~/.enso gets its own connection.
-_connections: dict[str, sqlite3.Connection] = {}
-_lock = threading.Lock()
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_runs_started ON runs (started_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_runs_kind_name ON runs (kind, name, started_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_runs_status ON runs (status)",
+)
 
 
 def _utc_now() -> str:
@@ -76,33 +70,16 @@ def log_path(run_id: str) -> str:
     return os.path.join(runs_dir(), f"{run_id}.log")
 
 
-def _connect() -> sqlite3.Connection:
-    """Return the cached connection for the active DB path, opening it lazily.
+def _ensure_schema(conn: sqlite3.Connection) -> None:
+    """Create the run-history schema inside the caller's write transaction."""
+    for statement in _SCHEMA_STATEMENTS:
+        conn.execute(statement)
 
-    Enables WAL mode and applies the schema (all ``IF NOT EXISTS``) the first
-    time a path is opened, so existing databases are left untouched.
-    """
-    path = _db_path()
-    conn = _connections.get(path)
-    if conn is not None:
-        harden_sqlite_files(path)
-        return conn
-    os.makedirs(config.CONFIG_DIR, mode=0o700, exist_ok=True)
-    prepare_private_sqlite_file(path)
-    conn = sqlite3.connect(path, check_same_thread=False)
-    try:
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.executescript(_SCHEMA)
-        conn.commit()
-        harden_sqlite_files(path)
-    except BaseException:
-        conn.close()
-        raise
-    _connections[path] = conn
-    log.debug("Opened runs DB at %s", path)
-    return conn
+
+def _schema_exists(conn: sqlite3.Connection) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM main.sqlite_master WHERE type = 'table' AND name = 'runs'"
+    ).fetchone() is not None
 
 
 def create(
@@ -121,8 +98,8 @@ def create(
     opens ``log_path(run_id)`` for captured output and later calls ``finish``.
     """
     run_id = uuid.uuid4().hex
-    conn = _connect()
-    with _lock:
+    with write_connection(_db_path()) as conn:
+        _ensure_schema(conn)
         conn.execute(
             "INSERT INTO runs "
             "(id, kind, name, title, trigger, status, provider, model, started_at) "
@@ -132,7 +109,6 @@ def create(
                 started_at or _utc_now(),
             ),
         )
-        conn.commit()
     log.info("run created id=%s kind=%s name=%s trigger=%s", run_id, kind, name, trigger)
     return run_id
 
@@ -147,13 +123,12 @@ def append_output(run_id: str, text: str) -> None:
     path = log_path(run_id)
     with open(path, "a", encoding="utf-8") as f:
         f.write(text)
-    conn = _connect()
-    with _lock:
+    with write_connection(_db_path()) as conn:
+        _ensure_schema(conn)
         conn.execute(
             "UPDATE runs SET output_path=? WHERE id=? AND output_path IS NULL",
             (path, run_id),
         )
-        conn.commit()
 
 
 def finish(run_id: str, exit_code: int, status: str) -> None:
@@ -164,37 +139,36 @@ def finish(run_id: str, exit_code: int, status: str) -> None:
     stored ``started_at``; ``output_bytes`` from the log file size
     (``output_path`` is backfilled if output exists but wasn't recorded).
     """
-    conn = _connect()
-    row = get(run_id)
-    if row is None:
-        log.warning("finish called for unknown run id=%s", run_id)
-        return
+    with write_connection(_db_path()) as conn:
+        _ensure_schema(conn)
+        stored = conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
+        if stored is None:
+            log.warning("finish called for unknown run id=%s", run_id)
+            return
+        row = dict(stored)
+        ended_at = _utc_now()
+        duration_ms: int | None = None
+        started = row.get("started_at")
+        if started:
+            try:
+                delta = datetime.fromisoformat(ended_at) - datetime.fromisoformat(started)
+                duration_ms = int(delta.total_seconds() * 1000)
+            except ValueError:
+                log.warning("Could not parse started_at=%r for run %s", started, run_id)
 
-    ended_at = _utc_now()
-    duration_ms: int | None = None
-    started = row.get("started_at")
-    if started:
-        try:
-            delta = datetime.fromisoformat(ended_at) - datetime.fromisoformat(started)
-            duration_ms = int(delta.total_seconds() * 1000)
-        except ValueError:
-            log.warning("Could not parse started_at=%r for run %s", started, run_id)
+        path = log_path(run_id)
+        output_path = row.get("output_path")
+        output_bytes: int | None = None
+        if os.path.exists(path):
+            output_bytes = os.path.getsize(path)
+            if output_path is None:
+                output_path = path
 
-    path = log_path(run_id)
-    output_path = row.get("output_path")
-    output_bytes: int | None = None
-    if os.path.exists(path):
-        output_bytes = os.path.getsize(path)
-        if output_path is None:
-            output_path = path
-
-    with _lock:
         conn.execute(
             "UPDATE runs SET ended_at=?, duration_ms=?, exit_code=?, status=?, "
             "output_path=?, output_bytes=? WHERE id=?",
             (ended_at, duration_ms, exit_code, status, output_path, output_bytes, run_id),
         )
-        conn.commit()
     log.info(
         "run finished id=%s status=%s exit=%s duration_ms=%s bytes=%s",
         run_id, status, exit_code, duration_ms, output_bytes,
@@ -203,10 +177,14 @@ def finish(run_id: str, exit_code: int, status: str) -> None:
 
 def get(run_id: str) -> dict | None:
     """Return a run row as a dict, or None if no such run exists."""
-    conn = _connect()
-    cur = conn.execute("SELECT * FROM runs WHERE id=?", (run_id,))
-    row = cur.fetchone()
-    return dict(row) if row is not None else None
+    path = _db_path()
+    if not database_exists(path):
+        return None
+    with read_connection(path) as conn:
+        if not _schema_exists(conn):
+            return None
+        row = conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
+        return dict(row) if row is not None else None
 
 
 def list_runs(
@@ -217,7 +195,9 @@ def list_runs(
     offset: int = 0,
 ) -> list[dict]:
     """Return a bounded run page newest first, optionally filtered."""
-    conn = _connect()
+    path = _db_path()
+    if not database_exists(path):
+        return []
     clauses: list[str] = []
     params: list[object] = []
     if kind is not None:
@@ -231,12 +211,15 @@ def list_runs(
         params.append(status)
     where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
     params.extend((limit, offset))
-    cur = conn.execute(
-        f"SELECT * FROM runs{where} "
-        "ORDER BY started_at DESC, rowid DESC LIMIT ? OFFSET ?",
-        params,
-    )
-    return [dict(r) for r in cur.fetchall()]
+    with read_connection(path) as conn:
+        if not _schema_exists(conn):
+            return []
+        cur = conn.execute(
+            f"SELECT * FROM runs{where} "
+            "ORDER BY started_at DESC, rowid DESC LIMIT ? OFFSET ?",
+            params,
+        )
+        return [dict(r) for r in cur.fetchall()]
 
 
 def read_output(run_id: str, max_bytes: int | None = None) -> str:
@@ -261,32 +244,32 @@ def prune(keep: int = 500, max_age_days: int = 30) -> None:
     ``max_age_days``. A ``running`` row is never pruned (it may be an active
     or crashed run). Both caps apply; a row failing either is removed.
     """
-    conn = _connect()
-
-    to_delete: set[str] = set()
-
-    # Age cap: anything terminal whose start predates the cutoff.
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()
-    cur = conn.execute(
-        "SELECT id FROM runs WHERE status != 'running' AND started_at < ?",
-        (cutoff,),
-    )
-    to_delete.update(r["id"] for r in cur.fetchall())
-
-    # Count cap: keep only the newest ``keep`` terminal rows.
-    cur = conn.execute(
-        "SELECT id FROM runs WHERE status != 'running' "
-        "ORDER BY started_at DESC, rowid DESC"
-    )
-    terminal_ids = [r["id"] for r in cur.fetchall()]
-    to_delete.update(terminal_ids[max(keep, 0):])
-
-    if not to_delete:
+    path = _db_path()
+    if not database_exists(path):
         return
+    to_delete: set[str] = set()
+    with write_connection(path) as conn:
+        _ensure_schema(conn)
 
-    with _lock:
+        # Age cap: anything terminal whose start predates the cutoff.
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()
+        cur = conn.execute(
+            "SELECT id FROM runs WHERE status != 'running' AND started_at < ?",
+            (cutoff,),
+        )
+        to_delete.update(r["id"] for r in cur.fetchall())
+
+        # Count cap: keep only the newest ``keep`` terminal rows.
+        cur = conn.execute(
+            "SELECT id FROM runs WHERE status != 'running' "
+            "ORDER BY started_at DESC, rowid DESC"
+        )
+        terminal_ids = [r["id"] for r in cur.fetchall()]
+        to_delete.update(terminal_ids[max(keep, 0):])
+
+        if not to_delete:
+            return
         conn.executemany("DELETE FROM runs WHERE id=?", [(i,) for i in to_delete])
-        conn.commit()
     for run_id in to_delete:
         with contextlib.suppress(OSError):
             os.remove(log_path(run_id))

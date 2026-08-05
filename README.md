@@ -225,6 +225,9 @@ Registration is the visibility boundary: only catalogued user tables appear unde
 **Tables** in the dashboard. Internal `runs`, `_enso_*`, and `sqlite_*` names stay hidden
 and reserved. The web UI shows schema plus a bounded, paginated row preview; table and
 row edits remain standard SQLite operations rather than a custom Enso query language.
+Enso uses short-lived connections and bounded lock waits; the dashboard distinguishes a
+retryable **Database busy** state from a broader **Database unavailable** failure without
+blocking its health endpoint.
 See [`docs/specs/tables.md`](docs/specs/tables.md) for the full design.
 
 ## Service Management

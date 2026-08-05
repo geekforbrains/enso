@@ -11,11 +11,12 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 
 - SQLite permission hardening no longer opens and closes live database or sidecar files, which could silently release every SQLite lock held by the process and disconnect active connections from their WAL files.
-- The dashboard distinguishes database failures from healthy empty run history or zero registered tables, and Tables failures now render a visible full-page `503` instead of an inert navigation result.
+- Database lock contention no longer stalls the bot or web event loop or masquerades as empty data: Runs and Tables database-only pages return safe `503` busy/unavailable states, while dashboard and job pages preserve unaffected content.
 - The `web` extra once again installs `python-multipart`, which Starlette requires to parse dashboard forms.
 
 ### Changed
 
+- SQLite-backed run history and registered tables now use short-lived, operation-owned connections with bounded lock waits and explicit write transactions; async callers execute complete database operations in worker threads.
 - Dashboard navigation, filters, pagination, and writes now use ordinary full-page links, forms, and `303` redirects.
 
 ### Removed

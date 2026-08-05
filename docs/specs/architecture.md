@@ -47,7 +47,7 @@ pulled into the base install.
 | Templates | **Jinja2** | Server-rendered HTML; the UI is views + forms, not an SPA |
 | Navigation | **Native browser links and forms** | Full-page requests and redirects without a client application bundle |
 | Forms | **Starlette `request.form()` + python-multipart** | Parses CSRF-protected URL-encoded writes |
-| SQLite store | **`sqlite3`** (stdlib) | Run history and registered user tables without another dependency; WAL mode for concurrent readers |
+| SQLite store | **`sqlite3`** (stdlib) | Operation-scoped connections and explicit transactions without another dependency; WAL mode for concurrent readers |
 | Job frontmatter | **PyYAML `BaseLoader` + legacy fallback** | Valid YAML scalars stay strings; malformed older headers remain loadable; raw web edits avoid reserialization |
 
 `pyproject.toml` defines:
@@ -161,9 +161,11 @@ The recording seam (see [data-model.md](data-model.md) for the schema):
    terminal `status` (`ok` / `error` / `timeout`; job gates may instead finish as
    `prerun_error` / `prerun_timeout`). Intentional no-work (`exit 1`) creates no row.
 
-A small `runs.py` module owns the SQLite connection and these calls, mirroring how
-`messages.py` owns the messages file. The DB is opened lazily and created on first use
-(`CREATE TABLE IF NOT EXISTS`), so existing installs need no migration step.
+`runs.py` owns these operations and `sqlite_store.py` owns their shared connection policy.
+Connections are opened lazily per operation and the DB is created on first write
+(`CREATE TABLE IF NOT EXISTS`), so existing installs need no migration step. The async
+runtime sends each complete telemetry operation through a worker thread; no SQLite
+connection is cached, shared across threads, or allowed to block the event loop.
 
 ## Concurrency & consistency
 
@@ -175,8 +177,14 @@ At personal scale the model is deliberately simple:
 - **Last write wins.** Optimistic locking and conflict resolution are out of scope for
   this single-operator tool.
 - **SQLite in WAL mode** allows the bot, dashboard, CLI, and agent subprocesses to share
-  run history and registered data without blocking readers. Table previews use
-  short-lived connections and a bounded busy timeout, with no web mutation path.
+  run history and registered data while readers normally continue during writes. Every
+  Enso operation owns a short-lived connection; reads wait at most 500 ms and writes have
+  a five-second writer-acquisition budget. Writes always roll back and close on
+  failure. Async callers run the complete operation in a worker thread.
+- **Contention is visible and bounded.** A lock timeout is a retryable **Database busy**
+  state; access, open, and corruption failures are **Database unavailable**. Database-backed
+  list/detail routes return `503`, while mixed pages keep their non-database content and
+  scope the alert to the failed section. `/health` never touches SQLite.
 - **SQLite files are private.** The database and data-bearing sidecars are created and
   repaired to owner-only `0600`, including databases from older installations. Repairs
   never open and close a live SQLite file, which would release process-scoped POSIX locks.
@@ -224,6 +232,7 @@ internet and the PRD makes that a non-goal.
 | `jobs.py` | Loads YAML scalars with `BaseLoader`, then falls back for malformed legacy headers |
 | `frontmatter.py` | Provides fence-aware raw edits and YAML serialization, writing through `fsutil` |
 | `fsutil.py` | Owns atomic text writes, containment checks, pristine-file hashing, and SQLite file hardening |
+| `sqlite_store.py` | Owns operation-scoped connections, transactions, bounded timeouts, and failure classification |
 | `docs.py` | Owns reference-doc path validation, the bounded recursive listing, scaffolding, and deletion |
 | `runs.py` | Owns SQLite `create`/`finish`/`list_runs`/`get`/`prune` operations |
 | `tables.py` | Owns the registration catalog, identifier validation, schema inspection, and bounded previews |

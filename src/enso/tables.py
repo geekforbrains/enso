@@ -9,17 +9,15 @@ from SQLite itself.
 
 from __future__ import annotations
 
-import contextlib
 import os
 import re
 import sqlite3
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
 
 from . import config
-from .fsutil import harden_sqlite_files, prepare_private_sqlite_file
+from .sqlite_store import database_exists, read_connection, write_connection
 
 MAX_TABLES = 500
 MAX_COLUMNS = 50
@@ -174,7 +172,7 @@ def register_table(
 
 def list_tables() -> TableListing:
     """List registered tables, including stale catalog entries as unavailable."""
-    if not os.path.isfile(db_path()):
+    if not database_exists(db_path()):
         return TableListing()
     with _read_connection() as conn:
         if not _catalog_exists(conn):
@@ -209,7 +207,7 @@ def list_tables() -> TableListing:
 def get_table(table_name: str) -> DataTable:
     """Return catalog and schema information for one registered table."""
     table_name = validate_table_name(table_name)
-    if not os.path.isfile(db_path()):
+    if not database_exists(db_path()):
         raise TableNotFoundError(f"Table '{table_name}' not found")
     with _read_connection() as conn:
         _require_catalog(conn, table_name)
@@ -234,7 +232,7 @@ def preview_table(
     if not 1 <= limit <= MAX_PAGE_SIZE:
         raise ValueError(f"Limit must be between 1 and {MAX_PAGE_SIZE}")
 
-    if not os.path.isfile(db_path()):
+    if not database_exists(db_path()):
         raise TableNotFoundError(f"Table '{table_name}' not found")
     with _read_connection() as conn:
         _require_catalog(conn, table_name)
@@ -298,52 +296,23 @@ def preview_table(
         )
 
 
-@contextlib.contextmanager
 def _write_connection():
-    """Yield a short-lived writable connection configured for cross-process use."""
-    os.makedirs(config.CONFIG_DIR, mode=0o700, exist_ok=True)
-    path = db_path()
-    prepare_private_sqlite_file(path)
-    conn = sqlite3.connect(path, timeout=5.0)
-    conn.row_factory = sqlite3.Row
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA busy_timeout=5000")
-        yield conn
-        conn.commit()
-    except BaseException:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-        harden_sqlite_files(path)
+    """Return a short-lived transaction context for a catalog write."""
+    return write_connection(db_path())
 
 
-@contextlib.contextmanager
 def _read_connection():
-    """Yield a short-lived read-only connection that works with a live WAL."""
-    path = db_path()
-    harden_sqlite_files(path)
-    uri = Path(path).resolve().as_uri() + "?mode=ro"
-    conn = sqlite3.connect(uri, uri=True, timeout=5.0)
-    conn.row_factory = sqlite3.Row
-    try:
-        conn.execute("PRAGMA query_only=ON")
-        conn.execute("PRAGMA busy_timeout=5000")
-        yield conn
-    finally:
-        conn.close()
-        harden_sqlite_files(path)
+    """Return a short-lived read-only context for a catalog operation."""
+    return read_connection(db_path())
 
 
 def _ensure_catalog(conn: sqlite3.Connection) -> None:
-    conn.executescript(_CATALOG_SCHEMA)
+    conn.execute(_CATALOG_SCHEMA)
 
 
 def _catalog_exists(conn: sqlite3.Connection) -> bool:
     return conn.execute(
-        "SELECT 1 FROM main.sqlite_schema WHERE type = 'table' AND name = '_enso_tables'"
+        "SELECT 1 FROM main.sqlite_master WHERE type = 'table' AND name = '_enso_tables'"
     ).fetchone() is not None
 
 
@@ -366,7 +335,7 @@ def _get_table(conn: sqlite3.Connection, table_name: str) -> DataTable:
     indexes = [
         TableIndex(name=index["name"], sql=index["sql"])
         for index in conn.execute(
-            "SELECT name, sql FROM sqlite_schema "
+            "SELECT name, sql FROM sqlite_master "
             "WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL ORDER BY name",
             (table_name,),
         ).fetchall()
@@ -403,7 +372,7 @@ def _ordinary_table_sql(conn: sqlite3.Connection, table_name: str) -> str | None
             return None
 
     row = conn.execute(
-        "SELECT sql FROM main.sqlite_schema WHERE type = 'table' AND name = ?",
+        "SELECT sql FROM main.sqlite_master WHERE type = 'table' AND name = ?",
         (table_name,),
     ).fetchone()
     if row is None or not isinstance(row["sql"], str):

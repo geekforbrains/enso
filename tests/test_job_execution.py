@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -90,6 +91,87 @@ def stub_provider(
         return_value=(output, b"", False)
     )
     return provider
+
+
+async def test_run_history_create_is_offloaded_from_event_loop(
+    tmp_enso, sample_config, monkeypatch,
+):
+    runtime = Runtime(sample_config)
+    job = make_job(tmp_enso)
+    event_loop_thread = threading.get_ident()
+    worker_threads: list[int] = []
+
+    def fake_create(**_kwargs):
+        worker_threads.append(threading.get_ident())
+        return "a" * 32
+
+    monkeypatch.setattr(runs, "create", fake_create)
+
+    run_id = await runtime._create_job_run(
+        job,
+        "schedule",
+        "[job:capture]",
+        datetime.now(timezone.utc).isoformat(),
+    )
+
+    assert run_id == "a" * 32
+    assert worker_threads and worker_threads[0] != event_loop_thread
+
+
+async def test_run_history_finish_is_offloaded_from_event_loop(
+    tmp_enso, sample_config, monkeypatch,
+):
+    runtime = Runtime(sample_config)
+    event_loop_thread = threading.get_ident()
+    worker_threads: list[int] = []
+
+    monkeypatch.setattr(runs, "append_output", lambda *_args: None)
+    monkeypatch.setattr(
+        runs,
+        "finish",
+        lambda *_args: worker_threads.append(threading.get_ident()),
+    )
+    monkeypatch.setattr(runs, "prune", lambda **_kwargs: None)
+
+    await runtime._record_run_finish(
+        "b" * 32,
+        "output",
+        0,
+        "ok",
+        "[job:capture]",
+    )
+
+    assert worker_threads and worker_threads[0] != event_loop_thread
+
+
+def test_run_history_finish_survives_output_bookkeeping_failure(
+    tmp_enso, sample_config, monkeypatch,
+):
+    """A log-write failure must not leave an otherwise completed run active."""
+    runtime = Runtime(sample_config)
+    run_id = "c" * 32
+    finish_calls = []
+
+    def fail_append(*_args):
+        raise OSError("injected output bookkeeping failure")
+
+    monkeypatch.setattr(runs, "append_output", fail_append)
+    monkeypatch.setattr(
+        runs,
+        "finish",
+        lambda *args: finish_calls.append(args),
+    )
+    monkeypatch.setattr(runs, "prune", lambda **_kwargs: None)
+
+    runtime._record_run_finish_sync(
+        run_id,
+        "output",
+        0,
+        "ok",
+        "[job:capture]",
+    )
+
+    assert finish_calls == [(run_id, 0, "ok")]
 
 
 async def test_invalid_job_provider_errors_before_prerun(tmp_enso, sample_config):

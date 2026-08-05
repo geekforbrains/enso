@@ -1799,7 +1799,7 @@ class Runtime:
         log.warning("%s prerun error (exit %s): %s", tag, exit_code, diagnostic)
         return PrerunResult("error", diagnostic=diagnostic, exit_code=exit_code)
 
-    def _create_job_run(
+    async def _create_job_run(
         self,
         job: Job,
         trigger: str,
@@ -1808,7 +1808,8 @@ class Runtime:
     ) -> str | None:
         """Create a run-history row without allowing telemetry to abort the job."""
         try:
-            return runs.create(
+            return await asyncio.to_thread(
+                runs.create,
                 kind="job",
                 name=job.dir_name,
                 title=job.name,
@@ -2012,10 +2013,10 @@ class Runtime:
         try:
             config_error = job_config_error(job.provider, job.model, self.models)
             if config_error:
-                run_id = self._create_job_run(job, trigger, tag, started_at)
+                run_id = await self._create_job_run(job, trigger, tag, started_at)
                 output = f"Invalid job config: {config_error}"
                 log.warning("%s %s", tag, output)
-                self._record_run_finish(run_id, output, -1, "error", tag)
+                await self._record_run_finish(run_id, output, -1, "error", tag)
                 if notify_failures:
                     await self._send_job_notification(
                         job, f"⚠️ [{job.name}] {output}", tag,
@@ -2034,9 +2035,9 @@ class Runtime:
                 status: Literal["prerun_error", "prerun_timeout"] = (
                     "prerun_timeout" if prerun.outcome == "timeout" else "prerun_error"
                 )
-                run_id = self._create_job_run(job, trigger, tag, started_at)
+                run_id = await self._create_job_run(job, trigger, tag, started_at)
                 output = f"{status.replace('_', ' ').title()}: {prerun.diagnostic}"
-                self._record_run_finish(
+                await self._record_run_finish(
                     run_id, output, prerun.exit_code, status, tag,
                 )
                 if notify_failures:
@@ -2055,7 +2056,7 @@ class Runtime:
 
             prompt = job.prompt.replace("{{prerun_output}}", prerun.output)
 
-            run_id = self._create_job_run(job, trigger, tag, started_at)
+            run_id = await self._create_job_run(job, trigger, tag, started_at)
             proc: Process | None = None
             try:
                 provider = self.make_provider(job.provider, timeout=job.timeout)
@@ -2087,7 +2088,7 @@ class Runtime:
                         "%s timeout after %ss (elapsed=%.1fs); process tree terminated",
                         tag, job.timeout, elapsed,
                     )
-                    self._record_run_finish(
+                    await self._record_run_finish(
                         run_id, output, proc.returncode, "timeout", tag,
                     )
                     if notify_failures:
@@ -2106,7 +2107,7 @@ class Runtime:
                 output = f"Job could not start or complete{f': {detail}' if detail else ''}"
                 exit_code = proc.returncode if proc and proc.returncode is not None else -1
                 log.warning("%s %s", tag, output, exc_info=True)
-                self._record_run_finish(run_id, output, exit_code, "error", tag)
+                await self._record_run_finish(run_id, output, exit_code, "error", tag)
                 if notify_failures:
                     await self._send_job_notification(
                         job, f"⚠️ [{job.name}] {output}", tag,
@@ -2118,7 +2119,7 @@ class Runtime:
 
             exit_code = proc.returncode if proc.returncode is not None else -1
             status = "ok" if exit_code == 0 else "error"
-            self._record_run_finish(run_id, output, exit_code, status, tag)
+            await self._record_run_finish(run_id, output, exit_code, status, tag)
             notified = False
             if exit_code != 0 and notify_failures:
                 log.warning(
@@ -2149,7 +2150,25 @@ class Runtime:
 
     # -- Run history instrumentation --
 
-    def _record_run_finish(
+    async def _record_run_finish(
+        self,
+        run_id: str | None,
+        output: str,
+        exit_code: int | None,
+        status: str,
+        tag: str,
+    ) -> None:
+        """Record a terminal run in a worker so SQLite cannot block the loop."""
+        await asyncio.to_thread(
+            self._record_run_finish_sync,
+            run_id,
+            output,
+            exit_code,
+            status,
+            tag,
+        )
+
+    def _record_run_finish_sync(
         self,
         run_id: str | None,
         output: str,
@@ -2165,9 +2184,17 @@ class Runtime:
         """
         if run_id is None:
             return
-        try:
-            if output:
+        if output:
+            try:
                 runs.append_output(run_id, output)
+            except Exception:
+                log.warning(
+                    "%s could not append output for run id=%s",
+                    tag,
+                    run_id,
+                    exc_info=True,
+                )
+        try:
             runs.finish(run_id, exit_code if exit_code is not None else -1, status)
         except Exception:
             log.warning("%s could not finish run record id=%s", tag, run_id, exc_info=True)

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "macros.html" import back_link, btn_primary, btn_secondary, delete_control, editor_form, related_run, text_link %}
+{% from "macros.html" import back_link, btn_primary, btn_secondary, database_alert, delete_control, editor_form, related_run, text_link %}
 {% block title %}{{ job.name }} · enso{% endblock %}
 
 {% block content %}
@@ -87,7 +87,9 @@
       <h2 class="text-lg font-semibold">Runs</h2>
       {{ text_link("/runs?name=" ~ job.dir_name, "All →") }}
     </div>
-    {% if job_runs %}
+    {% if runs_error %}
+      {{ database_alert(runs_error, "runs") }}
+    {% elif job_runs %}
       <div class="divide-y divide-border">
         {% for r in job_runs %}{{ related_run(r) }}{% endfor %}
       </div>

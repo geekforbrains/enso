@@ -50,6 +50,34 @@
   </span>
 {% endmacro %}
 
+{% macro database_alert(kind, scope="database", compact=false) %}
+  <div role="alert"
+       {% if kind == "busy" %}data-database-busy{% else %}data-database-unavailable{% endif %}
+       {% if scope != "database" %}data-{{ scope }}-unavailable{% endif %}
+       class="rounded-lg border px-4 text-sm
+              {% if compact %}py-3{% else %}py-4{% endif %}
+              {% if kind == 'busy' %}
+                border-amber-200 bg-amber-50 text-amber-800
+                dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-300
+              {% else %}
+                border-red-200 bg-red-50 text-red-800
+                dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-300
+              {% endif %}">
+    <p class="font-semibold">Database {{ "busy" if kind == "busy" else "unavailable" }}</p>
+    {% if not compact %}
+      {% if kind == "busy" %}
+        <p class="mt-1">Another Enso operation is using the SQLite database. Try again shortly.</p>
+      {% elif scope == "runs" %}
+        <p class="mt-1">Enso could not load run history. Check the service logs and database permissions, then try again.</p>
+      {% elif scope == "tables" %}
+        <p class="mt-1">Enso could not load registered tables. Check the service logs and database permissions, then try again.</p>
+      {% else %}
+        <p class="mt-1">Enso could not access its SQLite database. Check the service logs and database permissions, then try again.</p>
+      {% endif %}
+    {% endif %}
+  </div>
+{% endmacro %}
+
 {% macro btn_primary(label) %}
   <button type="submit"
           class="touch-target rounded-md bg-action px-4 py-2 text-sm font-medium text-action-text

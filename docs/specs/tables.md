@@ -29,9 +29,10 @@ recomputed without losing provenance.
 
 ## Storage and ownership
 
-Tables reuse `~/.enso/enso.db`, already opened in WAL mode for run history. One database
-keeps backup and agent access simple, and personal metrics do not justify a second
-connection lifecycle. The user-data namespace is kept separate from Enso internals:
+Tables reuse `~/.enso/enso.db`; every Enso write connection ensures WAL mode for both run
+history and registered data. One database keeps backup and agent access simple, and
+personal metrics do not justify a second connection lifecycle. The user-data namespace
+is kept separate from Enso internals:
 
 - `runs`, `_enso_*`, and `sqlite_*` are reserved and can never be registered.
 - Enso-owned metadata uses the `_enso_` prefix.
@@ -39,6 +40,11 @@ connection lifecycle. The user-data namespace is kept separate from Enso interna
 - Run retention applies only to `runs`; Enso never automatically prunes user tables.
 - `enso.db` and its journal/WAL sidecars are owner-only (`0600`). Enso hardens
   existing files when it next opens them, not only newly created databases.
+
+Tables and run history share the same operation-scoped connection policy. Enso never
+caches a connection: each read opens read-only with a 500 ms lock timeout, and each
+catalog write opens a fresh connection with a five-second writer-acquisition budget and an explicit
+transaction that rolls back before closing on failure.
 
 The registration catalog is created lazily by the first registration attempt:
 
@@ -169,18 +175,19 @@ Pagination is deterministic: previews order by declared primary-key columns, fal
 to an unshadowed SQLite rowid alias for ordinary rowid tables. This is a stability rule,
 not a claim that the key is the table's most meaningful analytical order.
 
-Preview queries use a short-lived connection with a busy timeout and expose no mutation
-path through the web app. The table identifier comes from a validated registration record
-and is still quoted. User-supplied sort expressions, filters, and arbitrary SQL are not
-accepted in v1.
+Preview queries use a short-lived read-only connection with a 500 ms busy timeout and run
+outside the web event loop. They expose no mutation path through the web app. The table
+identifier comes from a validated registration record and is still quoted. User-supplied
+sort expressions, filters, and arbitrary SQL are not accepted in v1.
 
 ## Failure behaviour
 
 - A missing database or catalog produces an empty list without creating either.
 - A stale catalog record is marked unavailable in the list and returns not found at
   detail/schema.
-- A lock timeout or corrupt database becomes a clear bounded error; the request never
-  retries indefinitely.
+- A lock timeout becomes a retryable **Database busy** `503`; open, permission,
+  corruption, and other access failures become **Database unavailable**. Raw SQLite
+  errors are logged, never rendered, and the request never retries indefinitely.
 - One invalid catalog table name cannot hide other valid registered tables.
 - A browser request can never mutate a registered table's schema or rows.
 - Reaching the maximum offset stops forward pagination instead of linking back to the
@@ -203,7 +210,8 @@ source of truth.
 
 | Area | Change |
 | --- | --- |
-| `tables.py` *(new)* | Database connection, catalog initialization, validation, registration, schema inspection, and bounded previews |
+| `sqlite_store.py` | Shared operation-scoped connections, transactions, timeouts, and failure classification |
+| `tables.py` *(new)* | Catalog initialization, validation, registration, schema inspection, and bounded previews |
 | `cli.py` | Adds the `table` group with `list`, `schema`, and `register` |
 | `skills/tables/SKILL.md` *(new)* | Bundled authoring/query workflow and safety rules |
 | `prompts/AGENTS.md` | Adds CLI discovery guidance and points to the tables skill |
