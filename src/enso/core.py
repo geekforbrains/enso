@@ -811,6 +811,14 @@ class Runtime:
         except Exception:
             log.exception("Failed to load state, starting fresh")
 
+    def touch_session(self, chat_key: str) -> None:
+        """Mark a state key active so stale-session pruning can reach it.
+
+        The teams router writes a durable provider-selection key that is not a
+        dispatch chat_key; without a last-active stamp it would never prune.
+        """
+        self._last_active[chat_key] = datetime.now()
+
     def _prune_stale_sessions(self, *, persist: bool = True) -> None:
         """Remove state entries for conversations inactive beyond SESSION_TTL_DAYS."""
         cutoff = datetime.now() - timedelta(days=SESSION_TTL_DAYS)
@@ -1925,6 +1933,17 @@ class Runtime:
                         "[job:%s] scheduler dispatch failed", job.dir_name,
                     )
 
+    def _enqueue_job_context(self, output: str, job: Job) -> None:
+        """Queue a job's failure output for injection into the next chat.
+
+        Legacy only: teams executions consume with ``include_global=False``,
+        so a global message would never be read and would accumulate. The
+        job-failure notification (``transport.notify``) delivers it regardless.
+        """
+        if load_teams(self.config) is not None:
+            return
+        messages.send(output, source=f"job:{job.dir_name}")
+
     def _runs_cfg(self) -> dict:
         """Return the ``runs`` config block (defensive against bad shapes)."""
         cfg = self.config.get("runs")
@@ -2457,7 +2476,7 @@ class Runtime:
                     await self._send_job_notification(
                         job, f"⚠️ [{job.name}] {output}", tag,
                     )
-                    messages.send(output, source=f"job:{job.dir_name}")
+                    self._enqueue_job_context(output, job)
                 return JobRunResult(
                     "error", run_id=run_id, output=output, exit_code=exit_code,
                 )
@@ -2475,7 +2494,7 @@ class Runtime:
                 notified = await self._send_job_notification(
                     job, f"⚠️ [{label}]\n{output}", tag,
                 )
-                messages.send(output, source=f"job:{job.dir_name}")
+                self._enqueue_job_context(output, job)
 
             elapsed = (datetime.now() - started).total_seconds()
             log.info(

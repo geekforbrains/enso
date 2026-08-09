@@ -344,6 +344,10 @@ class TeamsRouter:
         )
         self.runtime.active_provider_by_chat[chat_key] = provider
         self.runtime.active_provider_by_chat[sel_key] = provider
+        # Both digest keys ride the stale-session TTL so state.json can't grow
+        # an immortal entry per (conversation, workspace, revision).
+        self.runtime.touch_session(chat_key)
+        self.runtime.touch_session(sel_key)
 
         command_name = text[1:].split(None, 1)[0].lower() if text.startswith("!") else None
         turn_fields.update(

@@ -787,3 +787,30 @@ async def test_legacy_job_keeps_working_dir(tmp_enso, sample_config):
     assert result.status == "ok"
     assert runtime.make_provider.call_args.kwargs["context"] is None
     assert runtime._spawn_process.await_args.kwargs["cwd"] == runtime.working_dir
+
+
+async def test_teams_job_failure_does_not_enqueue_global_message(tmp_enso, sample_config):
+    """Teams mode never consumes global messages, so failures must not enqueue them."""
+    from enso import messages
+    sample_config.update(_teams_blocks(tmp_enso))
+    runtime = Runtime(sample_config)
+    runtime.transport = RecordingTransport()
+    job = make_job(tmp_enso, prerun=None)
+    job.workspace = "ops"  # unrestricted so it runs
+    stub_provider(runtime, returncode=1, output=b"boom")
+
+    await runtime._execute_job(job, trigger="manual", notify_failures=True)
+
+    assert messages.pending() == []  # notification rode transport.notify, not the queue
+
+
+async def test_legacy_job_failure_enqueues_global_message(tmp_enso, sample_config):
+    from enso import messages
+    runtime = Runtime(sample_config)
+    runtime.transport = RecordingTransport()
+    job = make_job(tmp_enso, prerun=None)
+    stub_provider(runtime, returncode=1, output=b"boom")
+
+    await runtime._execute_job(job, trigger="manual", notify_failures=True)
+
+    assert any(m["source"] == "job:capture" for m in messages.pending())
