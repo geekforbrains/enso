@@ -61,15 +61,11 @@ class Workspace:
     unrestricted: bool
     providers: tuple[str, ...]
     default_provider: str | None
-    skills: tuple[str, ...] | str  # "*" or explicit allowlist
     chat_commands: tuple[str, ...] | str
     concurrency: int
 
     def allows_provider(self, name: str) -> bool:
         return name in self.providers
-
-    def allows_skill(self, name: str) -> bool:
-        return self.skills == "*" or name in self.skills
 
     def allows_command(self, name: str) -> bool:
         return self.chat_commands == "*" or name in self.chat_commands
@@ -324,7 +320,6 @@ def _load_workspace(
         unrestricted=unrestricted,
         providers=tuple(providers_raw),
         default_provider=default_provider,
-        skills=_load_capability(cfg.get("skills"), "skills", problems),
         chat_commands=_load_capability(cfg.get("chat_commands"), "chat_commands", problems),
         concurrency=concurrency,
     )
@@ -531,7 +526,6 @@ def binding_revision(teams: TeamsConfig, route: Route) -> str:
             "unrestricted": workspace.unrestricted,
             "providers": list(workspace.providers),
             "default_provider": workspace.default_provider,
-            "skills": workspace.skills if workspace.skills == "*" else list(workspace.skills),
             "chat_commands": workspace.chat_commands
             if workspace.chat_commands == "*"
             else list(workspace.chat_commands),

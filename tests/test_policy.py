@@ -32,7 +32,6 @@ def make_workspace(tmp_path, *, unrestricted=False, providers=("claude", "codex"
         unrestricted=unrestricted,
         providers=tuple(providers),
         default_provider=providers[0] if providers else None,
-        skills=(),
         chat_commands=(),
         concurrency=1,
     )

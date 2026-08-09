@@ -49,7 +49,6 @@ def _teams_config(tmp_enso: str) -> dict:
                 "unrestricted": True,
                 "providers": ["claude", "codex", "agy"],
                 "default_provider": "claude",
-                "skills": "*",
                 "chat_commands": "*",
             },
             "acme": {
@@ -57,7 +56,6 @@ def _teams_config(tmp_enso: str) -> dict:
                 "policy_dir": str(policies),
                 "providers": ["claude"],
                 "default_provider": "claude",
-                "skills": ["docs"],
                 "chat_commands": ["status", "clear", "stop", "help", "use", "compact"],
             },
         },

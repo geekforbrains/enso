@@ -12,7 +12,6 @@ import logging
 import os
 import re
 import shlex
-import shutil
 import signal
 from asyncio.subprocess import Process
 from collections import deque
@@ -417,24 +416,23 @@ class Runtime:
     def install_teams_workspaces(self) -> None:
         """Bootstrap every structurally valid teams workspace.
 
-        Creates the workspace directory with the bundled system prompt and
-        exposes exactly the allowlisted skills — a policy-controlled
-        workspace never gets the whole shared skill root, and jobs, docs,
-        config, and the database are never linked in at all.
+        Creates the workspace directory with the bundled system prompt.
+        Instructions and skills are discovered by the provider CLI itself
+        (docs/specs/permissions.md); jobs, docs, config, and the database are
+        never linked in.
         """
         teams = load_teams(self.config)
         if teams is None:
             return
-        skills_root = os.path.join(CONFIG_DIR, "skills")
         for name, workspace in teams.workspaces.items():
             if name in teams.workspace_errors or not workspace.path:
                 continue
             try:
-                self._install_workspace(workspace, skills_root)
+                self._install_workspace(workspace)
             except OSError:
                 log.warning("Could not bootstrap workspace %s", name, exc_info=True)
 
-    def _install_workspace(self, workspace, skills_root: str) -> None:
+    def _install_workspace(self, workspace) -> None:
         os.makedirs(workspace.path, exist_ok=True)
         os.makedirs(os.path.join(workspace.path, "uploads"), exist_ok=True)
 
@@ -445,45 +443,16 @@ class Runtime:
             log.info("Wrote AGENTS.md in workspace %s", workspace.name)
         self._ensure_symlink(os.path.join(workspace.path, "CLAUDE.md"), "AGENTS.md")
 
+        # Put the shared skill root where each CLI already looks, exactly as
+        # the legacy workspace does. This is placement, not curation: there is
+        # no allowlist, and an operator who wants a workspace kept away from a
+        # skill writes a filesystem deny rule in its policy instead.
+        skills_root = os.path.join(CONFIG_DIR, "skills")
         for cli_dir in (".claude", ".agents"):
             parent = os.path.join(workspace.path, cli_dir)
             os.makedirs(parent, exist_ok=True)
-            self._expose_skills(
-                os.path.join(parent, "skills"), skills_root, workspace.skills
-            )
+            self._ensure_symlink(os.path.join(parent, "skills"), skills_root)
 
-    def _expose_skills(
-        self, link_path: str, skills_root: str, allowlist,
-    ) -> None:
-        """Expose skills per the workspace allowlist.
-
-        ``"*"`` links the whole shared root (today's behavior); an explicit
-        list becomes a real directory of per-skill symlinks, pruned when the
-        allowlist shrinks; an empty allowlist exposes nothing.
-        """
-        if allowlist == "*":
-            # Undo a previous narrow state (a real per-skill dir) before
-            # linking the whole root, so widening the allowlist takes effect.
-            if os.path.isdir(link_path) and not os.path.islink(link_path):
-                shutil.rmtree(link_path)
-            self._ensure_symlink(link_path, skills_root)
-            return
-        if os.path.islink(link_path):
-            os.unlink(link_path)  # was previously "*"; narrow it
-        allowed = set(allowlist)
-        if not allowed and not os.path.isdir(link_path):
-            return
-        os.makedirs(link_path, exist_ok=True)
-        for entry in os.listdir(link_path):
-            entry_path = os.path.join(link_path, entry)
-            if os.path.islink(entry_path) and entry not in allowed:
-                os.unlink(entry_path)
-        for skill in allowed:
-            source = os.path.join(skills_root, skill)
-            if os.path.isdir(source):
-                self._ensure_symlink(os.path.join(link_path, skill), source)
-            else:
-                log.warning("Allowlisted skill %r does not exist", skill)
 
     @staticmethod
     def _ensure_symlink(link_path: str, target: str) -> None:

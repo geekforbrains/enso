@@ -28,7 +28,6 @@ def make_config(tmp_path, **overrides) -> dict:
                 "unrestricted": True,
                 "providers": ["claude", "codex", "agy"],
                 "default_provider": "claude",
-                "skills": "*",
                 "chat_commands": "*",
             },
             "acme": {
@@ -36,7 +35,6 @@ def make_config(tmp_path, **overrides) -> dict:
                 "policy_dir": str(policies),
                 "providers": ["claude"],
                 "default_provider": "claude",
-                "skills": ["docs"],
                 "chat_commands": ["status", "clear", "stop", "help"],
             },
         },
@@ -120,28 +118,6 @@ def test_defaults_applied(tmp_path):
     assert t.workspaces["ops"].concurrency == 1
 
 
-def test_workspace_capability_defaults_are_empty(tmp_path):
-    config = make_config(tmp_path)
-    ws = config["workspaces"]["acme"]
-    del ws["providers"], ws["default_provider"], ws["skills"], ws["chat_commands"]
-    t = load_teams(config)
-    acme = t.workspaces["acme"]
-    assert acme.providers == ()
-    assert not acme.allows_skill("docs")
-    assert not acme.allows_command("status")
-    assert not acme.allows_provider("claude")
-
-
-def test_star_capabilities(tmp_path):
-    t = load_teams(make_config(tmp_path))
-    ops = t.workspaces["ops"]
-    assert ops.allows_skill("anything")
-    assert ops.allows_command("update")
-    acme = t.workspaces["acme"]
-    assert acme.allows_skill("docs")
-    assert not acme.allows_skill("tables")
-    assert acme.allows_command("status")
-    assert not acme.allows_command("update")
 
 
 def test_policy_dir_defaults_for_policy_controlled(tmp_path, monkeypatch):

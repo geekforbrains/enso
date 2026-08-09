@@ -36,7 +36,6 @@ def _teams_config(tmp_enso: str) -> dict:
                 "unrestricted": True,
                 "providers": ["claude"],
                 "default_provider": "claude",
-                "skills": "*",
                 "chat_commands": "*",
             },
             "acme": {
@@ -44,7 +43,6 @@ def _teams_config(tmp_enso: str) -> dict:
                 "policy_dir": str(base / "policies" / "acme"),
                 "providers": ["claude"],
                 "default_provider": "claude",
-                "skills": ["docs"],
                 "chat_commands": ["status"],
             },
         },
@@ -148,57 +146,22 @@ def test_message_send_refuses_dm_when_any_dm_route_audited(tmp_enso):
         _refuse_audited_slack_target(config, "D12345")
 
 
-def test_install_teams_workspaces_bootstraps_and_limits_skills(tmp_enso):
+
+
+
+
+
+
+def test_install_teams_workspaces_links_shared_skill_root(tmp_enso):
+    """No allowlist: each workspace gets the shared root where the CLIs look."""
     config = _teams_config(tmp_enso)
     skills_root = Path(tmp_enso, "skills")
     (skills_root / "docs").mkdir(parents=True)
-    (skills_root / "docs" / "SKILL.md").write_text("docs skill")
-    (skills_root / "tables").mkdir()
-    (skills_root / "tables" / "SKILL.md").write_text("tables skill")
 
     Runtime(config).install_teams_workspaces()
 
-    acme = Path(tmp_enso, "workspaces", "acme")
-    assert (acme / "AGENTS.md").is_file()
-    assert (acme / "CLAUDE.md").is_symlink()
-    assert (acme / "uploads").is_dir()
-    # Allowlist: only "docs" is exposed, as a per-skill symlink.
-    assert (acme / ".claude" / "skills" / "docs").is_symlink()
-    assert not (acme / ".claude" / "skills" / "tables").exists()
-    assert not (acme / ".claude" / "skills").is_symlink()
-    # "*" workspace links the whole shared root.
-    ops = Path(tmp_enso, "workspaces", "ops")
-    assert (ops / ".claude" / "skills").is_symlink()
-
-
-def test_install_teams_workspaces_prunes_narrowed_allowlist(tmp_enso):
-    config = _teams_config(tmp_enso)
-    skills_root = Path(tmp_enso, "skills")
-    for name in ("docs", "tables"):
-        (skills_root / name).mkdir(parents=True)
-    config["workspaces"]["acme"]["skills"] = ["docs", "tables"]
-    Runtime(config).install_teams_workspaces()
-    acme_skills = Path(tmp_enso, "workspaces", "acme", ".claude", "skills")
-    assert (acme_skills / "tables").is_symlink()
-
-    config["workspaces"]["acme"]["skills"] = ["docs"]
-    Runtime(config).install_teams_workspaces()
-    assert not (acme_skills / "tables").exists()
-    assert (acme_skills / "docs").is_symlink()
-
-
-def test_install_teams_workspaces_widens_back_to_star(tmp_enso):
-    config = _teams_config(tmp_enso)
-    skills_root = Path(tmp_enso, "skills")
-    for name in ("docs", "tables"):
-        (skills_root / name).mkdir(parents=True)
-    # Start narrow (real per-skill dir), then widen to "*".
-    config["workspaces"]["acme"]["skills"] = ["docs"]
-    Runtime(config).install_teams_workspaces()
-    acme_skills = Path(tmp_enso, "workspaces", "acme", ".claude", "skills")
-    assert not acme_skills.is_symlink()
-
-    config["workspaces"]["acme"]["skills"] = "*"
-    Runtime(config).install_teams_workspaces()
-    assert acme_skills.is_symlink()
-    assert (acme_skills / "tables" / "..").exists()  # whole root now visible
+    for ws in ("ops", "acme"):
+        for cli_dir in (".claude", ".agents"):
+            link = Path(tmp_enso, "workspaces", ws, cli_dir, "skills")
+            assert link.is_symlink(), f"{ws}/{cli_dir} not linked"
+            assert (link / "docs").is_dir()
