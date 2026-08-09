@@ -213,7 +213,7 @@ async def test_compact_happy_path(tmp_enso, sample_config, monkeypatch):
     reply = await cmd_compact_async(rt, "42")
 
     assert "Compacted" in reply
-    rt.run_compaction.assert_awaited_once_with("42", "claude")
+    rt.run_compaction.assert_awaited_once_with("42", "claude", context=None)
     assert rt.compact_seed_by_chat["42"] == "distilled context"
     # cmd_clear should have removed the active provider's session.
     assert ("42", "claude") not in rt.session_by_chat_provider

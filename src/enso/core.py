@@ -15,7 +15,8 @@ import shlex
 import signal
 from asyncio.subprocess import Process
 from collections import deque
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
@@ -256,6 +257,18 @@ class ExecutionContext:
     path: str  # subprocess cwd — the workspace root
     workspace_id: str | None = None
     launch: Launch | None = None  # None → unrestricted legacy invocation
+    # Teams routes set this to re-run authorization against current config
+    # immediately before each (possibly queued) execution. Returns None to
+    # proceed, "revoked" for silence, or any other string for an error reply.
+    revalidate: Callable[[], str | None] | None = field(
+        default=None, compare=False, repr=False
+    )
+    # Invoked (in a worker thread) after the turn reaches a terminal state —
+    # including revalidation refusals — so audit/ledger bookkeeping runs when
+    # the work actually finishes, not when it was queued. Must be idempotent.
+    on_complete: Callable[[], None] | None = field(
+        default=None, compare=False, repr=False
+    )
 
 
 class Runtime:
@@ -888,7 +901,46 @@ class Runtime:
         context: ExecutionContext,
     ) -> None:
         """Run a single provider request, tracking the task for cancellation."""
+        try:
+            await self._run_request_inner(provider, prompt, ctx, context)
+        finally:
+            if context.on_complete is not None:
+                try:
+                    await asyncio.to_thread(context.on_complete)
+                except Exception:
+                    log.exception(
+                        "on_complete failed for conv=%s", context.chat_key
+                    )
+
+    async def _run_request_inner(
+        self,
+        provider: str,
+        prompt: str,
+        ctx: TransportContext,
+        context: ExecutionContext,
+    ) -> None:
         chat_key = context.chat_key
+        if context.revalidate is not None:
+            # Queued turns keep their authorized snapshot, but it is never a
+            # lease: re-resolve against current config immediately before
+            # execution. Revoked access gets silence; any other mismatch gets
+            # an explicit refusal rather than a reroute (teams.md).
+            try:
+                verdict = await asyncio.to_thread(context.revalidate)
+            except Exception:
+                log.exception("Revalidation failed for conv=%s; refusing turn", chat_key)
+                verdict = "revalidation_failed"
+            if verdict == "revoked":
+                log.warning("Refusing stale turn for conv=%s: access revoked", chat_key)
+                return
+            if verdict is not None:
+                log.warning("Refusing stale turn for conv=%s: %s", chat_key, verdict)
+                with contextlib.suppress(Exception):
+                    await ctx.reply(
+                        "This request was queued under configuration that has "
+                        "since changed and was not run. Please resend it."
+                    )
+                return
         task = asyncio.create_task(
             self.process_request(provider, prompt, chat_key, ctx, context=context)
         )
@@ -1424,8 +1476,10 @@ class Runtime:
         Automatically injects any pending background messages into the prompt.
         """
         context = context or self.legacy_context(chat_id)
-        # Inject background messages
-        bg = messages.consume(chat_id)
+        # Inject background messages. Teams executions consume only messages
+        # explicitly addressed to them — a global message must not leak into
+        # an arbitrary route's context.
+        bg = messages.consume(chat_id, include_global=context.workspace_id is None)
         if bg:
             prompt = f"{messages.format_for_injection(bg)}\n\n{prompt}"
             log.info("[%s] Injected %d background message(s) into prompt", provider_name, len(bg))

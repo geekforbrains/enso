@@ -402,7 +402,7 @@ class TestCommandHandling:
             return_value=["Claude: Cleared.", "Codex: Cleared."],
         ) as mock_clear:
             result = await transport._handle_command("!clear all", "C123:1234")
-        mock_clear.assert_called_once_with(rt, "C123:1234", clear_all=True)
+        mock_clear.assert_called_once_with(rt, "C123:1234", clear_all=True, working_dir=None)
         assert "Cleared" in result
 
     @pytest.mark.asyncio

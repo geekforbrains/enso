@@ -10,7 +10,7 @@ from .config import CONFIG_DIR
 from .providers import PROVIDER_NAMES, provider_class
 
 if TYPE_CHECKING:
-    from .core import Runtime
+    from .core import ExecutionContext, Runtime
     from .updater import UpdateResult
 
 log = logging.getLogger(__name__)
@@ -44,21 +44,31 @@ def cmd_status(runtime: Runtime, conv_id: str) -> str:
 
 
 def cmd_use(
-    runtime: Runtime, conv_id: str, choice: str | None,
+    runtime: Runtime,
+    conv_id: str,
+    choice: str | None,
+    *,
+    providers: list[str] | None = None,
 ) -> tuple[str | None, list[tuple[str, bool]]]:
     """Switch provider or list available providers.
 
     If choice is given and valid, switches and returns (response_text, []).
     If no choice, returns (None, [(name, is_active), ...]) for the transport
-    to render in its native UI.
+    to render in its native UI. ``providers`` restricts both the picker and
+    accepted choices — teams workspaces pass their usable allowlist, so a
+    disallowed provider is refused rather than selected-and-failed later.
     """
-    if choice and choice in PROVIDER_NAMES:
-        runtime.active_provider_by_chat[conv_id] = choice
-        runtime.save_state()
-        return f"Provider set to {choice}.", []
+    available = PROVIDER_NAMES if providers is None else providers
+    if choice:
+        if choice in available:
+            runtime.active_provider_by_chat[conv_id] = choice
+            runtime.save_state()
+            return f"Provider set to {choice}.", []
+        if choice in PROVIDER_NAMES:
+            return f"Provider {choice} is not available here.", []
 
     active = runtime.get_active_provider(conv_id)
-    options = [(p, p == active) for p in PROVIDER_NAMES]
+    options = [(p, p == active) for p in available]
     return None, options
 
 
@@ -158,7 +168,9 @@ def cmd_effort(
     return None, options
 
 
-async def cmd_compact_async(runtime: Runtime, conv_id: str) -> str:
+async def cmd_compact_async(
+    runtime: Runtime, conv_id: str, *, context: ExecutionContext | None = None,
+) -> str:
     """Compact the active provider's session: summarise → clear → stash seed.
 
     Hidden summarisation runs through the live session; the summary becomes
@@ -179,12 +191,12 @@ async def cmd_compact_async(runtime: Runtime, conv_id: str) -> str:
     if not runtime.session_by_chat_provider.get((conv_id, provider)):
         return f"Nothing to compact — no active {provider} session for this chat."
 
-    summary = await runtime.run_compaction(conv_id, provider)
+    summary = await runtime.run_compaction(conv_id, provider, context=context)
     if not summary:
         return "Compaction failed — no summary produced. Session left untouched."
 
     # Clear only the active provider; cmd_clear without clear_all does that.
-    cmd_clear(runtime, conv_id)
+    cmd_clear(runtime, conv_id, working_dir=context.path if context else None)
     runtime.compact_seed_by_chat[conv_id] = summary
     runtime.save_state()
     log.info(
@@ -234,14 +246,25 @@ async def cmd_update_async(runtime: Runtime) -> UpdateResult:
             runtime._update_in_progress = False
 
 
-def cmd_clear(runtime: Runtime, conv_id: str, *, clear_all: bool = False) -> list[str]:
-    """Clear sessions and return summary lines per provider."""
+def cmd_clear(
+    runtime: Runtime,
+    conv_id: str,
+    *,
+    clear_all: bool = False,
+    working_dir: str | None = None,
+) -> list[str]:
+    """Clear sessions and return summary lines per provider.
+
+    ``working_dir`` locates provider session files; teams routes pass their
+    workspace path, everything else defaults to the legacy working_dir.
+    """
     parts = []
+    session_dir = working_dir or runtime.working_dir
     for prov_name in PROVIDER_NAMES:
         if clear_all or runtime.get_active_provider(conv_id) == prov_name:
             sid = runtime.session_by_chat_provider.pop((conv_id, prov_name), None)
             provider = runtime.make_provider(prov_name)
-            summary = provider.clear_session(sid, runtime.working_dir)
+            summary = provider.clear_session(sid, session_dir)
             parts.append(f"{prov_name.capitalize()}: {summary}")
     runtime.save_state()
     return parts

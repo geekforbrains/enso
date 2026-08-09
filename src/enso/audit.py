@@ -177,12 +177,16 @@ def record_delivery(turn_id: str, *, ok: bool) -> None:
 def complete_turn(
     turn_id: str, outcome: str, *, terminal_reason: str | None = None
 ) -> None:
-    """Mark an accepted turn terminal with its outcome and stable reason."""
+    """Mark an accepted turn terminal with its outcome and stable reason.
+
+    Idempotent: an already-terminal row is never rewritten, so a refusal
+    recorded at revalidation survives the generic completion that follows.
+    """
     with write_connection(_db_path()) as conn:
         _ensure_schema(conn)
         conn.execute(
             "UPDATE _enso_audit SET outcome=?, terminal_reason=?, completed_at=? "
-            "WHERE id=?",
+            "WHERE id=? AND completed_at IS NULL",
             (outcome, terminal_reason, _utc_now(), turn_id),
         )
 

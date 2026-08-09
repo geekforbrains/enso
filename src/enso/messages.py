@@ -53,20 +53,24 @@ def pending() -> list[dict]:
     return _load()
 
 
-def consume(conversation_id: str | None = None) -> list[dict]:
-    """Consume global messages plus those scoped to one conversation.
+def consume(
+    conversation_id: str | None = None, *, include_global: bool = True
+) -> list[dict]:
+    """Consume messages scoped to one conversation, plus global ones by default.
 
     Omitting ``conversation_id`` retains the original consume-all behavior.
+    Teams-mode execution passes ``include_global=False`` so one route can
+    never consume content that wasn't explicitly addressed to it.
     """
     with _queue_lock():
         queued = _load()
         if conversation_id is None:
             consumed, remaining = queued, []
         else:
+            accepted = (conversation_id,) if not include_global else (None, conversation_id)
             consumed, remaining = [], []
             for message in queued:
-                target = message.get("conversation_id")
-                if target in (None, conversation_id):
+                if message.get("conversation_id") in accepted:
                     consumed.append(message)
                 else:
                     remaining.append(message)
