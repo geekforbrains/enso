@@ -303,11 +303,23 @@ in the environment always wins**, so an explicit export still overrides the file
 happens in `enso serve` only — the dashboard process does not read these files. Restart
 the service after editing them.
 
-Transport and dashboard credentials can instead be resolved directly from 1Password at
-each process start or CLI invocation, without copying the token into `config.json` or
-projecting it into the environment. This opt-in integration expects
-`~/.enso/lib/1password.sh` to define `op_secret "<item>" "<field>"`; Enso calls that
-helper and never invokes the 1Password CLI directly. Reconfiguring an existing
+Credentials can be supplied three ways, and Enso does not require any particular secret
+manager: a literal value in `config.json` (simplest, fine for a personal install), an
+environment projection through `secrets/*.env` as above, or a reference to a secret
+manager. One reference implementation ships, for 1Password — it is entirely optional, and
+with no reference key configured Enso never invokes the helper.
+
+Worth knowing if you keep `~/.enso` in git (it is a repository by default, so Codex loads
+your shared `AGENTS.md`): a literal credential in `config.json` becomes a credential in
+your git history. That is fine in a private repository and a problem in a public one.
+Either keep `config.json` out of the repository or use one of the other two options so the
+tracked file holds a reference instead of a secret. Enso warns at startup when a tracked
+file could carry credentials, and otherwise leaves the choice to you.
+
+The 1Password integration resolves credentials at each process start or CLI invocation,
+without copying the token into `config.json` or projecting it into the environment. It
+expects `~/.enso/lib/1password.sh` to define `op_secret "<item>" "<field>"`; Enso calls
+that helper and never invokes the 1Password CLI directly. Reconfiguring an existing
 reference also requires the helper's `op_set_secret` function.
 
 ```json

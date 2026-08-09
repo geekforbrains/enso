@@ -455,6 +455,7 @@ workspaces/*/uploads/
             return  # never create the repo without the ignore file in place
 
         if os.path.isdir(os.path.join(CONFIG_DIR, ".git")):
+            self._warn_tracked_secrets()
             return
         try:
             subprocess.run(
@@ -468,6 +469,39 @@ workspaces/*/uploads/
                 "not load shared instructions until this is resolved",
                 CONFIG_DIR, exc,
             )
+
+    # Tracked copies of these carry credentials or conversation text into git
+    # history. Enso reports them; whether that matters is the operator's call,
+    # and a private repository is a legitimate answer.
+    _SENSITIVE_TRACKED = ("config.json", "enso.db", "state.json", "messages.json")
+
+    def _warn_tracked_secrets(self) -> None:
+        """Log when a pre-existing repo version-controls a sensitive file.
+
+        Enso writes a protective ``.gitignore`` only when creating the
+        repository, so an install that was already a repo keeps whatever the
+        operator chose. This makes that choice visible instead of silently
+        assuming the protection applies.
+        """
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                ["git", "ls-files", "--error-unmatch", *self._SENSITIVE_TRACKED],
+                cwd=CONFIG_DIR, capture_output=True, text=True, timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return
+        tracked = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        if not tracked:
+            return
+        log.warning(
+            "%s tracks %s in git. config.json may hold literal credentials and "
+            "enso.db holds the plain-text Slack audit trail, so both reach every "
+            "clone and push. Fine for a private repository; otherwise untrack them "
+            "or move credentials to secrets/*.env or a secret-manager reference.",
+            CONFIG_DIR, ", ".join(tracked),
+        )
 
     def install_teams_workspaces(self) -> None:
         """Bootstrap every structurally valid teams workspace.

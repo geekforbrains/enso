@@ -202,3 +202,26 @@ def test_policy_check_warns_on_nested_repo(tmp_enso):
     Path(tmp_enso, "workspaces", "acme", ".git").mkdir(parents=True, exist_ok=True)
     result = runner.invoke(app, ["policy", "check"])
     assert "own git repository" in result.output
+
+
+def test_warns_when_existing_repo_tracks_sensitive_files(tmp_enso, caplog):
+    """A pre-existing repo keeps the operator's choices; make them visible."""
+    import subprocess
+    subprocess.run(["git", "init", "--quiet", tmp_enso], check=True, capture_output=True)
+    Path(tmp_enso, "config.json").write_text("{}")
+    subprocess.run(["git", "add", "config.json"], cwd=tmp_enso, check=True,
+                   capture_output=True)
+    Path(tmp_enso, ".gitignore").write_text("# operator's own\n")
+
+    with caplog.at_level("WARNING"):
+        Runtime(_teams_config(tmp_enso)).install_enso_repo()
+
+    assert "tracks config.json" in caplog.text
+    # The operator's .gitignore is never overwritten.
+    assert Path(tmp_enso, ".gitignore").read_text() == "# operator's own\n"
+
+
+def test_no_warning_when_nothing_sensitive_tracked(tmp_enso, caplog):
+    with caplog.at_level("WARNING"):
+        Runtime(_teams_config(tmp_enso)).install_enso_repo()
+    assert "tracks" not in caplog.text

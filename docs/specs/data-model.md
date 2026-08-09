@@ -54,9 +54,29 @@ surrounding quotes — and sets only keys absent from the environment, so an exp
 still wins. The dashboard process does not read it. Values are never logged; only the key
 names that were loaded are.
 
-Transport and dashboard credentials do not have to be environment projections. A
-supported config value can use a direct 1Password reference named
-`<key>_1password`:
+### Supplying credentials
+
+Enso does not require any particular secret manager. There are three supported ways to
+give it a credential, in increasing order of how well they hold up once more than one
+person is involved:
+
+1. **A literal value in `config.json`.** Simplest, and fine for a personal install. The
+   file is written `0600`. The cost is that the secret is now in a file you may want to
+   back up, sync, or version-control — see the note below.
+2. **An environment projection via `secrets/*.env`.** Keeps credentials out of
+   `config.json` and lets an existing secret-management workflow write the file.
+3. **A direct reference to a secret manager.** Enso ships one implementation, for
+   1Password, described below. Nothing else depends on it: with no reference key
+   configured, Enso never invokes the helper, and every other feature works unchanged.
+
+If `~/.enso` is version-controlled — which it is by default, so Codex can load shared
+instructions — a literal credential in `config.json` becomes a credential in your git
+history. That is acceptable in a private repository and a problem in a public one. Either
+keep `config.json` out of the repository, or use option 2 or 3 so the tracked file holds a
+reference rather than a secret. Enso does not enforce a choice here; it only makes the
+consequence visible at startup.
+
+A supported config value can use a direct 1Password reference named `<key>_1password`:
 
 ```jsonc
 {
