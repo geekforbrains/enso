@@ -169,6 +169,26 @@ Pass `--to` to target a single destination:
 
 Slack never auto-broadcasts — always pass `--to` or configure `notify_channel`. Slack file uploads accept any type up to 1 GB.
 
+## Slack teams mode
+
+By default Enso answers whoever is in `allowed_users`, in one shared workspace, with no restrictions. **Teams mode** (Slack only) lets you scope *who* Enso answers, *where* their request runs, and *what that agent can do* — so you can put Enso in a channel shared with a client, answer only your own team's mentions, run their requests in a sandboxed workspace, and keep a plain-text audit trail. Telegram is unaffected and stays private and one-to-one.
+
+Three concepts:
+
+- **Groups** — named sets of Slack user IDs (*who*).
+- **Workspaces** — a working directory plus capability allowlists (providers, skills, chat commands), either `unrestricted` (today's behavior) or **policy-controlled**, where you author the agent CLI's own permission file and Enso launches it without a bypass flag (*where and how work runs*).
+- **Routes** — exact Slack DM and channel rules binding allowed groups to a workspace, with per-route auditing (*which conversations dispatch*).
+
+Adding a `routes.slack` block switches Slack into teams mode; the legacy `allowed_users` list is then replaced by groups and routes (having both is an error). It fails closed: unknown or disallowed senders are silently ignored, an authorized sender in a misconfigured conversation gets an explicit error, and a policy-controlled workspace with a missing or rejected policy file refuses to dispatch rather than falling back to unrestricted.
+
+```bash
+enso policy check                          # validate every workspace + native policy
+enso route explain slack U012ABC C0ACME    # dry-run how a sender/channel resolves
+enso audit tail                            # inspect the recorded conversations
+```
+
+Worked example config and verified Claude/Codex policy files are in [`docs/examples/`](docs/examples/). The full design lives in [`docs/specs/teams.md`](docs/specs/teams.md) (routing and audit) and [`docs/specs/permissions.md`](docs/specs/permissions.md) (native policy invocation). Under teams mode, each `JOB.md` also needs an explicit `workspace:` field — jobs never fall back to a default workspace.
+
 ## Background Jobs
 
 Enso can run agents on a schedule. Jobs live in `~/.enso/jobs/` and run inside `enso serve` on a 60-second tick.

@@ -1,0 +1,31 @@
+{
+  "$comment": "Example native Claude policy for a policy-controlled Enso workspace. Lives at <policy_dir>/claude/settings.json, chmod 600, OUTSIDE the workspace. Verified against Claude Code 2.1.226 by the security harness: blocks reads of ~/.ssh, ~/.enso, and out-of-workspace paths (incl. via Bash subprocesses), blocks the enso CLI, confines network to api.anthropic.com, and strips secret env vars — while allowing normal work inside the workspace. Tune to your needs; Enso does not grade this file.",
+  "permissions": {
+    "deny": [
+      "Bash(enso *)",
+      "Read(~/.ssh/**)",
+      "Read(~/.enso/**)",
+      "Read(//**/.env)",
+      "Edit(~/.enso/**)"
+    ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": false,
+    "network": {
+      "allowedDomains": ["api.anthropic.com"],
+      "strictAllowlist": true
+    },
+    "filesystem": {
+      "denyRead": ["~/.ssh", "~/.enso", "~/.aws", "~/.config"]
+    },
+    "credentials": {
+      "envVars": [
+        { "name": "OP_SERVICE_ACCOUNT_TOKEN", "mode": "deny" },
+        { "name": "SLACK_BOT_TOKEN", "mode": "deny" },
+        { "name": "SLACK_APP_TOKEN", "mode": "deny" }
+      ]
+    }
+  }
+}

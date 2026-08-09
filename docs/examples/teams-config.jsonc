@@ -1,0 +1,103 @@
+// Example ~/.enso/config.json for Slack teams mode.
+//
+// Teams mode is Slack-only and is switched on by the presence of the
+// "routes.slack" block. When it is present, Slack authorization comes ONLY
+// from "groups" and "routes.slack" — the legacy "allowed_users" list must be
+// removed (having both is a hard error that disables Slack). Telegram is
+// unaffected and keeps its own allowlist.
+//
+// Copy the blocks you need into your real ~/.enso/config.json (strip the
+// comments — config.json is strict JSON), then run:
+//
+//   enso policy check                       # validate workspaces + policies
+//   enso route explain slack <UID> <CID>    # dry-run a routing decision
+//
+// See docs/specs/teams.md and docs/specs/permissions.md for the full model.
+{
+  "transport": "slack",
+  "transports": {
+    "slack": {
+      // Store real tokens in 1Password via bot_token_1password / app_token_1password
+      // (see docs/specs/data-model.md); literals shown here for brevity only.
+      "bot_token": "xoxb-...",
+      "app_token": "xapp-...",
+      "bot_user_id": "UBOT000000"
+      // NOTE: no "allowed_users" — routes.slack replaces it.
+    }
+  },
+
+  // WHO. Named sets of Slack user IDs. Declaration order has no security
+  // meaning. Slack is the only group platform in v1.
+  "groups": {
+    "admin": { "slack": ["U01ADMIN"] },
+    "team": { "slack": ["U02DEV", "U03PM"] },
+    "client": { "slack": ["U04CLIENT"] }
+  },
+
+  // WHERE work runs. A workspace is a cwd plus capability allowlists.
+  "workspaces": {
+    // Unrestricted = today's "yolo" invocation. The only way to get it.
+    // May reuse your existing working_dir path.
+    "ops": {
+      "path": "~/.enso/workspaces/ops",
+      "unrestricted": true,
+      "providers": ["claude", "codex", "agy"],
+      "default_provider": "claude",
+      "skills": "*",
+      "chat_commands": "*"
+    },
+    // Policy-controlled. You author the native CLI policy files under
+    // policy_dir (default ~/.enso/policies/<name>); Enso launches the CLI
+    // against them without a bypass flag and refuses to dispatch if they
+    // are missing or rejected. agy is not allowed here (no policy model).
+    "acme": {
+      "path": "~/.enso/workspaces/acme",
+      "policy_dir": "~/.enso/policies/acme",
+      "providers": ["claude", "codex"],
+      "default_provider": "claude",
+      "skills": ["docs"],
+      "chat_commands": ["status", "clear", "stop", "help", "use"]
+    }
+  },
+
+  // WHICH conversations dispatch, and how.
+  "routes": {
+    "slack": {
+      // Must equal your Slack team ID (the T0... in `enso route explain`
+      // output, or auth.test). A mismatch disables all teams dispatch.
+      "account_id": "T0YOURTEAM",
+
+      // DMs match by group. A user may match AT MOST ONE dm route, or the
+      // whole config is rejected as ambiguous.
+      "dms": {
+        "owner": { "allow": ["admin"], "workspace": "ops", "audit": false }
+      },
+
+      // Channels match by EXACT channel ID. No default/wildcard route:
+      // an unlisted channel silently ignores everyone.
+      "channels": {
+        // Team + client share this channel; only team/admin mentions are
+        // answered, client mentions are silently ignored, and only
+        // allowed-author messages are injected as context.
+        "C0ACME": {
+          "allow": ["team", "admin"],
+          "workspace": "acme",
+          "audit": true,
+          "context_from": "allowed"
+        },
+        "C0FINANCE": {
+          "allow": ["admin"],
+          "workspace": "ops",
+          "audit": false
+        }
+      }
+    }
+  },
+
+  // Audit retention + failure behavior. block = refuse an audited turn if the
+  // audit write fails (default); 0 max_age_days = keep forever.
+  "audit": {
+    "on_failure": "block",
+    "max_age_days": 365
+  }
+}

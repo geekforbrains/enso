@@ -1,0 +1,43 @@
+# Example native Codex policy for a policy-controlled Enso workspace.
+# Lives at <policy_dir>/codex/config.toml, chmod 600, OUTSIDE the workspace.
+#
+# Verified against Codex CLI 0.147.0 by the security harness: the "enso"
+# permission profile grants minimal system read + workspace write, denies all
+# network, and — combined with approval_policy = "never" — blocks reads of
+# out-of-workspace paths, ~/.ssh, and ~/.enso/enso.db (incl. via sqlite3
+# subprocesses) while allowing normal work inside the workspace.
+#
+# Schema notes (these bit us; see docs/specs/permissions.md):
+#   - filesystem is a TABLE mapping a path or scope alias (":minimal",
+#     ":workspace_roots") to "read" | "write" | "deny". More specific wins.
+#   - network is a TABLE with `enabled` plus a `[...network.domains]` sub-table
+#     of "host" = "allow" | "deny". Beta profiles do NOT compose with the
+#     legacy sandbox_mode / [sandbox_workspace_write] settings — don't mix.
+#   - The model must be one your account actually serves. A ChatGPT-account
+#     login rejects many slugs with a 400 before any policy applies.
+
+default_permissions = "enso"
+approval_policy = "never"
+
+[permissions.enso.filesystem]
+":minimal" = "read"
+
+[permissions.enso.filesystem.":workspace_roots"]
+"." = "write"
+
+[permissions.enso.network]
+enabled = false
+
+# To allow specific hosts instead of denying all network:
+#   [permissions.enso.network]
+#   enabled = true
+#   [permissions.enso.network.domains]
+#   "api.github.com" = "allow"
+#   "*.githubusercontent.com" = "allow"
+
+# Keep the 1Password/transport secrets out of commands the agent spawns.
+[shell_environment_policy]
+inherit = "core"
+[shell_environment_policy.filters]
+"OP_SERVICE_ACCOUNT_TOKEN" = "exclude"
+"SLACK_*" = "exclude"
