@@ -100,3 +100,46 @@ async def test_delete_status_ignores_telegram_errors():
     await context.delete_status(handle)
 
     handle.delete.assert_awaited_once_with()
+
+
+# -- Non-private chat rejection --
+
+
+def _auth_transport():
+    runtime = SimpleNamespace(
+        config={
+            "transports": {
+                "telegram": {"bot_token": "t", "allowed_users": ["123"]},
+            },
+        },
+    )
+    return TelegramTransport(runtime)
+
+
+def _update(chat_type="private", user_id=123):
+    return SimpleNamespace(
+        effective_user=SimpleNamespace(id=user_id),
+        effective_chat=SimpleNamespace(type=chat_type, id=999),
+        message=SimpleNamespace(),
+        callback_query=None,
+    )
+
+
+def test_private_chat_from_allowed_user_is_authorized():
+    assert _auth_transport()._is_authorized(_update()) is True
+
+
+def test_group_chat_is_rejected_even_for_allowed_user():
+    """An authorized ID must not be able to invoke Enso from a group chat."""
+    for chat_type in ("group", "supergroup", "channel"):
+        assert _auth_transport()._is_authorized(_update(chat_type=chat_type)) is False
+
+
+def test_missing_chat_is_rejected():
+    update = _update()
+    update.effective_chat = None
+    assert _auth_transport()._is_authorized(update) is False
+
+
+def test_unknown_user_is_rejected_in_private_chat():
+    assert _auth_transport()._is_authorized(_update(user_id=666)) is False

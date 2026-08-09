@@ -166,6 +166,16 @@ class TelegramTransport(BaseTransport):
             return False
         if update.message is None and update.callback_query is None:
             return False
+        # Telegram is private and one-to-one by design (teams.md): an
+        # authorized ID must not be able to invoke Enso from a group chat
+        # someone added the bot to.
+        chat = update.effective_chat
+        if chat is None or chat.type != "private":
+            log.warning(
+                "Rejected non-private Telegram chat type=%s chat=%s",
+                getattr(chat, "type", None), getattr(chat, "id", None),
+            )
+            return False
         if not is_authorized(str(user.id), self.allowed_users):
             log.warning("Unauthorized user: %s", user.id)
             return False
