@@ -48,12 +48,18 @@ table_app = typer.Typer(help="Manage registered SQLite data tables")
 message_app = typer.Typer(help="Send messages and files via the configured transport")
 service_app = typer.Typer(help="Manage the background service")
 slack_app = typer.Typer(help="Slack directory lookups and message search")
+policy_app = typer.Typer(help="Validate teams workspaces and native provider policies")
+route_app = typer.Typer(help="Explain Slack teams routing decisions")
+audit_app = typer.Typer(help="Inspect the Slack audit trail")
 app.add_typer(job_app, name="job")
 app.add_typer(doc_app, name="doc")
 app.add_typer(table_app, name="table")
 app.add_typer(message_app, name="message")
 app.add_typer(service_app, name="service")
 app.add_typer(slack_app, name="slack")
+app.add_typer(policy_app, name="policy")
+app.add_typer(route_app, name="route")
+app.add_typer(audit_app, name="audit")
 
 console = Console()
 
@@ -805,6 +811,32 @@ def _update_referenced_secrets_with_rollback_or_exit(
     return results
 
 
+def _refuse_audited_slack_target(cfg: dict, target: str) -> None:
+    """Refuse out-of-band sends to an audited Slack route.
+
+    The audit trail is one row per turn; a message outside any turn would be
+    a gap in "what Enso said" until an outbound audit schema exists
+    (teams.md § Audit). DM-shaped targets can't be mapped to a DM route
+    without the Slack API, so they are refused whenever any DM route is
+    audited.
+    """
+    from .teams import load_teams
+
+    teams = load_teams(cfg)
+    if teams is None:
+        return
+    route = teams.channel_routes.get(target)
+    audited = route is not None and route.audit
+    if not audited and target[:1] in ("D", "U"):
+        audited = any(r.audit for r in teams.dm_routes.values())
+    if audited:
+        console.print(
+            "[red]✗[/] Refused: that destination is an audited Slack route, "
+            "and out-of-band sends cannot be recorded in the audit trail yet."
+        )
+        raise typer.Exit(1)
+
+
 def _resolve_send_targets(cfg: dict, to: str) -> tuple[str, str, list[str], str]:
     """Resolve delivery for ``message send``/``attach``.
 
@@ -832,6 +864,7 @@ def _resolve_send_targets(cfg: dict, to: str) -> tuple[str, str, list[str], str]
                 " set notify_channel in config."
             )
             raise typer.Exit(1)
+        _refuse_audited_slack_target(cfg, target)
         return transport, token, [target], thread_ts
 
     tg_cfg = cfg.get("transports", {}).get("telegram", {})
@@ -1296,6 +1329,7 @@ def serve(
 
     runtime = Runtime(config)
     runtime.install_system_prompts()
+    runtime.install_teams_workspaces()
     runtime.load_state()
 
     log.info("Starting Enso v%s", __version__)
@@ -2058,6 +2092,136 @@ def slack_thread(
 # ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
+
+# -- Teams: policy / route / audit --
+
+
+@policy_app.command("check")
+def policy_check() -> None:
+    """Validate every teams workspace and native provider policy."""
+    from .policy import check_provider
+    from .teams import load_teams
+
+    config = load_config()
+    teams = load_teams(config)
+    if teams is None:
+        console.print("Teams mode is not configured (no routes.slack).")
+        return
+
+    failed = False
+    for error in teams.errors:
+        failed = True
+        console.print(f"[red]✗[/] {error}")
+    if teams.errors:
+        console.print("[red]Slack teams dispatch is disabled until this is fixed.[/]")
+
+    for name, workspace in sorted(teams.workspaces.items()):
+        mode = "unrestricted" if workspace.unrestricted else "policy-controlled"
+        console.print(f"\n[bold]{name}[/] ({mode}) — {workspace.path}")
+        for problem in teams.workspace_errors.get(name, ()):
+            failed = True
+            console.print(f"  [red]✗[/] {problem}")
+        if not os.path.isdir(os.path.expanduser(workspace.path)):
+            failed = True
+            console.print("  [red]✗[/] workspace path does not exist")
+        for provider in workspace.providers:
+            check = check_provider(workspace, provider)
+            if check.ok:
+                revision = (check.policy_revision or "")[:12]
+                console.print(f"  [green]✓[/] {provider} ({revision})")
+                for warning in check.warnings:
+                    console.print(f"    [yellow]![/] {warning}")
+            else:
+                failed = True
+                for problem in check.problems:
+                    console.print(f"  [red]✗[/] {provider}: {problem}")
+
+    for route_id, problems in sorted(teams.route_errors.items()):
+        failed = True
+        for problem in problems:
+            console.print(f"[red]✗[/] {route_id}: {problem}")
+
+    if failed:
+        raise typer.Exit(1)
+    console.print("\n[green]All checks passed.[/]")
+
+
+@route_app.command("explain")
+def route_explain(
+    transport: Annotated[str, typer.Argument(help="Transport (only 'slack')")],
+    user_id: Annotated[str, typer.Argument(help="Slack user ID, e.g. U012ABC")],
+    channel_id: Annotated[
+        str | None, typer.Argument(help="Channel ID; omit for a DM")
+    ] = None,
+) -> None:
+    """Explain how a Slack sender/location pair would resolve."""
+    from .teams import binding_revision, load_teams, memberships, resolve
+
+    if transport != "slack":
+        console.print("[red]✗[/] Only 'slack' has teams routing.")
+        raise typer.Exit(1)
+    teams = load_teams(load_config())
+    if teams is None:
+        console.print("Teams mode is not configured (no routes.slack).")
+        raise typer.Exit(1)
+
+    groups = memberships(teams, user_id)
+    console.print(f"Groups: {', '.join(groups) or '(none — unknown sender)'}")
+    decision = resolve(teams, user_id=user_id, channel_id=channel_id)
+    console.print(f"Decision: [bold]{decision.status}[/] ({decision.reason})")
+    if decision.route is not None:
+        route = decision.route
+        console.print(f"Route: {route.route_id}")
+        console.print(f"Workspace: {route.workspace}")
+        console.print(f"Audit: {'on' if route.audit else 'off'}")
+        console.print(f"Context from: {route.context_from}")
+        console.print(f"Binding revision: {binding_revision(teams, route)[:16]}")
+    if not teams.dispatchable:
+        console.print("[red]Teams dispatch is disabled by config errors "
+                      "(see 'enso policy check').[/]")
+
+
+@audit_app.command("tail")
+def audit_tail(
+    count: Annotated[int, typer.Option("--count", "-n", help="Rows to show")] = 20,
+    route: Annotated[str | None, typer.Option("--route", help="Filter by route id")] = None,
+    user: Annotated[str | None, typer.Option("--user", help="Filter by user id")] = None,
+) -> None:
+    """Show the most recent audit turns."""
+    from . import audit as audit_store
+
+    turns = audit_store.list_turns(route_id=route, user_id=user, limit=count)
+    if not turns:
+        console.print("No audit turns recorded.")
+        return
+    table = Table(show_header=True, header_style="bold")
+    for column in ("When", "Route", "User", "Decision", "Outcome", "Request", "Response"):
+        table.add_column(column)
+    for turn in reversed(turns):
+        table.add_row(
+            turn["received_at"][:19],
+            turn["route_id"],
+            turn["user_name"] or turn["user_id"],
+            turn["decision"],
+            turn["outcome"],
+            (turn["request_text"] or "")[:60],
+            (turn["response_text"] or "")[:60],
+        )
+    console.print(table)
+
+
+@audit_app.command("export")
+def audit_export(
+    route: Annotated[str | None, typer.Option("--route", help="Filter by route id")] = None,
+    user: Annotated[str | None, typer.Option("--user", help="Filter by user id")] = None,
+    limit: Annotated[int, typer.Option("--limit", help="Maximum rows")] = 1000,
+) -> None:
+    """Export audit turns as JSON lines (newest first)."""
+    from . import audit as audit_store
+
+    for turn in audit_store.list_turns(route_id=route, user_id=user, limit=limit):
+        print(json.dumps(turn))
+
 
 def _load_startup_config_for_logging() -> dict | None:
     """Read config for early logging setup without creating config files."""
