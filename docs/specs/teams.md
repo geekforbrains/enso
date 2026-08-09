@@ -51,6 +51,14 @@ matches several DM routes, the configuration is ambiguous and Slack teams dispat
 disabled until the operator fixes it. Enso never guesses which workspace is more
 privileged.
 
+Because the route names the workspace, a workspace may serve one channel or many, and the
+same group may be allowed in several channels that each bind a different workspace. One
+workspace per channel gives that channel its own instructions, its own skills, and its own
+provider sessions — useful for client or project separation — at the cost of a policy set
+per workspace. A shared workspace across channels gives one context and one policy. Enso
+does not prefer either; changing a channel's workspace changes its `binding_revision`, so
+the next turn starts a fresh session rather than inheriting the previous context.
+
 ## Config shape
 
 The canonical schema and defaults live in
@@ -251,6 +259,25 @@ always untrusted input.
   marker.
 - Fetched context is not part of the plain-text audit trail. The trail records the
   triggering request and Enso's user-visible result.
+
+### Planned: identity envelope on the triggering message
+
+**Planned.** Injected context messages carry their author, but the triggering message does
+not — the agent receives bare text and must infer the sender from `ENSO_ORIGIN_*`
+environment variables. That asymmetry is the likely source of an agent confusing who is
+speaking or who is being discussed, and a policy-controlled workspace cannot fall back to
+`enso slack` lookups because the CLI is denied there.
+
+Enso will prepend a short, deterministic envelope to the triggering request in teams mode:
+
+```
+[Slack · #general (C0XYZ) · from Gavin (@U0AETSSDDEF)]
+```
+
+Names come from the existing Slack directory cache, which already maps user and channel
+IDs and refreshes at startup and on directory events; IDs remain so the agent can act on
+them unambiguously. The envelope is prompt content, not audit content — the audit trail
+continues to record the human's own text as `request_text`.
 
 ## Chat commands and providers
 

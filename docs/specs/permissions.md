@@ -63,7 +63,11 @@ can parse successfully and intentionally allow everything.
 ## Authoritative files
 
 Native policies live outside the agent's working directory. `policy_dir` defaults to
-`~/.enso/policies/<workspace>` and may name another protected directory:
+`~/.enso/policies/<workspace>` and may name another protected directory. **Planned:** this
+directory is renamed `~/.enso/permissions/<workspace>/`, matched to the workspace by name,
+with the config key becoming `permissions_dir` and `enso policy check` becoming
+`enso permissions check` (see
+[data-model.md](data-model.md#planned-scaffolding-and-the-permissions-rename)).
 
 | Provider | Canonical source                                                    |
 | -------- | ------------------------------------------------------------------- |
@@ -129,8 +133,22 @@ claude -p --output-format stream-json --verbose \
 - `--strict-mcp-config` keeps ambient MCP servers out; a protected workspace-specific MCP
   file is passed only when the operator configures one.
 
-The protected project instructions (`AGENTS.md`/`CLAUDE.md`) and allowlisted workspace
-skills are intentional inputs and remain available from the cwd.
+**Known defect.** `--setting-sources ""` suppresses more than settings: measured against
+2.1.226, it also stops Claude from loading `CLAUDE.md` up the directory chain *and* from
+discovering workspace skills. A policy-controlled workspace therefore runs today with no
+workspace or shared instructions and only built-in skills, so the bootstrapped `AGENTS.md`
+and the workspace `skills` allowlist are inert. Isolation is stronger than documented, not
+weaker — nothing ambient leaks — but the intended inputs are missing.
+
+Dropping the flag is not the fix: without it, the operator's entire `~/.claude` comes
+along (in testing, more than twenty ambient user skills). The planned repair is a
+per-workspace `CLAUDE_CONFIG_DIR` holding exactly the shared instructions, workspace
+instructions, and allowlisted skills Enso stages, so the "user" scope Claude loads is one
+Enso controls rather than the operator's own. That approach is unverified against the
+pinned CLI; the fallbacks are prepending the instructions to the prompt (provider-neutral,
+costs tokens per turn) or `--add-dir` with
+`CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1`. Whichever lands must keep ambient user
+configuration out while restoring layered instructions and allowlisted skills.
 
 Claude's sandbox is separate from permission mode and applies only to Bash and its child
 processes; it is disabled by default. An operator relying on it as the boundary should set

@@ -325,6 +325,67 @@ Skills stay authored under `~/.enso/skills`. A workspace exposes only its allowl
 skills. A symlink is not inherently read-only: the selected native policy or an OS mount
 must prevent writes to shared sources.
 
+### Planned: consolidated layout and per-workspace authoring
+
+**Planned.** Everything Enso owns lives under `~/.enso/`; there are never sibling
+`~/.enso-team-a` trees. The planned layout keeps the agent's cwd *at* the workspace root
+and moves native policy to a name-matched sibling directory renamed `permissions/`:
+
+```
+~/.enso/
+├── AGENTS.md                          # shared instructions (CLAUDE.md symlink beside it)
+├── jobs/<job>/JOB.md                  # flat; each names its workspace
+├── skills/<skill>/SKILL.md            # shared skills, exposed per workspace by allowlist
+├── workspaces/
+│   └── team-a/                        # agent cwd
+│       ├── AGENTS.md                  # workspace instructions (+ CLAUDE.md symlink)
+│       └── skills/<skill>/SKILL.md    # workspace-local skills
+└── permissions/
+    └── team-a/                        # name matches the workspace; never writable
+        ├── claude/settings.json
+        └── codex/{config.toml,rules/*.rules}
+```
+
+`permissions/<name>/` is a *sibling* of the workspace, so the policy governing an agent is
+never inside the tree that agent can write. Per-provider subdirectories stay: Codex needs a
+tree for `rules/` and its staged runtime home, and separate directories keep ownership
+unambiguous as providers are added.
+
+Placing the workspace under `~/.enso/` gives layered instructions for free. Claude walks
+`CLAUDE.md` up the directory chain, so an agent in `workspaces/team-a/` loads the workspace
+`AGENTS.md` and then the shared `~/.enso/AGENTS.md`. Shared knowledge lives once at the
+top; workspace-specific instructions live beside the workspace. Enso does not define a
+memory format — where an agent reads and writes notes is a filesystem question the
+operator answers in the native policy.
+
+**Jobs stay flat.** A job is never offered to a chat user, so it has no availability
+concern — only an execution binding (`workspace:`) and an authorship question. Keeping
+`~/.enso/jobs/` flat preserves job identity, run history, per-job locks, and
+`enso job run <name>`. Authorship is controlled by the filesystem: a policy-controlled
+workspace must be denied write on `~/.enso/jobs/`, which is load-bearing rather than tidy
+— it is what stops a restricted workspace from writing a `JOB.md` naming an unrestricted
+workspace and escalating on the next scheduler tick.
+
+**Skills are both shared and workspace-local**, because two different controls apply:
+
+- The workspace `skills` allowlist controls **discovery** — an unlisted shared skill is
+  never exposed to the agent.
+- The native policy controls **readability** — a workspace that can read `~/.enso/skills/`
+  at all can read the content of a shared skill it was never offered.
+
+So a skill that is merely irrelevant to a workspace belongs in the shared root and is
+omitted from the allowlist; a skill whose *content* must not be readable elsewhere belongs
+in the owning workspace's own `skills/` directory. Exposure is the union of allowlisted
+shared skills and all workspace-local skills, symlinked into `.claude/skills/` and
+`.agents/skills/`.
+
+A workspace's own `jobs`- and `skills`-adjacent paths sit inside its cwd, so whether the
+agent may edit them is a policy choice, not a consequence of the layout: an operator
+workspace may leave local skills writable so the agent can author them, while a client or
+staff workspace denies write. Writes to *other* workspaces and to the shared skill root
+must always be denied, or one workspace could poison a skill another executes with wider
+access.
+
 ### Teams config
 
 Four top-level blocks participate in Slack teams mode. `routes.slack` is the explicit
@@ -461,6 +522,52 @@ The job's existing `provider` must be in that workspace's provider allowlist and
 usable native policy unless the workspace is explicitly unrestricted. `prerun` is valid
 only for unrestricted workspaces. A job notification may not target an audited Slack
 route.
+
+### Planned: required job notification destination
+
+**Planned.** A job resolves its destination as `notify:` in `JOB.md`, then the transport
+default, then nothing. Slack never broadcasts, so "nothing" currently means the
+notification is dropped with a log warning — work ran and its output vanished silently.
+
+Planned behaviour separates configuration failure from delivery failure:
+
+- **Configuration.** `transports.slack.notify_channel` becomes required whenever Slack is
+  the active transport. Its absence is an error reported at startup and by
+  `enso permissions check`, not a per-send warning. Telegram is unaffected, since it can
+  fall back to its allowlist.
+- **Delivery.** A notification that resolves to no destination, or that is refused for
+  targeting an audited route, marks the **run** as errored rather than dropping quietly. A
+  job that never notifies is unaffected — the failure belongs to the send, not to jobs in
+  general.
+
+The default destination may be a channel or a DM. The audited-route refusal must apply
+consistently to both: today `transport.notify` checks channel routes only, while the
+`enso message send` path also refuses DM-shaped targets when any DM route is audited.
+
+### Planned: scaffolding and the `permissions/` rename
+
+**Planned.** `policies/` is renamed `permissions/` to match its spec and the operator's
+vocabulary, and `enso policy check` becomes `enso permissions check`. The command is
+branch-only and unreleased, so the rename costs nothing now. Existing installs that
+already created `policies/` are migrated or reported; Enso does not silently read both.
+
+`workspaces.<name>.permissions_dir` remains available as an explicit override — the
+convention `~/.enso/permissions/<name>/` covers the normal case, while the override lets
+an operator point at a directory with stricter ownership or a read-only mount.
+
+`enso workspace create <name>` scaffolds a working starting point:
+
+- `~/.enso/workspaces/<name>/` with `AGENTS.md`, a `CLAUDE.md` symlink, and `skills/`
+- for a restricted workspace, `~/.enso/permissions/<name>/<provider>/` seeded from the
+  templates in [`docs/examples/`](../examples/), `chmod 600`
+- the `workspaces` config block, so the workspace is valid and checkable
+
+Two rules the template encodes rather than leaves to the operator:
+
+- `--unrestricted` scaffolds **no** permission files, because a workspace that is both
+  unrestricted and has a discovered policy source is a hard configuration error.
+- `create` never writes a **route**. Routes grant access, so they stay a deliberate edit;
+  the command prints the snippet to paste.
 
 Queued execution captures the complete job-file digest, a digest of the relevant
 workspace config, and the provider policy revision. Enso reloads and compares them after
