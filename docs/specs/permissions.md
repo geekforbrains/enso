@@ -301,12 +301,35 @@ operator's own knowledge reaching their own agent is the point. And `--ignore-us
 is a trap: it removes ambient configuration but also silently drops the permission profile,
 flipping the sandbox back to a default. Enso never passes it.
 
-**Codex does not layer instructions the way Claude does.** It loads
-`<CODEX_HOME>/AGENTS.md` plus every `AGENTS.md` from the cwd upward, but the upward walk
-**stops at the enclosing git repository root**, and outside a git repository only the cwd's
-own `AGENTS.md` loads. A shared `~/.enso/AGENTS.md` above the workspace therefore does not
-reach Codex the way it reaches Claude — it must come from the staged `CODEX_HOME` instead.
-Any statement that shared and workspace instructions "both load" is Claude-specific.
+**Codex bounds its instruction chain at the git repository root.** It loads
+`<CODEX_HOME>/AGENTS.md` plus every `AGENTS.md` from the cwd upward, stopping at the
+enclosing repository root; outside a repository only the cwd's own file loads. Claude walks
+the chain regardless of git, so the two providers agree only when a repository root sits at
+or above the shared instructions.
+
+Enso therefore runs `git init` at `~/.enso` during setup (see
+[data-model.md](data-model.md#planned-consolidated-layout-and-per-workspace-authoring)).
+With that in place Codex loads the full chain natively — verified: shared
+`~/.enso/AGENTS.md`, any intermediate `AGENTS.md`, and the workspace's own file all
+reached the model — and matches Claude without Enso staging or composing anything.
+
+Two measured caveats:
+
+- `project_root_markers` does **not** extend the walk. A marker file placed at the intended
+  root left the shared instructions unloaded; only a real repository root worked.
+- A **nested repository silently truncates the chain.** Running `git init` inside a
+  workspace, or cloning a project directly into one, makes that the nearest root, and the
+  shared instructions stop loading with no error or warning. `enso permissions check`
+  reports a workspace containing its own repository for this reason. Claude is unaffected.
+
+Once `~/.enso` is a repository, `~/.enso/.git/` holds the content of every workspace, so a
+policy that grants broad read access to `~/.enso` in order to reach the shared `AGENTS.md`
+also exposes other workspaces' files and permission history through `git show`. Grant the
+shared instruction file specifically and deny `~/.enso/.git`. Mind the path syntax while
+doing so: in a permissions rule a single leading slash anchors at the settings file's
+directory rather than the filesystem root, so use `~/path` or `//abs/path` — a rule
+written as `/Users/...` silently matches nothing, while the sandbox `filesystem` block
+treats the same string as a normal absolute path.
 
 `codex debug prompt-input` renders the exact model-visible message list, including every
 skill locator, offline and without an API call. It is the cheapest way to confirm what a
@@ -376,7 +399,12 @@ the real control.
 | Codex mixes permission profiles and legacy sandbox settings          | provider error |
 | `agy` is enabled without `unrestricted: true`                        | provider error |
 | Claude policy omits `disableAllHooks: true` (**planned**)            | provider error |
+| Workspace contains its own git repository (**planned**)              | warning        |
 | Claude sandbox is not enabled in a policy-controlled workspace        | warning        |
+
+The nested-repository warning exists because it fails silently: a repository inside a
+workspace truncates Codex's instruction chain, so the shared `AGENTS.md` quietly stops
+loading there while everything else keeps working.
 
 Startup reports all workspaces and continues. A workspace-level structural error blocks
 that workspace. A provider-specific error refuses only that provider, so another

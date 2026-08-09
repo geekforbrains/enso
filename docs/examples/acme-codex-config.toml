@@ -35,6 +35,15 @@ enabled = false
 #   "api.github.com" = "allow"
 #   "*.githubusercontent.com" = "allow"
 
+# Codex bounds its AGENTS.md walk at the git repository root. Enso's setup runs
+# 'git init' at ~/.enso so the shared ~/.enso/AGENTS.md loads natively alongside the
+# workspace's own. Do NOT 'git init' inside a workspace: the nearer root truncates the
+# chain and the shared instructions silently stop loading.
+#
+# Keep ~/.enso/.git out of reach — after setup it contains every workspace's content.
+# Add deny entries under [permissions.enso.filesystem] for ~/.enso/.git,
+# ~/.enso/enso.db, ~/.enso/config.json, ~/.enso/secrets and ~/.enso/permissions.
+#
 # Keep the 1Password/transport secrets out of commands the agent spawns.
 [shell_environment_policy]
 inherit = "core"

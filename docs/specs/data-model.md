@@ -360,6 +360,22 @@ top; workspace-specific instructions live beside the workspace. Enso does not de
 memory format — where an agent reads and writes notes is a filesystem question the
 operator answers in the native policy.
 
+Codex bounds the same walk at the enclosing git repository root, so **setup runs
+`git init` at `~/.enso`**. That one step makes both providers load the identical chain
+natively, with no staging or composition, and it makes the operator's instructions, jobs,
+and permission files diffable and revertible. Setup writes a `.gitignore` in the same
+step — non-negotiable, because `~/.enso` holds `secrets/*.env`, staged provider `auth.json`
+copies, `enso.db` and its WAL sidecars, `runs/*.log`, `state.json`, `messages.json`,
+`update.json`, and `cache/`. A repository created without it is one `git add -A` away from
+committing credentials, and the agent may be the one running that command.
+
+A repository *inside* a workspace truncates Codex's chain and silently drops the shared
+instructions; `enso permissions check` warns about it. Once `~/.enso` is a repository, its
+`.git/` directory contains every workspace's content, so a policy granting broad read
+access to `~/.enso` to reach the shared `AGENTS.md` also exposes other workspaces through
+`git show` — grant the instruction file specifically and deny `~/.enso/.git`. Both points
+are detailed in [permissions.md](permissions.md#codex-launch-contract).
+
 **Jobs stay flat.** A job is never offered to a chat user, so it has no availability
 concern — only an execution binding (`workspace:`) and an authorship question. Keeping
 `~/.enso/jobs/` flat preserves job identity, run history, per-job locks, and
