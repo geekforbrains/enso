@@ -192,12 +192,19 @@ def complete_turn(
 
 
 def close_abandoned(turn_id: str) -> None:
-    """Close a turn orphaned by a crash: error/service_restart, no delivery."""
+    """Close a turn orphaned by a crash: error/service_restart.
+
+    Preserves a delivery status the crash left legitimately recorded — a
+    reply that reached Slack before the crash stays ``delivered``; only a
+    still-unresolved delivery becomes ``not_attempted``.
+    """
     with write_connection(_db_path()) as conn:
         _ensure_schema(conn)
         conn.execute(
             "UPDATE _enso_audit SET outcome='error', terminal_reason='service_restart', "
-            "completed_at=?, delivery_status='not_attempted' "
+            "completed_at=?, "
+            "delivery_status=CASE WHEN delivery_status IN ('delivered', 'failed') "
+            "THEN delivery_status ELSE 'not_attempted' END "
             "WHERE id=? AND completed_at IS NULL",
             (_utc_now(), turn_id),
         )

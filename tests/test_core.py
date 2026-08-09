@@ -962,6 +962,80 @@ async def test_process_request_injects_messages(tmp_enso, sample_config):
     assert "user message" in prompts_received[0]
 
 
+class _OutcomeCtx:
+    def __init__(self): self.replies = []
+    async def reply(self, text): self.replies.append(text)
+    async def reply_status(self, text): return "h"
+    async def edit_status(self, handle, text): pass
+    async def delete_status(self, handle): pass
+    async def send_typing(self): pass
+    def get_origin_env(self): return {}
+
+
+@pytest.mark.asyncio
+async def test_process_request_returns_terminal_outcome(sample_config):
+    rt = Runtime(sample_config)
+
+    async def ok_run(*a, **k):
+        yield StreamEvent(kind="response", text="hi")
+    rt.run_provider = ok_run
+    assert await rt.process_request("claude", "x", "1", _OutcomeCtx()) == ("completed", None)
+
+    async def err_run(*a, **k):
+        yield StreamEvent(kind="error", text="boom")
+    rt.run_provider = err_run
+    outcome, _reason = await rt.process_request("claude", "x", "1", _OutcomeCtx())
+    assert outcome == "error"
+
+
+@pytest.mark.asyncio
+async def test_run_request_reports_outcome_to_on_complete(sample_config):
+    from enso.core import ExecutionContext
+    rt = Runtime(sample_config)
+    seen = []
+
+    async def ok_run(*a, **k):
+        yield StreamEvent(kind="response", text="hi")
+    rt.run_provider = ok_run
+    ctx_obj = ExecutionContext(
+        chat_key="k", path=rt.working_dir,
+        on_complete=lambda outcome, reason: seen.append((outcome, reason)),
+    )
+    await rt._run_request("claude", "x", _OutcomeCtx(), ctx_obj)
+    assert seen == [("completed", None)]
+
+
+@pytest.mark.asyncio
+async def test_early_returns_finalize_teams_turn(sample_config):
+    """Queue-full and update-in-progress must not leak an audited turn."""
+    from enso.core import ExecutionContext
+    rt = Runtime(sample_config)
+    finalized = []
+    ctx_obj = ExecutionContext(
+        chat_key="k", path=rt.working_dir, workspace_id="ws",
+        on_complete=lambda outcome, reason: finalized.append((outcome, reason)),
+    )
+
+    # update-in-progress
+    rt._update_in_progress = True
+    await rt.dispatch("conv", "hi", _OutcomeCtx(), context=ctx_obj)
+    assert finalized == [("blocked", "update_in_progress")]
+    rt._update_in_progress = False
+
+    # queue-full: hold the lock and fill the queue
+    finalized.clear()
+    lock = rt.get_chat_lock("k")
+    await lock.acquire()
+    try:
+        for _ in range(rt._queue_by_conversation.get("k", []).__len__(), 5):
+            await rt.dispatch("conv", "q", _OutcomeCtx(), context=ctx_obj)
+        finalized.clear()
+        await rt.dispatch("conv", "overflow", _OutcomeCtx(), context=ctx_obj)
+    finally:
+        lock.release()
+    assert finalized == [("blocked", "queue_full")]
+
+
 @pytest.mark.asyncio
 async def test_process_request_uses_normalized_status_and_plain_final_response(sample_config):
     rt = Runtime(sample_config)

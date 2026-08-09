@@ -263,10 +263,12 @@ class ExecutionContext:
     revalidate: Callable[[], str | None] | None = field(
         default=None, compare=False, repr=False
     )
-    # Invoked (in a worker thread) after the turn reaches a terminal state —
-    # including revalidation refusals — so audit/ledger bookkeeping runs when
-    # the work actually finishes, not when it was queued. Must be idempotent.
-    on_complete: Callable[[], None] | None = field(
+    # Invoked (in a worker thread) with the turn's terminal outcome once it
+    # reaches a terminal state — a real dispatch, a revalidation refusal, or
+    # an early rejection (queue full, update in progress) — so audit/ledger
+    # bookkeeping records the true outcome and never leaks a pending row.
+    # Must be idempotent. Args: (outcome, terminal_reason).
+    on_complete: Callable[[str, str | None], None] | None = field(
         default=None, compare=False, repr=False
     )
 
@@ -929,10 +931,11 @@ class Runtime:
         ``context`` is the resolved execution binding; None binds the legacy
         context (global working_dir, conversation-keyed state).
         """
+        context = context or self.legacy_context(conversation_id)
         if self._update_in_progress:
             await ctx.reply("Enso is updating. Please try again after it restarts.")
+            await self._finalize_unrun(context, "update_in_progress")
             return
-        context = context or self.legacy_context(conversation_id)
         chat_key = context.chat_key
         self._last_active[chat_key] = datetime.now()
         lock = self.get_chat_lock(chat_key)
@@ -941,6 +944,7 @@ class Runtime:
             queue = self._queue_by_conversation.setdefault(chat_key, deque())
             if len(queue) >= MAX_QUEUE_SIZE:
                 await ctx.reply(f"Queue full ({MAX_QUEUE_SIZE}).")
+                await self._finalize_unrun(context, "queue_full")
                 return
             queue.append(
                 _QueuedItem(prompt=prompt, ctx=ctx, preview=preview, context=context)
@@ -962,6 +966,22 @@ class Runtime:
             await self._run_request(provider, prompt, ctx, context)
             await self._drain_queue(chat_key)
 
+    async def _finalize_unrun(
+        self, context: ExecutionContext, reason: str,
+    ) -> None:
+        """Finalize a turn rejected before it ran (queue full, update).
+
+        The audit turn and ledger claim were created at intake, so an
+        early rejection must still mark them terminal or they leak as
+        ``pending`` until a restart falsifies them.
+        """
+        if context.on_complete is None:
+            return
+        try:
+            await asyncio.to_thread(context.on_complete, "blocked", reason)
+        except Exception:
+            log.exception("on_complete failed for conv=%s", context.chat_key)
+
     async def _run_request(
         self,
         provider: str,
@@ -970,12 +990,15 @@ class Runtime:
         context: ExecutionContext,
     ) -> None:
         """Run a single provider request, tracking the task for cancellation."""
+        outcome, reason = "error", None
         try:
-            await self._run_request_inner(provider, prompt, ctx, context)
+            outcome, reason = await self._run_request_inner(
+                provider, prompt, ctx, context
+            )
         finally:
             if context.on_complete is not None:
                 try:
-                    await asyncio.to_thread(context.on_complete)
+                    await asyncio.to_thread(context.on_complete, outcome, reason)
                 except Exception:
                     log.exception(
                         "on_complete failed for conv=%s", context.chat_key
@@ -987,13 +1010,16 @@ class Runtime:
         prompt: str,
         ctx: TransportContext,
         context: ExecutionContext,
-    ) -> None:
+    ) -> tuple[str, str | None]:
+        """Run one turn; return its (outcome, terminal_reason) for on_complete."""
         chat_key = context.chat_key
         if context.revalidate is not None:
             # Queued turns keep their authorized snapshot, but it is never a
             # lease: re-resolve against current config immediately before
             # execution. Revoked access gets silence; any other mismatch gets
-            # an explicit refusal rather than a reroute (teams.md).
+            # an explicit refusal rather than a reroute (teams.md). The
+            # revalidator already completed the audit turn, so on_complete's
+            # complete_turn is a no-op; it still finalizes the ledger claim.
             try:
                 verdict = await asyncio.to_thread(context.revalidate)
             except Exception:
@@ -1001,7 +1027,7 @@ class Runtime:
                 verdict = "revalidation_failed"
             if verdict == "revoked":
                 log.warning("Refusing stale turn for conv=%s: access revoked", chat_key)
-                return
+                return "ignored", "access_revoked"
             if verdict is not None:
                 log.warning("Refusing stale turn for conv=%s: %s", chat_key, verdict)
                 with contextlib.suppress(Exception):
@@ -1009,18 +1035,21 @@ class Runtime:
                         "This request was queued under configuration that has "
                         "since changed and was not run. Please resend it."
                     )
-                return
+                return "blocked", verdict
         task = asyncio.create_task(
             self.process_request(provider, prompt, chat_key, ctx, context=context)
         )
         self.running_task_by_chat[chat_key] = task
+        outcome, reason = "stopped", None
         try:
-            await task
+            outcome, reason = await task
         except asyncio.CancelledError:
             log.info("Task cancelled for conv=%s", chat_key)
+            outcome, reason = "stopped", "cancelled"
         finally:
             if self.running_task_by_chat.get(chat_key) is task:
                 self.running_task_by_chat.pop(chat_key, None)
+        return outcome, reason
 
     async def _drain_queue(self, chat_key: str) -> None:
         """Process queued messages one by one until the queue is empty."""
@@ -1539,10 +1568,13 @@ class Runtime:
         ctx: TransportContext,
         *,
         context: ExecutionContext | None = None,
-    ) -> None:
+    ) -> tuple[str, str | None]:
         """Run a full provider request with status ticker and response delivery.
 
         Automatically injects any pending background messages into the prompt.
+        Returns the terminal ``(outcome, terminal_reason)`` so the caller can
+        record it on the audit turn: ``completed``, ``error``, ``timeout``, or
+        (via cancellation in the caller) ``stopped``.
         """
         context = context or self.legacy_context(chat_id)
         # Inject background messages. Teams executions consume only messages
@@ -1708,7 +1740,7 @@ class Runtime:
                             chat_id,
                             exc_info=True,
                         )
-                return
+                return "timeout", None
 
             await stop_ticker()
             if status_msg is not None:
@@ -1733,6 +1765,7 @@ class Runtime:
                     await ctx.reply(chunk)
             else:
                 await ctx.reply("(No response)")
+            return ("error", "provider_error") if error_text else ("completed", None)
 
         except asyncio.CancelledError:
             await stop_ticker()
@@ -1749,6 +1782,7 @@ class Runtime:
                     await ctx.delete_status(status_msg)
             for chunk in split_text(_format_error(str(exc)), limit=msg_limit):
                 await ctx.reply(chunk)
+            return "error", "exception"
 
     @staticmethod
     def _format_duration(seconds: int | float) -> str:

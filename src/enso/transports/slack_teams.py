@@ -14,6 +14,7 @@ sender with an unusable route gets a specific configuration error.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -66,12 +67,14 @@ class TeamsRouter:
         self.teams: TeamsConfig = load_teams(runtime.config)  # type: ignore[assignment]
         assert self.teams is not None, "TeamsRouter requires routes.slack"
         self.account_ok = False
+        self._authenticated_team = ""
         self._reported_problems = False
 
     # -- startup --
 
     def set_authenticated_account(self, team_id: str) -> None:
         """Compare the token's team against config; mismatch disables dispatch."""
+        self._authenticated_team = team_id
         if team_id and team_id == self.teams.account_id:
             self.account_ok = True
             log.info("Slack teams mode active for account %s", team_id)
@@ -83,6 +86,33 @@ class TeamsRouter:
                 self.teams.account_id, team_id,
             )
         self._report_config_problems()
+
+    def _refresh_teams(self) -> TeamsConfig | None:
+        """Reload the teams config from disk so intake sees current config.
+
+        Without this, resolution and binding_revision run against the
+        process-start snapshot while the revalidator reads fresh config — so a
+        newly authorized user would be ignored, or a benign edit would spuri-
+        ously refuse queued turns. Returns None (dispatch disabled) when the
+        config stopped being teams-mode or the authenticated account no longer
+        matches. Never raises.
+        """
+        try:
+            fresh = load_teams(load_config())
+        except Exception:
+            log.exception("Failed to reload teams config; using last-known snapshot")
+            fresh = self.teams
+        if fresh is None:
+            return None
+        if self._authenticated_team and fresh.account_id != self._authenticated_team:
+            log.error(
+                "routes.slack.account_id changed to %r, no longer matches the "
+                "authenticated team %r — dispatch disabled",
+                fresh.account_id, self._authenticated_team,
+            )
+            return None
+        self.teams = fresh
+        return fresh
 
     def _report_config_problems(self) -> None:
         if self._reported_problems:
@@ -118,7 +148,6 @@ class TeamsRouter:
         self, transport: SlackTransport, client: Any, event: dict, *, is_mention: bool
     ) -> None:
         """Run one Slack event through the full teams pipeline."""
-        teams = self.teams
         user = event.get("user", "")
         channel = event.get("channel", "")
         ts = event.get("ts", "")
@@ -127,6 +156,12 @@ class TeamsRouter:
             return
         if not self.account_ok:
             return  # mismatched account: silence for everyone, logged at start
+        # Resolve against current config, not the process-start snapshot, so
+        # config edits take effect without a restart (fixes a newly authorized
+        # user being ignored and stale binding_revision refusals).
+        teams = await asyncio.to_thread(self._refresh_teams)
+        if teams is None:
+            return
 
         # Only `im` conversations are DMs; everything else is an exact
         # channel route. app_mention events carry no channel_type, so DM
@@ -358,6 +393,29 @@ class TeamsRouter:
         )
 
         if command_name is not None:
+            # Commands are capabilities too — re-resolve against current
+            # config immediately before running, exactly as a provider turn
+            # would. A user revoked (or a route/workspace changed) between
+            # intake and now must not keep the command surface.
+            revalidate = self._make_revalidator(
+                user=user, is_dm=is_dm, channel=channel, route=route,
+                brev=brev, provider=provider,
+                policy_revision=launch.policy_revision, turn_id=turn_id,
+            )
+            try:
+                verdict = await asyncio.to_thread(revalidate)
+            except Exception:
+                log.exception("Command revalidation failed; refusing")
+                verdict = "revalidation_failed"
+            if verdict is not None:
+                if verdict != "revoked":
+                    with contextlib.suppress(Exception):
+                        await ctx.reply(
+                            "This command was made under configuration that has "
+                            "since changed and was not run. Please resend it."
+                        )
+                await self._complete_ledger(account, delivery, turn_id)
+                return
             command_context = ExecutionContext(
                 chat_key=chat_key,
                 path=workspace.path,
@@ -389,6 +447,14 @@ class TeamsRouter:
             text=text, is_mention=is_mention, is_dm=is_dm,
         )
         if not prompt:
+            # Nothing to run (bare mention, no text/files/context). Finalize
+            # the turn so an audited route never leaves it pending.
+            if turn_id is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.to_thread(
+                        audit.complete_turn, turn_id, "ignored",
+                        terminal_reason="empty_request",
+                    )
             await self._complete_ledger(account, delivery, turn_id)
             return
 
@@ -452,6 +518,7 @@ class TeamsRouter:
         command_context: ExecutionContext,
     ) -> None:
         usable = self._usable_providers(workspace)
+        outcome, reason = "error", "exception"
         try:
             response = await transport._handle_command(
                 text, chat_key, ctx=ctx,
@@ -460,10 +527,13 @@ class TeamsRouter:
             )
             if response:
                 await ctx.reply(response)
+            outcome, reason = "completed", None
         finally:
             if turn_id is not None:
                 try:
-                    await asyncio.to_thread(audit.complete_turn, turn_id, "completed")
+                    await asyncio.to_thread(
+                        audit.complete_turn, turn_id, outcome, terminal_reason=reason,
+                    )
                 except Exception:
                     log.exception("Failed to complete command audit turn")
             await self._complete_ledger(account, delivery, turn_id)
@@ -603,12 +673,18 @@ class TeamsRouter:
         return None
 
     def _make_completer(self, account: str, delivery: str, turn_id: str | None):
-        """Terminal bookkeeping for a dispatched turn. Idempotent, sync."""
+        """Terminal bookkeeping for a dispatched turn. Idempotent, sync.
 
-        def on_complete() -> None:
+        Records the real terminal outcome the runtime reports (completed,
+        error, timeout, stopped, or a pre-run block). complete_turn is a
+        no-op on an already-terminal row, so a revalidation refusal recorded
+        earlier is never overwritten.
+        """
+
+        def on_complete(outcome: str = "completed", terminal_reason: str | None = None) -> None:
             if turn_id is not None:
                 try:
-                    audit.complete_turn(turn_id, "completed")
+                    audit.complete_turn(turn_id, outcome, terminal_reason=terminal_reason)
                 except Exception:
                     log.exception("Failed to complete audit turn %s", turn_id)
             try:

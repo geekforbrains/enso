@@ -461,6 +461,58 @@ async def test_legacy_mode_still_works_without_routes(tmp_enso, monkeypatch):
     assert runtime.dispatch.call_args.kwargs.get("context") is None
 
 
+async def test_command_refused_after_revocation(tmp_enso, monkeypatch):
+    """A user revoked between intake and now must lose the command surface too."""
+    config = _teams_config(tmp_enso)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+    # Revoke DEV right before the command runs (revalidator reads fresh config).
+    config["groups"]["team"]["slack"].remove(DEV)
+    await transport._handle_app_mention(_mention(text="<@UBOT> !status"), client)
+    # !status never ran; the reply is the stale-config refusal, not a status line.
+    reply = (client.chat_postMessage.call_args.kwargs["text"]
+             if client.chat_postMessage.called else "")
+    assert "claude · " not in reply
+    rt.dispatch.assert_not_awaited()
+
+
+async def test_newly_authorized_user_recognized_without_restart(tmp_enso, monkeypatch):
+    """Adding a user to an allowed group takes effect on the next event."""
+    config = _teams_config(tmp_enso)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+    newcomer = "U09NEW"
+    # Unknown at first — silently ignored.
+    await transport._handle_app_mention(_mention(user=newcomer), client)
+    rt.dispatch.assert_not_awaited()
+    # Operator adds them to the team group (no restart).
+    config["groups"]["team"]["slack"].append(newcomer)
+    await transport._handle_app_mention(
+        _mention(user=newcomer, ts="200.2"), client
+    )
+    rt.dispatch.assert_awaited_once()
+
+
+async def test_account_id_change_disables_dispatch(tmp_enso, monkeypatch):
+    config = _teams_config(tmp_enso)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+    config["routes"]["slack"]["account_id"] = "TDIFFERENT"
+    await transport._handle_app_mention(_mention(), client)
+    rt.dispatch.assert_not_awaited()
+
+
+async def test_empty_prompt_turn_is_finalized_not_pending(tmp_enso, monkeypatch):
+    """A bare mention with no runnable content must not leave an audited turn pending."""
+    transport, rt = _make_transport(tmp_enso, monkeypatch)
+    client = _make_client()
+    await transport._handle_app_mention(_mention(text="<@UBOT>"), client)  # empty prompt
+    rt.dispatch.assert_not_awaited()
+    (row,) = _audit_rows(tmp_enso)
+    assert row["outcome"] == "ignored"
+    assert row["terminal_reason"] == "empty_request"
+
+
 async def test_startup_reconcile_closes_orphans(tmp_enso, monkeypatch):
     from enso import audit, ledger
 
