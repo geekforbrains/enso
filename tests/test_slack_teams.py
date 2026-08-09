@@ -26,7 +26,7 @@ def _teams_config(tmp_enso: str) -> dict:
     for d in (ops, acme, policies / "claude"):
         d.mkdir(parents=True, exist_ok=True)
     settings = policies / "claude" / "settings.json"
-    settings.write_text(json.dumps({"sandbox": {"enabled": True}}))
+    settings.write_text(json.dumps({"sandbox": {"enabled": True}, "disableAllHooks": True}))
     settings.chmod(0o600)
     return {
         "working_dir": str(base / "workspace"),
@@ -408,7 +408,7 @@ async def test_revalidator_detects_revocation_and_policy_change(tmp_enso, monkey
     settings.chmod(0o600)
     assert context.revalidate() == "resolution_changed"
 
-    settings.write_text(json.dumps({"sandbox": {"enabled": True}}))
+    settings.write_text(json.dumps({"sandbox": {"enabled": True}, "disableAllHooks": True}))
     settings.chmod(0o600)
     config["groups"]["team"]["slack"].remove(DEV)
     assert context.revalidate() == "revoked"

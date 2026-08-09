@@ -23,7 +23,7 @@ def _teams_config(tmp_enso: str) -> dict:
     for d in (ops, acme, policies):
         d.mkdir(parents=True, exist_ok=True)
     settings = policies / "settings.json"
-    settings.write_text(json.dumps({"sandbox": {"enabled": True}}))
+    settings.write_text(json.dumps({"sandbox": {"enabled": True}, "disableAllHooks": True}))
     settings.chmod(0o600)
     return {
         "working_dir": str(base / "workspace"),

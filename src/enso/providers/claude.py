@@ -73,16 +73,18 @@ class ClaudeProvider(BaseProvider):
     def _permission_args(launch) -> list[str]:
         """Permission flags per the launch contract in permissions.md.
 
-        A policy launch loads exactly the operator's settings file, suppresses
-        user/project/local settings sources, denies anything a prompt would
-        have asked about (headless has nobody to ask), and keeps ambient MCP
-        servers out. Otherwise: today's bypass invocation.
+        A policy launch loads exactly the operator's settings file, excludes
+        the operator's user settings (so their personal rules cannot widen a
+        workspace) while leaving the CLI's own instruction and skill discovery
+        working, denies anything a prompt would have asked about (headless has
+        nobody to ask), and keeps ambient MCP servers out. Otherwise: today's
+        bypass invocation.
         """
         if launch is not None and launch.mode == "policy":
             return [
                 "--settings", launch.policy_path,
                 "--permission-mode", "dontAsk",
-                "--setting-sources", "",
+                "--setting-sources", "project",
                 "--strict-mcp-config",
             ]
         return ["--dangerously-skip-permissions"]

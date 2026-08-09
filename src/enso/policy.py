@@ -127,7 +127,8 @@ def check_provider(workspace: Workspace, provider: str) -> PolicyCheck:
     path = policy_path(workspace, provider)
     if path is None:
         reason = (
-            "agy has no permission model and requires an unrestricted workspace"
+            "agy has no verified Enso launch contract and requires an "
+            "unrestricted workspace"
             if provider == "agy"
             else f"unknown provider {provider!r}"
         )
@@ -190,6 +191,15 @@ def _check_claude_settings(path: str) -> tuple[list[str], list[str]]:
         return [f"settings.json does not parse: {exc}"], []
     if not isinstance(settings, dict):
         return ["settings.json must be a JSON object"], []
+    problems = []
+    # Hooks in a workspace .claude/settings.json execute outside the permission
+    # system and outside the sandbox, and the agent can write that file itself.
+    # This key is Enso's launch floor, not a judgement of the operator's policy.
+    if settings.get("disableAllHooks") is not True:
+        problems.append(
+            'must set "disableAllHooks": true — without it a workspace '
+            ".claude/settings.json can run arbitrary commands outside the sandbox"
+        )
     warnings = []
     sandbox = settings.get("sandbox")
     if not (isinstance(sandbox, dict) and sandbox.get("enabled") is True):
@@ -197,7 +207,7 @@ def _check_claude_settings(path: str) -> tuple[list[str], list[str]]:
             "sandbox.enabled is not true: permission rules govern Claude's own "
             "tools only; subprocesses need the OS sandbox or outer isolation"
         )
-    return [], warnings
+    return problems, warnings
 
 
 def _check_codex_config(path: str) -> list[str]:
@@ -254,7 +264,16 @@ def prepare_launch(workspace: Workspace, provider: str) -> Launch:
     home: str | None = None
     ignore_rules = True
     if provider == "codex":
-        home, ignore_rules = _stage_codex_home(workspace, check.policy_revision)
+        try:
+            home, ignore_rules = _stage_codex_home(workspace, check.policy_revision)
+        except PolicyError:
+            raise
+        except OSError as exc:
+            # A read-only or unwritable policy dir must refuse this turn, not
+            # escape as an unhandled error after the delivery was claimed.
+            raise PolicyError(
+                provider, (f"could not stage the Codex runtime home: {exc}",)
+            ) from exc
         env["CODEX_HOME"] = home
     return Launch(
         mode="policy",

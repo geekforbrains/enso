@@ -15,6 +15,7 @@ from enso.teams import Workspace
 CLAUDE_SETTINGS = {
     "permissions": {"deny": ["Bash(enso *)"]},
     "sandbox": {"enabled": True},
+    "disableAllHooks": True,
 }
 
 CODEX_CONFIG = 'default_permissions = "enso"\n\n[permissions.enso]\nnetwork = false\n'
@@ -125,7 +126,7 @@ def test_policy_resolving_into_workspace_fails(tmp_path):
 
 
 def test_claude_without_sandbox_warns(tmp_path):
-    write_claude_policy(tmp_path, {"permissions": {"deny": []}})
+    write_claude_policy(tmp_path, {"permissions": {"deny": []}, "disableAllHooks": True})
     check = policy.check_provider(make_workspace(tmp_path), "claude")
     assert check.ok
     assert any("sandbox" in w for w in check.warnings)
@@ -171,7 +172,7 @@ def test_revision_changes_with_policy_bytes(tmp_path):
     write_claude_policy(tmp_path)
     ws = make_workspace(tmp_path)
     first = policy.check_provider(ws, "claude").policy_revision
-    write_claude_policy(tmp_path, {"permissions": {"deny": ["WebFetch"]}})
+    write_claude_policy(tmp_path, {"permissions": {"deny": ["WebFetch"]}, "disableAllHooks": True})
     second = policy.check_provider(ws, "claude").policy_revision
     assert first != second
 
@@ -284,7 +285,7 @@ def test_claude_policy_command_drops_bypass():
     assert "--dangerously-skip-permissions" not in cmd
     assert cmd[cmd.index("--settings") + 1] == "/protected/claude/settings.json"
     assert cmd[cmd.index("--permission-mode") + 1] == "dontAsk"
-    assert cmd[cmd.index("--setting-sources") + 1] == ""
+    assert cmd[cmd.index("--setting-sources") + 1] == "project"
     assert "--strict-mcp-config" in cmd
 
 
@@ -315,3 +316,59 @@ def test_codex_policy_command_loads_staged_rules():
     launch = _policy_launch(provider="codex", home="/staged", ignore_rules=False)
     cmd = provider.build_command("hi", "sol", launch=launch)
     assert "--ignore-rules" not in cmd
+
+
+# -- Launch contract hardening --
+
+
+def test_claude_policy_requires_disable_all_hooks(tmp_path):
+    """Without it, an agent can write workspace hooks that run outside the sandbox."""
+    write_claude_policy(tmp_path, {"sandbox": {"enabled": True}})
+    check = policy.check_provider(make_workspace(tmp_path), "claude")
+    assert not check.ok
+    assert any("disableAllHooks" in p for p in check.problems)
+
+
+def test_claude_policy_rejects_disable_all_hooks_false(tmp_path):
+    write_claude_policy(tmp_path, {"sandbox": {"enabled": True}, "disableAllHooks": False})
+    check = policy.check_provider(make_workspace(tmp_path), "claude")
+    assert not check.ok
+
+
+def test_claude_policy_with_disable_all_hooks_passes(tmp_path):
+    write_claude_policy(tmp_path, {"sandbox": {"enabled": True}, "disableAllHooks": True})
+    check = policy.check_provider(make_workspace(tmp_path), "claude")
+    assert check.ok, check.problems
+
+
+def test_unrestricted_workspace_skips_hook_requirement(tmp_path):
+    ws = make_workspace(tmp_path, unrestricted=True, providers=("claude",))
+    assert policy.check_provider(ws, "claude").ok
+
+
+def test_agy_refusal_cites_missing_contract_not_missing_model(tmp_path):
+    """agy does have a permission model; the honest reason is no verified contract."""
+    check = policy.check_provider(make_workspace(tmp_path, providers=("agy",)), "agy")
+    assert not check.ok
+    joined = " ".join(check.problems)
+    assert "no permission model" not in joined
+    assert "unrestricted" in joined
+
+
+def test_claude_launch_uses_project_setting_source():
+    provider = ClaudeProvider("claude")
+    cmd = provider.build_command("hi", "opus", launch=_policy_launch())
+    assert cmd[cmd.index("--setting-sources") + 1] == "project"
+
+
+def test_codex_staging_failure_raises_policy_error(tmp_path, monkeypatch):
+    """A read-only policy dir must refuse the turn, not escape as PermissionError."""
+    write_codex_policy(tmp_path)
+    ws = make_workspace(tmp_path, providers=("codex",))
+
+    def boom(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(policy.os, "makedirs", boom)
+    with pytest.raises(policy.PolicyError):
+        policy.prepare_launch(ws, "codex")
