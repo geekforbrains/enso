@@ -1,13 +1,15 @@
 # Permissions
 
-**Planned.** Nothing in this document ships today. It defines how Enso selects and
-launches an agent CLI after a workspace has been resolved. Enso remains a thin proxy: it
-does not invent a permission language, translate policy between providers, or certify that
-two providers enforce equivalent access.
+How Enso selects and launches an agent CLI after a workspace has been resolved. Enso
+remains a thin proxy: it does not invent a permission language, translate policy between
+providers, or certify that two providers enforce equivalent access.
 
-**Verified against:** Claude Code 2.1.226 and Codex CLI 0.147.0 on 2026-08-09. Both
-permission surfaces change frequently. Re-verify the launch contract and native policy
-syntax before implementation or a supported-version change.
+**Verified against:** Claude Code 2.1.226 and Codex CLI 0.147.0 on 2026-08-09, exercised
+by an adversarial harness (reads of `~/.ssh`, `~/.enso/enso.db` via a `sqlite3` subprocess,
+out-of-workspace writes, the `enso` CLI, secret env vars) that confirmed each escape is
+blocked and legitimate in-workspace work is allowed. Both permission surfaces change
+frequently; re-verify the launch contract and native policy syntax on a supported-version
+change.
 
 Sibling specs: [teams.md](teams.md) owns Slack groups, routes, and workspace selection.
 This document starts after one workspace and provider have been selected.
@@ -74,15 +76,14 @@ must not resolve through a symlink into the workspace, and must sit outside ever
 agent can write. A read-only bit alone is not a boundary when the agent runs as the same OS
 user; the selected native sandbox or an outer container/VM must enforce non-writability.
 
-Some CLIs require policy at a provider-specific runtime location. Enso may stage a
-byte-for-byte copy in a protected runtime config directory and select it explicitly. That
-is configuration plumbing, not compilation. The exact source digest and staged digest
-must match. A native config may itself reference other files. The operator must use
-absolute protected references, or Enso must stage the complete referenced subtree with
-its relative topology unchanged; Enso never rewrites references. Every dependency joins
-the policy manifest and `policy_revision`. An escaping, missing, writable, or
-semantics-changing dependency makes the provider unavailable. Staging and session-resume
-behaviour must be proven against the pinned CLI before implementation.
+Codex requires its policy at a provider-specific runtime location, so Enso stages a
+byte-for-byte copy into a protected runtime home and selects it explicitly (see the Codex
+launch contract below). That is configuration plumbing, not compilation: the source digest
+and the staged digest must match, and both join the policy manifest and `policy_revision`.
+Enso stages the config file and any configured `.rules` files; it never rewrites
+references, so a native config that points at other files must use absolute protected
+references for them. An escaping, missing, or writable dependency makes the provider
+unavailable.
 
 ## Dispatch gate
 
@@ -92,65 +93,58 @@ For the selected workspace and provider:
    native policy source. Enso never chooses one mode by precedence.
 1. If `unrestricted: true`, run the existing bypass invocation.
 1. Otherwise locate the provider's canonical native policy.
-1. Require a regular file outside the workspace and parse its JSON or TOML syntax.
-1. Run the provider-native validation/preflight and confirm the intended source was
-   loaded. A CLI that silently ignores the file is a failure.
+1. Require a regular, owner-only file resolving outside the workspace, and parse its JSON
+   or TOML syntax.
+1. Compute the `policy_revision` digest and, for Codex, stage the protected runtime home.
 1. Construct the provider-specific command below without a bypass flag or ambient policy
    source.
 
 Any failure refuses only that turn and reports the exact reason to an authorized caller.
-The service and other workspaces continue running. There is never a fallback from step 2
-through 5 to unrestricted mode.
+The service and other workspaces continue running; there is never a fallback to
+unrestricted mode. Enso does not run the provider's own validator, so an operator confirms
+the policy has the intended effect through the testing described below.
 
 ## Claude Code launch contract
 
-The policy-controlled invocation is based on:
+The policy-controlled invocation, verified against Claude 2.1.226:
 
 ```text
-claude --setting-sources "" --settings <protected-settings> \
-  --permission-mode dontAsk --strict-mcp-config --no-chrome \
-  --tools <workspace-tools> -p ...
+claude -p --output-format stream-json --verbose \
+  --settings <protected-settings> --permission-mode dontAsk \
+  --setting-sources "" --strict-mcp-config --model <model> \
+  [--session-id <id> | --resume <id>] -- <prompt>
 ```
 
-The adapter must verify the exact argument ordering, empty setting-source syntax, isolated
-config/home behaviour, and session resume behaviour against the pinned version.
-
-- Drop `--dangerously-skip-permissions`; it is reserved for `unrestricted: true`.
-- Pass `--settings` explicitly. In Claude 2.1.226 this source overrides matching scalar
-  keys but omitted keys retain lower-layer values, and array settings such as permission
-  and sandbox paths merge across sources. `--settings` alone is therefore not isolation.
-- Suppress user, project, and local settings sources and run with an isolated provider
-  config/home containing only the authentication and runtime state the invocation needs.
-  Ambient user CLAUDE.md, skills, plugins, hooks, MCP servers, commands, agents, and
-  auto-memory must not leak into the workspace. Managed organizational policy may still
+- `--dangerously-skip-permissions` is dropped; it is reserved for `unrestricted: true`.
+- `--settings` names the operator's file explicitly. In Claude 2.1.226 this source
+  overrides matching scalar keys but omitted keys retain lower-layer values, and array
+  settings such as permission and sandbox paths merge across sources — so `--settings`
+  alone is not isolation.
+- `--setting-sources ""` suppresses the user, project, and local settings sources, so
+  ambient user `CLAUDE.md`, skills, plugins, hooks, MCP servers, commands, agents, and
+  auto-memory do not leak into the workspace. Managed organizational policy may still
   apply.
-- Use `--permission-mode dontAsk`. A headless process has nobody to approve a prompt, so
-  every unapproved or `ask` action must be denied rather than stalled.
-- Use `--strict-mcp-config`; pass only a protected workspace-specific MCP file when the
-  operator explicitly configures one. Disable Chrome and other ambient integrations by
-  default.
-- Pass an explicit `--tools` list. Permission rules approve calls; `--tools` controls
-  which built-ins exist at all.
+- `--permission-mode dontAsk` denies every unapproved or `ask` action rather than stalling;
+  a headless process has nobody to approve a prompt.
+- `--strict-mcp-config` keeps ambient MCP servers out; a protected workspace-specific MCP
+  file is passed only when the operator configures one.
 
-The protected project instructions and allowlisted workspace skills are intentional
-inputs and remain available from the cwd. Enso provisions only those inputs, read-only,
-instead of loading the operator's ambient customizations. `--safe-mode` is useful for
-diagnostics but is not the normal launch contract because it also disables these intended
-instructions and skills. If the pinned CLI cannot combine isolated ambient state with the
-protected project inputs, Claude is unavailable for policy-controlled workspaces.
+The protected project instructions (`AGENTS.md`/`CLAUDE.md`) and allowlisted workspace
+skills are intentional inputs and remain available from the cwd.
 
 Claude's sandbox is separate from permission mode and applies only to Bash and its child
-processes. It is disabled by default. If an operator relies on it as the boundary, their
-native file should set `sandbox.enabled: true`, `sandbox.failIfUnavailable: true`, and
-`sandbox.allowUnsandboxedCommands: false`; filesystem and network rules then apply at the
-OS layer to Bash children. Other Claude tools remain governed by their own permission
-rules. Enso reports these settings but does not declare them universally required because
-an operator may provide a container or VM boundary instead.
+processes; it is disabled by default. An operator relying on it as the boundary should set
+`sandbox.enabled: true`, `sandbox.failIfUnavailable: true`, and
+`sandbox.allowUnsandboxedCommands: false` in the native file; filesystem and network rules
+then apply at the OS layer to Bash children. Other Claude tools remain governed by their
+own permission rules. Enso warns when the sandbox is off but does not require it, since an
+operator may provide a container or VM boundary instead.
 
-Claude `-p` silently ignores invalid settings rather than presenting an interactive error
-dialog. JSON parsing alone is insufficient: preflight must use Claude's own validation and
-prove that the explicit settings source was loaded. If that cannot be established for the
-pinned version, dispatch is blocked.
+Claude `-p` silently ignores invalid settings rather than raising an interactive error, so
+the operator verifies enforcement with the native diagnostics and disposable test
+workspaces described under [Operator testing](#operator-testing). Enso's own check is
+plumbing, not semantics: it confirms the file parses and is a protected regular file, not
+that a given rule has the intended effect.
 
 References: [settings](https://code.claude.com/docs/en/settings), [CLI](https://code.claude.com/docs/en/cli-usage), [permission modes](https://code.claude.com/docs/en/permission-modes), and [sandboxing](https://code.claude.com/docs/en/sandboxing).
 
@@ -204,10 +198,10 @@ rejects many model slugs (`gpt-5.1-codex`, `gpt-5-codex`, …) with a 400 before
 applies, so a workspace's Codex model must be one the operator's account actually serves
 (the security harness used the `sol` → `gpt-5.6-sol` alias).
 
-The profile and its referenced subtree are staged without changing bytes or relative
-topology; this is not an Enso translation. Codex resolves native references such as
-`agents.<name>.config_file` relative to the declaring config, so copying only the root
-file is invalid unless every reference is absolute and protected. The dedicated,
+The `config.toml` and any `.rules` files are staged byte-for-byte (digests must match);
+this is not an Enso translation. Codex resolves native references such as
+`agents.<name>.config_file` relative to the declaring config, and Enso does not stage those
+extra files, so any such reference must be an absolute protected path. The dedicated,
 service-owned `CODEX_HOME` contains only this staged tree, required authentication
 (`auth.json`, copied from the user Codex home), and workspace-scoped runtime state; it is
 never the operator's normal home or inside the writable workspace. The adapter:
@@ -264,23 +258,24 @@ the real control.
 
 `enso policy check` runs at startup and on demand. It verifies plumbing, not semantics:
 
-| Check                                                                          | Result         |
-| ------------------------------------------------------------------------------ | -------------- |
-| Workspace path exists and is a directory                                       | error          |
-| A policy-controlled provider lacks its canonical native file                   | provider error |
-| `unrestricted: true` and any native policy source are both present             | error          |
-| Canonical file is regular, outside cwd, and owner-only                         | provider error |
-| JSON/TOML parses and provider-native preflight accepts it                      | provider error |
-| Pinned provider version supports the launch contract                           | provider error |
-| Intended source/profile is selected with no ambiguous higher-precedence source | provider error |
-| Bypass flag appears in a policy-controlled launch                              | provider error |
-| Codex mixes permission profiles and legacy sandbox settings                    | provider error |
-| `agy` is enabled without `unrestricted: true`                                  | provider error |
+| Check                                                                | Result         |
+| -------------------------------------------------------------------- | -------------- |
+| Workspace path exists and is a directory                             | error          |
+| Teams schema is valid (known groups/workspaces, `default_provider`)  | error          |
+| `unrestricted: true` and any native policy source are both present   | workspace error |
+| A policy-controlled provider lacks its canonical native file         | provider error |
+| Canonical file is a regular, owner-only file resolving outside cwd   | provider error |
+| JSON/TOML parses                                                     | provider error |
+| Codex mixes permission profiles and legacy sandbox settings          | provider error |
+| `agy` is enabled without `unrestricted: true`                        | provider error |
+| Claude sandbox is not enabled in a policy-controlled workspace        | warning        |
 
 Startup reports all workspaces and continues. A workspace-level structural error blocks
 that workspace. A provider-specific error refuses only that provider, so another
 correctly configured provider in the same structurally valid workspace remains usable.
-Diagnostics do not rewrite or grade an otherwise valid native policy.
+The check confirms the file parses and is protected; it does not run the provider's own
+validator or grade an otherwise valid native policy. Enforcement is the operator's to
+verify — see the next section.
 
 ## Operator testing
 

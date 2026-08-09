@@ -43,9 +43,9 @@ overview, organisation, and managing the scheduled work Enso already runs.
 ## Non-goals (v1)
 
 - **No chat in the web UI.** Conversation stays in Telegram/Slack.
-- **No dashboard accounts / login.** Enso remains a single-operator service even when the
-  planned Slack [teams mode](specs/teams.md) authorizes coworkers or clients to use exact
-  chat routes. Those participants are not Enso accounts and receive no web access. The
+- **No dashboard accounts / login.** Enso remains a single-operator service even when
+  Slack [teams mode](specs/teams.md) authorizes coworkers or clients to use exact chat
+  routes. Those participants are not Enso accounts and receive no web access. The
   web UI binds to localhost; remote access is via Tailscale (see
   [architecture.md](specs/architecture.md)). A configured shared token is the only
   built-in authentication; leaving it empty disables authentication.
@@ -68,9 +68,8 @@ overview, organisation, and managing the scheduled work Enso already runs.
   or operator needs to query. Registration supplies discovery metadata and UI visibility;
   it does not transfer schema/row ownership to Enso. See [tables.md](specs/tables.md).
 - **Transport / notify** — the existing chat delivery layer (Telegram/Slack). Job
-  completion and failure notifications ride it. Planned Slack teams mode refuses
-  out-of-band delivery to an audited route until those messages have their own audit
-  schema.
+  completion and failure notifications ride it. Slack teams mode refuses out-of-band
+  delivery to an audited route, which would need its own audit schema.
 
 ## Key decisions
 
@@ -84,15 +83,15 @@ overview, organisation, and managing the scheduled work Enso already runs.
 | Web access | Bind **localhost** by default; Tailscale for remote; Host allowlist and optional shared token. No login |
 | Web capability | **Read/write, scoped to owned files** — edit job prompts, toggle/run jobs, edit Enso-owned skills and `AGENTS.md`; full job/skill CRUD is planned. External skills are read-only |
 | Tables web capability | **Read-only, bounded inspection** — list metadata, show schema, and page through capped previews; no SQL or row/schema mutations |
-| Notifications | Reuse `transport.notify` / `enso message send`; planned Slack teams mode blocks out-of-band sends to audited routes until they can be audited |
+| Notifications | Reuse `transport.notify` / `enso message send`; Slack teams mode blocks out-of-band sends to audited routes |
 
 ## Personas
 
 One owner persona: the operator. Runs Enso as a personal service on their own machine,
 talks to it from their phone via Telegram/Slack, and wants a laptop/desktop (or
 phone-over-Tailscale) surface to organise scheduled work and audit what the agents have
-been doing — without turning Enso into a hosted product. Planned Slack teams participants
-are authorized chat senders, not additional owners or dashboard personas.
+been doing — without turning Enso into a hosted product. Slack teams participants are
+authorized chat senders, not additional owners or dashboard personas.
 
 ## Features
 

@@ -1,11 +1,10 @@
 # Teams
 
-**Planned.** Nothing in this document ships today. Teams mode applies to Slack only: it
-defines who may address Enso, which workspace handles a Slack DM or channel mention, and
-what gets recorded. Telegram keeps its current private, one-to-one authorization and
-default workspace behavior; there is no `routes.telegram` in this design. The Telegram
-transport must reject every non-private chat type so authorized IDs cannot invoke Enso
-from a Telegram group.
+Teams mode applies to Slack only: it defines who may address Enso, which workspace handles
+a Slack DM or channel mention, and what gets recorded. Telegram keeps its private,
+one-to-one authorization and default workspace behavior; there is no `routes.telegram`.
+The Telegram transport rejects every non-private chat type so authorized IDs cannot invoke
+Enso from a Telegram group.
 
 Sibling specs own the implementation details: [permissions.md](permissions.md) owns how
 Enso invokes each agent CLI with its native policy, [architecture.md](architecture.md)
@@ -16,12 +15,12 @@ This document never invents a cross-provider permission language. Enso remains a
 proxy over the installed agent CLIs; the operator authors and tests their native policy
 files. See [permissions.md](permissions.md).
 
-## Why the current model does not scale
+## Why the single-allowlist model does not scale
 
-Enso today has one Slack allowlist (`transports.slack.allowed_users`), one `working_dir`,
-and one implicit trust level: every permitted user gets an agent running unsandboxed in
-the same workspace. That is appropriate for one operator and unsafe once coworkers,
-clients, DMs, and shared channels have different access needs.
+Without teams mode, Enso has one Slack allowlist (`transports.slack.allowed_users`), one
+`working_dir`, and one implicit trust level: every permitted user gets an agent running
+unsandboxed in the same workspace. That is appropriate for one operator and unsafe once
+coworkers, clients, DMs, and shared channels have different access needs.
 
 The direct extension — make groups and give each group a workspace — creates ambiguity:
 
@@ -278,9 +277,8 @@ before `prerun` or provider spawn. A changed or deleted job, workspace, provider
 cancels that snapshot instead of running old authorization against new files. An enabled
 job missing `workspace:` is a visible startup/load error and is never scheduled.
 
-A job `prerun` currently executes outside the provider CLI. V1 therefore permits it only
-for an explicitly unrestricted workspace. A provider policy cannot govern it, and no
-outer-executor contract is defined yet.
+A job `prerun` executes outside the provider CLI, so a provider policy cannot govern it;
+Enso therefore permits `prerun` only for an explicitly unrestricted workspace.
 
 Job execution remains run history, not a chat audit turn.
 
@@ -301,9 +299,9 @@ is in [data-model.md § Audit log](data-model.md#audit-log).
 - `audit: false` means no `_enso_audit` turn. Teams-mode operational logs are
   metadata-only and never contain prompt previews, but Slack retention, native provider
   session history, and uploads remain separate retention surfaces.
-- To keep the one-row turn contract complete, v1 refuses `enso message send`, job alerts,
-  hooks, and other out-of-band sends whose destination is an audited Slack route. Those
-  paths need a separate outbound-event audit schema before they may target one.
+- To keep the one-row turn contract complete, Enso refuses `enso message send`, job
+  alerts, and other out-of-band sends whose destination is an audited Slack route. Those
+  paths would need a separate outbound-event audit schema to target one.
 - `!status` reports the route's audit state, and startup logs enumerate audited routes.
 
 The operator's native provider policy or outer isolation must deny access to
@@ -326,24 +324,14 @@ only allowlisted skills, and does not link jobs, docs, config, or the database i
 policy-controlled workspace. These controls complement rather than replace the provider's
 native policy.
 
-## Delivery
+A Slack route is dispatchable only when its workspace explicitly selects
+`unrestricted: true` or the active provider's native policy can be loaded by the CLI.
+Missing, ambiguous, or stale configuration blocks.
 
-| Phase | Scope | New teams-mode access |
-| --- | --- | --- |
-| **0** | Replace global/per-chat state with structured execution keys; thread immutable `Resolution` through commands, queues, sessions, uploads, messages, and providers; add workspace-level concurrency | None |
-| **1** | Add workspace, group, route, and policy-path schemas plus fail-closed validation; retain legacy Slack behavior while teams mode is dark | None |
-| **2** | Add the Slack delivery ledger plus turn-based audit storage, retention, export, and dashboard visibility behind the dark teams-mode path | None |
-| **3** | Add native Claude/Codex policy selection, non-yolo invocation, environment scrubbing, and launch-plumbing diagnostics behind the dark teams-mode path | None |
-| **4** | Enable `routes.slack`, audit capture, exact channel/DM authorization, command/provider/context gating, and explicit workspace jobs together | Only routes whose workspace is usable |
+## Decisions
 
-A Slack route is never enabled merely because routing code exists. It becomes dispatchable
-only when its workspace explicitly selects `unrestricted: true` or the active provider's
-native policy can be loaded by the CLI. Missing, ambiguous, or stale configuration blocks.
-
-## Decisions recorded
-
-- Teams mode is Slack-only; Telegram uses its existing allowlist and must remain private
-  and one-to-one.
+- Teams mode is Slack-only; Telegram uses its existing allowlist and remains private and
+  one-to-one.
 - Routes are transport-qualified and exact; there is no dispatchable default route.
 - Group declaration order has no security meaning.
 - Enso does not define or compile a generic permission policy.

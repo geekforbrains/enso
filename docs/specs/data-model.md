@@ -284,12 +284,11 @@ Notes:
   block when an explicit `runs` value does not already take precedence, then remove the
   obsolete `tasks` block.
 
-## Teams (planned)
+## Teams
 
-**Planned.** None of this section ships today. It is the storage half of
-[teams.md](teams.md), which owns Slack route semantics; native CLI invocation is
-[permissions.md](permissions.md). This section is the sole owner of the config schema and
-audit table.
+The storage half of [teams.md](teams.md), which owns Slack route semantics; native CLI
+invocation is [permissions.md](permissions.md). This section is the sole owner of the
+teams config schema and the audit and delivery-ledger tables.
 
 ### Workspace and policy layout
 
@@ -438,9 +437,8 @@ Schema rules:
 
 - With no `routes.slack`, Enso stays in legacy Slack mode only when the pre-existing
   `transports.slack.allowed_users` key is present, and uses it with `working_dir`.
-- With neither `routes.slack` nor the legacy allowlist, Slack dispatch is blocked. New
-  setup writes the authenticated account ID plus empty teams-mode route maps rather than
-  relying on an absent key.
+- With neither `routes.slack` nor the legacy allowlist, Slack dispatch is blocked until
+  the operator adds one.
 - `routes.slack` and the legacy Slack allowlist are mutually exclusive. Enso rejects the
   ambiguous combination instead of choosing precedence.
 - Opting into teams mode never synthesizes routes from an old allowlist. The initial route
@@ -461,8 +459,8 @@ an explicit choice.
 
 The job's existing `provider` must be in that workspace's provider allowlist and have a
 usable native policy unless the workspace is explicitly unrestricted. `prerun` is valid
-only for unrestricted workspaces in v1. A job notification may not target an audited
-Slack route until the outbound audit schema exists.
+only for unrestricted workspaces. A job notification may not target an audited Slack
+route.
 
 Queued execution captures the complete job-file digest, a digest of the relevant
 workspace config, and the provider policy revision. Enso reloads and compares them after
@@ -578,14 +576,15 @@ even when the audit write fails.
 The delivery ledger is the idempotency authority. The audit unique index is additional
 defence against duplicate text rows and links back through `_enso_slack_events.audit_turn_id`.
 
-When a queued `accepted` turn fails revalidation, an existing audit row is completed with
-`outcome = 'blocked'` and the relevant `terminal_reason`; its original intake decision is
-not rewritten. A still-authorized sender receives a recorded configuration-changed error,
-while revoked access leaves `response_text` null and `delivery_status = 'not_attempted'`.
-If no row existed but the current route now enables audit, Enso first creates a terminal
-`denied`/`blocked` row for a still-authorized stale turn or an `ignored`/`ignored` row for
-revoked access. An existing row is always completed even if audit was disabled while the
-turn waited.
+When a queued `accepted` turn fails revalidation, its audit row is completed with
+`outcome = 'blocked'` (or `'ignored'` for revoked access) and the relevant
+`terminal_reason`; the original intake decision is not rewritten. A still-authorized sender
+receives a recorded configuration-changed error, while revoked access leaves
+`response_text` null and `delivery_status = 'not_attempted'`. Completion is idempotent, so
+a row already made terminal by revalidation is never overwritten by the runtime's final
+bookkeeping. At startup, any turn left `pending` by a crash is closed as
+`outcome = 'error'`, `terminal_reason = 'service_restart'`, preserving a delivery status
+the crash had already recorded.
 
 `_enso_audit` is Enso-owned and reserved by the existing `_enso_` prefix rule, so it never
 appears in the registered-tables catalog. The operator must deny policy-controlled
@@ -598,9 +597,9 @@ audit prevents new rows but does not delete existing evidence. It also does not 
 Slack retention, provider session history, or uploads. Teams-mode operational logs contain
 metadata only, never request or response text.
 
-V1 refuses `enso message send`, job alerts, hooks, and other out-of-band sends to an
-audited Slack route. These messages require a separate outbound-event audit schema before
-they can share an audited destination without creating a gap in “what Enso said.”
+Enso refuses `enso message send`, job alerts, and other out-of-band sends to an audited
+Slack route, since a message outside the one-row-per-turn contract would be a gap in “what
+Enso said” — supporting them would require a separate outbound-event audit schema.
 
 ## Cross-cutting rules
 

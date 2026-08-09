@@ -167,26 +167,26 @@ Connections are opened lazily per operation and the DB is created on first write
 runtime sends each complete telemetry operation through a worker thread; no SQLite
 connection is cached, shared across threads, or allowed to block the event loop.
 
-## Request resolution (planned)
+## Request resolution
 
-**Planned.** The enabling refactor for Slack [teams.md](teams.md); native CLI invocation
-is [permissions.md](permissions.md), and config/storage is
-[data-model.md](data-model.md). Telegram retains its user-ID allowlist and `working_dir`
-and must reject non-private chat types.
+The enabling refactor for Slack [teams.md](teams.md); native CLI invocation is
+[permissions.md](permissions.md), and config/storage is [data-model.md](data-model.md).
+Telegram retains its user-ID allowlist and `working_dir` and rejects non-private chat
+types.
 
-`Runtime` currently holds one `working_dir` for the whole process, read directly by
-`install_system_prompts`, `make_provider`, `run_provider`'s subprocess `cwd`, the Slack
-upload path, and job execution. That singleton is what makes a second workspace
-impossible, so conversation work receives an immutable execution context instead.
+Conversation work carries an immutable `ExecutionContext` instead of reading the process
+`working_dir`. The context holds the state key, the workspace cwd, the policy launch, and
+the workspace concurrency; it is threaded through `dispatch` → `process_request` →
+`run_provider` → the provider and used for the subprocess cwd, uploads, and sessions. The
+legacy context binds the global `working_dir` with the unrestricted invocation, so
+Telegram and legacy Slack are unchanged.
 
-For Slack teams mode, each inbound event receives an initial resolution before any
-command, context fetch, attachment download, or dispatch:
+For Slack teams mode, the router computes a resolution before any command, context fetch,
+attachment download, or dispatch, carrying:
 
 ```
-Resolution {
-  transport, account_id, route_id, groups, workspace_id, workspace_path,
-  provider, binding_revision, policy_revision, audit, context_from
-}
+account_id, route_id, groups, workspace_id, workspace_path,
+provider, binding_revision, policy_revision, audit, context_from
 ```
 
 The order is fixed:
@@ -201,55 +201,40 @@ The order is fixed:
 5. Create the audit turn when enabled.
 6. Only then process a command, fetch context, download files, or dispatch.
 
-The resulting value is threaded through `dispatch` → `process_request` →
-`run_provider` → the provider instance. The central route resolver repeats authorization
-and binding against the already-claimed delivery immediately before execution; it does
-not claim the event again. Downstream consumers never re-derive authorization ad hoc or
-re-read a global working directory.
+The router resolves against current config on every event (reloaded from disk), so a
+config edit takes effect without a restart, and it re-resolves again immediately before
+execution. Downstream consumers never re-derive authorization ad hoc or re-read a global
+working directory.
 
 ### Execution and session keys
 
-Cwd alone does not isolate sessions. Enso currently stores provider, model, effort,
-session, compaction, lock, queue, process, and activity state under conversation-only
-keys. A route or policy change could therefore resume a provider session created under a
-different workspace.
+Cwd alone does not isolate sessions. Provider, model, effort, session, compaction, lock,
+queue, process, and activity state are keyed by a `chat_key`. For legacy work that key is
+the conversation ID, unchanged. For a teams route it is a `teams:<digest>` string derived
+from a structured, versioned tuple — account, channel, thread, workspace, `binding_revision`,
+provider, and `policy_revision` — hashed rather than delimiter-joined, since Slack
+conversation IDs already contain `:`. A route, workspace, provider, or policy change
+therefore yields a different key and a fresh provider session; legacy keys are never split
+heuristically or reused by a teams route.
 
-Planned state uses structured keys:
-
-```
-ConversationKey { transport, account_id, channel_id, thread_id }
-ExecutionKey    { conversation, workspace_id, provider, binding_revision, policy_revision }
-```
-
-These keys are serialized as versioned objects, never delimiter-joined strings: Slack
-conversation IDs already contain `:`. Every state map, queued item, background message,
-upload directory, provider session, timeout notice, and compact seed carries the relevant
-key.
-
-Phase 0 performs an explicit state-schema migration. Existing compound keys are retained
-only in the legacy execution context and are never split heuristically or reused by a
-teams route. Enabling `routes.slack` therefore starts fresh provider sessions; malformed
-or ambiguous legacy Slack keys are quarantined rather than attached to a workspace.
-
-`binding_revision` covers every relevant authorization and binding config input: the
-configured Slack account ID, group definitions used by the route, the exact route and its
-allow/audit/context values, workspace path, provider allowlist/default, skills, chat
-commands, and other workspace capabilities. It is route/config state, not a digest of the
+`binding_revision` covers every relevant authorization and binding input: the configured
+Slack account ID, the group definitions the route allows, the exact route and its
+allow/audit/context values, and the full workspace binding (path, provider
+allowlist/default, skills, chat commands, concurrency). It is route/config state, not the
 individual sender's membership snapshot. `policy_revision` covers the selected provider's
-native/staged policy digest, provider CLI version, and Enso launch-contract version;
-unrestricted mode has its own explicit revision. Changing either revision creates a new
-execution key and therefore a fresh provider session.
+native/staged policy digest plus the Enso launch-contract version; unrestricted mode has
+its own explicit revision.
 
 Queued work retains the immutable resolution it was authorized under, but Enso fully
 re-resolves the current sender, route, workspace, and provider immediately before a
-command or provider spawn. The current resolution, including its selected provider and
-both revisions, must match the queued snapshot. Stale work is refused rather than
-rerouted; it never inherits authorization from an old snapshot.
+command or provider spawn. The current resolution — selected provider and both revisions
+included — must match the queued snapshot; stale work is refused rather than rerouted, and
+a revoked sender gets silence.
 
-Provider selection is scoped to the conversation, workspace, and binding revision. A
-new execution context starts with the workspace's explicit `default_provider`; `!use`
-changes only that scoped selection and selecting a different provider creates a distinct
-execution key.
+Provider selection is scoped to the conversation, workspace, and binding revision via a
+durable selection key. A new execution context starts with the workspace's explicit
+`default_provider`; `!use` changes only that scoped selection, and selecting a different
+provider creates a distinct execution key.
 
 ### Workspace isolation and concurrency
 
@@ -274,8 +259,8 @@ execution key.
   workspace semaphore, Enso reloads and validates all inputs immediately before `prerun`
   or provider spawn. A mismatch cancels that snapshot; an enabled job without an explicit
   workspace is a startup/load diagnostic and is not scheduled.
-- A policy-controlled job `prerun` runs outside the provider CLI. V1 refuses it unless
-  the workspace is explicitly unrestricted; no outer-executor contract exists yet.
+- A policy-controlled job `prerun` runs outside the provider CLI, so Enso refuses it
+  unless the workspace is explicitly unrestricted.
 
 Legacy Slack and Telegram continue to bind `working_dir` through a legacy execution
 context until the operator explicitly enables `routes.slack`.
