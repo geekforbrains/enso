@@ -946,7 +946,7 @@ async def test_process_request_injects_messages(tmp_enso, sample_config):
         def get_origin_env(self): return {}
 
     async def fake_run(
-        provider, prompt, chat_id, model, *, effort=None, extra_env=None,
+        provider, prompt, chat_id, model, *, effort=None, extra_env=None, context=None,
     ):
         prompts_received.append(prompt)
         if False:
@@ -1194,7 +1194,7 @@ async def test_manual_cancellation_does_not_queue_timeout_notice(
     rt.run_provider = hanging_run
     ctx = FakeCtx()
     request = asyncio.create_task(
-        rt._run_request("claude", "hello", "chat-a", ctx),
+        rt._run_request("claude", "hello", ctx, rt.legacy_context("chat-a")),
     )
     await started.wait()
 
@@ -1371,10 +1371,10 @@ async def test_run_provider_streams_progress_while_a_batch_provider_runs(sample_
         name = "agy"
         streaming_output = False
 
-        def build_command(self, prompt, model, session_id=None, *, effort=None):
+        def build_command(self, prompt, model, session_id=None, *, effort=None, launch=None):
             return ["fake"]
 
-        def build_batch_command(self, prompt, model, *, effort=None):
+        def build_batch_command(self, prompt, model, *, effort=None, launch=None):
             return ["fake"]
 
         def parse_event(self, event):
@@ -1427,10 +1427,10 @@ async def test_run_provider_survives_a_failing_progress_poller(sample_config):
         name = "agy"
         streaming_output = False
 
-        def build_command(self, prompt, model, session_id=None, *, effort=None):
+        def build_command(self, prompt, model, session_id=None, *, effort=None, launch=None):
             return ["fake"]
 
-        def build_batch_command(self, prompt, model, *, effort=None):
+        def build_batch_command(self, prompt, model, *, effort=None, launch=None):
             return ["fake"]
 
         def parse_event(self, event):

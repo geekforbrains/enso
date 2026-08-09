@@ -35,6 +35,7 @@ from .logging_config import logging_flags
 from .providers import PROVIDER_NAMES, BaseProvider, StreamEvent, provider_class
 
 if TYPE_CHECKING:
+    from .policy import Launch
     from .transports import BaseTransport, TransportContext
 
 log = logging.getLogger(__name__)
@@ -235,6 +236,26 @@ class _QueuedItem:
     prompt: str
     ctx: TransportContext
     preview: str
+    context: ExecutionContext | None = None
+
+
+@dataclass(frozen=True)
+class ExecutionContext:
+    """Immutable execution binding for one conversation's work.
+
+    Legacy work (Telegram, legacy Slack) binds the global ``working_dir``
+    with the unrestricted invocation and uses the conversation ID as its
+    state key, so existing sessions and queues are untouched. Slack teams
+    routes bind a named workspace, its policy launch, and a revision-scoped
+    ``chat_key`` — so a route, workspace, or policy change never resumes
+    state created under a different binding (architecture.md § Execution
+    and session keys).
+    """
+
+    chat_key: str  # key for all per-chat state: sessions, queues, locks
+    path: str  # subprocess cwd — the workspace root
+    workspace_id: str | None = None
+    launch: Launch | None = None  # None → unrestricted legacy invocation
 
 
 class Runtime:
@@ -756,15 +777,24 @@ class Runtime:
 
     # -- Provider management --
 
+    def legacy_context(self, conv_id: str) -> ExecutionContext:
+        """The pre-teams execution binding: global working_dir, unrestricted."""
+        return ExecutionContext(chat_key=conv_id, path=self.working_dir)
+
     def make_provider(
-        self, provider_name: str, *, timeout: int | float | None = None,
+        self,
+        provider_name: str,
+        *,
+        timeout: int | float | None = None,
+        context: ExecutionContext | None = None,
     ) -> BaseProvider:
         """Create a fresh provider instance using the configured CLI path."""
         provider_cfg = self.config.get("providers", {}).get(provider_name, {})
         path = provider_cfg.get("path", provider_name)
         effective_timeout = self.agent_timeout if timeout is None else timeout
+        working_dir = context.path if context is not None else self.working_dir
         return provider_class(provider_name)(
-            path, working_dir=self.working_dir, timeout=effective_timeout,
+            path, working_dir=working_dir, timeout=effective_timeout,
         )
 
     # -- Session management --
@@ -810,29 +840,36 @@ class Runtime:
         ctx: TransportContext,
         *,
         preview: str = "",
+        context: ExecutionContext | None = None,
     ) -> None:
-        """Dispatch a prompt, queuing if a request is already running."""
+        """Dispatch a prompt, queuing if a request is already running.
+
+        ``context`` is the resolved execution binding; None binds the legacy
+        context (global working_dir, conversation-keyed state).
+        """
         if self._update_in_progress:
             await ctx.reply("Enso is updating. Please try again after it restarts.")
             return
-        self._last_active[conversation_id] = datetime.now()
-        lock = self.get_chat_lock(conversation_id)
+        context = context or self.legacy_context(conversation_id)
+        chat_key = context.chat_key
+        self._last_active[chat_key] = datetime.now()
+        lock = self.get_chat_lock(chat_key)
 
         if lock.locked():
-            queue = self._queue_by_conversation.setdefault(
-                conversation_id, deque()
-            )
+            queue = self._queue_by_conversation.setdefault(chat_key, deque())
             if len(queue) >= MAX_QUEUE_SIZE:
                 await ctx.reply(f"Queue full ({MAX_QUEUE_SIZE}).")
                 return
-            queue.append(_QueuedItem(prompt=prompt, ctx=ctx, preview=preview))
+            queue.append(
+                _QueuedItem(prompt=prompt, ctx=ctx, preview=preview, context=context)
+            )
             pos = len(queue)
             label = f"{preview}\u2026" if len(preview) == 50 else preview
             await ctx.reply(f"Queued (#{pos}): {label}")
             log.info("Queued #%d for %s: %s", pos, conversation_id, preview)
             return
 
-        provider = self.get_active_provider(conversation_id)
+        provider = self.get_active_provider(chat_key)
         log.info(
             "Dispatch: conv=%s provider=%s prompt_len=%d",
             conversation_id, provider, len(prompt),
@@ -840,38 +877,44 @@ class Runtime:
         log.debug("Dispatch prompt:\n%s", prompt)
 
         async with lock:
-            await self._run_request(provider, prompt, conversation_id, ctx)
-            await self._drain_queue(conversation_id)
+            await self._run_request(provider, prompt, ctx, context)
+            await self._drain_queue(chat_key)
 
     async def _run_request(
-        self, provider: str, prompt: str, conv_id: str, ctx: TransportContext,
+        self,
+        provider: str,
+        prompt: str,
+        ctx: TransportContext,
+        context: ExecutionContext,
     ) -> None:
         """Run a single provider request, tracking the task for cancellation."""
+        chat_key = context.chat_key
         task = asyncio.create_task(
-            self.process_request(provider, prompt, conv_id, ctx)
+            self.process_request(provider, prompt, chat_key, ctx, context=context)
         )
-        self.running_task_by_chat[conv_id] = task
+        self.running_task_by_chat[chat_key] = task
         try:
             await task
         except asyncio.CancelledError:
-            log.info("Task cancelled for conv=%s", conv_id)
+            log.info("Task cancelled for conv=%s", chat_key)
         finally:
-            if self.running_task_by_chat.get(conv_id) is task:
-                self.running_task_by_chat.pop(conv_id, None)
+            if self.running_task_by_chat.get(chat_key) is task:
+                self.running_task_by_chat.pop(chat_key, None)
 
-    async def _drain_queue(self, conv_id: str) -> None:
+    async def _drain_queue(self, chat_key: str) -> None:
         """Process queued messages one by one until the queue is empty."""
-        queue = self._queue_by_conversation.get(conv_id)
+        queue = self._queue_by_conversation.get(chat_key)
         if not queue:
             return
         while queue:
             item = queue.popleft()
-            provider = self.get_active_provider(conv_id)
+            provider = self.get_active_provider(chat_key)
             log.info(
                 "Dequeuing for conv=%s (%d remaining): %s",
-                conv_id, len(queue), item.preview,
+                chat_key, len(queue), item.preview,
             )
-            await self._run_request(provider, item.prompt, conv_id, item.ctx)
+            context = item.context or self.legacy_context(chat_key)
+            await self._run_request(provider, item.prompt, item.ctx, context)
 
     def kick_queue(self, conv_id: str) -> None:
         """Schedule a queue drain outside dispatch (e.g. after /compact).
@@ -966,7 +1009,13 @@ class Runtime:
             f"\n\n{prompt}"
         )
 
-    async def run_compaction(self, chat_id: str, provider_name: str) -> str:
+    async def run_compaction(
+        self,
+        chat_id: str,
+        provider_name: str,
+        *,
+        context: ExecutionContext | None = None,
+    ) -> str:
         """Run a hidden summarisation pass and return the summary text.
 
         Called by /compact. Drives ``run_provider`` directly so the user
@@ -983,7 +1032,9 @@ class Runtime:
         async with lock:
             model = self.get_active_model(chat_id, provider_name)
             effort = self.get_active_effort(chat_id, provider_name, model)
-            provider = self.make_provider(provider_name, timeout=self.agent_timeout)
+            provider = self.make_provider(
+                provider_name, timeout=self.agent_timeout, context=context
+            )
 
             log.info(
                 "[%s] Compacting chat=%s model=%s effort=%s",
@@ -997,7 +1048,7 @@ class Runtime:
                 nonlocal failed
                 async for event in self.run_provider(
                     provider, self._COMPACTION_PROMPT, chat_id, model,
-                    effort=effort,
+                    effort=effort, context=context,
                 ):
                     if event.kind == "response":
                         response_parts.append(event.text)
@@ -1141,16 +1192,25 @@ class Runtime:
         *,
         effort: str | None = None,
         extra_env: dict[str, str] | None = None,
+        context: ExecutionContext | None = None,
     ):
         """Spawn a provider subprocess and yield StreamEvents.
 
-        ``extra_env`` is merged on top of ``os.environ`` for the subprocess
-        only (parent env is never mutated). Typically carries
+        ``extra_env`` is merged on top of the base environment for the
+        subprocess only (parent env is never mutated). Typically carries
         ``ENSO_ORIGIN_*`` so commands like ``enso message send`` can route
         back to the triggering conversation without an explicit ``--to``.
+
+        ``context`` selects the execution binding: cwd, the policy launch
+        (non-bypass flags), and — for policy launches — the allowlisted
+        minimal environment instead of the full parent environment.
         """
+        context = context or self.legacy_context(chat_id)
+        launch = context.launch
         session_id = self._get_or_create_session(chat_id, provider.name)
-        cmd = provider.build_command(prompt, model, session_id, effort=effort)
+        cmd = provider.build_command(
+            prompt, model, session_id, effort=effort, launch=launch
+        )
         log.info(
             "[%s] spawning class=%s chat=%s model=%s effort=%s session=%s prompt_len=%d",
             provider.name,
@@ -1197,23 +1257,25 @@ class Runtime:
             "stdin": asyncio.subprocess.DEVNULL,
             "stdout": asyncio.subprocess.PIPE,
             "stderr": stderr,
-            "cwd": self.working_dir,
+            "cwd": context.path,
         }
         limit = provider.stdout_limit()
         if limit:
             kwargs["limit"] = limit
-        if extra_env:
-            merged = os.environ.copy()
-            merged.update(extra_env)
+        # A policy launch supplies a complete allowlisted environment; the
+        # unrestricted/legacy path inherits the parent environment as before.
+        base_env = launch.env if launch is not None and launch.env is not None else None
+        if base_env is not None or extra_env:
+            merged = dict(base_env) if base_env is not None else os.environ.copy()
+            merged.update(extra_env or {})
             kwargs["env"] = merged
-            log.debug(
-                "[%s] subprocess cwd=%s extra_env_keys=%s",
-                provider.name,
-                self.working_dir,
-                sorted(extra_env),
-            )
-        else:
-            log.debug("[%s] subprocess cwd=%s extra_env_keys=[]", provider.name, self.working_dir)
+        log.debug(
+            "[%s] subprocess cwd=%s launch=%s extra_env_keys=%s",
+            provider.name,
+            context.path,
+            launch.mode if launch is not None else "legacy",
+            sorted(extra_env) if extra_env else [],
+        )
 
         try:
             process = await self._spawn_process(*cmd, **kwargs)
@@ -1354,11 +1416,14 @@ class Runtime:
         prompt: str,
         chat_id: str,
         ctx: TransportContext,
+        *,
+        context: ExecutionContext | None = None,
     ) -> None:
         """Run a full provider request with status ticker and response delivery.
 
         Automatically injects any pending background messages into the prompt.
         """
+        context = context or self.legacy_context(chat_id)
         # Inject background messages
         bg = messages.consume(chat_id)
         if bg:
@@ -1370,7 +1435,9 @@ class Runtime:
 
         model = self.get_active_model(chat_id, provider_name)
         effort = self.get_active_effort(chat_id, provider_name, model)
-        provider = self.make_provider(provider_name, timeout=self.agent_timeout)
+        provider = self.make_provider(
+            provider_name, timeout=self.agent_timeout, context=context
+        )
 
         try:
             origin_env = ctx.get_origin_env()
@@ -1427,7 +1494,7 @@ class Runtime:
             nonlocal error_text
             async for event in self.run_provider(
                 provider, prompt, chat_id, model,
-                effort=effort, extra_env=origin_env,
+                effort=effort, extra_env=origin_env, context=context,
             ):
                 if self.debug_events:
                     log.debug(
