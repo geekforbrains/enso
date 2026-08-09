@@ -521,6 +521,9 @@ def test_serve_reports_secret_resolution_failure_cleanly(
         def install_system_prompts(self):
             pass
 
+        def install_enso_repo(self):
+            pass
+
         def install_teams_workspaces(self):
             pass
 

@@ -165,3 +165,40 @@ def test_install_teams_workspaces_links_shared_skill_root(tmp_enso):
             link = Path(tmp_enso, "workspaces", ws, cli_dir, "skills")
             assert link.is_symlink(), f"{ws}/{cli_dir} not linked"
             assert (link / "docs").is_dir()
+
+
+def test_install_enso_repo_writes_gitignore_and_inits(tmp_enso):
+    import subprocess
+    Runtime(_teams_config(tmp_enso)).install_enso_repo()
+
+    gitignore = Path(tmp_enso, ".gitignore")
+    assert gitignore.is_file()
+    body = gitignore.read_text()
+    for secret in ("secrets/", "**/auth.json", "enso.db", "runs/", "state.json"):
+        assert secret in body, f"{secret} not ignored"
+    assert Path(tmp_enso, ".git").is_dir()
+
+    # The ignore file must actually take effect for the sensitive paths.
+    Path(tmp_enso, "secrets").mkdir(exist_ok=True)
+    Path(tmp_enso, "secrets", "1password.env").write_text("TOKEN=x")
+    out = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=tmp_enso, capture_output=True, text=True,
+    ).stdout
+    assert "secrets/" not in out
+
+
+def test_install_enso_repo_is_idempotent(tmp_enso):
+    rt = Runtime(_teams_config(tmp_enso))
+    rt.install_enso_repo()
+    Path(tmp_enso, ".gitignore").write_text("# customised by the operator\n")
+    rt.install_enso_repo()
+    assert Path(tmp_enso, ".gitignore").read_text() == "# customised by the operator\n"
+
+
+def test_policy_check_warns_on_nested_repo(tmp_enso):
+    config = _teams_config(tmp_enso)
+    save_config(config)
+    Path(tmp_enso, "workspaces", "acme", ".git").mkdir(parents=True, exist_ok=True)
+    result = runner.invoke(app, ["policy", "check"])
+    assert "own git repository" in result.output

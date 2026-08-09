@@ -1329,6 +1329,7 @@ def serve(
 
     runtime = Runtime(config)
     runtime.install_system_prompts()
+    runtime.install_enso_repo()
     runtime.install_teams_workspaces()
     runtime.load_state()
 
@@ -2121,9 +2122,17 @@ def policy_check() -> None:
         for problem in teams.workspace_errors.get(name, ()):
             failed = True
             console.print(f"  [red]✗[/] {problem}")
-        if not os.path.isdir(os.path.expanduser(workspace.path)):
+        expanded = os.path.expanduser(workspace.path)
+        if not os.path.isdir(expanded):
             failed = True
             console.print("  [red]✗[/] workspace path does not exist")
+        elif os.path.isdir(os.path.join(expanded, ".git")):
+            # A repository here becomes the nearest root, truncating Codex's
+            # AGENTS.md walk so shared instructions silently stop loading.
+            console.print(
+                "  [yellow]![/] contains its own git repository — Codex will not "
+                "load shared instructions in this workspace"
+            )
         for provider in workspace.providers:
             check = check_provider(workspace, provider)
             if check.ok:

@@ -413,6 +413,62 @@ class Runtime:
             command=notify_cmd,
         )
 
+    # Paths that must never be committed if ~/.enso is a git repository.
+    _GITIGNORE = """\
+# Written by Enso. ~/.enso is a git repository so Codex loads the shared
+# AGENTS.md — its instruction walk stops at the repository root. See
+# docs/specs/permissions.md. Nothing below may ever be committed.
+secrets/
+*.env
+**/auth.json
+*/.runtime/
+enso.db
+enso.db-*
+runs/
+cache/
+state.json
+messages.json
+messages.json.lock
+update.json
+workspaces/*/uploads/
+"""
+
+    def install_enso_repo(self) -> None:
+        """Make ``~/.enso`` a git repository, with a .gitignore written first.
+
+        Codex bounds its ``AGENTS.md`` walk at the enclosing repository root,
+        so a repository here is what lets a shared ``~/.enso/AGENTS.md`` reach
+        it — matching Claude, which walks the chain regardless. The .gitignore
+        is not optional: this tree holds ``secrets/*.env``, staged provider
+        ``auth.json`` copies, the database and its WAL sidecars, and run logs.
+        Missing git is a warning, never fatal.
+        """
+        import subprocess
+
+        gitignore = os.path.join(CONFIG_DIR, ".gitignore")
+        try:
+            if not os.path.exists(gitignore):
+                atomic_write_text(gitignore, self._GITIGNORE)
+                log.info("Wrote %s", gitignore)
+        except OSError:
+            log.warning("Could not write %s", gitignore, exc_info=True)
+            return  # never create the repo without the ignore file in place
+
+        if os.path.isdir(os.path.join(CONFIG_DIR, ".git")):
+            return
+        try:
+            subprocess.run(
+                ["git", "init", "--quiet", CONFIG_DIR],
+                check=True, capture_output=True, timeout=30,
+            )
+            log.info("Initialised %s as a git repository", CONFIG_DIR)
+        except (OSError, subprocess.SubprocessError) as exc:
+            log.warning(
+                "Could not initialise %s as a git repository (%s); Codex will "
+                "not load shared instructions until this is resolved",
+                CONFIG_DIR, exc,
+            )
+
     def install_teams_workspaces(self) -> None:
         """Bootstrap every structurally valid teams workspace.
 
