@@ -1746,9 +1746,21 @@ class Runtime:
                 log.info("Job scheduler paused while Enso updates")
                 continue
 
+            teams_mode = isinstance(self.config.get("routes"), dict) and (
+                "slack" in self.config["routes"]
+            )
             for job in load_jobs():
                 try:
                     if not job.enabled:
+                        continue
+                    if teams_mode and not job.workspace:
+                        # Never scheduled without an explicit workspace; the
+                        # operator must make the binding choice (teams.md).
+                        log.warning(
+                            "[job:%s] not scheduled: teams mode requires an "
+                            "explicit 'workspace:' in JOB.md",
+                            job.dir_name,
+                        )
                         continue
                     if job.dir_name in self._running_job_tasks:
                         continue
@@ -2107,6 +2119,59 @@ class Runtime:
                 continue
         return held
 
+    def _job_execution_binding(
+        self, job: Job,
+    ) -> tuple[ExecutionContext | None, str | None]:
+        """Resolve a job's workspace binding under teams mode.
+
+        Legacy mode (no ``routes.slack``) returns ``(None, None)`` — jobs keep
+        the global working_dir and inherited environment. Teams mode requires
+        an explicit, usable workspace; there is no fallback to working_dir,
+        and ``prerun`` is refused outside unrestricted workspaces because it
+        runs outside any provider CLI's policy.
+        """
+        from .policy import PolicyError, prepare_launch
+        from .teams import load_teams
+
+        teams = load_teams(self.config)
+        if teams is None:
+            return None, None
+        if not teams.dispatchable:
+            return None, "teams config is invalid; run 'enso policy check'"
+        if not job.workspace:
+            return None, (
+                "teams mode requires an explicit 'workspace:' in JOB.md; "
+                "there is no fallback workspace"
+            )
+        workspace = teams.workspaces.get(job.workspace)
+        if workspace is None:
+            return None, f"unknown workspace {job.workspace!r}"
+        if job.workspace in teams.workspace_errors:
+            return None, (
+                f"workspace {job.workspace!r} is misconfigured: "
+                f"{'; '.join(teams.workspace_errors[job.workspace])}"
+            )
+        if not workspace.allows_provider(job.provider):
+            return None, (
+                f"provider {job.provider!r} is not allowed in workspace "
+                f"{job.workspace!r}"
+            )
+        if job.prerun and not workspace.unrestricted:
+            return None, (
+                "prerun runs outside the provider CLI and is only permitted "
+                "in an unrestricted workspace"
+            )
+        try:
+            launch = prepare_launch(workspace, job.provider)
+        except PolicyError as exc:
+            return None, str(exc)
+        return ExecutionContext(
+            chat_key=f"job:{job.dir_name}",
+            path=workspace.path,
+            workspace_id=workspace.name,
+            launch=launch,
+        ), None
+
     async def _execute_job(
         self,
         job: Job,
@@ -2133,6 +2198,10 @@ class Runtime:
             return JobRunResult("error", output=output, exit_code=-1)
         try:
             config_error = job_config_error(job.provider, job.model, self.models)
+            if not config_error:
+                job_context, config_error = await asyncio.to_thread(
+                    self._job_execution_binding, job
+                )
             if config_error:
                 run_id = await self._create_job_run(job, trigger, tag, started_at)
                 output = f"Invalid job config: {config_error}"
@@ -2180,21 +2249,29 @@ class Runtime:
             run_id = await self._create_job_run(job, trigger, tag, started_at)
             proc: Process | None = None
             try:
-                provider = self.make_provider(job.provider, timeout=job.timeout)
-                cmd = provider.build_batch_command(prompt, job.model)
+                provider = self.make_provider(
+                    job.provider, timeout=job.timeout, context=job_context,
+                )
+                launch = job_context.launch if job_context is not None else None
+                cmd = provider.build_batch_command(prompt, job.model, launch=launch)
+                job_cwd = (
+                    job_context.path if job_context is not None else self.working_dir
+                )
                 log.info(
                     "%s spawning provider_class=%s cwd=%s prompt_len=%d",
                     tag, provider.__class__.__name__,
-                    self.working_dir, len(prompt),
+                    job_cwd, len(prompt),
                 )
                 log.debug("%s command=%s", tag, _redacted_command(cmd))
-                proc = await self._spawn_process(
-                    *cmd,
-                    stdin=asyncio.subprocess.DEVNULL,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
-                    cwd=self.working_dir,
-                )
+                spawn_kwargs: dict[str, Any] = {
+                    "stdin": asyncio.subprocess.DEVNULL,
+                    "stdout": asyncio.subprocess.PIPE,
+                    "stderr": asyncio.subprocess.STDOUT,
+                    "cwd": job_cwd,
+                }
+                if launch is not None and launch.env is not None:
+                    spawn_kwargs["env"] = dict(launch.env)
+                proc = await self._spawn_process(*cmd, **spawn_kwargs)
                 log.info("%s pid=%s", tag, proc.pid)
                 stdout, _, timed_out = await self._communicate_with_timeout(
                     proc, f"Job '{job.name}'", job.timeout,

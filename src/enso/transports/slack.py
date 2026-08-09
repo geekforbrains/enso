@@ -1065,6 +1065,17 @@ class SlackTransport(BaseTransport):
                 " notify_channel set"
             )
             return
+        if self.teams_router is not None:
+            route = self.teams_router.teams.channel_routes.get(channel)
+            if route is not None and route.audit:
+                # One-row-per-turn audit contract: out-of-band sends to an
+                # audited route are refused until they have their own
+                # outbound audit schema (teams.md § Audit).
+                log.error(
+                    "Slack notify to %s refused: the route is audited and "
+                    "out-of-band sends cannot be recorded yet", channel,
+                )
+                return
         if not self._client:
             log.warning("Cannot notify — client not initialized")
             return

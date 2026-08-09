@@ -29,6 +29,7 @@ class Job:
     provider: str
     model: str
     enabled: bool = True
+    workspace: str | None = None  # required once teams mode is enabled
     prerun: str | None = None
     notify: str | None = None
     timeout: int = 15 * 60
@@ -90,6 +91,7 @@ def parse_job(dir_name: str, path: str) -> Job | None:
         provider=fields["provider"],
         model=fields["model"],
         enabled=_parse_bool(fields.get("enabled"), True),
+        workspace=fields.get("workspace") or None,
         prerun=fields.get("prerun"),
         notify=fields.get("notify"),
         timeout=_parse_int(fields.get("timeout"), 15 * 60),

@@ -25,7 +25,7 @@ class FakeProvider:
     def __init__(self):
         self.prompts: list[tuple[str, str]] = []
 
-    def build_batch_command(self, prompt: str, model: str) -> list[str]:
+    def build_batch_command(self, prompt: str, model: str, *, launch=None) -> list[str]:
         self.prompts.append((prompt, model))
         return ["fake-provider"]
 
@@ -383,7 +383,9 @@ async def test_scheduled_open_prerun_injects_output_and_runs_provider(
 
     assert result.status == "ok"
     assert provider.prompts == [("Use this: captured context", "sonnet")]
-    runtime.make_provider.assert_called_once_with("claude", timeout=job.timeout)
+    runtime.make_provider.assert_called_once_with(
+        "claude", timeout=job.timeout, context=None,
+    )
     assert runtime._spawn_process.await_args.kwargs["stdin"] == asyncio.subprocess.DEVNULL
     row = runs.get(result.run_id)
     assert row["trigger"] == "schedule"
@@ -663,3 +665,125 @@ async def test_concurrent_same_job_is_skipped_via_run_lock(tmp_enso, sample_conf
     reacquired = runtime._acquire_job_lock(job)
     assert reacquired not in (None, "unlocked")
     reacquired.close()
+
+
+# -- Teams-mode workspace binding --
+
+
+def _teams_blocks(tmp_enso: str) -> dict:
+    """Teams config blocks reusing the sample workspaces under tmp."""
+    import json
+
+    ops = Path(tmp_enso, "workspaces", "ops")
+    acme = Path(tmp_enso, "workspaces", "acme")
+    policies = Path(tmp_enso, "policies", "acme", "claude")
+    for d in (ops, acme, policies):
+        d.mkdir(parents=True, exist_ok=True)
+    settings = policies / "settings.json"
+    settings.write_text(json.dumps({"sandbox": {"enabled": True}}))
+    settings.chmod(0o600)
+    return {
+        "groups": {"admin": {"slack": ["U1"]}},
+        "workspaces": {
+            "ops": {
+                "path": str(ops),
+                "unrestricted": True,
+                "providers": ["claude"],
+                "default_provider": "claude",
+            },
+            "acme": {
+                "path": str(acme),
+                "policy_dir": str(Path(tmp_enso, "policies", "acme")),
+                "providers": ["claude"],
+                "default_provider": "claude",
+            },
+        },
+        "routes": {"slack": {"account_id": "T1", "dms": {}, "channels": {}}},
+    }
+
+
+async def test_teams_job_without_workspace_fails(tmp_enso, sample_config):
+    sample_config.update(_teams_blocks(tmp_enso))
+    runtime = Runtime(sample_config)
+    job = make_job(tmp_enso, prerun=None)
+    stub_provider(runtime)
+
+    result = await runtime._execute_job(job, trigger="manual", notify_failures=False)
+
+    assert result.status == "error"
+    assert "workspace" in result.output
+    runtime._spawn_process.assert_not_awaited()
+
+
+async def test_teams_job_binds_workspace_and_launch(tmp_enso, sample_config):
+    sample_config.update(_teams_blocks(tmp_enso))
+    runtime = Runtime(sample_config)
+    job = make_job(tmp_enso, prerun=None)
+    job.workspace = "acme"
+    provider = stub_provider(runtime)
+
+    result = await runtime._execute_job(job, trigger="manual", notify_failures=False)
+
+    assert result.status == "ok"
+    context = runtime.make_provider.call_args.kwargs["context"]
+    assert context.workspace_id == "acme"
+    assert context.launch.mode == "policy"
+    spawn_kwargs = runtime._spawn_process.await_args.kwargs
+    assert spawn_kwargs["cwd"].endswith("workspaces/acme")
+    assert "OP_SERVICE_ACCOUNT_TOKEN" not in spawn_kwargs.get("env", {})
+    assert provider.prompts  # the batch command was built
+
+
+async def test_teams_job_prerun_requires_unrestricted(tmp_enso, sample_config):
+    sample_config.update(_teams_blocks(tmp_enso))
+    runtime = Runtime(sample_config)
+    job = make_job(tmp_enso)  # has a prerun
+    job.workspace = "acme"
+    stub_provider(runtime)
+
+    result = await runtime._execute_job(job, trigger="manual", notify_failures=False)
+
+    assert result.status == "error"
+    assert "prerun" in result.output
+    runtime._spawn_process.assert_not_awaited()
+
+
+async def test_teams_job_prerun_allowed_in_unrestricted(tmp_enso, sample_config):
+    sample_config.update(_teams_blocks(tmp_enso))
+    runtime = Runtime(sample_config)
+    job = make_job(tmp_enso, prerun=None)
+    job.workspace = "ops"
+    stub_provider(runtime)
+
+    result = await runtime._execute_job(job, trigger="manual", notify_failures=False)
+
+    assert result.status == "ok"
+    context = runtime.make_provider.call_args.kwargs["context"]
+    assert context.launch.mode == "unrestricted"
+
+
+async def test_teams_job_provider_must_be_allowed(tmp_enso, sample_config):
+    sample_config.update(_teams_blocks(tmp_enso))
+    runtime = Runtime(sample_config)
+    job = make_job(tmp_enso, prerun=None)
+    job.workspace = "acme"
+    job.provider = "codex"
+    job.model = "gpt-5.3-codex"  # valid for codex, so the workspace gate decides
+    stub_provider(runtime)
+
+    result = await runtime._execute_job(job, trigger="manual", notify_failures=False)
+
+    assert result.status == "error"
+    assert "not allowed" in result.output
+
+
+async def test_legacy_job_keeps_working_dir(tmp_enso, sample_config):
+    runtime = Runtime(sample_config)
+    job = make_job(tmp_enso, prerun=None)
+    stub_provider(runtime)
+
+    result = await runtime._execute_job(job, trigger="manual", notify_failures=False)
+
+    assert result.status == "ok"
+    assert runtime.make_provider.call_args.kwargs["context"] is None
+    assert runtime._spawn_process.await_args.kwargs["cwd"] == runtime.working_dir
