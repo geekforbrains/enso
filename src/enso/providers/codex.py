@@ -90,6 +90,22 @@ class CodexProvider(BaseProvider):
         """Return the highest effort level advertised for a Codex model."""
         return super().max_effort_for_model(resolve_codex_model(model))
 
+    @staticmethod
+    def _permission_args(launch) -> list[str]:
+        """Permission flags per the launch contract in permissions.md.
+
+        A policy launch relies on the staged CODEX_HOME (set via the launch
+        env) to select the operator's config, rejects unknown keys, and loads
+        only staged rules — or none, when none are configured. Otherwise:
+        today's bypass invocation.
+        """
+        if launch is not None and launch.mode == "policy":
+            args = ["--strict-config"]
+            if launch.ignore_rules:
+                args.append("--ignore-rules")
+            return args
+        return ["--dangerously-bypass-approvals-and-sandbox"]
+
     def build_command(
         self,
         prompt: str,
@@ -97,15 +113,13 @@ class CodexProvider(BaseProvider):
         session_id: str | None = None,
         *,
         effort: str | None = None,
+        launch=None,
     ) -> list[str]:
         cli_model = resolve_codex_model(model)
         cmd = [self.path, "exec"]
         if session_id:
             cmd.append("resume")
-        cmd.extend([
-            "--dangerously-bypass-approvals-and-sandbox", "--json",
-            "-m", cli_model,
-        ])
+        cmd.extend([*self._permission_args(launch), "--json", "-m", cli_model])
         if effort:
             cmd.extend(["-c", _reasoning_override(effort)])
         cmd.append("--")
@@ -115,12 +129,12 @@ class CodexProvider(BaseProvider):
         return cmd
 
     def build_batch_command(
-        self, prompt: str, model: str, *, effort: str | None = None,
+        self, prompt: str, model: str, *, effort: str | None = None, launch=None,
     ) -> list[str]:
         cli_model = resolve_codex_model(model)
         cmd = [
             self.path, "exec",
-            "--dangerously-bypass-approvals-and-sandbox",
+            *self._permission_args(launch),
             "-m", cli_model,
         ]
         if effort:

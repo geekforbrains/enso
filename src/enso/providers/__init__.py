@@ -6,7 +6,10 @@ import json
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
+
+if TYPE_CHECKING:
+    from ..policy import Launch
 
 # Status text is shown in a chat bubble alongside a header, so it has to
 # stay on one short line.
@@ -91,21 +94,30 @@ class BaseProvider(ABC):
         session_id: str | None = None,
         *,
         effort: str | None = None,
+        launch: Launch | None = None,
     ) -> list[str]:
         """Build the CLI command for interactive streaming.
 
         ``effort`` is an optional reasoning-effort level; providers that
-        don't support it ignore the argument.
+        don't support it ignore the argument. ``launch`` selects the policy
+        contract: None or an unrestricted launch keeps the bypass invocation,
+        while a policy launch substitutes the provider's non-bypass flags
+        (see docs/specs/permissions.md).
         """
 
     @abstractmethod
     def build_batch_command(
-        self, prompt: str, model: str, *, effort: str | None = None,
+        self,
+        prompt: str,
+        model: str,
+        *,
+        effort: str | None = None,
+        launch: Launch | None = None,
     ) -> list[str]:
         """Build the CLI command for batch execution (text output, no streaming).
 
         Used by the job runner to capture final output without parsing
-        streaming events.
+        streaming events. ``launch`` behaves as in ``build_command``.
         """
 
     @abstractmethod

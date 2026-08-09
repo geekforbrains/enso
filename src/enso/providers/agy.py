@@ -163,7 +163,10 @@ class AgyProvider(BaseProvider):
         session_id: str | None = None,
         *,
         effort: str | None = None,
+        launch=None,
     ) -> list[str]:
+        # ``launch`` is accepted for signature parity and ignored: agy has no
+        # permission model, so policy-controlled dispatch refuses it upstream.
         self._session_id = session_id
         cmd = [
             self.path,
@@ -180,7 +183,7 @@ class AgyProvider(BaseProvider):
         return cmd
 
     def build_batch_command(
-        self, prompt: str, model: str, *, effort: str | None = None,
+        self, prompt: str, model: str, *, effort: str | None = None, launch=None,
     ) -> list[str]:
         cmd = [
             self.path,

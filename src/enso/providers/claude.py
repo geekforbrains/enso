@@ -69,6 +69,24 @@ class ClaudeProvider(BaseProvider):
     }
     _default_max_effort = "high"
 
+    @staticmethod
+    def _permission_args(launch) -> list[str]:
+        """Permission flags per the launch contract in permissions.md.
+
+        A policy launch loads exactly the operator's settings file, suppresses
+        user/project/local settings sources, denies anything a prompt would
+        have asked about (headless has nobody to ask), and keeps ambient MCP
+        servers out. Otherwise: today's bypass invocation.
+        """
+        if launch is not None and launch.mode == "policy":
+            return [
+                "--settings", launch.policy_path,
+                "--permission-mode", "dontAsk",
+                "--setting-sources", "",
+                "--strict-mcp-config",
+            ]
+        return ["--dangerously-skip-permissions"]
+
     def build_command(
         self,
         prompt: str,
@@ -76,6 +94,7 @@ class ClaudeProvider(BaseProvider):
         session_id: str | None = None,
         *,
         effort: str | None = None,
+        launch=None,
     ) -> list[str]:
         """Build the Claude CLI command.
 
@@ -85,7 +104,8 @@ class ClaudeProvider(BaseProvider):
         cmd = [
             self.path, "-p",
             "--output-format", "stream-json",
-            "--verbose", "--dangerously-skip-permissions",
+            "--verbose",
+            *self._permission_args(launch),
             "--model", model,
         ]
         if effort:
@@ -98,13 +118,13 @@ class ClaudeProvider(BaseProvider):
         return cmd
 
     def build_batch_command(
-        self, prompt: str, model: str, *, effort: str | None = None,
+        self, prompt: str, model: str, *, effort: str | None = None, launch=None,
     ) -> list[str]:
         """Build command for batch execution (jobs). No session continuity."""
         cmd = [
             self.path, "-p",
             "--output-format", "text",
-            "--dangerously-skip-permissions",
+            *self._permission_args(launch),
             "--model", model,
         ]
         if effort:
