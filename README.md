@@ -14,6 +14,8 @@ Design docs live in [`docs/`](docs/) and are the source of truth for planned and
 | [`docs/specs/architecture.md`](docs/specs/architecture.md) | Dashboard/bot process boundaries and shared storage |
 | [`docs/specs/data-model.md`](docs/specs/data-model.md) | SQLite schemas, config, and the `~/.enso/` layout |
 | [`docs/specs/docs.md`](docs/specs/docs.md) | Operator-authored reference docs and their dashboard/CLI workflow |
+| [`docs/specs/teams.md`](docs/specs/teams.md) | **Planned** — Slack groups, exact routes, workspace routing, and audit policy |
+| [`docs/specs/permissions.md`](docs/specs/permissions.md) | **Planned** — native Claude/Codex policy selection and invocation |
 | [`docs/specs/tables.md`](docs/specs/tables.md) | Registered SQLite data tables, discovery, and bounded read-only views |
 | [`docs/specs/web.md`](docs/specs/web.md) | The web UI: routes, pages, read/write flows |
 | [`CHANGELOG.md`](CHANGELOG.md) | What has actually shipped, per version |

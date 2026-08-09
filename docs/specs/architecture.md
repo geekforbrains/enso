@@ -167,6 +167,119 @@ Connections are opened lazily per operation and the DB is created on first write
 runtime sends each complete telemetry operation through a worker thread; no SQLite
 connection is cached, shared across threads, or allowed to block the event loop.
 
+## Request resolution (planned)
+
+**Planned.** The enabling refactor for Slack [teams.md](teams.md); native CLI invocation
+is [permissions.md](permissions.md), and config/storage is
+[data-model.md](data-model.md). Telegram retains its user-ID allowlist and `working_dir`
+and must reject non-private chat types.
+
+`Runtime` currently holds one `working_dir` for the whole process, read directly by
+`install_system_prompts`, `make_provider`, `run_provider`'s subprocess `cwd`, the Slack
+upload path, and job execution. That singleton is what makes a second workspace
+impossible, so conversation work receives an immutable execution context instead.
+
+For Slack teams mode, each inbound event receives an initial resolution before any
+command, context fetch, attachment download, or dispatch:
+
+```
+Resolution {
+  transport, account_id, route_id, groups, workspace_id, workspace_path,
+  provider, binding_revision, policy_revision, audit, context_from
+}
+```
+
+The order is fixed:
+
+1. Normalize the Slack account, identity, channel type, channel/thread, and canonical
+   source message timestamp; derive the stable delivery ID defined in
+   [data-model.md](data-model.md#slack-delivery-ledger), and reject an account mismatch.
+2. Atomically claim the delivery ID in the metadata-only deduplication ledger. A duplicate
+   is acknowledged without another dispatch; a ledger failure blocks execution.
+3. Resolve all group memberships and the exact Slack route.
+4. Authorize and validate its workspace/provider/policy.
+5. Create the audit turn when enabled.
+6. Only then process a command, fetch context, download files, or dispatch.
+
+The resulting value is threaded through `dispatch` → `process_request` →
+`run_provider` → the provider instance. The central route resolver repeats authorization
+and binding against the already-claimed delivery immediately before execution; it does
+not claim the event again. Downstream consumers never re-derive authorization ad hoc or
+re-read a global working directory.
+
+### Execution and session keys
+
+Cwd alone does not isolate sessions. Enso currently stores provider, model, effort,
+session, compaction, lock, queue, process, and activity state under conversation-only
+keys. A route or policy change could therefore resume a provider session created under a
+different workspace.
+
+Planned state uses structured keys:
+
+```
+ConversationKey { transport, account_id, channel_id, thread_id }
+ExecutionKey    { conversation, workspace_id, provider, binding_revision, policy_revision }
+```
+
+These keys are serialized as versioned objects, never delimiter-joined strings: Slack
+conversation IDs already contain `:`. Every state map, queued item, background message,
+upload directory, provider session, timeout notice, and compact seed carries the relevant
+key.
+
+Phase 0 performs an explicit state-schema migration. Existing compound keys are retained
+only in the legacy execution context and are never split heuristically or reused by a
+teams route. Enabling `routes.slack` therefore starts fresh provider sessions; malformed
+or ambiguous legacy Slack keys are quarantined rather than attached to a workspace.
+
+`binding_revision` covers every relevant authorization and binding config input: the
+configured Slack account ID, group definitions used by the route, the exact route and its
+allow/audit/context values, workspace path, provider allowlist/default, skills, chat
+commands, and other workspace capabilities. It is route/config state, not a digest of the
+individual sender's membership snapshot. `policy_revision` covers the selected provider's
+native/staged policy digest, provider CLI version, and Enso launch-contract version;
+unrestricted mode has its own explicit revision. Changing either revision creates a new
+execution key and therefore a fresh provider session.
+
+Queued work retains the immutable resolution it was authorized under, but Enso fully
+re-resolves the current sender, route, workspace, and provider immediately before a
+command or provider spawn. The current resolution, including its selected provider and
+both revisions, must match the queued snapshot. Stale work is refused rather than
+rerouted; it never inherits authorization from an old snapshot.
+
+Provider selection is scoped to the conversation, workspace, and binding revision. A
+new execution context starts with the workspace's explicit `default_provider`; `!use`
+changes only that scoped selection and selecting a different provider creates a distinct
+execution key.
+
+### Workspace isolation and concurrency
+
+- System prompts, tool copies, allowlisted skills, provider config, session state, and
+  uploads are selected from the resolved workspace. Uploads use a unique
+  `uploads/<turn-id>/` directory.
+- Setup, `serve --working-dir`, service-manager working directories, prompt/bootstrap
+  installation, dashboard AGENTS/tool editing and cleanup, and outbound destination
+  resolution must distinguish a legacy context from an explicit named workspace. None may
+  recover a teams workspace from the process cwd or a singleton `working_dir`.
+- Background messages are scoped to an execution key. Slack teams mode rejects unaddressed
+  global model-context messages so one route cannot consume another route's content.
+- Teams-mode operational logs contain route/workspace IDs, lengths, and outcomes only.
+  Prompt previews and full debug prompts are never logged.
+- Each workspace has a semaphore shared by chats, compaction, and jobs. The safe default
+  is one active writer; the operator may explicitly raise it.
+- Jobs have no Slack route. In teams mode they require an explicit workspace and use the
+  same provider invocation, policy revision, environment, and semaphore. They never fall
+  back to `working_dir`.
+- A queued job snapshot contains the job-file digest, workspace binding revision,
+  provider, and provider policy revision. After acquiring both its per-job lock and the
+  workspace semaphore, Enso reloads and validates all inputs immediately before `prerun`
+  or provider spawn. A mismatch cancels that snapshot; an enabled job without an explicit
+  workspace is a startup/load diagnostic and is not scheduled.
+- A policy-controlled job `prerun` runs outside the provider CLI. V1 refuses it unless
+  the workspace is explicitly unrestricted; no outer-executor contract exists yet.
+
+Legacy Slack and Telegram continue to bind `working_dir` through a legacy execution
+context until the operator explicitly enables `routes.slack`.
+
 ## Concurrency & consistency
 
 The bot, dashboard, CLI, agent subprocesses, and operator can all touch the file layer.

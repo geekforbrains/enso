@@ -284,6 +284,324 @@ Notes:
   block when an explicit `runs` value does not already take precedence, then remove the
   obsolete `tasks` block.
 
+## Teams (planned)
+
+**Planned.** None of this section ships today. It is the storage half of
+[teams.md](teams.md), which owns Slack route semantics; native CLI invocation is
+[permissions.md](permissions.md). This section is the sole owner of the config schema and
+audit table.
+
+### Workspace and policy layout
+
+Teams mode adds named Slack workspaces without moving or retiring the existing
+`working_dir`. Telegram and legacy Slack continue to use `working_dir`; a Slack route
+uses the path of its named workspace.
+
+```
+~/.enso/
+├── workspace/                         # existing working_dir; unchanged
+├── workspaces/
+│   ├── ops/                           # AGENTS.md, CLAUDE.md, tools/, uploads/
+│   └── acme/
+└── policies/
+    ├── ops/
+    └── acme/
+        ├── claude/settings.json       # native Claude settings
+        └── codex/
+            ├── config.toml            # native Codex config/profile source
+            └── rules/*.rules
+```
+
+The policy directory is outside the provider cwd so working code cannot casually rewrite
+the control file governing it. Enso passes or stages these files through each CLI's native
+configuration mechanism without translating them. The operator remains responsible for
+policy content, filesystem protection, and testing; see [permissions.md](permissions.md).
+
+Each turn gets a unique `uploads/<turn-id>/` directory under its workspace. System
+prompts, tools, uploads, provider state, background messages, and session keys are all
+resolved from the same immutable execution key. Jobs, docs, `config.json`, `enso.db`, and
+the complete shared skill root are never linked into a policy-controlled workspace.
+
+Skills stay authored under `~/.enso/skills`. A workspace exposes only its allowlisted
+skills. A symlink is not inherently read-only: the selected native policy or an OS mount
+must prevent writes to shared sources.
+
+### Teams config
+
+Four top-level blocks participate in Slack teams mode. `routes.slack` is the explicit
+opt-in switch.
+
+```jsonc
+{
+  "groups": {
+    "admin": { "slack": ["U01ADMIN"] },
+    "team":  { "slack": ["U02DEV", "U03PM"] }
+  },
+  "workspaces": {
+    "ops": {
+      "path": "~/.enso/workspaces/ops",
+      "unrestricted": true,
+      "providers": ["claude", "codex", "agy"],
+      "default_provider": "claude",
+      "skills": "*",
+      "chat_commands": "*",
+      "concurrency": 1
+    },
+    "acme": {
+      "path": "~/.enso/workspaces/acme",
+      "policy_dir": "~/.enso/policies/acme",
+      "providers": ["claude", "codex"],
+      "default_provider": "claude",
+      "skills": ["docs"],
+      "chat_commands": ["status", "clear", "stop", "help"],
+      "concurrency": 1
+    }
+  },
+  "routes": {
+    "slack": {
+      "account_id": "T0ENSO",
+      "dms": {
+        "owner": {
+          "allow": ["admin"],
+          "workspace": "ops",
+          "audit": false
+        },
+        "project-team": {
+          "allow": ["team"],
+          "workspace": "acme",
+          "audit": true
+        }
+      },
+      "channels": {
+        "C0ACME": {
+          "allow": ["team", "admin"],
+          "workspace": "acme",
+          "audit": true,
+          "context_from": "allowed"
+        }
+      }
+    }
+  },
+  "audit": {
+    "on_failure": "block",
+    "max_age_days": 365
+  }
+}
+```
+
+Schema rules:
+
+- `groups.<name>.slack` is a unique list of Slack user IDs. Slack is the only group
+  platform in v1; a Telegram key is invalid.
+- `workspaces.<name>.path` is required. `policy_dir` defaults to
+  `~/.enso/policies/<workspace-name>` for policy-controlled workspaces. Expanded real
+  workspace paths must be distinct, non-nested, and owned safely. A policy-controlled
+  workspace may not overlap the legacy `working_dir`, because Telegram or legacy Slack
+  can still run there without its policy. Every policy directory must be outside all
+  workspace paths and the legacy `working_dir`.
+- `unrestricted` defaults to `false`. Only explicit `true` selects today's yolo
+  invocation. It does not imply providers, skills, or commands.
+- `unrestricted: true` is invalid alongside an explicit `policy_dir` or native policy
+  found at the canonical default path. Enso never chooses between policy-controlled and
+  unrestricted modes by precedence.
+- `providers`, `skills`, and `chat_commands` default to empty. The latter two accept
+  either a unique string list or the explicit string `"*"`.
+- `default_provider` is required when `providers` is non-empty and must name one of them.
+  Provider declaration order is not a default. `!use` selections are scoped to the
+  conversation, workspace, and binding revision.
+- `concurrency` is a positive integer and defaults to `1`. Chat turns, compaction, and
+  jobs share the workspace semaphore.
+- `routes.slack.dms` is a map of named DM routes. `routes.slack.channels` is keyed by
+  exact Slack channel ID; there is no default or wildcard route.
+- `routes.slack.account_id` is required and must equal the Slack team/workspace ID
+  returned by the configured credentials at startup. Mismatch disables teams dispatch;
+  these routes are never applied to another Slack account.
+- Every route requires `allow` and `workspace`. `allow` defaults to empty for defensive
+  parsing, but validation reports the omission. Unknown groups/workspaces disable the
+  route.
+- `audit` defaults to `false`; `context_from` defaults to `"allowed"` and accepts
+  only `"allowed"` or `"everyone"`.
+- `audit.on_failure` accepts `"block"` or `"warn"` and defaults to `"block"`.
+  `audit.max_age_days` is a non-negative integer and defaults to `365`; `0` means
+  indefinite retention.
+- A known Slack user may match any number of groups for channel authorization but at most
+  one DM route. Ambiguous DM matches are configuration errors that disable Slack teams
+  dispatch until corrected.
+- Missing provider policy or a rejected native config blocks that provider; it blocks the
+  turn when that provider is selected. An unavailable workspace blocks every provider.
+  There is no fallback to `working_dir` or another workspace.
+- A parse or schema error in `groups`, `workspaces`, or `routes` disables Slack teams
+  dispatch. The config loader must not replace invalid security config with permissive
+  defaults; valid unrelated transports may continue.
+
+### Compatibility and migration
+
+- With no `routes.slack`, Enso stays in legacy Slack mode only when the pre-existing
+  `transports.slack.allowed_users` key is present, and uses it with `working_dir`.
+- With neither `routes.slack` nor the legacy allowlist, Slack dispatch is blocked. New
+  setup writes the authenticated account ID plus empty teams-mode route maps rather than
+  relying on an absent key.
+- `routes.slack` and the legacy Slack allowlist are mutually exclusive. Enso rejects the
+  ambiguous combination instead of choosing precedence.
+- Opting into teams mode never synthesizes routes from an old allowlist. The initial route
+  maps are empty, so access remains blocked until the operator adds exact entries.
+- Existing files and sessions are not moved. Only an explicitly unrestricted workspace
+  may point at the old `working_dir`; a policy-controlled workspace must use a separate
+  path.
+- Telegram keeps its existing user-ID allowlist and `working_dir`, with non-private chat
+  types rejected; no teams migration or `routes.telegram` exists.
+
+### Jobs in teams mode
+
+When `routes.slack` activates teams mode, every enabled `JOB.md` requires a `workspace`
+frontmatter field naming a configured workspace. There is no `jobs.default_workspace` and
+no fallback to `working_dir`. Existing jobs without the field remain on disk but are not
+scheduled; startup and the dashboard show a configuration error until the operator makes
+an explicit choice.
+
+The job's existing `provider` must be in that workspace's provider allowlist and have a
+usable native policy unless the workspace is explicitly unrestricted. `prerun` is valid
+only for unrestricted workspaces in v1. A job notification may not target an audited
+Slack route until the outbound audit schema exists.
+
+Queued execution captures the complete job-file digest, a digest of the relevant
+workspace config, and the provider policy revision. Enso reloads and compares them after
+acquiring both the per-job lock and workspace semaphore and immediately before any
+`prerun` or provider process. A mismatch cancels the captured execution; it does not apply
+old authorization to new content or silently run the new version.
+
+### Slack delivery ledger
+
+Teams mode deduplicates Slack delivery independently of optional text auditing. For v1
+`message` and `app_mention` events, `delivery_id` is the SHA-256 digest of a versioned,
+length-prefixed tuple containing the authenticated account ID, channel ID, and canonical
+source message timestamp. Both Slack event types for one message and every retry therefore
+produce the same opaque ID. Any future interactive event type must define and test an
+equally stable canonical key before it can dispatch. The transport atomically claims that
+ID in a bounded metadata-only ledger before routing:
+
+```sql
+CREATE TABLE IF NOT EXISTS _enso_slack_events (
+    account_id      TEXT NOT NULL,
+    delivery_id     TEXT NOT NULL,
+    received_at     TEXT NOT NULL,
+    completed_at    TEXT,
+    status          TEXT NOT NULL,       -- 'pending' | 'completed' | 'abandoned'
+    audit_turn_id   TEXT,
+    PRIMARY KEY (account_id, delivery_id)
+);
+```
+
+A duplicate claim acknowledges the Slack retry without executing a command, spawning a
+provider, or delivering another response. This remains true when `audit: false` or an
+audit write uses `on_failure: "warn"`. Failure to claim the ledger blocks execution; it
+never degrades to at-least-once dispatch. Every normal terminal path, including silence,
+configuration refusal, provider failure, and delivery failure, marks the claim
+`completed` in a finalization path. At startup, claims left `pending` by a crash are marked
+`abandoned`, suppress the original event if it is retried, and are never replayed. A linked
+pending audit row is completed as `outcome = 'error'`,
+`terminal_reason = 'service_restart'`, with no delivery. All claims are pruned seven days
+after receipt. The ledger stores no user ID, channel ID, message text, or text hash; its
+opaque digest and timestamps are operational metadata, not a conversation audit.
+
+### Audit log
+
+Interactive chat is still not a run — see
+[architecture.md § Run recording](architecture.md#run-recording). The Slack audit trail
+uses one row per human-facing turn rather than separate input/output events, so an incident
+can be reconstructed without joining rows heuristically.
+
+```sql
+CREATE TABLE IF NOT EXISTS _enso_audit (
+    id                TEXT PRIMARY KEY,   -- turn id; uuid4 hex
+    received_at       TEXT NOT NULL,      -- ISO 8601 UTC
+    completed_at      TEXT,
+    transport         TEXT NOT NULL,      -- 'slack' in v1
+    account_id        TEXT NOT NULL,      -- Slack team/workspace id
+    delivery_id       TEXT NOT NULL,      -- stable Slack retry/delivery id
+    route_id          TEXT NOT NULL,      -- 'slack.dm.owner' | 'slack.channel.C0ACME'
+    channel_id        TEXT NOT NULL,
+    thread_id         TEXT,
+    source_message_id TEXT NOT NULL,      -- Slack event/message ts
+    conversation_id   TEXT NOT NULL,
+    user_id           TEXT NOT NULL,
+    user_name         TEXT,               -- snapshot at receipt; may be blank
+    groups_json       TEXT NOT NULL,      -- JSON array membership snapshot
+    authorized_groups_json TEXT,           -- JSON array of groups that satisfied allow
+    workspace_id      TEXT,
+    binding_revision  TEXT,
+    policy_revision   TEXT,
+    kind              TEXT,               -- 'provider' | 'command'; null until known
+    decision          TEXT NOT NULL,      -- 'accepted' | 'ignored' | 'unconfigured' | 'denied'
+    outcome           TEXT NOT NULL,      -- 'pending' | 'completed' | 'ignored' | 'blocked' | 'error' | 'timeout' | 'stopped'
+    terminal_reason   TEXT,
+    delivery_status   TEXT NOT NULL,      -- 'not_attempted' | 'pending' | 'delivered' | 'failed'
+    provider          TEXT,
+    model             TEXT,
+    request_text      TEXT NOT NULL,
+    response_text     TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_source
+    ON _enso_audit (account_id, delivery_id);
+CREATE INDEX IF NOT EXISTS idx_audit_received
+    ON _enso_audit (received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_route
+    ON _enso_audit (route_id, received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_user
+    ON _enso_audit (user_id, received_at DESC);
+```
+
+The request is the triggering human text after transport normalization and mention
+removal, before fetched context, compact seeds, background messages, or provider wrappers.
+The response is the final user-visible Slack text, including a configuration or provider
+error. Attachment bytes, fetched context, status edits, tool calls, and reasoning are not
+stored.
+
+`decision` records routing and capability handling: `ignored` for an unknown or
+disallowed sender on an audited exact route, `unconfigured` for an authorized but
+unusable route, `denied` for a workspace capability refusal, and `accepted` once either a
+provider turn or chat command is permitted. `kind` distinguishes those accepted paths;
+provider and model remain null for commands. Ignored rows finish immediately with
+`outcome = 'ignored'`; denied and unconfigured rows finish with `outcome = 'blocked'`;
+every terminal row has `completed_at`. Accepted work starts as `pending` and records its
+terminal result and delivery state; it may finish as `blocked` if mandatory
+pre-execution revalidation fails. `terminal_reason` records a stable reason such as
+`resolution_changed` or `access_revoked` without overloading the human response.
+
+For an audited route, Enso inserts the inbound row before any command, context fetch,
+attachment download, or provider spawn. It stores the final response before attempting
+Slack delivery, then updates `delivery_status`. Storage failure blocks an authorized turn
+when `audit.on_failure` is `"block"`, the default. An unauthorized sender remains silent
+even when the audit write fails.
+
+The delivery ledger is the idempotency authority. The audit unique index is additional
+defence against duplicate text rows and links back through `_enso_slack_events.audit_turn_id`.
+
+When a queued `accepted` turn fails revalidation, an existing audit row is completed with
+`outcome = 'blocked'` and the relevant `terminal_reason`; its original intake decision is
+not rewritten. A still-authorized sender receives a recorded configuration-changed error,
+while revoked access leaves `response_text` null and `delivery_status = 'not_attempted'`.
+If no row existed but the current route now enables audit, Enso first creates a terminal
+`denied`/`blocked` row for a still-authorized stale turn or an `ignored`/`ignored` row for
+revoked access. An existing row is always completed even if audit was disabled while the
+turn waited.
+
+`_enso_audit` is Enso-owned and reserved by the existing `_enso_` prefix rule, so it never
+appears in the registered-tables catalog. The operator must deny policy-controlled
+workspaces access to `enso.db` through the provider's native policy or outer isolation;
+Enso does not compile that requirement into provider rules.
+
+`audit.max_age_days` defaults to `365`; `0` explicitly selects indefinite retention.
+Pruning uses `completed_at` when present and `received_at` otherwise. Disabling a route's
+audit prevents new rows but does not delete existing evidence. It also does not disable
+Slack retention, provider session history, or uploads. Teams-mode operational logs contain
+metadata only, never request or response text.
+
+V1 refuses `enso message send`, job alerts, hooks, and other out-of-band sends to an
+audited Slack route. These messages require a separate outbound-event audit schema before
+they can share an audited destination without creating a gap in “what Enso said.”
+
 ## Cross-cutting rules
 
 - **Timestamps** are ISO 8601 **UTC** in Enso-owned stored data (run times). The tables
@@ -291,7 +609,7 @@ Notes:
   something else. The UI localises run times for display; cron **schedules** stay in the
   system's local timezone, matching existing job behaviour (do not convert schedules to
   UTC).
-- **IDs**: run ids are uuid4 hex. Job identity is the dir name.
+- **IDs**: run ids and audit turn ids are uuid4 hex. Job identity is the dir name.
 - **Atomic dashboard writes**: edits to `JOB.md`, Enso-owned `SKILL.md`, and `AGENTS.md`
   use a temp file plus `os.replace`, so a concurrent reader sees old-or-new, never a
   partial write. Doc edits follow the same rule.
