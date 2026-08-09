@@ -139,6 +139,10 @@ class TeamsRouter:
         for claim in ledger.abandon_pending():
             if claim.get("audit_turn_id"):
                 audit.close_abandoned(claim["audit_turn_id"])
+        # Backstop for a turn whose ledger link never completed (crash between
+        # create_turn and link_audit_turn) — the ledger-keyed pass above can't
+        # reach it. Safe because nothing is in flight at startup.
+        audit.close_all_pending()
         ledger.prune()
         audit.prune(self.teams.audit_max_age_days)
 
@@ -207,7 +211,7 @@ class TeamsRouter:
             "source_message_id": ts,
             "conversation_id": conv_label,
             "user_id": user,
-            "user_name": transport.lookup_user_name(user),
+            "user_name": await asyncio.to_thread(transport.lookup_user_name, user),
             "groups": decision.groups,
             "authorized_groups": decision.authorized_groups or None,
             "request_text": text,

@@ -191,6 +191,33 @@ def complete_turn(
         )
 
 
+def close_all_pending() -> int:
+    """Close every non-terminal turn as crash-abandoned. Returns the count.
+
+    Run once at startup: the process just began, so any row still ``pending``
+    was orphaned by a crash — including one whose ledger link never completed,
+    which ``close_abandoned`` (keyed via the ledger) could not reach. A
+    delivered reply keeps its delivery status.
+    """
+    path = _db_path()
+    if not database_exists(path):
+        return 0
+    with write_connection(path) as conn:
+        _ensure_schema(conn)
+        cur = conn.execute(
+            "UPDATE _enso_audit SET outcome='error', "
+            "terminal_reason='service_restart', completed_at=?, "
+            "delivery_status=CASE WHEN delivery_status IN ('delivered', 'failed') "
+            "THEN delivery_status ELSE 'not_attempted' END "
+            "WHERE completed_at IS NULL",
+            (_utc_now(),),
+        )
+        count = cur.rowcount
+    if count:
+        log.warning("Closed %d audit turn(s) left pending by a prior run", count)
+    return count
+
+
 def close_abandoned(turn_id: str) -> None:
     """Close a turn orphaned by a crash: error/service_restart.
 

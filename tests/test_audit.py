@@ -154,6 +154,31 @@ def test_close_abandoned_turn(tmp_enso):
     assert row["delivery_status"] == "not_attempted"
 
 
+def test_close_abandoned_preserves_delivered_status(tmp_enso):
+    """A reply that reached Slack before the crash stays 'delivered'."""
+    turn_id = audit.create_turn(**_turn())
+    audit.record_response(turn_id, "answer")
+    audit.record_delivery(turn_id, ok=True)
+    audit.close_abandoned(turn_id)
+    (row,) = _rows(tmp_enso)
+    assert row["outcome"] == "error"
+    assert row["delivery_status"] == "delivered"
+
+
+def test_close_all_pending_reaches_unlinked_turns(tmp_enso):
+    """Every pending turn is closed at startup, even one no ledger row references."""
+    a = audit.create_turn(**_turn(delivery_id="d1"))
+    audit.create_turn(**_turn(delivery_id="d2", decision="ignored", kind=None))  # terminal
+    audit.create_turn(**_turn(delivery_id="d3"))  # left pending
+    audit.complete_turn(a, "completed")
+    assert audit.close_all_pending() == 1  # only c was still pending
+    rows = {r["delivery_id"]: r for r in _rows(tmp_enso)}
+    assert rows["d1"]["outcome"] == "completed"  # already terminal, untouched
+    assert rows["d2"]["outcome"] == "ignored"
+    assert rows["d3"]["outcome"] == "error"
+    assert rows["d3"]["terminal_reason"] == "service_restart"
+
+
 # -- queries --
 
 
