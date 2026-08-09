@@ -421,6 +421,7 @@ class TeamsRouter:
                 path=workspace.path,
                 workspace_id=workspace.name,
                 launch=launch,
+                concurrency=workspace.concurrency,
             )
             await self._run_command(
                 transport, ctx, text, chat_key, sel_key, workspace,
@@ -433,6 +434,7 @@ class TeamsRouter:
             path=workspace.path,
             workspace_id=workspace.name,
             launch=launch,
+            concurrency=workspace.concurrency,
             revalidate=self._make_revalidator(
                 user=user, is_dm=is_dm, channel=channel, route=route,
                 brev=brev, provider=provider,

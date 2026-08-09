@@ -185,3 +185,20 @@ def test_install_teams_workspaces_prunes_narrowed_allowlist(tmp_enso):
     Runtime(config).install_teams_workspaces()
     assert not (acme_skills / "tables").exists()
     assert (acme_skills / "docs").is_symlink()
+
+
+def test_install_teams_workspaces_widens_back_to_star(tmp_enso):
+    config = _teams_config(tmp_enso)
+    skills_root = Path(tmp_enso, "skills")
+    for name in ("docs", "tables"):
+        (skills_root / name).mkdir(parents=True)
+    # Start narrow (real per-skill dir), then widen to "*".
+    config["workspaces"]["acme"]["skills"] = ["docs"]
+    Runtime(config).install_teams_workspaces()
+    acme_skills = Path(tmp_enso, "workspaces", "acme", ".claude", "skills")
+    assert not acme_skills.is_symlink()
+
+    config["workspaces"]["acme"]["skills"] = "*"
+    Runtime(config).install_teams_workspaces()
+    assert acme_skills.is_symlink()
+    assert (acme_skills / "tables" / "..").exists()  # whole root now visible

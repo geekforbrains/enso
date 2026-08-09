@@ -973,6 +973,60 @@ class _OutcomeCtx:
 
 
 @pytest.mark.asyncio
+async def test_workspace_semaphore_serializes_concurrent_runs(sample_config):
+    """concurrency=1 caps a workspace to one active provider run across chats."""
+    from enso.core import ExecutionContext
+    rt = Runtime(sample_config)
+    active = 0
+    peak = 0
+
+    async def slow_run(*a, **k):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.05)
+        active -= 1
+        yield StreamEvent(kind="response", text="ok")
+    rt.run_provider = slow_run
+
+    def ctx_for(conv):
+        return ExecutionContext(
+            chat_key=conv, path=rt.working_dir, workspace_id="ws", concurrency=1,
+        )
+    # Two distinct conversations, same workspace — must not overlap.
+    await asyncio.gather(
+        rt._run_request("claude", "a", _OutcomeCtx(), ctx_for("k1")),
+        rt._run_request("claude", "b", _OutcomeCtx(), ctx_for("k2")),
+    )
+    assert peak == 1
+
+
+@pytest.mark.asyncio
+async def test_legacy_runs_are_not_workspace_bounded(sample_config):
+    """Legacy (no workspace) work keeps its unbounded concurrency."""
+    from enso.core import ExecutionContext
+    rt = Runtime(sample_config)
+    active = 0
+    peak = 0
+
+    async def slow_run(*a, **k):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.05)
+        active -= 1
+        yield StreamEvent(kind="response", text="ok")
+    rt.run_provider = slow_run
+    await asyncio.gather(
+        rt._run_request("claude", "a", _OutcomeCtx(),
+                        ExecutionContext(chat_key="k1", path=rt.working_dir)),
+        rt._run_request("claude", "b", _OutcomeCtx(),
+                        ExecutionContext(chat_key="k2", path=rt.working_dir)),
+    )
+    assert peak == 2
+
+
+@pytest.mark.asyncio
 async def test_process_request_returns_terminal_outcome(sample_config):
     rt = Runtime(sample_config)
 

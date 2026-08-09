@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import signal
 from asyncio.subprocess import Process
 from collections import deque
@@ -34,6 +35,7 @@ from .fsutil import atomic_write_text, regular_file_sha256
 from .jobs import Job, job_config_error, load_jobs
 from .logging_config import logging_flags
 from .providers import PROVIDER_NAMES, BaseProvider, StreamEvent, provider_class
+from .teams import load_teams
 
 if TYPE_CHECKING:
     from .policy import Launch
@@ -257,6 +259,7 @@ class ExecutionContext:
     path: str  # subprocess cwd — the workspace root
     workspace_id: str | None = None
     launch: Launch | None = None  # None → unrestricted legacy invocation
+    concurrency: int = 1  # max concurrent provider runs sharing the workspace
     # Teams routes set this to re-run authorization against current config
     # immediately before each (possibly queued) execution. Returns None to
     # proceed, "revoked" for silence, or any other string for an error reply.
@@ -308,6 +311,11 @@ class Runtime:
         self._queue_by_conversation: dict[str, deque[_QueuedItem]] = {}
         # Strong references to fire-and-forget queue drains (kick_queue)
         self._kicked_queue_tasks: set[asyncio.Task] = set()
+
+        # Per-workspace semaphores bound the concurrent provider runs sharing a
+        # teams workspace (chats, compaction, jobs). Legacy work is unbounded
+        # as before. Created lazily, keyed by workspace id.
+        self._workspace_sems: dict[str, asyncio.Semaphore] = {}
 
         # Compact-command seeds: per-chat prior-session summaries waiting to
         # be prepended to the next user prompt. Set by /compact; consumed in
@@ -414,8 +422,6 @@ class Runtime:
         workspace never gets the whole shared skill root, and jobs, docs,
         config, and the database are never linked in at all.
         """
-        from .teams import load_teams
-
         teams = load_teams(self.config)
         if teams is None:
             return
@@ -456,6 +462,10 @@ class Runtime:
         allowlist shrinks; an empty allowlist exposes nothing.
         """
         if allowlist == "*":
+            # Undo a previous narrow state (a real per-skill dir) before
+            # linking the whole root, so widening the allowlist takes effect.
+            if os.path.isdir(link_path) and not os.path.islink(link_path):
+                shutil.rmtree(link_path)
             self._ensure_symlink(link_path, skills_root)
             return
         if os.path.islink(link_path):
@@ -865,6 +875,25 @@ class Runtime:
         """The pre-teams execution binding: global working_dir, unrestricted."""
         return ExecutionContext(chat_key=conv_id, path=self.working_dir)
 
+    @contextlib.asynccontextmanager
+    async def _workspace_slot(self, context: ExecutionContext):
+        """Hold the workspace's concurrency slot for the duration of a run.
+
+        A no-op for legacy (non-workspace) contexts, which stay unbounded.
+        The semaphore is shared across chats, compaction, and jobs bound to
+        the same workspace; the default limit is one active writer.
+        """
+        workspace_id = context.workspace_id
+        if workspace_id is None:
+            yield
+            return
+        sem = self._workspace_sems.get(workspace_id)
+        if sem is None:
+            sem = asyncio.Semaphore(max(1, context.concurrency))
+            self._workspace_sems[workspace_id] = sem
+        async with sem:
+            yield
+
     def make_provider(
         self,
         provider_name: str,
@@ -952,7 +981,9 @@ class Runtime:
             pos = len(queue)
             label = f"{preview}\u2026" if len(preview) == 50 else preview
             await ctx.reply(f"Queued (#{pos}): {label}")
-            log.info("Queued #%d for %s: %s", pos, conversation_id, preview)
+            # Teams-mode logs are metadata-only; the preview is content.
+            logged = "<redacted>" if context.workspace_id is not None else preview
+            log.info("Queued #%d for %s: %s", pos, conversation_id, logged)
             return
 
         provider = self.get_active_provider(chat_key)
@@ -960,7 +991,8 @@ class Runtime:
             "Dispatch: conv=%s provider=%s prompt_len=%d",
             conversation_id, provider, len(prompt),
         )
-        log.debug("Dispatch prompt:\n%s", prompt)
+        if context.workspace_id is None:
+            log.debug("Dispatch prompt:\n%s", prompt)
 
         async with lock:
             await self._run_request(provider, prompt, ctx, context)
@@ -1036,19 +1068,20 @@ class Runtime:
                         "since changed and was not run. Please resend it."
                     )
                 return "blocked", verdict
-        task = asyncio.create_task(
-            self.process_request(provider, prompt, chat_key, ctx, context=context)
-        )
-        self.running_task_by_chat[chat_key] = task
-        outcome, reason = "stopped", None
-        try:
-            outcome, reason = await task
-        except asyncio.CancelledError:
-            log.info("Task cancelled for conv=%s", chat_key)
-            outcome, reason = "stopped", "cancelled"
-        finally:
-            if self.running_task_by_chat.get(chat_key) is task:
-                self.running_task_by_chat.pop(chat_key, None)
+        async with self._workspace_slot(context):
+            task = asyncio.create_task(
+                self.process_request(provider, prompt, chat_key, ctx, context=context)
+            )
+            self.running_task_by_chat[chat_key] = task
+            outcome, reason = "stopped", None
+            try:
+                outcome, reason = await task
+            except asyncio.CancelledError:
+                log.info("Task cancelled for conv=%s", chat_key)
+                outcome, reason = "stopped", "cancelled"
+            finally:
+                if self.running_task_by_chat.get(chat_key) is task:
+                    self.running_task_by_chat.pop(chat_key, None)
         return outcome, reason
 
     async def _drain_queue(self, chat_key: str) -> None:
@@ -1179,7 +1212,8 @@ class Runtime:
             log.warning("run_compaction skipped — chat %s is busy", chat_id)
             return ""
 
-        async with lock:
+        slot = self._workspace_slot(context) if context is not None else contextlib.nullcontext()
+        async with lock, slot:
             model = self.get_active_model(chat_id, provider_name)
             effort = self.get_active_effort(chat_id, provider_name, model)
             provider = self.make_provider(
@@ -1600,19 +1634,24 @@ class Runtime:
             log.warning("get_origin_env failed for chat %s", chat_id, exc_info=True)
             origin_env = {}
 
+        # Teams-mode operational logs are metadata-only — the audit trail is
+        # the controlled record of conversation text (architecture.md). Only
+        # legacy work logs a prompt preview or full prompt.
+        is_teams = context.workspace_id is not None
+        preview = "<redacted>" if is_teams else f"{prompt[:120]}"
         log.info(
             "[%s] request chat=%s provider_class=%s model=%s effort=%s "
-            "prompt_len=%d preview=%.120s",
+            "prompt_len=%d preview=%s",
             provider_name,
             chat_id,
             provider.__class__.__name__,
             model,
             effort or "-",
             len(prompt),
-            prompt,
+            preview,
         )
         log.debug("[%s] origin_env_keys=%s", provider_name, sorted(origin_env))
-        if self.debug_prompts:
+        if self.debug_prompts and not is_teams:
             log.debug("[%s] full_prompt:\n%s", provider_name, prompt)
 
         await ctx.send_typing()
@@ -1849,9 +1888,7 @@ class Runtime:
                 log.info("Job scheduler paused while Enso updates")
                 continue
 
-            teams_mode = isinstance(self.config.get("routes"), dict) and (
-                "slack" in self.config["routes"]
-            )
+            teams_mode = load_teams(self.config) is not None
             for job in load_jobs():
                 try:
                     if not job.enabled:
@@ -2234,8 +2271,6 @@ class Runtime:
         runs outside any provider CLI's policy.
         """
         from .policy import PolicyError, prepare_launch
-        from .teams import load_teams
-
         teams = load_teams(self.config)
         if teams is None:
             return None, None
@@ -2273,6 +2308,7 @@ class Runtime:
             path=workspace.path,
             workspace_id=workspace.name,
             launch=launch,
+            concurrency=workspace.concurrency,
         ), None
 
     async def _execute_job(
@@ -2374,11 +2410,19 @@ class Runtime:
                 }
                 if launch is not None and launch.env is not None:
                     spawn_kwargs["env"] = dict(launch.env)
-                proc = await self._spawn_process(*cmd, **spawn_kwargs)
-                log.info("%s pid=%s", tag, proc.pid)
-                stdout, _, timed_out = await self._communicate_with_timeout(
-                    proc, f"Job '{job.name}'", job.timeout,
+                # Jobs share the workspace's concurrency slot with chats and
+                # compaction; legacy jobs (no context) stay unbounded.
+                slot = (
+                    self._workspace_slot(job_context)
+                    if job_context is not None
+                    else contextlib.nullcontext()
                 )
+                async with slot:
+                    proc = await self._spawn_process(*cmd, **spawn_kwargs)
+                    log.info("%s pid=%s", tag, proc.pid)
+                    stdout, _, timed_out = await self._communicate_with_timeout(
+                        proc, f"Job '{job.name}'", job.timeout,
+                    )
                 elapsed = (datetime.now() - started).total_seconds()
                 if timed_out:
                     output = (
