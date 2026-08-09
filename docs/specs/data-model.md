@@ -318,8 +318,10 @@ policy content, filesystem protection, and testing; see [permissions.md](permiss
 
 Each turn gets a unique `uploads/<turn-id>/` directory under its workspace. System
 prompts, tools, uploads, provider state, background messages, and session keys are all
-resolved from the same immutable execution key. Jobs, docs, `config.json`, `enso.db`, and
-the complete shared skill root are never linked into a policy-controlled workspace.
+resolved from the same immutable execution key. Jobs, docs, `config.json`, and `enso.db`
+are never linked into a policy-controlled workspace. A workspace that sets `skills: "*"`
+does currently link the whole shared skill root; the planned removal of that key resolves
+it.
 
 Skills stay authored under `~/.enso/skills`. A workspace exposes only its allowlisted
 skills. A symlink is not inherently read-only: the selected native policy or an OS mount
@@ -600,7 +602,7 @@ configuration refusal, provider failure, and delivery failure, marks the claim
 `completed` in a finalization path. At startup, claims left `pending` by a crash are marked
 `abandoned`, suppress the original event if it is retried, and are never replayed. A linked
 pending audit row is completed as `outcome = 'error'`,
-`terminal_reason = 'service_restart'`, with no delivery. All claims are pruned seven days
+`terminal_reason = 'service_restart'`, preserving any delivery status already recorded. All claims are pruned seven days
 after receipt. The ledger stores no user ID, channel ID, message text, or text hash; its
 opaque digest and timestamps are operational metadata, not a conversation audit.
 

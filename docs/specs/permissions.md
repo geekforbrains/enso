@@ -170,13 +170,18 @@ mechanism to learn.
 
 ### Hooks must be disabled in a policy-controlled workspace
 
-**Planned, and required.** A workspace's own `.claude/settings.json` may define hooks, and
-those hooks execute outside the permission system and outside the sandbox. The agent can
-write that file itself: verified end to end against 2.1.226 under `--permission-mode
-dontAsk`, an agent created `.claude/settings.json` and on the next run its `SessionStart`
-hook executed an arbitrary command. Documentation states that `dontAsk` denies
-protected-path writes; empirically it did not, so this is not a behaviour a CLI-literate
-operator would anticipate.
+**Planned, and required.** A workspace's own `.claude/settings.json` may define hooks for
+any event, and those hooks execute outside the permission system *and outside the sandbox*
+— in testing a `SessionStart` hook reached the network successfully in the same session
+where the agent's own Bash was blocked by the sandbox proxy. Only `SessionStart` surfaces
+in `stream-json` output, so watching the event stream is not a reliable detector.
+
+Two ways such a file arrives. It may simply already exist — a cloned repository, a
+template, an earlier unrestricted run. And the agent can write it: verified twice against
+2.1.226 under `--permission-mode dontAsk`, with and without `sandbox.enabled`, an agent
+used the `Write` tool to create `.claude/settings.json` in its own workspace, and on the
+next run the hook it defined executed an arbitrary command. Enso must assume either
+source, because it does not control where a workspace's files came from.
 
 `"disableAllHooks": true` blocks it — verified, with instructions still loading normally.
 Enso therefore **refuses to launch** a policy-controlled Claude workspace whose policy file
@@ -194,6 +199,21 @@ processes; it is disabled by default. An operator relying on it as the boundary 
 then apply at the OS layer to Bash children. Other Claude tools remain governed by their
 own permission rules. Enso warns when the sandbox is off but does not require it, since an
 operator may provide a container or VM boundary instead.
+
+**Never launch a provider through a shell.** Enso spawns the configured absolute binary
+path directly (`create_subprocess_exec`, no shell), which is what keeps a developer's shell
+aliases out of the launch. This is not hypothetical: on the machine these contracts were
+verified against, the operator's profile aliases `claude` to
+`--dangerously-skip-permissions` and `codex` to
+`--dangerously-bypass-approvals-and-sandbox`. A launch resolved through a login shell would
+silently enforce nothing, and the same trap catches an operator testing a policy by hand.
+
+Claude's `--settings` failure modes are asymmetric, and one of them fails **open**: a
+missing file is loud (`Settings file not found`, exit 1), while a file whose content is
+malformed or fails schema validation is ignored silently — exit 0, empty stderr, defaults
+applied. A corrupted policy file therefore produces an *unrestricted-looking* run rather
+than an error, which is why Enso parses and schema-checks before launch instead of relying
+on the CLI to complain.
 
 Claude `-p` silently ignores invalid settings rather than raising an interactive error, so
 the operator verifies enforcement with the native diagnostics and disposable test
@@ -281,9 +301,19 @@ operator's own knowledge reaching their own agent is the point. And `--ignore-us
 is a trap: it removes ambient configuration but also silently drops the permission profile,
 flipping the sandbox back to a default. Enso never passes it.
 
+**Codex does not layer instructions the way Claude does.** It loads
+`<CODEX_HOME>/AGENTS.md` plus every `AGENTS.md` from the cwd upward, but the upward walk
+**stops at the enclosing git repository root**, and outside a git repository only the cwd's
+own `AGENTS.md` loads. A shared `~/.enso/AGENTS.md` above the workspace therefore does not
+reach Codex the way it reaches Claude — it must come from the staged `CODEX_HOME` instead.
+Any statement that shared and workspace instructions "both load" is Claude-specific.
+
 `codex debug prompt-input` renders the exact model-visible message list, including every
 skill locator, offline and without an API call. It is the cheapest way to confirm what a
-given launch actually loads.
+given launch loads — but it reports a fixed permissions preamble rather than the effective
+sandbox, so use the `codex exec` startup banner for policy and `prompt-input` for
+instructions and skills. Note also that `--strict-config` validates only unknown
+*top-level* keys: a typo inside a `[permissions.<name>.*]` table loads silently.
 
 References: [permission profiles](https://learn.chatgpt.com/docs/permissions), [agent approvals and security](https://learn.chatgpt.com/docs/agent-approvals-security), and [configuration](https://learn.chatgpt.com/docs/config-file/config-reference).
 
@@ -299,8 +329,9 @@ exposes `toolPermission`, `permissions.allow`/`deny`, and auto-denies in headles
 The restriction stands on a narrower and honest basis — Enso has no verified agy launch
 contract, and its isolation controls (`--gemini_dir`, which silently falls back to
 `~/.gemini` when given a relative path) are undocumented and can change under the CLI's
-self-updater. **Planned:** define and verify an agy contract, then let agy graduate to the
-policy tier rather than remaining excluded by assumption.
+self-updater. The shipped refusal message still states the incorrect reason; correcting it
+is part of the same planned work. **Planned:** define and verify an agy contract, then let
+agy graduate to the policy tier rather than remaining excluded by assumption.
 
 ## Process environment and local authority
 

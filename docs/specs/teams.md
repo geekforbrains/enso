@@ -295,7 +295,7 @@ Scheduled jobs have no Slack route and therefore require an explicit `workspace:
 provider allowlist, native-policy invocation, environment handling, workspace lock, and
 policy revision as chat work.
 
-Scheduling captures the job-file digest, workspace binding revision, selected provider,
+**Planned.** Scheduling captures the job-file digest, workspace binding revision, selected provider,
 and provider policy revision. After acquiring both the per-job lock and workspace
 semaphore, Enso reloads the job and workspace and requires every value to match immediately
 before `prerun` or provider spawn. A changed or deleted job, workspace, provider, or policy
@@ -346,8 +346,9 @@ operator's native policies and any outer sandbox must account for these shared s
 
 Enso still owns the process boundary: it passes only the required environment and does not
 link jobs, docs, config, or the database into a policy-controlled workspace. These controls
-complement rather than replace the provider's native policy, and Enso does not curate the
-agent's instructions or skills — see
+complement rather than replace the provider's native policy. **Planned:** Enso stops
+curating the agent's instructions and skills; today it still seeds each workspace's
+`AGENTS.md` and exposes skills through the allowlist. See
 [permissions.md](permissions.md#instructions-and-skills-are-the-clis-job).
 
 An **unrestricted** workspace reaches everything on the machine, including other
