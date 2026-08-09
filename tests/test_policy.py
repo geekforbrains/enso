@@ -306,6 +306,7 @@ def test_codex_policy_command_drops_bypass():
     cmd = provider.build_command("hi", "sol", launch=launch)
     assert "--dangerously-bypass-approvals-and-sandbox" not in cmd
     assert "--strict-config" in cmd
+    assert "--skip-git-repo-check" in cmd
     assert "--ignore-rules" in cmd
 
 

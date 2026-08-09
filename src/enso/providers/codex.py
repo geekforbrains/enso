@@ -100,7 +100,10 @@ class CodexProvider(BaseProvider):
         today's bypass invocation.
         """
         if launch is not None and launch.mode == "policy":
-            args = ["--strict-config"]
+            # --skip-git-repo-check bypasses the "are you in a git repo" UX
+            # guard (a workspace need not be one); it is not a security
+            # boundary. The staged CODEX_HOME selects the operator's profile.
+            args = ["--strict-config", "--skip-git-repo-check"]
             if launch.ignore_rules:
                 args.append("--ignore-rules")
             return args

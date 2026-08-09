@@ -16,13 +16,13 @@ This document starts after one workspace and provider have been selected.
 
 1. The operator authors and tests each CLI's native policy. Enso never compiles a shared
    policy into provider-specific files.
-2. Enso owns only the launch seam: cwd, provider selection, policy source selection,
+1. Enso owns only the launch seam: cwd, provider selection, policy source selection,
    ambient configuration, and process environment.
-3. Missing, invalid, rejected, ambiguous, or unapplied policy fails closed. Enso refuses
+1. Missing, invalid, rejected, ambiguous, or unapplied policy fails closed. Enso refuses
    the turn rather than falling back to its current unrestricted invocation.
-4. A native file that deliberately grants broad access is still the operator's policy.
+1. A native file that deliberately grants broad access is still the operator's policy.
    Enso does not reinterpret or grade it.
-5. The authoritative policy lives outside the workspace. The operator is responsible for
+1. The authoritative policy lives outside the workspace. The operator is responsible for
    making it non-writable through the native policy or an outer boundary.
 
 The cost of this design is deliberate. A workspace that permits Claude and Codex needs
@@ -32,14 +32,14 @@ the CLI.
 
 ## The seam
 
-| Enso enforces at launch | The operator's native policy enforces |
-| --- | --- |
-| Which workspace is the cwd | Filesystem read and write access |
-| Which provider may run | Commands and built-in tools |
-| Which exact policy source is loaded | Network access and destinations |
-| Suppression of ambient user/project customization | MCP, connector, browser, and plugin exposure |
-| A minimal launch environment | What environment reaches agent-spawned commands |
-| Route authorization and audit capture | Provider-specific credential controls |
+| Enso enforces at launch                           | The operator's native policy enforces           |
+| ------------------------------------------------- | ----------------------------------------------- |
+| Which workspace is the cwd                        | Filesystem read and write access                |
+| Which provider may run                            | Commands and built-in tools                     |
+| Which exact policy source is loaded               | Network access and destinations                 |
+| Suppression of ambient user/project customization | MCP, connector, browser, and plugin exposure    |
+| A minimal launch environment                      | What environment reaches agent-spawned commands |
+| Route authorization and audit capture             | Provider-specific credential controls           |
 
 Enso validates that the requested native policy was selected and accepted. It does not
 grade the policy's meaning.
@@ -63,11 +63,11 @@ can parse successfully and intentionally allow everything.
 Native policies live outside the agent's working directory. `policy_dir` defaults to
 `~/.enso/policies/<workspace>` and may name another protected directory:
 
-| Provider | Canonical source |
-| --- | --- |
-| `claude` | `<policy_dir>/claude/settings.json` |
-| `codex` | `<policy_dir>/codex/config.toml` and optional `codex/rules/*.rules` |
-| `agy` | none; see [Antigravity](#antigravity-agy) |
+| Provider | Canonical source                                                    |
+| -------- | ------------------------------------------------------------------- |
+| `claude` | `<policy_dir>/claude/settings.json`                                 |
+| `codex`  | `<policy_dir>/codex/config.toml` and optional `codex/rules/*.rules` |
+| `agy`    | none; see [Antigravity](#antigravity-agy)                           |
 
 These are operator-owned source files, not generated output. They must be regular files,
 must not resolve through a symlink into the workspace, and must sit outside every path the
@@ -90,12 +90,12 @@ For the selected workspace and provider:
 
 1. Reject a workspace that combines `unrestricted: true` with an explicit or discovered
    native policy source. Enso never chooses one mode by precedence.
-2. If `unrestricted: true`, run the existing bypass invocation.
-3. Otherwise locate the provider's canonical native policy.
-4. Require a regular file outside the workspace and parse its JSON or TOML syntax.
-5. Run the provider-native validation/preflight and confirm the intended source was
+1. If `unrestricted: true`, run the existing bypass invocation.
+1. Otherwise locate the provider's canonical native policy.
+1. Require a regular file outside the workspace and parse its JSON or TOML syntax.
+1. Run the provider-native validation/preflight and confirm the intended source was
    loaded. A CLI that silently ignores the file is a failure.
-6. Construct the provider-specific command below without a bypass flag or ambient policy
+1. Construct the provider-specific command below without a bypass flag or ambient policy
    source.
 
 Any failure refuses only that turn and reports the exact reason to an authorized caller.
@@ -157,13 +157,30 @@ References: [settings](https://code.claude.com/docs/en/settings), [CLI](https://
 ## Codex launch contract
 
 Codex 0.147.0 has beta permission profiles that combine filesystem and network policy. A
-protected native config selects a profile with `default_permissions` and defines custom
-profiles under `[permissions.<name>]`.
+protected native config names the active profile with `default_permissions` and defines it
+under `[permissions.<name>]`. The schema below was verified against the pinned CLI by the
+security harness; earlier drafts of this doc guessed the shape and were wrong.
 
-Filesystem entries support `read`, `write`, and `deny`, including paths and scoped
-workspace subpaths. Network profiles support an enable switch plus domain `allow` and
-`deny` rules; no allow entry means domain requests are blocked. Local/private addresses
-and Unix sockets have separate controls and should remain closed unless explicitly needed.
+Filesystem access is a table mapping a path (or a scope alias like `":minimal"` and
+`":workspace_roots"`) to `read`, `write`, or `deny`; more specific paths win, and `deny`
+beats `write`/`read` at equal specificity. Network is a `[permissions.<name>.network]`
+table with `enabled` plus a `domains` sub-table of `"host" = "allow"|"deny"`; local
+binding and Unix sockets have their own keys and stay closed unless explicitly opened. A
+minimal, workspace-only, network-off profile is:
+
+```toml
+default_permissions = "enso"
+approval_policy = "never"
+
+[permissions.enso.filesystem]
+":minimal" = "read"
+
+[permissions.enso.filesystem.":workspace_roots"]
+"." = "write"
+
+[permissions.enso.network]
+enabled = false
+```
 
 Permission profiles require Codex 0.138.0 or later and do **not** compose with legacy
 `sandbox_mode` or `[sandbox_workspace_write]` settings. If `sandbox_mode` appears in any
@@ -171,33 +188,36 @@ loaded config, the selected config overlay sets it, or Enso passes `--sandbox`, 
 the legacy sandbox instead of `default_permissions`. Mixing the two systems is an error
 for a policy-controlled workspace.
 
-The intended non-interactive shape is:
+The verified non-interactive shape (note: `exec` is the subcommand, and the profile is
+selected by the staged config's `default_permissions`, not a `--profile` flag — `exec`
+does not accept `--ask-for-approval`):
 
 ```text
-CODEX_HOME=<protected-runtime-home> codex --strict-config \
-  --profile <protected-enso-profile> --ask-for-approval never \
-  -C <workspace> exec ...
+CODEX_HOME=<protected-runtime-home> codex exec --strict-config \
+  --skip-git-repo-check [--ignore-rules] -m <model> -- <prompt>
 ```
+
+`--skip-git-repo-check` bypasses Codex's "are you in a trusted git repo" UX guard; a
+workspace need not be a git repo, and this is not a security boundary. `approval_policy = "never"` in the staged config makes an attempted escalation fail rather than wait for a
+user who cannot answer. **Model availability is account-scoped:** a ChatGPT-account login
+rejects many model slugs (`gpt-5.1-codex`, `gpt-5-codex`, …) with a 400 before any policy
+applies, so a workspace's Codex model must be one the operator's account actually serves
+(the security harness used the `sol` → `gpt-5.6-sol` alias).
 
 The profile and its referenced subtree are staged without changing bytes or relative
 topology; this is not an Enso translation. Codex resolves native references such as
 `agents.<name>.config_file` relative to the declaring config, so copying only the root
 file is invalid unless every reference is absolute and protected. The dedicated,
-service-owned `CODEX_HOME` contains only this staged tree, required authentication, and
-workspace-scoped runtime state; it is never the operator's normal home or inside the
-writable workspace. Before implementation, prove how profile selection, project trust,
-rules, hooks, and session resume interact in the pinned CLI. The final adapter must:
+service-owned `CODEX_HOME` contains only this staged tree, required authentication
+(`auth.json`, copied from the user Codex home), and workspace-scoped runtime state; it is
+never the operator's normal home or inside the writable workspace. The adapter:
 
-- drop `--dangerously-bypass-approvals-and-sandbox` except for `unrestricted: true`;
-- use `--strict-config` so unknown keys are rejected;
-- select exactly the protected Enso profile and confirm `default_permissions` is active;
-- use approval policy `never`, so an attempted escalation fails rather than waiting for a
-  user who cannot answer;
-- exclude ambient user and writable project config, hooks, rules, MCP servers, plugins,
-  apps, connectors, browser/computer-use surfaces, and live web search unless the
-  protected operator policy explicitly supplies them; and
-- pass `--ignore-rules` when no rules are configured, or stage only the configured
-  `.rules` files in the isolated runtime home and verify Codex loaded those exact files.
+- drops `--dangerously-bypass-approvals-and-sandbox` except for `unrestricted: true`;
+- uses `--strict-config` so unknown keys are rejected;
+- selects the protected Enso profile via the staged `default_permissions`;
+- relies on `approval_policy = "never"` so an escalation fails rather than waiting; and
+- passes `--ignore-rules` when no rules are configured, or stages only the configured
+  `.rules` files in the isolated runtime home.
 
 Codex permission profiles govern local sandboxed command execution. They do not govern
 MCP, connectors, browser/computer-use tools, Codex cloud, or an approved escalation; those
@@ -244,18 +264,18 @@ the real control.
 
 `enso policy check` runs at startup and on demand. It verifies plumbing, not semantics:
 
-| Check | Result |
-| --- | --- |
-| Workspace path exists and is a directory | error |
-| A policy-controlled provider lacks its canonical native file | provider error |
-| `unrestricted: true` and any native policy source are both present | error |
-| Canonical file is regular, outside cwd, and owner-only | provider error |
-| JSON/TOML parses and provider-native preflight accepts it | provider error |
-| Pinned provider version supports the launch contract | provider error |
+| Check                                                                          | Result         |
+| ------------------------------------------------------------------------------ | -------------- |
+| Workspace path exists and is a directory                                       | error          |
+| A policy-controlled provider lacks its canonical native file                   | provider error |
+| `unrestricted: true` and any native policy source are both present             | error          |
+| Canonical file is regular, outside cwd, and owner-only                         | provider error |
+| JSON/TOML parses and provider-native preflight accepts it                      | provider error |
+| Pinned provider version supports the launch contract                           | provider error |
 | Intended source/profile is selected with no ambiguous higher-precedence source | provider error |
-| Bypass flag appears in a policy-controlled launch | provider error |
-| Codex mixes permission profiles and legacy sandbox settings | provider error |
-| `agy` is enabled without `unrestricted: true` | provider error |
+| Bypass flag appears in a policy-controlled launch                              | provider error |
+| Codex mixes permission profiles and legacy sandbox settings                    | provider error |
+| `agy` is enabled without `unrestricted: true`                                  | provider error |
 
 Startup reports all workspaces and continues. A workspace-level structural error blocks
 that workspace. A provider-specific error refuses only that provider, so another
@@ -285,16 +305,16 @@ Enso launch contract changes.
 
 ## Failure modes
 
-| Symptom | Likely cause |
-| --- | --- |
-| Policy file exists but has no effect | Wrong source selected, ambient config won, or a bypass flag remained |
-| Claude allow/deny paths unexpectedly widen | Array settings merged from another source |
-| Claude subprocess reads a denied path | Tool rule used without the OS sandbox or outer isolation |
-| Claude silently uses defaults | Invalid settings were ignored in `-p` mode |
-| Codex ignores `default_permissions` | A legacy sandbox setting or `--sandbox` selected the old system |
-| Codex reaches an unexpected domain | Broad `*` rule, another tool surface, or network outside the command proxy |
-| Secret appears in a spawned shell | Launch environment or native child-environment filter is too broad |
-| Agent changes its own policy | Canonical or staged policy was inside a writable root |
+| Symptom                                    | Likely cause                                                               |
+| ------------------------------------------ | -------------------------------------------------------------------------- |
+| Policy file exists but has no effect       | Wrong source selected, ambient config won, or a bypass flag remained       |
+| Claude allow/deny paths unexpectedly widen | Array settings merged from another source                                  |
+| Claude subprocess reads a denied path      | Tool rule used without the OS sandbox or outer isolation                   |
+| Claude silently uses defaults              | Invalid settings were ignored in `-p` mode                                 |
+| Codex ignores `default_permissions`        | A legacy sandbox setting or `--sandbox` selected the old system            |
+| Codex reaches an unexpected domain         | Broad `*` rule, another tool surface, or network outside the command proxy |
+| Secret appears in a spawned shell          | Launch environment or native child-environment filter is too broad         |
+| Agent changes its own policy               | Canonical or staged policy was inside a writable root                      |
 
 Every one of these failures can look like a valid configuration. That is why Enso fails
 closed when it cannot prove the native file was applied, while leaving the policy's actual
