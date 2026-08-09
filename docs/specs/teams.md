@@ -36,7 +36,7 @@ The three concepts stay separate:
 | --- | --- | --- |
 | **Group** | Who is this? | Slack user IDs only |
 | **Route** | Where did this happen? | Allowed groups, workspace, audit, and context policy |
-| **Workspace** | Where and how may work run? | Cwd, providers, native policies, skills, and chat commands |
+| **Workspace** | Where and how may work run? | Cwd, providers, native policies, and chat commands |
 
 **The route selects the workspace; the person never does so directly.** A request in
 `#client-acme` runs in the acme workspace under its policy even when the operator sent it.
@@ -79,7 +79,6 @@ shows the relationships:
       "unrestricted": true,
       "providers": ["claude", "codex", "agy"],
       "default_provider": "claude",
-      "skills": "*",
       "chat_commands": "*"
     },
     "acme": {
@@ -87,7 +86,6 @@ shows the relationships:
       "policy_dir": "~/.enso/policies/acme",
       "providers": ["claude", "codex"],
       "default_provider": "claude",
-      "skills": ["docs"],
       "chat_commands": ["status", "clear", "stop", "help"]
     }
   },
@@ -137,14 +135,14 @@ Fail-closed defaults are part of the schema, not conventions:
   the configured token. A mismatch disables Slack teams dispatch.
 - Missing `allow` means nobody. Missing `audit` means `false`. Missing `context_from`
   means `"allowed"`.
-- Missing `providers`, `skills`, or `chat_commands` means none; `"*"` must be explicit.
+- Missing `providers` or `chat_commands` means none; `"*"` must be explicit.
 - A route with an unknown group or workspace, no workspace, or an unusable selected
   provider is disabled and reported. It never falls back to another workspace. An
   unusable non-selected provider blocks only that provider.
 - Any ambiguous DM match disables all Slack teams dispatch until the configuration is
   corrected.
 - A workspace runs in today's yolo mode only when `unrestricted: true` is explicit. That
-  flag does not implicitly grant providers, skills, or commands.
+  flag does not implicitly grant providers or commands.
 - Unrestricted and policy-controlled modes are mutually exclusive. A workspace with
   `unrestricted: true` plus an explicit or discovered native policy source is invalid.
 - Otherwise the active provider's native policy must exist and be accepted by its CLI.
@@ -346,10 +344,19 @@ operator's native policies and any outer sandbox must account for these shared s
 - `~/.enso/config.json` contains authorization and route definitions.
 - Native provider homes may contain credentials, config, and conversation history.
 
-Enso still owns the process boundary: it passes only the required environment, exposes
-only allowlisted skills, and does not link jobs, docs, config, or the database into a
-policy-controlled workspace. These controls complement rather than replace the provider's
-native policy.
+Enso still owns the process boundary: it passes only the required environment and does not
+link jobs, docs, config, or the database into a policy-controlled workspace. These controls
+complement rather than replace the provider's native policy, and Enso does not curate the
+agent's instructions or skills — see
+[permissions.md](permissions.md#instructions-and-skills-are-the-clis-job).
+
+An **unrestricted** workspace reaches everything on the machine, including other
+workspaces' files and their policy files. That is intentional rather than a gap: it is how
+an operator has Enso maintain its own system — scaffolding a workspace for a new user,
+writing that workspace's permission files, editing jobs and skills. It is also why
+unrestricted routes belong to administrators only, and why "workspace isolation" describes
+protection *between* policy-controlled workspaces, never protection *from* an unrestricted
+one.
 
 A Slack route is dispatchable only when its workspace explicitly selects
 `unrestricted: true` or the active provider's native policy can be loaded by the CLI.

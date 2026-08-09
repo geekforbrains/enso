@@ -238,9 +238,9 @@ provider creates a distinct execution key.
 
 ### Workspace isolation and concurrency
 
-- System prompts, tool copies, allowlisted skills, provider config, session state, and
-  uploads are selected from the resolved workspace. Uploads use a unique
-  `uploads/<turn-id>/` directory.
+- System prompts, tool copies, provider config, session state, and uploads are selected
+  from the resolved workspace. Uploads use a unique `uploads/<turn-id>/` directory.
+  Instructions and skills are discovered by the provider CLI, not staged by Enso.
 - Setup, `serve --working-dir`, service-manager working directories, prompt/bootstrap
   installation, dashboard AGENTS/tool editing and cleanup, and outbound destination
   resolution must distinguish a legacy context from an explicit named workspace. None may

@@ -43,19 +43,18 @@
       "unrestricted": true,
       "providers": ["claude", "codex", "agy"],
       "default_provider": "claude",
-      "skills": "*",
       "chat_commands": "*"
     },
     // Policy-controlled. You author the native CLI policy files under
     // policy_dir (default ~/.enso/policies/<name>); Enso launches the CLI
     // against them without a bypass flag and refuses to dispatch if they
-    // are missing or rejected. agy is not allowed here (no policy model).
+    // are missing or rejected. agy is unrestricted-only for now: Enso has
+    // no verified agy launch contract yet.
     "acme": {
       "path": "~/.enso/workspaces/acme",
       "policy_dir": "~/.enso/policies/acme",
       "providers": ["claude", "codex"],
       "default_provider": "claude",
-      "skills": ["docs"],
       "chat_commands": ["status", "clear", "stop", "help", "use"]
     }
   },

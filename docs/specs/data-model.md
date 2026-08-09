@@ -366,25 +366,21 @@ workspace must be denied write on `~/.enso/jobs/`, which is load-bearing rather 
 — it is what stops a restricted workspace from writing a `JOB.md` naming an unrestricted
 workspace and escalating on the next scheduler tick.
 
-**Skills are both shared and workspace-local**, because two different controls apply:
+**Skills are discovered by the CLI, not curated by Enso.** The `skills` allowlist key is
+removed. Each CLI already discovers skills from the workspace and from the operator's own
+configuration, and Enso does not intercept that — see
+[permissions.md § Instructions and skills](permissions.md#instructions-and-skills-are-the-clis-job).
+A workspace-local `skills/` directory is simply where skills that belong to one workspace
+live; shared skills stay in `~/.enso/skills/`.
 
-- The workspace `skills` allowlist controls **discovery** — an unlisted shared skill is
-  never exposed to the agent.
-- The native policy controls **readability** — a workspace that can read `~/.enso/skills/`
-  at all can read the content of a shared skill it was never offered.
+An operator who wants a workspace not to reach a particular skill does it the same way as
+any other path restriction: a filesystem deny rule in that workspace's own policy file.
+There is no separate Enso mechanism, and no config key that promises isolation it cannot
+deliver.
 
-So a skill that is merely irrelevant to a workspace belongs in the shared root and is
-omitted from the allowlist; a skill whose *content* must not be readable elsewhere belongs
-in the owning workspace's own `skills/` directory. Exposure is the union of allowlisted
-shared skills and all workspace-local skills, symlinked into `.claude/skills/` and
-`.agents/skills/`.
-
-A workspace's own `jobs`- and `skills`-adjacent paths sit inside its cwd, so whether the
-agent may edit them is a policy choice, not a consequence of the layout: an operator
-workspace may leave local skills writable so the agent can author them, while a client or
-staff workspace denies write. Writes to *other* workspaces and to the shared skill root
-must always be denied, or one workspace could poison a skill another executes with wider
-access.
+Whether the agent may edit its own workspace's `skills/` is likewise a policy choice, not
+a consequence of the layout — an operator workspace may leave them writable so the agent
+can author skills, while a client or staff workspace denies write.
 
 ### Teams config
 
@@ -403,7 +399,6 @@ opt-in switch.
       "unrestricted": true,
       "providers": ["claude", "codex", "agy"],
       "default_provider": "claude",
-      "skills": "*",
       "chat_commands": "*",
       "concurrency": 1
     },
@@ -412,7 +407,6 @@ opt-in switch.
       "policy_dir": "~/.enso/policies/acme",
       "providers": ["claude", "codex"],
       "default_provider": "claude",
-      "skills": ["docs"],
       "chat_commands": ["status", "clear", "stop", "help"],
       "concurrency": 1
     }
@@ -464,8 +458,9 @@ Schema rules:
 - `unrestricted: true` is invalid alongside an explicit `policy_dir` or native policy
   found at the canonical default path. Enso never chooses between policy-controlled and
   unrestricted modes by precedence.
-- `providers`, `skills`, and `chat_commands` default to empty. The latter two accept
-  either a unique string list or the explicit string `"*"`.
+- `providers` and `chat_commands` default to empty. `chat_commands` accepts either a
+  unique string list or the explicit string `"*"`. **Planned:** the `skills` key is
+  removed; skills are discovered by the CLI.
 - `default_provider` is required when `providers` is non-empty and must name one of them.
   Provider declaration order is not a default. `!use` selections are scoped to the
   conversation, workspace, and binding revision.

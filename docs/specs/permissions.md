@@ -115,7 +115,7 @@ The policy-controlled invocation, verified against Claude 2.1.226:
 ```text
 claude -p --output-format stream-json --verbose \
   --settings <protected-settings> --permission-mode dontAsk \
-  --setting-sources "" --strict-mcp-config --model <model> \
+  --setting-sources project --strict-mcp-config --model <model> \
   [--session-id <id> | --resume <id>] -- <prompt>
 ```
 
@@ -124,31 +124,68 @@ claude -p --output-format stream-json --verbose \
   overrides matching scalar keys but omitted keys retain lower-layer values, and array
   settings such as permission and sandbox paths merge across sources — so `--settings`
   alone is not isolation.
-- `--setting-sources ""` suppresses the user, project, and local settings sources, so
-  ambient user `CLAUDE.md`, skills, plugins, hooks, MCP servers, commands, agents, and
-  auto-memory do not leak into the workspace. Managed organizational policy may still
-  apply.
+- `--setting-sources project` excludes the operator's **user** `settings.json`, so their
+  personal permission rules cannot widen a policy-controlled workspace, while leaving the
+  CLI's own instruction and skill discovery working normally. **Planned:** the shipped
+  value is `""`; see [§ Instructions and skills](#instructions-and-skills-are-the-clis-job).
 - `--permission-mode dontAsk` denies every unapproved or `ask` action rather than stalling;
   a headless process has nobody to approve a prompt.
 - `--strict-mcp-config` keeps ambient MCP servers out; a protected workspace-specific MCP
   file is passed only when the operator configures one.
 
-**Known defect.** `--setting-sources ""` suppresses more than settings: measured against
-2.1.226, it also stops Claude from loading `CLAUDE.md` up the directory chain *and* from
-discovering workspace skills. A policy-controlled workspace therefore runs today with no
-workspace or shared instructions and only built-in skills, so the bootstrapped `AGENTS.md`
-and the workspace `skills` allowlist are inert. Isolation is stronger than documented, not
-weaker — nothing ambient leaks — but the intended inputs are missing.
+### Instructions and skills are the CLI's job
 
-Dropping the flag is not the fix: without it, the operator's entire `~/.claude` comes
-along (in testing, more than twenty ambient user skills). The planned repair is a
-per-workspace `CLAUDE_CONFIG_DIR` holding exactly the shared instructions, workspace
-instructions, and allowlisted skills Enso stages, so the "user" scope Claude loads is one
-Enso controls rather than the operator's own. That approach is unverified against the
-pinned CLI; the fallbacks are prepending the instructions to the prompt (provider-neutral,
-costs tokens per turn) or `--add-dir` with
-`CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1`. Whichever lands must keep ambient user
-configuration out while restoring layered instructions and allowlisted skills.
+**Planned.** Enso does not stage, curate, or inject instructions and skills. `AGENTS.md`
+(via its `CLAUDE.md` symlink) and skills are discovered by the CLI exactly as they are for
+an operator running it by hand, including the walk up the directory chain. Because Enso
+workspaces live under `~/.enso/`, a workspace picks up its own instructions and then the
+shared `~/.enso/AGENTS.md` with no Enso involvement.
+
+This is deliberate. On a personal machine the operator usually *wants* the agent to know
+what they know, so a top-level `~/.claude/CLAUDE.md` reaching a workspace is the feature,
+not a leak. On a dedicated team machine that file is absent or is itself the intended
+global layer. Fighting the CLI's discovery would surprise anyone who knows the CLI, and a
+config key that claims to restrict skills but cannot is worse than no key at all — which
+is why the workspace `skills` allowlist is removed rather than reimplemented.
+
+Verified behaviours worth knowing, measured against 2.1.226:
+
+- `--setting-sources ""` suppresses far more than settings: it also stops `CLAUDE.md`
+  chain loading and workspace skill discovery. That is why the shipped value changes to
+  `project`.
+- `CLAUDE.md` **walks up** the directory chain; `settings.json` does **not**. Only the
+  workspace's own `.claude/settings.json` is read, so a shared parent directory cannot
+  supply settings or hooks to every workspace.
+- Claude reads `CLAUDE.md`, never a bare `AGENTS.md`. A missing symlink is ignored
+  silently, with no error and a zero exit.
+- Per-workspace `CLAUDE_CONFIG_DIR` does not work on macOS: the OAuth token is stored in
+  the login keychain under a service name derived from the config directory, so a fresh
+  directory fails with `Not logged in`. There is no credential file to copy. On Linux the
+  credentials are files under the config directory, so the same mechanism may be viable
+  there — untested.
+
+An operator who *does* want to narrow what a workspace can reach does it the same way as
+everything else: filesystem deny rules in their own policy file. There is no separate Enso
+mechanism to learn.
+
+### Hooks must be disabled in a policy-controlled workspace
+
+**Planned, and required.** A workspace's own `.claude/settings.json` may define hooks, and
+those hooks execute outside the permission system and outside the sandbox. The agent can
+write that file itself: verified end to end against 2.1.226 under `--permission-mode
+dontAsk`, an agent created `.claude/settings.json` and on the next run its `SessionStart`
+hook executed an arbitrary command. Documentation states that `dontAsk` denies
+protected-path writes; empirically it did not, so this is not a behaviour a CLI-literate
+operator would anticipate.
+
+`"disableAllHooks": true` blocks it — verified, with instructions still loading normally.
+Enso therefore **refuses to launch** a policy-controlled Claude workspace whose policy file
+omits it, and says why. This is a check on Enso's own launch contract, not a judgement of
+the operator's policy: it is what keeps the deny rules the operator wrote from being
+bypassed by the agent they constrain.
+
+The requirement is scoped to policy-controlled workspaces. An `unrestricted: true`
+workspace has no policy file, and hooks grant it nothing it does not already have.
 
 Claude's sandbox is separate from permission mode and applies only to Bash and its child
 processes; it is disabled by default. An operator relying on it as the boundary should set
@@ -236,13 +273,34 @@ MCP, connectors, browser/computer-use tools, Codex cloud, or an approved escalat
 surfaces need their own native settings or must be absent. `requirements.toml` is a
 system/managed policy surface, not a per-workspace file Enso should generate.
 
+Two verified behaviours matter when reading a staged `CODEX_HOME` as isolation. It governs
+Codex's own configuration, but **not** the operator's portable skills: with a fully staged
+home, all ten skills in `~/.agents/skills` still reached the model. Only overriding `HOME`
+excludes them, which Enso deliberately does not do — the same reasoning as Claude, that an
+operator's own knowledge reaching their own agent is the point. And `--ignore-user-config`
+is a trap: it removes ambient configuration but also silently drops the permission profile,
+flipping the sandbox back to a default. Enso never passes it.
+
+`codex debug prompt-input` renders the exact model-visible message list, including every
+skill locator, offline and without an API call. It is the cheapest way to confirm what a
+given launch actually loads.
+
 References: [permission profiles](https://learn.chatgpt.com/docs/permissions), [agent approvals and security](https://learn.chatgpt.com/docs/agent-approvals-security), and [configuration](https://learn.chatgpt.com/docs/config-file/config-reference).
 
 ## Antigravity (`agy`)
 
-`agy` has no documented permission or sandbox model. It is available only when the
-workspace explicitly sets `unrestricted: true`. In a policy-controlled workspace it is
-hidden from `!use`, and direct selection is refused immediately.
+`agy` is available only when the workspace explicitly sets `unrestricted: true`. In a
+policy-controlled workspace it is hidden from `!use`, and direct selection is refused
+immediately.
+
+**Correction.** Earlier revisions of this document, and the refusal message in the code,
+justified that restriction by claiming agy has no permission model. That is wrong: agy
+exposes `toolPermission`, `permissions.allow`/`deny`, and auto-denies in headless runs.
+The restriction stands on a narrower and honest basis — Enso has no verified agy launch
+contract, and its isolation controls (`--gemini_dir`, which silently falls back to
+`~/.gemini` when given a relative path) are undocumented and can change under the CLI's
+self-updater. **Planned:** define and verify an agy contract, then let agy graduate to the
+policy tier rather than remaining excluded by assumption.
 
 ## Process environment and local authority
 
@@ -286,6 +344,7 @@ the real control.
 | JSON/TOML parses                                                     | provider error |
 | Codex mixes permission profiles and legacy sandbox settings          | provider error |
 | `agy` is enabled without `unrestricted: true`                        | provider error |
+| Claude policy omits `disableAllHooks: true` (**planned**)            | provider error |
 | Claude sandbox is not enabled in a policy-controlled workspace        | warning        |
 
 Startup reports all workspaces and continues. A workspace-level structural error blocks
