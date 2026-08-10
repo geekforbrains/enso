@@ -2,6 +2,52 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.0] - 2026-08-10
+
+This release replaces Enso's single-user Slack allowlist with an access-profile model. Every Slack DM and channel is bound by an exact route to one named workspace and one complete native-CLI policy, and restricted work runs under the provider CLI's own sandbox and permission system instead of Enso's bypass invocation. It is a breaking change; see Migration.
+
+### Migration from 0.19.x
+
+- Slack now requires `routes.slack`; a Slack transport with `transports.slack.allowed_users` or without routes is invalid. Map each authorized DM user (by exact Slack user ID) and channel (by exact channel ID) to a route that names a workspace and an access profile. There is no allowlist, wildcard, or default route, and routes are never synthesized.
+- Move `unrestricted`, `policy_dir`, `providers`, `default_provider`, and `chat_commands` out of `workspaces` and into named `access` profiles; move directories into `workspaces`. `groups`, route `allow`, and route `context_from` are removed.
+- Every job's `JOB.md` must add `workspace` and `access`; a job missing either is skipped.
+- Telegram `allowed_users` must be exact numeric string IDs; the `allowed_user_ids` spelling and the `"*"` wildcard are removed, and only private chats are accepted.
+- `enso policy check` is now `enso config check`. Run it, and `enso route explain slack <user> [channel]`, before restarting the service.
+
+### Added
+
+- Access profiles: either `unrestricted` (retaining the bypass invocation, for trusted administrative routes) or a `policy_dir` of native provider policies. Reusable `workspaces` (a provider cwd and shared-content root) and exact Slack DM/channel routes bind a workspace to a profile.
+- Native non-bypass launch contracts. Claude launches with `--settings <policy> --permission-mode dontAsk --setting-sources project --strict-mcp-config`; Codex launches from a staged, revision-keyed, immutable `CODEX_HOME` with `--strict-config --skip-git-repo-check` (and `--ignore-rules` when the profile ships none). Policy-controlled children receive a minimal allowlisted environment holding only the active provider's credential.
+- Scheduled jobs bind to a workspace and access profile and run under that native policy. The launch is proven constructible before the trusted host-side prerun runs, and no failure ever falls back to unrestricted execution.
+- A metadata-only Slack delivery ledger for at-most-once dispatch across an event's message/mention twins and Slack retries, and an optional per-route turn-based audit trail (`audit`, with `audit.on_failure` and `audit.max_age_days`).
+- New CLI: `enso config check` (static configuration and launch-plumbing validation), `enso route explain`, `enso audit tail`, and `enso audit export`.
+- `enso setup` initializes `~/.enso` as a git repository with a protective `.gitignore`, and reports pre-existing tracked credential files instead of assuming the protection applies.
+- Per-workspace concurrency limits shared across a workspace's routes and compaction.
+
+### Changed
+
+- Slack authorization is exact routes only: channel membership authorizes a channel route, and DM routes are keyed by exact user ID. (breaking)
+- Jobs require explicit `workspace` and `access`. (breaking)
+- Telegram requires exact numeric string IDs and rejects non-private chats. (breaking)
+- `enso policy check` renamed to `enso config check`; it also validates job bindings and every route- and job-bound launch, and reports that it is a plumbing check, not proof that a policy is safe. (breaking)
+- Dispatch threads an immutable execution context (cwd, launch, workspace, access) resolved at the provider spawn boundary; operational logs for routed work are metadata-only.
+
+### Removed
+
+- Legacy `transports.slack.allowed_users`, `groups`, route `allow`, route `context_from`, and permission fields inside `workspaces`. (breaking)
+- Telegram `allowed_user_ids` and the `"*"` wildcard. (breaking)
+- The Enso-curated skills allowlist; each CLI's own skill discovery applies, governed by native policy rather than by Enso.
+
+### Fixed
+
+- A bare `!` command no longer raises inside the Slack router, a crash that had left the delivery claim pending and silently dropped the message.
+- Codex restricted launches pass `--skip-git-repo-check`; non-private Telegram chats are rejected; audit and ledger integrity and command-revocation gaps are closed; and crash-orphaned pending turns are reconciled at startup.
+
+### Security
+
+- Restricted routes and jobs execute under the provider CLI's native sandbox and permission system rather than `--dangerously-skip-permissions` or `--dangerously-bypass-approvals-and-sandbox`. A missing, unreadable, malformed, or structurally unsafe policy fails the turn closed; Enso never falls back to an unrestricted launch, another profile, another workspace, or the global `working_dir`.
+- Enso's transport tokens, secret-manager token, database, and unrelated provider credentials are withheld from policy-controlled children. Policy files must be protected owner-only regular files outside every writable workspace, and overlapping or symlinked layouts are rejected. Native policy, not Enso, remains the authority on what a profile can read, write, run, or reach.
+
 ## [0.19.0] - 2026-08-05
 
 ### Added
