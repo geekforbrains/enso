@@ -106,7 +106,7 @@ You can also send files — they're downloaded and passed to the active agent. R
 
 Effort is stored separately for each conversation, provider, and model. Claude supports its existing model-dependent range through `max`. Codex Sol and Terra support `low` through `ultra`; Luna supports `low` through `max`. Antigravity's concrete model names already encode effort (for example, `gemini-3.6-flash-low`), so choose the desired variant with `/model`. Enso clamps an unsupported higher Claude/Codex choice to the active model's maximum and reports the effective level.
 
-**Slack specifics.** DMs work like Telegram — every message dispatches. In channels, Enso only responds when mentioned (`@bot help me`); once a thread starts, it stays attentive to that thread only if you keep mentioning it. The bot fetches the last few thread/channel messages as context so it knows what's going on.
+**Slack specifics.** Configured DMs dispatch every ordinary message. In channels, Enso only responds when mentioned (`@bot help me`); once a thread starts, it stays attentive to that thread only if you keep mentioning it. For configured routes, the bot fetches the last few thread/channel messages as context so it knows what's going on. Teams mode handles explicit contact at unconfigured locations locally as described below.
 
 ## Slack directory (`enso slack`)
 
@@ -175,7 +175,7 @@ By default Enso answers Slack users listed in `allowed_users`, runs in one `work
 
 Channel membership is the authorization boundary. Everyone in a configured channel uses its route's same access profile, including administrators. A client channel and an internal staff channel can point at the same project workspace while using read-only and broader profiles respectively. Exact DMs are keyed by Slack user ID, so an owner DM can use an unrestricted administrative profile without granting that authority in shared channels.
 
-Adding `routes.slack` enables teams mode and is mutually exclusive with the legacy Slack `allowed_users` key. Unlisted DMs and channels are ignored. A broken route or native policy never falls back to another workspace or unrestricted execution.
+Adding `routes.slack` enables teams mode and is mutually exclusive with the legacy Slack `allowed_users` key. An unlisted DM receives a fixed access message, and an explicit mention in an unlisted channel receives a fixed thread reply; neither response invokes an LLM, resolves a workspace, fetches context, or creates a route audit record. Ordinary messages in unlisted channels remain ignored. A broken configured route or native policy reports a configuration error and never falls back to another workspace or unrestricted execution.
 
 ```bash
 enso policy check                          # check routes and native policy plumbing

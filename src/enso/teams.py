@@ -95,7 +95,7 @@ class Route:
 class Decision:
     """Outcome of resolving one inbound Slack event against static config."""
 
-    status: str  # "authorized" | "silent" | "error"
+    status: str  # "authorized" | "unconfigured" | "error"
     reason: str
     route: Route | None = None
 
@@ -455,7 +455,7 @@ def resolve(teams: TeamsConfig, *, user_id: str, channel_id: str | None) -> Deci
         teams.dm_routes.get(user_id) if channel_id is None else teams.channel_routes.get(channel_id)
     )
     if route is None:
-        return Decision(status="silent", reason="no_route")
+        return Decision(status="unconfigured", reason="no_route")
     if not teams.dispatchable:
         return Decision(status="error", reason="teams_config_invalid", route=route)
     if not teams.route_usable(route):

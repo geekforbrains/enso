@@ -110,7 +110,7 @@ def test_route_explain_dm_requires_exact_user_id(tmp_enso):
     save_config(_teams_config(tmp_enso))
     result = runner.invoke(app, ["route", "explain", "slack", "UNOBODY"])
     assert result.exit_code == 0
-    assert "silent" in result.output
+    assert "unconfigured" in result.output
 
 
 def test_audit_tail_and_export(tmp_enso):

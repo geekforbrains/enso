@@ -16,6 +16,10 @@ from enso.transports.slack import SlackTransport
 
 ACCOUNT = "T0ENSO"
 ADMIN, DEV, CLIENT = "U01ADMIN", "U02DEV", "U04CLIENT"
+UNCONFIGURED_CHANNEL_REPLY = (
+    "I haven't been enabled in this channel yet. Ask an Enso admin to set me up."
+)
+UNCONFIGURED_DM_REPLY = "I haven't been enabled for your DMs yet. Ask an Enso admin for access."
 
 
 def _teams_config(tmp_enso: str) -> dict:
@@ -179,14 +183,32 @@ async def test_every_channel_member_is_authorized_and_recorded(tmp_enso, monkeyp
     assert row["user_id"] == CLIENT
 
 
-async def test_unrouted_channel_is_pure_silence(tmp_enso, monkeypatch):
+async def test_unrouted_channel_mention_gets_fixed_thread_reply(tmp_enso, monkeypatch):
     transport, rt = _make_transport(tmp_enso, monkeypatch)
     client = _make_client()
     await transport._handle_app_mention(_mention(channel="CPRIVATE"), client)
 
     rt.dispatch.assert_not_awaited()
-    client.chat_postMessage.assert_not_awaited()
-    assert _audit_rows(tmp_enso) == []  # unmatched route has no audit policy
+    client.conversations_history.assert_not_awaited()
+    client.conversations_replies.assert_not_awaited()
+    client.chat_postMessage.assert_awaited_once_with(
+        channel="CPRIVATE",
+        text=UNCONFIGURED_CHANNEL_REPLY,
+        thread_ts="100.1",
+    )
+    assert _audit_rows(tmp_enso) == []  # unmatched route stores no request or reply
+
+
+async def test_duplicate_unrouted_mention_gets_one_reply(tmp_enso, monkeypatch):
+    transport, rt = _make_transport(tmp_enso, monkeypatch)
+    client = _make_client()
+    event = _mention(channel="CPRIVATE")
+
+    await transport._handle_app_mention(event, client)
+    await transport._handle_app_mention(event, client)
+
+    rt.dispatch.assert_not_awaited()
+    client.chat_postMessage.assert_awaited_once()
 
 
 async def test_channel_routes_do_not_apply_a_user_allowlist(tmp_enso, monkeypatch):
@@ -228,12 +250,19 @@ async def test_authorized_dm_uses_dm_route_workspace(tmp_enso, monkeypatch):
     assert context.access.unrestricted
 
 
-async def test_dm_without_route_is_silent(tmp_enso, monkeypatch):
+async def test_dm_without_route_gets_fixed_inline_reply(tmp_enso, monkeypatch):
     transport, rt = _make_transport(tmp_enso, monkeypatch)
     client = _make_client()
     await transport._handle_message(_dm(user=DEV), client)
+
     rt.dispatch.assert_not_awaited()
-    client.chat_postMessage.assert_not_awaited()
+    client.conversations_history.assert_not_awaited()
+    client.conversations_replies.assert_not_awaited()
+    client.chat_postMessage.assert_awaited_once_with(
+        channel="D0OWNER",
+        text=UNCONFIGURED_DM_REPLY,
+    )
+    assert _audit_rows(tmp_enso) == []  # unmatched route stores no request or reply
 
 
 async def test_account_mismatch_silences_everyone(tmp_enso, monkeypatch):
@@ -259,6 +288,20 @@ async def test_channel_message_without_mention_is_ignored(tmp_enso, monkeypatch)
         client,
     )
     rt.dispatch.assert_not_awaited()
+    client.chat_postMessage.assert_not_awaited()
+
+
+async def test_invalid_global_config_keeps_unrouted_dm_silent(tmp_enso, monkeypatch):
+    config = _teams_config(tmp_enso)
+    config["groups"] = {}  # unsupported top-level key makes teams config invalid
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    await transport._handle_message(_dm(user=DEV), client)
+
+    rt.dispatch.assert_not_awaited()
+    client.chat_postMessage.assert_not_awaited()
+    assert _audit_rows(tmp_enso) == []
 
 
 # -- configuration failures --
@@ -305,7 +348,7 @@ async def test_audit_failure_blocks_authorized_turn(tmp_enso, monkeypatch):
     assert "audit" in reply.lower()
 
 
-async def test_audit_failure_hook_is_not_reached_for_unrouted_dm(tmp_enso, monkeypatch):
+async def test_unrouted_dm_reply_does_not_touch_audit(tmp_enso, monkeypatch):
     transport, rt = _make_transport(tmp_enso, monkeypatch)
 
     def boom(**kwargs):
@@ -316,7 +359,10 @@ async def test_audit_failure_hook_is_not_reached_for_unrouted_dm(tmp_enso, monke
     await transport._handle_message(_dm(user=CLIENT), client)
 
     rt.dispatch.assert_not_awaited()
-    client.chat_postMessage.assert_not_awaited()
+    client.chat_postMessage.assert_awaited_once_with(
+        channel="D0OWNER",
+        text=UNCONFIGURED_DM_REPLY,
+    )
 
 
 # -- command gating --

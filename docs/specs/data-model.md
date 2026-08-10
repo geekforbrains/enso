@@ -411,7 +411,7 @@ Schema rules:
 - `access.<name>` requires a non-empty `providers` list and a `default_provider` from that list. `chat_commands` is either a unique list or the explicit string `"*"`; omission means none.
 - An access profile uses exactly one mode: explicit `unrestricted: true`, or native policy files under `policy_dir`. For a restricted profile the directory defaults to `~/.enso/policies/<access-name>`. Unrestricted mode does not imply providers or commands.
 - `routes.slack.account_id` must match the Slack account returned by the configured credentials.
-- `routes.slack.dms` is keyed by exact Slack user ID. `routes.slack.channels` is keyed by exact channel ID. There are no named DM rules, groups, allowlists, defaults, or wildcards.
+- `routes.slack.dms` is keyed by exact Slack user ID. `routes.slack.channels` is keyed by exact channel ID. There are no named DM rules, groups, allowlists, defaults, or wildcards. An unrouted explicit contact receives only the fixed transport-level access response; it does not create an implicit route.
 - Every route requires a known `workspace` and `access`. `audit` is optional and defaults to `false`.
 - A missing workspace, access profile, provider, or native policy is an error. Nothing falls back to `working_dir`, another profile, or unrestricted execution.
 - Config is loaded and validated at service startup. Changes take effect only after restart; invalid security config is never replaced with defaults.
@@ -442,11 +442,11 @@ CREATE TABLE IF NOT EXISTS _enso_slack_events (
 );
 ```
 
-The delivery ID is an opaque digest derived from the authenticated Slack account, channel, and canonical source-message timestamp. A duplicate is acknowledged without another provider run or response. The ledger contains no message text. Pending claims left by a service crash are closed during startup rather than replayed automatically.
+The delivery ID is an opaque digest derived from the authenticated Slack account, channel, and canonical source-message timestamp. A duplicate is acknowledged without another provider run or response. This includes unrouted DMs and explicit channel mentions, whose fixed access response is therefore sent at most once. The ledger contains no message text. Pending claims left by a service crash are closed during startup rather than replayed automatically.
 
 ### Optional audit log
 
-A route with `audit: true` asks Enso to record its triggering message and terminal outcome. The audit store is operational evidence, not a complete transcript or security boundary. It excludes surrounding Slack context, attachments, status edits, reasoning, tool calls, native provider history, and unrelated outbound messages.
+A route with `audit: true` asks Enso to record its triggering message and terminal outcome. An unrouted DM or channel mention has no route and creates no audit row; its fixed response is represented only by the metadata-only delivery ledger. The audit store is operational evidence, not a complete transcript or security boundary. It excludes surrounding Slack context, attachments, status edits, reasoning, tool calls, native provider history, and unrelated outbound messages.
 
 The existing turn table is retained for database compatibility. New teams-mode rows associate the Slack delivery with its exact route, workspace, sender, provider, model, actual launch policy revision, request text, available final response, outcome, and delivery status. The two group columns remain in the table but are populated with empty values because the routing model no longer has groups. Access-profile identity is not duplicated in a new column; the exact route identifies the configured profile at the time, while retained historical configuration is an operator concern.
 

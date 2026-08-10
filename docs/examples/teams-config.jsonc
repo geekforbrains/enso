@@ -2,7 +2,9 @@
 //
 // The presence of routes.slack enables teams mode. Remove the legacy Slack
 // allowed_users key: exact DM users and channel IDs become the authorization
-// boundary. Telegram keeps its existing allowlist and working_dir.
+// boundary. An unrouted DM or explicit channel mention gets a fixed local access
+// response without an LLM launch; ordinary unrouted channel messages are ignored.
+// Telegram keeps its existing allowlist and working_dir.
 //
 // Config changes require an Enso restart. Before restarting, run:
 //

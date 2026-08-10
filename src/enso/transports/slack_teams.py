@@ -27,6 +27,10 @@ _MENTION_RE = re.compile(r"<@\w+>\s*")
 CONFIG_ERROR_REPLY = (
     "This conversation isn't fully configured for Enso — ask an admin to run `enso policy check`."
 )
+UNCONFIGURED_CHANNEL_REPLY = (
+    "I haven't been enabled in this channel yet. Ask an Enso admin to set me up."
+)
+UNCONFIGURED_DM_REPLY = "I haven't been enabled for your DMs yet. Ask an Enso admin for access."
 AUDIT_FAILURE_REPLY = (
     "This is an audited conversation and the audit record could not be "
     "written, so the request was not run."
@@ -141,10 +145,26 @@ class TeamsRouter:
             log.info("Duplicate Slack delivery acknowledged (%s…)", delivery[:12])
             return
 
+        reply_thread = thread_ts or (ts if is_mention and not is_dm else None)
+        if decision.status == "unconfigured":
+            if self.teams.dispatchable:
+                await self._finish_unconfigured(
+                    transport,
+                    client,
+                    account,
+                    delivery,
+                    channel,
+                    reply_thread,
+                    user,
+                    is_dm=is_dm,
+                )
+            else:
+                await self._complete_ledger(account, delivery, None)
+            return
+
         text = _MENTION_RE.sub("", event.get("text", "")).strip()
         thread_key = thread_ts or (ts if not is_dm else None)
         conv_label = f"{channel}:{thread_key}" if thread_key else channel
-        reply_thread = thread_ts or (ts if is_mention and not is_dm else None)
         location_route = decision.route
         turn_fields = {
             "account_id": account,
@@ -159,9 +179,6 @@ class TeamsRouter:
             "request_text": text,
         }
 
-        if decision.status == "silent":
-            await self._complete_ledger(account, delivery, None)
-            return
         if decision.status == "error":
             await self._finish_config_error(
                 transport,
@@ -195,6 +212,27 @@ class TeamsRouter:
             is_dm=is_dm,
             is_mention=is_mention,
         )
+
+    async def _finish_unconfigured(
+        self,
+        transport: SlackTransport,
+        client: Any,
+        account: str,
+        delivery: str,
+        channel: str,
+        reply_thread: str | None,
+        user: str,
+        *,
+        is_dm: bool,
+    ) -> None:
+        """Reply deterministically to explicit contact at an unrouted location."""
+        ctx = transport.make_context(client, channel, reply_thread, user_id=user)
+        reply = UNCONFIGURED_DM_REPLY if is_dm else UNCONFIGURED_CHANNEL_REPLY
+        try:
+            await ctx.reply(reply)
+        except Exception:
+            log.exception("Failed to deliver unconfigured-location reply")
+        await self._complete_ledger(account, delivery, None)
 
     async def _finish_config_error(
         self,

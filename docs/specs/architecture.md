@@ -176,13 +176,17 @@ Conversation work carries an immutable `ExecutionContext` instead of reading a s
 Teams configuration is loaded and validated when `enso serve` starts. It is not hot-reloaded; changing authorization requires a restart. For each Slack event the transport performs this fixed sequence before fetching surrounding context or downloading attachments:
 
 1. Verify the event belongs to the configured Slack account.
+1. Accept an ordinary `im` message or an explicit mention in a channel. Ignore ordinary channel messages.
 1. Resolve an `im` conversation by exact sender ID, or any other conversation by exact channel ID. A thread inherits its parent channel route.
-1. Resolve the route's workspace and access profile.
 1. Claim the Slack delivery ID for retry deduplication.
+1. If no route exists, send the fixed DM response directly or the fixed channel response in a thread, then stop without resolving execution state.
+1. Resolve a configured route's workspace and access profile.
 1. Validate the selected provider's launch plumbing and start optional audit recording for the route.
 1. Process the command or provider request using the resolved execution context; prepare the native launch after acquiring the workspace slot.
 
-There are no groups, sender rankings, wildcard routes, or composed policies. A configured channel authorizes every human member who can post there; an administrator posting in a client channel gets the client channel's policy. An invalid route never falls back to another workspace, access profile, legacy `working_dir`, or unrestricted launch.
+There are no groups, sender rankings, wildcard routes, or composed policies. A configured channel authorizes every human member who can post there; an administrator posting in a client channel gets the client channel's policy. An invalid configured route never falls back to another workspace, access profile, legacy `working_dir`, or unrestricted launch. A configured route that cannot launch reports a configuration error.
+
+The two no-route replies are fixed transport strings. They do not invoke an LLM, select a workspace or access profile, construct an `ExecutionContext`, fetch message context or attachments, or start an audit turn. A globally invalid teams configuration or wrong-account event remains silent and is logged.
 
 ### Execution and session keys
 

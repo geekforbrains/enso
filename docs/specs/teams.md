@@ -18,7 +18,7 @@ A user does not carry a permission level into every room. The route is the secur
 - An exact channel route authorizes every human member posting in that channel.
 - Everyone using a channel gets the same workspace and access profile, including administrators.
 - Threads inherit their parent channel route but keep their own conversation session.
-- An unlisted DM user or channel is ignored. There is no default or wildcard route.
+- An unlisted DM or explicit mention in an unlisted channel receives a fixed local access message. Ordinary messages in unlisted channels are ignored. There is no default or wildcard route.
 
 This keeps Slack behavior understandable: if a room is safe for a client, the Enso agent in that room is client-safe too. Staff use a separate internal channel when they need broader authority.
 
@@ -141,14 +141,18 @@ On startup Enso validates the Slack account ID, exact routes, workspaces, access
 For each Slack event Enso:
 
 1. Verifies the authenticated Slack account.
-1. Resolves the exact DM user ID or channel ID.
-1. Resolves the route's workspace and access profile.
+1. Accepts an ordinary DM or explicit channel mention. Other channel messages are ignored.
+1. Resolves the exact DM user ID or channel ID and claims its delivery ID for retry deduplication.
+1. If the location is unlisted, returns the fixed local response described below and stops.
+1. Resolves a configured route's workspace and access profile.
 1. Checks that the selected provider and native policy can be launched.
 1. Runs the provider directly in the workspace directory.
 
-An invalid route or policy never falls back to another workspace, profile, legacy `working_dir`, or unrestricted execution. Configuration errors for an otherwise authorized route are reported; unknown routes remain silent.
+An invalid route or policy never falls back to another workspace, profile, legacy `working_dir`, or unrestricted execution. Configuration errors for an otherwise authorized route are reported. A globally invalid configuration cannot establish usable teams routing, and an event from the wrong Slack account remains silent and is logged rather than receiving an access response.
 
-Slack DMs dispatch ordinary messages. Channels dispatch only explicit bot mentions, including inside threads. Route resolution occurs before surrounding context or attachments are fetched. Channel context is untrusted input even though every member is authorized to invoke the route.
+Slack DMs dispatch ordinary messages. Channels dispatch only explicit bot mentions, including inside threads. An unlisted DM receives `I haven't been enabled for your DMs yet. Ask an Enso admin for access.` An explicit mention in an unlisted channel receives `I haven't been enabled in this channel yet. Ask an Enso admin to set me up.` as a thread reply. These are fixed transport responses: Enso does not resolve a workspace or access profile, fetch context or attachments, invoke an LLM, or create an audit record. They pass through the delivery ledger so a retried Slack event receives at most one reply.
+
+For configured routes, route resolution still occurs before surrounding context or attachments are fetched. Channel context is untrusted input even though every member is authorized to invoke the route.
 
 `enso policy check` inspects Enso's configuration and policy-file plumbing. `enso route explain slack <user-id> [channel-id]` explains the local routing decision. Neither command certifies that a native policy has the intended meaning; test policies with the provider's own tools and disposable files.
 

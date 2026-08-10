@@ -340,10 +340,10 @@ def test_configured_channel_authorizes_every_poster(tmp_path, user_id):
     assert decision.route.route_id == "slack.channel.C0ACME"
 
 
-def test_unconfigured_channel_is_silent(tmp_path):
+def test_unconfigured_channel_has_explicit_resolution(tmp_path):
     parsed = load_teams(make_config(tmp_path))
     decision = resolve(parsed, user_id="U01ADMIN", channel_id="CPRIVATE")
-    assert decision.status == "silent"
+    assert decision.status == "unconfigured"
     assert decision.reason == "no_route"
 
 
@@ -353,7 +353,7 @@ def test_dm_route_key_is_exact_slack_user_id(tmp_path):
     denied = resolve(parsed, user_id="U02STAFF", channel_id=None)
     assert allowed.status == "authorized"
     assert allowed.route.route_id == "slack.dm.U01ADMIN"
-    assert denied.status == "silent"
+    assert denied.status == "unconfigured"
     assert denied.reason == "no_route"
 
 
@@ -366,12 +366,13 @@ def test_route_scoped_error_is_reported_to_that_route(tmp_path):
     assert decision.reason == "route_unusable"
 
 
-def test_global_error_is_silent_without_exact_route(tmp_path):
+def test_global_error_preserves_unconfigured_resolution_without_exact_route(tmp_path):
     config = make_config(tmp_path)
     config["groups"] = {}
     parsed = load_teams(config)
     decision = resolve(parsed, user_id="UUNKNOWN", channel_id=None)
-    assert decision.status == "silent"
+    assert decision.status == "unconfigured"
+    assert decision.reason == "no_route"
 
 
 def test_global_error_is_reported_on_exact_route(tmp_path):
