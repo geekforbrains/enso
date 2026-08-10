@@ -12,10 +12,13 @@ approval_policy = "never"
 [permissions.enso.filesystem]
 ":minimal" = "read"
 
-# Read-only client access to the invocation workspace. Use "write" only for
-# a staff profile, or grant a narrower writable project-data path using the
-# installed CLI's current native syntax. Keep AGENTS.md, CLAUDE.md, .agents,
-# .claude, and skill definitions protected when a broader route trusts them.
+# Grants no write access. Note that a read-only Codex sandbox still permits
+# broad reads (system paths and TMPDIR); it is not confined to the workspace,
+# so keep secrets out of readable locations. Use "write" only for a staff
+# profile, or grant a narrower writable project-data path using the installed
+# CLI's current native syntax. A profile that grants writes must keep
+# AGENTS.md, CLAUDE.md, .agents, .claude, and skill definitions protected when
+# a broader route trusts them.
 [permissions.enso.filesystem.":workspace_roots"]
 "." = "read"
 
@@ -23,7 +26,10 @@ approval_policy = "never"
 enabled = false
 
 # Keep secrets out of commands the agent spawns. Adjust this list to the
-# credentials used by the installation.
+# credentials used by the installation. This filters only the inherited
+# environment; Codex runs commands through a login shell, so a secret exported
+# in ~/.zshenv or ~/.zprofile is re-sourced regardless — keep credentials out
+# of shell startup files.
 [shell_environment_policy]
 inherit = "core"
 

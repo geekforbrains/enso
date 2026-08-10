@@ -47,11 +47,13 @@
       "default_provider": "claude",
       "chat_commands": "*"
     },
+    // Service-wide commands (update, logs) stay on the unrestricted admin
+    // profile; staff gets everything else explicitly rather than "*".
     "staff": {
       "policy_dir": "~/.enso/policies/staff",
       "providers": ["claude", "codex"],
       "default_provider": "claude",
-      "chat_commands": "*"
+      "chat_commands": ["status", "clear", "stop", "help", "use", "model", "effort", "compact"]
     },
     "client-readonly": {
       "policy_dir": "~/.enso/policies/client-readonly",

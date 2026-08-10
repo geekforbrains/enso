@@ -101,7 +101,7 @@ The complete schema is in [data-model.md](data-model.md#execution-catalog-and-sl
       "policy_dir": "~/.enso/policies/staff",
       "providers": ["claude", "codex"],
       "default_provider": "claude",
-      "chat_commands": "*"
+      "chat_commands": ["status", "clear", "stop", "help", "use", "model", "effort", "compact"]
     },
     "client-readonly": {
       "policy_dir": "~/.enso/policies/client-readonly",

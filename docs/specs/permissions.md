@@ -66,6 +66,8 @@ Filtering `PATH` is useful friction but is not an isolation boundary: an agent m
 - service-control commands and the `enso` executable
 - unrelated native provider homes and credentials
 
+The allowlist covers only the provider process's own environment. Commands the agent then spawns usually run through the user's shell, which re-sources shell startup files — `~/.zshenv` on every invocation, `~/.zprofile` for login shells — so any secret exported there re-enters the child environment despite the allowlist. Keep credentials out of shell startup files; export them only where the service that launches Enso can see them.
+
 The policy must also account for every additional directory intentionally exposed to a staff or automation profile, such as `~/.enso/workspaces/clients/**`.
 
 ## Claude Code
@@ -93,6 +95,12 @@ A restricted Claude policy must set:
 Workspace hooks can execute outside Claude's ordinary tool permission flow, so a restricted access profile must not accept them. If the operator relies on Claude's command sandbox, enable and test it in the native file as well. Permission patterns and sandbox filesystem paths use provider-specific syntax; copy the [example](../examples/acme-claude-settings.json), then adapt and test it rather than translating a Codex policy by eye.
 
 Claude Code's behavior and schemas evolve independently of Enso. Review the official [permissions](https://code.claude.com/docs/en/permissions), [settings](https://code.claude.com/docs/en/settings), [tools reference](https://code.claude.com/docs/en/tools-reference), and [skills](https://code.claude.com/docs/en/skills) documentation for the installed version. Those sources describe available modes, settings precedence, tool surfaces, and skill scopes; Enso deliberately does not reproduce or reinterpret them.
+
+### Writing a restricted Claude policy
+
+Under `--permission-mode dontAsk`, unmatched tool calls default to deny for Bash, Write, and Edit but to allow for Read. A `deny` list therefore blocks only what it names: the Read tool can still reach any path neither the list nor the sandbox covers, and a rule that is mistyped, uses the wrong path form (absolute paths need the `//` prefix), or is written with the wrong JSON shape (for example a string where a list is expected) is silently ignored by `claude -p` — a plumbing check cannot see that. Prefer a fail-closed shape: `"deny": ["*"]` for a chat-only route, where the agent keeps no tools and answers only from the conversation Enso injects; or, to allow workspace reads, confine them with both `permissions` deny rules and `sandbox.filesystem.denyRead`, which constrains the Read tool as well as spawned commands. Confirm the result by attempting a forbidden read, never by assuming the file loaded.
+
+Because `--setting-sources project` also loads the workspace's own `.claude/settings.json`, treat that file as attacker-influenced. A `permissions` deny there cannot widen the launch (deny always wins), but a scalar such as `sandbox.enabled: false` can turn the sandbox off on the next launch. Any profile that grants writes must therefore deny writes to the control files a stricter profile trusts — `.claude/**`, `.codex/**`, `AGENTS.md`, `CLAUDE.md`, and skill directories. A Claude `deny` on those paths blocks the Write and Edit tools and Bash redirection to them; a read-only profile that grants no write tool cannot plant them at all.
 
 An access profile does not create instructions or copy skills. When Enso bootstraps a missing workspace, it writes a small `AGENTS.md` and a sibling `CLAUDE.md` symlink; after that, workspace instructions and native skill directories remain the operator's responsibility.
 
