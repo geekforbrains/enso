@@ -342,7 +342,7 @@ class TelegramTransport(BaseTransport):
 
         # Direct: /queue clear
         if args == ["clear"]:
-            count = self.runtime.clear_queue(conv_id)
+            count = await self.runtime.clear_queue(conv_id)
             await update.message.reply_text(
                 f"Cleared {count} queued message(s)." if count else "Queue is empty."
             )
@@ -582,14 +582,14 @@ class TelegramTransport(BaseTransport):
         elif data.startswith("queue:"):
             action = data.split(":", 1)[1]
             if action == "clear":
-                count = rt.clear_queue(conv_id)
+                count = await rt.clear_queue(conv_id)
                 await query.edit_message_text(
                     f"Cleared {count} queued message(s)."
                     if count else "Queue already empty."
                 )
             elif action.startswith("rm:"):
                 idx = int(action.split(":")[1])
-                rt.remove_from_queue(conv_id, idx)
+                await rt.remove_from_queue(conv_id, idx)
                 await self._show_queue(query, conv_id)
 
 

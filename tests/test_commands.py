@@ -6,8 +6,15 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from enso.commands import cmd_compact_async, cmd_effort, cmd_model, cmd_status, cmd_use
-from enso.core import Runtime
+from enso.commands import (
+    cmd_compact_async,
+    cmd_effort,
+    cmd_model,
+    cmd_status,
+    cmd_stop_async,
+    cmd_use,
+)
+from enso.core import ExecutionContext, Runtime
 from enso.providers import PROVIDER_NAMES
 from enso.providers.agy import AgyProvider
 
@@ -185,6 +192,31 @@ def test_cmd_status_reports_provider_and_model_only(sample_config):
     assert "Model: opus" in out
     assert "Effort" not in out
     assert "Runner" not in out
+
+
+@pytest.mark.asyncio
+async def test_cmd_stop_finalizes_cleared_queue_items(sample_config):
+    rt = Runtime(sample_config)
+    chat_key = "teams:stable"
+    completed = []
+    context = ExecutionContext(
+        chat_key=chat_key,
+        path=rt.working_dir,
+        workspace_id="acme",
+        on_complete=lambda outcome, reason: completed.append((outcome, reason)),
+    )
+    lock = rt.get_chat_lock(chat_key)
+    await lock.acquire()
+    try:
+        await rt.dispatch("C1:thread", "queued", AsyncMock(), context=context)
+        rt.stop_chat = AsyncMock(return_value=(False, None))
+
+        response = await cmd_stop_async(rt, chat_key)
+    finally:
+        lock.release()
+
+    assert response == "Cleared 1 queued message(s)."
+    assert completed == [("blocked", "queue_cleared")]
 
 
 # -- cmd_compact_async --

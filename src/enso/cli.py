@@ -811,32 +811,6 @@ def _update_referenced_secrets_with_rollback_or_exit(
     return results
 
 
-def _refuse_audited_slack_target(cfg: dict, target: str) -> None:
-    """Refuse out-of-band sends to an audited Slack route.
-
-    The audit trail is one row per turn; a message outside any turn would be
-    a gap in "what Enso said" until an outbound audit schema exists
-    (teams.md § Audit). DM-shaped targets can't be mapped to a DM route
-    without the Slack API, so they are refused whenever any DM route is
-    audited.
-    """
-    from .teams import load_teams
-
-    teams = load_teams(cfg)
-    if teams is None:
-        return
-    route = teams.channel_routes.get(target)
-    audited = route is not None and route.audit
-    if not audited and target[:1] in ("D", "U"):
-        audited = any(r.audit for r in teams.dm_routes.values())
-    if audited:
-        console.print(
-            "[red]✗[/] Refused: that destination is an audited Slack route, "
-            "and out-of-band sends cannot be recorded in the audit trail yet."
-        )
-        raise typer.Exit(1)
-
-
 def _resolve_send_targets(cfg: dict, to: str) -> tuple[str, str, list[str], str]:
     """Resolve delivery for ``message send``/``attach``.
 
@@ -864,7 +838,6 @@ def _resolve_send_targets(cfg: dict, to: str) -> tuple[str, str, list[str], str]
                 " set notify_channel in config."
             )
             raise typer.Exit(1)
-        _refuse_audited_slack_target(cfg, target)
         return transport, token, [target], thread_ts
 
     tg_cfg = cfg.get("transports", {}).get("telegram", {})
@@ -1329,7 +1302,6 @@ def serve(
 
     runtime = Runtime(config)
     runtime.install_system_prompts()
-    runtime.install_enso_repo()
     runtime.install_teams_workspaces()
     runtime.load_state()
 
@@ -2099,7 +2071,7 @@ def slack_thread(
 
 @policy_app.command("check")
 def policy_check() -> None:
-    """Validate every teams workspace and native provider policy."""
+    """Validate Slack routes, workspaces, and native access profiles."""
     from .policy import check_provider
     from .teams import load_teams
 
@@ -2117,8 +2089,7 @@ def policy_check() -> None:
         console.print("[red]Slack teams dispatch is disabled until this is fixed.[/]")
 
     for name, workspace in sorted(teams.workspaces.items()):
-        mode = "unrestricted" if workspace.unrestricted else "policy-controlled"
-        console.print(f"\n[bold]{name}[/] ({mode}) — {workspace.path}")
+        console.print(f"\n[bold]Workspace {name}[/] — {workspace.path}")
         for problem in teams.workspace_errors.get(name, ()):
             failed = True
             console.print(f"  [red]✗[/] {problem}")
@@ -2126,15 +2097,28 @@ def policy_check() -> None:
         if not os.path.isdir(expanded):
             failed = True
             console.print("  [red]✗[/] workspace path does not exist")
-        elif os.path.isdir(os.path.join(expanded, ".git")):
-            # A repository here becomes the nearest root, truncating Codex's
-            # AGENTS.md walk so shared instructions silently stop loading.
-            console.print(
-                "  [yellow]![/] contains its own git repository — Codex will not "
-                "load shared instructions in this workspace"
-            )
-        for provider in workspace.providers:
-            check = check_provider(workspace, provider)
+
+    for name, access in sorted(teams.access_profiles.items()):
+        mode = "unrestricted" if access.unrestricted else "policy-controlled"
+        console.print(f"\n[bold]Access {name}[/] ({mode})")
+        for problem in teams.access_errors.get(name, ()):
+            failed = True
+            console.print(f"  [red]✗[/] {problem}")
+
+    checked: set[tuple[str, str]] = set()
+    routes = (*teams.dm_routes.values(), *teams.channel_routes.values())
+    for route in sorted(routes, key=lambda item: item.route_id):
+        pair = (route.workspace, route.access)
+        if pair in checked or not teams.route_usable(route):
+            continue
+        checked.add(pair)
+        workspace = teams.workspaces[route.workspace]
+        access = teams.access_profiles[route.access]
+        console.print(
+            f"\n[bold]{route.workspace} + {route.access}[/] native launch"
+        )
+        for provider in access.providers:
+            check = check_provider(workspace, access, provider)
             if check.ok:
                 revision = (check.policy_revision or "")[:12]
                 console.print(f"  [green]✓[/] {provider} ({revision})")
@@ -2164,7 +2148,7 @@ def route_explain(
     ] = None,
 ) -> None:
     """Explain how a Slack sender/location pair would resolve."""
-    from .teams import binding_revision, load_teams, memberships, resolve
+    from .teams import load_teams, resolve
 
     if transport != "slack":
         console.print("[red]✗[/] Only 'slack' has teams routing.")
@@ -2174,17 +2158,15 @@ def route_explain(
         console.print("Teams mode is not configured (no routes.slack).")
         raise typer.Exit(1)
 
-    groups = memberships(teams, user_id)
-    console.print(f"Groups: {', '.join(groups) or '(none — unknown sender)'}")
+    console.print(f"Account: {teams.account_id}")
     decision = resolve(teams, user_id=user_id, channel_id=channel_id)
     console.print(f"Decision: [bold]{decision.status}[/] ({decision.reason})")
     if decision.route is not None:
         route = decision.route
         console.print(f"Route: {route.route_id}")
         console.print(f"Workspace: {route.workspace}")
+        console.print(f"Access: {route.access}")
         console.print(f"Audit: {'on' if route.audit else 'off'}")
-        console.print(f"Context from: {route.context_from}")
-        console.print(f"Binding revision: {binding_revision(teams, route)[:16]}")
     if not teams.dispatchable:
         console.print("[red]Teams dispatch is disabled by config errors "
                       "(see 'enso policy check').[/]")

@@ -40,15 +40,15 @@ Enso's runtime deps are deliberately tiny (`typer`, `rich`, `croniter`), with tr
 libraries behind extras. The web UI follows the same rule — a `web` extra, nothing
 pulled into the base install.
 
-| Concern | Choice | Why |
-| --- | --- | --- |
-| ASGI framework | **Starlette** | Minimal, async-native, and well suited to server-rendered pages |
-| Server | **Uvicorn** | Serves the standalone dashboard process |
-| Templates | **Jinja2** | Server-rendered HTML; the UI is views + forms, not an SPA |
-| Navigation | **Native browser links and forms** | Full-page requests and redirects without a client application bundle |
-| Forms | **Starlette `request.form()` + python-multipart** | Parses CSRF-protected URL-encoded writes |
-| SQLite store | **`sqlite3`** (stdlib) | Operation-scoped connections and explicit transactions without another dependency; WAL mode for concurrent readers |
-| Job frontmatter | **PyYAML `BaseLoader` + legacy fallback** | Valid YAML scalars stay strings; malformed older headers remain loadable; raw web edits avoid reserialization |
+| Concern         | Choice                                            | Why                                                                                                                |
+| --------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| ASGI framework  | **Starlette**                                     | Minimal, async-native, and well suited to server-rendered pages                                                    |
+| Server          | **Uvicorn**                                       | Serves the standalone dashboard process                                                                            |
+| Templates       | **Jinja2**                                        | Server-rendered HTML; the UI is views + forms, not an SPA                                                          |
+| Navigation      | **Native browser links and forms**                | Full-page requests and redirects without a client application bundle                                               |
+| Forms           | **Starlette `request.form()` + python-multipart** | Parses CSRF-protected URL-encoded writes                                                                           |
+| SQLite store    | **`sqlite3`** (stdlib)                            | Operation-scoped connections and explicit transactions without another dependency; WAL mode for concurrent readers |
+| Job frontmatter | **PyYAML `BaseLoader` + legacy fallback**         | Valid YAML scalars stay strings; malformed older headers remain loadable; raw web edits avoid reserialization      |
 
 `pyproject.toml` defines:
 
@@ -154,10 +154,10 @@ The recording seam (see [data-model.md](data-model.md) for the schema):
    `status='running'`, the pipeline start time, and an allocated `run_id`. A failed job
    prerun creates the same row when the failure is classified, backdated to gate start;
    intentional no-work creates no row.
-2. During: provider output is captured for the run log. Failed preruns store only their
+1. During: provider output is captured for the run log. Failed preruns store only their
    bounded safe diagnostic; raw prerun stdout/stderr is never copied into history or a
    transport notification.
-3. After: `runs.finish(run_id, exit_code, status)` sets `ended_at`, `exit_code`, and a
+1. After: `runs.finish(run_id, exit_code, status)` sets `ended_at`, `exit_code`, and a
    terminal `status` (`ok` / `error` / `timeout`; job gates may instead finish as
    `prerun_error` / `prerun_timeout`). Intentional no-work (`exit 1`) creates no row.
 
@@ -169,101 +169,38 @@ connection is cached, shared across threads, or allowed to block the event loop.
 
 ## Request resolution
 
-The enabling refactor for Slack [teams.md](teams.md); native CLI invocation is
-[permissions.md](permissions.md), and config/storage is [data-model.md](data-model.md).
-Telegram retains its user-ID allowlist and `working_dir` and rejects non-private chat
-types.
+Slack teams mode is described in [teams.md](teams.md), native CLI invocation in [permissions.md](permissions.md), and storage in [data-model.md](data-model.md). Telegram retains its user-ID allowlist and global `working_dir` and rejects non-private chat types.
 
-Conversation work carries an immutable `ExecutionContext` instead of reading the process
-`working_dir`. The context holds the state key, the workspace cwd, the policy launch, and
-the workspace concurrency; it is threaded through `dispatch` → `process_request` →
-`run_provider` → the provider and used for the subprocess cwd, uploads, and sessions. The
-legacy context binds the global `working_dir` with the unrestricted invocation, so
-Telegram and legacy Slack are unchanged.
+Conversation work carries an immutable `ExecutionContext` instead of reading a singleton cwd. For legacy Slack and Telegram the context contains the global `working_dir` and unrestricted launch. For teams mode it contains the workspace path, access profile, stable session key, captured model selection, audit callbacks, and workspace concurrency. The native provider launch is prepared only after the workspace slot is acquired. The same context is threaded through dispatch, uploads, commands, compaction, and provider execution.
 
-For Slack teams mode, the router computes a resolution before any command, context fetch,
-attachment download, or dispatch, carrying:
+Teams configuration is loaded and validated when `enso serve` starts. It is not hot-reloaded; changing authorization requires a restart. For each Slack event the transport performs this fixed sequence before fetching surrounding context or downloading attachments:
 
-```
-account_id, route_id, groups, workspace_id, workspace_path,
-provider, binding_revision, policy_revision, audit, context_from
-```
+1. Verify the event belongs to the configured Slack account.
+1. Resolve an `im` conversation by exact sender ID, or any other conversation by exact channel ID. A thread inherits its parent channel route.
+1. Resolve the route's workspace and access profile.
+1. Claim the Slack delivery ID for retry deduplication.
+1. Validate the selected provider's launch plumbing and start optional audit recording for the route.
+1. Process the command or provider request using the resolved execution context; prepare the native launch after acquiring the workspace slot.
 
-The order is fixed:
-
-1. Normalize the Slack account, identity, channel type, channel/thread, and canonical
-   source message timestamp; derive the stable delivery ID defined in
-   [data-model.md](data-model.md#slack-delivery-ledger), and reject an account mismatch.
-2. Atomically claim the delivery ID in the metadata-only deduplication ledger. A duplicate
-   is acknowledged without another dispatch; a ledger failure blocks execution.
-3. Resolve all group memberships and the exact Slack route.
-4. Authorize and validate its workspace/provider/policy.
-5. Create the audit turn when enabled.
-6. Only then process a command, fetch context, download files, or dispatch.
-
-The router resolves against current config on every event (reloaded from disk), so a
-config edit takes effect without a restart, and it re-resolves again immediately before
-execution. Downstream consumers never re-derive authorization ad hoc or re-read a global
-working directory.
+There are no groups, sender rankings, wildcard routes, or composed policies. A configured channel authorizes every human member who can post there; an administrator posting in a client channel gets the client channel's policy. An invalid route never falls back to another workspace, access profile, legacy `working_dir`, or unrestricted launch.
 
 ### Execution and session keys
 
-Cwd alone does not isolate sessions. Provider, model, effort, session, compaction, lock,
-queue, process, and activity state are keyed by a `chat_key`. For legacy work that key is
-the conversation ID, unchanged. For a teams route it is a `teams:<digest>` string derived
-from a structured, versioned tuple — account, channel, thread, workspace, `binding_revision`,
-provider, and `policy_revision` — hashed rather than delimiter-joined, since Slack
-conversation IDs already contain `:`. A route, workspace, provider, or policy change
-therefore yields a different key and a fresh provider session; legacy keys are never split
-heuristically or reused by a teams route.
+Cwd alone does not isolate sessions. Provider, model, effort, session, compaction, lock, queue, process, and activity state use a route-scoped `chat_key`. A Slack thread is distinct from its parent channel, and two channels sharing one workspace keep separate sessions. Provider selection is scoped to that conversation; `!use` never changes another route's selection.
 
-`binding_revision` covers every relevant authorization and binding input: the configured
-Slack account ID, the group definitions the route allows, the exact route and its
-allow/audit/context values, and the full workspace binding (path, provider
-allowlist/default, skills, chat commands, concurrency). It is route/config state, not the
-individual sender's membership snapshot. `policy_revision` covers the selected provider's
-native/staged policy digest plus the Enso launch-contract version; unrestricted mode has
-its own explicit revision.
-
-Queued work retains the immutable resolution it was authorized under, but Enso fully
-re-resolves the current sender, route, workspace, and provider immediately before a
-command or provider spawn. The current resolution — selected provider and both revisions
-included — must match the queued snapshot; stale work is refused rather than rerouted, and
-a revoked sender gets silence.
-
-Provider selection is scoped to the conversation, workspace, and binding revision via a
-durable selection key. A new execution context starts with the workspace's explicit
-`default_provider`; `!use` changes only that scoped selection, and selecting a different
-provider creates a distinct execution key.
+The key is serialized as structured data rather than by splitting a delimiter-bearing string. This matters because provider and route identifiers can already contain punctuation. It includes the Slack location, thread, workspace name, and access-profile name; it deliberately remains stable across `!use`, model, and policy-revision changes so stop, queues, and per-provider sessions remain reachable.
 
 ### Workspace isolation and concurrency
 
-- System prompts, tool copies, provider config, session state, and uploads are selected
-  from the resolved workspace. Uploads use a unique `uploads/<turn-id>/` directory.
-  Instructions and skills are discovered by the provider CLI, not staged by Enso.
-- Setup, `serve --working-dir`, service-manager working directories, prompt/bootstrap
-  installation, dashboard AGENTS/tool editing and cleanup, and outbound destination
-  resolution must distinguish a legacy context from an explicit named workspace. None may
-  recover a teams workspace from the process cwd or a singleton `working_dir`.
-- Background messages are scoped to an execution key. Slack teams mode rejects unaddressed
-  global model-context messages so one route cannot consume another route's content.
-- Teams-mode operational logs contain route/workspace IDs, lengths, and outcomes only.
-  Prompt previews and full debug prompts are never logged.
-- Each workspace has a semaphore shared by chats, compaction, and jobs. The safe default
-  is one active writer; the operator may explicitly raise it.
-- Jobs have no Slack route. In teams mode they require an explicit workspace and use the
-  same provider invocation, policy revision, environment, and semaphore. They never fall
-  back to `working_dir`.
-- A queued job snapshot contains the job-file digest, workspace binding revision,
-  provider, and provider policy revision. After acquiring both its per-job lock and the
-  workspace semaphore, Enso reloads and validates all inputs immediately before `prerun`
-  or provider spawn. A mismatch cancels that snapshot; an enabled job without an explicit
-  workspace is a startup/load diagnostic and is not scheduled.
-- A policy-controlled job `prerun` runs outside the provider CLI, so Enso refuses it
-  unless the workspace is explicitly unrestricted.
+- The resolved workspace supplies the subprocess cwd, uploads, native project instructions, native workspace skills, and session scope.
+- An access profile supplies provider availability, default provider, chat commands, and native policy selection. It supplies no content.
+- Several routes may share one workspace and therefore its files and concurrency limit while retaining separate sessions and access profiles.
+- A client route that shares files with a staff route must not be able to rewrite instructions, skill definitions, or provider control files trusted by the staff route.
+- Each workspace has a process-local semaphore shared by chats and compaction. The default is one active turn; operators may raise it when concurrent writes are safe.
+- Background messages are scoped to a conversation execution key, and operational logs avoid prompt previews.
+- Scheduled jobs are not Slack routes. They keep their existing global `working_dir`, provider configuration, prerun behavior, and per-job lock whether or not teams mode is enabled.
 
-Legacy Slack and Telegram continue to bind `working_dir` through a legacy execution
-context until the operator explicitly enables `routes.slack`.
+Legacy Slack and Telegram continue to bind `working_dir` through a legacy execution context until the operator explicitly enables `routes.slack`.
 
 ## Concurrency & consistency
 
@@ -322,21 +259,21 @@ internet and the PRD makes that a non-goal.
 
 ## Implementation map
 
-| Area | Change |
-| --- | --- |
-| `core.py` | Records scheduled runs around `_execute_job` and enforces retention |
-| `cli.py` | Provides standalone `enso web` and manual job-run commands |
-| `config.py` | Backfills `web` (including `allowed_hosts` / `external_skill_roots`) and `runs` defaults |
-| `jobs.py` | Loads YAML scalars with `BaseLoader`, then falls back for malformed legacy headers |
-| `frontmatter.py` | Provides fence-aware raw edits and YAML serialization, writing through `fsutil` |
-| `fsutil.py` | Owns atomic text writes, containment checks, pristine-file hashing, and SQLite file hardening |
-| `sqlite_store.py` | Owns operation-scoped connections, transactions, bounded timeouts, and failure classification |
-| `docs.py` | Owns reference-doc path validation, the bounded recursive listing, scaffolding, and deletion |
-| `runs.py` | Owns SQLite `create`/`finish`/`list_runs`/`get`/`prune` operations |
-| `tables.py` | Owns the registration catalog, identifier validation, schema inspection, and bounded previews |
-| `skills/tables/SKILL.md` | Guides safe, consistent agent table creation and data access |
-| `web/` | Contains the Starlette app, current routes/templates, discovery, and vendored assets |
-| `pyproject.toml` | Defines the `web` extra, base `pyyaml` dependency, and package data |
+| Area                     | Change                                                                                        |
+| ------------------------ | --------------------------------------------------------------------------------------------- |
+| `core.py`                | Records scheduled runs around `_execute_job` and enforces retention                           |
+| `cli.py`                 | Provides standalone `enso web` and manual job-run commands                                    |
+| `config.py`              | Backfills `web` (including `allowed_hosts` / `external_skill_roots`) and `runs` defaults      |
+| `jobs.py`                | Loads YAML scalars with `BaseLoader`, then falls back for malformed legacy headers            |
+| `frontmatter.py`         | Provides fence-aware raw edits and YAML serialization, writing through `fsutil`               |
+| `fsutil.py`              | Owns atomic text writes, containment checks, pristine-file hashing, and SQLite file hardening |
+| `sqlite_store.py`        | Owns operation-scoped connections, transactions, bounded timeouts, and failure classification |
+| `docs.py`                | Owns reference-doc path validation, the bounded recursive listing, scaffolding, and deletion  |
+| `runs.py`                | Owns SQLite `create`/`finish`/`list_runs`/`get`/`prune` operations                            |
+| `tables.py`              | Owns the registration catalog, identifier validation, schema inspection, and bounded previews |
+| `skills/tables/SKILL.md` | Guides safe, consistent agent table creation and data access                                  |
+| `web/`                   | Contains the Starlette app, current routes/templates, discovery, and vendored assets          |
+| `pyproject.toml`         | Defines the `web` extra, base `pyyaml` dependency, and package data                           |
 
 Missing bundled skill files are seeded. Existing copies update only when their hash
 matches a known pristine prior version; customized files and symlinks remain untouched.

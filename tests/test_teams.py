@@ -1,38 +1,37 @@
-"""Teams config schema, fail-closed validation, and Slack route resolution."""
+"""Static teams schema, fail-closed validation, and exact Slack routes."""
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
-from enso import teams
-from enso.teams import binding_revision, load_teams, resolve, slack_mode
+from enso.teams import load_teams, resolve, slack_mode
 
 
 def make_config(tmp_path, **overrides) -> dict:
-    """A valid teams-mode config with two groups, two workspaces, two routes."""
-    ops = tmp_path / "workspaces" / "ops"
-    acme = tmp_path / "workspaces" / "acme"
-    policies = tmp_path / "policies" / "acme"
-    for d in (ops, acme, policies):
-        d.mkdir(parents=True, exist_ok=True)
+    """A valid config with a shared project workspace and two access profiles."""
+    company = tmp_path / "workspaces" / "company"
+    acme = tmp_path / "workspaces" / "clients" / "acme"
+    client_policy = tmp_path / "policies" / "client-readonly"
+    for directory in (company, acme, client_policy):
+        directory.mkdir(parents=True, exist_ok=True)
     config = {
-        "working_dir": str(tmp_path / "workspace"),
+        "working_dir": str(tmp_path / "legacy"),
         "transports": {"slack": {"bot_token": "x", "app_token": "x"}},
-        "groups": {
-            "admin": {"slack": ["U01ADMIN"]},
-            "team": {"slack": ["U02DEV", "U03PM"]},
-        },
         "workspaces": {
-            "ops": {
-                "path": str(ops),
+            "company": {"path": str(company)},
+            "client-a": {"path": str(acme), "concurrency": 2},
+        },
+        "access": {
+            "admin": {
                 "unrestricted": True,
                 "providers": ["claude", "codex", "agy"],
                 "default_provider": "claude",
                 "chat_commands": "*",
             },
-            "acme": {
-                "path": str(acme),
-                "policy_dir": str(policies),
+            "client-readonly": {
+                "policy_dir": str(client_policy),
                 "providers": ["claude"],
                 "default_provider": "claude",
                 "chat_commands": ["status", "clear", "stop", "help"],
@@ -42,12 +41,12 @@ def make_config(tmp_path, **overrides) -> dict:
             "slack": {
                 "account_id": "T0ENSO",
                 "dms": {
-                    "owner": {"allow": ["admin"], "workspace": "ops"},
+                    "U01ADMIN": {"workspace": "company", "access": "admin"},
                 },
                 "channels": {
                     "C0ACME": {
-                        "allow": ["team", "admin"],
-                        "workspace": "acme",
+                        "workspace": "client-a",
+                        "access": "client-readonly",
                         "audit": True,
                     },
                 },
@@ -84,20 +83,21 @@ def test_slack_mode_conflict_when_both(tmp_path):
     assert slack_mode(config) == "conflict"
 
 
-# -- load_teams: valid config --
+# -- valid schema --
 
 
 def test_load_valid_config(tmp_path):
-    t = load_teams(make_config(tmp_path))
-    assert t is not None
-    assert t.dispatchable
-    assert t.errors == ()
-    assert t.account_id == "T0ENSO"
-    assert t.groups["team"] == frozenset({"U02DEV", "U03PM"})
-    assert t.workspaces["ops"].unrestricted
-    assert not t.workspaces["acme"].unrestricted
-    assert t.dm_routes["owner"].route_id == "slack.dm.owner"
-    assert t.channel_routes["C0ACME"].route_id == "slack.channel.C0ACME"
+    parsed = load_teams(make_config(tmp_path))
+    assert parsed is not None
+    assert parsed.dispatchable
+    assert parsed.errors == ()
+    assert parsed.account_id == "T0ENSO"
+    assert parsed.workspaces["company"].concurrency == 1
+    assert parsed.workspaces["client-a"].concurrency == 2
+    assert parsed.access_profiles["admin"].unrestricted
+    assert not parsed.access_profiles["client-readonly"].unrestricted
+    assert parsed.dm_routes["U01ADMIN"].route_id == "slack.dm.U01ADMIN"
+    assert parsed.channel_routes["C0ACME"].access == "client-readonly"
 
 
 def test_load_returns_none_without_routes(tmp_path):
@@ -106,36 +106,86 @@ def test_load_returns_none_without_routes(tmp_path):
     assert load_teams(config) is None
 
 
-def test_defaults_applied(tmp_path):
-    t = load_teams(make_config(tmp_path))
-    dm = t.dm_routes["owner"]
-    assert dm.audit is False
-    assert dm.context_from == "allowed"
-    ch = t.channel_routes["C0ACME"]
-    assert ch.audit is True
-    assert t.audit_on_failure == "block"
-    assert t.audit_max_age_days == 365
-    assert t.workspaces["ops"].concurrency == 1
+def test_paths_are_canonical_absolute(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config = make_config(tmp_path)
+    config["workspaces"]["company"]["path"] = "workspaces/../workspaces/company"
+    config["access"]["client-readonly"]["policy_dir"] = "policies/../policies/client-readonly"
+    parsed = load_teams(config)
+    assert parsed.workspaces["company"].path == os.path.realpath(
+        tmp_path / "workspaces" / "company"
+    )
+    assert parsed.access_profiles["client-readonly"].policy_dir == os.path.realpath(
+        tmp_path / "policies" / "client-readonly"
+    )
 
 
-
-
-def test_policy_dir_defaults_for_policy_controlled(tmp_path, monkeypatch):
+def test_policy_dir_defaults_from_access_profile_name(tmp_path, monkeypatch):
     monkeypatch.setattr("enso.config.CONFIG_DIR", str(tmp_path))
     config = make_config(tmp_path)
-    del config["workspaces"]["acme"]["policy_dir"]
-    t = load_teams(config)
-    assert t.workspaces["acme"].policy_dir == str(tmp_path / "policies" / "acme")
+    del config["access"]["client-readonly"]["policy_dir"]
+    parsed = load_teams(config)
+    assert parsed.access_profiles["client-readonly"].policy_dir == str(
+        tmp_path / "policies" / "client-readonly"
+    )
 
 
-# -- load_teams: global fail-closed errors --
+def test_routes_may_share_workspace_with_different_access(tmp_path):
+    config = make_config(tmp_path)
+    config["routes"]["slack"]["channels"]["C0ACME_INTERNAL"] = {
+        "workspace": "client-a",
+        "access": "admin",
+    }
+    parsed = load_teams(config)
+    assert parsed.dispatchable
+    assert parsed.route_usable(parsed.channel_routes["C0ACME"])
+    assert parsed.route_usable(parsed.channel_routes["C0ACME_INTERNAL"])
+
+
+def test_audit_defaults(tmp_path):
+    parsed = load_teams(make_config(tmp_path))
+    assert not parsed.dm_routes["U01ADMIN"].audit
+    assert parsed.channel_routes["C0ACME"].audit
+    assert parsed.audit_on_failure == "block"
+    assert parsed.audit_max_age_days == 365
+
+
+# -- global fail-closed errors --
 
 
 def test_conflict_with_legacy_allowlist_disables_dispatch(tmp_path):
     config = make_config(tmp_path)
     config["transports"]["slack"]["allowed_users"] = ["U1"]
-    t = load_teams(config)
-    assert not t.dispatchable
+    assert not load_teams(config).dispatchable
+
+
+def test_legacy_groups_are_explicit_migration_error(tmp_path):
+    config = make_config(tmp_path)
+    config["groups"] = {"staff": {"slack": ["U1"]}}
+    parsed = load_teams(config)
+    assert not parsed.dispatchable
+    assert any("no longer supported" in problem for problem in parsed.errors)
+
+
+@pytest.mark.parametrize("bad", [None, "x", 5, ["x"]])
+def test_malformed_workspaces_disables_dispatch(tmp_path, bad):
+    config = make_config(tmp_path)
+    config["workspaces"] = bad
+    assert not load_teams(config).dispatchable
+
+
+@pytest.mark.parametrize("bad", [None, "x", 5, ["x"]])
+def test_malformed_access_disables_dispatch(tmp_path, bad):
+    config = make_config(tmp_path)
+    config["access"] = bad
+    assert not load_teams(config).dispatchable
+
+
+@pytest.mark.parametrize("bad", [None, "x", 5, ["x"]])
+def test_malformed_routes_block_disables_dispatch(tmp_path, bad):
+    config = make_config(tmp_path)
+    config["routes"]["slack"]["channels"] = bad
+    assert not load_teams(config).dispatchable
 
 
 def test_missing_account_id_disables_dispatch(tmp_path):
@@ -144,293 +194,190 @@ def test_missing_account_id_disables_dispatch(tmp_path):
     assert not load_teams(config).dispatchable
 
 
-def test_malformed_groups_disable_dispatch(tmp_path):
+@pytest.mark.parametrize(
+    ("location", "unknown_key"),
+    [
+        (("routes", "slack"), "fallback"),
+        (("audit",), "retention"),
+    ],
+)
+def test_unknown_structural_keys_disable_dispatch(tmp_path, location, unknown_key):
     config = make_config(tmp_path)
-    config["groups"] = {"admin": ["U01ADMIN"]}  # not a platform map
+    if location == ("audit",):
+        config["audit"] = {unknown_key: True}
+    else:
+        config["routes"]["slack"][unknown_key] = True
     assert not load_teams(config).dispatchable
 
 
-def test_telegram_group_platform_is_invalid(tmp_path):
+@pytest.mark.parametrize("bad", [None, "block", 1, []])
+def test_malformed_audit_block_disables_dispatch(tmp_path, bad):
     config = make_config(tmp_path)
-    config["groups"]["admin"]["telegram"] = ["123"]
-    assert not load_teams(config).dispatchable
-
-
-def test_duplicate_group_member_is_invalid(tmp_path):
-    config = make_config(tmp_path)
-    config["groups"]["admin"]["slack"] = ["U01ADMIN", "U01ADMIN"]
-    assert not load_teams(config).dispatchable
-
-
-def test_ambiguous_dm_routes_disable_dispatch(tmp_path):
-    config = make_config(tmp_path)
-    # U01ADMIN matches both "owner" (admin) and a second DM route.
-    config["routes"]["slack"]["dms"]["second"] = {
-        "allow": ["admin"],
-        "workspace": "acme",
-    }
-    t = load_teams(config)
-    assert not t.dispatchable
-    assert any("ambiguous" in e.lower() for e in t.errors)
-
-
-def test_disjoint_dm_routes_are_not_ambiguous(tmp_path):
-    config = make_config(tmp_path)
-    config["routes"]["slack"]["dms"]["project-team"] = {
-        "allow": ["team"],
-        "workspace": "acme",
-    }
-    assert load_teams(config).dispatchable
-
-
-def test_malformed_routes_block_disables_dispatch(tmp_path):
-    config = make_config(tmp_path)
-    config["routes"]["slack"]["channels"] = ["C0ACME"]
+    config["audit"] = bad
     assert not load_teams(config).dispatchable
 
 
 def test_nested_workspace_paths_disable_dispatch(tmp_path):
     config = make_config(tmp_path)
-    nested = tmp_path / "workspaces" / "ops" / "inner"
+    nested = tmp_path / "workspaces" / "company" / "clients" / "acme"
     nested.mkdir(parents=True)
-    config["workspaces"]["acme"]["path"] = str(nested)
+    config["workspaces"]["client-a"]["path"] = str(nested)
     assert not load_teams(config).dispatchable
 
 
-def test_policy_dir_inside_workspace_disables_dispatch(tmp_path):
+def test_duplicate_workspace_paths_disable_dispatch(tmp_path):
     config = make_config(tmp_path)
-    inside = tmp_path / "workspaces" / "acme" / "policies"
-    inside.mkdir(parents=True)
-    config["workspaces"]["acme"]["policy_dir"] = str(inside)
+    config["workspaces"]["client-a"]["path"] = config["workspaces"]["company"]["path"]
     assert not load_teams(config).dispatchable
 
 
-# -- load_teams: workspace/route scoped errors --
-
-
-def test_unrestricted_with_policy_dir_is_workspace_error(tmp_path):
+@pytest.mark.parametrize("direction", ["inside", "contains"])
+def test_policy_dir_may_not_overlap_any_workspace(tmp_path, direction):
     config = make_config(tmp_path)
-    config["workspaces"]["ops"]["policy_dir"] = str(tmp_path / "policies" / "ops")
-    t = load_teams(config)
-    assert t.dispatchable
-    assert "ops" in t.workspace_errors
-
-
-def test_unrestricted_with_discovered_policy_is_workspace_error(tmp_path, monkeypatch):
-    monkeypatch.setattr("enso.config.CONFIG_DIR", str(tmp_path))
-    discovered = tmp_path / "policies" / "ops" / "claude"
-    discovered.mkdir(parents=True)
-    (discovered / "settings.json").write_text("{}")
-    t = load_teams(make_config(tmp_path))
-    assert "ops" in t.workspace_errors
-
-
-def test_policy_controlled_workspace_may_not_overlap_working_dir(tmp_path):
-    config = make_config(tmp_path)
-    config["workspaces"]["acme"]["path"] = config["working_dir"]
-    t = load_teams(config)
-    assert "acme" in t.workspace_errors
-
-
-def test_unrestricted_workspace_may_reuse_working_dir(tmp_path):
-    config = make_config(tmp_path)
-    config["workspaces"]["ops"]["path"] = config["working_dir"]
-    t = load_teams(config)
-    assert "ops" not in t.workspace_errors
-
-
-def test_missing_default_provider_is_workspace_error(tmp_path):
-    config = make_config(tmp_path)
-    del config["workspaces"]["acme"]["default_provider"]
-    t = load_teams(config)
-    assert "acme" in t.workspace_errors
-
-
-def test_default_provider_outside_list_is_workspace_error(tmp_path):
-    config = make_config(tmp_path)
-    config["workspaces"]["acme"]["default_provider"] = "codex"
-    t = load_teams(config)
-    assert "acme" in t.workspace_errors
-
-
-def test_route_with_unknown_group_is_disabled(tmp_path):
-    config = make_config(tmp_path)
-    config["routes"]["slack"]["channels"]["C0ACME"]["allow"] = ["team", "ghosts"]
-    t = load_teams(config)
-    assert t.dispatchable
-    assert "slack.channel.C0ACME" in t.route_errors
-
-
-def test_route_with_unknown_workspace_is_disabled(tmp_path):
-    config = make_config(tmp_path)
-    config["routes"]["slack"]["dms"]["owner"]["workspace"] = "missing"
-    t = load_teams(config)
-    assert "slack.dm.owner" in t.route_errors
-
-
-def test_route_missing_allow_is_reported(tmp_path):
-    config = make_config(tmp_path)
-    del config["routes"]["slack"]["channels"]["C0ACME"]["allow"]
-    t = load_teams(config)
-    assert "slack.channel.C0ACME" in t.route_errors
-
-
-def test_bad_context_from_is_route_error(tmp_path):
-    config = make_config(tmp_path)
-    config["routes"]["slack"]["channels"]["C0ACME"]["context_from"] = "anyone"
-    t = load_teams(config)
-    assert "slack.channel.C0ACME" in t.route_errors
-
-
-# -- resolve --
-
-
-def test_resolve_authorized_channel(tmp_path):
-    t = load_teams(make_config(tmp_path))
-    d = resolve(t, user_id="U02DEV", channel_id="C0ACME")
-    assert d.status == "authorized"
-    assert d.route.route_id == "slack.channel.C0ACME"
-    assert d.groups == ("team",)
-    assert d.authorized_groups == ("team",)
-
-
-def test_resolve_authorized_dm(tmp_path):
-    t = load_teams(make_config(tmp_path))
-    d = resolve(t, user_id="U01ADMIN", channel_id=None)
-    assert d.status == "authorized"
-    assert d.route.route_id == "slack.dm.owner"
-
-
-def test_resolve_unknown_user_is_silent(tmp_path):
-    t = load_teams(make_config(tmp_path))
-    d = resolve(t, user_id="UEVIL", channel_id="C0ACME")
-    assert d.status == "silent"
-    assert d.reason == "unknown_user"
-
-
-def test_resolve_unrouted_channel_is_silent(tmp_path):
-    t = load_teams(make_config(tmp_path))
-    d = resolve(t, user_id="U01ADMIN", channel_id="CPRIVATE")
-    assert d.status == "silent"
-    assert d.reason == "no_route"
-
-
-def test_resolve_known_user_not_in_allow_is_silent(tmp_path):
-    config = make_config(tmp_path)
-    config["routes"]["slack"]["channels"]["C0ACME"]["allow"] = ["admin"]
-    t = load_teams(config)
-    d = resolve(t, user_id="U02DEV", channel_id="C0ACME")
-    assert d.status == "silent"
-    assert d.reason == "not_allowed"
-
-
-def test_resolve_dm_without_matching_route_is_silent(tmp_path):
-    t = load_teams(make_config(tmp_path))
-    d = resolve(t, user_id="U02DEV", channel_id=None)  # team has no DM route
-    assert d.status == "silent"
-    assert d.reason == "no_route"
-
-
-def test_resolve_disabled_route_errors_for_authorized_user(tmp_path):
-    config = make_config(tmp_path)
-    config["routes"]["slack"]["dms"]["owner"]["workspace"] = "missing"
-    t = load_teams(config)
-    d = resolve(t, user_id="U01ADMIN", channel_id=None)
-    assert d.status == "error"
-    assert d.reason == "route_unusable"
-
-
-def test_resolve_workspace_error_makes_route_unusable(tmp_path):
-    config = make_config(tmp_path)
-    del config["workspaces"]["acme"]["default_provider"]
-    t = load_teams(config)
-    d = resolve(t, user_id="U02DEV", channel_id="C0ACME")
-    assert d.status == "error"
-    assert d.reason == "route_unusable"
-
-
-def test_resolve_global_error_is_silent_for_unknown(tmp_path):
-    config = make_config(tmp_path)
-    config["transports"]["slack"]["allowed_users"] = ["U1"]
-    t = load_teams(config)
-    d = resolve(t, user_id="UEVIL", channel_id="C0ACME")
-    assert d.status == "silent"
-
-
-def test_resolve_global_error_reports_to_authorized(tmp_path):
-    config = make_config(tmp_path)
-    config["transports"]["slack"]["allowed_users"] = ["U1"]
-    t = load_teams(config)
-    d = resolve(t, user_id="U02DEV", channel_id="C0ACME")
-    assert d.status == "error"
-    assert d.reason == "teams_config_invalid"
-
-
-# -- binding_revision --
-
-
-def test_binding_revision_is_stable(tmp_path):
-    config = make_config(tmp_path)
-    t1 = load_teams(config)
-    t2 = load_teams(make_config(tmp_path))
-    route = t1.channel_routes["C0ACME"]
-    assert binding_revision(t1, route) == binding_revision(t2, t2.channel_routes["C0ACME"])
-    assert len(binding_revision(t1, route)) == 64
-
-
-def test_binding_revision_changes_with_allow(tmp_path):
-    config = make_config(tmp_path)
-    t1 = load_teams(config)
-    config["routes"]["slack"]["channels"]["C0ACME"]["allow"] = ["admin"]
-    t2 = load_teams(config)
-    assert binding_revision(t1, t1.channel_routes["C0ACME"]) != binding_revision(
-        t2, t2.channel_routes["C0ACME"]
-    )
-
-
-def test_binding_revision_changes_with_group_membership(tmp_path):
-    config = make_config(tmp_path)
-    t1 = load_teams(config)
-    config["groups"]["team"]["slack"].append("U9NEW")
-    t2 = load_teams(config)
-    assert binding_revision(t1, t1.channel_routes["C0ACME"]) != binding_revision(
-        t2, t2.channel_routes["C0ACME"]
-    )
-
-
-def test_binding_revision_ignores_unrelated_route(tmp_path):
-    config = make_config(tmp_path)
-    t1 = load_teams(config)
-    config["routes"]["slack"]["dms"]["owner"]["audit"] = True
-    t2 = load_teams(config)
-    assert binding_revision(t1, t1.channel_routes["C0ACME"]) == binding_revision(
-        t2, t2.channel_routes["C0ACME"]
-    )
-
-
-# -- memberships --
-
-
-def test_memberships_collects_all_groups(tmp_path):
-    config = make_config(tmp_path)
-    config["groups"]["team"]["slack"].append("U01ADMIN")
-    config["routes"]["slack"]["dms"]["owner"]["allow"] = ["admin"]
-    t = load_teams(config)
-    assert teams.memberships(t, "U01ADMIN") == ("admin", "team")
-
-
-def test_group_declaration_order_has_no_effect(tmp_path):
-    """Reversing group declaration order changes nothing about authorization."""
-    config = make_config(tmp_path)
-    config["groups"] = dict(reversed(list(config["groups"].items())))
-    t = load_teams(config)
-    d = resolve(t, user_id="U02DEV", channel_id="C0ACME")
-    assert d.status == "authorized"
-    assert d.authorized_groups == ("team",)
-
-
-@pytest.mark.parametrize("bad", [None, "x", 5, ["U1"]])
-def test_malformed_workspaces_block_disables_dispatch(tmp_path, bad):
-    config = make_config(tmp_path)
-    config["workspaces"] = bad
+    workspace = tmp_path / "workspaces" / "clients" / "acme"
+    policy = workspace / "policy" if direction == "inside" else tmp_path / "workspaces" / "clients"
+    config["access"]["client-readonly"]["policy_dir"] = str(policy)
     assert not load_teams(config).dispatchable
+
+
+@pytest.mark.parametrize("direction", ["inside", "contains"])
+def test_policy_dir_may_not_overlap_legacy_working_dir(tmp_path, direction):
+    config = make_config(tmp_path)
+    legacy = tmp_path / "legacy"
+    policy = legacy / "policy" if direction == "inside" else tmp_path
+    config["access"]["client-readonly"]["policy_dir"] = str(policy)
+    assert not load_teams(config).dispatchable
+
+
+# -- item-scoped fail-closed errors --
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("path", None),
+        ("concurrency", True),
+        ("concurrency", 0),
+        ("policy_dir", "/tmp/old-schema"),
+    ],
+)
+def test_invalid_or_unknown_workspace_values_disable_its_routes(tmp_path, key, value):
+    config = make_config(tmp_path)
+    config["workspaces"]["client-a"][key] = value
+    parsed = load_teams(config)
+    assert parsed.dispatchable
+    assert "client-a" in parsed.workspace_errors
+    assert not parsed.route_usable(parsed.channel_routes["C0ACME"])
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("unrestricted", "yes"),
+        ("providers", "claude"),
+        ("providers", []),
+        ("default_provider", "codex"),
+        ("chat_commands", 1),
+        ("skills", ["project"]),
+    ],
+)
+def test_invalid_or_unknown_access_values_disable_its_routes(tmp_path, key, value):
+    config = make_config(tmp_path)
+    config["access"]["client-readonly"][key] = value
+    parsed = load_teams(config)
+    assert parsed.dispatchable
+    assert "client-readonly" in parsed.access_errors
+    assert not parsed.route_usable(parsed.channel_routes["C0ACME"])
+
+
+def test_unrestricted_and_policy_dir_is_access_error(tmp_path):
+    config = make_config(tmp_path)
+    config["access"]["admin"]["policy_dir"] = str(tmp_path / "policies" / "admin")
+    parsed = load_teams(config)
+    assert "admin" in parsed.access_errors
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("workspace", None),
+        ("access", None),
+        ("audit", "true"),
+        ("context_from", "everyone"),
+        ("allow", ["staff"]),
+    ],
+)
+def test_invalid_unknown_and_legacy_route_values_disable_route(tmp_path, key, value):
+    config = make_config(tmp_path)
+    config["routes"]["slack"]["channels"]["C0ACME"][key] = value
+    parsed = load_teams(config)
+    assert parsed.dispatchable
+    assert "slack.channel.C0ACME" in parsed.route_errors
+
+
+def test_unknown_workspace_disables_route(tmp_path):
+    config = make_config(tmp_path)
+    config["routes"]["slack"]["channels"]["C0ACME"]["workspace"] = "missing"
+    parsed = load_teams(config)
+    assert "slack.channel.C0ACME" in parsed.route_errors
+
+
+def test_unknown_access_profile_disables_route(tmp_path):
+    config = make_config(tmp_path)
+    config["routes"]["slack"]["channels"]["C0ACME"]["access"] = "missing"
+    parsed = load_teams(config)
+    assert "slack.channel.C0ACME" in parsed.route_errors
+
+
+# -- exact route resolution --
+
+
+@pytest.mark.parametrize("user_id", ["U02STAFF", "U03CLIENT", "USOMEONE"])
+def test_configured_channel_authorizes_every_poster(tmp_path, user_id):
+    parsed = load_teams(make_config(tmp_path))
+    decision = resolve(parsed, user_id=user_id, channel_id="C0ACME")
+    assert decision.status == "authorized"
+    assert decision.route.route_id == "slack.channel.C0ACME"
+
+
+def test_unconfigured_channel_is_silent(tmp_path):
+    parsed = load_teams(make_config(tmp_path))
+    decision = resolve(parsed, user_id="U01ADMIN", channel_id="CPRIVATE")
+    assert decision.status == "silent"
+    assert decision.reason == "no_route"
+
+
+def test_dm_route_key_is_exact_slack_user_id(tmp_path):
+    parsed = load_teams(make_config(tmp_path))
+    allowed = resolve(parsed, user_id="U01ADMIN", channel_id=None)
+    denied = resolve(parsed, user_id="U02STAFF", channel_id=None)
+    assert allowed.status == "authorized"
+    assert allowed.route.route_id == "slack.dm.U01ADMIN"
+    assert denied.status == "silent"
+    assert denied.reason == "no_route"
+
+
+def test_route_scoped_error_is_reported_to_that_route(tmp_path):
+    config = make_config(tmp_path)
+    config["routes"]["slack"]["channels"]["C0ACME"]["access"] = "missing"
+    parsed = load_teams(config)
+    decision = resolve(parsed, user_id="UANY", channel_id="C0ACME")
+    assert decision.status == "error"
+    assert decision.reason == "route_unusable"
+
+
+def test_global_error_is_silent_without_exact_route(tmp_path):
+    config = make_config(tmp_path)
+    config["groups"] = {}
+    parsed = load_teams(config)
+    decision = resolve(parsed, user_id="UUNKNOWN", channel_id=None)
+    assert decision.status == "silent"
+
+
+def test_global_error_is_reported_on_exact_route(tmp_path):
+    config = make_config(tmp_path)
+    config["groups"] = {}
+    parsed = load_teams(config)
+    decision = resolve(parsed, user_id="UANY", channel_id="C0ACME")
+    assert decision.status == "error"
+    assert decision.reason == "teams_config_invalid"

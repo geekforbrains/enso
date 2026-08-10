@@ -67,23 +67,21 @@ overview, organisation, and managing the scheduled work Enso already runs.
 - **Table** — a registered, user-owned SQLite table containing structured facts an agent
   or operator needs to query. Registration supplies discovery metadata and UI visibility;
   it does not transfer schema/row ownership to Enso. See [tables.md](specs/tables.md).
-- **Transport / notify** — the existing chat delivery layer (Telegram/Slack). Job
-  completion and failure notifications ride it. Slack teams mode refuses out-of-band
-  delivery to an audited route, which would need its own audit schema.
+- **Transport / notify** — the existing chat delivery layer (Telegram/Slack). Job completion and failure notifications ride it. Slack route auditing records inbound turns only and does not change notification behavior.
 
 ## Key decisions
 
-| Decision | Choice |
-| --- | --- |
-| Authored intent (jobs, skills) | **Files** — Markdown + YAML frontmatter, source of truth, edited by human and agent alike |
-| Structured storage | **SQLite** (`~/.enso/enso.db`) for run metadata and explicitly registered user data tables; **run output blobs on disk** (`~/.enso/runs/<id>.log`) |
-| Table discovery | `_enso_tables` is an explicit catalog; only valid registered tables appear in the CLI/UI, while agents use standard SQLite for schema and row operations |
-| Frontmatter | PyYAML `BaseLoader` for valid job metadata, with a legacy line-parser fallback for malformed older files; raw web edits preserve formatting |
-| Web server | **Starlette + Uvicorn + Jinja2**, run separately with `enso web` and sharing the file/SQLite model with `enso serve` |
-| Web access | Bind **localhost** by default; Tailscale for remote; Host allowlist and optional shared token. No login |
-| Web capability | **Read/write, scoped to owned files** — edit job prompts, toggle/run jobs, edit Enso-owned skills and `AGENTS.md`; full job/skill CRUD is planned. External skills are read-only |
-| Tables web capability | **Read-only, bounded inspection** — list metadata, show schema, and page through capped previews; no SQL or row/schema mutations |
-| Notifications | Reuse `transport.notify` / `enso message send`; Slack teams mode blocks out-of-band sends to audited routes |
+| Decision                       | Choice                                                                                                                                                                           |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Authored intent (jobs, skills) | **Files** — Markdown + YAML frontmatter, source of truth, edited by human and agent alike                                                                                        |
+| Structured storage             | **SQLite** (`~/.enso/enso.db`) for run metadata and explicitly registered user data tables; **run output blobs on disk** (`~/.enso/runs/<id>.log`)                               |
+| Table discovery                | `_enso_tables` is an explicit catalog; only valid registered tables appear in the CLI/UI, while agents use standard SQLite for schema and row operations                         |
+| Frontmatter                    | PyYAML `BaseLoader` for valid job metadata, with a legacy line-parser fallback for malformed older files; raw web edits preserve formatting                                      |
+| Web server                     | **Starlette + Uvicorn + Jinja2**, run separately with `enso web` and sharing the file/SQLite model with `enso serve`                                                             |
+| Web access                     | Bind **localhost** by default; Tailscale for remote; Host allowlist and optional shared token. No login                                                                          |
+| Web capability                 | **Read/write, scoped to owned files** — edit job prompts, toggle/run jobs, edit Enso-owned skills and `AGENTS.md`; full job/skill CRUD is planned. External skills are read-only |
+| Tables web capability          | **Read-only, bounded inspection** — list metadata, show schema, and page through capped previews; no SQL or row/schema mutations                                                 |
+| Notifications                  | Reuse `transport.notify` / `enso message send`; Slack teams routing does not alter job delivery                                                                                  |
 
 ## Personas
 

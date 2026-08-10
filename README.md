@@ -8,17 +8,17 @@ Enso connects [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Co
 
 Design docs live in [`docs/`](docs/) and are the source of truth for planned and in-progress work — read the one that owns what you're changing, and update it in the same commit.
 
-| Doc | Owns |
-|---|---|
-| [`docs/PRD.md`](docs/PRD.md) | **Web UI** — product requirements, shipped scope, and planned extensions |
-| [`docs/specs/architecture.md`](docs/specs/architecture.md) | Dashboard/bot process boundaries and shared storage |
-| [`docs/specs/data-model.md`](docs/specs/data-model.md) | SQLite schemas, config, and the `~/.enso/` layout |
-| [`docs/specs/docs.md`](docs/specs/docs.md) | Operator-authored reference docs and their dashboard/CLI workflow |
-| [`docs/specs/teams.md`](docs/specs/teams.md) | Slack groups, exact routes, workspace routing, and audit policy |
-| [`docs/specs/permissions.md`](docs/specs/permissions.md) | Native Claude/Codex policy selection and invocation |
-| [`docs/specs/tables.md`](docs/specs/tables.md) | Registered SQLite data tables, discovery, and bounded read-only views |
-| [`docs/specs/web.md`](docs/specs/web.md) | The web UI: routes, pages, read/write flows |
-| [`CHANGELOG.md`](CHANGELOG.md) | What has actually shipped, per version |
+| Doc                                                        | Owns                                                                                |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| [`docs/PRD.md`](docs/PRD.md)                               | **Web UI** — product requirements, shipped scope, and planned extensions            |
+| [`docs/specs/architecture.md`](docs/specs/architecture.md) | Dashboard/bot process boundaries and shared storage                                 |
+| [`docs/specs/data-model.md`](docs/specs/data-model.md)     | SQLite schemas, config, and the `~/.enso/` layout                                   |
+| [`docs/specs/docs.md`](docs/specs/docs.md)                 | Operator-authored reference docs and their dashboard/CLI workflow                   |
+| [`docs/specs/teams.md`](docs/specs/teams.md)               | Exact Slack routes, shared workspaces, access profiles, and optional audit metadata |
+| [`docs/specs/permissions.md`](docs/specs/permissions.md)   | Native Claude/Codex policy selection and invocation                                 |
+| [`docs/specs/tables.md`](docs/specs/tables.md)             | Registered SQLite data tables, discovery, and bounded read-only views               |
+| [`docs/specs/web.md`](docs/specs/web.md)                   | The web UI: routes, pages, read/write flows                                         |
+| [`CHANGELOG.md`](CHANGELOG.md)                             | What has actually shipped, per version                                              |
 
 > The dashboard and run history ship today. The Web UI docs distinguish current
 > behaviour from planned CRUD extensions.
@@ -87,20 +87,20 @@ tailnet/reverse-proxy access controls.
 
 Telegram autocompletes these when you type `/`. On Slack, use `!` instead (e.g. `!status`).
 
-| Command | What it does |
-|---------|-------------|
-| `/use` | Switch agent (shows buttons, or `/use claude` / `/use agy`) |
-| `/model` | Switch model (shows buttons, or `/model sonnet` / `/model gemini-3.6-flash-high`) |
-| `/effort` | Set the active provider's reasoning effort (or `default` to clear) |
-| `/status` | Active agent, model, and effort |
-| `/stop` | Stop process & clear queue |
-| `/queue` | View & manage queued messages (Telegram only) |
-| `/clear` | New session (shows current/all buttons) |
+| Command    | What it does                                                                          |
+| ---------- | ------------------------------------------------------------------------------------- |
+| `/use`     | Switch agent (shows buttons, or `/use claude` / `/use agy`)                           |
+| `/model`   | Switch model (shows buttons, or `/model sonnet` / `/model gemini-3.6-flash-high`)     |
+| `/effort`  | Set the active provider's reasoning effort (or `default` to clear)                    |
+| `/status`  | Active agent, model, and effort                                                       |
+| `/stop`    | Stop process & clear queue                                                            |
+| `/queue`   | View & manage queued messages (Telegram only)                                         |
+| `/clear`   | New session (shows current/all buttons)                                               |
 | `/compact` | Summarise the current session and reseed a fresh one — keeps the thread, trims tokens |
-| `/update` | Validate and install the latest stable Enso source, then restart the service |
-| `/restart` | Restart the service (Telegram only) |
-| `/logs` | Last 25 log entries |
-| `/help` | Show all commands |
+| `/update`  | Validate and install the latest stable Enso source, then restart the service          |
+| `/restart` | Restart the service (Telegram only)                                                   |
+| `/logs`    | Last 25 log entries                                                                   |
+| `/help`    | Show all commands                                                                     |
 
 You can also send files — they're downloaded and passed to the active agent. Responses render with per-transport formatting (Telegram HTML; Slack mrkdwn). While a request runs, Enso keeps one transient status message showing which provider, model, and effort are handling it, how long it has been running, and what the agent is doing right now (`Reading core.py`, `Running pytest`, `Writing report.md`) — including for Antigravity, whose headless mode prints only a final answer. The elapsed counter updates every second through 30 seconds, then every five seconds to stay within transport limits; each edit includes the latest activity. The final response contains only the agent's answer. Interactive turns stop after `agent.timeout` seconds (900 by default; set it to `0` to disable). A timeout leaves a conversation-scoped background notice for the next turn so the active provider knows partial work may remain.
 
@@ -139,13 +139,13 @@ pre-configured. `enso setup` copies it to `~/.enso/slack-app-manifest.yaml`
 and walks you through the one-paste flow. To do it manually:
 
 1. Open https://api.slack.com/apps?new_app=1
-2. Choose **From an app manifest**
-3. Paste the contents of `~/.enso/slack-app-manifest.yaml` (or the
+1. Choose **From an app manifest**
+1. Paste the contents of `~/.enso/slack-app-manifest.yaml` (or the
    bundled `src/enso/slack_manifest.yaml`)
-4. **Install to workspace** — gives you the xoxb- bot token
-5. Under **Basic Information → App-Level Tokens**, generate a token
+1. **Install to workspace** — gives you the xoxb- bot token
+1. Under **Basic Information → App-Level Tokens**, generate a token
    with scope `connections:write` — that's the xapp- token
-6. `enso setup` and paste both tokens when prompted
+1. `enso setup` and paste both tokens when prompted
 
 The manifest is a reasonable default; prune scopes or events if you
 don't need a feature. Without the directory-cache events the cache
@@ -162,32 +162,28 @@ enso message attach report.pdf "Weekly summary"
 
 Pass `--to` to target a single destination:
 
-| Transport | With `--to` | Without `--to` |
-|-----------|-------------|----------------|
-| Telegram  | send to that user ID | broadcast to all `allowed_users` |
+| Transport | With `--to`                     | Without `--to`                                     |
+| --------- | ------------------------------- | -------------------------------------------------- |
+| Telegram  | send to that user ID            | broadcast to all `allowed_users`                   |
 | Slack     | send to that channel/DM/user ID | use `notify_channel` from config; error if not set |
 
 Slack never auto-broadcasts — always pass `--to` or configure `notify_channel`. Slack file uploads accept any type up to 1 GB.
 
 ## Slack teams mode
 
-By default Enso answers whoever is in `allowed_users`, in one shared workspace, with no restrictions. **Teams mode** (Slack only) lets you scope *who* Enso answers, *where* their request runs, and *what that agent can do* — so you can put Enso in a channel shared with a client, answer only your own team's mentions, run their requests in a sandboxed workspace, and keep a plain-text audit trail. Telegram is unaffected and stays private and one-to-one.
+By default Enso answers Slack users listed in `allowed_users`, runs in one `working_dir`, and uses unrestricted provider launches. **Teams mode** binds each exact Slack DM user or channel to two things: a workspace containing shared project knowledge and an access profile containing providers, chat commands, and native CLI policies.
 
-Three concepts:
+Channel membership is the authorization boundary. Everyone in a configured channel uses its route's same access profile, including administrators. A client channel and an internal staff channel can point at the same project workspace while using read-only and broader profiles respectively. Exact DMs are keyed by Slack user ID, so an owner DM can use an unrestricted administrative profile without granting that authority in shared channels.
 
-- **Groups** — named sets of Slack user IDs (*who*).
-- **Workspaces** — a working directory plus capability allowlists (providers, skills, chat commands), either `unrestricted` (today's behavior) or **policy-controlled**, where you author the agent CLI's own permission file and Enso launches it without a bypass flag (*where and how work runs*).
-- **Routes** — exact Slack DM and channel rules binding allowed groups to a workspace, with per-route auditing (*which conversations dispatch*).
-
-Adding a `routes.slack` block switches Slack into teams mode; the legacy `allowed_users` list is then replaced by groups and routes (having both is an error). It fails closed: unknown or disallowed senders are silently ignored, an authorized sender in a misconfigured conversation gets an explicit error, and a policy-controlled workspace with a missing or rejected policy file refuses to dispatch rather than falling back to unrestricted.
+Adding `routes.slack` enables teams mode and is mutually exclusive with the legacy Slack `allowed_users` key. Unlisted DMs and channels are ignored. A broken route or native policy never falls back to another workspace or unrestricted execution.
 
 ```bash
-enso policy check                          # validate every workspace + native policy
+enso policy check                          # check routes and native policy plumbing
 enso route explain slack U012ABC C0ACME    # dry-run how a sender/channel resolves
 enso audit tail                            # inspect the recorded conversations
 ```
 
-Worked example config and verified Claude/Codex policy files are in [`docs/examples/`](docs/examples/). The full design lives in [`docs/specs/teams.md`](docs/specs/teams.md) (routing and audit) and [`docs/specs/permissions.md`](docs/specs/permissions.md) (native policy invocation). Under teams mode, each `JOB.md` also needs an explicit `workspace:` field — jobs never fall back to a default workspace.
+The examples in [`docs/examples/`](docs/examples/) are starting points, not policy certification. [`docs/specs/teams.md`](docs/specs/teams.md) covers routing and client projects; [`docs/specs/permissions.md`](docs/specs/permissions.md) covers native policy invocation. Config changes require restarting Enso. Background jobs remain independent and continue to use the global `working_dir`.
 
 ## Background Jobs
 
@@ -267,8 +263,7 @@ model to modify the installation. It checks the fixed
 installs it in an isolated environment, runs that revision's test suite, and
 only then installs the same wheel and restarts Enso. If the installed commit
 already matches, it reports that there is nothing to update. Successful
-updates are confirmed after the bot service has restarted. `enso service
-install` only manages the bot service, but if you run the dashboard as your
+updates are confirmed after the bot service has restarted. `enso service install` only manages the bot service, but if you run the dashboard as your
 own service named `com.enso.web` (launchd) or `enso-web.service` (systemd),
 `/update` restarts and health-checks it too; a dashboard started with a
 foreground `enso web` must be restarted manually after an update. Editable
@@ -309,12 +304,7 @@ environment projection through `secrets/*.env` as above, or a reference to a sec
 manager. One reference implementation ships, for 1Password — it is entirely optional, and
 with no reference key configured Enso never invokes the helper.
 
-Worth knowing if you keep `~/.enso` in git (it is a repository by default, so Codex loads
-your shared `AGENTS.md`): a literal credential in `config.json` becomes a credential in
-your git history. That is fine in a private repository and a problem in a public one.
-Either keep `config.json` out of the repository or use one of the other two options so the
-tracked file holds a reference instead of a secret. Enso warns at startup when a tracked
-file could carry credentials, and otherwise leaves the choice to you.
+If you choose to keep `~/.enso` in git, a literal credential in `config.json` becomes a credential in your git history. Enso does not initialize that repository for you. Keep state and secrets ignored, or use one of the other credential options so tracked config holds a reference instead of a secret.
 
 The 1Password integration resolves credentials at each process start or CLI invocation,
 without copying the token into `config.json` or projecting it into the environment. It
@@ -382,18 +372,18 @@ pytest
 
 ### Branching & Releases
 
-| Branch | Purpose |
-|--------|---------|
-| `main` | Latest stable release. Tagged with version numbers (e.g. `v0.10.0`). |
-| `dev` | Pre-release work for the next version. All feature branches merge here first. |
-| `feat/*`, `fix/*` | Short-lived branches off `main` or `dev` for individual changes. |
+| Branch            | Purpose                                                                       |
+| ----------------- | ----------------------------------------------------------------------------- |
+| `main`            | Latest stable release. Tagged with version numbers (e.g. `v0.10.0`).          |
+| `dev`             | Pre-release work for the next version. All feature branches merge here first. |
+| `feat/*`, `fix/*` | Short-lived branches off `main` or `dev` for individual changes.              |
 
 **Workflow:**
 
 1. Create a feature branch off `main` (or `dev` if building on unreleased work)
-2. Do the work, commit with [conventional commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, etc.)
-3. Merge into `dev` — this is where changes accumulate before release
-4. When ready to release: bump the version in `pyproject.toml`, finalize the `[Unreleased]` section in `CHANGELOG.md` with the date, merge `dev` → `main`, and tag
+1. Do the work, commit with [conventional commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, etc.)
+1. Merge into `dev` — this is where changes accumulate before release
+1. When ready to release: bump the version in `pyproject.toml`, finalize the `[Unreleased]` section in `CHANGELOG.md` with the date, merge `dev` → `main`, and tag
 
 ### Versioning
 

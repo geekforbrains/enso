@@ -1,20 +1,10 @@
-# Example native Codex policy for a policy-controlled Enso workspace.
-# Lives at <policy_dir>/codex/config.toml, chmod 600, OUTSIDE the workspace.
+# Starting point for <policy_dir>/codex/config.toml. chmod 600 and keep it
+# outside every workspace. This profile uses the invocation workspace root,
+# so one access profile can be reused for several project workspaces.
 #
-# Verified against Codex CLI 0.147.0 by the security harness: the "enso"
-# permission profile grants minimal system read + workspace write, denies all
-# network, and — combined with approval_policy = "never" — blocks reads of
-# out-of-workspace paths, ~/.ssh, and ~/.enso/enso.db (incl. via sqlite3
-# subprocesses) while allowing normal work inside the workspace.
-#
-# Schema notes (these bit us; see docs/specs/permissions.md):
-#   - filesystem is a TABLE mapping a path or scope alias (":minimal",
-#     ":workspace_roots") to "read" | "write" | "deny". More specific wins.
-#   - network is a TABLE with `enabled` plus a `[...network.domains]` sub-table
-#     of "host" = "allow" | "deny". Beta profiles do NOT compose with the
-#     legacy sandbox_mode / [sandbox_workspace_write] settings — don't mix.
-#   - The model must be one your account actually serves. A ChatGPT-account
-#     login rejects many slugs with a 400 before any policy applies.
+# Adapt and test it with the installed Codex version. Enso verifies that TOML
+# parses and that its launch plumbing is intact; it does not prove that the
+# native policy has the intended effect.
 
 default_permissions = "enso"
 approval_policy = "never"
@@ -22,31 +12,21 @@ approval_policy = "never"
 [permissions.enso.filesystem]
 ":minimal" = "read"
 
+# Read-only client access to the invocation workspace. Use "write" only for
+# a staff profile, or grant a narrower writable project-data path using the
+# installed CLI's current native syntax. Keep AGENTS.md, .agents, and skills
+# protected when a broader staff route trusts them.
 [permissions.enso.filesystem.":workspace_roots"]
-"." = "write"
+"." = "read"
 
 [permissions.enso.network]
 enabled = false
 
-# To allow specific hosts instead of denying all network:
-#   [permissions.enso.network]
-#   enabled = true
-#   [permissions.enso.network.domains]
-#   "api.github.com" = "allow"
-#   "*.githubusercontent.com" = "allow"
-
-# Codex bounds its AGENTS.md walk at the git repository root. Enso's setup runs
-# 'git init' at ~/.enso so the shared ~/.enso/AGENTS.md loads natively alongside the
-# workspace's own. Do NOT 'git init' inside a workspace: the nearer root truncates the
-# chain and the shared instructions silently stop loading.
-#
-# Keep ~/.enso/.git out of reach — after setup it contains every workspace's content.
-# Add deny entries under [permissions.enso.filesystem] for ~/.enso/.git,
-# ~/.enso/enso.db, ~/.enso/config.json, ~/.enso/secrets and ~/.enso/permissions.
-#
-# Keep the 1Password/transport secrets out of commands the agent spawns.
+# Keep secrets out of commands the agent spawns. Adjust this list to the
+# credentials used by the installation.
 [shell_environment_policy]
 inherit = "core"
+
 [shell_environment_policy.filters]
 "OP_SERVICE_ACCOUNT_TOKEN" = "exclude"
 "SLACK_*" = "exclude"

@@ -44,7 +44,7 @@ from .slack_teams import TeamsRouter
 
 if TYPE_CHECKING:
     from ..core import ExecutionContext, Runtime
-    from ..teams import Workspace
+    from ..teams import AccessProfile, Workspace
 
 log = logging.getLogger(__name__)
 
@@ -855,6 +855,7 @@ class SlackTransport(BaseTransport):
         ctx: SlackContext | None = None,
         *,
         workspace: Workspace | None = None,
+        access: AccessProfile | None = None,
         allowed_providers: list[str] | None = None,
         sel_key: str | None = None,
         context: ExecutionContext | None = None,
@@ -864,10 +865,9 @@ class SlackTransport(BaseTransport):
         ``ctx`` is optional but commands that need to post a progress message
         before doing slow work (e.g. ``!compact``) will use it when given.
 
-        Teams routes pass their ``workspace`` (commands are capabilities and
-        go through its allowlist), the policy-usable provider list for
-        ``!use``, the durable provider-selection key, and the execution
-        ``context`` for commands that spawn a provider.
+        Teams routes pass their workspace, access profile, policy-usable
+        provider list, and execution context for commands that spawn a
+        provider.
         """
         parts = text[1:].split(None, 1)
         cmd_name = parts[0].lower() if parts else ""
@@ -875,7 +875,7 @@ class SlackTransport(BaseTransport):
 
         rt = self.runtime
 
-        if workspace is not None and not workspace.allows_command(cmd_name):
+        if access is not None and not access.allows_command(cmd_name):
             return f"!{cmd_name} is not available in this conversation."
 
         if cmd_name == "stop":
@@ -947,8 +947,8 @@ class SlackTransport(BaseTransport):
         if cmd_name == "help":
             available = (
                 SLACK_COMMANDS
-                if workspace is None
-                else [c for c in SLACK_COMMANDS if workspace.allows_command(c[0])]
+                if access is None
+                else [c for c in SLACK_COMMANDS if access.allows_command(c[0])]
             )
             return cmd_help(available, prefix="!")
 
@@ -1065,17 +1065,6 @@ class SlackTransport(BaseTransport):
                 " notify_channel set"
             )
             return
-        if self.teams_router is not None:
-            route = self.teams_router.teams.channel_routes.get(channel)
-            if route is not None and route.audit:
-                # One-row-per-turn audit contract: out-of-band sends to an
-                # audited route are refused until they have their own
-                # outbound audit schema (teams.md § Audit).
-                log.error(
-                    "Slack notify to %s refused: the route is audited and "
-                    "out-of-band sends cannot be recorded yet", channel,
-                )
-                return
         if not self._client:
             log.warning("Cannot notify — client not initialized")
             return

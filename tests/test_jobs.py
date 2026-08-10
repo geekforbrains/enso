@@ -30,6 +30,7 @@ provider: claude
 model: sonnet
 enabled: true
 prerun: check.sh
+workspace: retired-routing-field
 ---
 
 Do the thing. {{prerun_output}}
@@ -42,6 +43,7 @@ Do the thing. {{prerun_output}}
     assert job.model == "sonnet"
     assert job.enabled is True
     assert job.prerun == "check.sh"
+    assert not hasattr(job, "workspace")
     assert "{{prerun_output}}" in job.prompt
 
 

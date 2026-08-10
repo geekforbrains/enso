@@ -164,6 +164,22 @@ def record_response(turn_id: str, response_text: str) -> None:
         )
 
 
+def record_launch(
+    turn_id: str,
+    *,
+    provider: str,
+    model: str,
+    policy_revision: str,
+) -> None:
+    """Attach the launch selected at the actual provider spawn boundary."""
+    with write_connection(_db_path()) as conn:
+        _ensure_schema(conn)
+        conn.execute(
+            "UPDATE _enso_audit SET provider=?, model=?, policy_revision=? WHERE id=?",
+            (provider, model, policy_revision, turn_id),
+        )
+
+
 def record_delivery(turn_id: str, *, ok: bool) -> None:
     """Record whether Slack delivery of the stored response succeeded."""
     status = "delivered" if ok else "failed"

@@ -54,7 +54,7 @@ def _make_runtime(**overrides: object) -> MagicMock:
     rt.active_model_by_chat_provider = {}
     rt.dispatch = AsyncMock()
     rt.stop_chat = AsyncMock(return_value=(False, None))
-    rt.clear_queue = MagicMock(return_value=0)
+    rt.clear_queue = AsyncMock(return_value=0)
     rt.get_active_provider = MagicMock(return_value="claude")
     rt.get_active_model = MagicMock(return_value="opus")
     rt.models = {"claude": ["opus", "sonnet"]}

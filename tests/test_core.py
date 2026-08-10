@@ -420,6 +420,25 @@ def test_runtime_state_persistence(tmp_enso, sample_config):
     assert rt2.session_by_chat_provider[("42", "codex")] == "sess_123"
 
 
+def test_runtime_state_roundtrip_preserves_opaque_team_keys(tmp_enso, sample_config):
+    key = "teams:0123456789abcdef"
+    rt = Runtime(sample_config)
+    model = rt.models["codex"][0]
+    rt.active_provider_by_chat[key] = "codex"
+    rt.active_model_by_chat_provider[(key, "codex")] = model
+    rt.effort_by_chat_provider_model[(key, "codex", model)] = "high"
+    rt.session_by_chat_provider[(key, "codex")] = "session-1"
+    rt.save_state()
+
+    loaded = Runtime(sample_config)
+    loaded.load_state()
+
+    assert loaded.active_provider_by_chat[key] == "codex"
+    assert loaded.active_model_by_chat_provider[(key, "codex")] == model
+    assert loaded.effort_by_chat_provider_model[(key, "codex", model)] == "high"
+    assert loaded.session_by_chat_provider[(key, "codex")] == "session-1"
+
+
 def test_load_state_removes_unsupported_provider_entries(tmp_enso, sample_config):
     state_file = Path(tmp_enso) / "state.json"
     state_file.write_text(json.dumps({
@@ -439,9 +458,9 @@ def test_load_state_removes_unsupported_provider_entries(tmp_enso, sample_config
     assert rt.session_by_chat_provider == {}
     persisted = json.loads(state_file.read_text())
     assert persisted["active_provider_by_chat"] == {}
-    assert persisted["active_model_by_chat_provider"] == {}
-    assert persisted["effort_by_chat_provider_model"] == {}
-    assert persisted["session_by_chat_provider"] == {}
+    assert persisted["active_model_by_chat_provider"] == []
+    assert persisted["effort_by_chat_provider_model"] == []
+    assert persisted["session_by_chat_provider"] == []
 
 
 def test_load_state_removes_entries_for_unconfigured_models(tmp_enso, sample_config):
@@ -465,8 +484,12 @@ def test_load_state_removes_entries_for_unconfigured_models(tmp_enso, sample_con
     assert rt.active_model_by_chat_provider == {("7", "claude"): "sonnet"}
     assert rt.effort_by_chat_provider_model == {("7", "claude", "sonnet"): "low"}
     persisted = json.loads(state_file.read_text())
-    assert persisted["active_model_by_chat_provider"] == {"7:claude": "sonnet"}
-    assert persisted["effort_by_chat_provider_model"] == {"7:claude:sonnet": "low"}
+    assert persisted["active_model_by_chat_provider"] == [
+        {"chat": "7", "provider": "claude", "model": "sonnet"}
+    ]
+    assert persisted["effort_by_chat_provider_model"] == [
+        {"chat": "7", "provider": "claude", "model": "sonnet", "effort": "low"}
+    ]
 
 
 def test_load_state_removes_effort_for_provider_without_effort_control(
@@ -486,7 +509,7 @@ def test_load_state_removes_effort_for_provider_without_effort_control(
     assert rt.effort_by_chat_provider_model == {}
     assert rt.get_active_effort("7", "agy", model) is None
     persisted = json.loads(state_file.read_text())
-    assert persisted["effort_by_chat_provider_model"] == {}
+    assert persisted["effort_by_chat_provider_model"] == []
 
 
 def test_save_state_failure_preserves_existing_file_and_removes_temp(

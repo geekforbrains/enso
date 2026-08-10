@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 
 async def cmd_stop_async(runtime: Runtime, conv_id: str) -> str:
     """Stop any running process, clear the queue, and describe what happened."""
-    queued_count = runtime.clear_queue(conv_id)
+    queued_count = await runtime.clear_queue(conv_id)
     had, error = await runtime.stop_chat(conv_id)
     if not had and not queued_count:
         return "Nothing running."

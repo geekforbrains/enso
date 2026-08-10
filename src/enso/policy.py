@@ -1,16 +1,18 @@
 """Native policy selection and launch construction for policy-controlled work.
 
 Enso does not compile or grade provider policy. The operator authors each
-CLI's native file under the workspace's ``policy_dir``; this module verifies
-the plumbing — the file exists, is a regular owner-only file outside the
-workspace, and parses — computes the ``policy_revision`` digest, and builds
-the launch inputs (arguments live in each provider class, the minimal child
-environment and staged runtime home live here). Anything it cannot verify
-fails closed with a specific diagnostic. See docs/specs/permissions.md.
+CLI's native files under an access profile's ``policy_dir``; this module
+verifies the plumbing against the selected workspace, computes the
+``policy_revision`` digest, and builds the launch inputs (arguments live in
+each provider class; the minimal child environment and staged runtime home
+live here). Anything it cannot verify fails closed with a specific diagnostic.
+See docs/specs/permissions.md.
 """
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import hashlib
 import json
 import logging
@@ -18,10 +20,11 @@ import os
 import shutil
 import stat
 import sys
+import tempfile
 from dataclasses import dataclass
 
 from .fsutil import regular_file_sha256
-from .teams import POLICY_FILES, Workspace
+from .teams import POLICY_FILES, AccessProfile, Workspace
 
 try:
     import tomllib
@@ -32,7 +35,7 @@ log = logging.getLogger(__name__)
 
 # Bump when the launch contract (flags, env construction) changes, so a new
 # contract produces a new policy_revision and therefore a fresh execution key.
-LAUNCH_CONTRACT_VERSION = "1"
+LAUNCH_CONTRACT_VERSION = "2"
 UNRESTRICTED_REVISION = f"unrestricted:v{LAUNCH_CONTRACT_VERSION}"
 
 # Environment kept for policy-controlled provider subprocesses. Everything
@@ -40,6 +43,8 @@ UNRESTRICTED_REVISION = f"unrestricted:v{LAUNCH_CONTRACT_VERSION}"
 # projections — is withheld; allowlisting means a newly added secret can
 # never leak by omission.
 _KEEP_ENV = ("HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "USER", "SHELL")
+_SNAPSHOT_MANIFEST = ".enso-policy-manifest.json"
+_CODEX_SOURCE_RESERVED = {"auth.json", _SNAPSHOT_MANIFEST}
 
 
 class PolicyError(Exception):
@@ -53,7 +58,7 @@ class PolicyError(Exception):
 
 @dataclass(frozen=True)
 class PolicyCheck:
-    """Result of statically checking one workspace/provider pair."""
+    """Result of checking one workspace/access-profile/provider binding."""
 
     provider: str
     ok: bool
@@ -70,7 +75,7 @@ class Launch:
     mode: str  # "unrestricted" | "policy"
     provider: str
     policy_path: str | None
-    home: str | None  # staged CODEX_HOME for codex policy launches
+    home: str | None  # revision-keyed CODEX_HOME for codex policy launches
     policy_revision: str
     env: dict[str, str] | None  # None → inherit the parent environment
     ignore_rules: bool = True  # codex: no .rules files were configured
@@ -89,46 +94,32 @@ UNRESTRICTED_LAUNCH_BY_PROVIDER = {
 }
 
 
-def policy_path(workspace: Workspace, provider: str) -> str | None:
+def policy_path(access: AccessProfile, provider: str) -> str | None:
     """Canonical native-policy path for a provider, or None if it has none."""
     rel = POLICY_FILES.get(provider)
-    if workspace.policy_dir is None or rel is None:
+    if access.policy_dir is None or rel is None:
         return None
-    return os.path.join(workspace.policy_dir, rel)
+    return os.path.join(access.policy_dir, rel)
 
 
-def _codex_rules_dir(workspace: Workspace) -> str:
-    assert workspace.policy_dir is not None
-    return os.path.join(workspace.policy_dir, "codex", "rules")
+def _codex_source_root(access: AccessProfile) -> str:
+    assert access.policy_dir is not None
+    return os.path.join(access.policy_dir, "codex")
 
 
-def _codex_rules_files(workspace: Workspace) -> list[str]:
-    rules_dir = _codex_rules_dir(workspace)
-    if not os.path.isdir(rules_dir):
-        return []
-    return sorted(
-        os.path.join(rules_dir, name)
-        for name in os.listdir(rules_dir)
-        if name.endswith(".rules")
-    )
-
-
-def check_provider(workspace: Workspace, provider: str) -> PolicyCheck:
-    """Statically validate the launch plumbing for one provider.
+def check_provider(workspace: Workspace, access: AccessProfile, provider: str) -> PolicyCheck:
+    """Statically validate one workspace/access-profile/provider binding.
 
     Verifies selection and integrity, not semantics: a file that parses and
     deliberately grants broad access is still the operator's policy.
     """
-    if workspace.unrestricted:
-        return PolicyCheck(
-            provider=provider, ok=True, policy_revision=UNRESTRICTED_REVISION
-        )
+    if access.unrestricted:
+        return PolicyCheck(provider=provider, ok=True, policy_revision=UNRESTRICTED_REVISION)
 
-    path = policy_path(workspace, provider)
+    path = policy_path(access, provider)
     if path is None:
         reason = (
-            "agy has no verified Enso launch contract and requires an "
-            "unrestricted workspace"
+            "agy has no verified Enso launch contract and requires an unrestricted workspace"
             if provider == "agy"
             else f"unknown provider {provider!r}"
         )
@@ -136,28 +127,32 @@ def check_provider(workspace: Workspace, provider: str) -> PolicyCheck:
 
     problems = _file_problems(path, workspace)
     if problems:
-        return PolicyCheck(
-            provider=provider, ok=False, problems=tuple(problems), policy_path=path
-        )
+        return PolicyCheck(provider=provider, ok=False, problems=tuple(problems), policy_path=path)
 
     warnings: list[str] = []
     if provider == "claude":
         problems, warnings = _check_claude_settings(path)
     elif provider == "codex":
         problems = _check_codex_config(path)
-        for rules_file in _codex_rules_files(workspace):
-            problems.extend(_file_problems(rules_file, workspace))
+        problems.extend(_codex_tree_problems(access, workspace, skip=path))
 
     if problems:
+        return PolicyCheck(provider=provider, ok=False, problems=tuple(problems), policy_path=path)
+    try:
+        revision = _policy_revision(access, provider, path)
+    except OSError as exc:
         return PolicyCheck(
-            provider=provider, ok=False, problems=tuple(problems), policy_path=path
+            provider=provider,
+            ok=False,
+            problems=(f"could not hash native policy: {exc}",),
+            policy_path=path,
         )
     return PolicyCheck(
         provider=provider,
         ok=True,
         warnings=tuple(warnings),
         policy_path=path,
-        policy_revision=_policy_revision(workspace, provider, path),
+        policy_revision=revision,
     )
 
 
@@ -174,6 +169,8 @@ def _file_problems(path: str, workspace: Workspace) -> list[str]:
         return [f"cannot stat {label}: {exc}"]
     if not stat.S_ISREG(file_stat.st_mode):
         return [f"{label} must be a regular file"]
+    if file_stat.st_nlink != 1:
+        return [f"{label} must not have hard links"]
     if stat.S_IMODE(file_stat.st_mode) & 0o077:
         return [f"{label} must be owner-only (chmod 600)"]
     real = os.path.realpath(path)
@@ -181,6 +178,43 @@ def _file_problems(path: str, workspace: Workspace) -> list[str]:
     if real == ws_real or real.startswith(ws_real + os.sep):
         return [f"{label} resolves inside the workspace; the agent could rewrite it"]
     return []
+
+
+def _codex_tree_files(root: str) -> list[tuple[str, str]]:
+    """Return every regular source path as a stable relative-path list."""
+    files: list[tuple[str, str]] = []
+    for directory, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames.sort()
+        filenames.sort()
+        for name in filenames:
+            path = os.path.join(directory, name)
+            relative = os.path.relpath(path, root).replace(os.sep, "/")
+            files.append((relative, path))
+    return files
+
+
+def _codex_tree_problems(access: AccessProfile, workspace: Workspace, *, skip: str) -> list[str]:
+    """Validate every file copied into the immutable Codex policy snapshot."""
+    root = _codex_source_root(access)
+    problems: list[str] = []
+    if os.path.islink(root):
+        problems.append("codex policy directory must not be a symlink")
+        return problems
+    for directory, dirnames, filenames in os.walk(root, followlinks=False):
+        for name in list(dirnames):
+            path = os.path.join(directory, name)
+            if os.path.islink(path):
+                relative = os.path.relpath(path, root)
+                problems.append(f"{relative} must be a directory, not a symlink")
+                dirnames.remove(name)
+        for name in filenames:
+            path = os.path.join(directory, name)
+            relative = os.path.relpath(path, root).replace(os.sep, "/")
+            if relative in _CODEX_SOURCE_RESERVED:
+                problems.append(f"codex policy tree reserves {relative}")
+            if os.path.abspath(path) != os.path.abspath(skip):
+                problems.extend(_file_problems(path, workspace))
+    return problems
 
 
 def _check_claude_settings(path: str) -> tuple[list[str], list[str]]:
@@ -226,14 +260,7 @@ def _check_codex_config(path: str) -> list[str]:
     return []
 
 
-def _policy_revision(workspace: Workspace, provider: str, path: str) -> str:
-    """Digest of the complete policy source tree plus the launch contract."""
-    manifest: dict[str, str | None] = {os.path.basename(path): regular_file_sha256(path)}
-    if provider == "codex":
-        for rules_file in _codex_rules_files(workspace):
-            manifest[f"rules/{os.path.basename(rules_file)}"] = regular_file_sha256(
-                rules_file
-            )
+def _manifest_revision(provider: str, manifest: dict[str, str]) -> str:
     payload = json.dumps(
         {"contract": LAUNCH_CONTRACT_VERSION, "provider": provider, "files": manifest},
         sort_keys=True,
@@ -241,12 +268,35 @@ def _policy_revision(workspace: Workspace, provider: str, path: str) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def prepare_launch(workspace: Workspace, provider: str) -> Launch:
+def _codex_manifest(root: str) -> dict[str, str]:
+    manifest: dict[str, str] = {}
+    for relative, path in _codex_tree_files(root):
+        if relative == _SNAPSHOT_MANIFEST:
+            continue
+        digest = regular_file_sha256(path)
+        if digest is None:
+            raise OSError(f"could not hash {path}")
+        manifest[relative] = digest
+    return manifest
+
+
+def _policy_revision(access: AccessProfile, provider: str, path: str) -> str:
+    """Digest of the complete policy source tree plus the launch contract."""
+    digest = regular_file_sha256(path)
+    if digest is None:
+        raise OSError(f"could not hash {path}")
+    manifest = {os.path.basename(path): digest}
+    if provider == "codex":
+        manifest = _codex_manifest(_codex_source_root(access))
+    return _manifest_revision(provider, manifest)
+
+
+def prepare_launch(workspace: Workspace, access: AccessProfile, provider: str) -> Launch:
     """Build the launch for one provider, failing closed on any problem."""
-    check = check_provider(workspace, provider)
+    check = check_provider(workspace, access, provider)
     if not check.ok:
         raise PolicyError(provider, check.problems)
-    if workspace.unrestricted:
+    if access.unrestricted:
         return UNRESTRICTED_LAUNCH_BY_PROVIDER.get(
             provider,
             Launch(
@@ -265,7 +315,7 @@ def prepare_launch(workspace: Workspace, provider: str) -> Launch:
     ignore_rules = True
     if provider == "codex":
         try:
-            home, ignore_rules = _stage_codex_home(workspace, check.policy_revision)
+            home, ignore_rules = _stage_codex_home(access, check.policy_revision)
         except PolicyError:
             raise
         except OSError as exc:
@@ -322,48 +372,162 @@ def _user_codex_home() -> str:
     return os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
 
 
-def _stage_codex_home(workspace: Workspace, revision: str) -> tuple[str, bool]:
-    """Stage a byte-for-byte copy of the Codex policy into a service-owned home.
+def _copy_codex_tree(source: str, destination: str) -> None:
+    """Copy a validated native Codex tree into an unpublished directory."""
+    for directory, dirnames, filenames in os.walk(source, followlinks=False):
+        dirnames.sort()
+        filenames.sort()
+        relative_dir = os.path.relpath(directory, source)
+        target_dir = destination if relative_dir == "." else os.path.join(destination, relative_dir)
+        os.makedirs(target_dir, mode=0o700, exist_ok=True)
+        os.chmod(target_dir, 0o700)
+        for name in filenames:
+            source_file = os.path.join(directory, name)
+            target_file = os.path.join(target_dir, name)
+            shutil.copyfile(source_file, target_file)
+            os.chmod(target_file, 0o400)
 
-    Codex reads ``$CODEX_HOME/config.toml``; pointing CODEX_HOME at a staged
-    tree both selects the operator's policy and keeps the ambient user config,
-    hooks, and rules out. Configuration plumbing, not compilation: staged
-    bytes must equal the source or the launch fails. Auth is copied from the
-    user Codex home so the CLI can authenticate; session state lives in the
-    staged home, giving per-workspace isolation.
-    """
-    assert workspace.policy_dir is not None
-    home = os.path.join(workspace.policy_dir, ".runtime", "codex-home")
-    os.makedirs(home, mode=0o700, exist_ok=True)
 
-    source = policy_path(workspace, "codex")
-    assert source is not None
-    staged_config = os.path.join(home, "config.toml")
-    shutil.copyfile(source, staged_config)
-    os.chmod(staged_config, 0o600)
-    if regular_file_sha256(staged_config) != regular_file_sha256(source):
-        raise PolicyError("codex", ("staged config digest does not match the source",))
+def _write_snapshot_manifest(home: str, manifest: dict[str, str]) -> None:
+    path = os.path.join(home, _SNAPSHOT_MANIFEST)
+    with open(path, "x", encoding="utf-8") as file:
+        json.dump(manifest, file, sort_keys=True, separators=(",", ":"))
+        file.flush()
+        os.fsync(file.fileno())
+    os.chmod(path, 0o400)
 
-    rules_files = _codex_rules_files(workspace)
+
+def _verify_codex_snapshot(home: str, revision: str) -> None:
+    """Ensure a published revision still contains its original policy bytes."""
+    manifest_path = os.path.join(home, _SNAPSHOT_MANIFEST)
+    if os.path.islink(manifest_path):
+        raise PolicyError("codex", ("staged policy manifest must not be a symlink",))
+    try:
+        with open(manifest_path, encoding="utf-8") as file:
+            manifest = json.load(file)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PolicyError("codex", (f"could not read staged policy manifest: {exc}",)) from exc
+    if not isinstance(manifest, dict) or not all(
+        isinstance(relative, str) and isinstance(digest, str)
+        for relative, digest in manifest.items()
+    ):
+        raise PolicyError("codex", ("staged policy manifest is invalid",))
+    if "config.toml" not in manifest or _manifest_revision("codex", manifest) != revision:
+        raise PolicyError("codex", ("staged policy manifest has the wrong revision",))
+
+    for relative, expected in manifest.items():
+        if os.path.isabs(relative) or ".." in relative.split("/"):
+            raise PolicyError("codex", ("staged policy manifest contains an unsafe path",))
+        staged = os.path.join(home, *relative.split("/"))
+        if regular_file_sha256(staged) != expected:
+            raise PolicyError("codex", (f"staged {relative} digest does not match its manifest",))
+
+    configured_rules = {
+        relative
+        for relative in manifest
+        if relative.startswith("rules/") and relative.endswith(".rules")
+    }
+    staged_rules = {
+        relative
+        for relative, _path in _codex_tree_files(os.path.join(home, "rules"))
+        if relative.endswith(".rules")
+    }
+    staged_rules = {f"rules/{relative}" for relative in staged_rules}
+    if staged_rules != configured_rules:
+        raise PolicyError("codex", ("staged rules do not match the policy manifest",))
+
+
+def _publish_codex_snapshot(source: str, home: str, revision: str) -> None:
+    """Atomically publish one immutable revision, tolerating a concurrent winner."""
+    parent = os.path.dirname(home)
+    temporary = tempfile.mkdtemp(prefix=f".{revision[:12]}-", dir=parent)
+    try:
+        _copy_codex_tree(source, temporary)
+        manifest = _codex_manifest(temporary)
+        if _manifest_revision("codex", manifest) != revision:
+            raise PolicyError(
+                "codex", ("staged policy digest does not match the checked revision",)
+            )
+        _write_snapshot_manifest(temporary, manifest)
+        try:
+            os.rename(temporary, home)
+        except OSError as exc:
+            concurrent_publish = exc.errno in {errno.EEXIST, errno.ENOTEMPTY}
+            if not concurrent_publish or not os.path.isdir(home) or os.path.islink(home):
+                raise
+    finally:
+        if os.path.isdir(temporary):
+            shutil.rmtree(temporary)
+
+
+def _read_codex_auth(path: str) -> bytes | None:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise PolicyError("codex", (f"could not open Codex auth safely: {exc}",)) from exc
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise PolicyError("codex", ("Codex auth must be a regular file",))
+        chunks: list[bytes] = []
+        while chunk := os.read(descriptor, 65536):
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+            raise PolicyError("codex", ("Codex auth changed while it was being read",))
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
+def _stage_codex_auth(home: str) -> None:
+    """Atomically refresh auth without ever exposing a partial credential file."""
+    source = os.path.join(_user_codex_home(), "auth.json")
+    destination = os.path.join(home, "auth.json")
+    content = _read_codex_auth(source)
+    if content is None:
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(destination)
+        return
+
+    descriptor, temporary = tempfile.mkstemp(prefix=".auth-", dir=home)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as file:
+            descriptor = -1
+            file.write(content)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary, destination)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(temporary)
+
+
+def _stage_codex_home(access: AccessProfile, revision: str) -> tuple[str, bool]:
+    """Select an immutable, revision-keyed Codex policy snapshot and safe auth."""
+    assert access.policy_dir is not None
+    source = _codex_source_root(access)
+    snapshots = os.path.join(access.policy_dir, ".runtime", "codex-home")
+    os.makedirs(snapshots, mode=0o700, exist_ok=True)
+    os.chmod(snapshots, 0o700)
+    home = os.path.join(snapshots, revision)
+    if os.path.lexists(home):
+        if os.path.islink(home) or not os.path.isdir(home):
+            raise PolicyError("codex", ("staged policy revision is not a directory",))
+    else:
+        _publish_codex_snapshot(source, home, revision)
+    _verify_codex_snapshot(home, revision)
+    _stage_codex_auth(home)
+
+    log.debug("Selected Codex home at %s (revision %s)", home, revision[:12])
     staged_rules = os.path.join(home, "rules")
-    if os.path.isdir(staged_rules):
-        shutil.rmtree(staged_rules)
-    if rules_files:
-        os.makedirs(staged_rules, mode=0o700)
-        for rules_file in rules_files:
-            staged = os.path.join(staged_rules, os.path.basename(rules_file))
-            shutil.copyfile(rules_file, staged)
-            os.chmod(staged, 0o600)
-            if regular_file_sha256(staged) != regular_file_sha256(rules_file):
-                raise PolicyError(
-                    "codex", ("staged rules digest does not match the source",)
-                )
-
-    auth = os.path.join(_user_codex_home(), "auth.json")
-    if os.path.isfile(auth):
-        staged_auth = os.path.join(home, "auth.json")
-        shutil.copyfile(auth, staged_auth)
-        os.chmod(staged_auth, 0o600)
-
-    log.debug("Staged Codex home at %s (revision %s)", home, revision[:12])
-    return home, not rules_files
+    has_rules = any(
+        relative.endswith(".rules") for relative, _path in _codex_tree_files(staged_rules)
+    )
+    return home, not has_rules

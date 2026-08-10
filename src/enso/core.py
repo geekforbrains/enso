@@ -16,7 +16,7 @@ import signal
 from asyncio.subprocess import Process
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
@@ -38,6 +38,7 @@ from .teams import load_teams
 
 if TYPE_CHECKING:
     from .policy import Launch
+    from .teams import AccessProfile, Workspace
     from .transports import BaseTransport, TransportContext
 
 log = logging.getLogger(__name__)
@@ -238,6 +239,7 @@ class _QueuedItem:
     prompt: str
     ctx: TransportContext
     preview: str
+    provider: str
     context: ExecutionContext | None = None
 
 
@@ -248,10 +250,9 @@ class ExecutionContext:
     Legacy work (Telegram, legacy Slack) binds the global ``working_dir``
     with the unrestricted invocation and uses the conversation ID as its
     state key, so existing sessions and queues are untouched. Slack teams
-    routes bind a named workspace, its policy launch, and a revision-scoped
-    ``chat_key`` — so a route, workspace, or policy change never resumes
-    state created under a different binding (architecture.md § Execution
-    and session keys).
+    routes bind a named workspace and access profile to one stable routed
+    conversation key. The native launch is prepared only after the workspace
+    slot is acquired, immediately before the provider process starts.
     """
 
     chat_key: str  # key for all per-chat state: sessions, queues, locks
@@ -259,10 +260,11 @@ class ExecutionContext:
     workspace_id: str | None = None
     launch: Launch | None = None  # None → unrestricted legacy invocation
     concurrency: int = 1  # max concurrent provider runs sharing the workspace
-    # Teams routes set this to re-run authorization against current config
-    # immediately before each (possibly queued) execution. Returns None to
-    # proceed, "revoked" for silence, or any other string for an error reply.
-    revalidate: Callable[[], str | None] | None = field(
+    workspace: Workspace | None = field(default=None, compare=False, repr=False)
+    access: AccessProfile | None = field(default=None, compare=False, repr=False)
+    model: str | None = None
+    effort: str | None = None
+    on_launch: Callable[[Launch], None] | None = field(
         default=None, compare=False, repr=False
     )
     # Invoked (in a worker thread) with the turn's terminal outcome once it
@@ -311,9 +313,8 @@ class Runtime:
         # Strong references to fire-and-forget queue drains (kick_queue)
         self._kicked_queue_tasks: set[asyncio.Task] = set()
 
-        # Per-workspace semaphores bound the concurrent provider runs sharing a
-        # teams workspace (chats, compaction, jobs). Legacy work is unbounded
-        # as before. Created lazily, keyed by workspace id.
+        # Per-workspace semaphores bound Slack chats and compaction sharing a
+        # teams workspace. Jobs remain on their independent legacy pipeline.
         self._workspace_sems: dict[str, asyncio.Semaphore] = {}
 
         # Compact-command seeds: per-chat prior-session summaries waiting to
@@ -413,102 +414,12 @@ class Runtime:
             command=notify_cmd,
         )
 
-    # Paths that must never be committed if ~/.enso is a git repository.
-    _GITIGNORE = """\
-# Written by Enso. ~/.enso is a git repository so Codex loads the shared
-# AGENTS.md — its instruction walk stops at the repository root. See
-# docs/specs/permissions.md. Nothing below may ever be committed.
-secrets/
-*.env
-**/auth.json
-*/.runtime/
-enso.db
-enso.db-*
-runs/
-cache/
-state.json
-messages.json
-messages.json.lock
-update.json
-workspaces/*/uploads/
-"""
-
-    def install_enso_repo(self) -> None:
-        """Make ``~/.enso`` a git repository, with a .gitignore written first.
-
-        Codex bounds its ``AGENTS.md`` walk at the enclosing repository root,
-        so a repository here is what lets a shared ``~/.enso/AGENTS.md`` reach
-        it — matching Claude, which walks the chain regardless. The .gitignore
-        is not optional: this tree holds ``secrets/*.env``, staged provider
-        ``auth.json`` copies, the database and its WAL sidecars, and run logs.
-        Missing git is a warning, never fatal.
-        """
-        import subprocess
-
-        gitignore = os.path.join(CONFIG_DIR, ".gitignore")
-        try:
-            if not os.path.exists(gitignore):
-                atomic_write_text(gitignore, self._GITIGNORE)
-                log.info("Wrote %s", gitignore)
-        except OSError:
-            log.warning("Could not write %s", gitignore, exc_info=True)
-            return  # never create the repo without the ignore file in place
-
-        if os.path.isdir(os.path.join(CONFIG_DIR, ".git")):
-            self._warn_tracked_secrets()
-            return
-        try:
-            subprocess.run(
-                ["git", "init", "--quiet", CONFIG_DIR],
-                check=True, capture_output=True, timeout=30,
-            )
-            log.info("Initialised %s as a git repository", CONFIG_DIR)
-        except (OSError, subprocess.SubprocessError) as exc:
-            log.warning(
-                "Could not initialise %s as a git repository (%s); Codex will "
-                "not load shared instructions until this is resolved",
-                CONFIG_DIR, exc,
-            )
-
-    # Tracked copies of these carry credentials or conversation text into git
-    # history. Enso reports them; whether that matters is the operator's call,
-    # and a private repository is a legitimate answer.
-    _SENSITIVE_TRACKED = ("config.json", "enso.db", "state.json", "messages.json")
-
-    def _warn_tracked_secrets(self) -> None:
-        """Log when a pre-existing repo version-controls a sensitive file.
-
-        Enso writes a protective ``.gitignore`` only when creating the
-        repository, so an install that was already a repo keeps whatever the
-        operator chose. This makes that choice visible instead of silently
-        assuming the protection applies.
-        """
-        import subprocess
-
-        try:
-            result = subprocess.run(
-                ["git", "ls-files", "--error-unmatch", *self._SENSITIVE_TRACKED],
-                cwd=CONFIG_DIR, capture_output=True, text=True, timeout=15,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return
-        tracked = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-        if not tracked:
-            return
-        log.warning(
-            "%s tracks %s in git. config.json may hold literal credentials and "
-            "enso.db holds the plain-text Slack audit trail, so both reach every "
-            "clone and push. Fine for a private repository; otherwise untrack them "
-            "or move credentials to secrets/*.env or a secret-manager reference.",
-            CONFIG_DIR, ", ".join(tracked),
-        )
-
     def install_teams_workspaces(self) -> None:
         """Bootstrap every structurally valid teams workspace.
 
         Creates the workspace directory with the bundled system prompt.
-        Instructions and skills are discovered by the provider CLI itself
-        (docs/specs/permissions.md); jobs, docs, config, and the database are
+        Instructions and skills are owned by the workspace and discovered by
+        the provider CLIs themselves; jobs, config, and shared skill roots are
         never linked in.
         """
         teams = load_teams(self.config)
@@ -528,21 +439,12 @@ workspaces/*/uploads/
 
         canonical = os.path.join(workspace.path, "AGENTS.md")
         if not os.path.lexists(canonical):
-            source = importlib.resources.files("enso").joinpath("prompts", "AGENTS.md")
+            source = importlib.resources.files("enso").joinpath(
+                "prompts", "WORKSPACE_AGENTS.md"
+            )
             atomic_write_text(canonical, source.read_text(encoding="utf-8"))
             log.info("Wrote AGENTS.md in workspace %s", workspace.name)
         self._ensure_symlink(os.path.join(workspace.path, "CLAUDE.md"), "AGENTS.md")
-
-        # Put the shared skill root where each CLI already looks, exactly as
-        # the legacy workspace does. This is placement, not curation: there is
-        # no allowlist, and an operator who wants a workspace kept away from a
-        # skill writes a filesystem deny rule in its policy instead.
-        skills_root = os.path.join(CONFIG_DIR, "skills")
-        for cli_dir in (".claude", ".agents"):
-            parent = os.path.join(workspace.path, cli_dir)
-            os.makedirs(parent, exist_ok=True)
-            self._ensure_symlink(os.path.join(parent, "skills"), skills_root)
-
 
     @staticmethod
     def _ensure_symlink(link_path: str, target: str) -> None:
@@ -768,21 +670,24 @@ workspaces/*/uploads/
     def save_state(self) -> None:
         """Atomically persist session and job state to disk."""
         data: dict[str, Any] = {
+            "version": 2,
             "active_provider_by_chat": {
                 str(k): v for k, v in self.active_provider_by_chat.items()
             },
-            "active_model_by_chat_provider": {
-                f"{cid}:{prov}": model
+            # Conversation keys are opaque and may contain colons. Store
+            # compound keys as records instead of inventing a delimiter.
+            "active_model_by_chat_provider": [
+                {"chat": cid, "provider": prov, "model": model}
                 for (cid, prov), model in self.active_model_by_chat_provider.items()
-            },
-            "effort_by_chat_provider_model": {
-                f"{cid}:{prov}:{model}": eff
+            ],
+            "effort_by_chat_provider_model": [
+                {"chat": cid, "provider": prov, "model": model, "effort": eff}
                 for (cid, prov, model), eff in self.effort_by_chat_provider_model.items()
-            },
-            "session_by_chat_provider": {
-                f"{cid}:{prov}": sid
+            ],
+            "session_by_chat_provider": [
+                {"chat": cid, "provider": prov, "session": sid}
                 for (cid, prov), sid in self.session_by_chat_provider.items()
-            },
+            ],
             "compact_seed_by_chat": dict(self.compact_seed_by_chat),
             "job_last_run": {
                 name: ts.isoformat()
@@ -818,31 +723,100 @@ workspaces/*/uploads/
                     self.active_provider_by_chat[k] = v
                 else:
                     state_changed = True
-            for k, v in data.get("active_model_by_chat_provider", {}).items():
-                cid, provider = k.split(":", 1)
+            raw_models = data.get("active_model_by_chat_provider", [])
+            if isinstance(raw_models, dict):
+                # v1 migration: provider was the final delimiter-separated
+                # component; split from the right so ``teams:<digest>`` works.
+                model_rows = (
+                    {"chat": k.rsplit(":", 1)[0], "provider": k.rsplit(":", 1)[1],
+                     "model": v}
+                    for k, v in raw_models.items() if ":" in k
+                )
+                state_changed = True
+            elif isinstance(raw_models, list):
+                model_rows = iter(raw_models)
+            else:
+                model_rows = iter(())
+                state_changed = True
+            for row in model_rows:
+                if not isinstance(row, dict):
+                    state_changed = True
+                    continue
+                cid = row.get("chat")
+                provider = row.get("provider")
+                v = row.get("model")
                 # Entries for retired providers or models removed from config
                 # are inert (selection falls back anyway) — prune them.
-                if v in self.models.get(provider, []):
+                if (
+                    isinstance(cid, str)
+                    and isinstance(provider, str)
+                    and v in self.models.get(provider, [])
+                ):
                     self.active_model_by_chat_provider[(cid, provider)] = v
                 else:
                     state_changed = True
-            for k, v in data.get("effort_by_chat_provider_model", {}).items():
-                parts = k.split(":", 2)
-                if len(parts) == 3:
-                    cid, provider, model = parts
-                    if (
-                        model in self.models.get(provider, [])
-                        and provider_class(provider).effort_levels
-                    ):
-                        self.effort_by_chat_provider_model[(cid, provider, model)] = v
-                    else:
-                        state_changed = True
+            raw_efforts = data.get("effort_by_chat_provider_model", [])
+            if isinstance(raw_efforts, dict):
+                effort_rows = []
+                for key, value in raw_efforts.items():
+                    parts = key.rsplit(":", 2)
+                    if len(parts) == 3:
+                        effort_rows.append(
+                            {"chat": parts[0], "provider": parts[1],
+                             "model": parts[2], "effort": value}
+                        )
+                state_changed = True
+            elif isinstance(raw_efforts, list):
+                effort_rows = raw_efforts
+            else:
+                effort_rows = []
+                state_changed = True
+            for row in effort_rows:
+                if not isinstance(row, dict):
+                    state_changed = True
+                    continue
+                cid = row.get("chat")
+                provider = row.get("provider")
+                model = row.get("model")
+                effort = row.get("effort")
+                if (
+                    isinstance(cid, str)
+                    and isinstance(provider, str)
+                    and isinstance(model, str)
+                    and isinstance(effort, str)
+                    and model in self.models.get(provider, [])
+                    and provider_class(provider).effort_levels
+                ):
+                    self.effort_by_chat_provider_model[(cid, provider, model)] = effort
                 else:
                     state_changed = True
-            for k, v in data.get("session_by_chat_provider", {}).items():
-                cid, provider = k.split(":", 1)
-                if provider in PROVIDER_NAMES:
-                    self.session_by_chat_provider[(cid, provider)] = v
+            raw_sessions = data.get("session_by_chat_provider", [])
+            if isinstance(raw_sessions, dict):
+                session_rows = (
+                    {"chat": k.rsplit(":", 1)[0], "provider": k.rsplit(":", 1)[1],
+                     "session": v}
+                    for k, v in raw_sessions.items() if ":" in k
+                )
+                state_changed = True
+            elif isinstance(raw_sessions, list):
+                session_rows = iter(raw_sessions)
+            else:
+                session_rows = iter(())
+                state_changed = True
+            for row in session_rows:
+                if not isinstance(row, dict):
+                    state_changed = True
+                    continue
+                cid = row.get("chat")
+                provider = row.get("provider")
+                sid = row.get("session")
+                if (
+                    isinstance(cid, str)
+                    and isinstance(provider, str)
+                    and isinstance(sid, str)
+                    and provider in PROVIDER_NAMES
+                ):
+                    self.session_by_chat_provider[(cid, provider)] = sid
                 else:
                     state_changed = True
             for k, v in data.get("compact_seed_by_chat", {}).items():
@@ -947,8 +921,8 @@ workspaces/*/uploads/
         """Hold the workspace's concurrency slot for the duration of a run.
 
         A no-op for legacy (non-workspace) contexts, which stay unbounded.
-        The semaphore is shared across chats, compaction, and jobs bound to
-        the same workspace; the default limit is one active writer.
+        The semaphore is shared across Slack chats and compaction bound to the
+        same workspace; the default limit is one active writer.
         """
         workspace_id = context.workspace_id
         if workspace_id is None:
@@ -960,6 +934,23 @@ workspaces/*/uploads/
             self._workspace_sems[workspace_id] = sem
         async with sem:
             yield
+
+    async def _prepare_execution_context(
+        self, provider: str, context: ExecutionContext
+    ) -> ExecutionContext:
+        """Resolve a teams profile into a native launch at the spawn boundary."""
+        if context.launch is not None or context.access is None:
+            return context
+        if context.workspace is None:
+            raise RuntimeError("access profile is missing its workspace binding")
+        from .policy import prepare_launch
+
+        launch = await asyncio.to_thread(
+            prepare_launch, context.workspace, context.access, provider
+        )
+        if context.on_launch is not None:
+            await asyncio.to_thread(context.on_launch, launch)
+        return replace(context, launch=launch)
 
     def make_provider(
         self,
@@ -1035,6 +1026,7 @@ workspaces/*/uploads/
         chat_key = context.chat_key
         self._last_active[chat_key] = datetime.now()
         lock = self.get_chat_lock(chat_key)
+        provider = self.get_active_provider(chat_key)
 
         if lock.locked():
             queue = self._queue_by_conversation.setdefault(chat_key, deque())
@@ -1043,7 +1035,13 @@ workspaces/*/uploads/
                 await self._finalize_unrun(context, "queue_full")
                 return
             queue.append(
-                _QueuedItem(prompt=prompt, ctx=ctx, preview=preview, context=context)
+                _QueuedItem(
+                    prompt=prompt,
+                    ctx=ctx,
+                    preview=preview,
+                    provider=provider,
+                    context=context,
+                )
             )
             pos = len(queue)
             label = f"{preview}\u2026" if len(preview) == 50 else preview
@@ -1053,7 +1051,6 @@ workspaces/*/uploads/
             log.info("Queued #%d for %s: %s", pos, conversation_id, logged)
             return
 
-        provider = self.get_active_provider(chat_key)
         log.info(
             "Dispatch: conv=%s provider=%s prompt_len=%d",
             conversation_id, provider, len(prompt),
@@ -1090,11 +1087,18 @@ workspaces/*/uploads/
     ) -> None:
         """Run a single provider request, tracking the task for cancellation."""
         outcome, reason = "error", None
+        task = asyncio.create_task(
+            self._run_request_inner(provider, prompt, ctx, context)
+        )
+        self.running_task_by_chat[context.chat_key] = task
         try:
-            outcome, reason = await self._run_request_inner(
-                provider, prompt, ctx, context
-            )
+            outcome, reason = await task
+        except asyncio.CancelledError:
+            log.info("Task cancelled for conv=%s", context.chat_key)
+            outcome, reason = "stopped", "cancelled"
         finally:
+            if self.running_task_by_chat.get(context.chat_key) is task:
+                self.running_task_by_chat.pop(context.chat_key, None)
             if context.on_complete is not None:
                 try:
                     await asyncio.to_thread(context.on_complete, outcome, reason)
@@ -1112,44 +1116,20 @@ workspaces/*/uploads/
     ) -> tuple[str, str | None]:
         """Run one turn; return its (outcome, terminal_reason) for on_complete."""
         chat_key = context.chat_key
-        if context.revalidate is not None:
-            # Queued turns keep their authorized snapshot, but it is never a
-            # lease: re-resolve against current config immediately before
-            # execution. Revoked access gets silence; any other mismatch gets
-            # an explicit refusal rather than a reroute (teams.md). The
-            # revalidator already completed the audit turn, so on_complete's
-            # complete_turn is a no-op; it still finalizes the ledger claim.
+        async with self._workspace_slot(context):
             try:
-                verdict = await asyncio.to_thread(context.revalidate)
+                prepared = await self._prepare_execution_context(provider, context)
             except Exception:
-                log.exception("Revalidation failed for conv=%s; refusing turn", chat_key)
-                verdict = "revalidation_failed"
-            if verdict == "revoked":
-                log.warning("Refusing stale turn for conv=%s: access revoked", chat_key)
-                return "ignored", "access_revoked"
-            if verdict is not None:
-                log.warning("Refusing stale turn for conv=%s: %s", chat_key, verdict)
+                log.exception("Native policy launch failed for conv=%s", chat_key)
                 with contextlib.suppress(Exception):
                     await ctx.reply(
-                        "This request was queued under configuration that has "
-                        "since changed and was not run. Please resend it."
+                        "This conversation isn't fully configured for Enso — "
+                        "ask an admin to run `enso policy check`."
                     )
-                return "blocked", verdict
-        async with self._workspace_slot(context):
-            task = asyncio.create_task(
-                self.process_request(provider, prompt, chat_key, ctx, context=context)
+                return "blocked", "policy_unavailable"
+            return await self.process_request(
+                provider, prompt, chat_key, ctx, context=prepared
             )
-            self.running_task_by_chat[chat_key] = task
-            outcome, reason = "stopped", None
-            try:
-                outcome, reason = await task
-            except asyncio.CancelledError:
-                log.info("Task cancelled for conv=%s", chat_key)
-                outcome, reason = "stopped", "cancelled"
-            finally:
-                if self.running_task_by_chat.get(chat_key) is task:
-                    self.running_task_by_chat.pop(chat_key, None)
-        return outcome, reason
 
     async def _drain_queue(self, chat_key: str) -> None:
         """Process queued messages one by one until the queue is empty."""
@@ -1158,13 +1138,14 @@ workspaces/*/uploads/
             return
         while queue:
             item = queue.popleft()
-            provider = self.get_active_provider(chat_key)
             log.info(
                 "Dequeuing for conv=%s (%d remaining): %s",
-                chat_key, len(queue), item.preview,
+                chat_key,
+                len(queue),
+                "<redacted>" if item.context and item.context.workspace_id else item.preview,
             )
             context = item.context or self.legacy_context(chat_key)
-            await self._run_request(provider, item.prompt, item.ctx, context)
+            await self._run_request(item.provider, item.prompt, item.ctx, context)
 
     def kick_queue(self, conv_id: str) -> None:
         """Schedule a queue drain outside dispatch (e.g. after /compact).
@@ -1196,20 +1177,26 @@ workspaces/*/uploads/
             return []
         return [item.preview for item in queue]
 
-    def clear_queue(self, conv_id: str) -> int:
+    async def clear_queue(self, conv_id: str) -> int:
         """Clear the queue for a conversation. Returns count of items cleared."""
         queue = self._queue_by_conversation.get(conv_id)
         if not queue:
             return 0
-        count = len(queue)
+        items = list(queue)
         queue.clear()
-        return count
+        for item in items:
+            if item.context is not None:
+                await self._finalize_unrun(item.context, "queue_cleared")
+        return len(items)
 
-    def remove_from_queue(self, conv_id: str, index: int) -> bool:
+    async def remove_from_queue(self, conv_id: str, index: int) -> bool:
         """Remove item at index from the queue. Returns True if removed."""
         queue = self._queue_by_conversation.get(conv_id)
         if queue and 0 <= index < len(queue):
+            item = queue[index]
             del queue[index]
+            if item.context is not None:
+                await self._finalize_unrun(item.context, "queue_removed")
             log.info("Removed queue item %d for conv=%s", index, conv_id)
             return True
         return False
@@ -1281,8 +1268,27 @@ workspaces/*/uploads/
 
         slot = self._workspace_slot(context) if context is not None else contextlib.nullcontext()
         async with lock, slot:
-            model = self.get_active_model(chat_id, provider_name)
-            effort = self.get_active_effort(chat_id, provider_name, model)
+            if context is not None:
+                try:
+                    context = await self._prepare_execution_context(
+                        provider_name, context
+                    )
+                except Exception:
+                    log.exception(
+                        "Native policy launch failed during compaction for chat=%s",
+                        chat_id,
+                    )
+                    return ""
+            model = (
+                context.model
+                if context is not None and context.model is not None
+                else self.get_active_model(chat_id, provider_name)
+            )
+            effort = (
+                context.effort
+                if context is not None and context.model is not None
+                else self.get_active_effort(chat_id, provider_name, model)
+            )
             provider = self.make_provider(
                 provider_name, timeout=self.agent_timeout, context=context
             )
@@ -1539,6 +1545,9 @@ workspaces/*/uploads/
 
         event_count = 0
         finalized = False
+        emitted_error = False
+        unparsed_output: list[str] = []
+        unparsed_chars = 0
 
         def remember_session(event: StreamEvent) -> None:
             if event.kind == "session" and event.session_id:
@@ -1555,6 +1564,11 @@ workspaces/*/uploads/
                         continue
                     raw = provider.parse_line(decoded)
                     if raw is None:
+                        if unparsed_chars < 2000:
+                            remaining = 2000 - unparsed_chars
+                            kept = decoded[:remaining]
+                            unparsed_output.append(kept)
+                            unparsed_chars += len(kept)
                         continue
                     event_count += 1
                     if self.debug_events:
@@ -1574,6 +1588,8 @@ workspaces/*/uploads/
                             event_count,
                         )
                     for stream_event in parsed_events:
+                        if stream_event.kind == "error":
+                            emitted_error = True
                         remember_session(stream_event)
                         yield stream_event
                 await process.wait()
@@ -1625,23 +1641,33 @@ workspaces/*/uploads/
                 )
                 event_count += len(parsed_events)
                 for stream_event in parsed_events:
+                    if stream_event.kind == "error":
+                        emitted_error = True
                     remember_session(stream_event)
                     yield stream_event
 
             for stream_event in provider.finalize_events():
                 event_count += 1
+                if stream_event.kind == "error":
+                    emitted_error = True
                 remember_session(stream_event)
                 yield stream_event
             finalized = True
 
             rc = process.returncode
-            if rc and not provider.stderr_to_stdout() and process.stderr:
-                if stderr_data is None:
-                    stderr_data = await process.stderr.read()
-                if stderr_data:
-                    stderr_text = stderr_data.decode(errors="replace").strip()[:2000]
-                    log.error("[%s] stderr: %s", provider.name, stderr_text)
-                    yield StreamEvent(kind="error", text=stderr_text)
+            if rc and not emitted_error:
+                error_text = ""
+                if not provider.stderr_to_stdout() and process.stderr:
+                    if stderr_data is None:
+                        stderr_data = await process.stderr.read()
+                    if stderr_data:
+                        error_text = stderr_data.decode(errors="replace").strip()[:2000]
+                elif unparsed_output:
+                    error_text = "\n".join(unparsed_output).strip()[:2000]
+                if not error_text:
+                    error_text = f"{provider.name} exited with status {rc}"
+                log.error("[%s] provider error: %s", provider.name, error_text)
+                yield StreamEvent(kind="error", text=error_text)
         finally:
             if process.returncode is None:
                 await self._terminate_process_tree(
@@ -1689,8 +1715,16 @@ workspaces/*/uploads/
         # Inject compact seed if one is pending for this chat.
         prompt = self._consume_compact_seed(chat_id, prompt, provider_name)
 
-        model = self.get_active_model(chat_id, provider_name)
-        effort = self.get_active_effort(chat_id, provider_name, model)
+        model = (
+            context.model
+            if context.model is not None
+            else self.get_active_model(chat_id, provider_name)
+        )
+        effort = (
+            context.effort
+            if context.model is not None
+            else self.get_active_effort(chat_id, provider_name, model)
+        )
         provider = self.make_provider(
             provider_name, timeout=self.agent_timeout, context=context
         )
@@ -1955,19 +1989,9 @@ workspaces/*/uploads/
                 log.info("Job scheduler paused while Enso updates")
                 continue
 
-            teams_mode = load_teams(self.config) is not None
             for job in load_jobs():
                 try:
                     if not job.enabled:
-                        continue
-                    if teams_mode and not job.workspace:
-                        # Never scheduled without an explicit workspace; the
-                        # operator must make the binding choice (teams.md).
-                        log.warning(
-                            "[job:%s] not scheduled: teams mode requires an "
-                            "explicit 'workspace:' in JOB.md",
-                            job.dir_name,
-                        )
                         continue
                     if job.dir_name in self._running_job_tasks:
                         continue
@@ -2337,58 +2361,6 @@ workspaces/*/uploads/
                 continue
         return held
 
-    def _job_execution_binding(
-        self, job: Job,
-    ) -> tuple[ExecutionContext | None, str | None]:
-        """Resolve a job's workspace binding under teams mode.
-
-        Legacy mode (no ``routes.slack``) returns ``(None, None)`` — jobs keep
-        the global working_dir and inherited environment. Teams mode requires
-        an explicit, usable workspace; there is no fallback to working_dir,
-        and ``prerun`` is refused outside unrestricted workspaces because it
-        runs outside any provider CLI's policy.
-        """
-        from .policy import PolicyError, prepare_launch
-        teams = load_teams(self.config)
-        if teams is None:
-            return None, None
-        if not teams.dispatchable:
-            return None, "teams config is invalid; run 'enso policy check'"
-        if not job.workspace:
-            return None, (
-                "teams mode requires an explicit 'workspace:' in JOB.md; "
-                "there is no fallback workspace"
-            )
-        workspace = teams.workspaces.get(job.workspace)
-        if workspace is None:
-            return None, f"unknown workspace {job.workspace!r}"
-        if job.workspace in teams.workspace_errors:
-            return None, (
-                f"workspace {job.workspace!r} is misconfigured: "
-                f"{'; '.join(teams.workspace_errors[job.workspace])}"
-            )
-        if not workspace.allows_provider(job.provider):
-            return None, (
-                f"provider {job.provider!r} is not allowed in workspace "
-                f"{job.workspace!r}"
-            )
-        if job.prerun and not workspace.unrestricted:
-            return None, (
-                "prerun runs outside the provider CLI and is only permitted "
-                "in an unrestricted workspace"
-            )
-        try:
-            launch = prepare_launch(workspace, job.provider)
-        except PolicyError as exc:
-            return None, str(exc)
-        return ExecutionContext(
-            chat_key=f"job:{job.dir_name}",
-            path=workspace.path,
-            workspace_id=workspace.name,
-            launch=launch,
-            concurrency=workspace.concurrency,
-        ), None
-
     async def _execute_job(
         self,
         job: Job,
@@ -2415,10 +2387,6 @@ workspaces/*/uploads/
             return JobRunResult("error", output=output, exit_code=-1)
         try:
             config_error = job_config_error(job.provider, job.model, self.models)
-            if not config_error:
-                job_context, config_error = await asyncio.to_thread(
-                    self._job_execution_binding, job
-                )
             if config_error:
                 run_id = await self._create_job_run(job, trigger, tag, started_at)
                 output = f"Invalid job config: {config_error}"
@@ -2467,13 +2435,10 @@ workspaces/*/uploads/
             proc: Process | None = None
             try:
                 provider = self.make_provider(
-                    job.provider, timeout=job.timeout, context=job_context,
+                    job.provider, timeout=job.timeout,
                 )
-                launch = job_context.launch if job_context is not None else None
-                cmd = provider.build_batch_command(prompt, job.model, launch=launch)
-                job_cwd = (
-                    job_context.path if job_context is not None else self.working_dir
-                )
+                cmd = provider.build_batch_command(prompt, job.model)
+                job_cwd = self.working_dir
                 log.info(
                     "%s spawning provider_class=%s cwd=%s prompt_len=%d",
                     tag, provider.__class__.__name__,
@@ -2486,21 +2451,11 @@ workspaces/*/uploads/
                     "stderr": asyncio.subprocess.STDOUT,
                     "cwd": job_cwd,
                 }
-                if launch is not None and launch.env is not None:
-                    spawn_kwargs["env"] = dict(launch.env)
-                # Jobs share the workspace's concurrency slot with chats and
-                # compaction; legacy jobs (no context) stay unbounded.
-                slot = (
-                    self._workspace_slot(job_context)
-                    if job_context is not None
-                    else contextlib.nullcontext()
+                proc = await self._spawn_process(*cmd, **spawn_kwargs)
+                log.info("%s pid=%s", tag, proc.pid)
+                stdout, _, timed_out = await self._communicate_with_timeout(
+                    proc, f"Job '{job.name}'", job.timeout,
                 )
-                async with slot:
-                    proc = await self._spawn_process(*cmd, **spawn_kwargs)
-                    log.info("%s pid=%s", tag, proc.pid)
-                    stdout, _, timed_out = await self._communicate_with_timeout(
-                        proc, f"Job '{job.name}'", job.timeout,
-                    )
                 elapsed = (datetime.now() - started).total_seconds()
                 if timed_out:
                     output = (

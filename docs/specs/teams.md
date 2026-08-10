@@ -1,90 +1,100 @@
-# Teams
+# Slack teams mode
 
-Teams mode applies to Slack only: it defines who may address Enso, which workspace handles
-a Slack DM or channel mention, and what gets recorded. Telegram keeps its private,
-one-to-one authorization and default workspace behavior; there is no `routes.telegram`.
-The Telegram transport rejects every non-private chat type so authorized IDs cannot invoke
-Enso from a Telegram group.
+Teams mode gives each exact Slack conversation a workspace and an access profile. It is intentionally small: Slack decides who is in a channel, Enso chooses where the CLI starts and which native policy it uses, and the CLI enforces that policy.
 
-Sibling specs own the implementation details: [permissions.md](permissions.md) owns how
-Enso invokes each agent CLI with its native policy, [architecture.md](architecture.md)
-owns process and state boundaries, and [data-model.md](data-model.md) owns the canonical
-config blocks and audit schema.
+Telegram is unchanged. It remains private, one-to-one, and authorized by `transports.telegram.allowed_users`.
 
-This document never invents a cross-provider permission language. Enso remains a thin
-proxy over the installed agent CLIs; the operator authors and tests their native policy
-files. See [permissions.md](permissions.md).
+## Model
 
-## Why the single-allowlist model does not scale
+| Concept        | Purpose                                                                                                              |
+| -------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Workspace      | A directory containing shared project knowledge, instructions, and native workspace skills, plus a concurrency limit |
+| Access profile | The providers, default provider, chat commands, and native provider policy available to a route                      |
+| Route          | An exact Slack DM user ID or channel ID bound to one workspace and one access profile                                |
 
-Without teams mode, Enso has one Slack allowlist (`transports.slack.allowed_users`), one
-`working_dir`, and one implicit trust level: every permitted user gets an agent running
-unsandboxed in the same workspace. That is appropriate for one operator and unsafe once
-coworkers, clients, DMs, and shared channels have different access needs.
+A user does not carry a permission level into every room. The route is the security boundary:
 
-The direct extension — make groups and give each group a workspace — creates ambiguity:
+- An exact DM route authorizes that Slack user.
+- An exact channel route authorizes every human member posting in that channel.
+- Everyone using a channel gets the same workspace and access profile, including administrators.
+- Threads inherit their parent channel route but keep their own conversation session.
+- An unlisted DM user or channel is ignored. There is no default or wildcard route.
 
-- A person may belong to several groups.
-- A channel may contain people from several groups.
-- DM access, channel access, execution policy, and auditing are separate decisions.
+This keeps Slack behavior understandable: if a room is safe for a client, the Enso agent in that room is client-safe too. Staff use a separate internal channel when they need broader authority.
 
-## Groups, routes, and workspaces
+## Example: one client, two trust levels
 
-The three concepts stay separate:
+`#client-acme` and `#client-acme-internal` can share the same files while using different native policies:
 
-| Concept | Question | Carries |
-| --- | --- | --- |
-| **Group** | Who is this? | Slack user IDs only |
-| **Route** | Where did this happen? | Allowed groups, workspace, audit, and context policy |
-| **Workspace** | Where and how may work run? | Cwd, providers, native policies, and chat commands |
+```text
+#client-acme          -> workspace acme -> access client-readonly
+#client-acme-internal -> workspace acme -> access staff
+owner DM              -> workspace company -> access admin
+#company              -> workspace company -> access staff
+```
 
-**The route selects the workspace; the person never does so directly.** A request in
-`#client-acme` runs in the acme workspace under its policy even when the operator sent it.
-Privilege belongs to the room, not the sender's rank.
+The client channel may answer questions from the project knowledge but deny edits and administrative commands. The internal channel starts in the same directory, so it sees the same project instructions and skills, but the staff profile may write documentation or use additional tools. Sessions remain separate because they belong to their Slack channel or thread, not merely to the filesystem directory.
 
-Enso retains every group a Slack user belongs to. Channel authorization uses the
-intersection of that membership set and the route's `allow` list. Object declaration
-order is never an authorization control.
+The client profile should prevent writes to control files such as `AGENTS.md`, `CLAUDE.md`, `.claude/`, `.agents/`, and skill definitions. If clients need to create material, grant write access only to an ordinary data directory such as `drafts/` or `uploads/`. Otherwise a client could alter instructions later trusted by the more privileged internal route.
 
-DM routes also match groups, but a DM must resolve to exactly one route. If one user
-matches several DM routes, the configuration is ambiguous and Slack teams dispatch is
-disabled until the operator fixes it. Enso never guesses which workspace is more
-privileged.
+## Company and client directories
 
-Because the route names the workspace, a workspace may serve one channel or many, and the
-same group may be allowed in several channels that each bind a different workspace. One
-workspace per channel gives that channel its own instructions, its own skills, and its own
-provider sessions — useful for client or project separation — at the cost of a policy set
-per workspace. A shared workspace across channels gives one context and one policy. Enso
-does not prefer either; changing a channel's workspace changes its `binding_revision`, so
-the next turn starts a fresh session rather than inheriting the previous context.
+A practical layout for a small team is:
 
-## Config shape
+```text
+~/.enso/workspaces/
+├── company/
+│   ├── AGENTS.md
+│   ├── .agents/skills/
+│   └── .claude/skills/
+└── clients/
+    ├── acme/
+    │   ├── AGENTS.md
+    │   ├── README.md
+    │   ├── .agents/skills/
+    │   └── .claude/skills/
+    └── globex/
+```
 
-The canonical schema and defaults live in
-[data-model.md § Teams config](data-model.md#teams-config). This illustrative example
-shows the relationships:
+The staff native policy may grant the company route read or write access to `~/.enso/workspaces/clients/**`. This lets an operator normalize project storage with ordinary directories instead of teaching Enso about project types or mounting several workspaces into one request.
+
+Starting the CLI in `company/` does not reliably make every provider discover instructions or skills in a sibling client directory. The company `AGENTS.md` should therefore tell the agent where client workspaces live and require it to read the selected client's protected `AGENTS.md` and project overview before working there. This is explicit and provider-independent; Enso does not synthesize an instruction chain.
+
+For work that should automatically begin with one client's project instructions and skills, use an internal client channel whose route starts directly in that client workspace.
+
+## Configuration
+
+The complete schema is in [data-model.md](data-model.md#slack-teams-mode). This example shows the relationships:
 
 ```jsonc
 {
-  "groups": {
-    "admin":  { "slack": ["U01ADMIN"] },
-    "team":   { "slack": ["U02DEV", "U03PM"] },
-    "client": { "slack": ["U04CLIENT"] }
+  "workspaces": {
+    "company": {
+      "path": "~/.enso/workspaces/company",
+      "concurrency": 1
+    },
+    "acme": {
+      "path": "~/.enso/workspaces/clients/acme",
+      "concurrency": 1
+    }
   },
 
-  "workspaces": {
-    "ops": {
-      "path": "~/.enso/workspaces/ops",
+  "access": {
+    "admin": {
       "unrestricted": true,
       "providers": ["claude", "codex", "agy"],
       "default_provider": "claude",
       "chat_commands": "*"
     },
-    "acme": {
-      "path": "~/.enso/workspaces/acme",
-      "policy_dir": "~/.enso/policies/acme",
+    "staff": {
+      "policy_dir": "~/.enso/policies/staff",
       "providers": ["claude", "codex"],
+      "default_provider": "claude",
+      "chat_commands": "*"
+    },
+    "client-readonly": {
+      "policy_dir": "~/.enso/policies/client-readonly",
+      "providers": ["claude"],
       "default_provider": "claude",
       "chat_commands": ["status", "clear", "stop", "help"]
     }
@@ -92,285 +102,89 @@ shows the relationships:
 
   "routes": {
     "slack": {
-      "account_id": "T0ENSO",
+      "account_id": "T0YOURTEAM",
       "dms": {
-        "owner": {
-          "allow": ["admin"],
-          "workspace": "ops",
+        "U01OWNER": {
+          "workspace": "company",
+          "access": "admin",
           "audit": false
-        },
-        "project-team": {
-          "allow": ["team"],
-          "workspace": "acme",
-          "audit": true
         }
       },
       "channels": {
         "C0ACME": {
-          "allow": ["team", "admin"],
           "workspace": "acme",
-          "audit": true,
-          "context_from": "allowed"
+          "access": "client-readonly",
+          "audit": true
         },
-        "C0FINANCE": {
-          "allow": ["admin"],
-          "workspace": "ops",
+        "C0ACMEINTERNAL": {
+          "workspace": "acme",
+          "access": "staff",
+          "audit": false
+        },
+        "C0COMPANY": {
+          "workspace": "company",
+          "access": "staff",
           "audit": false
         }
       }
     }
-  },
-
-  "audit": {
-    "on_failure": "block",
-    "max_age_days": 365
   }
 }
 ```
 
-Fail-closed defaults are part of the schema, not conventions:
+The same access profile may be reused across many workspaces when its native policy is written in terms of the invocation workspace. For example, every external client channel can use `client-readonly`; each route still starts in its own client's directory.
 
-- There is no catch-all Slack route. An absent DM or channel route cannot dispatch.
-- `routes.slack.account_id` must exactly match the Slack team/workspace authenticated by
-  the configured token. A mismatch disables Slack teams dispatch.
-- Missing `allow` means nobody. Missing `audit` means `false`. Missing `context_from`
-  means `"allowed"`.
-- Missing `providers` or `chat_commands` means none; `"*"` must be explicit.
-- A route with an unknown group or workspace, no workspace, or an unusable selected
-  provider is disabled and reported. It never falls back to another workspace. An
-  unusable non-selected provider blocks only that provider.
-- Any ambiguous DM match disables all Slack teams dispatch until the configuration is
-  corrected.
-- A workspace runs in today's yolo mode only when `unrestricted: true` is explicit. That
-  flag does not implicitly grant providers or commands.
-- Unrestricted and policy-controlled modes are mutually exclusive. A workspace with
-  `unrestricted: true` plus an explicit or discovered native policy source is invalid.
-- Otherwise the active provider's native policy must exist and be accepted by its CLI.
-  Missing or rejected policy blocks the turn. Enso does not generate or grade it.
+## Resolution and lifecycle
 
-## Opt-in and migration
+On startup Enso validates the Slack account ID, exact routes, workspaces, access profiles, enabled providers, and native policy plumbing. Configuration changes require an Enso restart. Enso deliberately does not hot-reload authorization while work is queued or running.
 
-`routes.slack` is the teams-mode switch.
+For each Slack event Enso:
 
-- When it is absent, the presence of the legacy
-  `transports.slack.allowed_users` keeps that behavior and its existing `working_dir`.
-  The key itself is the explicit legacy opt-in; absence of both configurations blocks
-  Slack.
-- When it is present, Slack authorization comes only from `groups` and `routes.slack`.
-  Configuring both teams mode and the legacy Slack allowlist is an error rather than an
-  undocumented precedence rule.
-- Migration does not synthesize a workspace, move the existing `working_dir`, or leave a
-  symlink. Legacy execution continues to use `working_dir`; the operator explicitly
-  declares any unrestricted teams-mode workspace that should reuse that path. A
-  policy-controlled workspace may not overlap it.
-- Setup never synthesizes channel routes from the old allowlist: doing so would create an
-  unsafe catch-all. New Slack setup writes the authenticated `routes.slack.account_id`
-  plus empty `dms` and `channels` maps, with no legacy allowlist, so access remains
-  blocked until the operator adds exact entries.
-- Telegram does not participate in this migration. It retains its user-ID allowlist and
-  default workspace, with an explicit private-chat-type check.
+1. Verifies the authenticated Slack account.
+1. Resolves the exact DM user ID or channel ID.
+1. Resolves the route's workspace and access profile.
+1. Checks that the selected provider and native policy can be launched.
+1. Runs the provider directly in the workspace directory.
 
-## Resolution
+An invalid route or policy never falls back to another workspace, profile, legacy `working_dir`, or unrestricted execution. Configuration errors for an otherwise authorized route are reported; unknown routes remain silent.
 
-One immutable `Resolution` is computed before commands, context fetches, attachment
-downloads, or provider work:
+Slack DMs dispatch ordinary messages. Channels dispatch only explicit bot mentions, including inside threads. Route resolution occurs before surrounding context or attachments are fetched. Channel context is untrusted input even though every member is authorized to invoke the route.
 
-```
-Resolution {
-  transport, account_id, route_id, groups, workspace_id, workspace_path,
-  provider, binding_revision, policy_revision, audit, context_from
-}
-```
+`enso policy check` inspects Enso's configuration and policy-file plumbing. `enso route explain slack <user-id> [channel-id]` explains the local routing decision. Neither command certifies that a native policy has the intended meaning; test policies with the provider's own tools and disposable files.
 
-For Slack teams mode, ingress runs the full pipeline below. Immediately before execution,
-the shared route resolver repeats steps 3 through 7 against the original delivery claim:
+## Providers and commands
 
-1. **Identify.** Extract Slack team/account ID, user ID, channel ID, canonical source
-   message timestamp, channel type, parent channel, and thread timestamp; derive the
-   stable `delivery_id` defined in [data-model.md](data-model.md#slack-delivery-ledger).
-   Reject an account ID that does not match `routes.slack.account_id`. Only `im` is a DM;
-   `mpim`, public, private, and Slack Connect conversations are exact-ID channel routes. A
-   thread inherits its channel's route.
-2. **Deduplicate.** Atomically claim the delivery ID in the metadata-only Slack event
-   ledger. A retry never executes a command or provider twice, even when audit is off.
-3. **Resolve memberships.** Collect every configured Slack group containing the user ID.
-   No membership means the sender is unknown.
-4. **Resolve the route.** For a channel, look up the exact channel ID. For a DM, collect
-   DM routes whose `allow` list intersects the membership set. Zero matches means no
-   route; more than one means invalid configuration.
-5. **Authorize.** Authorization succeeds when the memberships intersect the route's
-   `allow` list. An unknown, unmatched, or disallowed sender is silently ignored.
-6. **Configure.** Resolve the execution-scoped provider from the workspace default or a
-   prior permitted `!use` selection, then validate the workspace, provider allowlist, and
-   native policy.
-   An authorized sender whose route is unusable receives an explicit configuration error;
-   no provider process starts.
-7. **Bind.** Freeze the route, workspace, provider, authorization/config revision, native
-   policy revision, audit state, and context policy into the `Resolution` carried through
-   dispatch.
+An access profile declares its available providers, default provider, and chat commands. `!help` and `!use` show only capabilities offered by the route's access profile. Service-wide commands such as update, restart, and logs normally belong only to an administrative profile.
 
-Queued turns retain that snapshot, but it is never an authorization lease. Immediately
-before a command or provider spawn, Enso fully resolves the current config and sender
-memberships again. The current resolution must be authorized and match the queued route,
-workspace, selected provider, `binding_revision`, and `policy_revision`; otherwise the
-stale turn is refused rather than rerouted. If audit became enabled while the turn waited,
-the terminal refusal is recorded before Enso replies. A sender whose access was revoked
-receives silence.
+Enso never combines a user policy with a channel policy and never translates policies between providers. A route selects one complete access profile, and that profile selects one native policy for the active CLI.
 
-The delivery claim happens only at ingress; revalidation does not mistake the active turn
-for a retry. Only the shared route resolver performs mandatory revalidation. Commands,
-providers, and other downstream consumers never derive authorization ad hoc or read a
-global working directory.
+## Skills and instructions
 
-### Silence and errors are different controls
+Project instructions and skills are ordinary provider-native files in the workspace: `AGENTS.md` and `.agents/skills/` for Codex, plus `CLAUDE.md` and `.claude/skills/` for Claude Code. The CLIs may also expose their native user, managed, plugin, system, or bundled skill scopes; Enso does not suppress those scopes or maintain a skill allowlist. A project skill adds relevant behavior but is not proof that other skills are absent. Treat all skill discovery as functionality rather than isolation, and rely on the selected native policy for actual authority.
 
-| Situation | Response |
-| --- | --- |
-| Unknown user | Silence |
-| Known user with no matching DM or exact channel route | Silence |
-| Known user not allowed by the matched channel route | Silence |
-| Authorized user, but route/workspace/provider/policy is unusable | Explicit error; no spawn |
-| Authorized audited turn whose initial audit write fails | Explicit error; no spawn |
-
-An unauthorized user stays silent even if audit storage or config diagnostics fail. Enso
-must not disclose that the bot is listening or that an allowlist exists.
-
-`enso route explain slack <user-id> [channel-id]` may report memberships, route,
-workspace, audit state, and configuration errors to the local operator. It explains Enso
-routing only; it does not certify a provider policy.
-
-## Slack triggers and untrusted context
-
-Slack DMs dispatch ordinary messages. Channels dispatch only an explicit bot mention,
-including inside threads. Authorization and route validation occur before Enso fetches
-surrounding context or downloads attachments.
-
-Ignored users can still place text in an allowed channel that reaches the next authorized
-request. Being ignored is not the same as not being processed, so surrounding context is
-always untrusted input.
-
-- `context_from: "allowed"` includes only messages authored by users whose memberships
-  intersect the route's `allow` list, plus Enso's own messages. This is the default.
-- `context_from: "everyone"` includes the full available channel/thread context when the
-  operator deliberately needs it.
-- Every injected message carries its author identity and an explicit untrusted-content
-  marker.
-- Fetched context is not part of the plain-text audit trail. The trail records the
-  triggering request and Enso's user-visible result.
-
-### Planned: identity envelope on the triggering message
-
-**Planned.** Injected context messages carry their author, but the triggering message does
-not — the agent receives bare text and must infer the sender from `ENSO_ORIGIN_*`
-environment variables. That asymmetry is the likely source of an agent confusing who is
-speaking or who is being discussed, and a policy-controlled workspace cannot fall back to
-`enso slack` lookups because the CLI is denied there.
-
-Enso will prepend a short, deterministic envelope to the triggering request in teams mode:
-
-```
-[Slack · #general (C0XYZ) · from Gavin (@U0AETSSDDEF)]
-```
-
-Names come from the existing Slack directory cache, which already maps user and channel
-IDs and refreshes at startup and on directory events; IDs remain so the agent can act on
-them unambiguously. The envelope is prompt content, not audit content — the audit trail
-continues to record the human's own text as `request_text`.
-
-## Chat commands and providers
-
-Commands are capabilities. They resolve through the same route before executing, and a
-workspace's `chat_commands` allowlist controls which are offered and accepted. `!help`
-lists only permitted commands.
-
-This is especially important for `!update`, `!restart`, and `!logs`, which affect or
-expose the shared service, and `!use`, which changes the execution-scoped provider
-selection. `!use` lists only the workspace's permitted providers and refuses a provider
-whose native policy is absent or unusable. It never changes another route's selection.
+Use project-specific skills in the relevant client workspace and company-wide skills in the company workspace. A staff route starting directly in a client workspace naturally sees that client's project material. A route starting in the company workspace must explicitly read a client's protected instructions before working across directories.
 
 ## Jobs
 
-Scheduled jobs have no Slack route and therefore require an explicit `workspace:` in
-`JOB.md` once teams mode is enabled. There is no workspace fallback. The job uses the same
-provider allowlist, native-policy invocation, environment handling, workspace lock, and
-policy revision as chat work.
+Scheduled jobs are independent of Slack teams routing. They continue to use the existing global `working_dir`, provider configuration, locks, and run history. Enabling `routes.slack` does not require a `workspace:` field, change prerun behavior, or reschedule existing jobs.
 
-**Planned.** Scheduling captures the job-file digest, workspace binding revision, selected provider,
-and provider policy revision. After acquiring both the per-job lock and workspace
-semaphore, Enso reloads the job and workspace and requires every value to match immediately
-before `prerun` or provider spawn. A changed or deleted job, workspace, provider, or policy
-cancels that snapshot instead of running old authorization against new files. An enabled
-job missing `workspace:` is a visible startup/load error and is never scheduled.
-
-A job `prerun` executes outside the provider CLI, so a provider policy cannot govern it;
-Enso therefore permits `prerun` only for an explicitly unrestricted workspace.
-
-Job execution remains run history, not a chat audit turn.
+If project-scoped jobs are needed later, that should be a separate explicit design rather than an implicit consequence of enabling Slack routes.
 
 ## Audit
 
-The audit trail is an opt-in, plain-text safety record of the triggering human message and
-Enso's final user-visible reply or terminal outcome. It excludes fetched context, status
-ticker edits, tool calls, reasoning, and raw provider prompts. The canonical turn schema
-is in [data-model.md § Audit log](data-model.md#audit-log).
+`audit` is optional route metadata and defaults to `false`. When enabled, Enso attempts to record the triggering message and outcome using its audit store. This is useful operational evidence, not a complete security transcript: Slack history, fetched context, provider sessions, tool activity, status edits, and out-of-band messages have their own retention and visibility.
 
-- `audit` defaults to `false` on every route. An unmatched route has no audit policy.
-- For an audited route, Enso creates the turn record before any command, context fetch,
-  attachment download, or provider spawn. Failure blocks an authorized turn by default.
-- Enso stores the final response before delivery and then records whether Slack delivery
-  succeeded.
-- A matched audited route may record an ignored or denied trigger with no response. An
-  unauthorized sender still receives silence if that write fails.
-- `audit: false` means no `_enso_audit` turn. Teams-mode operational logs are
-  metadata-only and never contain prompt previews, but Slack retention, native provider
-  session history, and uploads remain separate retention surfaces.
-- To keep the one-row turn contract complete, Enso refuses `enso message send`, job
-  alerts, and other out-of-band sends whose destination is an audited Slack route. Those
-  paths would need a separate outbound-event audit schema to target one.
-- `!status` reports the route's audit state, and startup logs enumerate audited routes.
+Provider policy must keep restricted agents away from Enso's config, secrets, policies, database, and service-control commands whether route auditing is enabled or not.
 
-The operator's native provider policy or outer isolation must deny access to
-`~/.enso/enso.db`. Enso does not translate that requirement into a generic provider rule.
+## Migration
 
-## Escalation surface
+The presence of `routes.slack` enables teams mode. It is mutually exclusive with the legacy Slack `allowed_users` key. With no teams block, legacy Slack continues to use `allowed_users` and `working_dir` exactly as before.
 
-Routing decides where a request runs, not what code in that workspace can reach. The
-operator's native policies and any outer sandbox must account for these shared surfaces:
+Earlier branch configurations using `groups`, route `allow`, route `context_from`, or permission fields inside `workspaces` are rejected with a migration error. Convert them explicitly:
 
-- The `enso` CLI can create jobs, send messages, and access shared data.
-- `~/.enso/secrets/` contains credentials loaded by the service.
-- `~/.enso/skills/` can influence every workspace.
-- `~/.enso/enso.db` contains runs, user tables, and audit turns.
-- `~/.enso/config.json` contains authorization and route definitions.
-- Native provider homes may contain credentials, config, and conversation history.
+- Move `unrestricted`, `policy_dir`, `providers`, `default_provider`, and `chat_commands` from each workspace into a named `access` profile.
+- Add `access` to every route.
+- Key DMs by exact Slack user ID.
+- Remove groups and route allowlists; a configured channel authorizes its members uniformly.
 
-Enso still owns the process boundary: it passes only the required environment and does not
-link jobs, docs, config, or the database into a policy-controlled workspace. These controls
-complement rather than replace the provider's native policy. **Planned:** Enso stops
-curating the agent's instructions and skills; today it still seeds each workspace's
-`AGENTS.md` and exposes skills through the allowlist. See
-[permissions.md](permissions.md#instructions-and-skills-are-the-clis-job).
-
-An **unrestricted** workspace reaches everything on the machine, including other
-workspaces' files and their policy files. That is intentional rather than a gap: it is how
-an operator has Enso maintain its own system — scaffolding a workspace for a new user,
-writing that workspace's permission files, editing jobs and skills. It is also why
-unrestricted routes belong to administrators only, and why "workspace isolation" describes
-protection *between* policy-controlled workspaces, never protection *from* an unrestricted
-one.
-
-A Slack route is dispatchable only when its workspace explicitly selects
-`unrestricted: true` or the active provider's native policy can be loaded by the CLI.
-Missing, ambiguous, or stale configuration blocks.
-
-## Decisions
-
-- Teams mode is Slack-only; Telegram uses its existing allowlist and remains private and
-  one-to-one.
-- Routes are transport-qualified and exact; there is no dispatchable default route.
-- Group declaration order has no security meaning.
-- Enso does not define or compile a generic permission policy.
-- The operator authors and tests native provider policies; Enso selects them and fails
-  closed when it cannot apply them.
-- An unrestricted workspace may still enable audit.
-- Audit failures block authorized audited turns by default.
+No routes are synthesized during migration because creating a route grants access.

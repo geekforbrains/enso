@@ -384,7 +384,7 @@ async def test_scheduled_open_prerun_injects_output_and_runs_provider(
     assert result.status == "ok"
     assert provider.prompts == [("Use this: captured context", "sonnet")]
     runtime.make_provider.assert_called_once_with(
-        "claude", timeout=job.timeout, context=None,
+        "claude", timeout=job.timeout,
     )
     assert runtime._spawn_process.await_args.kwargs["stdin"] == asyncio.subprocess.DEVNULL
     row = runs.get(result.run_id)
@@ -667,114 +667,74 @@ async def test_concurrent_same_job_is_skipped_via_run_lock(tmp_enso, sample_conf
     reacquired.close()
 
 
-# -- Teams-mode workspace binding --
+# -- Teams mode does not alter the global job runtime --
 
 
 def _teams_blocks(tmp_enso: str) -> dict:
-    """Teams config blocks reusing the sample workspaces under tmp."""
-    import json
-
-    ops = Path(tmp_enso, "workspaces", "ops")
+    """Minimal valid teams config whose access profile allows only Claude."""
     acme = Path(tmp_enso, "workspaces", "acme")
-    policies = Path(tmp_enso, "policies", "acme", "claude")
-    for d in (ops, acme, policies):
-        d.mkdir(parents=True, exist_ok=True)
-    settings = policies / "settings.json"
-    settings.write_text(json.dumps({"sandbox": {"enabled": True}, "disableAllHooks": True}))
-    settings.chmod(0o600)
+    acme.mkdir(parents=True, exist_ok=True)
     return {
-        "groups": {"admin": {"slack": ["U1"]}},
-        "workspaces": {
-            "ops": {
-                "path": str(ops),
+        "workspaces": {"acme": {"path": str(acme)}},
+        "access": {
+            "chat": {
                 "unrestricted": True,
                 "providers": ["claude"],
                 "default_provider": "claude",
-            },
-            "acme": {
-                "path": str(acme),
-                "policy_dir": str(Path(tmp_enso, "policies", "acme")),
-                "providers": ["claude"],
-                "default_provider": "claude",
+                "chat_commands": "*",
             },
         },
-        "routes": {"slack": {"account_id": "T1", "dms": {}, "channels": {}}},
+        "routes": {
+            "slack": {
+                "account_id": "T1",
+                "dms": {},
+                "channels": {
+                    "C1": {"workspace": "acme", "access": "chat"},
+                },
+            },
+        },
     }
 
 
-async def test_teams_job_without_workspace_fails(tmp_enso, sample_config):
+async def test_teams_mode_job_without_workspace_runs_globally(tmp_enso, sample_config):
     sample_config.update(_teams_blocks(tmp_enso))
     runtime = Runtime(sample_config)
     job = make_job(tmp_enso, prerun=None)
-    stub_provider(runtime)
-
-    result = await runtime._execute_job(job, trigger="manual", notify_failures=False)
-
-    assert result.status == "error"
-    assert "workspace" in result.output
-    runtime._spawn_process.assert_not_awaited()
-
-
-async def test_teams_job_binds_workspace_and_launch(tmp_enso, sample_config):
-    sample_config.update(_teams_blocks(tmp_enso))
-    runtime = Runtime(sample_config)
-    job = make_job(tmp_enso, prerun=None)
-    job.workspace = "acme"
     provider = stub_provider(runtime)
 
     result = await runtime._execute_job(job, trigger="manual", notify_failures=False)
 
     assert result.status == "ok"
-    context = runtime.make_provider.call_args.kwargs["context"]
-    assert context.workspace_id == "acme"
-    assert context.launch.mode == "policy"
+    assert "context" not in runtime.make_provider.call_args.kwargs
     spawn_kwargs = runtime._spawn_process.await_args.kwargs
-    assert spawn_kwargs["cwd"].endswith("workspaces/acme")
-    assert "OP_SERVICE_ACCOUNT_TOKEN" not in spawn_kwargs.get("env", {})
+    assert spawn_kwargs["cwd"] == runtime.working_dir
     assert provider.prompts  # the batch command was built
 
 
-async def test_teams_job_prerun_requires_unrestricted(tmp_enso, sample_config):
+async def test_teams_mode_does_not_restrict_job_prerun(tmp_enso, sample_config):
     sample_config.update(_teams_blocks(tmp_enso))
     runtime = Runtime(sample_config)
-    job = make_job(tmp_enso)  # has a prerun
-    job.workspace = "acme"
-    stub_provider(runtime)
-
-    result = await runtime._execute_job(job, trigger="manual", notify_failures=False)
-
-    assert result.status == "error"
-    assert "prerun" in result.output
-    runtime._spawn_process.assert_not_awaited()
-
-
-async def test_teams_job_prerun_allowed_in_unrestricted(tmp_enso, sample_config):
-    sample_config.update(_teams_blocks(tmp_enso))
-    runtime = Runtime(sample_config)
-    job = make_job(tmp_enso, prerun=None)
-    job.workspace = "ops"
+    job = make_job(tmp_enso)
     stub_provider(runtime)
 
     result = await runtime._execute_job(job, trigger="manual", notify_failures=False)
 
     assert result.status == "ok"
-    context = runtime.make_provider.call_args.kwargs["context"]
-    assert context.launch.mode == "unrestricted"
 
 
-async def test_teams_job_provider_must_be_allowed(tmp_enso, sample_config):
+async def test_slack_access_provider_allowlist_does_not_apply_to_jobs(
+    tmp_enso, sample_config,
+):
     sample_config.update(_teams_blocks(tmp_enso))
     runtime = Runtime(sample_config)
     job = make_job(tmp_enso, prerun=None)
-    job.workspace = "acme"
     job.provider = "codex"
-    job.model = "gpt-5.3-codex"  # valid for codex, so the workspace gate decides
+    job.model = "gpt-5.3-codex"
     stub_provider(runtime)
 
     result = await runtime._execute_job(job, trigger="manual", notify_failures=False)
 
-    assert result.status == "error"
-    assert "not allowed" in result.output
+    assert result.status == "ok"
 
 
 async def test_legacy_job_keeps_working_dir(tmp_enso, sample_config):
@@ -785,32 +745,21 @@ async def test_legacy_job_keeps_working_dir(tmp_enso, sample_config):
     result = await runtime._execute_job(job, trigger="manual", notify_failures=False)
 
     assert result.status == "ok"
-    assert runtime.make_provider.call_args.kwargs["context"] is None
+    assert "context" not in runtime.make_provider.call_args.kwargs
     assert runtime._spawn_process.await_args.kwargs["cwd"] == runtime.working_dir
 
 
-async def test_teams_job_failure_does_not_enqueue_global_message(tmp_enso, sample_config):
-    """Teams mode never consumes global messages, so failures must not enqueue them."""
+async def test_teams_mode_job_failure_does_not_enqueue_chat_context(
+    tmp_enso, sample_config,
+):
+    """A global job must not inject context into an arbitrary teams chat."""
     from enso import messages
     sample_config.update(_teams_blocks(tmp_enso))
     runtime = Runtime(sample_config)
     runtime.transport = RecordingTransport()
     job = make_job(tmp_enso, prerun=None)
-    job.workspace = "ops"  # unrestricted so it runs
     stub_provider(runtime, returncode=1, output=b"boom")
 
     await runtime._execute_job(job, trigger="manual", notify_failures=True)
 
-    assert messages.pending() == []  # notification rode transport.notify, not the queue
-
-
-async def test_legacy_job_failure_enqueues_global_message(tmp_enso, sample_config):
-    from enso import messages
-    runtime = Runtime(sample_config)
-    runtime.transport = RecordingTransport()
-    job = make_job(tmp_enso, prerun=None)
-    stub_provider(runtime, returncode=1, output=b"boom")
-
-    await runtime._execute_job(job, trigger="manual", notify_failures=True)
-
-    assert any(m["source"] == "job:capture" for m in messages.pending())
+    assert messages.pending() == []
