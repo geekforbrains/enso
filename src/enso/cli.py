@@ -24,9 +24,17 @@ from rich.table import Table
 from rich.text import Text
 
 from . import __version__, slack_cache, tables
-from .config import CONFIG_FILE, detect_providers, load_config, resolve_providers, save_config
+from .auth import parse_telegram_allowed_users
+from .config import (
+    CONFIG_FILE,
+    detect_providers,
+    load_config,
+    provider_models,
+    resolve_providers,
+    save_config,
+)
 from .docs import MAX_DOCS, create_doc, load_docs
-from .jobs import create_job, load_jobs
+from .jobs import create_job, load_jobs, load_jobs_with_errors
 from .logging_config import configure_logging
 from .messages import clear as msg_clear
 from .messages import pending as msg_pending
@@ -48,8 +56,8 @@ table_app = typer.Typer(help="Manage registered SQLite data tables")
 message_app = typer.Typer(help="Send messages and files via the configured transport")
 service_app = typer.Typer(help="Manage the background service")
 slack_app = typer.Typer(help="Slack directory lookups and message search")
-policy_app = typer.Typer(help="Validate teams workspaces and native provider policies")
-route_app = typer.Typer(help="Explain Slack teams routing decisions")
+config_app = typer.Typer(help="Validate routes, workspaces, access, jobs, and policies")
+route_app = typer.Typer(help="Explain Slack routing decisions")
 audit_app = typer.Typer(help="Inspect the Slack audit trail")
 app.add_typer(job_app, name="job")
 app.add_typer(doc_app, name="doc")
@@ -57,7 +65,7 @@ app.add_typer(table_app, name="table")
 app.add_typer(message_app, name="message")
 app.add_typer(service_app, name="service")
 app.add_typer(slack_app, name="slack")
-app.add_typer(policy_app, name="policy")
+app.add_typer(config_app, name="config")
 app.add_typer(route_app, name="route")
 app.add_typer(audit_app, name="audit")
 
@@ -68,6 +76,7 @@ TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 # ---------------------------------------------------------------------------
 # Telegram API helpers (stdlib only — no extra deps for setup)
 # ---------------------------------------------------------------------------
+
 
 def _tg_call(token: str, method: str, **params: object) -> dict:
     """Call a Telegram Bot API method. Returns the parsed JSON response."""
@@ -169,6 +178,7 @@ def _tg_send_file(token: str, chat_id: int, file_path: str, caption: str = "") -
     add_field("chat_id", str(chat_id))
     if caption:
         from .formatting import md_to_html
+
         add_field("caption", md_to_html(caption))
         add_field("parse_mode", "HTML")
 
@@ -204,13 +214,20 @@ def _tg_send_file(token: str, chat_id: int, file_path: str, caption: str = "") -
                 last_err = exc.read().decode("utf-8", "replace")  # type: ignore[attr-defined]
         log.warning(
             "telegram %s failed (attempt %d/3) file=%s chat=%s: %s",
-            method, attempt, filename, chat_id, last_err,
+            method,
+            attempt,
+            filename,
+            chat_id,
+            last_err,
         )
         if attempt < 3:
             time.sleep(2 * attempt)
     log.error(
         "telegram %s gave up after 3 attempts file=%s chat=%s: %s",
-        method, filename, chat_id, last_err,
+        method,
+        filename,
+        chat_id,
+        last_err,
     )
     return False
 
@@ -222,8 +239,11 @@ def _tg_send_message(token: str, chat_id: int, text: str) -> bool:
     try:
         html = md_to_html(text)
         result = _tg_call(
-            token, "sendMessage",
-            chat_id=chat_id, text=html, parse_mode="HTML",
+            token,
+            "sendMessage",
+            chat_id=chat_id,
+            text=html,
+            parse_mode="HTML",
         )
         if result.get("ok"):
             return True
@@ -242,9 +262,7 @@ def _tg_send_message(token: str, chat_id: int, text: str) -> bool:
 # ---------------------------------------------------------------------------
 
 _LAUNCHD_LABEL = "com.enso.agent"
-_LAUNCHD_PLIST = os.path.expanduser(
-    f"~/Library/LaunchAgents/{_LAUNCHD_LABEL}.plist"
-)
+_LAUNCHD_PLIST = os.path.expanduser(f"~/Library/LaunchAgents/{_LAUNCHD_LABEL}.plist")
 _SYSTEMD_UNIT = "enso.service"
 
 # Advanced tuning env vars read by the runtime (see core.py). Snapshotted
@@ -281,9 +299,7 @@ def _build_path_str(enso_bin: str) -> str:
 
 def _systemd_env() -> dict[str, str]:
     """Build env dict with XDG_RUNTIME_DIR and DBUS for systemctl."""
-    xdg = os.environ.get(
-        "XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"
-    )
+    xdg = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
     return {
         **os.environ,
         "XDG_RUNTIME_DIR": xdg,
@@ -306,9 +322,7 @@ def _service_is_installed() -> bool:
     if platform == "launchd":
         return os.path.exists(_LAUNCHD_PLIST)
     if platform == "systemd":
-        path = os.path.expanduser(
-            f"~/.config/systemd/user/{_SYSTEMD_UNIT}"
-        )
+        path = os.path.expanduser(f"~/.config/systemd/user/{_SYSTEMD_UNIT}")
         return os.path.exists(path)
     return False
 
@@ -325,7 +339,9 @@ def _service_cmd(launchd_argv: list[str], systemd_argv: list[str]) -> bool:
             r = subprocess.run(launchd_argv, capture_output=True)
         elif platform == "systemd":
             r = subprocess.run(
-                systemd_argv, env=_systemd_env(), capture_output=True,
+                systemd_argv,
+                env=_systemd_env(),
+                capture_output=True,
             )
         else:
             return False
@@ -355,9 +371,7 @@ def _service_install(config: dict) -> bool:
     if platform == "systemd":
         return _install_systemd(config, enso_bin)
 
-    console.print(
-        f"[yellow]Service install not supported on {sys.platform}.[/]"
-    )
+    console.print(f"[yellow]Service install not supported on {sys.platform}.[/]")
     return False
 
 
@@ -422,7 +436,8 @@ def _install_launchd(config: dict, enso_bin: str) -> bool:
     try:
         subprocess.run(
             ["launchctl", "load", _LAUNCHD_PLIST],
-            capture_output=True, check=True,
+            capture_output=True,
+            check=True,
         )
         console.print("[green]\u2713[/] Service installed and started.")
         return True
@@ -470,19 +485,19 @@ WantedBy=default.target
         env = _systemd_env()
         subprocess.run(
             ["systemctl", "--user", "daemon-reload"],
-            env=env, capture_output=True,
+            env=env,
+            capture_output=True,
         )
         subprocess.run(
             ["systemctl", "--user", "enable", "--now", _SYSTEMD_UNIT],
-            env=env, capture_output=True,
+            env=env,
+            capture_output=True,
         )
         console.print("[green]\u2713[/] Service installed and started.")
         return True
     except Exception:
         console.print(f"Written to {service_path}")
-        console.print(
-            f"Enable with: systemctl --user enable --now {_SYSTEMD_UNIT}"
-        )
+        console.print(f"Enable with: systemctl --user enable --now {_SYSTEMD_UNIT}")
         return False
 
 
@@ -498,19 +513,19 @@ def _service_uninstall() -> bool:
             os.remove(_LAUNCHD_PLIST)
             return True
     elif platform == "systemd":
-        path = os.path.expanduser(
-            f"~/.config/systemd/user/{_SYSTEMD_UNIT}"
-        )
+        path = os.path.expanduser(f"~/.config/systemd/user/{_SYSTEMD_UNIT}")
         if os.path.exists(path):
             env = _systemd_env()
             subprocess.run(
                 ["systemctl", "--user", "disable", "--now", _SYSTEMD_UNIT],
-                env=env, capture_output=True,
+                env=env,
+                capture_output=True,
             )
             os.remove(path)
             subprocess.run(
                 ["systemctl", "--user", "daemon-reload"],
-                env=env, capture_output=True,
+                env=env,
+                capture_output=True,
             )
             return True
     return False
@@ -547,6 +562,7 @@ def _service_restart() -> bool:
 # Setup wizard
 # ---------------------------------------------------------------------------
 
+
 def _setup_providers(config: dict) -> None:
     """Step 1: detect and display available provider CLIs."""
     console.rule("[bold]Step 1 \u00b7 Provider Detection")
@@ -570,9 +586,53 @@ def _setup_providers(config: dict) -> None:
         console.print(f"Install at least one of: {', '.join(PROVIDER_NAMES)}")
 
 
+def _ensure_default_execution_config(config: dict) -> tuple[str, str]:
+    """Seed the default workspace and unrestricted admin access profile.
+
+    Setup uses these names for the first exact Slack DM route and new jobs.
+    Existing definitions are preserved verbatim.
+    """
+    workspace_name = "default"
+    access_name = "admin"
+    working_dir = os.path.abspath(
+        os.path.expanduser(
+            str(config.get("working_dir") or os.path.join("~", ".enso", "workspace"))
+        )
+    )
+
+    workspaces = config.get("workspaces")
+    if not isinstance(workspaces, dict):
+        workspaces = {}
+        config["workspaces"] = workspaces
+    workspaces.setdefault(
+        workspace_name,
+        {"path": working_dir, "concurrency": 1},
+    )
+
+    access = config.get("access")
+    if not isinstance(access, dict):
+        access = {}
+        config["access"] = access
+    configured = provider_models(config)
+    providers = [name for name in PROVIDER_NAMES if name in configured]
+    if not providers:
+        providers = list(PROVIDER_NAMES)
+    default_provider = "claude" if "claude" in providers else providers[0]
+    access.setdefault(
+        access_name,
+        {
+            "unrestricted": True,
+            "providers": providers,
+            "default_provider": default_provider,
+            "chat_commands": "*",
+        },
+    )
+    return workspace_name, access_name
+
+
 def _setup_transport(config: dict) -> int | None:
-    """Step 2: configure transport."""
-    console.rule("[bold]Step 2 \u00b7 Transport")
+    """Step 3: configure transport."""
+    console.rule("[bold]Step 3 \u00b7 Transport")
     choices = ["telegram", "slack"]
     transport = Prompt.ask(
         "  Transport",
@@ -627,7 +687,10 @@ def _setup_telegram(config: dict) -> int | None:
         if bot_info:
             console.print(f"  [green]\u2713[/] Connected to @{bot_info.get('username', '?')}")
             is_reference = _update_referenced_secret_or_exit(
-                tg_cfg, "bot_token", token, "Telegram bot token",
+                tg_cfg,
+                "bot_token",
+                token,
+                "Telegram bot token",
             )
             if is_reference:
                 next_cfg = dict(tg_cfg)
@@ -638,6 +701,7 @@ def _setup_telegram(config: dict) -> int | None:
                 next_cfg = {
                     "bot_token": token,
                     "allowed_users": current_users,
+                    "notify_channel": tg_cfg.get("notify_channel", ""),
                 }
             config.setdefault("transports", {})["telegram"] = next_cfg
             current_token = token
@@ -659,12 +723,14 @@ def _setup_telegram(config: dict) -> int | None:
     name = user_info.get("first_name") or user_info.get("username") or "?"
     console.print(f"  [green]\u2713[/] Got it! {name} (ID: {user_id})")
     config["transports"]["telegram"]["allowed_users"] = [str(user_id)]
+    config["transports"]["telegram"]["notify_channel"] = str(user_info.get("chat_id") or user_id)
     return user_info.get("chat_id")
 
 
 # ---------------------------------------------------------------------------
 # Slack API helpers (stdlib only — no extra deps for setup)
 # ---------------------------------------------------------------------------
+
 
 def _slack_validate_token(token: str) -> dict | None:
     """Validate a Slack bot token via auth.test.
@@ -679,7 +745,10 @@ def _slack_validate_token(token: str) -> dict | None:
 
 
 def _slack_send_message(
-    token: str, channel: str, text: str, thread_ts: str = "",
+    token: str,
+    channel: str,
+    text: str,
+    thread_ts: str = "",
 ) -> bool:
     """Send a message to Slack via chat.postMessage.
 
@@ -695,7 +764,8 @@ def _slack_send_message(
 
 
 def _resolve_slack_target(
-    explicit: str, notify_channel: str,
+    explicit: str,
+    notify_channel: str,
 ) -> tuple[str, str]:
     """Resolve the Slack channel + thread for ``message send``/``attach``.
 
@@ -720,13 +790,14 @@ def _resolve_slack_target(
 
 
 def _tg_allowed_users(tg_cfg: dict) -> list[str]:
-    """Configured Telegram users, with legacy ``allowed_user_ids`` fallback."""
-    raw = tg_cfg.get("allowed_users") or tg_cfg.get("allowed_user_ids", [])
-    return [str(u) for u in raw]
+    """Return exact configured Telegram user IDs; malformed values fail closed."""
+    return parse_telegram_allowed_users(tg_cfg)
 
 
 def _resolve_transport_secret_or_exit(
-    transport_cfg: dict, key: str, transport_name: str,
+    transport_cfg: dict,
+    key: str,
+    transport_name: str,
 ) -> str:
     """Resolve a transport credential and turn reference errors into CLI output."""
     try:
@@ -756,9 +827,7 @@ def _update_referenced_secrets_with_rollback_or_exit(
 ) -> dict[str, bool]:
     """Update a credential set, restoring earlier referenced writes on failure."""
     referenced = [
-        (key, label)
-        for key, _value, label in updates
-        if f"{key}_1password" in transport_cfg
+        (key, label) for key, _value, label in updates if f"{key}_1password" in transport_cfg
     ]
     previous: dict[str, str] = {}
     for key, label in referenced:
@@ -791,9 +860,7 @@ def _update_referenced_secrets_with_rollback_or_exit(
                     )
                 except SecretResolutionError:
                     rollback_failures.append(updated_label)
-            console.print(
-                f"[red]✗[/] Could not save {label} through 1Password."
-            )
+            console.print(f"[red]✗[/] Could not save {label} through 1Password.")
             if rollback_failures:
                 console.print(
                     "[red]✗[/] Rollback also failed for:"
@@ -801,9 +868,7 @@ def _update_referenced_secrets_with_rollback_or_exit(
                     " Referenced credentials may be inconsistent."
                 )
             elif updated:
-                console.print(
-                    "[yellow]Earlier referenced credential updates were restored.[/]"
-                )
+                console.print("[yellow]Earlier referenced credential updates were restored.[/]")
             raise typer.Exit(1) from None
         results[key] = is_reference
         if is_reference:
@@ -814,9 +879,9 @@ def _update_referenced_secrets_with_rollback_or_exit(
 def _resolve_send_targets(cfg: dict, to: str) -> tuple[str, str, list[str], str]:
     """Resolve delivery for ``message send``/``attach``.
 
-    Returns ``(transport, token, targets, thread_ts)``. Slack always yields a
-    single target; Telegram may broadcast to every allowed user. Exits with a
-    console error when the transport isn't configured or nothing resolves.
+    Returns ``(transport, token, targets, thread_ts)``. Both transports resolve
+    one explicit, originating, or default destination. Authorization never
+    doubles as a notification subscription.
     """
     transport = cfg.get("transport", "telegram")
 
@@ -824,30 +889,21 @@ def _resolve_send_targets(cfg: dict, to: str) -> tuple[str, str, list[str], str]
         slack_cfg = cfg.get("transports", {}).get("slack", {})
         token = _resolve_transport_secret_or_exit(slack_cfg, "bot_token", "Slack")
         if not token:
-            console.print(
-                "[red]✗[/] Slack not configured."
-                " Run [bold]enso setup[/]."
-            )
+            console.print("[red]✗[/] Slack not configured. Run [bold]enso setup[/].")
             raise typer.Exit(1)
         target, thread_ts = _resolve_slack_target(
-            to, slack_cfg.get("notify_channel", ""),
+            to,
+            slack_cfg.get("notify_channel", ""),
         )
         if not target:
-            console.print(
-                "[red]✗[/] No destination. Pass --to or"
-                " set notify_channel in config."
-            )
+            console.print("[red]✗[/] No destination. Pass --to or set notify_channel in config.")
             raise typer.Exit(1)
         return transport, token, [target], thread_ts
 
     tg_cfg = cfg.get("transports", {}).get("telegram", {})
     token = _resolve_transport_secret_or_exit(tg_cfg, "bot_token", "Telegram")
-    users = _tg_allowed_users(tg_cfg)
-    if not token or not users:
-        console.print(
-            "[red]✗[/] Telegram not configured."
-            " Run [bold]enso setup[/]."
-        )
+    if not token:
+        console.print("[red]✗[/] Telegram not configured. Run [bold]enso setup[/].")
         raise typer.Exit(1)
     origin = os.environ.get("ENSO_ORIGIN_CHANNEL", "")
     if to:
@@ -855,7 +911,11 @@ def _resolve_send_targets(cfg: dict, to: str) -> tuple[str, str, list[str], str]
     elif origin:
         targets = [origin]
     else:
-        targets = users
+        notify = tg_cfg.get("notify_channel", "")
+        targets = [notify] if isinstance(notify, str) and notify else []
+    if not targets:
+        console.print("[red]✗[/] No destination. Pass --to or set notify_channel in config.")
+        raise typer.Exit(1)
     return transport, token, targets, ""
 
 
@@ -863,7 +923,10 @@ _SLACK_MAX_UPLOAD_BYTES = 1024 * 1024 * 1024  # 1 GB
 
 
 def _slack_upload_file(
-    token: str, channel: str, file_path: str, caption: str = "",
+    token: str,
+    channel: str,
+    file_path: str,
+    caption: str = "",
     thread_ts: str = "",
 ) -> tuple[bool, str]:
     """Upload a file to Slack using the external upload flow.
@@ -963,8 +1026,15 @@ def _write_slack_manifest_copy() -> str:
 
 
 def _setup_slack(config: dict) -> None:
-    """Configure Slack bot tokens and allowed users."""
+    """Configure Slack credentials and one exact routed owner DM."""
     slack_cfg = config.get("transports", {}).get("slack", {})
+    routes_block = config.get("routes")
+    existing_routes = (
+        routes_block.get("slack")
+        if isinstance(routes_block, dict) and isinstance(routes_block.get("slack"), dict)
+        else None
+    )
+    needs_allowlist_migration = "allowed_users" in slack_cfg
     try:
         current_bot = resolve_config_secret(slack_cfg, "bot_token")
     except SecretResolutionError as exc:
@@ -974,14 +1044,15 @@ def _setup_slack(config: dict) -> None:
     if current_bot:
         auth = _slack_validate_token(current_bot)
         if auth:
-            console.print(
-                f"  Current bot: [bold]{auth.get('user', '?')}[/]"
-            )
-            users = slack_cfg.get("allowed_users", [])
-            if users:
-                console.print(f"  Allowed users: {users}")
+            console.print(f"  Current bot: [bold]{auth.get('user', '?')}[/]")
+            if needs_allowlist_migration:
+                console.print(
+                    "[yellow]  This Slack configuration uses the removed"
+                    " allowed_users mode and must be migrated to exact routes.[/]"
+                )
             if not Confirm.ask(
-                "\n  Reconfigure Slack?", default=False,
+                "\n  Migrate Slack now?" if needs_allowlist_migration else "\n  Reconfigure Slack?",
+                default=needs_allowlist_migration,
             ):
                 return
         else:
@@ -989,28 +1060,19 @@ def _setup_slack(config: dict) -> None:
 
     # Offer a one-paste app manifest to short-circuit the Slack app wizard.
     manifest_path = _write_slack_manifest_copy()
-    console.print(
-        "  To create the Slack app, paste the bundled manifest:\n"
-    )
+    console.print("  To create the Slack app, paste the bundled manifest:\n")
     console.print("   1. Open [bold]https://api.slack.com/apps?new_app=1[/]")
     console.print("   2. Choose [bold]From an app manifest[/]")
     console.print("   3. Pick your workspace")
     console.print(f"   4. Paste the contents of [bold]{manifest_path}[/]")
     console.print("      (scopes, events, and Socket Mode are all pre-configured)")
-    console.print(
-        "   5. [bold]Install to workspace[/] — this gives you the Bot Token"
-    )
+    console.print("   5. [bold]Install to workspace[/] — this gives you the Bot Token")
     console.print(
         "   6. Basic Information \u2192 [bold]App-Level Tokens[/]"
         " \u2192 Generate, with scope [bold]connections:write[/]"
     )
-    console.print(
-        "   7. Copy both tokens; paste them when prompted below.\n"
-    )
-    console.print(
-        "  [dim]If you already have an app, jump straight to copying"
-        " the tokens.[/]\n"
-    )
+    console.print("   7. Copy both tokens; paste them when prompted below.\n")
+    console.print("  [dim]If you already have an app, jump straight to copying the tokens.[/]\n")
 
     while True:
         bot_token = Prompt.ask("  Bot Token (xoxb-...)", password=True)
@@ -1022,9 +1084,11 @@ def _setup_slack(config: dict) -> None:
         if auth:
             bot_name = auth.get("user", "?")
             bot_user_id = auth.get("user_id", "")
-            console.print(
-                f"  [green]\u2713[/] Authenticated as {bot_name}"
-            )
+            team_id = auth.get("team_id", "")
+            if not isinstance(team_id, str) or not team_id:
+                console.print("[red]  \u2717 Slack did not return a workspace ID.[/]")
+                continue
+            console.print(f"  [green]\u2713[/] Authenticated as {bot_name}")
             break
         console.print("[red]  \u2717 Invalid token. Try again.[/]")
 
@@ -1035,18 +1099,29 @@ def _setup_slack(config: dict) -> None:
             break
         console.print("[red]  Token is required.[/]")
 
-    # Allowed users
-    console.print(
-        "\n\n  Enter Slack user IDs allowed to interact"
-        " (comma-separated), or * for everyone.\n"
-    )
-    raw_users = Prompt.ask("  Allowed users", default="*")
-    if raw_users.strip() == "*":
-        allowed: list[str] = ["*"]
-    else:
-        allowed = [
-            u.strip() for u in raw_users.split(",") if u.strip()
-        ]
+    reset_routes = existing_routes is None
+    if existing_routes is not None and existing_routes.get("account_id") != team_id:
+        if not Confirm.ask(
+            "\n  The token belongs to a different Slack workspace. Replace the"
+            " existing Slack routes?",
+            default=False,
+        ):
+            console.print("[yellow]  Slack configuration was not changed.[/]")
+            return
+        reset_routes = True
+
+    owner_id = ""
+    if reset_routes:
+        console.print(
+            "\n  Add the first administrator DM route. Channel routes can be"
+            " added later in config.json.\n"
+        )
+        while not owner_id:
+            candidate = Prompt.ask("  Owner Slack user ID").strip()
+            if candidate and candidate != "*" and not any(ch.isspace() for ch in candidate):
+                owner_id = candidate
+            else:
+                console.print("[red]  Enter one exact Slack user ID (for example U012ABC).[/]")
 
     # Notify channel — where `enso message send` (no --to), scheduled-job
     # alerts, and the autocompact hook deliver. Without one they fail with
@@ -1079,6 +1154,7 @@ def _setup_slack(config: dict) -> None:
     bot_is_reference = reference_updates["bot_token"]
     app_is_reference = reference_updates["app_token"]
     next_cfg = dict(slack_cfg)
+    next_cfg.pop("allowed_users", None)
     if bot_is_reference:
         next_cfg.pop("bot_token", None)
     else:
@@ -1087,17 +1163,31 @@ def _setup_slack(config: dict) -> None:
         next_cfg.pop("app_token", None)
     else:
         next_cfg["app_token"] = app_token
-    next_cfg.update({
-        "bot_user_id": bot_user_id,
-        "allowed_users": allowed,
-        "notify_channel": notify,
-    })
+    next_cfg.update(
+        {
+            "bot_user_id": bot_user_id,
+            "notify_channel": notify,
+        }
+    )
     config.setdefault("transports", {})["slack"] = next_cfg
+    if reset_routes:
+        workspace, access = _ensure_default_execution_config(config)
+        config.setdefault("routes", {})["slack"] = {
+            "account_id": team_id,
+            "dms": {
+                owner_id: {
+                    "workspace": workspace,
+                    "access": access,
+                },
+            },
+            "channels": {},
+        }
 
 
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
+
 
 @app.command()
 def setup() -> None:
@@ -1106,19 +1196,23 @@ def setup() -> None:
     config = load_config()
 
     _setup_providers(config)
-    captured_chat_id = _setup_transport(config)
 
-    # Step 3: Working directory
-    console.rule("[bold]Step 3 \u00b7 Working Directory")
+    # Step 2: Working directory and shared execution catalog
+    console.rule("[bold]Step 2 \u00b7 Working Directory")
     console.print("  Where agents run commands and create files.\n")
     default_dir = os.path.join(os.path.expanduser("~/.enso"), "workspace")
     current_dir = config.get("working_dir", default_dir)
     config["working_dir"] = os.path.abspath(Prompt.ask("  Working directory", default=current_dir))
     os.makedirs(config["working_dir"], exist_ok=True)
+    _ensure_default_execution_config(config)
+
+    captured_chat_id = _setup_transport(config)
 
     from .core import Runtime
 
-    Runtime(config).install_system_prompts()
+    runtime = Runtime(config)
+    runtime.install_system_prompts()
+    runtime.install_workspaces()
 
     with console.status("Saving config..."):
         save_config(config)
@@ -1132,22 +1226,18 @@ def setup() -> None:
         except SecretResolutionError as exc:
             console.print(f"[yellow]Skipping test message: {exc}[/]")
             token = ""
-        users = tg.get("allowed_users", [])
-        chat_id = captured_chat_id or (
-            users[0] if users else None
-        )
+        chat_id = captured_chat_id or tg.get("notify_channel")
         if token and chat_id:
             with console.status("Sending test message..."):
                 sent = _tg_send_message(
-                    token, chat_id,
+                    token,
+                    chat_id,
                     f"Enso v{__version__} ready.",
                 )
             if sent:
                 console.print("[green]\u2713[/] Test message sent!")
             else:
-                console.print(
-                    "[yellow]Failed to send test message.[/]"
-                )
+                console.print("[yellow]Failed to send test message.[/]")
     elif config.get("transport") == "slack":
         slack_cfg = config.get("transports", {}).get("slack", {})
         try:
@@ -1157,19 +1247,16 @@ def setup() -> None:
             token = ""
         target = slack_cfg.get("notify_channel", "")
         if not target:
-            console.print(
-                "[yellow]Skipping test message \u2014 no notify_channel set.[/]"
-            )
+            console.print("[yellow]Skipping test message \u2014 no notify_channel set.[/]")
         elif token:
             with console.status("Sending test message..."):
                 sent = _slack_send_message(
-                    token, target,
+                    token,
+                    target,
                     f"Enso v{__version__} ready.",
                 )
             if sent:
-                console.print(
-                    f"[green]\u2713[/] Test message sent to {target}."
-                )
+                console.print(f"[green]\u2713[/] Test message sent to {target}.")
             else:
                 console.print(
                     f"[yellow]Failed to send test message to {target}."
@@ -1192,9 +1279,7 @@ def setup() -> None:
             _service_install(config)
             installed = True
     else:
-        console.print(
-            f"[yellow]  Auto service not supported on {sys.platform}.[/]"
-        )
+        console.print(f"[yellow]  Auto service not supported on {sys.platform}.[/]")
 
     # Summary
     summary = Table(show_header=False, box=None, padding=(0, 2))
@@ -1207,9 +1292,14 @@ def setup() -> None:
         summary.add_row("Logs", "tail -f ~/.enso/enso.log")
     else:
         summary.add_row("Run", "enso serve")
-    console.print(Panel(
-        summary, title="Setup Complete", border_style="green", expand=False,
-    ))
+    console.print(
+        Panel(
+            summary,
+            title="Setup Complete",
+            border_style="green",
+            expand=False,
+        )
+    )
 
 
 def _load_transport(name: str, runtime) -> BaseTransport:
@@ -1302,7 +1392,7 @@ def serve(
 
     runtime = Runtime(config)
     runtime.install_system_prompts()
-    runtime.install_teams_workspaces()
+    runtime.install_workspaces()
     runtime.load_state()
 
     log.info("Starting Enso v%s", __version__)
@@ -1367,6 +1457,7 @@ def web(
 # Job subcommands
 # ---------------------------------------------------------------------------
 
+
 @job_app.command("list")
 def job_list() -> None:
     """List all configured jobs."""
@@ -1379,10 +1470,20 @@ def job_list() -> None:
     table.add_column("Schedule")
     table.add_column("Provider")
     table.add_column("Model")
+    table.add_column("Workspace")
+    table.add_column("Access")
     table.add_column("Enabled")
     for job in jobs:
         enabled = "[green]\u2713[/]" if job.enabled else "[red]\u2717[/]"
-        table.add_row(job.dir_name, job.schedule, job.provider, job.model, enabled)
+        table.add_row(
+            job.dir_name,
+            job.schedule,
+            job.provider,
+            job.model,
+            job.workspace,
+            job.access,
+            enabled,
+        )
     console.print(table)
 
 
@@ -1394,6 +1495,12 @@ def job_create(
         str, typer.Option("--model", help="Model name (e.g. sonnet, sol, terra, luna)")
     ],
     schedule: Annotated[str, typer.Option("--schedule", help="Cron expression (e.g. '0 9 * * *')")],
+    workspace: Annotated[
+        str, typer.Option("--workspace", help="Named workspace where the provider runs")
+    ],
+    access: Annotated[
+        str, typer.Option("--access", help="Named access profile for the provider launch")
+    ],
 ) -> None:
     """Create a new background job. Edit the JOB.md to add the prompt and optional prerun."""
     dir_name = re.sub(r"[^\w]+", "-", name.casefold()).strip("-_")
@@ -1401,7 +1508,15 @@ def job_create(
         console.print("[red]Job name must contain at least one letter or number.[/]")
         raise typer.Exit(1)
     try:
-        job = create_job(dir_name, name, provider, model, schedule)
+        job = create_job(
+            dir_name,
+            name,
+            provider,
+            model,
+            schedule,
+            workspace=workspace,
+            access=access,
+        )
     except (FileExistsError, ValueError) as exc:
         console.print(f"[red]Could not create job:[/] {exc}")
         raise typer.Exit(1) from None
@@ -1442,6 +1557,7 @@ def job_run(
 # ---------------------------------------------------------------------------
 # Doc subcommands
 # ---------------------------------------------------------------------------
+
 
 @doc_app.command("list")
 def doc_list() -> None:
@@ -1490,6 +1606,7 @@ def doc_create(
 # Table subcommands
 # ---------------------------------------------------------------------------
 
+
 @table_app.command("list")
 def table_list() -> None:
     """List registered user data tables in ~/.enso/enso.db."""
@@ -1528,9 +1645,7 @@ def table_list() -> None:
 
 @table_app.command("register")
 def table_register(
-    table_name: Annotated[
-        str, typer.Argument(help="Existing SQLite table name")
-    ],
+    table_name: Annotated[str, typer.Argument(help="Existing SQLite table name")],
     description: Annotated[
         str, typer.Option("--description", "-d", help="What the table contains and when to use it")
     ],
@@ -1573,9 +1688,7 @@ def table_schema(
         constraints: list[str] = []
         if column.primary_key:
             constraints.append(
-                "PRIMARY KEY"
-                if column.primary_key == 1
-                else f"PRIMARY KEY {column.primary_key}"
+                "PRIMARY KEY" if column.primary_key == 1 else f"PRIMARY KEY {column.primary_key}"
             )
         if column.not_null:
             constraints.append("NOT NULL")
@@ -1599,17 +1712,19 @@ def table_schema(
 # Message subcommands
 # ---------------------------------------------------------------------------
 
+
 @message_app.command("send")
 def message_send(
     text: Annotated[str, typer.Argument(help="Message text to send")],
     to: Annotated[
         str,
         typer.Option(
-            "--to", "-t",
+            "--to",
+            "-t",
             help=(
                 "Destination. Slack: channel/DM/user ID (required if no"
-                " notify_channel). Telegram: user ID; omit to broadcast to"
-                " all allowed_users."
+                " notify_channel). Telegram: chat ID; omit to use the current"
+                " chat or notify_channel."
             ),
         ),
     ] = "",
@@ -1620,17 +1735,12 @@ def message_send(
 
     if transport == "slack":
         if not _slack_send_message(token, targets[0], text[:40000], thread_ts):
-            console.print(
-                f"[red]\u2717[/] Failed to send to {targets[0]}."
-            )
+            console.print(f"[red]\u2717[/] Failed to send to {targets[0]}.")
             raise typer.Exit(1)
     else:
         for uid in targets:
             if not _tg_send_message(token, uid, text[:4096]):
-                console.print(
-                    f"[red]\u2717[/] Failed to send to"
-                    f" user {uid}."
-                )
+                console.print(f"[red]\u2717[/] Failed to send to user {uid}.")
                 raise typer.Exit(1)
 
     msg_send(text, source="notify")
@@ -1652,7 +1762,6 @@ def message_list() -> None:
         console.print(f"  {text[:200]}{'...' if len(text) > 200 else ''}\n")
 
 
-
 @message_app.command("attach")
 def message_attach(
     file: Annotated[str, typer.Argument(help="Path to file to send")],
@@ -1660,11 +1769,12 @@ def message_attach(
     to: Annotated[
         str,
         typer.Option(
-            "--to", "-t",
+            "--to",
+            "-t",
             help=(
                 "Destination. Slack: channel/DM/user ID (required if no"
-                " notify_channel). Telegram: user ID; omit to broadcast to"
-                " all allowed_users."
+                " notify_channel). Telegram: chat ID; omit to use the current"
+                " chat or notify_channel."
             ),
         ),
     ] = "",
@@ -1727,6 +1837,7 @@ def message_clear() -> None:
 # ---------------------------------------------------------------------------
 # Service subcommands
 # ---------------------------------------------------------------------------
+
 
 @service_app.command("status")
 def service_status() -> None:
@@ -1793,12 +1904,8 @@ def service_restart_cmd() -> None:
 
 @service_app.command("logs")
 def service_logs_cmd(
-    follow: Annotated[
-        bool, typer.Option("--follow", "-f", help="Follow log output")
-    ] = False,
-    lines: Annotated[
-        int, typer.Option("--lines", "-n", help="Number of lines")
-    ] = 25,
+    follow: Annotated[bool, typer.Option("--follow", "-f", help="Follow log output")] = False,
+    lines: Annotated[int, typer.Option("--lines", "-n", help="Number of lines")] = 25,
 ) -> None:
     """Show service logs."""
     log_path = os.path.expanduser("~/.enso/enso.log")
@@ -1824,15 +1931,14 @@ def service_logs_cmd(
 # Slack subcommands (directory cache + message search)
 # ---------------------------------------------------------------------------
 
+
 def _slack_token_or_exit() -> str:
     """Load the Slack bot token or exit with a clear error."""
     cfg = load_config()
     slack_cfg = cfg.get("transports", {}).get("slack", {})
     token = _resolve_transport_secret_or_exit(slack_cfg, "bot_token", "Slack")
     if not token:
-        console.print(
-            "[red]\u2717[/] Slack not configured. Run [bold]enso setup[/]."
-        )
+        console.print("[red]\u2717[/] Slack not configured. Run [bold]enso setup[/].")
         raise typer.Exit(1)
     return token
 
@@ -1923,8 +2029,7 @@ def slack_open_dm(
             raise typer.Exit(1)
         if len(matches) > 1:
             console.print(
-                f"Ambiguous '{user}' \u2014 {len(matches)} matches. "
-                "Use --user with a specific ID:"
+                f"Ambiguous '{user}' \u2014 {len(matches)} matches. Use --user with a specific ID:"
             )
             for u in matches:
                 console.print(_fmt_user(u))
@@ -1990,10 +2095,16 @@ def slack_search(
 ) -> None:
     """Search Slack messages across accessible channels."""
     token = _slack_token_or_exit()
-    data = slack_cache.api_post(token, "search.messages", {
-        "query": query, "count": count,
-        "sort": "timestamp", "sort_dir": "desc",
-    })
+    data = slack_cache.api_post(
+        token,
+        "search.messages",
+        {
+            "query": query,
+            "count": count,
+            "sort": "timestamp",
+            "sort_dir": "desc",
+        },
+    )
     if not data.get("ok"):
         console.print(f"[red]\u2717[/] search.messages: {data.get('error', '?')}")
         raise typer.Exit(1)
@@ -2022,7 +2133,8 @@ def slack_history(
     """Fetch recent messages from a channel."""
     token = _slack_token_or_exit()
     data = slack_cache.api_get(
-        token, "conversations.history",
+        token,
+        "conversations.history",
         {"channel": channel, "limit": str(count)},
     )
     if not data.get("ok"):
@@ -2047,7 +2159,8 @@ def slack_thread(
     """Fetch every message in a thread."""
     token = _slack_token_or_exit()
     data = slack_cache.api_get(
-        token, "conversations.replies",
+        token,
+        "conversations.replies",
         {"channel": channel, "ts": thread_ts, "limit": "100"},
     )
     if not data.get("ok"):
@@ -2066,31 +2179,26 @@ def slack_thread(
 # App setup
 # ---------------------------------------------------------------------------
 
-# -- Teams: policy / route / audit --
+# -- Routed configuration / route / audit --
 
 
-@policy_app.command("check")
-def policy_check() -> None:
-    """Validate Slack routes, workspaces, and native access profiles."""
+@config_app.command("check")
+def config_check() -> None:
+    """Validate execution bindings and native-policy launch plumbing."""
     from .policy import check_provider
-    from .teams import load_teams
+    from .teams import load_catalog, load_teams
 
     config = load_config()
-    teams = load_teams(config)
-    if teams is None:
-        console.print("Teams mode is not configured (no routes.slack).")
-        return
+    catalog = load_catalog(config)
 
     failed = False
-    for error in teams.errors:
+    for error in catalog.errors:
         failed = True
         console.print(f"[red]✗[/] {error}")
-    if teams.errors:
-        console.print("[red]Slack teams dispatch is disabled until this is fixed.[/]")
 
-    for name, workspace in sorted(teams.workspaces.items()):
+    for name, workspace in sorted(catalog.workspaces.items()):
         console.print(f"\n[bold]Workspace {name}[/] — {workspace.path}")
-        for problem in teams.workspace_errors.get(name, ()):
+        for problem in catalog.workspace_errors.get(name, ()):
             failed = True
             console.print(f"  [red]✗[/] {problem}")
         expanded = os.path.expanduser(workspace.path)
@@ -2098,26 +2206,75 @@ def policy_check() -> None:
             failed = True
             console.print("  [red]✗[/] workspace path does not exist")
 
-    for name, access in sorted(teams.access_profiles.items()):
+    for name, access in sorted(catalog.access_profiles.items()):
         mode = "unrestricted" if access.unrestricted else "policy-controlled"
         console.print(f"\n[bold]Access {name}[/] ({mode})")
-        for problem in teams.access_errors.get(name, ()):
+        for problem in catalog.access_errors.get(name, ()):
             failed = True
             console.print(f"  [red]✗[/] {problem}")
 
-    checked: set[tuple[str, str]] = set()
-    routes = (*teams.dm_routes.values(), *teams.channel_routes.values())
-    for route in sorted(routes, key=lambda item: item.route_id):
-        pair = (route.workspace, route.access)
-        if pair in checked or not teams.route_usable(route):
-            continue
-        checked.add(pair)
-        workspace = teams.workspaces[route.workspace]
-        access = teams.access_profiles[route.access]
-        console.print(
-            f"\n[bold]{route.workspace} + {route.access}[/] native launch"
+    pairs: dict[tuple[str, str], set[str]] = {}
+    routes_cfg = config.get("routes")
+    has_slack_routes = isinstance(routes_cfg, dict) and "slack" in routes_cfg
+    transports_cfg = config.get("transports", {})
+    has_slack_config = isinstance(transports_cfg, dict) and "slack" in transports_cfg
+    if config.get("transport") == "slack" or has_slack_routes or has_slack_config:
+        teams = load_teams(config)
+        for error in teams.errors:
+            if error not in catalog.errors:
+                failed = True
+                console.print(f"[red]✗[/] {error}")
+        if teams.errors:
+            console.print("[red]Slack dispatch is disabled until this is fixed.[/]")
+        routes = (*teams.dm_routes.values(), *teams.channel_routes.values())
+        for route in sorted(routes, key=lambda item: item.route_id):
+            if teams.route_usable(route):
+                key = (route.workspace, route.access)
+                pairs.setdefault(key, set()).update(teams.access_profiles[route.access].providers)
+        for route_id, problems in sorted(teams.route_errors.items()):
+            failed = True
+            for problem in problems:
+                console.print(f"[red]✗[/] {route_id}: {problem}")
+
+    has_telegram_config = isinstance(transports_cfg, dict) and "telegram" in transports_cfg
+    if config.get("transport") == "telegram" or has_telegram_config:
+        tg_cfg = transports_cfg.get("telegram", {}) if isinstance(transports_cfg, dict) else {}
+        raw_users = tg_cfg.get("allowed_users") if isinstance(tg_cfg, dict) else None
+        if not isinstance(tg_cfg, dict) or "allowed_user_ids" in tg_cfg:
+            failed = True
+            console.print(
+                "[red]✗[/] transports.telegram.allowed_user_ids is no longer supported;"
+                " use allowed_users with exact numeric string IDs"
+            )
+        invalid_users = (
+            not isinstance(raw_users, list)
+            or not raw_users
+            or _tg_allowed_users(tg_cfg) != raw_users
         )
-        for provider in access.providers:
+        if invalid_users:
+            failed = True
+            console.print(
+                "[red]✗[/] transports.telegram.allowed_users must be a non-empty"
+                " list of unique exact numeric string IDs"
+            )
+
+    jobs, job_errors = load_jobs_with_errors(config)
+    for name, problems in sorted(job_errors.items()):
+        failed = True
+        for problem in problems:
+            console.print(f"[red]✗[/] jobs.{name}: {problem}")
+    for job in jobs:
+        if job.dir_name in job_errors:
+            continue
+        key = (job.workspace, job.access)
+        if catalog.usable(*key):
+            pairs.setdefault(key, set()).add(job.provider)
+
+    for (workspace_name, access_name), providers in sorted(pairs.items()):
+        workspace = catalog.workspaces[workspace_name]
+        access = catalog.access_profiles[access_name]
+        console.print(f"\n[bold]{workspace_name} + {access_name}[/] native launch")
+        for provider in sorted(providers):
             check = check_provider(workspace, access, provider)
             if check.ok:
                 revision = (check.policy_revision or "")[:12]
@@ -2129,11 +2286,6 @@ def policy_check() -> None:
                 for problem in check.problems:
                     console.print(f"  [red]✗[/] {provider}: {problem}")
 
-    for route_id, problems in sorted(teams.route_errors.items()):
-        failed = True
-        for problem in problems:
-            console.print(f"[red]✗[/] {route_id}: {problem}")
-
     if failed:
         raise typer.Exit(1)
     console.print("\n[green]All checks passed.[/]")
@@ -2143,9 +2295,7 @@ def policy_check() -> None:
 def route_explain(
     transport: Annotated[str, typer.Argument(help="Transport (only 'slack')")],
     user_id: Annotated[str, typer.Argument(help="Slack user ID, e.g. U012ABC")],
-    channel_id: Annotated[
-        str | None, typer.Argument(help="Channel ID; omit for a DM")
-    ] = None,
+    channel_id: Annotated[str | None, typer.Argument(help="Channel ID; omit for a DM")] = None,
 ) -> None:
     """Explain how a Slack sender/location pair would resolve."""
     from .teams import load_teams, resolve
@@ -2154,9 +2304,6 @@ def route_explain(
         console.print("[red]✗[/] Only 'slack' has teams routing.")
         raise typer.Exit(1)
     teams = load_teams(load_config())
-    if teams is None:
-        console.print("Teams mode is not configured (no routes.slack).")
-        raise typer.Exit(1)
 
     console.print(f"Account: {teams.account_id}")
     decision = resolve(teams, user_id=user_id, channel_id=channel_id)
@@ -2168,8 +2315,9 @@ def route_explain(
         console.print(f"Access: {route.access}")
         console.print(f"Audit: {'on' if route.audit else 'off'}")
     if not teams.dispatchable:
-        console.print("[red]Teams dispatch is disabled by config errors "
-                      "(see 'enso policy check').[/]")
+        console.print(
+            "[red]Teams dispatch is disabled by config errors (see 'enso config check').[/]"
+        )
 
 
 @audit_app.command("tail")

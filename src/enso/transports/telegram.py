@@ -27,7 +27,7 @@ except ImportError:
         "Install it with: pip install enso[telegram]"
     ) from None
 
-from ..auth import is_authorized
+from ..auth import is_authorized, parse_telegram_allowed_users
 from ..commands import (
     cmd_clear,
     cmd_compact_async,
@@ -55,6 +55,17 @@ log = logging.getLogger(__name__)
 def _is_parse_error(exc: BadRequest) -> bool:
     """Return True when Telegram rejected HTML formatting rather than delivery."""
     return "parse entities" in str(exc).lower()
+
+
+def _allowed_users(config: dict[str, Any]) -> list[str]:
+    """Return valid, exact Telegram user IDs or fail closed."""
+    users = parse_telegram_allowed_users(config)
+    if not users:
+        log.error(
+            "Telegram allowed_users must be a non-empty list of unique positive "
+            "numeric strings; allowed_user_ids is not supported"
+        )
+    return users
 
 
 # Commands registered with Telegram's menu UI.
@@ -155,9 +166,8 @@ class TelegramTransport(BaseTransport):
         self.runtime = runtime
         tg_cfg = runtime.config.get("transports", {}).get("telegram", {})
         self.bot_token = resolve_config_secret(tg_cfg, "bot_token")
-        # Backward compat: read allowed_users (str list) or allowed_user_ids (int list)
-        raw = tg_cfg.get("allowed_users") or tg_cfg.get("allowed_user_ids", [])
-        self.allowed_users: list[str] = [str(u) for u in raw]
+        self.allowed_users = _allowed_users(tg_cfg)
+        self.notify_channel = str(tg_cfg.get("notify_channel", "") or "")
         self._bot: Any = None
 
     def _is_authorized(self, update: Update) -> bool:
@@ -173,7 +183,8 @@ class TelegramTransport(BaseTransport):
         if chat is None or chat.type != "private":
             log.warning(
                 "Rejected non-private Telegram chat type=%s chat=%s",
-                getattr(chat, "type", None), getattr(chat, "id", None),
+                getattr(chat, "type", None),
+                getattr(chat, "id", None),
             )
             return False
         if not is_authorized(str(user.id), self.allowed_users):
@@ -207,15 +218,17 @@ class TelegramTransport(BaseTransport):
         app.add_handler(CallbackQueryHandler(self._handle_callback))
 
         # Plain text → agent prompt
-        app.add_handler(
-            MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message)
-        )
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message))
 
         # File uploads
         app.add_handler(
             MessageHandler(
-                filters.Document.ALL | filters.PHOTO | filters.AUDIO
-                | filters.VOICE | filters.VIDEO | filters.VIDEO_NOTE,
+                filters.Document.ALL
+                | filters.PHOTO
+                | filters.AUDIO
+                | filters.VOICE
+                | filters.VIDEO
+                | filters.VIDEO_NOTE,
                 self._handle_file_message,
             )
         )
@@ -229,36 +242,37 @@ class TelegramTransport(BaseTransport):
 
     async def _send_update_confirmation(self, pending: dict, text: str) -> bool:
         await self._bot.send_message(
-            chat_id=pending.get("channel", ""), text=text,
+            chat_id=pending.get("channel", ""),
+            text=text,
         )
         return True
 
     async def notify(self, text: str, *, destination: str | None = None) -> None:
-        """Send a one-way notification.
-
-        If ``destination`` is given, sends only to that user ID. Otherwise
-        broadcasts to every configured ``allowed_users`` entry.
-        """
+        """Send a one-way notification to one explicit or configured target."""
+        target = destination or self.notify_channel
+        if not target:
+            log.warning("Telegram notify dropped — no destination passed and no notify_channel set")
+            return
         if not self._bot:
             log.warning("Cannot notify — bot not initialized yet")
             return
         html = md_to_html(text[:4096])
-        targets = [destination] if destination else list(self.allowed_users)
-        for user_id in targets:
+        try:
+            await self._bot.send_message(
+                chat_id=target,
+                text=html,
+                parse_mode=ParseMode.HTML,
+            )
+        except BadRequest as exc:
+            if not _is_parse_error(exc):
+                log.exception("Failed to notify Telegram destination %s", target)
+                return
             try:
-                await self._bot.send_message(
-                    chat_id=user_id, text=html, parse_mode=ParseMode.HTML,
-                )
-            except BadRequest as exc:
-                if not _is_parse_error(exc):
-                    log.exception("Failed to notify user %s", user_id)
-                    continue
-                try:
-                    await self._bot.send_message(chat_id=user_id, text=text[:4096])
-                except Exception:
-                    log.exception("Failed to notify user %s", user_id)
+                await self._bot.send_message(chat_id=target, text=text[:4096])
             except Exception:
-                log.exception("Failed to notify user %s", user_id)
+                log.exception("Failed to notify Telegram destination %s", target)
+        except Exception:
+            log.exception("Failed to notify Telegram destination %s", target)
 
     # -- Message handling --
 
@@ -351,7 +365,9 @@ class TelegramTransport(BaseTransport):
         await self._show_queue(update, conv_id)
 
     async def _show_queue(
-        self, update_or_query: Any, conv_id: str,
+        self,
+        update_or_query: Any,
+        conv_id: str,
     ) -> None:
         """Render the queue view (used by /queue command and callbacks)."""
         previews = self.runtime.get_queue(conv_id)
@@ -370,22 +386,27 @@ class TelegramTransport(BaseTransport):
 
         remove_buttons = [
             InlineKeyboardButton(
-                f"\u2715 {i + 1}", callback_data=f"queue:rm:{i}",
+                f"\u2715 {i + 1}",
+                callback_data=f"queue:rm:{i}",
             )
             for i in range(len(previews))
         ]
-        keyboard = InlineKeyboardMarkup([
-            remove_buttons,
-            [InlineKeyboardButton("Clear all", callback_data="queue:clear")],
-        ])
+        keyboard = InlineKeyboardMarkup(
+            [
+                remove_buttons,
+                [InlineKeyboardButton("Clear all", callback_data="queue:clear")],
+            ]
+        )
 
         if hasattr(update_or_query, "edit_message_text"):
             await update_or_query.edit_message_text(
-                "\n".join(lines), reply_markup=keyboard,
+                "\n".join(lines),
+                reply_markup=keyboard,
             )
         else:
             await update_or_query.message.reply_text(
-                "\n".join(lines), reply_markup=keyboard,
+                "\n".join(lines),
+                reply_markup=keyboard,
             )
 
     async def _cmd_use(self, update: Update, _ctx: Any) -> None:
@@ -457,7 +478,8 @@ class TelegramTransport(BaseTransport):
             return
 
         model = self.runtime.get_active_model(
-            conv_id, self.runtime.get_active_provider(conv_id),
+            conv_id,
+            self.runtime.get_active_provider(conv_id),
         )
         buttons = [
             InlineKeyboardButton(
@@ -467,9 +489,11 @@ class TelegramTransport(BaseTransport):
             for name, active in options
         ]
         keyboard = [[b] for b in buttons]
-        keyboard.append([
-            InlineKeyboardButton("Use default", callback_data="effort:default"),
-        ])
+        keyboard.append(
+            [
+                InlineKeyboardButton("Use default", callback_data="effort:default"),
+            ]
+        )
         await update.message.reply_text(
             f"Set effort ({model}):",
             reply_markup=InlineKeyboardMarkup(keyboard),
@@ -489,12 +513,14 @@ class TelegramTransport(BaseTransport):
 
         # No args → show options
         active = self.runtime.get_active_provider(conv_id)
-        keyboard = InlineKeyboardMarkup([
+        keyboard = InlineKeyboardMarkup(
             [
-                InlineKeyboardButton(f"Clear {active}", callback_data="clear:current"),
-                InlineKeyboardButton("Clear all", callback_data="clear:all"),
-            ],
-        ])
+                [
+                    InlineKeyboardButton(f"Clear {active}", callback_data="clear:current"),
+                    InlineKeyboardButton("Clear all", callback_data="clear:all"),
+                ],
+            ]
+        )
         await update.message.reply_text("Clear session:", reply_markup=keyboard)
 
     async def _cmd_compact(self, update: Update, _ctx: Any) -> None:
@@ -511,9 +537,7 @@ class TelegramTransport(BaseTransport):
     async def _cmd_update(self, update: Update, _ctx: Any) -> None:
         if not self._is_authorized(update):
             return
-        status = await update.message.reply_text(
-            "Checking the latest stable Enso release…"
-        )
+        status = await update.message.reply_text("Checking the latest stable Enso release…")
         result = await cmd_update_async(self.runtime)
         await status.edit_text(result.message)
         if result.restart_required:
@@ -584,8 +608,7 @@ class TelegramTransport(BaseTransport):
             if action == "clear":
                 count = await rt.clear_queue(conv_id)
                 await query.edit_message_text(
-                    f"Cleared {count} queued message(s)."
-                    if count else "Queue already empty."
+                    f"Cleared {count} queued message(s)." if count else "Queue already empty."
                 )
             elif action.startswith("rm:"):
                 idx = int(action.split(":")[1])

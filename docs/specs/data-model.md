@@ -20,7 +20,7 @@ whose value comes from filtering, joining, and aggregation.
 ├── update.json          # updater-owned metadata (installed revision, pending confirmation)
 ├── slack-app-manifest.yaml  # copy of the bundled Slack app manifest (written by `enso setup`)
 ├── enso.log             # service log
-├── enso.db              # SQLite: run history plus registered user data tables
+├── enso.db              # SQLite: runs, route audit, Slack delivery ledger, and registered user tables
 ├── cache/
 │   └── slack.json       # Slack name↔ID directory cache (`enso slack`)
 ├── secrets/             # *.env files loaded into the `enso serve` environment at
@@ -30,13 +30,13 @@ whose value comes from filtering, joining, and aggregation.
 │   ├── homelab.md       #   Markdown + frontmatter; identity is the relative path.
 │   └── stuff/sub_stuff.md   #   See [docs.md](docs.md)
 ├── jobs/                # user jobs
-│   └── <name>/JOB.md    # plus a .run.lock twin while a run is in flight
+│   └── <name>/          # JOB.md plus a persistent .run.lock coordination file
 ├── runs/                # captured output, one file per run
 │   └── <run_id>.log
-├── skills/              # Enso-owned legacy/global skills (editable via UI)
+├── skills/              # Enso-owned skills (editable via UI)
 │   └── .deleted/        # deletion markers preventing bundled skills from being reseeded
-├── workspace/           # global working_dir for jobs, Telegram, and legacy Slack
-├── workspaces/          # optional Slack teams workspaces; each owns native project files
+├── workspace/           # global working_dir for private Telegram interaction
+├── workspaces/          # named content roots used by Slack routes and every job
 │   ├── company/
 │   └── clients/<name>/
 └── policies/            # protected native policies, keyed by access profile
@@ -158,6 +158,8 @@ file in the same process can release that process's POSIX record locks.
 
 ## Runs
 
+Run history records scheduled and manual job executions only. Interactive Slack and Telegram turns are not `runs`; optional Slack route auditing uses `_enso_audit` instead. A parsed job that fails provider/model, workspace/access, or native-policy validation creates a terminal error run before any prerun or provider process starts. A job file that cannot be parsed or lacks required frontmatter is reported by `enso config check` and skipped, so it creates no run. Intentional prerun no-work also creates no run.
+
 ```sql
 CREATE TABLE IF NOT EXISTS runs (
     id           TEXT PRIMARY KEY,      -- uuid4 hex; also the log filename
@@ -194,8 +196,9 @@ path to the full log.
 
 1. **create** (`runs.create`) before provider spawn: insert a row with a fresh `id`,
    `status='running'`, pipeline `started_at`, `trigger`, `provider`, and `model`. Failed
-   preruns create the row when classified while preserving the earlier gate start time;
-   intentional no-work creates no row. Returns the `id`; output uses `runs/<id>.log`.
+   preruns and invalid job bindings create the row when classified while preserving the
+   earlier pipeline start time; intentional no-work creates no row. Returns the `id`;
+   output uses `runs/<id>.log`.
 1. **finish** (`runs.finish`) at exit: set `ended_at`, `duration_ms`, `exit_code`, and a
    terminal `status` — `ok` (exit 0), `error` (nonzero), `timeout` (killed by the job
    budget), `prerun_error`, or `prerun_timeout`. Intentional prerun no-work (`exit 1`)
@@ -302,9 +305,11 @@ Notes:
   block when an explicit `runs` value does not already take precedence, then remove the
   obsolete `tasks` block.
 
-## Slack teams mode
+## Execution catalog and Slack routes
 
-Slack teams mode adds exact Slack routes without replacing the legacy global `working_dir`. A route selects one named workspace and one named access profile. See [teams.md](teams.md) for behavior and [permissions.md](permissions.md) for provider launches.
+The top-level `workspaces` and `access` blocks form a transport-independent execution catalog. Every job selects one entry from each block. Slack additionally requires `routes.slack`, where every exact DM user or channel selects the same pair. Telegram interaction remains private and uses its global `working_dir`; Telegram jobs still use the catalog.
+
+See [teams.md](teams.md) for route behavior and [permissions.md](permissions.md) for provider launches.
 
 ### Filesystem layout
 
@@ -312,11 +317,11 @@ A practical installation may use:
 
 ```text
 ~/.enso/
-├── workspace/                         # legacy working_dir; jobs, Telegram, legacy Slack
+├── workspace/                         # private Telegram working_dir
 ├── workspaces/
-│   ├── company/                       # AGENTS/CLAUDE + .agents/.claude skills
+│   ├── company/                       # shared content root and provider cwd
 │   └── clients/
-│       ├── acme/                      # client-safe knowledge + native skills
+│       ├── acme/                      # project content + native instructions/skills
 │       └── globex/
 └── policies/
     ├── staff/
@@ -327,17 +332,17 @@ A practical installation may use:
         └── codex/{config.toml,rules/*.rules}
 ```
 
-A workspace is a provider cwd and content boundary. It contains project knowledge, `AGENTS.md`/`CLAUDE.md`, and provider-native `.agents/skills/` and `.claude/skills/` directories. The CLIs may additionally load their native user, managed, plugin, system, or bundled skill scopes; project placement is not an allowlist. When a named teams workspace is missing its instruction file, Enso seeds a small `AGENTS.md` plus a `CLAUDE.md` symlink but does not add global skill links. A path that is also the legacy global `working_dir` may retain the legacy installer's existing global skill links.
+A workspace is a shared content root and provider cwd, not a security boundary. It may contain project knowledge, `AGENTS.md`/`CLAUDE.md`, and provider-native `.agents/skills/` and `.claude/skills/` directories. The CLIs may additionally load native user, managed, plugin, system, or bundled skill scopes; project placement is not an allowlist. When a named workspace is missing its instruction file, Enso seeds a small `AGENTS.md` plus a `CLAUDE.md` symlink but does not add global skill links.
 
-A policy directory belongs to an access profile and stays outside all writable workspaces and the legacy `working_dir`. This separation lets one profile serve several project directories. Paths are expanded and canonicalized before topology checks or child-process use. Workspaces may live at normalized operator-chosen paths, but configured workspace roots must not overlap each other; policy paths must not overlap any workspace. Aliases and hard links must not provide a writable path back to protected policy bytes.
+A policy directory belongs to an access profile and stays outside all writable workspaces and Telegram's global `working_dir`. This separation lets one profile serve several project directories. Paths are expanded and canonicalized before topology checks or child-process use. Workspaces may live at normalized operator-chosen paths, but configured workspace roots must not overlap each other; policy paths must not overlap any workspace. Aliases and hard links must not provide a writable path back to protected policy bytes.
 
 Enso does not initialize `~/.enso` as a Git repository. Instruction discovery follows each provider's native behavior from the route's starting cwd. A company workspace that can access sibling client directories should explicitly tell the agent to read the selected client's protected instructions rather than relying on implicit discovery after changing directories.
 
-An attachment-bearing turn gets a unique `uploads/<random-id>/` directory within its resolved workspace. Enso config, secrets, policies, database, jobs, and provider credentials are not linked into restricted workspaces.
+An attachment-bearing Slack turn gets a unique `uploads/<random-id>/` directory within its resolved workspace. These files persist until the operator removes them; Enso does not treat uploads as temporary or apply automatic retention. Telegram instead stores downloads directly in `uploads/` under its global `working_dir`. Enso config, secrets, policies, database, jobs, and provider credentials are not linked into restricted workspaces.
 
 ### Configuration
 
-Three top-level blocks participate. The presence of `routes.slack` enables teams mode.
+The catalogs are parsed independently of Slack. `routes.slack` is additionally required when Slack is the active transport.
 
 ```jsonc
 {
@@ -370,6 +375,12 @@ Three top-level blocks participate. The presence of `routes.slack` enables teams
       "providers": ["claude"],
       "default_provider": "claude",
       "chat_commands": ["status", "clear", "stop", "help"]
+    },
+    "automation": {
+      "policy_dir": "~/.enso/policies/automation",
+      "providers": ["claude", "codex"],
+      "default_provider": "claude",
+      "chat_commands": []
     }
   },
 
@@ -408,27 +419,46 @@ Three top-level blocks participate. The presence of `routes.slack` enables teams
 Schema rules:
 
 - `workspaces.<name>.path` is required and resolves to an absolute directory. `concurrency` is a positive integer and defaults to `1`. Workspaces do not contain provider, command, skill, or permission settings.
-- `access.<name>` requires a non-empty `providers` list and a `default_provider` from that list. `chat_commands` is either a unique list or the explicit string `"*"`; omission means none.
+- `access.<name>` requires a non-empty `providers` list and a `default_provider` from that list. `chat_commands` is either a unique list or the explicit string `"*"`; omission means none. It governs Enso chat commands only, not provider-native tools, slash commands, skills, plugins, hooks, or MCP servers.
 - An access profile uses exactly one mode: explicit `unrestricted: true`, or native policy files under `policy_dir`. For a restricted profile the directory defaults to `~/.enso/policies/<access-name>`. Unrestricted mode does not imply providers or commands.
 - `routes.slack.account_id` must match the Slack account returned by the configured credentials.
 - `routes.slack.dms` is keyed by exact Slack user ID. `routes.slack.channels` is keyed by exact channel ID. There are no named DM rules, groups, allowlists, defaults, or wildcards. An unrouted explicit contact receives only the fixed transport-level access response; it does not create an implicit route.
 - Every route requires a known `workspace` and `access`. `audit` is optional and defaults to `false`.
 - A missing workspace, access profile, provider, or native policy is an error. Nothing falls back to `working_dir`, another profile, or unrestricted execution.
-- Config is loaded and validated at service startup. Changes take effect only after restart; invalid security config is never replaced with defaults.
+- `config.json` is loaded at service startup. Slack loads and validates its route catalog then; jobs are loaded from disk on scheduler ticks and manual runs and revalidated before execution. `config.json` changes take effect only after restart, and invalid bindings never receive permissive defaults.
 
 Several routes may select the same workspace with different access profiles. Their files and workspace concurrency are shared, but their sessions, provider choices, queues, and chat commands remain scoped to each Slack conversation.
 
-### Compatibility and migration
+### Job bindings
 
-Without `routes.slack`, Slack retains its legacy `transports.slack.allowed_users` and `working_dir` behavior. `routes.slack` and the legacy Slack allowlist are mutually exclusive. Telegram always retains its own user allowlist and the global `working_dir`.
+Every `~/.enso/jobs/<name>/JOB.md` requires `workspace` and `access` names in addition to `provider` and `model`:
 
-Configurations from the earlier teams branch are rejected when they contain `groups`, route `allow`, route `context_from`, or access fields inside a workspace. Operators migrate them by creating explicit `access` profiles, adding `access` to every route, keying each DM by a Slack user ID, and removing groups and route allowlists. Enso never synthesizes a route because doing so grants access.
+```yaml
+workspace: company
+access: automation
+```
 
-Scheduled jobs are independent of this migration. They continue to run from the global `working_dir` with their existing provider, model, prerun, notification, lock, and history behavior.
+The job's provider and model remain authoritative. The access profile must allow that provider. The provider process uses the named workspace as cwd, receives the profile's native policy, and participates in the workspace's process-local concurrency semaphore. Once a job is parsed, an unknown, incomplete, or unsafe binding creates an error run and notifies through the normal job failure path before prerun or provider execution. A missing required frontmatter field prevents the job from loading, is reported by `enso config check`, and creates no run or notification. There is no global or unrestricted fallback.
+
+An optional prerun script is trusted host-side code, invoked through Bash with the job directory as cwd. It deliberately remains outside the provider native policy. Prerun output may be injected into the prompt, so the resulting data is still untrusted input to the provider.
+
+The `.run.lock` file is a persistent lock target, not a temporary in-flight marker. Its advisory lock coordinates the scheduler, CLI, and dashboard across processes for the same job. Workspace semaphores are process-local and do not serialize separate Enso processes.
+
+Scheduled successes are silent unless the prompt explicitly calls `enso message send`. Host-side failure and prerun-recovery alerts use the job's `notify` destination or the configured transport `notify_channel`, independently of Slack routes. `enso job run` suppresses those automatic alerts but cannot suppress a message explicitly sent by the provider process.
+
+### Transport authorization and migration
+
+Slack always requires `routes.slack`; `transports.slack.allowed_users` is invalid. Routes are never synthesized because creating one grants access. Each authorized DM user and channel must be migrated to an exact route selecting a known workspace and access profile.
+
+Slack outbound delivery resolves an explicit destination, then an interactive origin, then `transports.slack.notify_channel`. It is not inferred from an inbound route and never broadcasts.
+
+Telegram always uses exact numeric strings under `transports.telegram.allowed_users` and accepts private chats only. `allowed_user_ids` and the `"*"` wildcard are invalid. Telegram outbound delivery resolves an explicit destination, then an interactive origin, then `transports.telegram.notify_channel`; it never broadcasts to the allowlist.
+
+Configurations from the earlier teams branch are rejected when they contain `groups`, route `allow`, route `context_from`, or access fields inside a workspace. Operators migrate them by creating explicit `access` profiles, adding `access` to every route and job, keying each DM by a Slack user ID, and removing groups and route allowlists.
 
 ### Slack delivery ledger
 
-Teams mode keeps a small metadata-only ledger to suppress duplicate Slack retries independently of optional auditing:
+Slack routing keeps a small metadata-only ledger to suppress duplicate Slack retries independently of optional auditing:
 
 ```sql
 CREATE TABLE IF NOT EXISTS _enso_slack_events (
@@ -442,13 +472,13 @@ CREATE TABLE IF NOT EXISTS _enso_slack_events (
 );
 ```
 
-The delivery ID is an opaque digest derived from the authenticated Slack account, channel, and canonical source-message timestamp. A duplicate is acknowledged without another provider run or response. This includes unrouted DMs and explicit channel mentions, whose fixed access response is therefore sent at most once. The ledger contains no message text. Pending claims left by a service crash are closed during startup rather than replayed automatically.
+The delivery ID is an opaque digest derived from the authenticated Slack account, channel, and canonical source-message timestamp. A duplicate is acknowledged without another provider run or response. This includes unrouted DMs and explicit channel mentions, whose fixed access response is therefore sent at most once. The ledger contains no message text. Pending claims left by a service crash are closed during startup rather than replayed automatically. Rows older than seven days are pruned at service startup.
 
 ### Optional audit log
 
 A route with `audit: true` asks Enso to record its triggering message and terminal outcome. An unrouted DM or channel mention has no route and creates no audit row; its fixed response is represented only by the metadata-only delivery ledger. The audit store is operational evidence, not a complete transcript or security boundary. It excludes surrounding Slack context, attachments, status edits, reasoning, tool calls, native provider history, and unrelated outbound messages.
 
-The existing turn table is retained for database compatibility. New teams-mode rows associate the Slack delivery with its exact route, workspace, sender, provider, model, actual launch policy revision, request text, available final response, outcome, and delivery status. The two group columns remain in the table but are populated with empty values because the routing model no longer has groups. Access-profile identity is not duplicated in a new column; the exact route identifies the configured profile at the time, while retained historical configuration is an operator concern.
+The existing turn table is retained for database compatibility. New routed rows associate the Slack delivery with its exact route, workspace, sender, provider, model, actual launch policy revision, request text, available final response, outcome, and delivery status. The two group columns remain in the table but are populated with empty values because the routing model no longer has groups. Access-profile identity is not duplicated in a new column; the exact route identifies the configured profile at the time, while retained historical configuration is an operator concern.
 
 ```sql
 CREATE TABLE IF NOT EXISTS _enso_audit (

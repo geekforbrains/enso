@@ -14,9 +14,40 @@ from enso.jobs import (
     create_job,
     job_config_error,
     load_jobs,
+    load_jobs_with_errors,
     parse_job,
     schedule_error,
 )
+
+
+@pytest.fixture(autouse=True)
+def configured_job_catalog(tmp_enso):
+    workspace = Path(tmp_enso, "workspaces", "company")
+    workspace.mkdir(parents=True, exist_ok=True)
+    config = load_config()
+    config.update(
+        {
+            "workspaces": {"company": {"path": str(workspace)}},
+            "access": {
+                "automation": {
+                    "unrestricted": True,
+                    "providers": ["claude", "codex"],
+                    "default_provider": "claude",
+                    "chat_commands": [],
+                },
+            },
+        }
+    )
+    save_config(config)
+
+
+def _create_job(*args, **kwargs):
+    return create_job(
+        *args,
+        workspace="company",
+        access="automation",
+        **kwargs,
+    )
 
 
 def test_parse_job(tmp_path):
@@ -30,7 +61,8 @@ provider: claude
 model: sonnet
 enabled: true
 prerun: check.sh
-workspace: retired-routing-field
+workspace: company
+access: automation
 ---
 
 Do the thing. {{prerun_output}}
@@ -43,8 +75,27 @@ Do the thing. {{prerun_output}}
     assert job.model == "sonnet"
     assert job.enabled is True
     assert job.prerun == "check.sh"
-    assert not hasattr(job, "workspace")
+    assert job.workspace == "company"
+    assert job.access == "automation"
     assert "{{prerun_output}}" in job.prompt
+
+
+@pytest.mark.parametrize("missing", ["workspace", "access"])
+def test_parse_job_requires_execution_binding(tmp_path, missing):
+    """Every job declares both halves of its named execution binding."""
+    fields = {
+        "name": "Bound job",
+        "schedule": "0 9 * * *",
+        "provider": "claude",
+        "model": "sonnet",
+        "workspace": "company",
+        "access": "automation",
+    }
+    fields.pop(missing)
+    job_file = tmp_path / "JOB.md"
+    frontmatter.write(job_file, fields, "Do the thing.")
+
+    assert parse_job("bound", str(job_file)) is None
 
 
 def test_parse_job_disabled(tmp_path):
@@ -56,6 +107,8 @@ name: Disabled
 schedule: "0 0 * * *"
 provider: codex
 model: luna
+workspace: company
+access: automation
 enabled: false
 ---
 
@@ -75,6 +128,8 @@ name: Formatted
 schedule: "0 0 * * *"
 provider: claude
 model: sonnet
+workspace: company
+access: automation
 enabled : false  # temporarily paused
 catch_up: true  # run a missed invocation
 ---
@@ -111,11 +166,13 @@ def test_parse_job_bad_frontmatter(tmp_path):
 
 def test_create_job(tmp_enso):
     """create_job scaffolds a JOB.md file with enabled: false."""
-    job = create_job("my-job", "My Job", "claude", "opus", "30 6 * * *")
+    job = _create_job("my-job", "My Job", "claude", "opus", "30 6 * * *")
     assert os.path.isfile(job.path)
     assert job.dir_name == "my-job"
     assert job.name == "My Job"
     assert job.schedule == "30 6 * * *"
+    assert job.workspace == "company"
+    assert job.access == "automation"
     assert job.enabled is False
     assert job.prompt == "Your prompt here."
 
@@ -124,6 +181,8 @@ def test_create_job(tmp_enso):
     assert parsed is not None
     assert parsed.name == "My Job"
     assert parsed.provider == "claude"
+    assert parsed.workspace == "company"
+    assert parsed.access == "automation"
     assert parsed.enabled is False
     assert parsed.prompt == job.prompt
 
@@ -138,7 +197,7 @@ def _configure_model(model: str) -> None:
 def test_create_job_quotes_yaml_sensitive_values(tmp_enso):
     """New scaffolds are valid YAML and remain compatible with the loader."""
     _configure_model("null")  # YAML-sensitive scalar as a model name
-    job = create_job(
+    job = _create_job(
         "daily-review",
         "Daily: Review",
         "claude",
@@ -152,6 +211,8 @@ def test_create_job_quotes_yaml_sensitive_values(tmp_enso):
         "schedule": "* * * * *",
         "provider": "claude",
         "model": "null",
+        "workspace": "company",
+        "access": "automation",
         "enabled": False,
     }
     assert body == "Your prompt here.\n"
@@ -168,7 +229,7 @@ def test_create_job_and_loader_handle_safe_dump_edge_values(tmp_enso):
     """Quoted apostrophes, colons, and fence-like lines round-trip exactly."""
     _configure_model("null")
     name = "Bob's: Review\n---\ncontinued"
-    job = create_job(
+    job = _create_job(
         "yaml-edge",
         name,
         "claude",
@@ -194,6 +255,8 @@ name: Daily: Review
 schedule: "0 9 * * *"
 provider: claude
 model: sonnet
+workspace: company
+access: automation
 enabled: true  # legacy comment
 ---
 
@@ -223,7 +286,7 @@ Prompt.
 )
 def test_create_job_rejects_unsafe_directory_names(tmp_enso, dir_name):
     with pytest.raises(ValueError, match="non-empty slug"):
-        create_job(dir_name, "Unsafe", "claude", "sonnet", "0 9 * * *")
+        _create_job(dir_name, "Unsafe", "claude", "sonnet", "0 9 * * *")
 
     assert not os.path.exists(os.path.join(tmp_enso, "jobs"))
 
@@ -238,14 +301,58 @@ def test_job_config_error_messages():
 
 def test_create_job_rejects_unknown_provider(tmp_enso):
     with pytest.raises(ValueError, match="Unknown provider 'gemini'"):
-        create_job("bad", "Bad", "gemini", "gemini-pro", "0 0 * * *")
+        _create_job("bad", "Bad", "gemini", "gemini-pro", "0 0 * * *")
     # Validation fails before anything touches disk.
     assert not os.path.isdir(os.path.join(tmp_enso, "jobs", "bad"))
 
 
 def test_create_job_rejects_unknown_model(tmp_enso):
     with pytest.raises(ValueError, match="Unknown claude model 'bogus'"):
-        create_job("bad", "Bad", "claude", "bogus", "0 0 * * *")
+        _create_job("bad", "Bad", "claude", "bogus", "0 0 * * *")
+    assert not os.path.isdir(os.path.join(tmp_enso, "jobs", "bad"))
+
+
+@pytest.mark.parametrize(
+    ("workspace", "access", "expected"),
+    [
+        ("missing", "automation", "Unknown workspace 'missing'"),
+        ("company", "missing", "Unknown access profile 'missing'"),
+    ],
+)
+def test_create_job_rejects_unknown_execution_binding(
+    tmp_enso,
+    workspace,
+    access,
+    expected,
+):
+    with pytest.raises(ValueError, match=expected):
+        create_job(
+            "bad",
+            "Bad",
+            "claude",
+            "sonnet",
+            "0 0 * * *",
+            workspace=workspace,
+            access=access,
+        )
+    assert not os.path.isdir(os.path.join(tmp_enso, "jobs", "bad"))
+
+
+def test_create_job_rejects_provider_disallowed_by_access(tmp_enso):
+    config = load_config()
+    config["access"]["automation"]["providers"] = ["claude"]
+    save_config(config)
+
+    with pytest.raises(ValueError, match="does not allow provider 'codex'"):
+        create_job(
+            "bad",
+            "Bad",
+            "codex",
+            "luna",
+            "0 0 * * *",
+            workspace="company",
+            access="automation",
+        )
     assert not os.path.isdir(os.path.join(tmp_enso, "jobs", "bad"))
 
 
@@ -257,7 +364,7 @@ def test_create_job_with_malformed_models_config_rejects_cleanly(tmp_enso):
 
     # "son" would pass a naive `in` check against the string "sonnet".
     with pytest.raises(ValueError, match="none configured"):
-        create_job("bad", "Bad", "claude", "son", "0 0 * * *")
+        _create_job("bad", "Bad", "claude", "son", "0 0 * * *")
 
 
 def test_create_job_accepts_custom_configured_model(tmp_enso):
@@ -266,19 +373,19 @@ def test_create_job_accepts_custom_configured_model(tmp_enso):
     config["providers"]["claude"]["models"].append("my-custom-model")
     save_config(config)
 
-    job = create_job("custom", "Custom", "claude", "my-custom-model", "0 0 * * *")
+    job = _create_job("custom", "Custom", "claude", "my-custom-model", "0 0 * * *")
 
     assert job.model == "my-custom-model"
 
 
 def test_create_job_refuses_to_overwrite_existing_job(tmp_enso):
-    job = create_job("daily", "Daily", "claude", "sonnet", "0 9 * * *")
+    job = _create_job("daily", "Daily", "claude", "sonnet", "0 9 * * *")
     with open(job.path, "a", encoding="utf-8") as file:
         file.write("User customization.\n")
     original = Path(job.path).read_bytes()
 
     with pytest.raises(FileExistsError, match="Job 'daily' already exists"):
-        create_job("daily", "Replacement", "codex", "luna", "0 0 * * *")
+        _create_job("daily", "Replacement", "codex", "luna", "0 0 * * *")
 
     assert Path(job.path).read_bytes() == original
 
@@ -291,7 +398,7 @@ def test_create_job_refuses_existing_symlink_directory(tmp_enso, tmp_path):
     (jobs_dir / "linked").symlink_to(outside, target_is_directory=True)
 
     with pytest.raises(FileExistsError, match="Job 'linked' already exists"):
-        create_job("linked", "Linked", "claude", "sonnet", "0 9 * * *")
+        _create_job("linked", "Linked", "claude", "sonnet", "0 9 * * *")
 
     assert list(outside.iterdir()) == []
 
@@ -305,8 +412,8 @@ def test_parse_job_skips_non_utf8_file(tmp_path):
 
 def test_load_jobs(tmp_enso):
     """load_jobs finds all jobs in the jobs directory."""
-    create_job("alpha", "Alpha", "claude", "sonnet", "0 9 * * *")
-    create_job("beta", "Beta", "codex", "luna", "0 12 * * *")
+    _create_job("alpha", "Alpha", "claude", "sonnet", "0 9 * * *")
+    _create_job("beta", "Beta", "codex", "luna", "0 12 * * *")
     jobs = load_jobs()
     assert len(jobs) == 2
     names = {j.dir_name for j in jobs}
@@ -318,6 +425,63 @@ def test_load_jobs_empty(tmp_enso):
     assert load_jobs() == []
 
 
+def test_load_jobs_with_errors_reports_dropped_job_fields(tmp_enso):
+    job_dir = Path(tmp_enso, "jobs", "broken")
+    job_dir.mkdir(parents=True)
+    frontmatter.write(
+        job_dir / "JOB.md",
+        {
+            "name": "Broken",
+            "schedule": "0 9 * * *",
+            "provider": "claude",
+            "model": "sonnet",
+            "workspace": "company",
+        },
+        "Prompt.",
+    )
+
+    jobs, errors = load_jobs_with_errors()
+
+    assert jobs == []
+    assert errors == {"broken": ("Missing required fields: access",)}
+    assert load_jobs() == []
+
+
+def test_load_jobs_with_errors_validates_parsed_jobs_against_config(tmp_enso):
+    job_dir = Path(tmp_enso, "jobs", "invalid")
+    job_dir.mkdir(parents=True)
+    frontmatter.write(
+        job_dir / "JOB.md",
+        {
+            "name": "Invalid",
+            "schedule": "not cron",
+            "provider": "claude",
+            "model": "bogus",
+            "workspace": "missing",
+            "access": "automation",
+        },
+        "Prompt.",
+    )
+
+    jobs, errors = load_jobs_with_errors(load_config())
+
+    assert [job.dir_name for job in jobs] == ["invalid"]
+    assert "Invalid cron schedule" in errors["invalid"][0]
+    assert "Unknown claude model 'bogus'" in errors["invalid"][1]
+    assert "Unknown workspace 'missing'" in errors["invalid"][2]
+
+
+def test_load_jobs_with_errors_reports_unreadable_job(tmp_enso):
+    job_dir = Path(tmp_enso, "jobs", "binary")
+    job_dir.mkdir(parents=True)
+    (job_dir / "JOB.md").write_bytes(b"---\nname: invalid\n---\n\xff")
+
+    jobs, errors = load_jobs_with_errors()
+
+    assert jobs == []
+    assert errors == {"binary": ("Could not read JOB.md as UTF-8",)}
+
+
 def test_parse_job_with_notify(tmp_path):
     """Jobs with a notify field parse correctly."""
     job_file = tmp_path / "JOB.md"
@@ -327,6 +491,8 @@ name: Notify Job
 schedule: "0 9 * * *"
 provider: claude
 model: sonnet
+workspace: company
+access: automation
 notify: alerts
 ---
 
@@ -346,6 +512,8 @@ name: Controlled Job
 schedule: "*/15 * * * *"
 provider: codex
 model: gpt-5.5
+workspace: company
+access: automation
 timeout: 1800
 prerun_timeout: 45
 catch_up: true
@@ -371,6 +539,8 @@ name: No Notify
 schedule: "0 9 * * *"
 provider: claude
 model: sonnet
+workspace: company
+access: automation
 ---
 
 Do stuff.
@@ -382,13 +552,21 @@ Do stuff.
 
 def test_job_dir_property():
     """Job.job_dir computes correctly."""
-    job = Job(dir_name="foo", name="Foo", schedule="* * * * *", provider="claude", model="sonnet")
+    job = Job(
+        dir_name="foo",
+        name="Foo",
+        schedule="* * * * *",
+        provider="claude",
+        model="sonnet",
+        workspace="company",
+        access="automation",
+    )
     assert job.job_dir.endswith("/foo")
 
 
 def test_create_job_rejects_invalid_schedule(tmp_enso):
     with pytest.raises(ValueError, match="Invalid cron schedule"):
-        create_job("bad", "Bad", "claude", "sonnet", "0 9 * *")
+        _create_job("bad", "Bad", "claude", "sonnet", "0 9 * *")
     # Validation fails before anything touches disk.
     assert not os.path.isdir(os.path.join(tmp_enso, "jobs", "bad"))
 

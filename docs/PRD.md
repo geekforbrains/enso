@@ -44,7 +44,7 @@ overview, organisation, and managing the scheduled work Enso already runs.
 
 - **No chat in the web UI.** Conversation stays in Telegram/Slack.
 - **No dashboard accounts / login.** Enso remains a single-operator service even when
-  Slack [teams mode](specs/teams.md) authorizes coworkers or clients to use exact chat
+  Slack [routes](specs/teams.md) authorize coworkers or clients to use exact chat
   routes. Those participants are not Enso accounts and receive no web access. The
   web UI binds to localhost; remote access is via Tailscale (see
   [architecture.md](specs/architecture.md)). A configured shared token is the only
@@ -59,15 +59,13 @@ overview, organisation, and managing the scheduled work Enso already runs.
 
 ## Vocabulary
 
-- **Job** — a *scheduled* background unit of work defined by a `JOB.md` file, run on a
-  cron by the scheduler. Recurring. This work records its runs and makes it editable
-  from the web UI.
+- **Job** — a *scheduled* background unit of work defined by a `JOB.md` file, bound to one named workspace and access profile, and run on a cron by the scheduler. Recurring. This work records its runs and makes it editable from the web UI.
 - **Run** — one execution of a job: when it started/ended, its exit status,
   and its captured output. Recorded in SQLite. See [data-model.md](specs/data-model.md).
 - **Table** — a registered, user-owned SQLite table containing structured facts an agent
   or operator needs to query. Registration supplies discovery metadata and UI visibility;
   it does not transfer schema/row ownership to Enso. See [tables.md](specs/tables.md).
-- **Transport / notify** — the existing chat delivery layer (Telegram/Slack). Job completion and failure notifications ride it. Slack route auditing records inbound turns only and does not change notification behavior.
+- **Transport / notify** — the existing chat delivery layer (Telegram/Slack). Host-side job failure and recovery alerts ride it; successful jobs are silent unless the prompt explicitly sends a message. Slack route auditing records inbound turns only and does not change notification behavior.
 
 ## Key decisions
 
@@ -81,7 +79,7 @@ overview, organisation, and managing the scheduled work Enso already runs.
 | Web access                     | Bind **localhost** by default; Tailscale for remote; Host allowlist and optional shared token. No login                                                                          |
 | Web capability                 | **Read/write, scoped to owned files** — edit job prompts, toggle/run jobs, edit Enso-owned skills and `AGENTS.md`; full job/skill CRUD is planned. External skills are read-only |
 | Tables web capability          | **Read-only, bounded inspection** — list metadata, show schema, and page through capped previews; no SQL or row/schema mutations                                                 |
-| Notifications                  | Reuse `transport.notify` / `enso message send`; Slack teams routing does not alter job delivery                                                                                  |
+| Notifications                  | Reuse `transport.notify` / `enso message send`; exact Slack routing does not alter job delivery. No transport implicitly broadcasts                                              |
 
 ## Personas
 
@@ -95,14 +93,12 @@ authorized chat senders, not additional owners or dashboard personas.
 
 ### F1 — Run history
 
-- Every provider execution and failed job prerun records a **run** row in SQLite;
-  intentional prerun no-work does not. Rows include kind (`job`), name, trigger
+- Job provider executions, parsed jobs that fail execution configuration/binding validation, and failed job preruns record a **run** row in SQLite; job files that cannot be loaded, intentional prerun no-work, and triggers skipped by locking or scheduling do not. Rows include kind (`job`), name, trigger
   (`schedule`/`manual`), start/end times, exit code,
   status (`running`/`ok`/`error`/`timeout`, plus `prerun_error`/`prerun_timeout` for
   failed job gates), and a pointer to its output log on disk.
 - Captured output is written to `~/.enso/runs/<run_id>.log`; the row stays lean.
-- A run is created at **spawn** (status `running`) and finalised at exit, so a crash
-  mid-run leaves a visible `running` row rather than nothing.
+- For a provider execution, a run is created at **spawn** (status `running`) and finalised at exit, so a crash mid-run leaves a visible `running` row rather than nothing. A classified pre-provider failure is written directly as a terminal run.
 - Retention: a configurable cap prunes old runs (and their logs) so history doesn't
   grow without bound. See [data-model.md](specs/data-model.md).
 - Surfaced in the web UI (per job and a global recent-runs feed).
@@ -117,7 +113,7 @@ authorized chat senders, not additional owners or dashboard personas.
 
 ### F3 — Web UI: jobs (partially implemented)
 
-- `/jobs` — list with schedule, provider/model, enabled state.
+- `/jobs` — list with schedule, provider/model, workspace/access, enabled state.
 - `/jobs/<name>` — configuration, prompt, prerun state, recent runs, **Run now**,
   enable/disable, and confirmed directory deletion.
 - Editing the prompt has a focused endpoint that rewrites only the `JOB.md` body,
@@ -127,7 +123,7 @@ authorized chat senders, not additional owners or dashboard personas.
 - Deleting a job removes its whole directory, including companion and prerun files;
   recorded run history remains available.
 - **Planned:** create and fully edit jobs from the UI: name, schedule, provider, model,
-  enabled, timeout, notify, prompt body, and optional prerun script.
+  workspace, access profile, enabled, timeout, notify, prompt body, and optional prerun script.
 
 ### F4 — Web UI: skills & AGENTS.md
 
@@ -164,12 +160,12 @@ authorized chat senders, not additional owners or dashboard personas.
 
 - Editing a job's schedule, prompt body, or prerun from the web UI writes back to
   `~/.enso/jobs/<name>/` and the next scheduled run uses the new definition.
-- Every job execution leaves a run row with retrievable output, visible in the web UI.
+- Every job provider execution or classified configuration/prerun failure leaves a run row with retrievable output, visible in the web UI; intentional no-work and skipped triggers remain absent by design.
 - A registered data table can be discovered consistently by an agent and inspected in a
   bounded web view without exposing internal or unrelated SQLite tables.
 - The web UI runs via `enso web`, reachable at `http://localhost:<port>` and, when
   deliberately bound there, over the tailnet.
-- Existing chat, jobs, and messaging behaviour are unchanged.
+- Slack authorization uses exact routes; every job requires a named workspace and access profile; Telegram remains private with exact numeric allowed-user IDs.
 
 ## Future ideas (explicitly out of v1)
 

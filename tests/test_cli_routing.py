@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import copy
+from pathlib import Path
 
 import pytest
 import typer
 
 from enso.cli import (
+    _ensure_default_execution_config,
     _resolve_send_targets,
     _resolve_slack_target,
     _setup_slack,
@@ -74,6 +76,7 @@ def test_telegram_send_target_resolves_1password_reference(monkeypatch):
                     "field": "TOKEN",
                 },
                 "allowed_users": ["123"],
+                "notify_channel": "456",
             },
         },
     }
@@ -87,9 +90,50 @@ def test_telegram_send_target_resolves_1password_reference(monkeypatch):
     assert (transport, token, targets, thread_ts) == (
         "telegram",
         "resolved-telegram-token",
-        ["123"],
+        ["456"],
         "",
     )
+
+
+def test_telegram_send_target_does_not_broadcast_to_allowed_users(monkeypatch):
+    monkeypatch.delenv("ENSO_ORIGIN_CHANNEL", raising=False)
+    config = {
+        "transport": "telegram",
+        "transports": {
+            "telegram": {
+                "bot_token": "token",
+                "allowed_users": ["123", "456"],
+            },
+        },
+    }
+
+    with pytest.raises(typer.Exit):
+        _resolve_send_targets(config, "")
+
+
+def test_default_execution_config_uses_shared_access_vocabulary(tmp_enso):
+    working_dir = str(Path(tmp_enso) / "workspace")
+    config = {
+        "working_dir": working_dir,
+        "providers": {
+            "claude": {"path": "claude", "models": ["sonnet"]},
+            "codex": {"path": "codex", "models": ["terra"]},
+        },
+    }
+
+    workspace, access = _ensure_default_execution_config(config)
+
+    assert (workspace, access) == ("default", "admin")
+    assert config["workspaces"]["default"] == {
+        "path": working_dir,
+        "concurrency": 1,
+    }
+    assert config["access"]["admin"] == {
+        "unrestricted": True,
+        "providers": ["claude", "codex"],
+        "default_provider": "claude",
+        "chat_commands": "*",
+    }
 
 
 def test_slack_send_target_resolves_1password_reference(monkeypatch):
@@ -155,8 +199,14 @@ def test_slack_setup_validates_resolved_existing_token(monkeypatch):
                     "item": "Slack",
                     "field": "BOT_TOKEN",
                 },
-                "allowed_users": ["U123"],
             },
+        },
+        "routes": {
+            "slack": {
+                "account_id": "T123",
+                "dms": {"U123": {"workspace": "default", "access": "admin"}},
+                "channels": {},
+            }
         },
     }
     monkeypatch.setattr(
@@ -165,7 +215,9 @@ def test_slack_setup_validates_resolved_existing_token(monkeypatch):
     )
     monkeypatch.setattr(
         "enso.cli._slack_validate_token",
-        lambda token: {"user": "enso"} if token == "resolved-slack-token" else None,
+        lambda token: {"user": "enso", "team_id": "T123"}
+        if token == "resolved-slack-token"
+        else None,
     )
     monkeypatch.setattr("enso.cli.Confirm.ask", lambda *args, **kwargs: False)
 
@@ -183,6 +235,7 @@ def test_telegram_setup_reconfiguration_updates_reference_without_plaintext(
                 "bot_token_1password": reference,
                 "bot_token": "stale-literal",
                 "allowed_users": ["123"],
+                "allowed_user_ids": [999],
             },
         },
     }
@@ -219,13 +272,16 @@ def test_telegram_setup_reconfiguration_updates_reference_without_plaintext(
     telegram = config["transports"]["telegram"]
     assert telegram["bot_token_1password"] is reference
     assert "bot_token" not in telegram
+    assert "allowed_user_ids" not in telegram
     assert telegram["allowed_users"] == ["456"]
+    assert telegram["notify_channel"] == "456"
     assert updates == [
         (
             {
                 "bot_token_1password": reference,
                 "bot_token": "stale-literal",
                 "allowed_users": ["123"],
+                "allowed_user_ids": [999],
             },
             "bot_token",
             "new-token",
@@ -245,8 +301,25 @@ def test_slack_setup_reconfiguration_updates_references_without_plaintext(
                 "app_token_1password": app_reference,
                 "bot_token": "stale-bot-literal",
                 "app_token": "stale-app-literal",
-                "allowed_users": ["UOLD"],
                 "notify_channel": "COLD",
+            },
+        },
+        "workspaces": {
+            "company": {"path": "/tmp/company", "concurrency": 1},
+        },
+        "access": {
+            "admin": {
+                "unrestricted": True,
+                "providers": ["claude"],
+                "default_provider": "claude",
+                "chat_commands": "*",
+            },
+        },
+        "routes": {
+            "slack": {
+                "account_id": "T1",
+                "dms": {"UOLD": {"workspace": "company", "access": "admin"}},
+                "channels": {"CSTAFF": {"workspace": "company", "access": "admin"}},
             },
         },
     }
@@ -258,16 +331,14 @@ def test_slack_setup_reconfiguration_updates_references_without_plaintext(
 
     def validate(token):
         if token == "old-bot-token":
-            return {"user": "old-bot", "user_id": "UOLD"}
-        return {"user": "new-bot", "user_id": "UNEWBOT"}
+            return {"user": "old-bot", "user_id": "UOLD", "team_id": "T1"}
+        return {"user": "new-bot", "user_id": "UNEWBOT", "team_id": "T1"}
 
     def prompt(label, **kwargs):
         if "Bot Token" in label:
             return "new-bot-token"
         if "App Token" in label:
             return "new-app-token"
-        if "Allowed users" in label:
-            return "UNEW"
         if "Notify channel" in label:
             return "CNEW"
         raise AssertionError(f"Unexpected prompt: {label}")
@@ -291,8 +362,13 @@ def test_slack_setup_reconfiguration_updates_references_without_plaintext(
     assert "bot_token" not in slack
     assert "app_token" not in slack
     assert slack["bot_user_id"] == "UNEWBOT"
-    assert slack["allowed_users"] == ["UNEW"]
+    assert "allowed_users" not in slack
     assert slack["notify_channel"] == "CNEW"
+    assert config["routes"]["slack"] == {
+        "account_id": "T1",
+        "dms": {"UOLD": {"workspace": "company", "access": "admin"}},
+        "channels": {"CSTAFF": {"workspace": "company", "access": "admin"}},
+    }
     assert updates == [
         ("bot_token", "new-bot-token"),
         ("app_token", "new-app-token"),
@@ -477,8 +553,8 @@ def test_slack_setup_reprompts_until_app_token_provided(monkeypatch, capsys):
         if "App Token" in label:
             app_prompts += 1
             return "" if app_prompts == 1 else "xapp-new"
-        if "Allowed users" in label:
-            return "*"
+        if "Owner Slack user ID" in label:
+            return "UOWNER"
         if "Notify channel" in label:
             return "C123"
         raise AssertionError(f"Unexpected prompt: {label}")
@@ -486,7 +562,7 @@ def test_slack_setup_reprompts_until_app_token_provided(monkeypatch, capsys):
     monkeypatch.setattr("enso.cli.Prompt.ask", prompt)
     monkeypatch.setattr(
         "enso.cli._slack_validate_token",
-        lambda token: {"user": "enso", "user_id": "UBOT"},
+        lambda token: {"user": "enso", "user_id": "UBOT", "team_id": "T1"},
     )
     monkeypatch.setattr(
         "enso.cli._write_slack_manifest_copy",
@@ -498,6 +574,12 @@ def test_slack_setup_reprompts_until_app_token_provided(monkeypatch, capsys):
     slack = config["transports"]["slack"]
     assert app_prompts == 2
     assert slack["app_token"] == "xapp-new"
+    assert "allowed_users" not in slack
+    assert config["routes"]["slack"] == {
+        "account_id": "T1",
+        "dms": {"UOWNER": {"workspace": "default", "access": "admin"}},
+        "channels": {},
+    }
     assert "Token is required" in capsys.readouterr().out
 
 
@@ -521,7 +603,7 @@ def test_serve_reports_secret_resolution_failure_cleanly(
         def install_system_prompts(self):
             pass
 
-        def install_teams_workspaces(self):
+        def install_workspaces(self):
             pass
 
         def load_state(self):

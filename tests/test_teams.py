@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from enso.teams import load_teams, resolve, slack_mode
+from enso.teams import load_catalog, load_teams, resolve
 
 
 def make_config(tmp_path, **overrides) -> dict:
@@ -57,30 +57,40 @@ def make_config(tmp_path, **overrides) -> dict:
     return config
 
 
-# -- slack_mode --
+# -- transport-independent execution catalog --
 
 
-def test_slack_mode_teams(tmp_path):
-    assert slack_mode(make_config(tmp_path)) == "teams"
-
-
-def test_slack_mode_legacy(tmp_path):
+def test_catalog_loads_without_slack_routes(tmp_path):
     config = make_config(tmp_path)
     del config["routes"]
-    config["transports"]["slack"]["allowed_users"] = ["U1"]
-    assert slack_mode(config) == "legacy"
+
+    catalog = load_catalog(config)
+
+    assert catalog.errors == ()
+    assert catalog.workspaces["company"].path.endswith("workspaces/company")
+    assert catalog.access_profiles["admin"].unrestricted
+    assert catalog.usable("company", "admin")
 
 
-def test_slack_mode_blocked_when_neither(tmp_path):
+def test_catalog_rejects_unknown_or_invalid_bindings(tmp_path):
+    config = make_config(tmp_path)
+    config["access"]["client-readonly"]["providers"] = []
+    catalog = load_catalog(config)
+
+    assert not catalog.usable("client-a", "client-readonly")
+    assert not catalog.usable("missing", "admin")
+    assert not catalog.usable("company", "missing")
+
+
+def test_catalog_retains_topology_validation_without_slack_routes(tmp_path):
     config = make_config(tmp_path)
     del config["routes"]
-    assert slack_mode(config) == "blocked"
+    config["workspaces"]["client-a"]["path"] = config["workspaces"]["company"]["path"]
 
+    catalog = load_catalog(config)
 
-def test_slack_mode_conflict_when_both(tmp_path):
-    config = make_config(tmp_path)
-    config["transports"]["slack"]["allowed_users"] = ["U1"]
-    assert slack_mode(config) == "conflict"
+    assert catalog.errors
+    assert not catalog.usable("company", "admin")
 
 
 # -- valid schema --
@@ -100,10 +110,13 @@ def test_load_valid_config(tmp_path):
     assert parsed.channel_routes["C0ACME"].access == "client-readonly"
 
 
-def test_load_returns_none_without_routes(tmp_path):
+def test_missing_slack_routes_is_actionable_invalid_config(tmp_path):
     config = make_config(tmp_path)
     del config["routes"]
-    assert load_teams(config) is None
+    parsed = load_teams(config)
+
+    assert not parsed.dispatchable
+    assert any("routes.slack is required" in problem for problem in parsed.errors)
 
 
 def test_paths_are_canonical_absolute(tmp_path, monkeypatch):
@@ -153,10 +166,28 @@ def test_audit_defaults(tmp_path):
 # -- global fail-closed errors --
 
 
-def test_conflict_with_legacy_allowlist_disables_dispatch(tmp_path):
+def test_removed_slack_allowlist_has_actionable_migration_error(tmp_path):
     config = make_config(tmp_path)
     config["transports"]["slack"]["allowed_users"] = ["U1"]
-    assert not load_teams(config).dispatchable
+    parsed = load_teams(config)
+
+    assert not parsed.dispatchable
+    assert any(
+        "transports.slack.allowed_users is no longer supported" in problem
+        and "routes.slack.dms" in problem
+        for problem in parsed.errors
+    )
+
+
+def test_removed_slack_allowlist_cannot_enable_slack_without_routes(tmp_path):
+    config = make_config(tmp_path)
+    del config["routes"]
+    config["transports"]["slack"]["allowed_users"] = ["U1"]
+    parsed = load_teams(config)
+
+    assert not parsed.dispatchable
+    assert any("routes.slack is required" in problem for problem in parsed.errors)
+    assert any("allowed_users is no longer supported" in problem for problem in parsed.errors)
 
 
 def test_legacy_groups_are_explicit_migration_error(tmp_path):

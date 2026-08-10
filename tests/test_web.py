@@ -291,6 +291,8 @@ def _write_job(
         'schedule: "0 9 * * *"\n'
         "provider: claude\n"
         "model: opus\n"
+        "workspace: default\n"
+        "access: admin\n"
         "enabled: false\n"
         f"{prerun_line}"
         f"---\n\n{body}\n",
@@ -706,6 +708,10 @@ def test_job_prompt_edit_round_trips_and_preserves_frontmatter(tmp_path, monkeyp
     assert detail.status_code == 200
     assert 'name="content"' in detail.text
     assert "Original prompt body." in detail.text
+    assert "Workspace" in detail.text
+    assert "default" in detail.text
+    assert "Access" in detail.text
+    assert "admin" in detail.text
 
     # Saving swaps only the body and redirects back to the job.
     resp = client.post(
@@ -726,6 +732,8 @@ def test_job_prompt_edit_round_trips_and_preserves_frontmatter(tmp_path, monkeyp
         "schedule": "0 9 * * *",
         "provider": "claude",
         "model": "opus",
+        "workspace": "default",
+        "access": "admin",
         "enabled": False,
     }
 
@@ -752,6 +760,8 @@ def test_job_prompt_edit_preserves_legacy_frontmatter_bytes(tmp_path, monkeypatc
         b'schedule: "0 9 * * *"\r\n'
         b"provider: claude\r\n"
         b"model: opus\r\n"
+        b"workspace: default\r\n"
+        b"access: admin\r\n"
         b"notify:\r\n"
         b"enabled: false\r\n"
         b"---\r\n"
@@ -781,6 +791,8 @@ def test_job_prompt_edit_rejects_job_file_symlink_escape(tmp_path, monkeypatch):
         'schedule: "0 9 * * *"\n'
         "provider: claude\n"
         "model: opus\n"
+        "workspace: default\n"
+        "access: admin\n"
         "enabled: false\n"
         "---\n\n"
         "Prompt.\n",
@@ -816,6 +828,8 @@ def test_job_toggle_preserves_legacy_frontmatter_and_redirects(tmp_path, monkeyp
         'schedule: "0 9 * * *"\n'
         "provider: claude\n"
         "model: opus\n"
+        "workspace: default\n"
+        "access: admin\n"
         "notify:\n"
         "enabled : false  # keep this too\n"
         "---\n\n"
@@ -845,6 +859,8 @@ def test_job_toggle_rejects_job_file_symlink_escape(tmp_path, monkeypatch):
         'schedule: "0 9 * * *"\n'
         "provider: claude\n"
         "model: opus\n"
+        "workspace: default\n"
+        "access: admin\n"
         "enabled: false\n"
         "---\n\n"
         "Prompt.\n",

@@ -1,11 +1,11 @@
-"""Static Slack route, workspace, and access-profile configuration.
+"""Static workspace/access catalog and exact Slack route configuration.
 
-Teams mode deliberately has no user/group policy composition. An exact channel
+Slack routing deliberately has no user/group policy composition. An exact channel
 route authorizes every poster in that channel. An exact DM route is keyed by
 the Slack user ID it authorizes. Each route selects one filesystem workspace
 and one complete native-CLI access profile.
 
-Invalid security configuration fails closed. Structural errors disable teams
+Invalid security configuration fails closed. Structural errors disable routed
 dispatch, while invalid workspaces, access profiles, and routes make every
 route that references them unusable.
 """
@@ -101,20 +101,59 @@ class Decision:
 
 
 @dataclass(frozen=True)
-class TeamsConfig:
-    """Parsed teams blocks plus every validation problem found."""
+class ExecutionCatalog:
+    """Transport-independent workspace and access-profile configuration."""
 
-    account_id: str
     workspaces: dict[str, Workspace]
     access_profiles: dict[str, AccessProfile]
+    errors: tuple[str, ...] = ()
+    workspace_errors: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    access_errors: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+    @property
+    def valid(self) -> bool:
+        """Whether catalog-wide structure and path topology are valid."""
+        return not self.errors
+
+    def usable(self, workspace: str, access: str) -> bool:
+        """Whether two named entries form a valid execution binding."""
+        return (
+            self.valid
+            and workspace in self.workspaces
+            and access in self.access_profiles
+            and workspace not in self.workspace_errors
+            and access not in self.access_errors
+        )
+
+
+@dataclass(frozen=True)
+class TeamsConfig:
+    """Parsed Slack routes over a transport-independent execution catalog."""
+
+    account_id: str
+    catalog: ExecutionCatalog
     dm_routes: dict[str, Route]
     channel_routes: dict[str, Route]
     audit_on_failure: str
     audit_max_age_days: int
     errors: tuple[str, ...] = ()
-    workspace_errors: dict[str, tuple[str, ...]] = field(default_factory=dict)
-    access_errors: dict[str, tuple[str, ...]] = field(default_factory=dict)
     route_errors: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+    @property
+    def workspaces(self) -> dict[str, Workspace]:
+        return self.catalog.workspaces
+
+    @property
+    def access_profiles(self) -> dict[str, AccessProfile]:
+        return self.catalog.access_profiles
+
+    @property
+    def workspace_errors(self) -> dict[str, tuple[str, ...]]:
+        return self.catalog.workspace_errors
+
+    @property
+    def access_errors(self) -> dict[str, tuple[str, ...]]:
+        return self.catalog.access_errors
 
     @property
     def dispatchable(self) -> bool:
@@ -125,50 +164,52 @@ class TeamsConfig:
         """Whether a configured route has usable workspace and access bindings."""
         if route.route_id in self.route_errors:
             return False
-        if route.workspace not in self.workspaces:
-            return False
-        if route.access not in self.access_profiles:
-            return False
-        return (
-            route.workspace not in self.workspace_errors and route.access not in self.access_errors
-        )
+        return self.catalog.usable(route.workspace, route.access)
 
 
-def slack_mode(config: dict) -> str:
-    """Classify Slack handling: 'teams' | 'legacy' | 'conflict' | 'blocked'."""
-    routes = config.get("routes")
-    has_teams = isinstance(routes, dict) and "slack" in routes
+def load_catalog(config: dict) -> ExecutionCatalog:
+    """Parse reusable workspace/access configuration without a transport."""
+    errors: list[str] = []
+    workspaces, workspace_errors = _load_workspaces(config.get("workspaces", {}), errors)
+    access_profiles, access_errors = _load_access(config.get("access", {}), errors)
+    _check_topology(workspaces, access_profiles, config.get("working_dir"), errors)
+    return ExecutionCatalog(
+        workspaces=workspaces,
+        access_profiles=access_profiles,
+        errors=tuple(errors),
+        workspace_errors=workspace_errors,
+        access_errors=access_errors,
+    )
+
+
+def load_teams(config: dict) -> TeamsConfig:
+    """Parse static teams configuration without raising on invalid input."""
+    catalog = load_catalog(config)
+    errors = list(catalog.errors)
+
     transports = config.get("transports", {})
     slack_cfg = transports.get("slack", {}) if isinstance(transports, dict) else {}
-    has_legacy = isinstance(slack_cfg, dict) and "allowed_users" in slack_cfg
-    if has_teams and has_legacy:
-        return "conflict"
-    if has_teams:
-        return "teams"
-    if has_legacy:
-        return "legacy"
-    return "blocked"
-
-
-def load_teams(config: dict) -> TeamsConfig | None:
-    """Parse static teams configuration without raising on invalid input."""
-    routes_block = config.get("routes")
-    if not (isinstance(routes_block, dict) and "slack" in routes_block):
-        return None
-
-    errors: list[str] = []
-    if slack_mode(config) == "conflict":
+    if isinstance(slack_cfg, dict) and "allowed_users" in slack_cfg:
         errors.append(
-            "routes.slack and transports.slack.allowed_users are both set; "
-            "remove one — teams mode and the legacy allowlist are mutually exclusive"
+            "transports.slack.allowed_users is no longer supported; migrate authorized "
+            "DM users to routes.slack.dms and channels to routes.slack.channels"
         )
+
+    routes_block = config.get("routes")
+    if not isinstance(routes_block, dict) or "slack" not in routes_block:
+        errors.append(
+            "routes.slack is required; Slack authorization uses exact DM and channel routes"
+        )
+        slack_routes: object = {}
+    else:
+        slack_routes = routes_block["slack"]
+
     if "groups" in config:
         errors.append(
-            "groups is no longer supported in teams mode; channel membership and "
+            "groups is no longer supported; channel membership and "
             "exact DM user routes define authorization"
         )
 
-    slack_routes = routes_block["slack"]
     if not isinstance(slack_routes, dict):
         errors.append("routes.slack must be an object")
         slack_routes = {}
@@ -179,8 +220,6 @@ def load_teams(config: dict) -> TeamsConfig | None:
         errors.append("routes.slack.account_id is required and must be a string")
         account_id = ""
 
-    workspaces, workspace_errors = _load_workspaces(config.get("workspaces", {}), errors)
-    access_profiles, access_errors = _load_access(config.get("access", {}), errors)
     dm_routes, dm_schema_errors = _load_routes(slack_routes.get("dms", {}), "dm", errors)
     channel_routes, channel_schema_errors = _load_routes(
         slack_routes.get("channels", {}), "channel", errors
@@ -190,16 +229,9 @@ def load_teams(config: dict) -> TeamsConfig | None:
     for route in (*dm_routes.values(), *channel_routes.values()):
         schema_errors = dm_schema_errors if route.kind == "dm" else channel_schema_errors
         problems = [*schema_errors.get(route.route_id, ())]
-        problems.extend(_route_problems(route, workspaces, access_profiles))
+        problems.extend(_route_problems(route, catalog.workspaces, catalog.access_profiles))
         if problems:
             route_errors[route.route_id] = tuple(problems)
-
-    _check_topology(
-        workspaces,
-        access_profiles,
-        config.get("working_dir"),
-        errors,
-    )
 
     audit_cfg = config.get("audit", {})
     if not isinstance(audit_cfg, dict):
@@ -217,15 +249,12 @@ def load_teams(config: dict) -> TeamsConfig | None:
 
     return TeamsConfig(
         account_id=account_id,
-        workspaces=workspaces,
-        access_profiles=access_profiles,
+        catalog=catalog,
         dm_routes=dm_routes,
         channel_routes=channel_routes,
         audit_on_failure=on_failure,
         audit_max_age_days=max_age,
         errors=tuple(errors),
-        workspace_errors=workspace_errors,
-        access_errors=access_errors,
         route_errors=route_errors,
     )
 
@@ -372,7 +401,7 @@ def _check_topology(
 
     protected_roots = dict(paths)
     if isinstance(working_dir, str) and working_dir:
-        protected_roots["legacy working_dir"] = _canonical(working_dir)
+        protected_roots["global working_dir"] = _canonical(working_dir)
     for profile_name, profile in profiles.items():
         if profile.policy_dir is None:
             continue

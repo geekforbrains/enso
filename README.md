@@ -42,7 +42,7 @@ pip install -e ".[telegram]"    # or ".[slack]", or ".[telegram,slack]"
 enso setup
 ```
 
-The setup wizard detects your agent CLIs, connects your chosen transport (Telegram or Slack), prompts for the user IDs allowed to message the bot (the bot is locked down by default and only responds to listed IDs), and optionally installs a background service (launchd on macOS, systemd on Linux) so Enso starts on boot.
+The setup wizard detects your agent CLIs, connects your chosen transport, and optionally installs a background service (launchd on macOS, systemd on Linux) so Enso starts on boot. Telegram captures one exact numeric user ID and remains private one-to-one. Slack creates one exact owner DM route backed by a default workspace and administrative access profile; add channel routes deliberately in `config.json`.
 
 Once setup is done, start chatting:
 
@@ -106,7 +106,7 @@ You can also send files — they're downloaded and passed to the active agent. R
 
 Effort is stored separately for each conversation, provider, and model. Claude supports its existing model-dependent range through `max`. Codex Sol and Terra support `low` through `ultra`; Luna supports `low` through `max`. Antigravity's concrete model names already encode effort (for example, `gemini-3.6-flash-low`), so choose the desired variant with `/model`. Enso clamps an unsupported higher Claude/Codex choice to the active model's maximum and reports the effective level.
 
-**Slack specifics.** Configured DMs dispatch every ordinary message. In channels, Enso only responds when mentioned (`@bot help me`); once a thread starts, it stays attentive to that thread only if you keep mentioning it. For configured routes, the bot fetches the last few thread/channel messages as context so it knows what's going on. Teams mode handles explicit contact at unconfigured locations locally as described below.
+**Slack specifics.** Every authorized Slack location is an exact route. Configured DMs dispatch every ordinary message. In channels, Enso only responds when mentioned (`@bot help me`); once a thread starts, it stays attentive to that thread only if you keep mentioning it. For configured routes, the bot fetches the last few thread/channel messages as context so it knows what's going on. Explicit contact at an unconfigured location gets a fixed local response as described below.
 
 ## Slack directory (`enso slack`)
 
@@ -160,46 +160,52 @@ enso message send "Deploy finished"
 enso message attach report.pdf "Weekly summary"
 ```
 
-Pass `--to` to target a single destination:
+Pass `--to` to target a single destination. Without it, an interactive agent call returns to `ENSO_ORIGIN_CHANNEL`; otherwise Enso uses that transport's `notify_channel` and errors when neither exists:
 
-| Transport | With `--to`                     | Without `--to`                                     |
-| --------- | ------------------------------- | -------------------------------------------------- |
-| Telegram  | send to that user ID            | broadcast to all `allowed_users`                   |
-| Slack     | send to that channel/DM/user ID | use `notify_channel` from config; error if not set |
+| Transport | With `--to`                     | Without `--to`                                    |
+| --------- | ------------------------------- | ------------------------------------------------- |
+| Telegram  | send to that numeric chat ID    | use the interactive origin, then `notify_channel` |
+| Slack     | send to that channel/DM/user ID | use the interactive origin, then `notify_channel` |
 
-Slack never auto-broadcasts — always pass `--to` or configure `notify_channel`. Slack file uploads accept any type up to 1 GB.
+Neither transport auto-broadcasts. Always pass `--to`, call from an interactive turn with an origin, or configure `notify_channel`. Slack file uploads accept any type up to 1 GB.
 
-## Slack teams mode
+Telegram accepts private chats only and authorizes exact numeric strings in `transports.telegram.allowed_users`. The `"*"` wildcard and old `allowed_user_ids` spelling are not supported.
 
-By default Enso answers Slack users listed in `allowed_users`, runs in one `working_dir`, and uses unrestricted provider launches. **Teams mode** binds each exact Slack DM user or channel to two things: a workspace containing shared project knowledge and an access profile containing providers, chat commands, and native CLI policies.
+## Slack routes, workspaces, and access
+
+Slack binds each exact DM user or channel route to two named objects: a workspace containing shared project knowledge and an access profile containing providers, Enso chat commands, and either unrestricted execution or protected native CLI policies. Slack has no default route, wildcard, or `allowed_users` mode.
 
 Channel membership is the authorization boundary. Everyone in a configured channel uses its route's same access profile, including administrators. A client channel and an internal staff channel can point at the same project workspace while using read-only and broader profiles respectively. Exact DMs are keyed by Slack user ID, so an owner DM can use an unrestricted administrative profile without granting that authority in shared channels.
 
-Adding `routes.slack` enables teams mode and is mutually exclusive with the legacy Slack `allowed_users` key. An unlisted DM receives a fixed access message, and an explicit mention in an unlisted channel receives a fixed thread reply; neither response invokes an LLM, resolves a workspace, fetches context, or creates a route audit record. Ordinary messages in unlisted channels remain ignored. A broken configured route or native policy reports a configuration error and never falls back to another workspace or unrestricted execution.
+An unlisted DM receives a fixed access message, and an explicit mention in an unlisted channel receives a fixed thread reply; neither response invokes an LLM, resolves a workspace, fetches context, or creates a route audit record. Ordinary messages in unlisted channels remain ignored. A broken configured route or native policy reports a configuration error and never falls back to another workspace or unrestricted execution.
 
 ```bash
-enso policy check                          # check routes and native policy plumbing
+enso config check                          # check routes, jobs, and native policy plumbing
 enso route explain slack U012ABC C0ACME    # dry-run how a sender/channel resolves
-enso audit tail                            # inspect the recorded conversations
+enso audit tail                            # inspect recorded Slack audit turns
 ```
 
-The examples in [`docs/examples/`](docs/examples/) are starting points, not policy certification. [`docs/specs/teams.md`](docs/specs/teams.md) covers routing and client projects; [`docs/specs/permissions.md`](docs/specs/permissions.md) covers native policy invocation. Config changes require restarting Enso. Background jobs remain independent and continue to use the global `working_dir`.
+The examples in [`docs/examples/`](docs/examples/) are starting points, not policy certification. [`docs/specs/teams.md`](docs/specs/teams.md) covers routing and client projects; [`docs/specs/permissions.md`](docs/specs/permissions.md) covers native policy invocation. Config changes require restarting Enso.
 
 ## Background Jobs
 
 Enso can run agents on a schedule. Jobs live in `~/.enso/jobs/` and run inside `enso serve` on a 60-second tick.
 
 ```bash
-enso job create --name "Daily Review" --provider claude --model sonnet --schedule "0 9 * * *"
-enso job create --name "Fast Triage" --provider codex --model luna --schedule "*/30 * * * *"
-enso job create --name "Agy Review" --provider agy --model gemini-3.6-flash-high --schedule "0 10 * * *"
+enso job create --name "Daily Review" --provider claude --model sonnet --schedule "0 9 * * *" --workspace company --access automation
+enso job create --name "Fast Triage" --provider codex --model luna --schedule "*/30 * * * *" --workspace company --access automation
+enso job create --name "Agy Review" --provider agy --model gemini-3.6-flash-high --schedule "0 10 * * *" --workspace company --access admin
 enso job list
 enso job run daily-review    # test it manually
 ```
 
-Each job has a `JOB.md` with a cron schedule, provider, model, and prompt. Schedules are validated at creation; if a hand-edited schedule later becomes invalid, the scheduler skips that job (with a log warning) instead of running it. By default a job that misses its scheduled time by more than `misfire_grace_seconds` (300) — say the machine was asleep — is skipped rather than run late; set `catch_up: true` in the frontmatter to run missed schedules on the next tick. A per-job lock prevents the scheduler, the CLI, and the dashboard from running the same job concurrently. Jobs can include a prerun script that gates execution — `exit 0` to proceed, `exit 1` to skip silently, and any other exit to fail. Prerun timeouts, missing scripts, and exit `2+` are recorded in run history and notify through the job's configured destination. Identical alerts are suppressed for 24 hours and one recovery is sent when the prerun becomes healthy. Prerun stdout gets injected into the prompt via `{{prerun_output}}`; only an explicit, sanitized `ENSO_ERROR:` stderr summary can appear in an alert. The bundled `jobs` skill teaches your agents how to create and manage jobs themselves.
+Each job has a `JOB.md` with a cron schedule, provider, model, named `workspace`, named `access`, and prompt. The workspace is the provider CLI's cwd; the access profile must allow the job's provider and supplies its native policy. Every job requires both names. `enso config check` reports a missing required field and the loader skips that file; a parsed job with an invalid binding creates an error run before prerun or provider execution. Neither case falls back to the global working directory or unrestricted execution. Workspace/access configuration is top-level and works independently of Slack routes.
 
-`enso job run <name>` exercises the same prerun and provider pipeline without sending chat notifications. Intentional no-work exits successfully with a clear message; prerun and provider failures return a nonzero CLI status.
+Schedules are validated at creation; if a hand-edited schedule later becomes invalid, the scheduler skips that job (with a log warning) instead of running it. By default a job that misses its scheduled time by more than `misfire_grace_seconds` (300) — say the machine was asleep — is skipped rather than run late; set `catch_up: true` in the frontmatter to run missed schedules on the next tick. A persistent per-job `.run.lock` file coordinates the scheduler, CLI, and dashboard so the same job does not run concurrently. Jobs sharing a workspace also use that workspace's process-local concurrency limit, but separate Enso processes do not share that workspace semaphore.
+
+Jobs can include a prerun script that gates execution — `exit 0` to proceed, `exit 1` to skip silently, and any other exit to fail. The prerun is trusted host-side code run with the job directory as cwd; it is not constrained by the provider's native policy. Prerun timeouts, missing scripts, and exit `2+` are recorded in run history and notify through the job's configured destination. Identical alerts are suppressed for 24 hours and one recovery is sent when the prerun becomes healthy. Prerun stdout gets injected into the prompt via `{{prerun_output}}`; only an explicit, sanitized `ENSO_ERROR:` stderr summary can appear in an alert. The bundled `jobs` skill teaches your agents how to create and manage jobs themselves.
+
+Successful jobs are silent unless their prompt explicitly sends a message. Scheduled failures and prerun recovery use the job's `notify` destination or the transport's `notify_channel`. `enso job run <name>` exercises the same prerun and provider pipeline while suppressing Enso's automatic job alerts; it cannot suppress a message explicitly sent by the provider process. Intentional no-work exits successfully with a clear message; prerun and provider failures return a nonzero CLI status.
 
 Codex models use the short names `sol`, `terra`, and `luna` in chat commands and job files. Enso translates them to the CLI model IDs `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` when spawning Codex. Full or custom model IDs remain supported.
 
@@ -277,7 +283,7 @@ development is in progress.
 
 ## Config
 
-Everything lives under `~/.enso/`. Config is at `~/.enso/config.json` — the setup wizard writes it for you, but you can edit it directly to add models, change the working directory, or set the interactive timeout through `agent.timeout` (whole seconds). Upgrades backfill newly supported providers without replacing existing paths or custom model lists. Set `notify_channel` to give `enso message send`, job alerts, and autocompact hooks a default destination (required for Slack; on Telegram it's optional — without it, sends broadcast to `allowed_users`).
+Everything lives under `~/.enso/`. Config is at `~/.enso/config.json` — the setup wizard writes it for you, but you can edit it directly to add models, define workspaces/access profiles/routes, change Telegram's global working directory, or set the interactive timeout through `agent.timeout` (whole seconds). Upgrades backfill newly supported providers without replacing existing paths or custom model lists. Set `notify_channel` to give `enso message send`, job alerts, and autocompact hooks a default destination when no interactive origin or explicit destination exists. No transport broadcasts implicitly.
 
 ### Secrets
 
@@ -320,7 +326,8 @@ reference also requires the helper's `op_set_secret` function.
         "item": "Enso - Transport - Telegram",
         "field": "TELEGRAM_BOT_TOKEN"
       },
-      "allowed_users": ["123456789"]
+      "allowed_users": ["123456789"],
+      "notify_channel": "123456789"
     },
     "slack": {
       "bot_token_1password": {
@@ -331,7 +338,6 @@ reference also requires the helper's `op_set_secret` function.
         "item": "Enso - Transport - Slack",
         "field": "SLACK_APP_TOKEN"
       },
-      "allowed_users": ["U12345678"],
       "notify_channel": "C12345678"
     }
   },
@@ -343,6 +349,8 @@ reference also requires the helper's `op_set_secret` function.
   }
 }
 ```
+
+That fragment demonstrates credential storage only. A valid Slack configuration also needs the top-level `workspaces`, `access`, and exact `routes.slack` blocks shown in [`docs/examples/teams-config.jsonc`](docs/examples/teams-config.jsonc).
 
 The service-account credential needed by the helper may still use the bootstrap
 `~/.enso/secrets/1password.env` file. Existing literal `bot_token` and `app_token`

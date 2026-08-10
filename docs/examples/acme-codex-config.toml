@@ -14,8 +14,8 @@ approval_policy = "never"
 
 # Read-only client access to the invocation workspace. Use "write" only for
 # a staff profile, or grant a narrower writable project-data path using the
-# installed CLI's current native syntax. Keep AGENTS.md, .agents, and skills
-# protected when a broader staff route trusts them.
+# installed CLI's current native syntax. Keep AGENTS.md, CLAUDE.md, .agents,
+# .claude, and skill definitions protected when a broader route trusts them.
 [permissions.enso.filesystem.":workspace_roots"]
 "." = "read"
 

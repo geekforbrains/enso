@@ -10,8 +10,12 @@ from enso.transports.telegram import TelegramContext, TelegramTransport, _resolv
 
 def _msg(**kwargs):
     fields = {
-        "document": None, "photo": None, "audio": None,
-        "voice": None, "video": None, "video_note": None,
+        "document": None,
+        "photo": None,
+        "audio": None,
+        "voice": None,
+        "video": None,
+        "video_note": None,
     }
     fields.update(kwargs)
     return SimpleNamespace(**fields)
@@ -62,6 +66,182 @@ def test_transport_resolves_1password_token_reference(monkeypatch):
 
     assert transport.bot_token == "resolved-telegram-token"
     assert transport.allowed_users == ["123"]
+
+
+def test_legacy_allowed_user_ids_is_ignored_and_fails_closed():
+    runtime = SimpleNamespace(
+        config={
+            "transports": {
+                "telegram": {"bot_token": "t", "allowed_user_ids": [123]},
+            },
+        },
+    )
+
+    transport = TelegramTransport(runtime)
+
+    assert transport.allowed_users == []
+    assert transport._is_authorized(_update()) is False
+
+
+def test_wildcard_allowed_user_is_rejected():
+    runtime = SimpleNamespace(
+        config={
+            "transports": {
+                "telegram": {"bot_token": "t", "allowed_users": ["*"]},
+            },
+        },
+    )
+
+    transport = TelegramTransport(runtime)
+
+    assert transport.allowed_users == []
+    assert transport._is_authorized(_update()) is False
+
+
+def test_invalid_allowed_users_value_fails_closed():
+    runtime = SimpleNamespace(
+        config={
+            "transports": {
+                "telegram": {"bot_token": "t", "allowed_users": "123"},
+            },
+        },
+    )
+
+    transport = TelegramTransport(runtime)
+
+    assert transport.allowed_users == []
+    assert transport._is_authorized(_update()) is False
+
+
+def test_one_invalid_allowed_user_fails_closed_for_the_whole_list():
+    runtime = SimpleNamespace(
+        config={
+            "transports": {
+                "telegram": {
+                    "bot_token": "t",
+                    "allowed_users": ["123", 456],
+                },
+            },
+        },
+    )
+
+    transport = TelegramTransport(runtime)
+
+    assert transport.allowed_users == []
+    assert transport._is_authorized(_update()) is False
+
+
+def test_duplicate_allowed_users_fail_closed():
+    runtime = SimpleNamespace(
+        config={
+            "transports": {
+                "telegram": {
+                    "bot_token": "t",
+                    "allowed_users": ["123", "123"],
+                },
+            },
+        },
+    )
+
+    transport = TelegramTransport(runtime)
+
+    assert transport.allowed_users == []
+
+
+def test_non_positive_allowed_user_fails_closed():
+    runtime = SimpleNamespace(
+        config={
+            "transports": {
+                "telegram": {
+                    "bot_token": "t",
+                    "allowed_users": ["123", "0"],
+                },
+            },
+        },
+    )
+
+    transport = TelegramTransport(runtime)
+
+    assert transport.allowed_users == []
+
+
+def test_legacy_alias_fails_closed_even_with_valid_allowed_users():
+    runtime = SimpleNamespace(
+        config={
+            "transports": {
+                "telegram": {
+                    "bot_token": "t",
+                    "allowed_users": ["123"],
+                    "allowed_user_ids": [123],
+                },
+            },
+        },
+    )
+
+    transport = TelegramTransport(runtime)
+
+    assert transport.allowed_users == []
+
+
+async def test_notify_uses_configured_notify_channel():
+    runtime = SimpleNamespace(
+        config={
+            "transports": {
+                "telegram": {
+                    "bot_token": "t",
+                    "allowed_users": ["123", "456"],
+                    "notify_channel": "789",
+                },
+            },
+        },
+    )
+    transport = TelegramTransport(runtime)
+    transport._bot = SimpleNamespace(send_message=AsyncMock())
+
+    await transport.notify("Hello")
+
+    transport._bot.send_message.assert_awaited_once()
+    assert transport._bot.send_message.await_args.kwargs["chat_id"] == "789"
+
+
+async def test_notify_explicit_destination_wins_over_notify_channel():
+    runtime = SimpleNamespace(
+        config={
+            "transports": {
+                "telegram": {
+                    "bot_token": "t",
+                    "allowed_users": ["123"],
+                    "notify_channel": "789",
+                },
+            },
+        },
+    )
+    transport = TelegramTransport(runtime)
+    transport._bot = SimpleNamespace(send_message=AsyncMock())
+
+    await transport.notify("Hello", destination="999")
+
+    transport._bot.send_message.assert_awaited_once()
+    assert transport._bot.send_message.await_args.kwargs["chat_id"] == "999"
+
+
+async def test_notify_without_destination_is_dropped_instead_of_broadcast():
+    runtime = SimpleNamespace(
+        config={
+            "transports": {
+                "telegram": {
+                    "bot_token": "t",
+                    "allowed_users": ["123", "456"],
+                },
+            },
+        },
+    )
+    transport = TelegramTransport(runtime)
+    transport._bot = SimpleNamespace(send_message=AsyncMock())
+
+    await transport.notify("Hello")
+
+    transport._bot.send_message.assert_not_awaited()
 
 
 async def test_reply_status_returns_message_handle():

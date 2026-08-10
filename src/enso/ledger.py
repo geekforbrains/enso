@@ -1,6 +1,6 @@
 """Slack delivery ledger — at-most-once dispatch, independent of auditing.
 
-Teams mode claims every inbound Slack delivery in ``_enso_slack_events``
+Slack routing claims every inbound delivery in ``_enso_slack_events``
 before routing. Both event types for one message (``message`` and
 ``app_mention``) and every Slack retry derive the same opaque ``delivery_id``,
 so a duplicate claim acknowledges the retry without executing anything twice.

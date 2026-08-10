@@ -40,6 +40,8 @@ def _database_web_app(tmp_path: Path, monkeypatch):
         'schedule: "0 9 * * *"\n'
         "provider: codex\n"
         "model: gpt-test\n"
+        "workspace: default\n"
+        "access: admin\n"
         "enabled: false\n"
         "---\n\n"
         "Original prompt.\n",

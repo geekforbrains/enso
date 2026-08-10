@@ -316,7 +316,7 @@ async def test_missing_policy_gets_config_error(tmp_enso, monkeypatch):
 
     rt.dispatch.assert_not_awaited()
     reply = client.chat_postMessage.call_args.kwargs["text"]
-    assert "enso policy check" in reply
+    assert "enso config check" in reply
     (row,) = _audit_rows(tmp_enso)
     assert row["decision"] == "unconfigured"
     assert row["outcome"] == "blocked"
@@ -463,35 +463,45 @@ async def test_completer_finishes_audit_and_ledger(tmp_enso, monkeypatch):
     assert status == "completed"
 
 
-# -- legacy coexistence --
+# -- exact-route-only migration --
 
 
-async def test_conflict_mode_blocks_slack_entirely(tmp_enso, monkeypatch):
+async def test_removed_allowlist_invalidates_exact_route_config(tmp_enso, monkeypatch):
     config = _teams_config(tmp_enso)
     config["transports"]["slack"]["allowed_users"] = [DEV]
     runtime = Runtime(config)
     runtime.dispatch = AsyncMock()
     transport = SlackTransport(runtime)
-    assert transport.mode == "conflict"
+    assert transport.teams_router is not None
+    assert not transport.teams_router.teams.dispatchable
+    assert any(
+        "allowed_users is no longer supported" in problem
+        for problem in transport.teams_router.teams.errors
+    )
+    transport.teams_router.set_authenticated_account(ACCOUNT)
     client = _make_client()
     await transport._handle_app_mention(_mention(), client)
     await transport._handle_message(_dm(), client)
     runtime.dispatch.assert_not_awaited()
+    assert client.chat_postMessage.await_count == 2
 
 
-async def test_legacy_mode_still_works_without_routes(tmp_enso, monkeypatch):
+async def test_allowlist_without_routes_cannot_enable_slack(tmp_enso, monkeypatch):
     config = _teams_config(tmp_enso)
     del config["routes"]
     config["transports"]["slack"]["allowed_users"] = [DEV]
     runtime = Runtime(config)
     runtime.dispatch = AsyncMock()
     transport = SlackTransport(runtime)
-    assert transport.mode == "legacy"
+    assert transport.teams_router is not None
+    assert not transport.teams_router.teams.dispatchable
+    assert any(
+        "routes.slack is required" in problem for problem in transport.teams_router.teams.errors
+    )
     client = _make_client()
     await transport._handle_app_mention(_mention(), client)
-    runtime.dispatch.assert_awaited_once()
-    # Legacy context: global working_dir, no teams binding.
-    assert runtime.dispatch.call_args.kwargs.get("context") is None
+    await transport._handle_message(_dm(user=DEV), client)
+    runtime.dispatch.assert_not_awaited()
 
 
 async def test_commands_work_when_current_provider_policy_is_broken(tmp_enso, monkeypatch):

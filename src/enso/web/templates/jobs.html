@@ -35,6 +35,8 @@
               {{ job.schedule | humanize_cron }}
               <span aria-hidden="true">·</span>
               <span class="break-anywhere">{{ job.provider }}/{{ job.model }}</span>
+              <span aria-hidden="true">·</span>
+              <span class="break-anywhere">{{ job.workspace }}/{{ job.access }}</span>
             </div>
           </div>
           {% if job.enabled %}

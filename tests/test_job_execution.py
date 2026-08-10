@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -24,9 +25,11 @@ class FakeProcess:
 class FakeProvider:
     def __init__(self):
         self.prompts: list[tuple[str, str]] = []
+        self.launches = []
 
     def build_batch_command(self, prompt: str, model: str, *, launch=None) -> list[str]:
         self.prompts.append((prompt, model))
+        self.launches.append(launch)
         return ["fake-provider"]
 
     @staticmethod
@@ -61,10 +64,35 @@ def make_job(tmp_enso: str, *, prerun: str | None = "prerun.sh", notify: str = "
         schedule="*/5 * * * *",
         provider="claude",
         model="sonnet",
+        workspace="company",
+        access="automation",
         prerun=prerun,
         notify=notify,
         prompt="Use this: {{prerun_output}}",
     )
+
+
+@pytest.fixture(autouse=True)
+def configured_job_catalog(sample_config, tmp_enso):
+    """Give execution tests one valid named workspace/access pair."""
+    workspace = Path(tmp_enso, "workspaces", "company")
+    workspace.mkdir(parents=True, exist_ok=True)
+    sample_config.update(
+        {
+            "workspaces": {
+                "company": {"path": str(workspace), "concurrency": 1},
+            },
+            "access": {
+                "automation": {
+                    "unrestricted": True,
+                    "providers": ["claude", "codex", "agy"],
+                    "default_provider": "claude",
+                    "chat_commands": [],
+                },
+            },
+        }
+    )
+    return workspace
 
 
 def stub_prerun_process(
@@ -76,9 +104,7 @@ def stub_prerun_process(
     timed_out: bool = False,
 ) -> None:
     runtime._spawn_process = AsyncMock(return_value=FakeProcess(returncode))
-    runtime._communicate_with_timeout = AsyncMock(
-        return_value=(stdout, stderr, timed_out)
-    )
+    runtime._communicate_with_timeout = AsyncMock(return_value=(stdout, stderr, timed_out))
 
 
 def stub_provider(
@@ -87,14 +113,14 @@ def stub_provider(
     provider = FakeProvider()
     runtime.make_provider = MagicMock(return_value=provider)
     runtime._spawn_process = AsyncMock(return_value=FakeProcess(returncode))
-    runtime._communicate_with_timeout = AsyncMock(
-        return_value=(output, b"", False)
-    )
+    runtime._communicate_with_timeout = AsyncMock(return_value=(output, b"", False))
     return provider
 
 
 async def test_run_history_create_is_offloaded_from_event_loop(
-    tmp_enso, sample_config, monkeypatch,
+    tmp_enso,
+    sample_config,
+    monkeypatch,
 ):
     runtime = Runtime(sample_config)
     job = make_job(tmp_enso)
@@ -119,7 +145,9 @@ async def test_run_history_create_is_offloaded_from_event_loop(
 
 
 async def test_run_history_finish_is_offloaded_from_event_loop(
-    tmp_enso, sample_config, monkeypatch,
+    tmp_enso,
+    sample_config,
+    monkeypatch,
 ):
     runtime = Runtime(sample_config)
     event_loop_thread = threading.get_ident()
@@ -145,7 +173,9 @@ async def test_run_history_finish_is_offloaded_from_event_loop(
 
 
 def test_run_history_finish_survives_output_bookkeeping_failure(
-    tmp_enso, sample_config, monkeypatch,
+    tmp_enso,
+    sample_config,
+    monkeypatch,
 ):
     """A log-write failure must not leave an otherwise completed run active."""
     runtime = Runtime(sample_config)
@@ -227,7 +257,10 @@ async def test_manual_run_of_invalid_job_errors_without_notifying(tmp_enso, samp
     [(0, "open"), (1, "no_work"), (2, "error"), (7, "error"), (-15, "error")],
 )
 async def test_prerun_classifies_exact_exit_contract(
-    tmp_enso, sample_config, returncode, expected,
+    tmp_enso,
+    sample_config,
+    returncode,
+    expected,
 ):
     runtime = Runtime(sample_config)
     job = make_job(tmp_enso)
@@ -263,7 +296,9 @@ async def test_prerun_executes_real_shell_contract(tmp_enso, sample_config):
     result = await runtime._run_job_prerun(job, "[job:capture]")
 
     assert result == PrerunResult(
-        "error", diagnostic="safe shell failure", exit_code=2,
+        "error",
+        diagnostic="safe shell failure",
+        exit_code=2,
     )
 
 
@@ -292,14 +327,14 @@ async def test_prerun_spawn_error_is_classified(tmp_enso, sample_config):
 
 
 async def test_prerun_diagnostic_requires_safe_marker_and_redacts(
-    tmp_enso, sample_config,
+    tmp_enso,
+    sample_config,
 ):
     runtime = Runtime(sample_config)
     job = make_job(tmp_enso)
     raw = b"private source record\n"
     marked = (
-        b"  ENSO_ERROR: request failed token=hunter2 "
-        b"Authorization=Bearer-secret Bearer abc.def\n"
+        b"  ENSO_ERROR: request failed token=hunter2 Authorization=Bearer-secret Bearer abc.def\n"
     )
     stub_prerun_process(
         runtime,
@@ -348,7 +383,8 @@ async def test_prerun_diagnostic_is_truncated(tmp_enso, sample_config):
 
 
 async def test_failure_history_and_notification_never_include_raw_streams(
-    tmp_enso, sample_config,
+    tmp_enso,
+    sample_config,
 ):
     runtime = Runtime(sample_config)
     runtime.transport = RecordingTransport()
@@ -370,7 +406,8 @@ async def test_failure_history_and_notification_never_include_raw_streams(
 
 
 async def test_scheduled_open_prerun_injects_output_and_runs_provider(
-    tmp_enso, sample_config,
+    tmp_enso,
+    sample_config,
 ):
     runtime = Runtime(sample_config)
     job = make_job(tmp_enso)
@@ -383,9 +420,10 @@ async def test_scheduled_open_prerun_injects_output_and_runs_provider(
 
     assert result.status == "ok"
     assert provider.prompts == [("Use this: captured context", "sonnet")]
-    runtime.make_provider.assert_called_once_with(
-        "claude", timeout=job.timeout,
-    )
+    runtime.make_provider.assert_called_once()
+    assert runtime.make_provider.call_args.args == ("claude",)
+    assert runtime.make_provider.call_args.kwargs["timeout"] == job.timeout
+    assert runtime.make_provider.call_args.kwargs["context"].workspace_id == "company"
     assert runtime._spawn_process.await_args.kwargs["stdin"] == asyncio.subprocess.DEVNULL
     row = runs.get(result.run_id)
     assert row["trigger"] == "schedule"
@@ -407,9 +445,7 @@ async def test_no_work_is_silent_without_history_or_provider(tmp_enso, sample_co
     runtime = Runtime(sample_config)
     runtime.transport = RecordingTransport()
     job = make_job(tmp_enso)
-    runtime._run_job_prerun = AsyncMock(
-        return_value=PrerunResult("no_work", exit_code=1)
-    )
+    runtime._run_job_prerun = AsyncMock(return_value=PrerunResult("no_work", exit_code=1))
     runtime.make_provider = MagicMock()
 
     result = await runtime._execute_job(job)
@@ -429,7 +465,11 @@ async def test_no_work_is_silent_without_history_or_provider(tmp_enso, sample_co
     ],
 )
 async def test_scheduled_prerun_failure_records_and_notifies_destination(
-    tmp_enso, sample_config, prerun, expected_status, expected_exit,
+    tmp_enso,
+    sample_config,
+    prerun,
+    expected_status,
+    expected_exit,
 ):
     runtime = Runtime(sample_config)
     runtime.transport = RecordingTransport()
@@ -464,7 +504,8 @@ async def test_missing_prerun_records_failure_and_never_runs_provider(tmp_enso, 
 
 
 async def test_identical_prerun_failures_are_suppressed_but_recorded(
-    tmp_enso, sample_config,
+    tmp_enso,
+    sample_config,
 ):
     runtime = Runtime(sample_config)
     runtime.transport = RecordingTransport()
@@ -477,9 +518,7 @@ async def test_identical_prerun_failures_are_suppressed_but_recorded(
     second = await runtime._execute_job(job)
 
     assert len(runtime.transport.notifications) == 1
-    assert {runs.get(first.run_id)["status"], runs.get(second.run_id)["status"]} == {
-        "prerun_error"
-    }
+    assert {runs.get(first.run_id)["status"], runs.get(second.run_id)["status"]} == {"prerun_error"}
     assert runtime._job_failure_alerts[job.dir_name]["suppressed"] == 1
     assert "same failure" not in Path(tmp_enso, "state.json").read_text()
 
@@ -521,7 +560,9 @@ async def test_changed_exit_or_destination_alerts_immediately(tmp_enso, sample_c
     await runtime._execute_job(job)
 
     assert [destination for _, destination in runtime.transport.notifications] == [
-        "one", "one", "two"
+        "one",
+        "one",
+        "two",
     ]
 
 
@@ -556,7 +597,8 @@ async def test_terminal_job_runs_apply_retention_config(tmp_enso, sample_config)
 
 
 async def test_dedupe_persists_and_healthy_prerun_sends_one_recovery(
-    tmp_enso, sample_config,
+    tmp_enso,
+    sample_config,
 ):
     job = make_job(tmp_enso)
     first_runtime = Runtime(sample_config)
@@ -572,9 +614,7 @@ async def test_dedupe_persists_and_healthy_prerun_sends_one_recovery(
     await runtime._execute_job(job)
     assert runtime.transport.notifications == []
 
-    runtime._run_job_prerun = AsyncMock(
-        return_value=PrerunResult("no_work", exit_code=1)
-    )
+    runtime._run_job_prerun = AsyncMock(return_value=PrerunResult("no_work", exit_code=1))
     await runtime._execute_job(job)
     await runtime._execute_job(job)
 
@@ -584,7 +624,8 @@ async def test_dedupe_persists_and_healthy_prerun_sends_one_recovery(
 
 
 async def test_recovery_clears_episode_even_if_notification_fails(
-    tmp_enso, sample_config,
+    tmp_enso,
+    sample_config,
 ):
     runtime = Runtime(sample_config)
     runtime.transport = RecordingTransport()
@@ -595,9 +636,7 @@ async def test_recovery_clears_episode_even_if_notification_fails(
     await runtime._execute_job(job)
 
     runtime.transport = FailingTransport()
-    runtime._run_job_prerun = AsyncMock(
-        return_value=PrerunResult("no_work", exit_code=1)
-    )
+    runtime._run_job_prerun = AsyncMock(return_value=PrerunResult("no_work", exit_code=1))
     await runtime._execute_job(job)
 
     assert job.dir_name not in runtime._job_failure_alerts
@@ -611,7 +650,10 @@ async def test_recovery_clears_episode_even_if_notification_fails(
     ],
 )
 async def test_manual_run_uses_prerun_records_failure_without_notifying(
-    tmp_enso, sample_config, monkeypatch, prerun,
+    tmp_enso,
+    sample_config,
+    monkeypatch,
+    prerun,
 ):
     runtime = Runtime(sample_config)
     runtime.transport = RecordingTransport()
@@ -633,9 +675,7 @@ async def test_manual_no_work_has_no_history(tmp_enso, sample_config, monkeypatc
     runtime.transport = RecordingTransport()
     job = make_job(tmp_enso)
     monkeypatch.setattr("enso.core.load_jobs", lambda: [job])
-    runtime._run_job_prerun = AsyncMock(
-        return_value=PrerunResult("no_work", exit_code=1)
-    )
+    runtime._run_job_prerun = AsyncMock(return_value=PrerunResult("no_work", exit_code=1))
 
     result = await runtime.run_job_now(job.dir_name)
 
@@ -667,37 +707,15 @@ async def test_concurrent_same_job_is_skipped_via_run_lock(tmp_enso, sample_conf
     reacquired.close()
 
 
-# -- Teams mode does not alter the global job runtime --
+# -- Named workspace/access execution bindings --
 
 
-def _teams_blocks(tmp_enso: str) -> dict:
-    """Minimal valid teams config whose access profile allows only Claude."""
-    acme = Path(tmp_enso, "workspaces", "acme")
-    acme.mkdir(parents=True, exist_ok=True)
-    return {
-        "workspaces": {"acme": {"path": str(acme)}},
-        "access": {
-            "chat": {
-                "unrestricted": True,
-                "providers": ["claude"],
-                "default_provider": "claude",
-                "chat_commands": "*",
-            },
-        },
-        "routes": {
-            "slack": {
-                "account_id": "T1",
-                "dms": {},
-                "channels": {
-                    "C1": {"workspace": "acme", "access": "chat"},
-                },
-            },
-        },
-    }
-
-
-async def test_teams_mode_job_without_workspace_runs_globally(tmp_enso, sample_config):
-    sample_config.update(_teams_blocks(tmp_enso))
+async def test_job_runs_in_named_workspace_with_native_launch(
+    tmp_enso,
+    sample_config,
+    configured_job_catalog,
+):
+    """Jobs reuse the same workspace/access execution plumbing as routes."""
     runtime = Runtime(sample_config)
     job = make_job(tmp_enso, prerun=None)
     provider = stub_provider(runtime)
@@ -705,56 +723,269 @@ async def test_teams_mode_job_without_workspace_runs_globally(tmp_enso, sample_c
     result = await runtime._execute_job(job, trigger="manual", notify_failures=False)
 
     assert result.status == "ok"
-    assert "context" not in runtime.make_provider.call_args.kwargs
+    context = runtime.make_provider.call_args.kwargs["context"]
+    assert context.path == str(configured_job_catalog)
+    assert context.workspace_id == "company"
+    assert context.workspace.name == "company"
+    assert context.access.name == "automation"
     spawn_kwargs = runtime._spawn_process.await_args.kwargs
-    assert spawn_kwargs["cwd"] == runtime.working_dir
-    assert provider.prompts  # the batch command was built
+    assert spawn_kwargs["cwd"] == str(configured_job_catalog)
+    assert provider.launches[0].mode == "unrestricted"
 
 
-async def test_teams_mode_does_not_restrict_job_prerun(tmp_enso, sample_config):
-    sample_config.update(_teams_blocks(tmp_enso))
+async def test_job_passes_policy_launch_and_minimal_environment(
+    tmp_enso,
+    sample_config,
+    monkeypatch,
+):
+    """The selected access profile controls batch command and child env."""
+    launch = MagicMock(mode="policy", env={"SAFE_ONLY": "1"})
+    prepared = []
+
+    def fake_prepare(workspace, access, provider):
+        prepared.append((workspace.name, access.name, provider))
+        return launch
+
+    monkeypatch.setattr("enso.policy.prepare_launch", fake_prepare)
     runtime = Runtime(sample_config)
-    job = make_job(tmp_enso)
-    stub_provider(runtime)
+    job = make_job(tmp_enso, prerun=None)
+    provider = stub_provider(runtime)
 
     result = await runtime._execute_job(job, trigger="manual", notify_failures=False)
 
     assert result.status == "ok"
+    assert prepared == [
+        ("company", "automation", "claude"),
+        ("company", "automation", "claude"),
+    ]
+    assert provider.launches == [launch]
+    assert runtime._spawn_process.await_args.kwargs["env"] == {"SAFE_ONLY": "1"}
 
 
-async def test_slack_access_provider_allowlist_does_not_apply_to_jobs(
-    tmp_enso, sample_config,
+async def test_job_policy_preparation_failure_never_falls_back(
+    tmp_enso,
+    sample_config,
+    monkeypatch,
 ):
-    sample_config.update(_teams_blocks(tmp_enso))
+    def fail_prepare(_workspace, _access, _provider):
+        raise RuntimeError("native policy is invalid")
+
+    monkeypatch.setattr("enso.policy.prepare_launch", fail_prepare)
+    runtime = Runtime(sample_config)
+    job = make_job(tmp_enso)
+    runtime._run_job_prerun = AsyncMock()
+    runtime.make_provider = MagicMock()
+    runtime._spawn_process = AsyncMock()
+
+    result = await runtime._execute_job(job, trigger="manual", notify_failures=False)
+
+    assert result.status == "error"
+    assert "native policy is invalid" in result.output
+    runtime._run_job_prerun.assert_not_awaited()
+    runtime.make_provider.assert_not_called()
+    runtime._spawn_process.assert_not_awaited()
+
+
+async def test_job_policy_preflight_failure_happens_before_prerun(
+    tmp_enso,
+    sample_config,
+    monkeypatch,
+):
+    from enso.policy import PolicyCheck
+
+    monkeypatch.setattr(
+        "enso.policy.check_provider",
+        lambda _workspace, _access, provider: PolicyCheck(
+            provider=provider,
+            ok=False,
+            problems=("native policy is missing",),
+        ),
+    )
+    runtime = Runtime(sample_config)
+    job = make_job(tmp_enso)
+    runtime._run_job_prerun = AsyncMock()
+    runtime.make_provider = MagicMock()
+
+    result = await runtime._execute_job(job, trigger="manual", notify_failures=False)
+
+    assert result.status == "error"
+    assert "native policy is missing" in result.output
+    runtime._run_job_prerun.assert_not_awaited()
+    runtime.make_provider.assert_not_called()
+
+
+async def test_missing_job_workspace_path_fails_before_prerun(
+    tmp_enso,
+    sample_config,
+):
+    missing = Path(tmp_enso, "workspaces", "missing")
+    sample_config["workspaces"]["company"]["path"] = str(missing)
+    runtime = Runtime(sample_config)
+    job = make_job(tmp_enso)
+    runtime._run_job_prerun = AsyncMock()
+    runtime.make_provider = MagicMock()
+
+    result = await runtime._execute_job(job, trigger="manual", notify_failures=False)
+
+    assert result.status == "error"
+    assert "workspace path does not exist" in result.output
+    runtime._run_job_prerun.assert_not_awaited()
+    runtime.make_provider.assert_not_called()
+
+
+async def test_bound_jobs_share_process_local_workspace_concurrency(
+    tmp_enso,
+    sample_config,
+):
+    runtime = Runtime(sample_config)
+    first = make_job(tmp_enso, prerun=None)
+    second_dir = Path(tmp_enso, "jobs", "second")
+    second_dir.mkdir(parents=True)
+    second = replace(first, dir_name="second", name="Second")
+    runtime.make_provider = MagicMock(side_effect=[FakeProvider(), FakeProvider()])
+    runtime._spawn_process = AsyncMock(side_effect=[FakeProcess(0), FakeProcess(0)])
+    runtime._create_job_run = AsyncMock(return_value=None)
+    runtime._record_run_finish = AsyncMock()
+    active = 0
+    maximum = 0
+
+    async def communicate(_proc, _label, _timeout):
+        nonlocal active, maximum
+        active += 1
+        maximum = max(maximum, active)
+        await asyncio.sleep(0)
+        active -= 1
+        return b"done", b"", False
+
+    runtime._communicate_with_timeout = AsyncMock(side_effect=communicate)
+
+    results = await asyncio.gather(
+        runtime._execute_job(first, trigger="manual", notify_failures=False),
+        runtime._execute_job(second, trigger="manual", notify_failures=False),
+    )
+
+    assert [result.status for result in results] == ["ok", "ok"]
+    assert maximum == 1
+
+
+async def test_job_binding_does_not_move_trusted_prerun(tmp_enso, sample_config):
+    """Prerun remains a trusted job-directory script outside native policy."""
+    runtime = Runtime(sample_config)
+    job = make_job(tmp_enso)
+    runtime._spawn_process = AsyncMock(return_value=FakeProcess(1))
+    runtime._communicate_with_timeout = AsyncMock(return_value=(b"", b"", False))
+
+    result = await runtime._run_job_prerun(job, "[job:capture]")
+
+    assert result.outcome == "no_work"
+    assert runtime._spawn_process.await_args.kwargs["cwd"] == job.job_dir
+
+
+async def test_job_access_must_allow_its_provider_before_prerun(
+    tmp_enso,
+    sample_config,
+):
+    sample_config["access"]["automation"]["providers"] = ["claude"]
+    runtime = Runtime(sample_config)
+    job = make_job(tmp_enso)
+    job.provider = "codex"
+    job.model = "gpt-5.3-codex"
+    runtime._run_job_prerun = AsyncMock()
+    runtime.make_provider = MagicMock()
+
+    result = await runtime._execute_job(job, trigger="manual", notify_failures=False)
+
+    assert result.status == "error"
+    assert "does not allow provider 'codex'" in result.output
+    runtime._run_job_prerun.assert_not_awaited()
+    runtime.make_provider.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected"),
+    [
+        ("workspace", "missing", "Unknown workspace 'missing'"),
+        ("access", "missing", "Unknown access profile 'missing'"),
+        ("workspace", "", "workspace is required"),
+        ("access", "", "access is required"),
+    ],
+)
+async def test_invalid_job_binding_fails_without_global_fallback(
+    tmp_enso,
+    sample_config,
+    field,
+    value,
+    expected,
+):
+    runtime = Runtime(sample_config)
+    job = make_job(tmp_enso)
+    setattr(job, field, value)
+    runtime._run_job_prerun = AsyncMock()
+    runtime.make_provider = MagicMock()
+
+    result = await runtime._execute_job(job, trigger="manual", notify_failures=False)
+
+    assert result.status == "error"
+    assert expected in result.output
+    runtime._run_job_prerun.assert_not_awaited()
+    runtime.make_provider.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "value", "expected"),
+    [
+        ("workspaces", "path", "", "Invalid workspace 'company'"),
+        ("access", "unrestricted", "yes", "Invalid access profile 'automation'"),
+    ],
+)
+async def test_invalid_selected_catalog_entry_fails_before_prerun(
+    tmp_enso,
+    sample_config,
+    section,
+    field,
+    value,
+    expected,
+):
+    sample_config[section]["company" if section == "workspaces" else "automation"][field] = value
+    runtime = Runtime(sample_config)
+    job = make_job(tmp_enso)
+    runtime._run_job_prerun = AsyncMock()
+    runtime.make_provider = MagicMock()
+
+    result = await runtime._execute_job(job, trigger="manual", notify_failures=False)
+
+    assert result.status == "error"
+    assert expected in result.output
+    runtime._run_job_prerun.assert_not_awaited()
+    runtime.make_provider.assert_not_called()
+
+
+async def test_job_provider_and_model_override_access_default(
+    tmp_enso,
+    sample_config,
+):
+    """Access authorizes providers; the JOB.md still chooses provider/model."""
     runtime = Runtime(sample_config)
     job = make_job(tmp_enso, prerun=None)
     job.provider = "codex"
     job.model = "gpt-5.3-codex"
-    stub_provider(runtime)
+    provider = stub_provider(runtime)
 
     result = await runtime._execute_job(job, trigger="manual", notify_failures=False)
 
     assert result.status == "ok"
+    runtime.make_provider.assert_called_once()
+    assert runtime.make_provider.call_args.args == ("codex",)
+    assert provider.prompts == [("Use this: ", "gpt-5.3-codex")]
 
 
-async def test_legacy_job_keeps_working_dir(tmp_enso, sample_config):
-    runtime = Runtime(sample_config)
-    job = make_job(tmp_enso, prerun=None)
-    stub_provider(runtime)
-
-    result = await runtime._execute_job(job, trigger="manual", notify_failures=False)
-
-    assert result.status == "ok"
-    assert "context" not in runtime.make_provider.call_args.kwargs
-    assert runtime._spawn_process.await_args.kwargs["cwd"] == runtime.working_dir
-
-
-async def test_teams_mode_job_failure_does_not_enqueue_chat_context(
-    tmp_enso, sample_config,
+async def test_bound_job_failure_does_not_enqueue_chat_context(
+    tmp_enso,
+    sample_config,
 ):
-    """A global job must not inject context into an arbitrary teams chat."""
+    """A job binding does not make the job part of an interactive route."""
     from enso import messages
-    sample_config.update(_teams_blocks(tmp_enso))
+
     runtime = Runtime(sample_config)
     runtime.transport = RecordingTransport()
     job = make_job(tmp_enso, prerun=None)

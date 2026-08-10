@@ -1,14 +1,15 @@
-// Example ~/.enso/config.json for Slack teams mode.
+// Example ~/.enso/config.json for exact Slack routes.
 //
-// The presence of routes.slack enables teams mode. Remove the legacy Slack
-// allowed_users key: exact DM users and channel IDs become the authorization
-// boundary. An unrouted DM or explicit channel mention gets a fixed local access
-// response without an LLM launch; ordinary unrouted channel messages are ignored.
-// Telegram keeps its existing allowlist and working_dir.
+// Slack requires routes.slack: exact DM users and channel IDs select one workspace
+// and one access profile. There is no Slack allowlist, wildcard, or default route.
+// An unrouted DM or explicit channel mention gets a fixed local access response
+// without an LLM launch; ordinary unrouted channel messages are ignored.
+// Telegram, when used instead, remains private and uses exact numeric IDs under
+// transports.telegram.allowed_users plus the global working_dir.
 //
 // Config changes require an Enso restart. Before restarting, run:
 //
-//   enso policy check
+//   enso config check
 //   enso route explain slack U01OWNER
 //   enso route explain slack U04CLIENT C0ACME
 //
@@ -19,12 +20,13 @@
     "slack": {
       "bot_token": "xoxb-...",
       "app_token": "xapp-...",
-      "bot_user_id": "UBOT000000"
+      "bot_user_id": "UBOT000000",
+      "notify_channel": "C0COMPANY"
     }
   },
 
-  // A workspace is only a cwd containing shared knowledge, instructions, and
-  // native skills. Both Acme channels below deliberately share one workspace.
+  // A workspace is a provider cwd and shared content root, not a security
+  // boundary. Both Acme channels below deliberately share one workspace.
   "workspaces": {
     "company": {
       "path": "~/.enso/workspaces/company",
@@ -56,6 +58,12 @@
       "providers": ["claude"],
       "default_provider": "claude",
       "chat_commands": ["status", "clear", "stop", "help"]
+    },
+    "automation": {
+      "policy_dir": "~/.enso/policies/automation",
+      "providers": ["claude", "codex"],
+      "default_provider": "claude",
+      "chat_commands": []
     }
   },
 
@@ -100,3 +108,11 @@
     "max_age_days": 365
   }
 }
+
+// Every ~/.enso/jobs/<name>/JOB.md separately declares both names, for example:
+//
+//   workspace: company
+//   access: automation
+//
+// The job's provider runs in that workspace under that access profile's native
+// policy. Missing or invalid bindings never fall back to unrestricted execution.

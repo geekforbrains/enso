@@ -7,6 +7,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import yaml
 from croniter import croniter
@@ -14,9 +15,13 @@ from croniter import croniter
 from . import frontmatter
 from .config import JOBS_DIR, load_config, provider_models
 
+if TYPE_CHECKING:
+    from .teams import ExecutionCatalog
+
 log = logging.getLogger(__name__)
 
 _DEFAULT_PROMPT = "Your prompt here."
+_REQUIRED_FIELDS = ("name", "schedule", "provider", "model", "workspace", "access")
 
 
 @dataclass
@@ -28,6 +33,8 @@ class Job:
     schedule: str
     provider: str
     model: str
+    workspace: str
+    access: str
     enabled: bool = True
     prerun: str | None = None
     notify: str | None = None
@@ -46,16 +53,39 @@ class Job:
 
 def load_jobs() -> list[Job]:
     """Load all jobs from ~/.enso/jobs/."""
+    jobs, _errors = load_jobs_with_errors()
+    return jobs
+
+
+def load_jobs_with_errors(
+    config: dict | None = None,
+) -> tuple[list[Job], dict[str, tuple[str, ...]]]:
+    """Load jobs plus actionable errors keyed by job directory name.
+
+    Parse errors include jobs that ``load_jobs`` must skip. When ``config`` is
+    supplied, parsed jobs are also checked against their schedule, configured
+    provider/model, and named workspace/access binding.
+    """
     if not os.path.isdir(JOBS_DIR):
-        return []
-    jobs = []
+        return [], {}
+    jobs: list[Job] = []
+    errors: dict[str, tuple[str, ...]] = {}
     for entry in sorted(os.listdir(JOBS_DIR)):
         job_file = os.path.join(JOBS_DIR, entry, "JOB.md")
         if os.path.isfile(job_file):
-            job = parse_job(entry, job_file)
-            if job:
-                jobs.append(job)
-    return jobs
+            job, problems = _parse_job(entry, job_file)
+            if problems:
+                errors[entry] = problems
+                for problem in problems:
+                    log.warning("%s in %s", problem, job_file)
+            if job is None:
+                continue
+            jobs.append(job)
+            if config is not None:
+                validation = job_validation_errors(job, config)
+                if validation:
+                    errors[entry] = (*errors.get(entry, ()), *validation)
+    return jobs, errors
 
 
 def parse_job(dir_name: str, path: str) -> Job | None:
@@ -64,48 +94,62 @@ def parse_job(dir_name: str, path: str) -> Job | None:
     Expected format: YAML-like frontmatter between --- delimiters,
     followed by the prompt body.
     """
+    job, problems = _parse_job(dir_name, path)
+    for problem in problems:
+        log.warning("%s in %s", problem, path)
+    return job
+
+
+def _parse_job(dir_name: str, path: str) -> tuple[Job | None, tuple[str, ...]]:
+    """Parse one job while preserving diagnostics for validation commands."""
     try:
         with open(path, encoding="utf-8") as f:
             content = f.read()
-    except (OSError, UnicodeError):
-        log.warning("Could not read %s", path)
-        return None
+    except UnicodeError:
+        return None, ("Could not read JOB.md as UTF-8",)
+    except OSError as exc:
+        return None, (f"Could not read JOB.md: {exc}",)
 
     parts = frontmatter.split_raw(content)
     if parts is None:
-        log.warning("Invalid frontmatter in %s", path)
-        return None
+        return None, ("Invalid or missing frontmatter",)
 
     raw_meta, prompt = parts
     fields = _parse_frontmatter(raw_meta)
-    required = ("name", "schedule", "provider", "model")
-    if not all(k in fields for k in required):
-        log.warning("Missing required fields in %s", path)
-        return None
+    missing = tuple(field for field in _REQUIRED_FIELDS if field not in fields)
+    if missing:
+        return None, (f"Missing required fields: {', '.join(missing)}",)
 
-    return Job(
-        dir_name=dir_name,
-        name=fields["name"],
-        schedule=fields["schedule"],
-        provider=fields["provider"],
-        model=fields["model"],
-        enabled=_parse_bool(fields.get("enabled"), True),
-        prerun=fields.get("prerun"),
-        notify=fields.get("notify"),
-        timeout=_parse_int(fields.get("timeout"), 15 * 60),
-        prerun_timeout=_parse_int(fields.get("prerun_timeout"), 120),
-        catch_up=_parse_bool(fields.get("catch_up"), False),
-        misfire_grace_seconds=_parse_int(
-            fields.get("misfire_grace_seconds"),
-            5 * 60,
+    return (
+        Job(
+            dir_name=dir_name,
+            name=fields["name"],
+            schedule=fields["schedule"],
+            provider=fields["provider"],
+            model=fields["model"],
+            workspace=fields["workspace"],
+            access=fields["access"],
+            enabled=_parse_bool(fields.get("enabled"), True),
+            prerun=fields.get("prerun"),
+            notify=fields.get("notify"),
+            timeout=_parse_int(fields.get("timeout"), 15 * 60),
+            prerun_timeout=_parse_int(fields.get("prerun_timeout"), 120),
+            catch_up=_parse_bool(fields.get("catch_up"), False),
+            misfire_grace_seconds=_parse_int(
+                fields.get("misfire_grace_seconds"),
+                5 * 60,
+            ),
+            prompt=prompt.strip(),
+            path=path,
         ),
-        prompt=prompt.strip(),
-        path=path,
+        (),
     )
 
 
 def job_config_error(
-    provider: str, model: str, models_by_provider: dict[str, list[str]],
+    provider: str,
+    model: str,
+    models_by_provider: dict[str, list[str]],
 ) -> str | None:
     """Explain why a job's provider/model pair can't run, or None when valid."""
     if provider not in models_by_provider:
@@ -118,11 +162,66 @@ def job_config_error(
     return None
 
 
+def job_binding_error(
+    workspace: str,
+    access: str,
+    provider: str,
+    catalog: ExecutionCatalog,
+) -> str | None:
+    """Explain why a named job execution binding is unusable."""
+    if not workspace:
+        return "workspace is required"
+    if not access:
+        return "access is required"
+    if catalog.errors:
+        return "Invalid execution catalog: " + "; ".join(catalog.errors)
+
+    if workspace not in catalog.workspaces:
+        valid = ", ".join(catalog.workspaces) or "none configured"
+        return f"Unknown workspace '{workspace}' (valid: {valid})"
+    workspace_problems = catalog.workspace_errors.get(workspace)
+    if workspace_problems:
+        return f"Invalid workspace '{workspace}': " + "; ".join(workspace_problems)
+
+    profile = catalog.access_profiles.get(access)
+    if profile is None:
+        valid = ", ".join(catalog.access_profiles) or "none configured"
+        return f"Unknown access profile '{access}' (valid: {valid})"
+    access_problems = catalog.access_errors.get(access)
+    if access_problems:
+        return f"Invalid access profile '{access}': " + "; ".join(access_problems)
+    if not profile.allows_provider(provider):
+        allowed = ", ".join(profile.providers) or "none"
+        return (
+            f"Access profile '{access}' does not allow provider '{provider}' (allowed: {allowed})"
+        )
+    return None
+
+
 def schedule_error(schedule: str) -> str | None:
     """Explain why a cron schedule can't be parsed, or None when valid."""
     if isinstance(schedule, str) and croniter.is_valid(schedule):
         return None
     return f"Invalid cron schedule {schedule!r} (expected e.g. '0 9 * * *')"
+
+
+def job_validation_errors(job: Job, config: dict) -> tuple[str, ...]:
+    """Return every static schedule and execution error for a parsed job."""
+    from .teams import load_catalog
+
+    problems: list[str] = []
+    if error := schedule_error(job.schedule):
+        problems.append(error)
+    if error := job_config_error(job.provider, job.model, provider_models(config)):
+        problems.append(error)
+    if error := job_binding_error(
+        job.workspace,
+        job.access,
+        job.provider,
+        load_catalog(config),
+    ):
+        problems.append(error)
+    return tuple(problems)
 
 
 def create_job(
@@ -131,16 +230,30 @@ def create_job(
     provider: str,
     model: str,
     schedule: str,
+    *,
+    workspace: str,
+    access: str,
 ) -> Job:
     """Create a new job directory with a scaffolded JOB.md file.
 
     The prompt body is left as a placeholder for the caller to fill in.
     """
     _validate_dir_name(dir_name)
-    error = job_config_error(provider, model, provider_models(load_config()))
+    config = load_config()
+    error = job_config_error(provider, model, provider_models(config))
     if error:
         raise ValueError(error)
     error = schedule_error(schedule)
+    if error:
+        raise ValueError(error)
+    from .teams import load_catalog
+
+    error = job_binding_error(
+        workspace,
+        access,
+        provider,
+        load_catalog(config),
+    )
     if error:
         raise ValueError(error)
     os.makedirs(JOBS_DIR, exist_ok=True)
@@ -159,6 +272,8 @@ def create_job(
                 "schedule": schedule,
                 "provider": provider,
                 "model": model,
+                "workspace": workspace,
+                "access": access,
                 "enabled": False,
             },
             _DEFAULT_PROMPT,
@@ -174,6 +289,8 @@ def create_job(
         schedule=schedule,
         provider=provider,
         model=model,
+        workspace=workspace,
+        access=access,
         enabled=False,
         prompt=_DEFAULT_PROMPT,
         path=job_file,

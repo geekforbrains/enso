@@ -35,36 +35,36 @@ fails app creation if it is malformed, unavailable, or empty. A configured liter
 
 ## Routes
 
-| Route | Method | Status | Purpose |
-| --- | --- | --- | --- |
-| `/` | GET | Implemented | Dashboard — recent runs plus job, skill, doc, and table counts |
-| `/health` | GET | Implemented | Unauthenticated process-health probe |
-| `/jobs` | GET | Implemented | Job list — schedule, provider/model, enabled state |
-| `/jobs/new` | GET, POST | **Planned** | Create-job form and `JOB.md` scaffold |
-| `/jobs/{name}` | GET | Implemented | Job configuration, prompt, prerun state, and recent runs |
-| `/jobs/{name}/edit` | POST | **Planned** | Edit job metadata and prerun configuration |
-| `/jobs/{name}/prompt` | POST | Implemented | Edit only the prompt body while preserving raw frontmatter |
-| `/jobs/{name}/prerun` | POST | Implemented | Edit the configured prerun script while preserving its mode |
-| `/jobs/{name}/toggle` | POST | Implemented | Enable or disable a job |
-| `/jobs/{name}/delete` | POST | Implemented | Delete a job directory after confirmation |
-| `/jobs/{name}/run` | POST | Implemented | Run now and record a `manual` run |
-| `/runs` | GET | Implemented | Paginated run feed; filter by `?name=`, `?status=` |
-| `/runs/{id}` | GET | Implemented | Run metadata and captured log output |
-| `/skills` | GET | Implemented | Enso-owned and external read-only skill tiers |
-| `/skills/new` | GET, POST | **Planned** | Create an Enso-owned skill |
-| `/skills/{name}` | GET | Implemented | View `SKILL.md`; edit controls appear for Enso-owned skills |
-| `/skills/{name}/edit` | POST | Implemented | Replace an Enso-owned skill's `SKILL.md` |
-| `/skills/{name}/delete` | POST | Implemented | Delete an Enso-owned skill directory after confirmation |
-| `/docs` | GET | Implemented | Reference-doc list — name, description, relative path |
-| `/docs/new` | GET, POST | Implemented | Create a doc and scaffold its frontmatter |
-| `/docs/{path:path}` | GET | Implemented | View and edit one doc |
-| `/docs/edit` | POST | Implemented | Replace a doc's contents atomically |
-| `/docs/delete` | POST | Implemented | Delete a doc after confirmation |
-| `/tables` | GET | Implemented | Registered data-table list with discovery metadata |
-| `/tables/{name}` | GET | Implemented | Schema summary and bounded, read-only row preview |
-| `/agents` | GET | Implemented | View the working-directory `AGENTS.md` |
-| `/agents/edit` | POST | Implemented | Save `AGENTS.md` atomically |
-| `/static/*` | GET | Implemented | Vendored CSS and image assets |
+| Route                   | Method    | Status      | Purpose                                                              |
+| ----------------------- | --------- | ----------- | -------------------------------------------------------------------- |
+| `/`                     | GET       | Implemented | Dashboard — recent runs plus job, skill, doc, and table counts       |
+| `/health`               | GET       | Implemented | Unauthenticated process-health probe                                 |
+| `/jobs`                 | GET       | Implemented | Job list — schedule, provider/model, workspace/access, enabled state |
+| `/jobs/new`             | GET, POST | **Planned** | Create-job form and `JOB.md` scaffold                                |
+| `/jobs/{name}`          | GET       | Implemented | Job configuration, prompt, prerun state, and recent runs             |
+| `/jobs/{name}/edit`     | POST      | **Planned** | Edit job metadata and prerun configuration                           |
+| `/jobs/{name}/prompt`   | POST      | Implemented | Edit only the prompt body while preserving raw frontmatter           |
+| `/jobs/{name}/prerun`   | POST      | Implemented | Edit the configured prerun script while preserving its mode          |
+| `/jobs/{name}/toggle`   | POST      | Implemented | Enable or disable a job                                              |
+| `/jobs/{name}/delete`   | POST      | Implemented | Delete a job directory after confirmation                            |
+| `/jobs/{name}/run`      | POST      | Implemented | Run now and record a `manual` run                                    |
+| `/runs`                 | GET       | Implemented | Paginated run feed; filter by `?name=`, `?status=`                   |
+| `/runs/{id}`            | GET       | Implemented | Run metadata and captured log output                                 |
+| `/skills`               | GET       | Implemented | Enso-owned and external read-only skill tiers                        |
+| `/skills/new`           | GET, POST | **Planned** | Create an Enso-owned skill                                           |
+| `/skills/{name}`        | GET       | Implemented | View `SKILL.md`; edit controls appear for Enso-owned skills          |
+| `/skills/{name}/edit`   | POST      | Implemented | Replace an Enso-owned skill's `SKILL.md`                             |
+| `/skills/{name}/delete` | POST      | Implemented | Delete an Enso-owned skill directory after confirmation              |
+| `/docs`                 | GET       | Implemented | Reference-doc list — name, description, relative path                |
+| `/docs/new`             | GET, POST | Implemented | Create a doc and scaffold its frontmatter                            |
+| `/docs/{path:path}`     | GET       | Implemented | View and edit one doc                                                |
+| `/docs/edit`            | POST      | Implemented | Replace a doc's contents atomically                                  |
+| `/docs/delete`          | POST      | Implemented | Delete a doc after confirmation                                      |
+| `/tables`               | GET       | Implemented | Registered data-table list with discovery metadata                   |
+| `/tables/{name}`        | GET       | Implemented | Schema summary and bounded, read-only row preview                    |
+| `/agents`               | GET       | Implemented | View the working-directory `AGENTS.md`                               |
+| `/agents/edit`          | POST      | Implemented | Save `AGENTS.md` atomically                                          |
+| `/static/*`             | GET       | Implemented | Vendored CSS and image assets                                        |
 
 Every page request returns a complete document. Successful writes use ordinary `303`
 redirects to their resulting page. Table pagination and the Runs browser use normal links
@@ -89,7 +89,7 @@ The dashboard shows:
 
 ### Jobs (`/jobs`, `/jobs/{name}`)
 
-- Read: schedule, provider/model, timeout, notify destination, prompt body, and whether
+- Read: schedule, provider/model, required workspace/access names, timeout, notify destination, prompt body, and whether
   the configured prerun script exists.
 - A dedicated **enable/disable** toggle flips `enabled:` for one-click pause, and
   **Run now** executes the job immediately.
@@ -105,8 +105,7 @@ The dashboard shows:
   Existing run history remains available.
 - Recent runs for this job, linking to `/runs/{id}`. If run history is busy or unavailable,
   the configuration and editors remain usable and the failure is shown only in the Runs card.
-- **Planned:** browser forms for create and full metadata editing, including choosing the
-  prerun path. Until then use `enso job create` or edit the job files directly.
+- **Planned:** browser forms for create and full metadata editing, including choosing the workspace, access profile, and prerun path. Until then use `enso job create` or edit the job files directly.
 
 ### Run detail (`/runs/{id}`)
 
@@ -208,10 +207,10 @@ for its bounded timeout therefore cannot delay health checks or unrelated web re
 
 "Run now" executes through the dashboard process's `Runtime`:
 
-- It uses the same prerun/provider pipeline as `enso job run` and records
-  `trigger='manual'` in run history.
-- The POST waits for the run to finish, then uses a `303` redirect to its run detail page.
-  Live progress polling and output streaming are future work.
+- It uses the same prerun/provider pipeline as `enso job run`. When that pipeline creates a run row, it records `trigger='manual'`; intentional prerun no-work creates no row.
+- The provider runs in the job's named workspace under its selected access profile. Invalid bindings fail closed before prerun or provider execution.
+- Manual runs suppress Enso's automatic job failure/recovery notifications. A provider explicitly invoking `enso message send` remains an ordinary provider action and is not suppressed.
+- The POST waits for the run to finish, then uses a `303` redirect to its run detail page when a run row exists. Intentional no-work redirects back to the job page with a status message. Live progress polling and output streaming are future work.
 
 ## Rendering & assets
 
@@ -230,8 +229,7 @@ for its bounded timeout therefore cannot delay health checks or unrelated web re
   states, and chevrons across browsers and themes.
 - **Styling**: compiled Tailwind utilities are vendored as `web/static/tailwind.css`, with
   the small hand-written layer in `web/static/app.css`. Rebuild the generated file with
-  `cd src/enso/web && npx tailwindcss@3.4.17 -c tailwind.config.js -i tailwind.input.css
-  -o static/tailwind.css --minify`. Light, dark, and system themes are user-selectable.
+  `cd src/enso/web && npx tailwindcss@3.4.17 -c tailwind.config.js -i tailwind.input.css -o static/tailwind.css --minify`. Light, dark, and system themes are user-selectable.
   Templates use semantic neutral tokens (`canvas`, `surface`, `border`, `ink`, `muted`,
   `action`, and related states) backed by CSS variables in `app.css`; green, amber, and red
   are reserved for success, warning, and destructive states rather than ordinary actions.

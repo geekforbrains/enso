@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 _MENTION_RE = re.compile(r"<@\w+>\s*")
 
 CONFIG_ERROR_REPLY = (
-    "This conversation isn't fully configured for Enso — ask an admin to run `enso policy check`."
+    "This conversation isn't fully configured for Enso — ask an admin to run `enso config check`."
 )
 UNCONFIGURED_CHANNEL_REPLY = (
     "I haven't been enabled in this channel yet. Ask an Enso admin to set me up."
@@ -48,8 +48,7 @@ class TeamsRouter:
 
     def __init__(self, runtime: Runtime):
         self.runtime = runtime
-        self.teams: TeamsConfig = load_teams(runtime.config)  # type: ignore[assignment]
-        assert self.teams is not None, "TeamsRouter requires routes.slack"
+        self.teams: TeamsConfig = load_teams(runtime.config)
         self.account_ok = False
         self._reported_problems = False
 
@@ -57,11 +56,11 @@ class TeamsRouter:
         """Require the configured account to match the authenticated token."""
         self.account_ok = bool(team_id and team_id == self.teams.account_id)
         if self.account_ok:
-            log.info("Slack teams mode active for account %s", team_id)
+            log.info("Slack routes active for account %s", team_id)
         else:
             log.error(
                 "routes.slack.account_id=%r does not match the authenticated "
-                "Slack team %r — teams dispatch is disabled",
+                "Slack team %r — routed dispatch is disabled",
                 self.teams.account_id,
                 team_id,
             )
@@ -573,7 +572,7 @@ class TeamsRouter:
                 client,
                 channel,
                 thread_ts,
-                allowed_users=None,
+                author_filter=None,
                 untrusted=True,
             )
         elif is_mention and not is_dm:
@@ -581,7 +580,7 @@ class TeamsRouter:
                 client,
                 channel,
                 ts,
-                allowed_users=None,
+                author_filter=None,
                 untrusted=True,
             )
 

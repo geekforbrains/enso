@@ -1,10 +1,11 @@
-"""Tests for the teams CLI surface: policy check, route explain, audit."""
+"""Tests for routed configuration checks, route explain, and audit."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from enso import audit
@@ -65,29 +66,158 @@ def _teams_config(tmp_enso: str) -> dict:
     }
 
 
-def test_policy_check_passes_valid_config(tmp_enso):
+def test_config_check_passes_valid_config(tmp_enso):
     save_config(_teams_config(tmp_enso))
-    result = runner.invoke(app, ["policy", "check"])
+    result = runner.invoke(app, ["config", "check"])
     assert result.exit_code == 0, result.output
     assert "All checks passed" in result.output
 
 
-def test_policy_check_fails_on_missing_policy(tmp_enso):
+def test_config_check_fails_on_missing_policy(tmp_enso):
     config = _teams_config(tmp_enso)
     Path(tmp_enso, "policies", "client", "claude", "settings.json").unlink()
     save_config(config)
-    result = runner.invoke(app, ["policy", "check"])
+    result = runner.invoke(app, ["config", "check"])
     assert result.exit_code == 1
     assert "claude" in result.output
 
 
-def test_policy_check_without_teams_mode(tmp_enso):
+def test_config_check_validates_catalog_without_slack_routes(tmp_enso):
     config = _teams_config(tmp_enso)
     del config["routes"]
+    config["transport"] = "telegram"
+    config["transports"] = {
+        "telegram": {
+            "bot_token": "x",
+            "allowed_users": ["123"],
+            "notify_channel": "123",
+        }
+    }
     save_config(config)
-    result = runner.invoke(app, ["policy", "check"])
+    result = runner.invoke(app, ["config", "check"])
     assert result.exit_code == 0
-    assert "not configured" in result.output
+    assert "All checks passed" in result.output
+
+
+@pytest.mark.parametrize(
+    "allowed_users",
+    [
+        [123],
+        ["123", "123"],
+        ["123", "0"],
+        ["123", "invalid"],
+    ],
+)
+def test_config_check_rejects_malformed_telegram_allowlist(
+    tmp_enso,
+    allowed_users,
+):
+    config = _teams_config(tmp_enso)
+    del config["routes"]
+    config["transport"] = "telegram"
+    config["transports"] = {
+        "telegram": {
+            "bot_token": "x",
+            "allowed_users": allowed_users,
+            "notify_channel": "123",
+        },
+    }
+    save_config(config)
+
+    result = runner.invoke(app, ["config", "check"])
+
+    assert result.exit_code == 1
+    assert "allowed_users must be a non-empty" in result.output
+
+
+def test_config_check_rejects_telegram_alias_with_valid_allowlist(tmp_enso):
+    config = _teams_config(tmp_enso)
+    del config["routes"]
+    config["transport"] = "telegram"
+    config["transports"] = {
+        "telegram": {
+            "bot_token": "x",
+            "allowed_users": ["123"],
+            "allowed_user_ids": [123],
+            "notify_channel": "123",
+        },
+    }
+    save_config(config)
+
+    result = runner.invoke(app, ["config", "check"])
+
+    assert result.exit_code == 1
+    assert "allowed_user_ids is no longer supported" in result.output
+
+
+def test_config_check_validates_inactive_configured_telegram(tmp_enso):
+    config = _teams_config(tmp_enso)
+    config["transports"]["telegram"] = {
+        "bot_token": "x",
+        "allowed_users": ["123", "0"],
+        "allowed_user_ids": [123],
+    }
+    save_config(config)
+
+    result = runner.invoke(app, ["config", "check"])
+
+    assert result.exit_code == 1
+    assert "allowed_user_ids is no longer supported" in result.output
+    assert "allowed_users must be a non-empty" in result.output
+
+
+def test_config_check_validates_inactive_configured_slack(tmp_enso):
+    config = _teams_config(tmp_enso)
+    del config["routes"]
+    config["transport"] = "telegram"
+    config["transports"] = {
+        "telegram": {
+            "bot_token": "x",
+            "allowed_users": ["123"],
+            "notify_channel": "123",
+        },
+        "slack": {
+            "bot_token": "x",
+            "app_token": "x",
+            "allowed_users": ["U01ADMIN"],
+        },
+    }
+    save_config(config)
+
+    result = runner.invoke(app, ["config", "check"])
+
+    assert result.exit_code == 1
+    assert "transports.slack.allowed_users is no longer supported" in result.output
+    assert "routes.slack is required" in result.output
+
+
+def test_config_check_reports_jobs_missing_execution_binding(tmp_enso):
+    config = _teams_config(tmp_enso)
+    save_config(config)
+    job_dir = Path(tmp_enso, "jobs", "old-job")
+    job_dir.mkdir(parents=True)
+    (job_dir / "JOB.md").write_text(
+        "---\n"
+        "name: Old job\n"
+        'schedule: "0 9 * * *"\n'
+        "provider: claude\n"
+        "model: opus\n"
+        "---\n\n"
+        "Do work.\n"
+    )
+
+    result = runner.invoke(app, ["config", "check"])
+
+    assert result.exit_code == 1
+    assert "jobs.old-job" in result.output
+    assert "workspace" in result.output
+    assert "access" in result.output
+
+
+def test_removed_policy_check_is_not_advertised(tmp_enso):
+    save_config(_teams_config(tmp_enso))
+    result = runner.invoke(app, ["policy", "check"])
+    assert result.exit_code != 0
 
 
 def test_route_explain_authorized(tmp_enso):
@@ -137,17 +267,22 @@ def test_audit_tail_and_export(tmp_enso):
     assert row["user_id"] == "U02DEV"
 
 
-def test_install_teams_workspaces_keeps_instructions_local(tmp_enso):
-    """Teams workspaces get local instructions, not global skill links."""
+def test_install_workspaces_keeps_instructions_local(tmp_enso):
+    """Named workspaces get local instructions, not global skill links."""
     config = _teams_config(tmp_enso)
     skills_root = Path(tmp_enso, "skills")
     (skills_root / "docs").mkdir(parents=True)
 
-    Runtime(config).install_teams_workspaces()
+    Runtime(config).install_workspaces()
 
     for ws in ("ops", "acme"):
         root = Path(tmp_enso, "workspaces", ws)
         assert (root / "AGENTS.md").is_file()
+        instructions = (root / "AGENTS.md").read_text()
+        assert "knowledge/" in instructions
+        assert "drafts/" in instructions
+        assert "uploads/<random-id>/" in instructions
+        assert "control files" in instructions
         assert (root / "CLAUDE.md").is_symlink()
         for cli_dir in (".claude", ".agents"):
             assert not (root / cli_dir / "skills").exists()

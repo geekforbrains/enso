@@ -12,7 +12,7 @@ loads `JOB.md` files every 60 seconds and fires due jobs through `_execute_job`.
 
 `enso web` builds its own `Runtime` and runs Starlette/Uvicorn as a separate process.
 The dashboard and bot therefore do not share memory or an event loop. They coordinate
-through the same files under `~/.enso/`, the configured workspace, and the shared SQLite
+through the same files under `~/.enso/`, the configured workspaces, and the shared SQLite
 database. Starting `enso serve` does not start the dashboard.
 
 ```
@@ -24,7 +24,7 @@ database. Starting `enso serve` does not start the dashboard.
               └──────────────┬─────────────────┘
                              ▼
                  files under ~/.enso/ and
-                 the configured workspace
+                 the configured workspaces
                              +
                  SQLite (enso.db, WAL mode)
 ```
@@ -71,6 +71,8 @@ for background work:
 
 Interactive **chat** requests are *not* runs — they are session-based and ephemeral, and
 belong to the transport, not the run log.
+
+A parsed job that fails execution configuration/binding validation or has a failed prerun records a terminal run even though no provider starts. A job file that cannot be loaded, intentional prerun no-work, and triggers skipped because a schedule is invalid, too late, disabled, or already locked do not create runs; `enso config check` reports load errors.
 
 ## Registered data tables
 
@@ -141,7 +143,7 @@ Antigravity additionally pins every conversation to a *project* at creation, and
 print mode never derives one from the working directory — without an explicit flag,
 conversations land in the default scratch project rather than the workspace. When Enso
 starts a fresh conversation (first chat turn, post-`/clear`, or any job run) it resolves
-the project for `working_dir` from Antigravity's catalog (`~/.gemini/config/projects/`,
+the project for the active workspace from Antigravity's catalog (`~/.gemini/config/projects/`,
 matching plain and git-folder file URIs) and passes `--project`, falling back to
 `--new-project` the first time a directory is used; the created project is then found by
 lookup on subsequent runs. Resume keeps the conversation's existing pin, so no project
@@ -151,9 +153,10 @@ per-workspace state, like Claude's project directories, and are never deleted.
 The recording seam (see [data-model.md](data-model.md) for the schema):
 
 1. Before provider spawn: `runs.create(kind, name, trigger)` → a row with
-   `status='running'`, the pipeline start time, and an allocated `run_id`. A failed job
-   prerun creates the same row when the failure is classified, backdated to gate start;
-   intentional no-work creates no row.
+   `status='running'`, the pipeline start time, and an allocated `run_id`. A parsed job's
+   failed execution configuration/binding check or prerun creates the same row when the
+   failure is classified, backdated to pipeline start; an unloadable job file and
+   intentional no-work create no row.
 1. During: provider output is captured for the run log. Failed preruns store only their
    bounded safe diagnostic; raw prerun stdout/stderr is never copied into history or a
    transport notification.
@@ -169,11 +172,11 @@ connection is cached, shared across threads, or allowed to block the event loop.
 
 ## Request resolution
 
-Slack teams mode is described in [teams.md](teams.md), native CLI invocation in [permissions.md](permissions.md), and storage in [data-model.md](data-model.md). Telegram retains its user-ID allowlist and global `working_dir` and rejects non-private chat types.
+Slack routing is described in [teams.md](teams.md), native CLI invocation in [permissions.md](permissions.md), and storage in [data-model.md](data-model.md). Slack always uses exact routes. Telegram retains its exact numeric user-ID allowlist and global `working_dir` and rejects non-private chat types.
 
-Conversation work carries an immutable `ExecutionContext` instead of reading a singleton cwd. For legacy Slack and Telegram the context contains the global `working_dir` and unrestricted launch. For teams mode it contains the workspace path, access profile, stable session key, captured model selection, audit callbacks, and workspace concurrency. The native provider launch is prepared only after the workspace slot is acquired. The same context is threaded through dispatch, uploads, commands, compaction, and provider execution.
+Conversation work carries an immutable `ExecutionContext` instead of reading a singleton cwd. Telegram's context contains the global `working_dir` and unrestricted launch. Slack's context contains the routed workspace path, access profile, stable session key, captured model selection, audit callbacks, and workspace concurrency. The native provider launch is prepared only after the workspace slot is acquired. The same context is threaded through dispatch, uploads, commands, compaction, and provider execution.
 
-Teams configuration is loaded and validated when `enso serve` starts. It is not hot-reloaded; changing authorization requires a restart. For each Slack event the transport performs this fixed sequence before fetching surrounding context or downloading attachments:
+The top-level workspace/access catalog is parsed independently of Slack so jobs can use it on any transport. Slack routes are loaded and validated when `enso serve` starts. They are not hot-reloaded; changing authorization requires a restart. For each Slack event the transport performs this fixed sequence before fetching surrounding context or downloading attachments:
 
 1. Verify the event belongs to the configured Slack account.
 1. Accept an ordinary `im` message or an explicit mention in a channel. Ignore ordinary channel messages.
@@ -184,9 +187,9 @@ Teams configuration is loaded and validated when `enso serve` starts. It is not 
 1. Validate the selected provider's launch plumbing and start optional audit recording for the route.
 1. Process the command or provider request using the resolved execution context; prepare the native launch after acquiring the workspace slot.
 
-There are no groups, sender rankings, wildcard routes, or composed policies. A configured channel authorizes every human member who can post there; an administrator posting in a client channel gets the client channel's policy. An invalid configured route never falls back to another workspace, access profile, legacy `working_dir`, or unrestricted launch. A configured route that cannot launch reports a configuration error.
+There are no groups, sender rankings, wildcard routes, Slack allowlists, or composed policies. A configured channel authorizes every human member who can post there; an administrator posting in a client channel gets the client channel's access profile. An invalid configured route never falls back to another workspace, access profile, global `working_dir`, or unrestricted launch. A configured route that cannot launch reports a configuration error.
 
-The two no-route replies are fixed transport strings. They do not invoke an LLM, select a workspace or access profile, construct an `ExecutionContext`, fetch message context or attachments, or start an audit turn. A globally invalid teams configuration or wrong-account event remains silent and is logged.
+The two no-route replies are fixed transport strings. They do not invoke an LLM, select a workspace or access profile, construct an `ExecutionContext`, fetch message context or attachments, or start an audit turn. A globally invalid Slack configuration or wrong-account event remains silent and is logged.
 
 ### Execution and session keys
 
@@ -194,17 +197,19 @@ Cwd alone does not isolate sessions. Provider, model, effort, session, compactio
 
 The key is serialized as structured data rather than by splitting a delimiter-bearing string. This matters because provider and route identifiers can already contain punctuation. It includes the Slack location, thread, workspace name, and access-profile name; it deliberately remains stable across `!use`, model, and policy-revision changes so stop, queues, and per-provider sessions remain reachable.
 
-### Workspace isolation and concurrency
+### Workspace content and concurrency
 
-- The resolved workspace supplies the subprocess cwd, uploads, native project instructions, native workspace skills, and session scope.
-- An access profile supplies provider availability, default provider, chat commands, and native policy selection. It supplies no content.
+- The resolved workspace supplies the subprocess cwd, persistent uploads, native project instructions, native workspace skills, and session scope. It is a shared content root, not a security boundary.
+- An access profile supplies provider availability, default provider, allowed Enso chat commands, and native policy selection. It supplies no content and does not govern provider-native slash commands or skills.
 - Several routes may share one workspace and therefore its files and concurrency limit while retaining separate sessions and access profiles.
 - A client route that shares files with a staff route must not be able to rewrite instructions, skill definitions, or provider control files trusted by the staff route.
 - Each workspace has a process-local semaphore shared by chats and compaction. The default is one active turn; operators may raise it when concurrent writes are safe.
 - Background messages are scoped to a conversation execution key, and operational logs avoid prompt previews.
-- Scheduled jobs are not Slack routes. They keep their existing global `working_dir`, provider configuration, prerun behavior, and per-job lock whether or not teams mode is enabled.
-
-Legacy Slack and Telegram continue to bind `working_dir` through a legacy execution context until the operator explicitly enables `routes.slack`.
+- Scheduled jobs are not Slack routes, but every job selects a named workspace and access profile. Its provider runs in that workspace under the profile's native policy and shares the process-local workspace semaphore.
+- A job prerun is trusted host-side Bash executed from the job directory before the provider launch. It is not constrained by the native policy.
+- A persistent per-job `.run.lock` coordinates the scheduler, CLI, and dashboard across processes. Workspace semaphores remain process-local, so two separate Enso processes are not serialized merely because their jobs share a workspace.
+- Invalid job bindings or a provider disallowed by the selected profile fail before prerun and provider execution. There is no global or unrestricted job fallback.
+- Scheduled successes are silent unless the provider explicitly sends a message. Host-side failure and recovery notifications use the job's destination independently of Slack routing; manual runs suppress those automatic notifications but cannot suppress a provider-originated send.
 
 ## Concurrency & consistency
 

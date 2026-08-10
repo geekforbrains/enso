@@ -31,10 +31,10 @@ from .config import (
     provider_models,
 )
 from .fsutil import atomic_write_text, regular_file_sha256
-from .jobs import Job, job_config_error, load_jobs
+from .jobs import Job, job_binding_error, job_config_error, load_jobs
 from .logging_config import logging_flags
 from .providers import PROVIDER_NAMES, BaseProvider, StreamEvent, provider_class
-from .teams import load_teams
+from .teams import load_catalog
 
 if TYPE_CHECKING:
     from .policy import Launch
@@ -90,10 +90,7 @@ def status_text(header: str, elapsed: int, action: str | None = None) -> str:
 
 def _status_edit_due(elapsed: int) -> bool:
     """Update every second through 30s, then on five-second boundaries."""
-    return (
-        elapsed <= STATUS_FAST_UPDATE_SECONDS
-        or elapsed % STATUS_SLOW_UPDATE_SECONDS == 0
-    )
+    return elapsed <= STATUS_FAST_UPDATE_SECONDS or elapsed % STATUS_SLOW_UPDATE_SECONDS == 0
 
 
 async def _cancel_and_wait(task: asyncio.Task[Any]) -> BaseException | None:
@@ -130,9 +127,7 @@ MAX_QUEUE_SIZE = 5
 SESSION_TTL_DAYS = int(os.environ.get("ENSO_SESSION_TTL_DAYS", "30"))
 JOB_CONCURRENCY = int(os.environ.get("ENSO_JOB_CONCURRENCY", "2"))
 PROCESS_TERMINATE_GRACE_SECS = float(os.environ.get("ENSO_PROCESS_TERMINATE_GRACE_SECS", "5"))
-JOB_FAILURE_RENOTIFY_SECS = int(
-    os.environ.get("ENSO_JOB_FAILURE_RENOTIFY_SECS", str(24 * 60 * 60))
-)
+JOB_FAILURE_RENOTIFY_SECS = int(os.environ.get("ENSO_JOB_FAILURE_RENOTIFY_SECS", str(24 * 60 * 60)))
 PRERUN_DIAGNOSTIC_LIMIT = 500
 
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -148,39 +143,41 @@ _SENSITIVE_KEY_RE = re.compile(r"(?i)(api[_-]?key|token|secret|password|authoriz
 # Upgrade markers for artifacts bundled immediately before the built-in task
 # system was removed. Hashes let us recognize pristine installer-owned files
 # without retaining obsolete task instructions in the package.
-_LEGACY_TASKS_SKILL_SHA256 = (
-    "661ffca9a360cc40521c274a295a97c7735123a7c8a44e1d307da046f07735cc"
-)
-_LEGACY_TASKS_AGENTS_SHA256 = (
-    "ec67ee973a15c38e23451cfc65317643debe0e6e8659589bf0c30433f60a2e4a"
-)
+_LEGACY_TASKS_SKILL_SHA256 = "661ffca9a360cc40521c274a295a97c7735123a7c8a44e1d307da046f07735cc"
+_LEGACY_TASKS_AGENTS_SHA256 = "ec67ee973a15c38e23451cfc65317643debe0e6e8659589bf0c30433f60a2e4a"
 _LEGACY_TASK_RUNNER_STATE_KEY = "__task_runner__"
 
 # Pristine bundled AGENTS.md hashes from prior releases. Exact matches follow
 # the bundled template forward; customized copies are preserved.
-_PRISTINE_AGENTS_SHA256: frozenset[str] = frozenset({
-    _LEGACY_TASKS_AGENTS_SHA256,
-    "18e29e570f07237eea24a2b329090ccae9b572cdbc7e35f38e22916f3e5acf7f",
-    "b5676b7f1b571a813554c0c580c93a6c9269d82625161f01f2c00e205888da20",
-})
+_PRISTINE_AGENTS_SHA256: frozenset[str] = frozenset(
+    {
+        _LEGACY_TASKS_AGENTS_SHA256,
+        "18e29e570f07237eea24a2b329090ccae9b572cdbc7e35f38e22916f3e5acf7f",
+        "b5676b7f1b571a813554c0c580c93a6c9269d82625161f01f2c00e205888da20",
+    }
+)
 
 # Known hashes of pristine bundled skills from prior releases. Exact matches
 # can follow the bundled copy forward without overwriting user-customized files.
 _BUNDLED_SKILL_PRISTINE_HASHES: dict[tuple[str, str], frozenset[str]] = {
-    ("jobs", "SKILL.md"): frozenset({
-        "f52f890e467bd212534474b1d0ee913edbf6cc968e010686153044aac13bcd77",
-        "8824886bd76e476672395bfcef6d34655b7eeedb40c89cf0fc459706e9ad4cff",
-        "cc8d7abc0e550b901644d7c7feee2e3363608adf794a2f885c7421a5cb7fa08b",
-        "256ce5a5609551246927c9e19ef0be13f68f630fb343815f303e6f90ab8cb51c",
-        "608c4a5d9f34d76ae9143f749fa7b028a4fce413d260e1a5f58d361288730bd8",
-        "1756397ae5838a5aba08c6371cb721f9e1b4f815c8b1907a19b017e7aca53be0",
-        "dabb0fa66f276cd78c8e88e17c38155ad537aa52938e50622dcc2955b70f036a",
-        "ecde110e219de184ccf52594d02d9ae458022a4813dcc8ac417a975c5010f282",
-    }),
-    ("slack", "SKILL.md"): frozenset({
-        "5d9f76e2bcb757b27ab294a6f7322e07a59ebafbe08566f218348f8d15ac178a",
-        "646d0ab64c0713baf32eec4f0639b4d709d4b1c7a2a1a320e2eed84d55fc5582",
-    }),
+    ("jobs", "SKILL.md"): frozenset(
+        {
+            "f52f890e467bd212534474b1d0ee913edbf6cc968e010686153044aac13bcd77",
+            "8824886bd76e476672395bfcef6d34655b7eeedb40c89cf0fc459706e9ad4cff",
+            "cc8d7abc0e550b901644d7c7feee2e3363608adf794a2f885c7421a5cb7fa08b",
+            "256ce5a5609551246927c9e19ef0be13f68f630fb343815f303e6f90ab8cb51c",
+            "608c4a5d9f34d76ae9143f749fa7b028a4fce413d260e1a5f58d361288730bd8",
+            "1756397ae5838a5aba08c6371cb721f9e1b4f815c8b1907a19b017e7aca53be0",
+            "dabb0fa66f276cd78c8e88e17c38155ad537aa52938e50622dcc2955b70f036a",
+            "ecde110e219de184ccf52594d02d9ae458022a4813dcc8ac417a975c5010f282",
+        }
+    ),
+    ("slack", "SKILL.md"): frozenset(
+        {
+            "5d9f76e2bcb757b27ab294a6f7322e07a59ebafbe08566f218348f8d15ac178a",
+            "646d0ab64c0713baf32eec4f0639b4d709d4b1c7a2a1a320e2eed84d55fc5582",
+        }
+    ),
 }
 
 # The pre-0.12 bundled slack skill shipped a Python tool script that the
@@ -188,9 +185,11 @@ _BUNDLED_SKILL_PRISTINE_HASHES: dict[tuple[str, str], frozenset[str]] = {
 # workspace/tools twins) are removed on setup/serve; customized copies are
 # preserved with a warning.
 _RETIRED_SKILL_TOOL_HASHES: dict[tuple[str, str], frozenset[str]] = {
-    ("slack", "slack_search.py"): frozenset({
-        "2a993392c4d58ac7e5ce653ade6070ed9db9baaa6b909ae2167d29de490ded7d",
-    }),
+    ("slack", "slack_search.py"): frozenset(
+        {
+            "2a993392c4d58ac7e5ce653ade6070ed9db9baaa6b909ae2167d29de490ded7d",
+        }
+    ),
 }
 
 
@@ -208,9 +207,7 @@ class PrerunResult:
 class JobRunResult:
     """Terminal result shared by scheduled, CLI, and web job execution."""
 
-    status: Literal[
-        "ok", "error", "timeout", "no_work", "prerun_error", "prerun_timeout"
-    ]
+    status: Literal["ok", "error", "timeout", "no_work", "prerun_error", "prerun_timeout"]
     run_id: str | None = None
     output: str = ""
     exit_code: int | None = None
@@ -247,26 +244,23 @@ class _QueuedItem:
 class ExecutionContext:
     """Immutable execution binding for one conversation's work.
 
-    Legacy work (Telegram, legacy Slack) binds the global ``working_dir``
-    with the unrestricted invocation and uses the conversation ID as its
-    state key, so existing sessions and queues are untouched. Slack teams
-    routes bind a named workspace and access profile to one stable routed
-    conversation key. The native launch is prepared only after the workspace
-    slot is acquired, immediately before the provider process starts.
+    Telegram conversations bind the global ``working_dir`` with the unrestricted
+    invocation and use the conversation ID as their state key. Slack routes and
+    jobs bind a named workspace and access profile. The native launch is prepared
+    only after the workspace slot is acquired, immediately before the provider
+    process starts.
     """
 
     chat_key: str  # key for all per-chat state: sessions, queues, locks
     path: str  # subprocess cwd — the workspace root
     workspace_id: str | None = None
-    launch: Launch | None = None  # None → unrestricted legacy invocation
+    launch: Launch | None = None  # None → unrestricted global invocation
     concurrency: int = 1  # max concurrent provider runs sharing the workspace
     workspace: Workspace | None = field(default=None, compare=False, repr=False)
     access: AccessProfile | None = field(default=None, compare=False, repr=False)
     model: str | None = None
     effort: str | None = None
-    on_launch: Callable[[Launch], None] | None = field(
-        default=None, compare=False, repr=False
-    )
+    on_launch: Callable[[Launch], None] | None = field(default=None, compare=False, repr=False)
     # Invoked (in a worker thread) with the turn's terminal outcome once it
     # reaches a terminal state — a real dispatch, a revalidation refusal, or
     # an early rejection (queue full, update in progress) — so audit/ledger
@@ -313,8 +307,8 @@ class Runtime:
         # Strong references to fire-and-forget queue drains (kick_queue)
         self._kicked_queue_tasks: set[asyncio.Task] = set()
 
-        # Per-workspace semaphores bound Slack chats and compaction sharing a
-        # teams workspace. Jobs remain on their independent legacy pipeline.
+        # Process-local concurrency shared by Slack chats, compaction, and jobs
+        # bound to the same workspace. Separate Enso processes do not share it.
         self._workspace_sems: dict[str, asyncio.Semaphore] = {}
 
         # Compact-command seeds: per-chat prior-session summaries waiting to
@@ -384,9 +378,7 @@ class Runtime:
                 canonical,
             )
 
-        self._ensure_symlink(
-            os.path.join(self.working_dir, "CLAUDE.md"), "AGENTS.md"
-        )
+        self._ensure_symlink(os.path.join(self.working_dir, "CLAUDE.md"), "AGENTS.md")
 
         # Symlink skills into CLI-specific discovery paths
         # .claude/skills -> ~/.enso/skills (Claude Code)
@@ -394,19 +386,14 @@ class Runtime:
         for cli_dir in (".claude", ".agents"):
             parent = os.path.join(self.working_dir, cli_dir)
             os.makedirs(parent, exist_ok=True)
-            self._ensure_symlink(
-                os.path.join(parent, "skills"), skills_dir
-            )
+            self._ensure_symlink(os.path.join(parent, "skills"), skills_dir)
 
         # Auto-compact notification hooks — lets the user know via the
         # configured chat transport when a provider is compacting context
         # (which can be slow).
         # Claude: PreCompact with "auto" matcher
         # Codex: no compaction hooks available
-        notify_cmd = (
-            "enso message send"
-            " 'Autocompacting context, this might take a moment...'"
-        )
+        notify_cmd = "enso message send 'Autocompacting context, this might take a moment...'"
         self._ensure_hook_entry(
             os.path.join(self.working_dir, ".claude", "settings.json"),
             event="PreCompact",
@@ -414,19 +401,17 @@ class Runtime:
             command=notify_cmd,
         )
 
-    def install_teams_workspaces(self) -> None:
-        """Bootstrap every structurally valid teams workspace.
+    def install_workspaces(self) -> None:
+        """Bootstrap every structurally valid configured workspace.
 
         Creates the workspace directory with the bundled system prompt.
         Instructions and skills are owned by the workspace and discovered by
         the provider CLIs themselves; jobs, config, and shared skill roots are
         never linked in.
         """
-        teams = load_teams(self.config)
-        if teams is None:
-            return
-        for name, workspace in teams.workspaces.items():
-            if name in teams.workspace_errors or not workspace.path:
+        catalog = load_catalog(self.config)
+        for name, workspace in catalog.workspaces.items():
+            if name in catalog.workspace_errors or not workspace.path:
                 continue
             try:
                 self._install_workspace(workspace)
@@ -439,9 +424,7 @@ class Runtime:
 
         canonical = os.path.join(workspace.path, "AGENTS.md")
         if not os.path.lexists(canonical):
-            source = importlib.resources.files("enso").joinpath(
-                "prompts", "WORKSPACE_AGENTS.md"
-            )
+            source = importlib.resources.files("enso").joinpath("prompts", "WORKSPACE_AGENTS.md")
             atomic_write_text(canonical, source.read_text(encoding="utf-8"))
             log.info("Wrote AGENTS.md in workspace %s", workspace.name)
         self._ensure_symlink(os.path.join(workspace.path, "CLAUDE.md"), "AGENTS.md")
@@ -492,10 +475,12 @@ class Runtime:
                 if h.get("command") == command:
                     return
 
-        event_hooks.append({
-            "matcher": matcher,
-            "hooks": [{"type": "command", "command": command, "async": True}],
-        })
+        event_hooks.append(
+            {
+                "matcher": matcher,
+                "hooks": [{"type": "command", "command": command, "async": True}],
+            }
+        )
 
         try:
             atomic_write_text(settings_path, json.dumps(settings, indent=2) + "\n")
@@ -513,12 +498,15 @@ class Runtime:
                 content = f.read()
         except (OSError, UnicodeError):
             return False
-        return any(marker in content for marker in (
-            "enso task create",
-            "enso task list",
-            "enso task show",
-            "use the `tasks` skill",
-        ))
+        return any(
+            marker in content
+            for marker in (
+                "enso task create",
+                "enso task list",
+                "enso task show",
+                "use the `tasks` skill",
+            )
+        )
 
     @classmethod
     def _retire_legacy_tasks_skill(cls, skills_dir: str) -> None:
@@ -577,7 +565,8 @@ class Runtime:
                     os.remove(skill_copy)
                     log.info(
                         "Removed retired bundled skill tool: %s/%s",
-                        skill_name, filename,
+                        skill_name,
+                        filename,
                     )
             elif skill_hash is not None:
                 log.warning(
@@ -596,9 +585,7 @@ class Runtime:
         for skill_dir in bundled.iterdir():
             if not skill_dir.is_dir():
                 continue
-            tombstone = os.path.join(
-                tombstones_dir, f"{skill_dir.name}.deleted"
-            )
+            tombstone = os.path.join(tombstones_dir, f"{skill_dir.name}.deleted")
             if os.path.lexists(tombstone):
                 log.info("Preserving deleted bundled skill: %s", skill_dir.name)
                 continue
@@ -671,9 +658,7 @@ class Runtime:
         """Atomically persist session and job state to disk."""
         data: dict[str, Any] = {
             "version": 2,
-            "active_provider_by_chat": {
-                str(k): v for k, v in self.active_provider_by_chat.items()
-            },
+            "active_provider_by_chat": {str(k): v for k, v in self.active_provider_by_chat.items()},
             # Conversation keys are opaque and may contain colons. Store
             # compound keys as records instead of inventing a delimiter.
             "active_model_by_chat_provider": [
@@ -689,15 +674,9 @@ class Runtime:
                 for (cid, prov), sid in self.session_by_chat_provider.items()
             ],
             "compact_seed_by_chat": dict(self.compact_seed_by_chat),
-            "job_last_run": {
-                name: ts.isoformat()
-                for name, ts in self._job_last_run.items()
-            },
+            "job_last_run": {name: ts.isoformat() for name, ts in self._job_last_run.items()},
             "job_failure_alerts": dict(self._job_failure_alerts),
-            "last_active": {
-                cid: ts.isoformat()
-                for cid, ts in self._last_active.items()
-            },
+            "last_active": {cid: ts.isoformat() for cid, ts in self._last_active.items()},
         }
         try:
             atomic_write_text(STATE_FILE, json.dumps(data))
@@ -728,9 +707,9 @@ class Runtime:
                 # v1 migration: provider was the final delimiter-separated
                 # component; split from the right so ``teams:<digest>`` works.
                 model_rows = (
-                    {"chat": k.rsplit(":", 1)[0], "provider": k.rsplit(":", 1)[1],
-                     "model": v}
-                    for k, v in raw_models.items() if ":" in k
+                    {"chat": k.rsplit(":", 1)[0], "provider": k.rsplit(":", 1)[1], "model": v}
+                    for k, v in raw_models.items()
+                    if ":" in k
                 )
                 state_changed = True
             elif isinstance(raw_models, list):
@@ -762,8 +741,12 @@ class Runtime:
                     parts = key.rsplit(":", 2)
                     if len(parts) == 3:
                         effort_rows.append(
-                            {"chat": parts[0], "provider": parts[1],
-                             "model": parts[2], "effort": value}
+                            {
+                                "chat": parts[0],
+                                "provider": parts[1],
+                                "model": parts[2],
+                                "effort": value,
+                            }
                         )
                 state_changed = True
             elif isinstance(raw_efforts, list):
@@ -793,9 +776,9 @@ class Runtime:
             raw_sessions = data.get("session_by_chat_provider", [])
             if isinstance(raw_sessions, dict):
                 session_rows = (
-                    {"chat": k.rsplit(":", 1)[0], "provider": k.rsplit(":", 1)[1],
-                     "session": v}
-                    for k, v in raw_sessions.items() if ":" in k
+                    {"chat": k.rsplit(":", 1)[0], "provider": k.rsplit(":", 1)[1], "session": v}
+                    for k, v in raw_sessions.items()
+                    if ":" in k
                 )
                 state_changed = True
             elif isinstance(raw_sessions, list):
@@ -888,7 +871,10 @@ class Runtime:
         return models[0] if models else "default"
 
     def get_active_effort(
-        self, chat_id: str, provider: str, model: str,
+        self,
+        chat_id: str,
+        provider: str,
+        model: str,
     ) -> str | None:
         """Return the effective effort level for chat+provider+model.
 
@@ -912,17 +898,17 @@ class Runtime:
 
     # -- Provider management --
 
-    def legacy_context(self, conv_id: str) -> ExecutionContext:
-        """The pre-teams execution binding: global working_dir, unrestricted."""
+    def global_context(self, conv_id: str) -> ExecutionContext:
+        """The Telegram execution binding: global working_dir, unrestricted."""
         return ExecutionContext(chat_key=conv_id, path=self.working_dir)
 
     @contextlib.asynccontextmanager
     async def _workspace_slot(self, context: ExecutionContext):
         """Hold the workspace's concurrency slot for the duration of a run.
 
-        A no-op for legacy (non-workspace) contexts, which stay unbounded.
-        The semaphore is shared across Slack chats and compaction bound to the
-        same workspace; the default limit is one active writer.
+        A no-op for global (non-workspace) contexts, which stay unbounded.
+        The semaphore is shared across Slack chats, compaction, and jobs bound
+        to the same workspace; the default limit is one active writer.
         """
         workspace_id = context.workspace_id
         if workspace_id is None:
@@ -965,7 +951,9 @@ class Runtime:
         effective_timeout = self.agent_timeout if timeout is None else timeout
         working_dir = context.path if context is not None else self.working_dir
         return provider_class(provider_name)(
-            path, working_dir=working_dir, timeout=effective_timeout,
+            path,
+            working_dir=working_dir,
+            timeout=effective_timeout,
         )
 
     # -- Session management --
@@ -975,9 +963,7 @@ class Runtime:
     # Codex and Agy generate their own IDs, which we capture after spawning.
     _SELF_MANAGED_SESSIONS: ClassVar[set[str]] = {"claude"}
 
-    def _get_or_create_session(
-        self, chat_id: str, provider_name: str
-    ) -> str | None:
+    def _get_or_create_session(self, chat_id: str, provider_name: str) -> str | None:
         """Get existing session ID, or generate one for providers that support it.
 
         For self-managed providers (Claude), generates a UUID upfront and
@@ -997,7 +983,8 @@ class Runtime:
             self.save_state()
             log.info(
                 "[%s] Created session for chat %s",
-                provider_name, chat_id,
+                provider_name,
+                chat_id,
             )
             return session_id
         return None
@@ -1015,10 +1002,10 @@ class Runtime:
     ) -> None:
         """Dispatch a prompt, queuing if a request is already running.
 
-        ``context`` is the resolved execution binding; None binds the legacy
+        ``context`` is the resolved execution binding; None binds the global
         context (global working_dir, conversation-keyed state).
         """
-        context = context or self.legacy_context(conversation_id)
+        context = context or self.global_context(conversation_id)
         if self._update_in_progress:
             await ctx.reply("Enso is updating. Please try again after it restarts.")
             await self._finalize_unrun(context, "update_in_progress")
@@ -1053,7 +1040,9 @@ class Runtime:
 
         log.info(
             "Dispatch: conv=%s provider=%s prompt_len=%d",
-            conversation_id, provider, len(prompt),
+            conversation_id,
+            provider,
+            len(prompt),
         )
         if context.workspace_id is None:
             log.debug("Dispatch prompt:\n%s", prompt)
@@ -1063,7 +1052,9 @@ class Runtime:
             await self._drain_queue(chat_key)
 
     async def _finalize_unrun(
-        self, context: ExecutionContext, reason: str,
+        self,
+        context: ExecutionContext,
+        reason: str,
     ) -> None:
         """Finalize a turn rejected before it ran (queue full, update).
 
@@ -1087,9 +1078,7 @@ class Runtime:
     ) -> None:
         """Run a single provider request, tracking the task for cancellation."""
         outcome, reason = "error", None
-        task = asyncio.create_task(
-            self._run_request_inner(provider, prompt, ctx, context)
-        )
+        task = asyncio.create_task(self._run_request_inner(provider, prompt, ctx, context))
         self.running_task_by_chat[context.chat_key] = task
         try:
             outcome, reason = await task
@@ -1103,9 +1092,7 @@ class Runtime:
                 try:
                     await asyncio.to_thread(context.on_complete, outcome, reason)
                 except Exception:
-                    log.exception(
-                        "on_complete failed for conv=%s", context.chat_key
-                    )
+                    log.exception("on_complete failed for conv=%s", context.chat_key)
 
     async def _run_request_inner(
         self,
@@ -1124,12 +1111,10 @@ class Runtime:
                 with contextlib.suppress(Exception):
                     await ctx.reply(
                         "This conversation isn't fully configured for Enso — "
-                        "ask an admin to run `enso policy check`."
+                        "ask an admin to run `enso config check`."
                     )
                 return "blocked", "policy_unavailable"
-            return await self.process_request(
-                provider, prompt, chat_key, ctx, context=prepared
-            )
+            return await self.process_request(provider, prompt, chat_key, ctx, context=prepared)
 
     async def _drain_queue(self, chat_key: str) -> None:
         """Process queued messages one by one until the queue is empty."""
@@ -1144,7 +1129,7 @@ class Runtime:
                 len(queue),
                 "<redacted>" if item.context and item.context.workspace_id else item.preview,
             )
-            context = item.context or self.legacy_context(chat_key)
+            context = item.context or self.global_context(chat_key)
             await self._run_request(item.provider, item.prompt, item.ctx, context)
 
     def kick_queue(self, conv_id: str) -> None:
@@ -1220,7 +1205,10 @@ class Runtime:
     )
 
     def _consume_compact_seed(
-        self, chat_id: str, prompt: str, provider_name: str,
+        self,
+        chat_id: str,
+        prompt: str,
+        provider_name: str,
     ) -> str:
         """Prepend any pending compact seed to ``prompt`` and consume it.
 
@@ -1235,7 +1223,9 @@ class Runtime:
         self.save_state()
         log.info(
             "[%s] Injected compact seed (%d chars) for chat %s",
-            provider_name, len(seed), chat_id,
+            provider_name,
+            len(seed),
+            chat_id,
         )
         return (
             "[Continuing from a previous session — that conversation was "
@@ -1270,9 +1260,7 @@ class Runtime:
         async with lock, slot:
             if context is not None:
                 try:
-                    context = await self._prepare_execution_context(
-                        provider_name, context
-                    )
+                    context = await self._prepare_execution_context(provider_name, context)
                 except Exception:
                     log.exception(
                         "Native policy launch failed during compaction for chat=%s",
@@ -1295,7 +1283,10 @@ class Runtime:
 
             log.info(
                 "[%s] Compacting chat=%s model=%s effort=%s",
-                provider_name, chat_id, model, effort or "-",
+                provider_name,
+                chat_id,
+                model,
+                effort or "-",
             )
 
             response_parts: list[str] = []
@@ -1304,14 +1295,20 @@ class Runtime:
             async def consume() -> None:
                 nonlocal failed
                 async for event in self.run_provider(
-                    provider, self._COMPACTION_PROMPT, chat_id, model,
-                    effort=effort, context=context,
+                    provider,
+                    self._COMPACTION_PROMPT,
+                    chat_id,
+                    model,
+                    effort=effort,
+                    context=context,
                 ):
                     if event.kind == "response":
                         response_parts.append(event.text)
                     elif event.kind == "error":
                         log.warning(
-                            "Compaction error in chat %s: %s", chat_id, event.text,
+                            "Compaction error in chat %s: %s",
+                            chat_id,
+                            event.text,
                         )
                         failed = True
                         return
@@ -1319,13 +1316,15 @@ class Runtime:
             task = asyncio.create_task(consume())
             try:
                 done, _ = await asyncio.wait(
-                    {task}, timeout=self.agent_timeout or None,
+                    {task},
+                    timeout=self.agent_timeout or None,
                 )
                 if task not in done:
                     await _cancel_and_wait(task)
                     log.warning(
                         "Compaction timed out for chat %s after %ss",
-                        chat_id, self.agent_timeout,
+                        chat_id,
+                        self.agent_timeout,
                     )
                     return ""
                 await task
@@ -1375,7 +1374,10 @@ class Runtime:
                 pass
 
         log.info(
-            "Terminating process tree for %s pid=%s pgid=%s", label, process.pid, pgid,
+            "Terminating process tree for %s pid=%s pgid=%s",
+            label,
+            process.pid,
+            pgid,
         )
         signal_process(signal.SIGTERM)
         try:
@@ -1392,7 +1394,9 @@ class Runtime:
         except asyncio.TimeoutError:
             log.error(
                 "Process tree for %s still did not exit after SIGKILL pid=%s pgid=%s",
-                label, process.pid, pgid,
+                label,
+                process.pid,
+                pgid,
             )
 
     async def _communicate_with_timeout(
@@ -1404,7 +1408,8 @@ class Runtime:
         """Communicate with a child process and kill its tree on timeout."""
         try:
             stdout, stderr = await asyncio.wait_for(
-                process.communicate(), timeout=timeout_secs,
+                process.communicate(),
+                timeout=timeout_secs,
             )
             return stdout, stderr, False
         except asyncio.CancelledError:
@@ -1430,7 +1435,9 @@ class Runtime:
         try:
             if process and process.returncode is None:
                 await self._terminate_process_tree(
-                    process, f"chat {chat_id}", grace=0.5,
+                    process,
+                    f"chat {chat_id}",
+                    grace=0.5,
                 )
             if task and not task.done():
                 task.cancel()
@@ -1462,12 +1469,10 @@ class Runtime:
         (non-bypass flags), and — for policy launches — the allowlisted
         minimal environment instead of the full parent environment.
         """
-        context = context or self.legacy_context(chat_id)
+        context = context or self.global_context(chat_id)
         launch = context.launch
         session_id = self._get_or_create_session(chat_id, provider.name)
-        cmd = provider.build_command(
-            prompt, model, session_id, effort=effort, launch=launch
-        )
+        cmd = provider.build_command(prompt, model, session_id, effort=effort, launch=launch)
         log.info(
             "[%s] spawning class=%s chat=%s model=%s effort=%s session=%s prompt_len=%d",
             provider.name,
@@ -1493,22 +1498,19 @@ class Runtime:
             self.save_state()
 
         def revert_unused_session() -> None:
-            if (
-                promoted_from
-                and self.session_by_chat_provider.get(key)
-                == promoted_from.removeprefix("new:")
-            ):
+            if promoted_from and self.session_by_chat_provider.get(
+                key
+            ) == promoted_from.removeprefix("new:"):
                 self.session_by_chat_provider[key] = promoted_from
                 self.save_state()
                 log.info(
                     "[%s] Reverted unused session for chat %s",
-                    provider.name, chat_id,
+                    provider.name,
+                    chat_id,
                 )
 
         stderr = (
-            asyncio.subprocess.STDOUT
-            if provider.stderr_to_stdout()
-            else asyncio.subprocess.PIPE
+            asyncio.subprocess.STDOUT if provider.stderr_to_stdout() else asyncio.subprocess.PIPE
         )
         kwargs: dict[str, Any] = {
             "stdin": asyncio.subprocess.DEVNULL,
@@ -1618,7 +1620,8 @@ class Runtime:
                         # Progress is decorative; the elapsed ticker carries on.
                         log.debug(
                             "[%s] progress polling stopped early",
-                            provider.name, exc_info=True,
+                            provider.name,
+                            exc_info=True,
                         )
 
                 runner = asyncio.create_task(run_to_completion())
@@ -1671,7 +1674,9 @@ class Runtime:
         finally:
             if process.returncode is None:
                 await self._terminate_process_tree(
-                    process, f"{provider.name} chat {chat_id}", grace=1.0,
+                    process,
+                    f"{provider.name} chat {chat_id}",
+                    grace=1.0,
                 )
             if not finalized:
                 for stream_event in provider.finalize_events():
@@ -1703,7 +1708,7 @@ class Runtime:
         record it on the audit turn: ``completed``, ``error``, ``timeout``, or
         (via cancellation in the caller) ``stopped``.
         """
-        context = context or self.legacy_context(chat_id)
+        context = context or self.global_context(chat_id)
         # Inject background messages. Teams executions consume only messages
         # explicitly addressed to them — a global message must not leak into
         # an arbitrary route's context.
@@ -1725,9 +1730,7 @@ class Runtime:
             if context.model is not None
             else self.get_active_effort(chat_id, provider_name, model)
         )
-        provider = self.make_provider(
-            provider_name, timeout=self.agent_timeout, context=context
-        )
+        provider = self.make_provider(provider_name, timeout=self.agent_timeout, context=context)
 
         try:
             origin_env = ctx.get_origin_env()
@@ -1735,14 +1738,12 @@ class Runtime:
             log.warning("get_origin_env failed for chat %s", chat_id, exc_info=True)
             origin_env = {}
 
-        # Teams-mode operational logs are metadata-only — the audit trail is
-        # the controlled record of conversation text (architecture.md). Only
-        # legacy work logs a prompt preview or full prompt.
-        is_teams = context.workspace_id is not None
-        preview = "<redacted>" if is_teams else f"{prompt[:120]}"
+        # Named-workspace operational logs are metadata-only; global Telegram
+        # work retains the existing optional prompt logging behavior.
+        is_bound = context.workspace_id is not None
+        preview = "<redacted>" if is_bound else f"{prompt[:120]}"
         log.info(
-            "[%s] request chat=%s provider_class=%s model=%s effort=%s "
-            "prompt_len=%d preview=%s",
+            "[%s] request chat=%s provider_class=%s model=%s effort=%s prompt_len=%d preview=%s",
             provider_name,
             chat_id,
             provider.__class__.__name__,
@@ -1752,7 +1753,7 @@ class Runtime:
             preview,
         )
         log.debug("[%s] origin_env_keys=%s", provider_name, sorted(origin_env))
-        if self.debug_prompts and not is_teams:
+        if self.debug_prompts and not is_bound:
             log.debug("[%s] full_prompt:\n%s", provider_name, prompt)
 
         await ctx.send_typing()
@@ -1778,7 +1779,8 @@ class Runtime:
             if error is not None and not isinstance(error, asyncio.CancelledError):
                 log.warning(
                     "Status ticker failed while stopping for chat %s: %s",
-                    chat_id, error,
+                    chat_id,
+                    error,
                 )
 
         msg_limit = self.transport.message_limit if self.transport else 4096
@@ -1788,8 +1790,13 @@ class Runtime:
         async def consume_provider_events() -> None:
             nonlocal error_text
             async for event in self.run_provider(
-                provider, prompt, chat_id, model,
-                effort=effort, extra_env=origin_env, context=context,
+                provider,
+                prompt,
+                chat_id,
+                model,
+                effort=effort,
+                extra_env=origin_env,
+                context=context,
             ):
                 if self.debug_events:
                     log.debug(
@@ -1820,12 +1827,14 @@ class Runtime:
                 if error is not None and not isinstance(error, asyncio.CancelledError):
                     log.warning(
                         "Provider cleanup failed for chat %s: %s",
-                        chat_id, error,
+                        chat_id,
+                        error,
                     )
 
             try:
                 done, _ = await asyncio.wait(
-                    {provider_task}, timeout=self.agent_timeout,
+                    {provider_task},
+                    timeout=self.agent_timeout,
                 )
                 if provider_task in done:
                     await provider_task
@@ -1849,7 +1858,9 @@ class Runtime:
                 )
                 log.warning(
                     "[%s] request timed out chat=%s after %ss",
-                    provider_name, chat_id, self.agent_timeout,
+                    provider_name,
+                    chat_id,
+                    self.agent_timeout,
                 )
                 try:
                     messages.send(
@@ -1963,7 +1974,8 @@ class Runtime:
                         log.warning(
                             "Disabling status updates for current request after "
                             "%d consecutive edit failures",
-                            failures, exc_info=True,
+                            failures,
+                            exc_info=True,
                         )
                     else:
                         log.debug("Status edit failed; will retry", exc_info=True)
@@ -1998,7 +2010,8 @@ class Runtime:
                     if self._should_run_job(job, now):
                         log.info(
                             "[job:%s] scheduler dispatch (schedule=%r)",
-                            job.dir_name, job.schedule,
+                            job.dir_name,
+                            job.schedule,
                         )
                         self._job_last_run[job.dir_name] = now
                         self.save_state()
@@ -2006,26 +2019,17 @@ class Runtime:
                         self._running_job_tasks[job.dir_name] = task
                         task.add_done_callback(
                             lambda _task, name=job.dir_name: self._running_job_tasks.pop(
-                                name, None,
+                                name,
+                                None,
                             )
                         )
                 except Exception:
                     # One broken job must not stop the others from being
                     # considered — or kill the scheduler task outright.
                     log.exception(
-                        "[job:%s] scheduler dispatch failed", job.dir_name,
+                        "[job:%s] scheduler dispatch failed",
+                        job.dir_name,
                     )
-
-    def _enqueue_job_context(self, output: str, job: Job) -> None:
-        """Queue a job's failure output for injection into the next chat.
-
-        Legacy only: teams executions consume with ``include_global=False``,
-        so a global message would never be read and would accumulate. The
-        job-failure notification (``transport.notify``) delivers it regardless.
-        """
-        if load_teams(self.config) is not None:
-            return
-        messages.send(output, source=f"job:{job.dir_name}")
 
     def _runs_cfg(self) -> dict:
         """Return the ``runs`` config block (defensive against bad shapes)."""
@@ -2056,18 +2060,18 @@ class Runtime:
             # expression must not take down the scheduler for every job.
             log.warning(
                 "Job '%s' has an invalid cron schedule %r; skipping",
-                job.name, job.schedule,
+                job.name,
+                job.schedule,
             )
             return False
         if next_run > now:
             return False
-        if (
-            not job.catch_up
-            and (now - next_run).total_seconds() > job.misfire_grace_seconds
-        ):
+        if not job.catch_up and (now - next_run).total_seconds() > job.misfire_grace_seconds:
             log.warning(
                 "Job '%s' missed scheduled run at %s by more than %ss; skipping catch-up",
-                job.name, next_run.isoformat(), job.misfire_grace_seconds,
+                job.name,
+                next_run.isoformat(),
+                job.misfire_grace_seconds,
             )
             self._job_last_run[job.dir_name] = now
             self.save_state()
@@ -2137,17 +2141,22 @@ class Runtime:
 
         log.info(
             "%s prerun start script=%s timeout=%ss",
-            tag, job.prerun, job.prerun_timeout,
+            tag,
+            job.prerun,
+            job.prerun_timeout,
         )
         try:
             proc = await self._spawn_process(
-                "bash", script,
+                "bash",
+                script,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=job.job_dir,
             )
             stdout, stderr, timed_out = await self._communicate_with_timeout(
-                proc, f"Job '{job.name}' prerun", job.prerun_timeout,
+                proc,
+                f"Job '{job.name}' prerun",
+                job.prerun_timeout,
             )
         except Exception as exc:
             detail = self._sanitize_job_diagnostic(f"{type(exc).__name__}: {exc}")
@@ -2203,7 +2212,8 @@ class Runtime:
             return False
         try:
             await self.transport.notify(
-                text[: self.transport.message_limit], destination=job.notify,
+                text[: self.transport.message_limit],
+                destination=job.notify,
             )
         except Exception:
             log.warning("%s could not send job notification", tag, exc_info=True)
@@ -2244,7 +2254,10 @@ class Runtime:
 
         now = datetime.now(timezone.utc)
         fingerprint = self._failure_alert_fingerprint(
-            job, status, diagnostic, exit_code,
+            job,
+            status,
+            diagnostic,
+            exit_code,
         )
         previous = self._job_failure_alerts.get(job.dir_name, {})
         last_notified: datetime | None = None
@@ -2258,8 +2271,7 @@ class Runtime:
 
         same_failure = previous.get("fingerprint") == fingerprint
         within_cooldown = bool(
-            last_notified
-            and (now - last_notified).total_seconds() < JOB_FAILURE_RENOTIFY_SECS
+            last_notified and (now - last_notified).total_seconds() < JOB_FAILURE_RENOTIFY_SECS
         )
         if same_failure and within_cooldown:
             previous["last_seen_at"] = now.isoformat()
@@ -2272,7 +2284,8 @@ class Runtime:
             self.save_state()
             log.info(
                 "%s duplicate prerun alert suppressed count=%s",
-                tag, previous["suppressed"],
+                tag,
+                previous["suppressed"],
             )
             return False
 
@@ -2329,7 +2342,8 @@ class Runtime:
         except OSError:
             log.warning(
                 "[job:%s] could not create run lock; continuing unlocked",
-                job.dir_name, exc_info=True,
+                job.dir_name,
+                exc_info=True,
             )
             return "unlocked"
         try:
@@ -2361,6 +2375,42 @@ class Runtime:
                 continue
         return held
 
+    def _job_execution_context(
+        self,
+        job: Job,
+    ) -> tuple[ExecutionContext | None, str | None]:
+        """Resolve a job's named workspace/access pair without any fallback."""
+        if not job.workspace:
+            return None, "workspace is required"
+        if not job.access:
+            return None, "access is required"
+
+        catalog = load_catalog(self.config)
+        error = job_binding_error(
+            job.workspace,
+            job.access,
+            job.provider,
+            catalog,
+        )
+        if error:
+            return None, error
+
+        workspace = catalog.workspaces[job.workspace]
+        access = catalog.access_profiles[job.access]
+        if not os.path.isdir(workspace.path):
+            return None, (
+                "workspace path does not exist or is not a directory: "
+                f"{workspace.path}"
+            )
+        return ExecutionContext(
+            chat_key=f"job:{job.dir_name}",
+            path=workspace.path,
+            workspace_id=workspace.name,
+            concurrency=workspace.concurrency,
+            workspace=workspace,
+            access=access,
+        ), None
+
     async def _execute_job(
         self,
         job: Job,
@@ -2374,7 +2424,11 @@ class Runtime:
         started_at = datetime.now(timezone.utc).isoformat()
         log.info(
             "%s start name=%r provider=%s model=%s timeout=%ss prerun=%s",
-            tag, job.name, job.provider, job.model, job.timeout,
+            tag,
+            job.name,
+            job.provider,
+            job.model,
+            job.timeout,
             job.prerun or "-",
         )
         lock_file = self._acquire_job_lock(job)
@@ -2387,6 +2441,31 @@ class Runtime:
             return JobRunResult("error", output=output, exit_code=-1)
         try:
             config_error = job_config_error(job.provider, job.model, self.models)
+            execution: ExecutionContext | None = None
+            if config_error is None:
+                execution, config_error = self._job_execution_context(job)
+            if config_error is None and execution is not None:
+                from .policy import prepare_launch
+
+                assert execution.workspace is not None
+                assert execution.access is not None
+                try:
+                    # Prove the complete native launch can be constructed before
+                    # running the trusted host-side prerun. The resulting launch is
+                    # deliberately discarded: policy is prepared again inside the
+                    # workspace slot at the actual provider spawn boundary.
+                    await asyncio.to_thread(
+                        prepare_launch,
+                        execution.workspace,
+                        execution.access,
+                        job.provider,
+                    )
+                except Exception as exc:
+                    detail = self._sanitize_job_diagnostic(str(exc))
+                    config_error = (
+                        "native launch is unavailable"
+                        f"{f': {detail}' if detail else ''}"
+                    )
             if config_error:
                 run_id = await self._create_job_run(job, trigger, tag, started_at)
                 output = f"Invalid job config: {config_error}"
@@ -2394,10 +2473,15 @@ class Runtime:
                 await self._record_run_finish(run_id, output, -1, "error", tag)
                 if notify_failures:
                     await self._send_job_notification(
-                        job, f"⚠️ [{job.name}] {output}", tag,
+                        job,
+                        f"⚠️ [{job.name}] {output}",
+                        tag,
                     )
                 return JobRunResult(
-                    "error", run_id=run_id, output=output, exit_code=-1,
+                    "error",
+                    run_id=run_id,
+                    output=output,
+                    exit_code=-1,
                 )
 
             prerun = await self._run_job_prerun(job, tag)
@@ -2413,11 +2497,19 @@ class Runtime:
                 run_id = await self._create_job_run(job, trigger, tag, started_at)
                 output = f"{status.replace('_', ' ').title()}: {prerun.diagnostic}"
                 await self._record_run_finish(
-                    run_id, output, prerun.exit_code, status, tag,
+                    run_id,
+                    output,
+                    prerun.exit_code,
+                    status,
+                    tag,
                 )
                 if notify_failures:
                     await self._notify_prerun_failure(
-                        job, status, prerun.diagnostic, prerun.exit_code, tag,
+                        job,
+                        status,
+                        prerun.diagnostic,
+                        prerun.exit_code,
+                        tag,
                     )
                 return JobRunResult(
                     status,
@@ -2434,52 +2526,75 @@ class Runtime:
             run_id = await self._create_job_run(job, trigger, tag, started_at)
             proc: Process | None = None
             try:
-                provider = self.make_provider(
-                    job.provider, timeout=job.timeout,
-                )
-                cmd = provider.build_batch_command(prompt, job.model)
-                job_cwd = self.working_dir
-                log.info(
-                    "%s spawning provider_class=%s cwd=%s prompt_len=%d",
-                    tag, provider.__class__.__name__,
-                    job_cwd, len(prompt),
-                )
-                log.debug("%s command=%s", tag, _redacted_command(cmd))
-                spawn_kwargs: dict[str, Any] = {
-                    "stdin": asyncio.subprocess.DEVNULL,
-                    "stdout": asyncio.subprocess.PIPE,
-                    "stderr": asyncio.subprocess.STDOUT,
-                    "cwd": job_cwd,
-                }
-                proc = await self._spawn_process(*cmd, **spawn_kwargs)
-                log.info("%s pid=%s", tag, proc.pid)
-                stdout, _, timed_out = await self._communicate_with_timeout(
-                    proc, f"Job '{job.name}'", job.timeout,
-                )
-                elapsed = (datetime.now() - started).total_seconds()
-                if timed_out:
-                    output = (
-                        f"Job timed out after {job.timeout}s; "
-                        "process tree was terminated"
+                assert execution is not None
+                async with self._workspace_slot(execution):
+                    execution = await self._prepare_execution_context(
+                        job.provider,
+                        execution,
                     )
-                    log.warning(
-                        "%s timeout after %ss (elapsed=%.1fs); process tree terminated",
-                        tag, job.timeout, elapsed,
+                    provider = self.make_provider(
+                        job.provider,
+                        timeout=job.timeout,
+                        context=execution,
                     )
-                    await self._record_run_finish(
-                        run_id, output, proc.returncode, "timeout", tag,
+                    cmd = provider.build_batch_command(
+                        prompt,
+                        job.model,
+                        launch=execution.launch,
                     )
-                    if notify_failures:
-                        await self._send_job_notification(
-                            job, f"⚠️ [{job.name}] {output}", tag,
+                    log.info(
+                        "%s spawning provider_class=%s cwd=%s prompt_len=%d",
+                        tag,
+                        provider.__class__.__name__,
+                        execution.path,
+                        len(prompt),
+                    )
+                    log.debug("%s command=%s", tag, _redacted_command(cmd))
+                    spawn_kwargs: dict[str, Any] = {
+                        "stdin": asyncio.subprocess.DEVNULL,
+                        "stdout": asyncio.subprocess.PIPE,
+                        "stderr": asyncio.subprocess.STDOUT,
+                        "cwd": execution.path,
+                    }
+                    launch = execution.launch
+                    if launch is not None and launch.env is not None:
+                        spawn_kwargs["env"] = dict(launch.env)
+                    proc = await self._spawn_process(*cmd, **spawn_kwargs)
+                    log.info("%s pid=%s", tag, proc.pid)
+                    stdout, _, timed_out = await self._communicate_with_timeout(
+                        proc,
+                        f"Job '{job.name}'",
+                        job.timeout,
+                    )
+                    elapsed = (datetime.now() - started).total_seconds()
+                    if timed_out:
+                        output = f"Job timed out after {job.timeout}s; process tree was terminated"
+                        log.warning(
+                            "%s timeout after %ss (elapsed=%.1fs); process tree terminated",
+                            tag,
+                            job.timeout,
+                            elapsed,
                         )
-                    return JobRunResult(
-                        "timeout",
-                        run_id=run_id,
-                        output=output,
-                        exit_code=proc.returncode,
-                    )
-                output = provider.parse_batch_output(stdout.decode(errors="replace"))
+                        await self._record_run_finish(
+                            run_id,
+                            output,
+                            proc.returncode,
+                            "timeout",
+                            tag,
+                        )
+                        if notify_failures:
+                            await self._send_job_notification(
+                                job,
+                                f"⚠️ [{job.name}] {output}",
+                                tag,
+                            )
+                        return JobRunResult(
+                            "timeout",
+                            run_id=run_id,
+                            output=output,
+                            exit_code=proc.returncode,
+                        )
+                    output = provider.parse_batch_output(stdout.decode(errors="replace"))
             except Exception as exc:
                 detail = self._sanitize_job_diagnostic(f"{type(exc).__name__}: {exc}")
                 output = f"Job could not start or complete{f': {detail}' if detail else ''}"
@@ -2488,11 +2603,15 @@ class Runtime:
                 await self._record_run_finish(run_id, output, exit_code, "error", tag)
                 if notify_failures:
                     await self._send_job_notification(
-                        job, f"⚠️ [{job.name}] {output}", tag,
+                        job,
+                        f"⚠️ [{job.name}] {output}",
+                        tag,
                     )
-                    self._enqueue_job_context(output, job)
                 return JobRunResult(
-                    "error", run_id=run_id, output=output, exit_code=exit_code,
+                    "error",
+                    run_id=run_id,
+                    output=output,
+                    exit_code=exit_code,
                 )
 
             exit_code = proc.returncode if proc.returncode is not None else -1
@@ -2502,21 +2621,32 @@ class Runtime:
             if exit_code != 0 and notify_failures:
                 log.warning(
                     "%s nonzero exit=%s output_len=%d notify=%s",
-                    tag, exit_code, len(output), job.notify or "default",
+                    tag,
+                    exit_code,
+                    len(output),
+                    job.notify or "default",
                 )
                 label = f"{job.name} (exit {exit_code})"
                 notified = await self._send_job_notification(
-                    job, f"⚠️ [{label}]\n{output}", tag,
+                    job,
+                    f"⚠️ [{label}]\n{output}",
+                    tag,
                 )
-                self._enqueue_job_context(output, job)
 
             elapsed = (datetime.now() - started).total_seconds()
             log.info(
                 "%s complete exit=%s duration=%.1fs output_len=%d notified=%s",
-                tag, exit_code, elapsed, len(output), notified,
+                tag,
+                exit_code,
+                elapsed,
+                len(output),
+                notified,
             )
             return JobRunResult(
-                status, run_id=run_id, output=output, exit_code=exit_code,
+                status,
+                run_id=run_id,
+                output=output,
+                exit_code=exit_code,
             )
         finally:
             if lock_file != "unlocked":
@@ -2598,5 +2728,7 @@ class Runtime:
         if job is None:
             raise ValueError(f"No such job: {name}")
         return await self._execute_job(
-            job, trigger="manual", notify_failures=False,
+            job,
+            trigger="manual",
+            notify_failures=False,
         )

@@ -9,9 +9,28 @@ from typer.testing import CliRunner
 
 from enso import cli as cli_mod
 from enso import core as core_mod
+from enso.config import load_config, save_config
 from enso.core import JobRunResult
 
 runner = CliRunner()
+
+
+def configure_job_catalog(tmp_enso: str) -> None:
+    config = load_config()
+    workspace = str(Path(tmp_enso) / "workspace")
+    config["working_dir"] = workspace
+    config["workspaces"] = {
+        "default": {"path": workspace, "concurrency": 1},
+    }
+    config["access"] = {
+        "admin": {
+            "unrestricted": True,
+            "providers": ["claude"],
+            "default_provider": "claude",
+            "chat_commands": "*",
+        },
+    }
+    save_config(config)
 
 
 def stub_runtime(monkeypatch, result: JobRunResult | Exception) -> None:
@@ -68,6 +87,7 @@ def test_job_run_reports_missing_job(monkeypatch):
 
 
 def test_job_create_uses_safe_slug_and_refuses_duplicate(tmp_enso):
+    configure_job_catalog(tmp_enso)
     args = [
         "job",
         "create",
@@ -79,6 +99,10 @@ def test_job_create_uses_safe_slug_and_refuses_duplicate(tmp_enso):
         "sonnet",
         "--schedule",
         "0 9 * * *",
+        "--workspace",
+        "default",
+        "--access",
+        "admin",
     ]
 
     first = runner.invoke(cli_mod.app, args)
@@ -96,6 +120,7 @@ def test_job_create_uses_safe_slug_and_refuses_duplicate(tmp_enso):
 
 
 def test_job_create_rejects_name_without_slug_characters(tmp_enso):
+    configure_job_catalog(tmp_enso)
     result = runner.invoke(
         cli_mod.app,
         [
@@ -109,9 +134,55 @@ def test_job_create_rejects_name_without_slug_characters(tmp_enso):
             "sonnet",
             "--schedule",
             "0 9 * * *",
+            "--workspace",
+            "default",
+            "--access",
+            "admin",
         ],
     )
 
     assert result.exit_code == 1
     assert "must contain at least one letter or number" in result.output
     assert not (Path(tmp_enso) / "jobs").exists()
+
+
+def test_job_create_requires_workspace_and_access(tmp_enso):
+    configure_job_catalog(tmp_enso)
+    result = runner.invoke(
+        cli_mod.app,
+        [
+            "job",
+            "create",
+            "--name",
+            "Daily",
+            "--provider",
+            "claude",
+            "--model",
+            "sonnet",
+            "--schedule",
+            "0 9 * * *",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "workspace" in result.output
+
+    result = runner.invoke(
+        cli_mod.app,
+        [
+            "job",
+            "create",
+            "--name",
+            "Daily",
+            "--provider",
+            "claude",
+            "--model",
+            "sonnet",
+            "--schedule",
+            "0 9 * * *",
+            "--workspace",
+            "default",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "access" in result.output

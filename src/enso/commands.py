@@ -55,7 +55,7 @@ def cmd_use(
     If choice is given and valid, switches and returns (response_text, []).
     If no choice, returns (None, [(name, is_active), ...]) for the transport
     to render in its native UI. ``providers`` restricts both the picker and
-    accepted choices — teams workspaces pass their usable allowlist, so a
+    accepted choices — routed workspaces pass their usable allowlist, so a
     disallowed provider is refused rather than selected-and-failed later.
     """
     available = PROVIDER_NAMES if providers is None else providers
@@ -255,8 +255,8 @@ def cmd_clear(
 ) -> list[str]:
     """Clear sessions and return summary lines per provider.
 
-    ``working_dir`` locates provider session files; teams routes pass their
-    workspace path, everything else defaults to the legacy working_dir.
+    ``working_dir`` locates provider session files; Slack routes pass their
+    named workspace path, while Telegram defaults to the global working_dir.
     """
     parts = []
     session_dir = working_dir or runtime.working_dir
