@@ -324,7 +324,8 @@ class TeamsRouter:
         self.runtime.active_provider_by_chat[chat_key] = provider
         self.runtime.touch_session(chat_key)
 
-        command_name = text[1:].split(None, 1)[0].lower() if text.startswith("!") else None
+        command_parts = text[1:].split(None, 1) if text.startswith("!") else []
+        command_name = command_parts[0].lower() if command_parts else None
         model = self.runtime.get_active_model(chat_key, provider)
         effort = self.runtime.get_active_effort(chat_key, provider, model)
         turn_fields.update(

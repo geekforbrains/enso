@@ -412,6 +412,17 @@ async def test_use_refuses_provider_outside_access_profile(tmp_enso, monkeypatch
     assert "not available" in reply
 
 
+async def test_bare_bang_is_not_a_command_and_does_not_crash(tmp_enso, monkeypatch):
+    # A lone "!" has no command word. It must not raise (the parse once did) and
+    # must not be dropped before dispatch — it flows through as an ordinary
+    # prompt, so the delivery is handled instead of leaking as a pending claim.
+    transport, rt = _make_transport(tmp_enso, monkeypatch)
+    client = _make_client()
+    await transport._handle_app_mention(_mention(text="<@UBOT> !"), client)
+    rt.dispatch.assert_awaited_once()
+    assert rt.dispatch.call_args.args[1] == "!"
+
+
 # -- context injection --
 
 
