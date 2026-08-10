@@ -2004,7 +2004,7 @@ def slack_lookup_channel(
 
 @slack_app.command("whois")
 def slack_whois(
-    user_id: Annotated[str, typer.Argument(help="Slack user ID (e.g. U0AETSSDDEF)")],
+    user_id: Annotated[str, typer.Argument(help="Slack user ID (e.g. U0123456789)")],
 ) -> None:
     """Resolve a U-ID to a user record. Calls users.info on cache miss."""
     token = _slack_token_or_exit()

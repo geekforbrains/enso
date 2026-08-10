@@ -116,16 +116,16 @@ name↔ID directory backed by a local JSON cache at
 `~/.enso/cache/slack.json`.
 
 ```bash
-enso slack lookup-user "gavin"            # name / email / display → user
-enso slack lookup-channel "daily"         # name → channel
-enso slack whois U0AETSSDDEF              # reverse: ID → user
-enso slack open-dm gavin                  # returns the DM channel ID
+enso slack lookup-user "alex"            # name / email / display → user
+enso slack lookup-channel "general"         # name → channel
+enso slack whois U0123456789              # reverse: ID → user
+enso slack open-dm alex                  # returns the DM channel ID
 enso slack list [users|channels]          # dump cache (auto-refresh if empty)
 enso slack refresh [--users|--channels]   # force refresh
 
 enso slack search "deploy failed"         # search.messages (public channels)
-enso slack history C0AEWRPJ9LM            # channel history
-enso slack thread C0AEWRPJ9LM <ts>        # full thread
+enso slack history C0123456789            # channel history
+enso slack thread C0123456789 <ts>        # full thread
 ```
 
 Lookups refresh automatically on a miss (guarded to at most once every 60

@@ -23,7 +23,7 @@ def _turn(**overrides) -> dict:
         "source_message_id": "111.222",
         "conversation_id": "C1:111.222",
         "user_id": "U1",
-        "user_name": "gavin",
+        "user_name": "alex",
         "groups": ("team",),
         "authorized_groups": ("team",),
         "workspace_id": "acme",

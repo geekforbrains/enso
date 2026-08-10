@@ -1,6 +1,6 @@
 ---
 name: slack
-description: Look up Slack users and channels by name, open DMs, read channel history, and search messages. Use when you need to resolve a name to an ID (e.g. someone asks you to "mention Gavin" and you need `<@U…>`), find a channel, or retrieve context from other Slack conversations.
+description: Look up Slack users and channels by name, open DMs, read channel history, and search messages. Use when you need to resolve a name to an ID (e.g. someone asks you to "mention Alex" and you need `<@U…>`), find a channel, or retrieve context from other Slack conversations.
 ---
 
 # Slack
@@ -10,13 +10,13 @@ It's always available — no token management on your side.
 
 ## Name ↔ ID lookups
 
-Whenever someone says "mention Gavin" or "post to #daily", resolve the
+Whenever someone says "mention Alex" or "post to #general", resolve the
 name to an ID before composing the message:
 
 ```bash
-enso slack lookup-user "gavin"           # by name / real_name / display / email
-enso slack lookup-channel "daily"        # by name or channel ID
-enso slack whois U0AETSSDDEF             # reverse: ID → user record
+enso slack lookup-user "alex"           # by name / real_name / display / email
+enso slack lookup-channel "general"        # by name or channel ID
+enso slack whois U0123456789             # reverse: ID → user record
 ```
 
 - Output is one line per match: `<id>  <real_name>  (@handle)  <email>  [tags]`
@@ -30,8 +30,8 @@ enso slack whois U0AETSSDDEF             # reverse: ID → user record
 Once you have an ID, embed it in your Slack message using Slack mention
 syntax:
 
-- User mention: `<@U0AETSSDDEF>`
-- Channel reference: `<#C0AEWRPJ9LM|daily>`
+- User mention: `<@U0123456789>`
+- Channel reference: `<#C0123456789|general>`
 
 Slack renders these as clickable mentions/links automatically.
 
@@ -41,7 +41,7 @@ To send someone a direct message, you need the DM channel ID (`D…`), not
 their user ID:
 
 ```bash
-enso slack open-dm U0AETSSDDEF           # or by name: open-dm "gavin"
+enso slack open-dm U0123456789           # or by name: open-dm "alex"
 # → prints D0AFV5ANEGY
 ```
 
@@ -65,9 +65,9 @@ No cache here — these hit the API live each time:
 
 ```bash
 enso slack search "deploy failed"        # search.messages
-enso slack search "from:@gavin report"
-enso slack history C0AEWRPJ9LM --count 30
-enso slack thread C0AEWRPJ9LM 1706789234.123456
+enso slack search "from:@alex report"
+enso slack history C0123456789 --count 30
+enso slack thread C0123456789 1706789234.123456
 ```
 
 `enso slack search` uses the bot token with the `search:read.public`
