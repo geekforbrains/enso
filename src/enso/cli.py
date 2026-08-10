@@ -2289,6 +2289,11 @@ def config_check() -> None:
     if failed:
         raise typer.Exit(1)
     console.print("\n[green]All checks passed.[/]")
+    console.print(
+        "[dim]Plumbing only: this confirms Enso can select each native policy, not that "
+        "the policy is safe. Before trusting a restricted profile, test it with the "
+        "installed CLI — a forbidden read, a forbidden write, and command execution.[/]"
+    )
 
 
 @route_app.command("explain")
