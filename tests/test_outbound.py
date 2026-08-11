@@ -7,18 +7,36 @@ import json
 import pytest
 
 from enso.outbound import (
+    MAX_AXIS_LABEL,
     MAX_BLOCKS_PER_MESSAGE,
+    MAX_CHART_LABEL,
+    MAX_CHART_POINTS,
+    MAX_CHART_SERIES,
     MAX_DATA_TABLE_ROWS,
     MAX_DATA_TABLE_TEXT,
+    MAX_DATA_VISUALIZATION_BLOCKS,
     MAX_FALLBACK_TEXT,
     MAX_MARKDOWN_TEXT,
+    MAX_PIE_SEGMENTS,
+    MAX_SECTION_FIELD_TEXT,
+    MAX_SECTION_FIELDS,
     MAX_TABLE_COLUMNS,
     MAX_TABLE_ROWS,
     MAX_TABLE_TEXT,
+    MAX_VISUALIZATION_TITLE,
     STRUCTURED_OUTPUT_INSTRUCTIONS,
+    ChartAxis,
+    ChartPoint,
+    ChartSegment,
+    ChartSeries,
     DataTableBlock,
+    DataVisualizationBlock,
     MarkdownBlock,
     OutboundMessage,
+    PieChart,
+    SectionField,
+    SectionFieldsBlock,
+    SeriesChart,
     TableBlock,
     TableColumnSetting,
     TableNumberCell,
@@ -74,6 +92,23 @@ def test_agent_instructions_match_the_strict_envelope_contract():
     assert f"{MAX_DATA_TABLE_TEXT:,} cell characters" in instructions
     assert f"{MAX_TABLE_TEXT:,} cell characters" in instructions
     assert "all native table blocks combined" in instructions
+    assert '"type":"section"' in instructions
+    assert '"type":"data_visualization"' in instructions
+    assert all(chart_type in instructions for chart_type in ("pie", "bar", "area", "line"))
+    assert '"segments":[{"label":"A","value":1}]' in instructions
+    assert '"series":[{"name":"Revenue","data":[' in instructions
+    assert '"axis_config":{"categories":["Jan"]' in instructions
+    assert f"{MAX_SECTION_FIELDS} fields" in instructions
+    assert f"{MAX_SECTION_FIELD_TEXT:,} characters" in instructions
+    assert f"{MAX_DATA_VISUALIZATION_BLOCKS} charts" in instructions
+    assert f"{MAX_VISUALIZATION_TITLE} characters" in instructions
+    assert f"{MAX_CHART_SERIES} series" in instructions
+    assert f"{MAX_CHART_POINTS} points" in instructions
+    assert f"{MAX_CHART_LABEL} characters" in instructions
+    assert f"{MAX_AXIS_LABEL} characters" in instructions
+    assert f"{MAX_PIE_SEGMENTS} segments" in instructions
+    assert "pie values must be positive" in instructions
+    assert "line, bar, and area values may be negative" in instructions
 
 
 def test_parse_outbound_message_accepts_native_table_blocks():
@@ -164,6 +199,380 @@ def test_parse_outbound_message_accepts_native_table_blocks():
             ),
         ),
     )
+
+
+def _section(**overrides: object) -> dict:
+    block = {
+        "type": "section",
+        "fields": [
+            {"type": "markdown", "text": "**MRR**\n$42k"},
+            {"type": "text", "text": "On target"},
+        ],
+    }
+    block.update(overrides)
+    return block
+
+
+def _segment(label: object = "Enterprise", value: object = 60) -> dict:
+    return {"label": label, "value": value}
+
+
+def _point(label: object = "Jan", value: object = 10) -> dict:
+    return {"label": label, "value": value}
+
+
+def _series(name: object = "Revenue", data: object | None = None) -> dict:
+    return {
+        "name": name,
+        "data": [_point()] if data is None else data,
+    }
+
+
+def _axis(categories: object | None = None, **overrides: object) -> dict:
+    axis = {"categories": ["Jan"] if categories is None else categories}
+    axis.update(overrides)
+    return axis
+
+
+def _pie_chart(**overrides: object) -> dict:
+    chart = {"type": "pie", "segments": [_segment()]}
+    chart.update(overrides)
+    return chart
+
+
+def _series_chart(chart_type: str = "line", **overrides: object) -> dict:
+    chart = {
+        "type": chart_type,
+        "series": [_series()],
+        "axis_config": _axis(),
+    }
+    chart.update(overrides)
+    return chart
+
+
+def _visualization(chart: object | None = None, **overrides: object) -> dict:
+    block = {
+        "type": "data_visualization",
+        "title": "Revenue mix",
+        "chart": _pie_chart() if chart is None else chart,
+    }
+    block.update(overrides)
+    return block
+
+
+def test_parse_outbound_message_accepts_section_fields_and_pie_chart():
+    message = parse_outbound_message(
+        _envelope(
+            _payload(
+                fallback_text="MRR is $42k; enterprise contributes 60%.",
+                blocks=[
+                    _section(),
+                    _visualization(
+                        _pie_chart(
+                            segments=[
+                                _segment("Enterprise", 60),
+                                _segment("Self-serve", 40.5),
+                            ]
+                        ),
+                    ),
+                ],
+            )
+        )
+    )
+
+    assert message == OutboundMessage(
+        fallback_text="MRR is $42k; enterprise contributes 60%.",
+        blocks=(
+            SectionFieldsBlock(
+                fields=(
+                    SectionField(kind="markdown", text="**MRR**\n$42k"),
+                    SectionField(kind="text", text="On target"),
+                )
+            ),
+            DataVisualizationBlock(
+                title="Revenue mix",
+                chart=PieChart(
+                    segments=(
+                        ChartSegment(label="Enterprise", value=60),
+                        ChartSegment(label="Self-serve", value=40.5),
+                    )
+                ),
+            ),
+        ),
+    )
+
+
+@pytest.mark.parametrize("chart_type", ["line", "bar", "area"])
+def test_parse_outbound_message_accepts_series_charts(chart_type):
+    chart = _series_chart(
+        chart_type,
+        series=[
+            _series(
+                "Revenue",
+                [_point("Feb", 12.5), _point("Jan", -3)],
+            ),
+            _series(
+                "Target",
+                [_point("Jan", 0), _point("Feb", 10)],
+            ),
+        ],
+        axis_config=_axis(
+            ["Jan", "Feb"],
+            x_label="Month",
+            y_label="USD",
+        ),
+    )
+
+    message = parse_outbound_message(
+        _envelope(_payload(blocks=[_visualization(chart, title="Monthly revenue")]))
+    )
+
+    assert message == OutboundMessage(
+        fallback_text="Accessible summary",
+        blocks=(
+            DataVisualizationBlock(
+                title="Monthly revenue",
+                chart=SeriesChart(
+                    chart_type=chart_type,
+                    series=(
+                        ChartSeries(
+                            name="Revenue",
+                            data=(
+                                ChartPoint(label="Feb", value=12.5),
+                                ChartPoint(label="Jan", value=-3),
+                            ),
+                        ),
+                        ChartSeries(
+                            name="Target",
+                            data=(
+                                ChartPoint(label="Jan", value=0),
+                                ChartPoint(label="Feb", value=10),
+                            ),
+                        ),
+                    ),
+                    axis_config=ChartAxis(
+                        categories=("Jan", "Feb"),
+                        x_label="Month",
+                        y_label="USD",
+                    ),
+                ),
+            ),
+        ),
+    )
+
+
+def test_parse_outbound_message_accepts_summary_and_chart_boundaries():
+    categories = tuple(
+        "C" * MAX_CHART_LABEL if index == 0 else f"C{index:02}"
+        for index in range(MAX_CHART_POINTS)
+    )
+    series = [
+        _series(
+            "N" * MAX_CHART_LABEL if index == 0 else f"Series {index}",
+            [_point(label, index) for label in reversed(categories)],
+        )
+        for index in range(MAX_CHART_SERIES)
+    ]
+    blocks = [
+        _section(
+            fields=[
+                {"type": "text", "text": "x" * MAX_SECTION_FIELD_TEXT}
+                for _ in range(MAX_SECTION_FIELDS)
+            ]
+        ),
+        _visualization(
+            _pie_chart(
+                segments=[
+                    _segment(
+                        "S" * MAX_CHART_LABEL if index == 0 else f"Segment {index}",
+                        index + 1,
+                    )
+                    for index in range(MAX_PIE_SEGMENTS)
+                ]
+            ),
+            title="P" * MAX_VISUALIZATION_TITLE,
+        ),
+        _visualization(
+            _series_chart(
+                "line",
+                series=series,
+                axis_config=_axis(
+                    list(categories),
+                    x_label="X" * MAX_AXIS_LABEL,
+                    y_label="Y" * MAX_AXIS_LABEL,
+                ),
+            ),
+        ),
+    ]
+
+    message = parse_outbound_message(_envelope(_payload(blocks=blocks)))
+
+    assert message is not None
+    assert len(message.blocks) == 3
+
+
+def test_blank_optional_axis_labels_are_normalized_to_omission():
+    message = parse_outbound_message(
+        _envelope(
+            _payload(
+                blocks=[
+                    _visualization(
+                        _series_chart(axis_config=_axis(x_label="", y_label="   "))
+                    )
+                ]
+            )
+        )
+    )
+
+    assert message is not None
+    chart = message.blocks[0].chart
+    assert isinstance(chart, SeriesChart)
+    assert chart.axis_config.x_label is None
+    assert chart.axis_config.y_label is None
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        {"type": "section", "fields": []},
+        {"type": "section", "fields": "not a list"},
+        {"type": "section", "fields": [None]},
+        {"type": "section", "fields": [{"type": "markdown", "text": ""}]},
+        {"type": "section", "fields": [{"type": "mrkdwn", "text": "raw"}]},
+        {
+            "type": "section",
+            "fields": [{"type": "text", "text": "x", "emoji": True}],
+        },
+        _visualization(title=""),
+        _visualization(title=42),
+        _visualization(
+            _pie_chart(
+                segments=[_segment(f"S{i}", i + 1) for i in range(MAX_PIE_SEGMENTS + 1)]
+            ),
+            title=42,
+        ),
+        _visualization(chart="not an object"),
+        _visualization({"type": "scatter", "series": []}),
+        _visualization(_pie_chart(segments=[])),
+        _visualization(_pie_chart(segments=[None])),
+        _visualization(_pie_chart(segments=[{"label": "A"}])),
+        _visualization(_pie_chart(segments=[_segment(label="")])),
+        _visualization(_pie_chart(segments=[_segment(value=True)])),
+        _visualization(_pie_chart(segments=[_segment(value="1")])),
+        _visualization(_pie_chart(segments=[_segment(value=float("inf"))])),
+        _visualization(_pie_chart(segments=[_segment(value=0)])),
+        _visualization(_pie_chart(segments=[_segment(value=-1)])),
+        _visualization(_series_chart(series=[])),
+        _visualization(_series_chart(series=[{"name": "Revenue"}])),
+        _visualization(_series_chart(series=[_series(name="")])),
+        _visualization(_series_chart(series=[_series(data=[])])),
+        _visualization(_series_chart(series=[_series(data=[_point(value=True)])])),
+        _visualization(_series_chart(series=[_series(data=[_point(value="1")])])),
+        _visualization(
+            _series_chart(series=[_series(data=[_point(value=float("nan"))])])
+        ),
+        _visualization(_series_chart(axis_config=_axis([]))),
+        _visualization(_series_chart(axis_config=_axis([""]))),
+        _visualization(_series_chart(axis_config=_axis(["Jan", "Jan"]))),
+        _visualization(
+            _series_chart(
+                series=[_series("Revenue"), _series("Revenue")],
+            )
+        ),
+        _visualization(
+            _series_chart(
+                series=[_series(data=[_point("Feb")])],
+                axis_config=_axis(["Jan"]),
+            )
+        ),
+        _visualization(
+            _series_chart(
+                series=[_series(data=[_point("Jan"), _point("Jan")])],
+                axis_config=_axis(["Jan", "Feb"]),
+            )
+        ),
+        _visualization(
+            _series_chart(axis_config={"categories": ["Jan"], "extra": True})
+        ),
+    ],
+)
+def test_parse_outbound_message_rejects_invalid_summary_and_chart_schema(block):
+    text = _envelope(_payload(blocks=[block]))
+
+    assert parse_outbound_message(text) is None
+    assert parse_outbound_fallback(text) is None
+
+
+def _over_limit_summary_and_chart_blocks() -> list[dict]:
+    categories = [f"C{i:02}" for i in range(MAX_CHART_POINTS + 1)]
+    return [
+        _section(
+            fields=[{"type": "text", "text": "x"}]
+            * (MAX_SECTION_FIELDS + 1)
+        ),
+        _section(
+            fields=[
+                {"type": "text", "text": "x" * (MAX_SECTION_FIELD_TEXT + 1)}
+            ]
+        ),
+        _visualization(title="T" * (MAX_VISUALIZATION_TITLE + 1)),
+        _visualization(
+            _pie_chart(
+                segments=[_segment(f"S{i}", i + 1) for i in range(MAX_PIE_SEGMENTS + 1)]
+            )
+        ),
+        _visualization(_pie_chart(segments=[_segment("L" * (MAX_CHART_LABEL + 1))])),
+        _visualization(
+            _series_chart(
+                series=[_series(f"S{i}") for i in range(MAX_CHART_SERIES + 1)]
+            )
+        ),
+        _visualization(_series_chart(series=[_series("N" * (MAX_CHART_LABEL + 1))])),
+        _visualization(
+            _series_chart(
+                series=[
+                    _series(
+                        data=[_point(label, 1) for label in categories],
+                    )
+                ],
+                axis_config=_axis(categories),
+            )
+        ),
+        _visualization(
+            _series_chart(
+                series=[_series(data=[_point("L" * (MAX_CHART_LABEL + 1))])],
+                axis_config=_axis(["L" * (MAX_CHART_LABEL + 1)]),
+            )
+        ),
+        _visualization(
+            _series_chart(axis_config=_axis(x_label="X" * (MAX_AXIS_LABEL + 1)))
+        ),
+        _visualization(
+            _series_chart(axis_config=_axis(y_label="Y" * (MAX_AXIS_LABEL + 1)))
+        ),
+    ]
+
+
+@pytest.mark.parametrize("block", _over_limit_summary_and_chart_blocks())
+def test_over_limit_summary_and_chart_exposes_complete_safe_fallback(block):
+    text = _envelope(
+        _payload(fallback_text="Compact complete fallback", blocks=[block])
+    )
+
+    assert parse_outbound_message(text) is None
+    assert parse_outbound_fallback(text) == "Compact complete fallback"
+
+
+def test_more_than_two_visualizations_exposes_complete_safe_fallback():
+    text = _envelope(
+        _payload(
+            fallback_text="Compact chart summary",
+            blocks=[_visualization(), _visualization(), _visualization()],
+        )
+    )
+
+    assert parse_outbound_message(text) is None
+    assert parse_outbound_fallback(text) == "Compact chart summary"
 
 
 def _text_cell(text: str = "x") -> dict:

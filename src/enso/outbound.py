@@ -17,6 +17,15 @@ MAX_DATA_TABLE_TEXT = 20000
 MAX_TABLE_TEXT = 10000
 MAX_NATIVE_TABLE_TEXT = 20000
 MAX_DATA_TABLE_PAGE_SIZE = 100
+MAX_SECTION_FIELDS = 10
+MAX_SECTION_FIELD_TEXT = 2000
+MAX_DATA_VISUALIZATION_BLOCKS = 2
+MAX_VISUALIZATION_TITLE = 50
+MAX_CHART_SERIES = 12
+MAX_CHART_POINTS = 20
+MAX_CHART_LABEL = 20
+MAX_AXIS_LABEL = 50
+MAX_PIE_SEGMENTS = 12
 
 STRUCTURED_OUTPUT_INSTRUCTIONS = (
     "[Enso structured output capability]\n"
@@ -47,7 +56,24 @@ STRUCTURED_OUTPUT_INSTRUCTIONS = (
     f"{MAX_TABLE_COLUMNS} columns. Each data_table allows {MAX_DATA_TABLE_TEXT:,} "
     f"cell characters; each table allows {MAX_TABLE_TEXT:,} cell characters; all "
     "native table "
-    f"blocks combined allow {MAX_NATIVE_TABLE_TEXT:,} cell characters per message. "
+    f"blocks combined allow {MAX_NATIVE_TABLE_TEXT:,} cell characters per message.\n"
+    '- Compact two-column fields: {"type":"section","fields":['
+    '{"type":"markdown","text":"**MRR**\\n$42k"},'
+    '{"type":"text","text":"On target"}]}. Use 1 to '
+    f"{MAX_SECTION_FIELDS} fields, each at most {MAX_SECTION_FIELD_TEXT:,} characters.\n"
+    '- Charts: {"type":"data_visualization","title":"Short title","chart":{...}}. '
+    f"Use at most {MAX_DATA_VISUALIZATION_BLOCKS} charts per message and titles up "
+    f"to {MAX_VISUALIZATION_TITLE} characters. A pie chart is "
+    '{"type":"pie","segments":[{"label":"A","value":1}]}; use 1 to '
+    f"{MAX_PIE_SEGMENTS} segments and pie values must be positive. A series chart is "
+    '{"type":"line","series":[{"name":"Revenue","data":['
+    '{"label":"Jan","value":10}]}],"axis_config":{"categories":["Jan"],'
+    '"x_label":"Month","y_label":"USD"}}; x_label and y_label are optional, and '
+    "type may be line, bar, or area, with "
+    f"1 to {MAX_CHART_SERIES} series and 1 to {MAX_CHART_POINTS} points each. "
+    f"Series, category, point, and segment labels allow {MAX_CHART_LABEL} characters; "
+    f"optional axis labels allow {MAX_AXIS_LABEL} characters. Every series must cover "
+    "each category exactly once; line, bar, and area values may be negative.\n"
     "Add no prose outside the fence, and otherwise respond normally.\n"
 )
 
@@ -68,6 +94,223 @@ class MarkdownBlock:
         if len(self.text) > MAX_MARKDOWN_TEXT:
             raise ValueError(
                 f"markdown block text exceeds {MAX_MARKDOWN_TEXT} characters"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class SectionField:
+    """One compact summary field in standard Markdown or plain text."""
+
+    kind: str
+    text: str
+
+    def __post_init__(self) -> None:
+        if type(self.kind) is not str or self.kind not in {"markdown", "text"}:
+            raise ValueError("section field kind must be markdown or text")
+        if type(self.text) is not str or not self.text.strip():
+            raise ValueError("section field text must be a non-empty string")
+
+
+@dataclass(frozen=True, slots=True)
+class SectionFieldsBlock:
+    """Compact summary fields rendered in two columns."""
+
+    fields: tuple[SectionField, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.fields) is not tuple or not self.fields:
+            raise ValueError("section fields must be a non-empty tuple")
+        if not all(isinstance(field, SectionField) for field in self.fields):
+            raise ValueError("section contains an invalid field")
+        if len(self.fields) > MAX_SECTION_FIELDS:
+            raise _OutboundLimitError(
+                f"section exceeds {MAX_SECTION_FIELDS} fields"
+            )
+        if any(len(field.text) > MAX_SECTION_FIELD_TEXT for field in self.fields):
+            raise _OutboundLimitError(
+                f"section field exceeds {MAX_SECTION_FIELD_TEXT} characters"
+            )
+
+
+def _is_finite_number(value: Any) -> bool:
+    return type(value) in (int, float) and (
+        type(value) is int or math.isfinite(value)
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ChartSegment:
+    """One labeled positive slice in a pie chart."""
+
+    label: str
+    value: int | float
+
+    def __post_init__(self) -> None:
+        if type(self.label) is not str or not self.label.strip():
+            raise ValueError("chart segment label must be a non-empty string")
+        if not _is_finite_number(self.value) or self.value <= 0:
+            raise ValueError("chart segment value must be a positive finite number")
+
+
+@dataclass(frozen=True, slots=True)
+class ChartPoint:
+    """One labeled numeric point in a series chart."""
+
+    label: str
+    value: int | float
+
+    def __post_init__(self) -> None:
+        if type(self.label) is not str or not self.label.strip():
+            raise ValueError("chart point label must be a non-empty string")
+        if not _is_finite_number(self.value):
+            raise ValueError("chart point value must be a finite number")
+
+
+@dataclass(frozen=True, slots=True)
+class ChartSeries:
+    """One named series of chart data points."""
+
+    name: str
+    data: tuple[ChartPoint, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.name) is not str or not self.name.strip():
+            raise ValueError("chart series name must be a non-empty string")
+        if type(self.data) is not tuple or not self.data:
+            raise ValueError("chart series data must be a non-empty tuple")
+        if not all(isinstance(point, ChartPoint) for point in self.data):
+            raise ValueError("chart series contains an invalid point")
+
+
+@dataclass(frozen=True, slots=True)
+class ChartAxis:
+    """Categories and optional axis labels for a series chart."""
+
+    categories: tuple[str, ...]
+    x_label: str | None = None
+    y_label: str | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.categories) is not tuple or not self.categories:
+            raise ValueError("chart categories must be a non-empty tuple")
+        if not all(
+            type(category) is str and category.strip() for category in self.categories
+        ):
+            raise ValueError("chart categories must be non-empty strings")
+        if len(set(self.categories)) != len(self.categories):
+            raise ValueError("chart categories must be unique")
+        for attribute in ("x_label", "y_label"):
+            label = getattr(self, attribute)
+            if label is not None and type(label) is not str:
+                raise ValueError("chart axis labels must be strings")
+            if label is not None and not label.strip():
+                object.__setattr__(self, attribute, None)
+
+
+@dataclass(frozen=True, slots=True)
+class PieChart:
+    """A pie chart composed of positive segments."""
+
+    segments: tuple[ChartSegment, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.segments) is not tuple or not self.segments:
+            raise ValueError("pie chart segments must be a non-empty tuple")
+        if not all(isinstance(segment, ChartSegment) for segment in self.segments):
+            raise ValueError("pie chart contains an invalid segment")
+        if len(self.segments) > MAX_PIE_SEGMENTS:
+            raise _OutboundLimitError(
+                f"pie chart exceeds {MAX_PIE_SEGMENTS} segments"
+            )
+        if any(len(segment.label) > MAX_CHART_LABEL for segment in self.segments):
+            raise _OutboundLimitError(
+                f"pie chart label exceeds {MAX_CHART_LABEL} characters"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class SeriesChart:
+    """A line, bar, or area chart with shared category axes."""
+
+    chart_type: str
+    series: tuple[ChartSeries, ...]
+    axis_config: ChartAxis
+
+    def __post_init__(self) -> None:
+        if type(self.chart_type) is not str or self.chart_type not in {
+            "line",
+            "bar",
+            "area",
+        }:
+            raise ValueError("series chart type must be line, bar, or area")
+        if type(self.series) is not tuple or not self.series:
+            raise ValueError("chart series must be a non-empty tuple")
+        if not all(isinstance(series, ChartSeries) for series in self.series):
+            raise ValueError("chart contains an invalid series")
+        if not isinstance(self.axis_config, ChartAxis):
+            raise ValueError("chart contains an invalid axis_config")
+
+        names = tuple(series.name for series in self.series)
+        if len(set(names)) != len(names):
+            raise ValueError("chart series names must be unique")
+        categories = set(self.axis_config.categories)
+        for series in self.series:
+            labels = tuple(point.label for point in series.data)
+            if len(set(labels)) != len(labels) or set(labels) != categories:
+                raise ValueError(
+                    "each chart series must cover every category exactly once"
+                )
+
+        if len(self.series) > MAX_CHART_SERIES:
+            raise _OutboundLimitError(
+                f"chart exceeds {MAX_CHART_SERIES} series"
+            )
+        if any(len(name) > MAX_CHART_LABEL for name in names):
+            raise _OutboundLimitError(
+                f"chart series name exceeds {MAX_CHART_LABEL} characters"
+            )
+        if len(self.axis_config.categories) > MAX_CHART_POINTS:
+            raise _OutboundLimitError(
+                f"chart exceeds {MAX_CHART_POINTS} categories"
+            )
+        if any(
+            len(category) > MAX_CHART_LABEL
+            for category in self.axis_config.categories
+        ):
+            raise _OutboundLimitError(
+                f"chart category exceeds {MAX_CHART_LABEL} characters"
+            )
+        for series in self.series:
+            if len(series.data) > MAX_CHART_POINTS:
+                raise _OutboundLimitError(
+                    f"chart series exceeds {MAX_CHART_POINTS} points"
+                )
+            if any(len(point.label) > MAX_CHART_LABEL for point in series.data):
+                raise _OutboundLimitError(
+                    f"chart point label exceeds {MAX_CHART_LABEL} characters"
+                )
+        for label in (self.axis_config.x_label, self.axis_config.y_label):
+            if label is not None and len(label) > MAX_AXIS_LABEL:
+                raise _OutboundLimitError(
+                    f"chart axis label exceeds {MAX_AXIS_LABEL} characters"
+                )
+
+
+@dataclass(frozen=True, slots=True)
+class DataVisualizationBlock:
+    """A native pie, line, bar, or area chart."""
+
+    title: str
+    chart: PieChart | SeriesChart
+
+    def __post_init__(self) -> None:
+        if type(self.title) is not str or not self.title.strip():
+            raise ValueError("visualization title must be a non-empty string")
+        if not isinstance(self.chart, (PieChart, SeriesChart)):
+            raise ValueError("visualization contains an invalid chart")
+        if len(self.title) > MAX_VISUALIZATION_TITLE:
+            raise _OutboundLimitError(
+                f"visualization title exceeds {MAX_VISUALIZATION_TITLE} characters"
             )
 
 
@@ -219,7 +462,13 @@ class TableBlock:
             )
 
 
-OutboundBlock = MarkdownBlock | DataTableBlock | TableBlock
+OutboundBlock = (
+    MarkdownBlock
+    | SectionFieldsBlock
+    | DataVisualizationBlock
+    | DataTableBlock
+    | TableBlock
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,7 +485,16 @@ class OutboundMessage:
         if len(self.blocks) > MAX_BLOCKS_PER_MESSAGE:
             raise ValueError(f"blocks exceeds {MAX_BLOCKS_PER_MESSAGE} items")
         if not all(
-            isinstance(block, (MarkdownBlock, DataTableBlock, TableBlock))
+            isinstance(
+                block,
+                (
+                    MarkdownBlock,
+                    SectionFieldsBlock,
+                    DataVisualizationBlock,
+                    DataTableBlock,
+                    TableBlock,
+                ),
+            )
             for block in self.blocks
         ):
             raise ValueError("message contains an unsupported block type")
@@ -258,6 +516,14 @@ class OutboundMessage:
             raise _OutboundLimitError(
                 "native table blocks exceed "
                 f"{MAX_NATIVE_TABLE_TEXT} cumulative cell characters"
+            )
+        visualization_count = sum(
+            isinstance(block, DataVisualizationBlock) for block in self.blocks
+        )
+        if visualization_count > MAX_DATA_VISUALIZATION_BLOCKS:
+            raise _OutboundLimitError(
+                "message exceeds "
+                f"{MAX_DATA_VISUALIZATION_BLOCKS} data visualization blocks"
             )
 
 
@@ -352,11 +618,107 @@ def _parse_table_block(value: dict[str, Any]) -> TableBlock:
     )
 
 
+def _parse_section_field(value: Any) -> SectionField:
+    if type(value) is not dict or set(value) != {"type", "text"}:
+        raise ValueError("invalid section field schema")
+    return SectionField(kind=value["type"], text=value["text"])
+
+
+def _parse_section_fields_block(value: dict[str, Any]) -> SectionFieldsBlock:
+    if set(value) != {"type", "fields"} or type(value["fields"]) is not list:
+        raise ValueError("invalid section fields block schema")
+    return SectionFieldsBlock(
+        fields=tuple(_parse_section_field(field) for field in value["fields"])
+    )
+
+
+def _parse_chart_segment(value: Any) -> ChartSegment:
+    if type(value) is not dict or set(value) != {"label", "value"}:
+        raise ValueError("invalid chart segment schema")
+    return ChartSegment(label=value["label"], value=value["value"])
+
+
+def _parse_chart_point(value: Any) -> ChartPoint:
+    if type(value) is not dict or set(value) != {"label", "value"}:
+        raise ValueError("invalid chart point schema")
+    return ChartPoint(label=value["label"], value=value["value"])
+
+
+def _parse_chart_series(value: Any) -> ChartSeries:
+    if (
+        type(value) is not dict
+        or set(value) != {"name", "data"}
+        or type(value["data"]) is not list
+    ):
+        raise ValueError("invalid chart series schema")
+    return ChartSeries(
+        name=value["name"],
+        data=tuple(_parse_chart_point(point) for point in value["data"]),
+    )
+
+
+def _parse_chart_axis(value: Any) -> ChartAxis:
+    required = {"categories"}
+    allowed = required | {"x_label", "y_label"}
+    if (
+        type(value) is not dict
+        or not required <= set(value) <= allowed
+        or type(value["categories"]) is not list
+    ):
+        raise ValueError("invalid chart axis schema")
+    return ChartAxis(
+        categories=tuple(value["categories"]),
+        x_label=value.get("x_label"),
+        y_label=value.get("y_label"),
+    )
+
+
+def _parse_pie_chart(value: dict[str, Any]) -> PieChart:
+    if set(value) != {"type", "segments"} or type(value["segments"]) is not list:
+        raise ValueError("invalid pie chart schema")
+    return PieChart(
+        segments=tuple(_parse_chart_segment(segment) for segment in value["segments"])
+    )
+
+
+def _parse_series_chart(value: dict[str, Any]) -> SeriesChart:
+    if (
+        set(value) != {"type", "series", "axis_config"}
+        or type(value["series"]) is not list
+    ):
+        raise ValueError("invalid series chart schema")
+    return SeriesChart(
+        chart_type=value["type"],
+        series=tuple(_parse_chart_series(series) for series in value["series"]),
+        axis_config=_parse_chart_axis(value["axis_config"]),
+    )
+
+
+def _parse_data_visualization_block(value: dict[str, Any]) -> DataVisualizationBlock:
+    if set(value) != {"type", "title", "chart"} or type(value["chart"]) is not dict:
+        raise ValueError("invalid data visualization block schema")
+    if type(value["title"]) is not str or not value["title"].strip():
+        raise ValueError("visualization title must be a non-empty string")
+    chart_value = value["chart"]
+    chart_type = chart_value.get("type")
+    if chart_type == "pie":
+        chart: PieChart | SeriesChart = _parse_pie_chart(chart_value)
+    elif chart_type in {"line", "bar", "area"}:
+        chart = _parse_series_chart(chart_value)
+    else:
+        raise ValueError("unsupported visualization chart type")
+    return DataVisualizationBlock(title=value["title"], chart=chart)
+
+
 def _parse_block(value: Any) -> OutboundBlock:
     if type(value) is not dict or type(value.get("type")) is not str:
         raise ValueError("invalid block schema")
     if value["type"] == "markdown":
         return _parse_markdown_block(value)
+    if value["type"] == "section":
+        return _parse_section_fields_block(value)
+    if value["type"] == "data_visualization":
+        return _parse_data_visualization_block(value)
     if value["type"] == "data_table":
         return _parse_data_table_block(value)
     if value["type"] == "table":
@@ -415,7 +777,7 @@ def parse_outbound_message(text: str) -> OutboundMessage | None:
     """Parse an exact versioned ``enso-message`` fence, or return ``None``.
 
     Invalid or unknown envelopes deliberately remain ordinary response text.
-    Recognized native tables that exceed delivery limits can use
+    Recognized native blocks that exceed delivery limits can use
     :func:`parse_outbound_fallback` instead.
     """
     payload = _parse_envelope_payload(text)

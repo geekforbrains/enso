@@ -8,9 +8,18 @@ import pytest
 
 from enso.formatting import md_to_mrkdwn
 from enso.outbound import (
+    ChartAxis,
+    ChartPoint,
+    ChartSegment,
+    ChartSeries,
     DataTableBlock,
+    DataVisualizationBlock,
     MarkdownBlock,
     OutboundMessage,
+    PieChart,
+    SectionField,
+    SectionFieldsBlock,
+    SeriesChart,
     TableBlock,
     TableColumnSetting,
     TableNumberCell,
@@ -411,6 +420,167 @@ class TestSlackContext:
                     ],
                 },
             ],
+            "thread_ts": "1234.5678",
+        }
+
+    @pytest.mark.asyncio
+    async def test_reply_message_renders_section_fields_and_pie_visualization(self):
+        client = _make_client()
+        ctx = SlackContext(
+            client,
+            "C123",
+            thread_ts="1234.5678",
+            rich_messages=True,
+        )
+        message = OutboundMessage(
+            fallback_text="MRR is $42k; enterprise contributes 60%.",
+            blocks=(
+                SectionFieldsBlock(
+                    fields=(
+                        SectionField(kind="markdown", text="**MRR**\n$42k"),
+                        SectionField(kind="text", text="On target"),
+                    )
+                ),
+                DataVisualizationBlock(
+                    title="Revenue mix",
+                    chart=PieChart(
+                        segments=(
+                            ChartSegment(label="Enterprise", value=60),
+                            ChartSegment(label="Self-serve", value=40),
+                        )
+                    ),
+                ),
+            ),
+        )
+
+        await ctx.reply_message(message)
+
+        assert client.chat_postMessage.call_args.kwargs == {
+            "channel": "C123",
+            "text": "MRR is $42k; enterprise contributes 60%.",
+            "blocks": [
+                {
+                    "type": "section",
+                    "fields": [
+                        {"type": "mrkdwn", "text": "*MRR*\n$42k"},
+                        {"type": "plain_text", "text": "On target"},
+                    ],
+                },
+                {
+                    "type": "data_visualization",
+                    "title": "Revenue mix",
+                    "chart": {
+                        "type": "pie",
+                        "segments": [
+                            {"label": "Enterprise", "value": 60},
+                            {"label": "Self-serve", "value": 40},
+                        ],
+                    },
+                },
+            ],
+            "thread_ts": "1234.5678",
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("chart_type", ["line", "bar", "area"])
+    async def test_reply_message_renders_series_visualizations(self, chart_type):
+        client = _make_client()
+        ctx = SlackContext(client, "C123", rich_messages=True)
+        message = OutboundMessage(
+            fallback_text="Revenue was -3 in January and 12.5 in February.",
+            blocks=(
+                DataVisualizationBlock(
+                    title="Monthly revenue",
+                    chart=SeriesChart(
+                        chart_type=chart_type,
+                        series=(
+                            ChartSeries(
+                                name="Revenue",
+                                data=(
+                                    ChartPoint(label="Feb", value=12.5),
+                                    ChartPoint(label="Jan", value=-3),
+                                ),
+                            ),
+                        ),
+                        axis_config=ChartAxis(
+                            categories=("Jan", "Feb"),
+                            x_label="Month",
+                            y_label=None,
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        await ctx.reply_message(message)
+
+        assert client.chat_postMessage.call_args.kwargs == {
+            "channel": "C123",
+            "text": "Revenue was -3 in January and 12.5 in February.",
+            "blocks": [
+                {
+                    "type": "data_visualization",
+                    "title": "Monthly revenue",
+                    "chart": {
+                        "type": chart_type,
+                        "series": [
+                            {
+                                "name": "Revenue",
+                                "data": [
+                                    {"label": "Feb", "value": 12.5},
+                                    {"label": "Jan", "value": -3},
+                                ],
+                            }
+                        ],
+                        "axis_config": {
+                            "categories": ["Jan", "Feb"],
+                            "x_label": "Month",
+                        },
+                    },
+                }
+            ],
+        }
+
+    @pytest.mark.asyncio
+    async def test_visualization_retries_complete_fallback_when_blocks_are_rejected(self):
+        class BlockError(Exception):
+            def __init__(self):
+                super().__init__("invalid blocks")
+                self.response = {"error": "invalid_blocks"}
+
+        client = _make_client()
+        client.chat_postMessage.side_effect = [
+            BlockError(),
+            {"ts": "1234567890.123456"},
+        ]
+        ctx = SlackContext(
+            client,
+            "C123",
+            thread_ts="1234.5678",
+            rich_messages=True,
+        )
+        message = OutboundMessage(
+            fallback_text="Enterprise is 60% and self-serve is 40%.",
+            blocks=(
+                DataVisualizationBlock(
+                    title="Revenue mix",
+                    chart=PieChart(
+                        segments=(
+                            ChartSegment(label="Enterprise", value=60),
+                            ChartSegment(label="Self-serve", value=40),
+                        )
+                    ),
+                ),
+            ),
+        )
+
+        await ctx.reply_message(message)
+
+        first_call, second_call = client.chat_postMessage.call_args_list
+        assert first_call.kwargs["blocks"][0]["type"] == "data_visualization"
+        assert second_call.kwargs == {
+            "channel": "C123",
+            "text": "Enterprise is 60% and self-serve is 40%.",
             "thread_ts": "1234.5678",
         }
 

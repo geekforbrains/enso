@@ -25,7 +25,15 @@ from enso.core import (
     status_text,
 )
 from enso.jobs import Job
-from enso.outbound import MarkdownBlock, OutboundMessage
+from enso.outbound import (
+    ChartAxis,
+    ChartPoint,
+    ChartSeries,
+    DataVisualizationBlock,
+    MarkdownBlock,
+    OutboundMessage,
+    SeriesChart,
+)
 from enso.providers import BaseProvider, StreamEvent
 from enso.providers.agy import AgyProvider
 from enso.providers.claude import ClaudeProvider
@@ -1271,6 +1279,95 @@ async def test_process_request_delivers_explicit_structured_response(sample_conf
     assert ctx.replies == []
     assert ctx.rich_replies == []
     assert received_prompts == ["hello\n\nStructured output instructions."]
+
+
+@pytest.mark.asyncio
+async def test_process_request_delivers_explicit_chart_response(sample_config):
+    rt = Runtime(sample_config)
+    response = (
+        "```enso-message\n"
+        + json.dumps(
+            {
+                "version": 1,
+                "fallback_text": "Revenue rose from 10 to 12.",
+                "blocks": [
+                    {
+                        "type": "data_visualization",
+                        "title": "Monthly revenue",
+                        "chart": {
+                            "type": "line",
+                            "series": [
+                                {
+                                    "name": "Revenue",
+                                    "data": [
+                                        {"label": "Jan", "value": 10},
+                                        {"label": "Feb", "value": 12},
+                                    ],
+                                }
+                            ],
+                            "axis_config": {
+                                "categories": ["Jan", "Feb"],
+                                "x_label": "Month",
+                            },
+                        },
+                    }
+                ],
+            }
+        )
+        + "\n```"
+    )
+
+    class FakeCtx:
+        rich_markdown_enabled = True
+
+        def __init__(self):
+            self.replies = []
+            self.messages = []
+
+        async def reply(self, text): self.replies.append(text)
+        async def reply_message(self, message): self.messages.append(message)
+        async def reply_status(self, text): return "handle"
+        async def edit_status(self, handle, text): pass
+        async def delete_status(self, handle): pass
+        async def send_typing(self): pass
+        def get_origin_env(self): return {}
+        def get_output_instructions(self): return "Structured output instructions."
+
+    async def fake_run(*args, **kwargs):
+        yield StreamEvent(kind="response", text=response)
+
+    ctx = FakeCtx()
+    rt.run_provider = fake_run
+
+    await rt.process_request("claude", "hello", "1", ctx)
+
+    assert ctx.messages == [
+        OutboundMessage(
+            fallback_text="Revenue rose from 10 to 12.",
+            blocks=(
+                DataVisualizationBlock(
+                    title="Monthly revenue",
+                    chart=SeriesChart(
+                        chart_type="line",
+                        series=(
+                            ChartSeries(
+                                name="Revenue",
+                                data=(
+                                    ChartPoint(label="Jan", value=10),
+                                    ChartPoint(label="Feb", value=12),
+                                ),
+                            ),
+                        ),
+                        axis_config=ChartAxis(
+                            categories=("Jan", "Feb"),
+                            x_label="Month",
+                        ),
+                    ),
+                ),
+            ),
+        )
+    ]
+    assert ctx.replies == []
 
 
 @pytest.mark.asyncio

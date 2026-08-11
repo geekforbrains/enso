@@ -37,9 +37,18 @@ from ..commands import (
 from ..formatting import md_to_mrkdwn, split_markdown
 from ..outbound import (
     STRUCTURED_OUTPUT_INSTRUCTIONS,
+    ChartAxis,
+    ChartPoint,
+    ChartSegment,
+    ChartSeries,
     DataTableBlock,
+    DataVisualizationBlock,
     MarkdownBlock,
     OutboundMessage,
+    PieChart,
+    SectionField,
+    SectionFieldsBlock,
+    SeriesChart,
     TableBlock,
     TableColumnSetting,
     TableNumberCell,
@@ -94,11 +103,73 @@ def _render_column_setting(setting: TableColumnSetting) -> dict[str, Any]:
     return rendered
 
 
+def _render_section_field(field: SectionField) -> dict[str, Any]:
+    if field.kind == "markdown":
+        return {"type": "mrkdwn", "text": md_to_mrkdwn(field.text)}
+    return {"type": "plain_text", "text": field.text}
+
+
+def _render_chart_segment(segment: ChartSegment) -> dict[str, Any]:
+    return {"label": segment.label, "value": segment.value}
+
+
+def _render_chart_point(point: ChartPoint) -> dict[str, Any]:
+    return {"label": point.label, "value": point.value}
+
+
+def _render_chart_series(series: ChartSeries) -> dict[str, Any]:
+    return {
+        "name": series.name,
+        "data": [_render_chart_point(point) for point in series.data],
+    }
+
+
+def _render_chart_axis(axis: ChartAxis) -> dict[str, Any]:
+    rendered: dict[str, Any] = {"categories": list(axis.categories)}
+    if axis.x_label is not None:
+        rendered["x_label"] = axis.x_label
+    if axis.y_label is not None:
+        rendered["y_label"] = axis.y_label
+    return rendered
+
+
+def _render_visualization_chart(chart: PieChart | SeriesChart) -> dict[str, Any]:
+    if isinstance(chart, PieChart):
+        return {
+            "type": "pie",
+            "segments": [
+                _render_chart_segment(segment) for segment in chart.segments
+            ],
+        }
+    return {
+        "type": chart.chart_type,
+        "series": [_render_chart_series(series) for series in chart.series],
+        "axis_config": _render_chart_axis(chart.axis_config),
+    }
+
+
 def _render_outbound_block(
-    block: MarkdownBlock | DataTableBlock | TableBlock,
+    block: (
+        MarkdownBlock
+        | SectionFieldsBlock
+        | DataVisualizationBlock
+        | DataTableBlock
+        | TableBlock
+    ),
 ) -> dict[str, Any]:
     if isinstance(block, MarkdownBlock):
         return {"type": "markdown", "text": block.text}
+    if isinstance(block, SectionFieldsBlock):
+        return {
+            "type": "section",
+            "fields": [_render_section_field(field) for field in block.fields],
+        }
+    if isinstance(block, DataVisualizationBlock):
+        return {
+            "type": "data_visualization",
+            "title": block.title,
+            "chart": _render_visualization_chart(block.chart),
+        }
     if isinstance(block, DataTableBlock):
         rendered = {
             "type": "data_table",
