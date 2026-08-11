@@ -37,7 +37,13 @@ from ..commands import (
 from ..formatting import md_to_mrkdwn, split_markdown
 from ..outbound import (
     STRUCTURED_OUTPUT_INSTRUCTIONS,
+    DataTableBlock,
+    MarkdownBlock,
     OutboundMessage,
+    TableBlock,
+    TableColumnSetting,
+    TableNumberCell,
+    TableTextCell,
 )
 from ..secret_refs import resolve_config_secret
 from . import BaseTransport, TransportContext, safe_filename
@@ -65,6 +71,55 @@ def _slack_error_code(exc: Exception) -> str:
     with contextlib.suppress(Exception):
         return str(getter("error", ""))
     return ""
+
+
+def _render_table_cell(cell: TableTextCell | TableNumberCell) -> dict[str, Any]:
+    if isinstance(cell, TableTextCell):
+        return {"type": "raw_text", "text": cell.text}
+    return {"type": "raw_number", "value": cell.value, "text": cell.text}
+
+
+def _render_table_rows(
+    rows: tuple[tuple[TableTextCell | TableNumberCell, ...], ...],
+) -> list[list[dict[str, Any]]]:
+    return [[_render_table_cell(cell) for cell in row] for row in rows]
+
+
+def _render_column_setting(setting: TableColumnSetting) -> dict[str, Any]:
+    rendered: dict[str, Any] = {}
+    if setting.align is not None:
+        rendered["align"] = setting.align
+    if setting.is_wrapped is not None:
+        rendered["is_wrapped"] = setting.is_wrapped
+    return rendered
+
+
+def _render_outbound_block(
+    block: MarkdownBlock | DataTableBlock | TableBlock,
+) -> dict[str, Any]:
+    if isinstance(block, MarkdownBlock):
+        return {"type": "markdown", "text": block.text}
+    if isinstance(block, DataTableBlock):
+        rendered = {
+            "type": "data_table",
+            "caption": block.caption,
+            "rows": _render_table_rows(block.rows),
+        }
+        if block.page_size is not None:
+            rendered["page_size"] = block.page_size
+        if block.row_header_column_index is not None:
+            rendered["row_header_column_index"] = block.row_header_column_index
+        return rendered
+
+    rendered = {
+        "type": "table",
+        "rows": _render_table_rows(block.rows),
+    }
+    if block.column_settings:
+        rendered["column_settings"] = [
+            _render_column_setting(setting) for setting in block.column_settings
+        ]
+    return rendered
 
 # Slack message subtypes that aren't user-authored content — channel/group
 # lifecycle, message lifecycle, pin/reminder noise, etc. Anything not in this
@@ -360,10 +415,7 @@ class SlackContext(TransportContext):
             await self.reply(message.fallback_text)
             return
 
-        blocks = [
-            {"type": "markdown", "text": block.text}
-            for block in message.blocks
-        ]
+        blocks = [_render_outbound_block(block) for block in message.blocks]
         await self._record_response(message.fallback_text)
         await self._deliver(
             [self._message_kwargs(message.fallback_text, blocks=blocks)],

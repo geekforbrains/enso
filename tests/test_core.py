@@ -1380,6 +1380,63 @@ async def test_process_request_invalid_structured_response_stays_ordinary_text(s
 
 
 @pytest.mark.asyncio
+async def test_process_request_uses_safe_fallback_for_over_limit_native_table(
+    sample_config,
+):
+    rt = Runtime(sample_config)
+    response = (
+        "```enso-message\n"
+        + json.dumps(
+            {
+                "version": 1,
+                "fallback_text": "Compact complete fallback",
+                "blocks": [
+                    {
+                        "type": "data_table",
+                        "caption": "Too much data",
+                        "rows": [
+                            [{"type": "text", "text": "Value"}],
+                            [{"type": "text", "text": "x" * 20_000}],
+                        ],
+                    }
+                ],
+            }
+        )
+        + "\n```"
+    )
+
+    class FakeCtx:
+        rich_markdown_enabled = True
+
+        def __init__(self):
+            self.replies = []
+            self.rich_replies = []
+            self.messages = []
+
+        async def reply(self, text): self.replies.append(text)
+        async def reply_markdown(self, text): self.rich_replies.append(text)
+        async def reply_message(self, message): self.messages.append(message)
+        async def reply_status(self, text): return "handle"
+        async def edit_status(self, handle, text): pass
+        async def delete_status(self, handle): pass
+        async def send_typing(self): pass
+        def get_origin_env(self): return {}
+        def get_output_instructions(self): return "Structured output instructions."
+
+    async def fake_run(*args, **kwargs):
+        yield StreamEvent(kind="response", text=response)
+
+    ctx = FakeCtx()
+    rt.run_provider = fake_run
+
+    await rt.process_request("claude", "hello", "1", ctx)
+
+    assert ctx.replies == ["Compact complete fallback"]
+    assert ctx.rich_replies == []
+    assert ctx.messages == []
+
+
+@pytest.mark.asyncio
 async def test_process_request_error_wins_over_structured_looking_response(sample_config):
     rt = Runtime(sample_config)
     response = (

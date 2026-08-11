@@ -7,7 +7,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from enso.formatting import md_to_mrkdwn
-from enso.outbound import MarkdownBlock, OutboundMessage
+from enso.outbound import (
+    DataTableBlock,
+    MarkdownBlock,
+    OutboundMessage,
+    TableBlock,
+    TableColumnSetting,
+    TableNumberCell,
+    TableTextCell,
+)
 from enso.transports import safe_filename
 from enso.transports.slack import (
     SlackContext,
@@ -328,6 +336,81 @@ class TestSlackContext:
             "channel": "C123",
             "text": "Plain _fallback_ for every reader",
             "blocks": [{"type": "markdown", "text": "# Rich summary"}],
+            "thread_ts": "1234.5678",
+        }
+
+    @pytest.mark.asyncio
+    async def test_reply_message_renders_native_table_blocks(self):
+        client = _make_client()
+        ctx = SlackContext(
+            client,
+            "C123",
+            thread_ts="1234.5678",
+            rich_messages=True,
+        )
+        rows = (
+            (TableTextCell("Name"), TableTextCell("Score")),
+            (TableTextCell("Ada"), TableNumberCell(value=42, text="42")),
+        )
+        message = OutboundMessage(
+            fallback_text="Ada scored 42.",
+            blocks=(
+                DataTableBlock(
+                    caption="Team scores",
+                    rows=rows,
+                    page_size=20,
+                    row_header_column_index=0,
+                ),
+                TableBlock(
+                    rows=rows,
+                    column_settings=(
+                        TableColumnSetting(),
+                        TableColumnSetting(align="right", is_wrapped=True),
+                    ),
+                ),
+            ),
+        )
+
+        await ctx.reply_message(message)
+
+        assert client.chat_postMessage.call_args.kwargs == {
+            "channel": "C123",
+            "text": "Ada scored 42.",
+            "blocks": [
+                {
+                    "type": "data_table",
+                    "caption": "Team scores",
+                    "rows": [
+                        [
+                            {"type": "raw_text", "text": "Name"},
+                            {"type": "raw_text", "text": "Score"},
+                        ],
+                        [
+                            {"type": "raw_text", "text": "Ada"},
+                            {"type": "raw_number", "value": 42, "text": "42"},
+                        ],
+                    ],
+                    "page_size": 20,
+                    "row_header_column_index": 0,
+                },
+                {
+                    "type": "table",
+                    "rows": [
+                        [
+                            {"type": "raw_text", "text": "Name"},
+                            {"type": "raw_text", "text": "Score"},
+                        ],
+                        [
+                            {"type": "raw_text", "text": "Ada"},
+                            {"type": "raw_number", "value": 42, "text": "42"},
+                        ],
+                    ],
+                    "column_settings": [
+                        {},
+                        {"align": "right", "is_wrapped": True},
+                    ],
+                },
+            ],
             "thread_ts": "1234.5678",
         }
 
