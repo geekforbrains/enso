@@ -1153,7 +1153,7 @@ async def test_process_request_uses_normalized_status_and_plain_final_response(s
     rt.run_provider = fake_run
     await rt.process_request("claude", "hello", "1", ctx)
 
-    assert ctx.statuses == ["claude · opus · high · 0s"]
+    assert ctx.statuses == ["claude · opus · high · 0s\n↳ Processing"]
     assert ctx.deleted == ["handle"]
     assert ctx.replies == ["Done"]
 
@@ -1251,7 +1251,7 @@ async def test_process_request_timeout_stops_provider_and_queues_scoped_notice(
     )
 
     assert provider_cancelled.is_set()
-    assert ctx.statuses == ["claude · opus · 0s"]
+    assert ctx.statuses == ["claude · opus · 0s\n↳ Processing"]
     assert len(ctx.edits) == 1
     assert "timeout" in ctx.edits[0].lower()
     assert ctx.edits[0] != "Stopped."

@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- The status message now shows `↳ Processing` from the moment it is posted, instead of only the model line, until the provider reports its first real status (e.g. `↳ Thinking`).
+
 ## [1.0.0] - 2026-08-10
 
 This release replaces Enso's single-user Slack allowlist with an access-profile model. Every Slack DM and channel is bound by an exact route to one named workspace and one complete native-CLI policy, and restricted work runs under the provider CLI's own sandbox and permission system instead of Enso's bypass invocation. It is a breaking change; see Migration.

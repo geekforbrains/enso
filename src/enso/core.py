@@ -61,6 +61,9 @@ STATUS_SLOW_UPDATE_SECONDS = 5
 # the rest of the request. One blip (a transient 429) shouldn't cost the user
 # every later update.
 STATUS_MAX_EDIT_FAILURES = 3
+# Shown as the action line until the provider reports its first real status,
+# so the message keeps the same shape from the moment it is posted.
+STATUS_INITIAL_ACTION = "Processing"
 
 
 def format_elapsed(seconds: int) -> str:
@@ -1760,13 +1763,15 @@ class Runtime:
         header = status_header(provider_name, model, effort)
         status_msg = None
         try:
-            status_msg = await ctx.reply_status(status_text(header, 0))
+            status_msg = await ctx.reply_status(
+                status_text(header, 0, STATUS_INITIAL_ACTION)
+            )
         except Exception:
             log.warning("Failed to send initial status message for chat %s", chat_id, exc_info=True)
         state: dict[str, Any] = {
             "elapsed": 0,
             "header": header,
-            "action": None,
+            "action": STATUS_INITIAL_ACTION,
         }
         stop = asyncio.Event()
         ticker = asyncio.create_task(self._run_ticker(ctx, status_msg, state, stop))
