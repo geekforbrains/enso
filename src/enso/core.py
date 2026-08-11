@@ -33,6 +33,7 @@ from .config import (
 from .fsutil import atomic_write_text, regular_file_sha256
 from .jobs import Job, job_binding_error, job_config_error, load_jobs
 from .logging_config import logging_flags
+from .outbound import parse_outbound_message
 from .providers import PROVIDER_NAMES, BaseProvider, StreamEvent, provider_class
 from .teams import load_catalog
 
@@ -1723,6 +1724,23 @@ class Runtime:
         # Inject compact seed if one is pending for this chat.
         prompt = self._consume_compact_seed(chat_id, prompt, provider_name)
 
+        output_instructions = ""
+        get_output_instructions = getattr(ctx, "get_output_instructions", None)
+        if callable(get_output_instructions):
+            try:
+                candidate = get_output_instructions()
+            except Exception:
+                log.warning(
+                    "get_output_instructions failed for chat %s",
+                    chat_id,
+                    exc_info=True,
+                )
+            else:
+                if isinstance(candidate, str):
+                    output_instructions = candidate.strip()
+                    if output_instructions:
+                        prompt = f"{prompt}\n\n{output_instructions}"
+
         model = (
             context.model
             if context.model is not None
@@ -1917,12 +1935,24 @@ class Runtime:
             if error_text:
                 await ctx.reply(_format_error(error_text[:4000]))
             elif response_text:
-                reply_markdown = getattr(ctx, "reply_markdown", None)
-                if getattr(ctx, "rich_markdown_enabled", False) and callable(reply_markdown):
-                    await reply_markdown(response_text)
-                else:
-                    for chunk in split_text(response_text, limit=msg_limit):
+                message = (
+                    parse_outbound_message(response_text) if output_instructions else None
+                )
+                reply_message = getattr(ctx, "reply_message", None)
+                if message is not None and callable(reply_message):
+                    await reply_message(message)
+                elif message is not None:
+                    for chunk in split_text(message.fallback_text, limit=msg_limit):
                         await ctx.reply(chunk)
+                else:
+                    reply_markdown = getattr(ctx, "reply_markdown", None)
+                    if getattr(ctx, "rich_markdown_enabled", False) and callable(
+                        reply_markdown
+                    ):
+                        await reply_markdown(response_text)
+                    else:
+                        for chunk in split_text(response_text, limit=msg_limit):
+                            await ctx.reply(chunk)
             else:
                 await ctx.reply("(No response)")
             return ("error", "provider_error") if error_text else ("completed", None)

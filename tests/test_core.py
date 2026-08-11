@@ -25,6 +25,7 @@ from enso.core import (
     status_text,
 )
 from enso.jobs import Job
+from enso.outbound import MarkdownBlock, OutboundMessage
 from enso.providers import BaseProvider, StreamEvent
 from enso.providers.agy import AgyProvider
 from enso.providers.claude import ClaudeProvider
@@ -1220,6 +1221,198 @@ async def test_process_request_keeps_provider_errors_on_plain_reply_path(sample_
 
     assert ctx.replies == ["Error: provider failed"]
     assert ctx.rich_replies == []
+
+
+@pytest.mark.asyncio
+async def test_process_request_delivers_explicit_structured_response(sample_config):
+    rt = Runtime(sample_config)
+    response = (
+        "```enso-message\n"
+        '{"version":1,"fallback_text":"Accessible summary","blocks":'
+        '[{"type":"markdown","text":"# Rich summary"}]}\n'
+        "```"
+    )
+
+    class FakeCtx:
+        rich_markdown_enabled = True
+
+        def __init__(self):
+            self.replies = []
+            self.rich_replies = []
+            self.messages = []
+
+        async def reply(self, text): self.replies.append(text)
+        async def reply_markdown(self, text): self.rich_replies.append(text)
+        async def reply_message(self, message): self.messages.append(message)
+        async def reply_status(self, text): return "handle"
+        async def edit_status(self, handle, text): pass
+        async def delete_status(self, handle): pass
+        async def send_typing(self): pass
+        def get_origin_env(self): return {}
+        def get_output_instructions(self): return "Structured output instructions."
+
+    received_prompts = []
+
+    async def fake_run(provider, prompt, *args, **kwargs):
+        received_prompts.append(prompt)
+        yield StreamEvent(kind="response", text=response)
+
+    ctx = FakeCtx()
+    rt.run_provider = fake_run
+
+    await rt.process_request("claude", "hello", "1", ctx)
+
+    assert ctx.messages == [
+        OutboundMessage(
+            fallback_text="Accessible summary",
+            blocks=(MarkdownBlock(text="# Rich summary"),),
+        )
+    ]
+    assert ctx.replies == []
+    assert ctx.rich_replies == []
+    assert received_prompts == ["hello\n\nStructured output instructions."]
+
+
+@pytest.mark.asyncio
+async def test_process_request_structured_response_falls_back_for_legacy_context(sample_config):
+    rt = Runtime(sample_config)
+    response = (
+        "```enso-message\n"
+        '{"version":1,"fallback_text":"Accessible summary","blocks":'
+        '[{"type":"markdown","text":"# Rich summary"}]}\n'
+        "```"
+    )
+
+    class FakeCtx:
+        def __init__(self):
+            self.replies = []
+
+        async def reply(self, text): self.replies.append(text)
+        async def reply_status(self, text): return "handle"
+        async def edit_status(self, handle, text): pass
+        async def delete_status(self, handle): pass
+        async def send_typing(self): pass
+        def get_origin_env(self): return {}
+        def get_output_instructions(self): return "Structured output instructions."
+
+    async def fake_run(*args, **kwargs):
+        yield StreamEvent(kind="response", text=response)
+
+    ctx = FakeCtx()
+    rt.run_provider = fake_run
+
+    await rt.process_request("claude", "hello", "1", ctx)
+
+    assert ctx.replies == ["Accessible summary"]
+
+
+@pytest.mark.asyncio
+async def test_process_request_preserves_structured_fence_without_capability(sample_config):
+    rt = Runtime(sample_config)
+    response = (
+        "```enso-message\n"
+        '{"version":1,"fallback_text":"Must stay literal","blocks":'
+        '[{"type":"markdown","text":"# Presentation"}]}\n'
+        "```"
+    )
+
+    class FakeCtx:
+        rich_markdown_enabled = False
+
+        def __init__(self):
+            self.replies = []
+            self.messages = []
+
+        async def reply(self, text): self.replies.append(text)
+        async def reply_message(self, message): self.messages.append(message)
+        async def reply_status(self, text): return "handle"
+        async def edit_status(self, handle, text): pass
+        async def delete_status(self, handle): pass
+        async def send_typing(self): pass
+        def get_origin_env(self): return {}
+        def get_output_instructions(self): return ""
+
+    async def fake_run(*args, **kwargs):
+        yield StreamEvent(kind="response", text=response)
+
+    ctx = FakeCtx()
+    rt.run_provider = fake_run
+
+    await rt.process_request("claude", "hello", "1", ctx)
+
+    assert ctx.replies == [response]
+    assert ctx.messages == []
+
+
+@pytest.mark.asyncio
+async def test_process_request_invalid_structured_response_stays_ordinary_text(sample_config):
+    rt = Runtime(sample_config)
+    response = "```enso-message\n{not json}\n```"
+
+    class FakeCtx:
+        rich_markdown_enabled = True
+
+        def __init__(self):
+            self.replies = []
+            self.rich_replies = []
+            self.messages = []
+
+        async def reply(self, text): self.replies.append(text)
+        async def reply_markdown(self, text): self.rich_replies.append(text)
+        async def reply_message(self, message): self.messages.append(message)
+        async def reply_status(self, text): return "handle"
+        async def edit_status(self, handle, text): pass
+        async def delete_status(self, handle): pass
+        async def send_typing(self): pass
+        def get_origin_env(self): return {}
+
+    async def fake_run(*args, **kwargs):
+        yield StreamEvent(kind="response", text=response)
+
+    ctx = FakeCtx()
+    rt.run_provider = fake_run
+
+    await rt.process_request("claude", "hello", "1", ctx)
+
+    assert ctx.messages == []
+    assert ctx.replies == []
+    assert ctx.rich_replies == [response]
+
+
+@pytest.mark.asyncio
+async def test_process_request_error_wins_over_structured_looking_response(sample_config):
+    rt = Runtime(sample_config)
+    response = (
+        "```enso-message\n"
+        '{"version":1,"fallback_text":"Do not deliver","blocks":'
+        '[{"type":"markdown","text":"# Partial"}]}\n'
+        "```"
+    )
+
+    class FakeCtx:
+        def __init__(self):
+            self.replies = []
+            self.messages = []
+
+        async def reply(self, text): self.replies.append(text)
+        async def reply_message(self, message): self.messages.append(message)
+        async def reply_status(self, text): return "handle"
+        async def edit_status(self, handle, text): pass
+        async def delete_status(self, handle): pass
+        async def send_typing(self): pass
+        def get_origin_env(self): return {}
+
+    async def fake_run(*args, **kwargs):
+        yield StreamEvent(kind="response", text=response)
+        yield StreamEvent(kind="error", text="Error: provider failed")
+
+    ctx = FakeCtx()
+    rt.run_provider = fake_run
+
+    await rt.process_request("claude", "hello", "1", ctx)
+
+    assert ctx.replies == ["Error: provider failed"]
+    assert ctx.messages == []
 
 
 @pytest.mark.asyncio

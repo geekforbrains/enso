@@ -35,6 +35,10 @@ from ..commands import (
     cmd_use,
 )
 from ..formatting import md_to_mrkdwn, split_markdown
+from ..outbound import (
+    STRUCTURED_OUTPUT_INSTRUCTIONS,
+    OutboundMessage,
+)
 from ..secret_refs import resolve_config_secret
 from . import BaseTransport, TransportContext, safe_filename
 from .slack_teams import TeamsRouter
@@ -269,13 +273,18 @@ class SlackContext(TransportContext):
                 "\n\n".join(self._audit_parts),
             )
 
-    def _message_kwargs(self, text: str, *, markdown: str | None = None) -> dict[str, Any]:
+    def _message_kwargs(
+        self,
+        text: str,
+        *,
+        blocks: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
             "channel": self._channel,
             "text": text,
         }
-        if markdown is not None:
-            kwargs["blocks"] = [{"type": "markdown", "text": markdown}]
+        if blocks is not None:
+            kwargs["blocks"] = blocks
         if self._thread_ts:
             kwargs["thread_ts"] = self._thread_ts
         return kwargs
@@ -298,7 +307,7 @@ class SlackContext(TransportContext):
         except Exception as exc:
             error_code = _slack_error_code(exc)
             if sent == 0 and fallback_payloads and error_code in SLACK_BLOCK_FALLBACK_ERRORS:
-                log.warning("Slack rejected Markdown blocks (%s); retrying as text", error_code)
+                log.warning("Slack rejected message blocks (%s); retrying as text", error_code)
                 try:
                     for kwargs in fallback_payloads:
                         await self._client.chat_postMessage(**kwargs)
@@ -337,9 +346,29 @@ class SlackContext(TransportContext):
             return
 
         payloads = [
-            self._message_kwargs(md_to_mrkdwn(chunk), markdown=chunk) for chunk in chunks
+            self._message_kwargs(
+                md_to_mrkdwn(chunk),
+                blocks=[{"type": "markdown", "text": chunk}],
+            )
+            for chunk in chunks
         ]
         await self._deliver(payloads, fallback_payloads=self._legacy_payloads(text))
+
+    async def reply_message(self, message: OutboundMessage) -> None:
+        """Translate typed outbound blocks at the Slack boundary."""
+        if not self.rich_markdown_enabled:
+            await self.reply(message.fallback_text)
+            return
+
+        blocks = [
+            {"type": "markdown", "text": block.text}
+            for block in message.blocks
+        ]
+        await self._record_response(message.fallback_text)
+        await self._deliver(
+            [self._message_kwargs(message.fallback_text, blocks=blocks)],
+            fallback_payloads=[self._message_kwargs(message.fallback_text)],
+        )
 
     async def reply_status(self, text: str) -> Any:
         kwargs: dict[str, Any] = {
@@ -394,6 +423,10 @@ class SlackContext(TransportContext):
             env.setdefault("ENSO_ORIGIN_USER_NAME", "")
             env.setdefault("ENSO_ORIGIN_CHANNEL_NAME", "")
         return env
+
+    def get_output_instructions(self) -> str:
+        """Advertise the explicit envelope only when rich delivery is enabled."""
+        return STRUCTURED_OUTPUT_INSTRUCTIONS if self.rich_markdown_enabled else ""
 
 
 class SlackTransport(BaseTransport):

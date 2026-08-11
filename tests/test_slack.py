@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from enso.formatting import md_to_mrkdwn
+from enso.outbound import MarkdownBlock, OutboundMessage
 from enso.transports import safe_filename
 from enso.transports.slack import (
     SlackContext,
@@ -306,6 +307,112 @@ class TestSlackContext:
         call_kwargs = client.chat_postMessage.call_args.kwargs
         assert call_kwargs["text"] == "processing..."
         assert "blocks" not in call_kwargs
+
+    @pytest.mark.asyncio
+    async def test_reply_message_posts_typed_blocks_with_accessible_fallback(self):
+        client = _make_client()
+        ctx = SlackContext(
+            client,
+            "C123",
+            thread_ts="1234.5678",
+            rich_messages=True,
+        )
+        message = OutboundMessage(
+            fallback_text="Plain _fallback_ for every reader",
+            blocks=(MarkdownBlock(text="# Rich summary"),),
+        )
+
+        await ctx.reply_message(message)
+
+        assert client.chat_postMessage.call_args.kwargs == {
+            "channel": "C123",
+            "text": "Plain _fallback_ for every reader",
+            "blocks": [{"type": "markdown", "text": "# Rich summary"}],
+            "thread_ts": "1234.5678",
+        }
+
+    @pytest.mark.asyncio
+    async def test_reply_message_uses_fallback_only_when_rich_messages_are_disabled(self):
+        client = _make_client()
+        ctx = SlackContext(client, "C123")
+        message = OutboundMessage(
+            fallback_text="Readable fallback",
+            blocks=(MarkdownBlock(text="# Rich summary"),),
+        )
+
+        await ctx.reply_message(message)
+
+        call_kwargs = client.chat_postMessage.call_args.kwargs
+        assert call_kwargs["text"] == "Readable fallback"
+        assert "blocks" not in call_kwargs
+        assert ctx.get_output_instructions() == ""
+
+    def test_rich_context_exposes_the_structured_output_contract(self):
+        ctx = SlackContext(_make_client(), "C123", rich_messages=True)
+
+        instructions = ctx.get_output_instructions()
+
+        assert "```enso-message" in instructions
+        assert "fallback_text" in instructions
+        assert "otherwise respond normally" in instructions.lower()
+
+    @pytest.mark.asyncio
+    async def test_reply_message_audits_only_the_fallback_text(self):
+        client = _make_client()
+        ctx = SlackContext(
+            client,
+            "C123",
+            audit_turn_id="turn-1",
+            rich_messages=True,
+        )
+        message = OutboundMessage(
+            fallback_text="Auditable summary",
+            blocks=(MarkdownBlock(text="# Presentation"),),
+        )
+
+        with (
+            patch("enso.transports.slack.audit_store.record_response") as record_response,
+            patch("enso.transports.slack.audit_store.record_delivery") as record_delivery,
+        ):
+            await ctx.reply_message(message)
+
+        record_response.assert_called_once_with("turn-1", "Auditable summary")
+        record_delivery.assert_called_once_with("turn-1", ok=True)
+
+    @pytest.mark.asyncio
+    async def test_reply_message_retries_complete_fallback_when_blocks_are_rejected(self):
+        class BlockError(Exception):
+            def __init__(self):
+                super().__init__("invalid blocks")
+                self.response = {"error": "invalid_blocks"}
+
+        client = _make_client()
+        client.chat_postMessage.side_effect = [
+            BlockError(),
+            {"ts": "1234567890.123456"},
+        ]
+        ctx = SlackContext(
+            client,
+            "C123",
+            thread_ts="1234.5678",
+            rich_messages=True,
+        )
+        message = OutboundMessage(
+            fallback_text="Complete fallback",
+            blocks=(MarkdownBlock(text="# Presentation"),),
+        )
+
+        await ctx.reply_message(message)
+
+        first_call, second_call = client.chat_postMessage.call_args_list
+        assert first_call.kwargs["blocks"] == [
+            {"type": "markdown", "text": "# Presentation"}
+        ]
+        assert second_call.kwargs == {
+            "channel": "C123",
+            "text": "Complete fallback",
+            "thread_ts": "1234.5678",
+        }
 
     @pytest.mark.asyncio
     async def test_reply_status_returns_ts(self):

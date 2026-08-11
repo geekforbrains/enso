@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ..core import Runtime
+    from ..outbound import OutboundMessage
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +40,10 @@ class TransportContext(ABC):
     async def reply(self, text: str) -> None:
         """Send a final response message."""
 
+    async def reply_message(self, message: OutboundMessage) -> None:
+        """Send a structured response, falling back safely on plain text."""
+        await self.reply(message.fallback_text)
+
     @abstractmethod
     async def reply_status(self, text: str) -> Any:
         """Send a status message. Returns a handle for editing/deleting."""
@@ -64,6 +69,10 @@ class TransportContext(ABC):
         outbound commands then fall through to ``notify_channel``.
         """
         return {}
+
+    def get_output_instructions(self) -> str:
+        """Return transport-specific final-output instructions for the agent."""
+        return ""
 
 
 class BaseTransport(ABC):
