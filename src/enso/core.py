@@ -1917,8 +1917,12 @@ class Runtime:
             if error_text:
                 await ctx.reply(_format_error(error_text[:4000]))
             elif response_text:
-                for chunk in split_text(response_text, limit=msg_limit):
-                    await ctx.reply(chunk)
+                reply_markdown = getattr(ctx, "reply_markdown", None)
+                if getattr(ctx, "rich_markdown_enabled", False) and callable(reply_markdown):
+                    await reply_markdown(response_text)
+                else:
+                    for chunk in split_text(response_text, limit=msg_limit):
+                        await ctx.reply(chunk)
             else:
                 await ctx.reply("(No response)")
             return ("error", "provider_error") if error_text else ("completed", None)

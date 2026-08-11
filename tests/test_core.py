@@ -1159,6 +1159,70 @@ async def test_process_request_uses_normalized_status_and_plain_final_response(s
 
 
 @pytest.mark.asyncio
+async def test_process_request_sends_rich_markdown_before_legacy_splitting(sample_config):
+    rt = Runtime(sample_config)
+    response = "```text\n" + ("a" * 100 + "\n") * 410 + "```"
+
+    class FakeCtx:
+        rich_markdown_enabled = True
+
+        def __init__(self):
+            self.replies = []
+            self.rich_replies = []
+
+        async def reply(self, text): self.replies.append(text)
+        async def reply_markdown(self, text): self.rich_replies.append(text)
+        async def reply_status(self, text): return "handle"
+        async def edit_status(self, handle, text): pass
+        async def delete_status(self, handle): pass
+        async def send_typing(self): pass
+        def get_origin_env(self): return {}
+
+    async def fake_run(*args, **kwargs):
+        yield StreamEvent(kind="response", text=response)
+
+    ctx = FakeCtx()
+    rt.run_provider = fake_run
+
+    await rt.process_request("claude", "hello", "1", ctx)
+
+    assert len(response) > 40000
+    assert ctx.rich_replies == [response]
+    assert ctx.replies == []
+
+
+@pytest.mark.asyncio
+async def test_process_request_keeps_provider_errors_on_plain_reply_path(sample_config):
+    rt = Runtime(sample_config)
+
+    class FakeCtx:
+        rich_markdown_enabled = True
+
+        def __init__(self):
+            self.replies = []
+            self.rich_replies = []
+
+        async def reply(self, text): self.replies.append(text)
+        async def reply_markdown(self, text): self.rich_replies.append(text)
+        async def reply_status(self, text): return "handle"
+        async def edit_status(self, handle, text): pass
+        async def delete_status(self, handle): pass
+        async def send_typing(self): pass
+        def get_origin_env(self): return {}
+
+    async def fake_run(*args, **kwargs):
+        yield StreamEvent(kind="error", text="Error: provider failed")
+
+    ctx = FakeCtx()
+    rt.run_provider = fake_run
+
+    await rt.process_request("claude", "hello", "1", ctx)
+
+    assert ctx.replies == ["Error: provider failed"]
+    assert ctx.rich_replies == []
+
+
+@pytest.mark.asyncio
 async def test_process_request_terminal_error_wins_over_partial_response(sample_config):
     rt = Runtime(sample_config)
 

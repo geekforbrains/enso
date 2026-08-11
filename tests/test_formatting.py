@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from enso.formatting import md_to_mrkdwn
+from enso.formatting import md_to_mrkdwn, split_markdown
 
 
 def test_bold():
@@ -67,3 +67,53 @@ def test_bold_with_italic_inside():
     text = "**important *stuff***"
     result = md_to_mrkdwn(text)
     assert "*important *stuff**" in result or "*important _stuff_*" in result
+
+
+# -- Standard Markdown block splitting --
+
+
+def test_split_markdown_short_text_is_unchanged():
+    text = "# Results\n\nAll done."
+
+    assert split_markdown(text, limit=100) == [text]
+
+
+def test_split_markdown_preserves_ordinary_text():
+    text = "first line\n" + ("x" * 30) + "\nlast line"
+
+    chunks = split_markdown(text, limit=12)
+
+    assert all(len(chunk) <= 12 for chunk in chunks)
+    assert "".join(chunks) == text
+
+
+def test_split_markdown_repeats_table_header_without_splitting_rows():
+    header = "| Name | Value |\n"
+    delimiter = "| --- | --- |\n"
+    rows = [f"| row-{i} | value-{i} |\n" for i in range(7)]
+    text = header + delimiter + "".join(rows)
+
+    chunks = split_markdown(text, limit=76)
+
+    assert len(chunks) > 1
+    assert all(len(chunk) <= 76 for chunk in chunks)
+    assert all(chunk.startswith(header + delimiter) for chunk in chunks)
+    assert "".join(chunk.removeprefix(header + delimiter) for chunk in chunks) == "".join(
+        rows
+    )
+
+
+def test_split_markdown_balances_each_oversized_fenced_code_chunk():
+    opener = "```python\n"
+    closer = "```\n"
+    body_lines = [f"print('line {i}')\n" for i in range(8)]
+    text = opener + "".join(body_lines) + closer
+
+    chunks = split_markdown(text, limit=50)
+
+    assert len(chunks) > 1
+    assert all(len(chunk) <= 50 for chunk in chunks)
+    assert all(chunk.startswith(opener) and chunk.endswith(closer) for chunk in chunks)
+    assert "".join(chunk[len(opener) : -len(closer)] for chunk in chunks) == "".join(
+        body_lines
+    )

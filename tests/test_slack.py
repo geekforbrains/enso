@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from enso.formatting import md_to_mrkdwn
 from enso.transports import safe_filename
 from enso.transports.slack import (
     SlackContext,
@@ -178,6 +179,133 @@ class TestSlackContext:
 
         call_kwargs = client.chat_postMessage.call_args.kwargs
         assert "*bold text*" in call_kwargs["text"]
+        assert "blocks" not in call_kwargs
+
+    @pytest.mark.asyncio
+    async def test_reply_markdown_posts_raw_standard_markdown_block(self):
+        client = _make_client()
+        ctx = SlackContext(
+            client,
+            "C123",
+            thread_ts="1234.5678",
+            rich_messages=True,
+        )
+        markdown = "# Results\n\n| Name | Score |\n| --- | ---: |\n| Ada | 10 |"
+
+        await ctx.reply_markdown(markdown)
+
+        call_kwargs = client.chat_postMessage.call_args.kwargs
+        assert ctx.rich_markdown_enabled is True
+        assert call_kwargs == {
+            "channel": "C123",
+            "text": md_to_mrkdwn(markdown),
+            "blocks": [{"type": "markdown", "text": markdown}],
+            "thread_ts": "1234.5678",
+        }
+
+    @pytest.mark.asyncio
+    async def test_reply_markdown_splits_at_block_limit(self):
+        client = _make_client()
+        ctx = SlackContext(client, "C123", rich_messages=True)
+        markdown = ("abcdefghij\n" * 1200) + "done"
+
+        await ctx.reply_markdown(markdown)
+
+        calls = client.chat_postMessage.call_args_list
+        rendered = [call.kwargs["blocks"][0]["text"] for call in calls]
+        assert len(rendered) > 1
+        assert all(len(chunk) <= 12000 for chunk in rendered)
+        assert "".join(rendered) == markdown
+
+    @pytest.mark.asyncio
+    async def test_reply_markdown_falls_back_when_a_code_line_cannot_fit(self):
+        client = _make_client()
+        ctx = SlackContext(client, "C123", rich_messages=True)
+        markdown = "```text\n" + ("x" * 12001) + "\n```"
+
+        await ctx.reply_markdown(markdown)
+
+        call_kwargs = client.chat_postMessage.call_args.kwargs
+        assert call_kwargs["text"] == markdown
+        assert "blocks" not in call_kwargs
+
+    @pytest.mark.asyncio
+    async def test_reply_markdown_retries_legacy_text_when_blocks_are_rejected(self):
+        class BlockError(Exception):
+            def __init__(self):
+                super().__init__("invalid blocks")
+                self.response = {"error": "invalid_blocks"}
+
+        client = _make_client()
+        client.chat_postMessage.side_effect = [
+            BlockError(),
+            {"ts": "1234567890.123456"},
+        ]
+        ctx = SlackContext(client, "C123", rich_messages=True)
+        markdown = "# Results\n\n**Complete**"
+
+        await ctx.reply_markdown(markdown)
+
+        first_call, second_call = client.chat_postMessage.call_args_list
+        assert first_call.kwargs["blocks"] == [{"type": "markdown", "text": markdown}]
+        assert second_call.kwargs["text"] == md_to_mrkdwn(markdown)
+        assert "blocks" not in second_call.kwargs
+
+    @pytest.mark.asyncio
+    async def test_reply_markdown_records_failed_later_chunk_delivery(self):
+        client = _make_client()
+        client.chat_postMessage.side_effect = [
+            {"ts": "1234567890.123456"},
+            RuntimeError("network failed"),
+        ]
+        ctx = SlackContext(
+            client,
+            "C123",
+            audit_turn_id="turn-1",
+            rich_messages=True,
+        )
+        markdown = ("abcdefghij\n" * 1200) + "done"
+
+        with (
+            patch("enso.transports.slack.audit_store.record_response") as record_response,
+            patch("enso.transports.slack.audit_store.record_delivery") as record_delivery,
+            pytest.raises(RuntimeError, match="network failed"),
+        ):
+            await ctx.reply_markdown(markdown)
+
+        record_response.assert_called_once_with("turn-1", markdown)
+        record_delivery.assert_called_once_with("turn-1", ok=False)
+
+    @pytest.mark.asyncio
+    async def test_reply_markdown_audits_original_response_once(self):
+        client = _make_client()
+        ctx = SlackContext(
+            client,
+            "C123",
+            audit_turn_id="turn-1",
+            rich_messages=True,
+        )
+        markdown = ("abcdefghij\n" * 1200) + "done"
+
+        with (
+            patch("enso.transports.slack.audit_store.record_response") as record_response,
+            patch("enso.transports.slack.audit_store.record_delivery") as record_delivery,
+        ):
+            await ctx.reply_markdown(markdown)
+
+        record_response.assert_called_once_with("turn-1", markdown)
+        record_delivery.assert_called_once_with("turn-1", ok=True)
+
+    @pytest.mark.asyncio
+    async def test_status_stays_text_only_when_rich_messages_are_enabled(self):
+        client = _make_client()
+        ctx = SlackContext(client, "C123", rich_messages=True)
+
+        await ctx.reply_status("processing...")
+
+        call_kwargs = client.chat_postMessage.call_args.kwargs
+        assert call_kwargs["text"] == "processing..."
+        assert "blocks" not in call_kwargs
 
     @pytest.mark.asyncio
     async def test_reply_status_returns_ts(self):
@@ -1301,6 +1429,17 @@ class TestTransportInit:
         assert transport.teams_router.teams.dispatchable
         assert transport.name == "slack"
         assert transport.message_limit == 40000
+        assert transport.rich_messages is False
+
+    def test_rich_messages_config_flows_to_context(self):
+        rt = _make_runtime()
+        rt.config["transports"]["slack"]["rich_messages"] = True
+        transport = _make_transport(rt)
+
+        ctx = transport.make_context(_make_client(), "C123", "1234.5678")
+
+        assert transport.rich_messages is True
+        assert ctx.rich_markdown_enabled is True
 
     def test_empty_config(self):
         rt = _make_runtime()

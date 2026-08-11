@@ -1,4 +1,4 @@
-"""Convert standard Markdown to Telegram-safe HTML."""
+"""Formatting helpers for transport-specific Markdown rendering."""
 
 from __future__ import annotations
 
@@ -19,6 +19,9 @@ _STRIKE_DOUBLE = re.compile(r"~~(.+?)~~")
 _STRIKE_SINGLE = re.compile(r"(?<![~\w])~(\S(?:[^~]*\S)?)~(?![~\w])")
 _LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _BLOCKQUOTE = re.compile(r"(^&gt; .+(?:\n&gt; .+)*)", re.MULTILINE)
+
+_FENCE_OPEN = re.compile(r"^( {0,3})(`{3,}|~{3,})[^\r\n]*$")
+_TABLE_DELIMITER_CELL = re.compile(r"^:?-{3,}:?$")
 
 
 def md_to_html(text: str) -> str:
@@ -156,3 +159,189 @@ def md_to_mrkdwn(text: str) -> str:
         text = text.replace(f"\x00I{i}\x00", inline)
 
     return text
+
+
+# ---------------------------------------------------------------------------
+# Standard Markdown blocks
+# ---------------------------------------------------------------------------
+
+
+def _line_content(line: str) -> str:
+    """Return a line without its newline terminator."""
+    return line.removesuffix("\n").removesuffix("\r")
+
+
+def _fence_close(line: str, marker: str) -> bool:
+    """Whether *line* closes a fenced code block opened by *marker*."""
+    content = _line_content(line)
+    stripped = content.lstrip(" ")
+    if len(content) - len(stripped) > 3:
+        return False
+    run = len(stripped) - len(stripped.lstrip(marker[0]))
+    return run >= len(marker) and not stripped[run:].strip()
+
+
+def _table_cells(line: str) -> list[str] | None:
+    """Split a pipe-table line, ignoring escaped pipes."""
+    content = _line_content(line).strip()
+    if not content:
+        return None
+    parts = re.split(r"(?<!\\)\|", content)
+    if len(parts) < 2:
+        return None
+    if not parts[0]:
+        parts = parts[1:]
+    if parts and not parts[-1]:
+        parts = parts[:-1]
+    return [part.strip() for part in parts]
+
+
+def _is_table_start(header: str, delimiter: str) -> bool:
+    """Recognize the first two lines of a GFM pipe table."""
+    header_cells = _table_cells(header)
+    delimiter_cells = _table_cells(delimiter)
+    return bool(
+        header_cells
+        and delimiter_cells
+        and len(header_cells) == len(delimiter_cells)
+        and all(_TABLE_DELIMITER_CELL.fullmatch(cell) for cell in delimiter_cells)
+    )
+
+
+def _split_table(lines: list[str], limit: int) -> list[str] | None:
+    """Split a table between rows, repeating its header in each chunk."""
+    prefix = lines[0] + lines[1]
+    rows = lines[2:]
+    if len(prefix) > limit:
+        return None
+
+    chunks: list[str] = []
+    current_rows: list[str] = []
+    current_length = len(prefix)
+    for row in rows:
+        if current_length + len(row) <= limit:
+            current_rows.append(row)
+            current_length += len(row)
+            continue
+        if not current_rows or len(prefix) + len(row) > limit:
+            return None
+        chunks.append(prefix + "".join(current_rows))
+        current_rows = [row]
+        current_length = len(prefix) + len(row)
+
+    chunks.append(prefix + "".join(current_rows))
+    return chunks
+
+
+def _split_fence(lines: list[str], limit: int) -> list[str] | None:
+    """Split a code fence while balancing every emitted chunk."""
+    opener = lines[0]
+    closer = lines[-1]
+    body = lines[1:-1]
+    wrapper_length = len(opener) + len(closer)
+    if wrapper_length > limit:
+        return None
+
+    chunks: list[str] = []
+    current_lines: list[str] = []
+    current_length = wrapper_length
+    for line in body:
+        if current_length + len(line) <= limit:
+            current_lines.append(line)
+            current_length += len(line)
+            continue
+        if not current_lines or wrapper_length + len(line) > limit:
+            return None
+        chunks.append(opener + "".join(current_lines) + closer)
+        current_lines = [line]
+        current_length = wrapper_length + len(line)
+
+    chunks.append(opener + "".join(current_lines) + closer)
+    return chunks
+
+
+def split_markdown(text: str, *, limit: int = 12000) -> list[str] | None:
+    """Split standard Markdown without breaking fenced code or table rows.
+
+    Oversized tables repeat their header and delimiter. Oversized fenced code
+    blocks repeat their opening and closing fences so every chunk is valid on
+    its own. ``None`` signals that one protected row or code line cannot fit.
+    """
+    if limit <= 0:
+        raise ValueError("limit must be positive")
+    if len(text) <= limit:
+        return [text]
+
+    lines = text.splitlines(keepends=True)
+    chunks: list[str] = []
+    current = ""
+
+    def flush() -> None:
+        nonlocal current
+        if current:
+            chunks.append(current)
+            current = ""
+
+    def add_ordinary(piece: str) -> None:
+        nonlocal current
+        if len(piece) <= limit:
+            if current and len(current) + len(piece) > limit:
+                flush()
+            current += piece
+            return
+
+        flush()
+        while len(piece) > limit:
+            chunks.append(piece[:limit])
+            piece = piece[limit:]
+        current = piece
+
+    index = 0
+    while index < len(lines):
+        opener_match = _FENCE_OPEN.fullmatch(_line_content(lines[index]))
+        if opener_match:
+            marker = opener_match.group(2)
+            end = index + 1
+            while end < len(lines) and not _fence_close(lines[end], marker):
+                end += 1
+            closed = end < len(lines)
+            if closed:
+                fence_lines = lines[index : end + 1]
+            else:
+                body = lines[index + 1 :]
+                separator = "" if not body or body[-1].endswith(("\n", "\r")) else "\n"
+                fence_lines = [lines[index], *body, separator + marker]
+            fence = "".join(fence_lines)
+            if closed and len(fence) <= limit:
+                add_ordinary(fence)
+            else:
+                fence_chunks = _split_fence(fence_lines, limit)
+                if fence_chunks is None:
+                    return None
+                flush()
+                chunks.extend(fence_chunks)
+            index = end + 1 if closed else len(lines)
+            continue
+
+        if index + 1 < len(lines) and _is_table_start(lines[index], lines[index + 1]):
+            end = index + 2
+            while end < len(lines) and _table_cells(lines[end]) is not None:
+                end += 1
+            table_lines = lines[index:end]
+            table = "".join(table_lines)
+            if len(table) <= limit:
+                add_ordinary(table)
+            else:
+                table_chunks = _split_table(table_lines, limit)
+                if table_chunks is None:
+                    return None
+                flush()
+                chunks.extend(table_chunks)
+            index = end
+            continue
+
+        add_ordinary(lines[index])
+        index += 1
+
+    flush()
+    return chunks

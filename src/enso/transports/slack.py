@@ -34,7 +34,7 @@ from ..commands import (
     cmd_update_async,
     cmd_use,
 )
-from ..formatting import md_to_mrkdwn
+from ..formatting import md_to_mrkdwn, split_markdown
 from ..secret_refs import resolve_config_secret
 from . import BaseTransport, TransportContext, safe_filename
 from .slack_teams import TeamsRouter
@@ -44,6 +44,23 @@ if TYPE_CHECKING:
     from ..teams import AccessProfile, Workspace
 
 log = logging.getLogger(__name__)
+
+SLACK_MARKDOWN_BLOCK_LIMIT = 12000
+SLACK_TEXT_LIMIT = 40000
+SLACK_BLOCK_FALLBACK_ERRORS = frozenset(
+    {"invalid_blocks", "invalid_blocks_format", "msg_blocks_too_long"}
+)
+
+
+def _slack_error_code(exc: Exception) -> str:
+    """Extract an API error code without depending on one SDK exception type."""
+    response = getattr(exc, "response", None)
+    getter = getattr(response, "get", None)
+    if not callable(getter):
+        return ""
+    with contextlib.suppress(Exception):
+        return str(getter("error", ""))
+    return ""
 
 # Slack message subtypes that aren't user-authored content — channel/group
 # lifecycle, message lifecycle, pin/reminder noise, etc. Anything not in this
@@ -233,6 +250,7 @@ class SlackContext(TransportContext):
         *,
         user_id: str = "",
         audit_turn_id: str | None = None,
+        rich_messages: bool = False,
     ):
         self._client = client
         self._channel = channel
@@ -240,8 +258,9 @@ class SlackContext(TransportContext):
         self._user_id = user_id
         self._audit_turn_id = audit_turn_id
         self._audit_parts: list[str] = []
+        self.rich_markdown_enabled = rich_messages
 
-    async def reply(self, text: str) -> None:
+    async def _record_response(self, text: str) -> None:
         if self._audit_turn_id is not None:
             self._audit_parts.append(text)
             await asyncio.to_thread(
@@ -249,23 +268,78 @@ class SlackContext(TransportContext):
                 self._audit_turn_id,
                 "\n\n".join(self._audit_parts),
             )
+
+    def _message_kwargs(self, text: str, *, markdown: str | None = None) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
             "channel": self._channel,
-            "text": md_to_mrkdwn(text),
+            "text": text,
         }
+        if markdown is not None:
+            kwargs["blocks"] = [{"type": "markdown", "text": markdown}]
         if self._thread_ts:
             kwargs["thread_ts"] = self._thread_ts
-        try:
-            await self._client.chat_postMessage(**kwargs)
-        except Exception:
-            if self._audit_turn_id is not None:
-                with contextlib.suppress(Exception):
-                    await asyncio.to_thread(
-                        audit_store.record_delivery, self._audit_turn_id, ok=False
-                    )
-            raise
+        return kwargs
+
+    async def _record_delivery(self, *, ok: bool) -> None:
         if self._audit_turn_id is not None:
-            await asyncio.to_thread(audit_store.record_delivery, self._audit_turn_id, ok=True)
+            await asyncio.to_thread(audit_store.record_delivery, self._audit_turn_id, ok=ok)
+
+    async def _deliver(
+        self,
+        payloads: list[dict[str, Any]],
+        *,
+        fallback_payloads: list[dict[str, Any]] | None = None,
+    ) -> None:
+        sent = 0
+        try:
+            for kwargs in payloads:
+                await self._client.chat_postMessage(**kwargs)
+                sent += 1
+        except Exception as exc:
+            error_code = _slack_error_code(exc)
+            if sent == 0 and fallback_payloads and error_code in SLACK_BLOCK_FALLBACK_ERRORS:
+                log.warning("Slack rejected Markdown blocks (%s); retrying as text", error_code)
+                try:
+                    for kwargs in fallback_payloads:
+                        await self._client.chat_postMessage(**kwargs)
+                except Exception:
+                    with contextlib.suppress(Exception):
+                        await self._record_delivery(ok=False)
+                    raise
+                await self._record_delivery(ok=True)
+                return
+            with contextlib.suppress(Exception):
+                await self._record_delivery(ok=False)
+            raise
+        await self._record_delivery(ok=True)
+
+    def _legacy_payloads(self, text: str) -> list[dict[str, Any]]:
+        chunks = [
+            text[index : index + SLACK_TEXT_LIMIT]
+            for index in range(0, len(text), SLACK_TEXT_LIMIT)
+        ] or [""]
+        return [self._message_kwargs(md_to_mrkdwn(chunk)) for chunk in chunks]
+
+    async def reply(self, text: str) -> None:
+        await self._record_response(text)
+        await self._deliver([self._message_kwargs(md_to_mrkdwn(text))])
+
+    async def reply_markdown(self, text: str) -> None:
+        """Send a final response using Slack's standard Markdown block."""
+        if not self.rich_markdown_enabled:
+            await self.reply(text)
+            return
+
+        await self._record_response(text)
+        chunks = split_markdown(text, limit=SLACK_MARKDOWN_BLOCK_LIMIT)
+        if chunks is None:
+            await self._deliver(self._legacy_payloads(text))
+            return
+
+        payloads = [
+            self._message_kwargs(md_to_mrkdwn(chunk), markdown=chunk) for chunk in chunks
+        ]
+        await self._deliver(payloads, fallback_payloads=self._legacy_payloads(text))
 
     async def reply_status(self, text: str) -> Any:
         kwargs: dict[str, Any] = {
@@ -326,7 +400,7 @@ class SlackTransport(BaseTransport):
     """Slack bot transport using Socket Mode."""
 
     name = "slack"
-    message_limit = 40000
+    message_limit = SLACK_TEXT_LIMIT
 
     def __init__(self, runtime: Runtime):
         self.runtime = runtime
@@ -336,6 +410,7 @@ class SlackTransport(BaseTransport):
         self.bot_user_id: str = slack_cfg.get("bot_user_id", "")
         self.notify_channel: str = slack_cfg.get("notify_channel", "")
         self.channel_context_messages: int = int(slack_cfg.get("channel_context_messages", 20))
+        self.rich_messages: bool = slack_cfg.get("rich_messages") is True
         self._client: AsyncWebClient | None = None
 
         # Slack authorization is always resolved through exact DM/channel
@@ -519,6 +594,7 @@ class SlackTransport(BaseTransport):
             thread_ts,
             user_id=user_id,
             audit_turn_id=audit_turn_id,
+            rich_messages=self.rich_messages,
         )
 
     def lookup_user_name(self, user_id: str) -> str:
