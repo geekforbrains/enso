@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -22,6 +23,16 @@ CLAUDE_SETTINGS = {
 
 CODEX_CONFIG = 'default_permissions = "enso"\n\n[permissions.enso.network]\nenabled = false\n'
 
+CLAUDE_MCP = {
+    "mcpServers": {
+        "metrics": {
+            "type": "http",
+            "url": "https://metrics.internal.example/mcp",
+            "headers": {"Authorization": "${METRICS_API_TOKEN}"},
+        }
+    }
+}
+
 
 def make_workspace(tmp_path):
     ws_dir = tmp_path / "ws"
@@ -33,7 +44,9 @@ def make_workspace(tmp_path):
     )
 
 
-def make_access(tmp_path, *, unrestricted=False, providers=("claude", "codex")):
+def make_access(
+    tmp_path, *, unrestricted=False, providers=("claude", "codex"), env_passthrough=()
+):
     policy_dir = tmp_path / "policies"
     return AccessProfile(
         name="standard",
@@ -42,6 +55,7 @@ def make_access(tmp_path, *, unrestricted=False, providers=("claude", "codex")):
         providers=tuple(providers),
         default_provider=providers[0] if providers else None,
         chat_commands=(),
+        env_passthrough=tuple(env_passthrough),
     )
 
 
@@ -57,6 +71,15 @@ def write_codex_policy(tmp_path, content=CODEX_CONFIG) -> str:
     path = tmp_path / "policies" / "codex" / "config.toml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
+    path.chmod(0o600)
+    return str(path)
+
+
+def write_claude_mcp(tmp_path, content=None) -> str:
+    path = tmp_path / "policies" / "claude" / "mcp.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = CLAUDE_MCP if content is None else content
+    path.write_text(payload if isinstance(payload, str) else json.dumps(payload))
     path.chmod(0o600)
     return str(path)
 
@@ -182,6 +205,180 @@ def test_unknown_provider_fails(tmp_path):
     assert not check.ok
 
 
+# -- claude mcp.json --
+
+
+def test_absent_mcp_file_means_no_servers(tmp_path):
+    write_claude_policy(tmp_path)
+    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    assert check.ok, check.problems
+    assert check.mcp_servers == ()
+
+
+def test_valid_mcp_file_resolves_sorted_server_names(tmp_path):
+    write_claude_policy(tmp_path)
+    write_claude_mcp(
+        tmp_path,
+        {"mcpServers": {"tickets": {"type": "http"}, "metrics": {"type": "http"}}},
+    )
+    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    assert check.ok, check.problems
+    assert check.mcp_servers == ("metrics", "tickets")
+
+
+def test_symlinked_mcp_file_fails(tmp_path):
+    write_claude_policy(tmp_path)
+    real = tmp_path / "elsewhere-mcp.json"
+    real.write_text(json.dumps(CLAUDE_MCP))
+    path = tmp_path / "policies" / "claude" / "mcp.json"
+    path.symlink_to(real)
+    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    assert not check.ok
+    assert any("mcp.json must be a regular file, not a symlink" in p for p in check.problems)
+
+
+def test_group_readable_mcp_file_fails(tmp_path):
+    write_claude_policy(tmp_path)
+    path = write_claude_mcp(tmp_path)
+    os.chmod(path, 0o644)
+    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    assert not check.ok
+    assert any("mcp.json must be owner-only" in p for p in check.problems)
+
+
+def test_unparseable_mcp_file_fails(tmp_path):
+    write_claude_policy(tmp_path)
+    write_claude_mcp(tmp_path, "{not json")
+    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    assert not check.ok
+    assert any("mcp.json does not parse" in p for p in check.problems)
+
+
+def test_non_object_mcp_file_fails(tmp_path):
+    write_claude_policy(tmp_path)
+    write_claude_mcp(tmp_path, ["mcpServers"])
+    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    assert not check.ok
+    assert any("mcp.json must be a JSON object" in p for p in check.problems)
+
+
+def test_mcp_file_without_mcp_servers_fails(tmp_path):
+    write_claude_policy(tmp_path)
+    write_claude_mcp(tmp_path, {})
+    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    assert not check.ok
+    assert any('must define "mcpServers" as an object' in p for p in check.problems)
+
+
+def test_empty_mcp_servers_fails_with_delete_guidance(tmp_path):
+    write_claude_policy(tmp_path)
+    write_claude_mcp(tmp_path, {"mcpServers": {}})
+    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    assert not check.ok
+    assert any("delete the file to disable MCP" in p for p in check.problems)
+
+
+# -- mcp permission-rule and secret-literal warnings --
+
+
+def test_mcp_rule_without_mcp_file_warns_inert_rule(tmp_path):
+    write_claude_policy(
+        tmp_path, {**CLAUDE_SETTINGS, "permissions": {"allow": ["mcp__ghost__tool"]}}
+    )
+    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    assert check.ok, check.problems
+    assert any(
+        'permission rule "mcp__ghost__tool" matches no MCP server' in w for w in check.warnings
+    )
+
+
+def test_mcp_rule_matching_a_defined_server_does_not_warn(tmp_path):
+    write_claude_policy(
+        tmp_path, {**CLAUDE_SETTINGS, "permissions": {"allow": ["mcp__metrics__query"]}}
+    )
+    write_claude_mcp(tmp_path, {"mcpServers": {"metrics": {"type": "http"}}})
+    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    assert check.ok, check.problems
+    assert check.warnings == ()
+
+
+def test_mcp_rule_matches_server_names_containing_underscores(tmp_path):
+    write_claude_policy(
+        tmp_path, {**CLAUDE_SETTINGS, "permissions": {"allow": ["mcp__my_server__tool"]}}
+    )
+    write_claude_mcp(tmp_path, {"mcpServers": {"my_server": {"type": "http"}}})
+    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    assert check.ok, check.problems
+    assert check.warnings == ()
+
+
+def test_unreferenced_mcp_server_warns(tmp_path):
+    write_claude_policy(tmp_path)
+    write_claude_mcp(tmp_path, {"mcpServers": {"metrics": {"type": "http"}}})
+    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    assert check.ok, check.problems
+    assert any(
+        'MCP server "metrics" is referenced by no permission rule' in w for w in check.warnings
+    )
+
+
+def test_secret_shaped_literal_in_mcp_headers_warns(tmp_path):
+    write_claude_policy(
+        tmp_path, {**CLAUDE_SETTINGS, "permissions": {"allow": ["mcp__tickets__list"]}}
+    )
+    write_claude_mcp(
+        tmp_path,
+        {
+            "mcpServers": {
+                "tickets": {
+                    "type": "http",
+                    "headers": {
+                        "Authorization": "Bearer abc123",
+                        "Content-Type": "application/json",
+                    },
+                }
+            }
+        },
+    )
+    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    assert check.ok, check.problems
+    assert check.warnings == (
+        'mcp.json server "tickets" has a secret-shaped literal in '
+        "headers.Authorization; use a ${VAR} reference",
+    )
+
+
+def test_env_reference_in_mcp_headers_does_not_warn(tmp_path):
+    write_claude_policy(
+        tmp_path, {**CLAUDE_SETTINGS, "permissions": {"allow": ["mcp__metrics__query"]}}
+    )
+    write_claude_mcp(tmp_path)
+    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    assert check.ok, check.problems
+    assert check.warnings == ()
+
+
+def test_secret_shaped_literal_in_mcp_env_warns(tmp_path):
+    write_claude_policy(
+        tmp_path, {**CLAUDE_SETTINGS, "permissions": {"allow": ["mcp__tickets__list"]}}
+    )
+    write_claude_mcp(
+        tmp_path,
+        {
+            "mcpServers": {
+                "tickets": {
+                    "type": "stdio",
+                    "command": "tickets-mcp",
+                    "env": {"API_KEY": "literal-secret"},
+                }
+            }
+        },
+    )
+    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    assert check.ok, check.problems
+    assert any("env.API_KEY" in w and "${VAR}" in w for w in check.warnings)
+
+
 # -- policy_revision --
 
 
@@ -221,6 +418,31 @@ def test_codex_revision_covers_relative_profile_files(tmp_path):
     agent_config.write_text('model = "gpt-5.6-sol"\n')
     second = policy.check_provider(workspace, access, "codex").policy_revision
     assert first != second
+
+
+def test_revision_rotates_on_mcp_file_add_edit_and_remove(tmp_path):
+    write_claude_policy(tmp_path)
+    workspace = make_workspace(tmp_path)
+    access = make_access(tmp_path)
+    base = policy.check_provider(workspace, access, "claude").policy_revision
+
+    mcp_path = write_claude_mcp(tmp_path, {"mcpServers": {"metrics": {"type": "http"}}})
+    added = policy.check_provider(workspace, access, "claude").policy_revision
+    assert added != base
+
+    write_claude_mcp(tmp_path, {"mcpServers": {"tickets": {"type": "http"}}})
+    edited = policy.check_provider(workspace, access, "claude").policy_revision
+    assert edited != added
+    assert edited != base
+
+    os.remove(mcp_path)
+    removed = policy.check_provider(workspace, access, "claude").policy_revision
+    assert removed == base
+
+
+def test_launch_contract_is_version_three():
+    assert policy.LAUNCH_CONTRACT_VERSION == "3"
+    assert policy.UNRESTRICTED_REVISION == "unrestricted:v3"
 
 
 def test_hard_linked_codex_rule_fails(tmp_path):
@@ -280,6 +502,77 @@ def test_enso_bin_dir_is_stripped_from_path(tmp_path, monkeypatch):
     launch = policy.prepare_launch(make_workspace(tmp_path), make_access(tmp_path), "claude")
     assert str(bin_dir) not in launch.env["PATH"].split(":")
     assert "/usr/bin" in launch.env["PATH"].split(":")
+
+
+def test_env_passthrough_name_is_copied_into_launch_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("METRICS_API_TOKEN", "tok-value")
+    write_claude_policy(tmp_path)
+    access = make_access(tmp_path, env_passthrough=("METRICS_API_TOKEN",))
+    launch = policy.prepare_launch(make_workspace(tmp_path), access, "claude")
+    assert launch.env["METRICS_API_TOKEN"] == "tok-value"
+
+
+def test_absent_env_passthrough_name_is_skipped_and_warned(tmp_path, monkeypatch, caplog):
+    monkeypatch.delenv("ABSENT_METRICS_TOKEN", raising=False)
+    write_claude_policy(tmp_path)
+    access = make_access(tmp_path, env_passthrough=("ABSENT_METRICS_TOKEN",))
+    with caplog.at_level(logging.WARNING, logger="enso.policy"):
+        launch = policy.prepare_launch(make_workspace(tmp_path), access, "claude")
+    assert "ABSENT_METRICS_TOKEN" not in launch.env
+    assert (
+        "env_passthrough names not set in the service environment: ABSENT_METRICS_TOKEN"
+        in caplog.text
+    )
+
+
+def test_passthrough_naming_path_cannot_displace_the_filtered_path(tmp_path, monkeypatch):
+    """Validation rejects PATH; a bypassed validator still must not win over the launch."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "enso").write_text("#!/bin/sh\n")
+    (bin_dir / "enso").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
+    write_claude_policy(tmp_path)
+    access = make_access(tmp_path, env_passthrough=("PATH",))
+    launch = policy.prepare_launch(make_workspace(tmp_path), access, "claude")
+    assert launch.env["PATH"] != os.environ["PATH"]
+    assert str(bin_dir) not in launch.env["PATH"].split(":")
+
+
+def test_claude_launch_without_mcp_file_has_no_mcp_config(tmp_path):
+    write_claude_policy(tmp_path)
+    launch = policy.prepare_launch(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    assert launch.mcp_config is None
+    cmd = ClaudeProvider("claude").build_command("hi", "opus", launch=launch)
+    assert "--mcp-config" not in cmd
+    assert "--strict-mcp-config" in cmd
+
+
+def test_claude_launch_with_mcp_file_passes_it_as_mcp_config(tmp_path):
+    write_claude_policy(tmp_path)
+    mcp_path = write_claude_mcp(tmp_path)
+    launch = policy.prepare_launch(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    assert launch.mcp_config == mcp_path
+    cmd = ClaudeProvider("claude").build_command("hi", "opus", launch=launch)
+    assert "--strict-mcp-config" in cmd
+    assert cmd[cmd.index("--mcp-config") + 1] == mcp_path
+
+
+def test_prepare_launch_logs_capability_set_without_values(tmp_path, monkeypatch, caplog):
+    monkeypatch.setenv("METRICS_API_TOKEN", "sekret-value")
+    monkeypatch.delenv("ABSENT_METRICS_TOKEN", raising=False)
+    write_claude_policy(tmp_path)
+    write_claude_mcp(tmp_path)
+    access = make_access(
+        tmp_path, env_passthrough=("METRICS_API_TOKEN", "ABSENT_METRICS_TOKEN")
+    )
+    with caplog.at_level(logging.INFO, logger="enso.policy"):
+        policy.prepare_launch(make_workspace(tmp_path), access, "claude")
+    assert (
+        "Policy launch for claude: MCP servers [metrics], passthrough [METRICS_API_TOKEN]"
+        in caplog.text
+    )
+    assert "sekret-value" not in caplog.text
 
 
 def test_codex_launch_stages_isolated_home(tmp_path, monkeypatch):
@@ -443,9 +736,26 @@ def test_claude_policy_command_drops_bypass():
     assert "--strict-mcp-config" in cmd
 
 
-def test_claude_unrestricted_command_is_unchanged():
+def test_claude_policy_command_appends_mcp_config_after_strict(tmp_path):
     provider = ClaudeProvider("claude")
-    assert "--dangerously-skip-permissions" in provider.build_command("hi", "opus")
+    launch = _policy_launch(mcp_config="/protected/claude/mcp.json")
+    cmd = provider.build_command("hi", "opus", launch=launch)
+    strict = cmd.index("--strict-mcp-config")
+    assert cmd[strict + 1] == "--mcp-config"
+    assert cmd[strict + 2] == "/protected/claude/mcp.json"
+
+
+def test_claude_policy_command_without_mcp_config_stays_strict():
+    provider = ClaudeProvider("claude")
+    cmd = provider.build_command("hi", "opus", launch=_policy_launch())
+    assert "--strict-mcp-config" in cmd
+    assert "--mcp-config" not in cmd
+
+
+def test_claude_unrestricted_command_is_unchanged():
+    cmd = ClaudeProvider("claude").build_command("hi", "opus")
+    assert "--dangerously-skip-permissions" in cmd
+    assert "--mcp-config" not in cmd
 
 
 def test_claude_batch_policy_command_drops_bypass():

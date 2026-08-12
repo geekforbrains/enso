@@ -328,6 +328,88 @@ def test_unrestricted_and_policy_dir_is_access_error(tmp_path):
     assert "admin" in parsed.access_errors
 
 
+# -- env_passthrough --
+
+
+def test_env_passthrough_valid_list_is_stored_as_tuple(tmp_path):
+    config = make_config(tmp_path)
+    config["access"]["client-readonly"]["env_passthrough"] = [
+        "METRICS_API_TOKEN",
+        "TICKETS_API_TOKEN",
+    ]
+    parsed = load_teams(config)
+    assert "client-readonly" not in parsed.access_errors
+    assert parsed.access_profiles["client-readonly"].env_passthrough == (
+        "METRICS_API_TOKEN",
+        "TICKETS_API_TOKEN",
+    )
+
+
+def test_env_passthrough_defaults_to_empty(tmp_path):
+    parsed = load_teams(make_config(tmp_path))
+    assert parsed.access_profiles["client-readonly"].env_passthrough == ()
+
+
+@pytest.mark.parametrize("bad", ["METRICS_API_TOKEN", 5, [1], ["OK_NAME", None], {"A": "B"}])
+def test_env_passthrough_must_be_a_string_list(tmp_path, bad):
+    config = make_config(tmp_path)
+    config["access"]["client-readonly"]["env_passthrough"] = bad
+    parsed = load_teams(config)
+    problems = parsed.access_errors["client-readonly"]
+    assert any("env_passthrough must be a list of strings" in p for p in problems)
+    assert parsed.access_profiles["client-readonly"].env_passthrough == ()
+
+
+def test_env_passthrough_rejects_duplicates(tmp_path):
+    config = make_config(tmp_path)
+    config["access"]["client-readonly"]["env_passthrough"] = ["A_TOKEN", "A_TOKEN"]
+    parsed = load_teams(config)
+    problems = parsed.access_errors["client-readonly"]
+    assert any("duplicate" in p for p in problems)
+
+
+@pytest.mark.parametrize("name", ["metrics_token", "FOO=BAR", "1FOO", ""])
+def test_env_passthrough_rejects_malformed_names(tmp_path, name):
+    config = make_config(tmp_path)
+    config["access"]["client-readonly"]["env_passthrough"] = [name]
+    parsed = load_teams(config)
+    problems = parsed.access_errors["client-readonly"]
+    assert any("must match" in p for p in problems)
+
+
+@pytest.mark.parametrize("name", ["HOME", "PATH", "CODEX_HOME", "ENSO_ANYTHING"])
+def test_env_passthrough_rejects_reserved_names(tmp_path, name):
+    config = make_config(tmp_path)
+    config["access"]["client-readonly"]["env_passthrough"] = [name]
+    parsed = load_teams(config)
+    problems = parsed.access_errors["client-readonly"]
+    assert any("reserved" in p for p in problems)
+
+
+def test_env_passthrough_is_rejected_on_unrestricted_profile(tmp_path):
+    config = make_config(tmp_path)
+    config["access"]["admin"]["env_passthrough"] = ["METRICS_API_TOKEN"]
+    parsed = load_teams(config)
+    problems = parsed.access_errors["admin"]
+    assert any("unrestricted: true is invalid alongside env_passthrough" in p for p in problems)
+
+
+def test_env_passthrough_key_typo_is_unknown_key_error(tmp_path):
+    config = make_config(tmp_path)
+    config["access"]["client-readonly"]["env_passthru"] = ["METRICS_API_TOKEN"]
+    parsed = load_teams(config)
+    problems = parsed.access_errors["client-readonly"]
+    assert any("unknown keys" in p and "env_passthru" in p for p in problems)
+
+
+def test_reserved_names_cover_every_launch_controlled_variable():
+    """teams.py defines the reserved set locally (circular import); guard drift."""
+    from enso import policy, teams
+
+    launch_controlled = set(policy._KEEP_ENV) | {"PATH", "CODEX_HOME"}
+    assert launch_controlled <= teams._ENV_PASSTHROUGH_RESERVED
+
+
 @pytest.mark.parametrize(
     ("key", "value"),
     [

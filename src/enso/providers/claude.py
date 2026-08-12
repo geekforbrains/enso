@@ -77,16 +77,20 @@ class ClaudeProvider(BaseProvider):
         the operator's user settings (so their personal rules cannot widen a
         workspace) while leaving the CLI's own instruction and skill discovery
         working, denies anything a prompt would have asked about (headless has
-        nobody to ask), and keeps ambient MCP servers out. Otherwise: today's
-        bypass invocation.
+        nobody to ask), and loads exactly the profile's declared MCP servers —
+        the conventional mcp.json when present, none otherwise — never the
+        operator's ambient ones. Otherwise: today's bypass invocation.
         """
         if launch is not None and launch.mode == "policy":
-            return [
+            args = [
                 "--settings", launch.policy_path,
                 "--permission-mode", "dontAsk",
                 "--setting-sources", "project",
                 "--strict-mcp-config",
             ]
+            if launch.mcp_config:
+                args.extend(["--mcp-config", launch.mcp_config])
+            return args
         return ["--dangerously-skip-permissions"]
 
     def build_command(

@@ -17,6 +17,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import stat
 import sys
@@ -35,16 +36,19 @@ log = logging.getLogger(__name__)
 
 # Bump when the launch contract (flags, env construction) changes, so a new
 # contract produces a new policy_revision and therefore a fresh execution key.
-LAUNCH_CONTRACT_VERSION = "2"
+LAUNCH_CONTRACT_VERSION = "3"
 UNRESTRICTED_REVISION = f"unrestricted:v{LAUNCH_CONTRACT_VERSION}"
 
 # Environment kept for policy-controlled provider subprocesses. Everything
 # else — 1Password service tokens, transport credentials, secrets/*.env
-# projections — is withheld; allowlisting means a newly added secret can
-# never leak by omission.
+# projections — is withheld unless the profile's env_passthrough names it;
+# allowlisting means a newly added secret can never leak by omission.
 _KEEP_ENV = ("HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "USER", "SHELL")
 _SNAPSHOT_MANIFEST = ".enso-policy-manifest.json"
 _CODEX_SOURCE_RESERVED = {"auth.json", _SNAPSHOT_MANIFEST}
+# Header/env keys in mcp.json that look credential-bearing; a literal value
+# (one with no ${...} reference) under such a key draws a warning.
+_SECRET_KEY_RE = re.compile(r"(?i)(auth|token|secret|key|password|bearer)")
 
 
 class PolicyError(Exception):
@@ -66,6 +70,7 @@ class PolicyCheck:
     warnings: tuple[str, ...] = ()
     policy_path: str | None = None
     policy_revision: str | None = None
+    mcp_servers: tuple[str, ...] = ()  # claude: server names resolved from mcp.json
 
 
 @dataclass(frozen=True)
@@ -79,6 +84,7 @@ class Launch:
     policy_revision: str
     env: dict[str, str] | None  # None → inherit the parent environment
     ignore_rules: bool = True  # codex: no .rules files were configured
+    mcp_config: str | None = None  # claude: conventional mcp.json, passed as --mcp-config
 
 
 UNRESTRICTED_LAUNCH_BY_PROVIDER = {
@@ -100,6 +106,12 @@ def policy_path(access: AccessProfile, provider: str) -> str | None:
     if access.policy_dir is None or rel is None:
         return None
     return os.path.join(access.policy_dir, rel)
+
+
+def _claude_mcp_path(access: AccessProfile) -> str:
+    """Conventional Claude MCP server file; its presence turns MCP on for the profile."""
+    assert access.policy_dir is not None
+    return os.path.join(access.policy_dir, "claude", "mcp.json")
 
 
 def _codex_source_root(access: AccessProfile) -> str:
@@ -130,8 +142,15 @@ def check_provider(workspace: Workspace, access: AccessProfile, provider: str) -
         return PolicyCheck(provider=provider, ok=False, problems=tuple(problems), policy_path=path)
 
     warnings: list[str] = []
+    mcp_servers: tuple[str, ...] = ()
     if provider == "claude":
-        problems, warnings = _check_claude_settings(path)
+        problems, warnings, settings = _check_claude_settings(path)
+        mcp_problems, servers = _check_claude_mcp(access, workspace)
+        problems.extend(mcp_problems)
+        mcp_servers = tuple(sorted(servers))
+        if not problems and settings is not None:
+            warnings.extend(_claude_mcp_rule_warnings(settings, mcp_servers))
+            warnings.extend(_claude_mcp_secret_warnings(servers))
     elif provider == "codex":
         problems = _check_codex_config(path)
         problems.extend(_codex_tree_problems(access, workspace, skip=path))
@@ -153,6 +172,7 @@ def check_provider(workspace: Workspace, access: AccessProfile, provider: str) -
         warnings=tuple(warnings),
         policy_path=path,
         policy_revision=revision,
+        mcp_servers=mcp_servers,
     )
 
 
@@ -217,14 +237,15 @@ def _codex_tree_problems(access: AccessProfile, workspace: Workspace, *, skip: s
     return problems
 
 
-def _check_claude_settings(path: str) -> tuple[list[str], list[str]]:
+def _check_claude_settings(path: str) -> tuple[list[str], list[str], dict | None]:
+    """Validate settings.json, returning it parsed for further cross-checks."""
     try:
         with open(path, encoding="utf-8") as f:
             settings = json.load(f)
     except (OSError, json.JSONDecodeError) as exc:
-        return [f"settings.json does not parse: {exc}"], []
+        return [f"settings.json does not parse: {exc}"], [], None
     if not isinstance(settings, dict):
-        return ["settings.json must be a JSON object"], []
+        return ["settings.json must be a JSON object"], [], None
     problems = []
     # Hooks in a workspace .claude/settings.json execute outside the permission
     # system and outside the sandbox, and the agent can write that file itself.
@@ -241,7 +262,100 @@ def _check_claude_settings(path: str) -> tuple[list[str], list[str]]:
             "sandbox.enabled is not true: permission rules govern Claude's own "
             "tools only; subprocesses need the OS sandbox or outer isolation"
         )
-    return problems, warnings
+    return problems, warnings, settings
+
+
+def _check_claude_mcp(access: AccessProfile, workspace: Workspace) -> tuple[list[str], dict]:
+    """Validate the conventional claude/mcp.json when present.
+
+    Returns (problems, servers) where servers is the parsed mcpServers object,
+    empty when the file is absent or unusable. Presence is tested with lexists,
+    so a symlink at the conventional path is an integrity error, never absence.
+    """
+    path = _claude_mcp_path(access)
+    if not os.path.lexists(path):
+        return [], {}
+    problems = _file_problems(path, workspace)
+    if problems:
+        return problems, {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            mcp = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        return [f"mcp.json does not parse: {exc}"], {}
+    if not isinstance(mcp, dict):
+        return ["mcp.json must be a JSON object"], {}
+    servers = mcp.get("mcpServers")
+    if not isinstance(servers, dict):
+        return ['mcp.json must define "mcpServers" as an object'], {}
+    if not servers:
+        return ['mcp.json "mcpServers" is empty; delete the file to disable MCP'], {}
+    return [], servers
+
+
+def _claude_mcp_rule_warnings(settings: dict, known: tuple[str, ...]) -> list[str]:
+    """Cross-check mcp__ permission rules against the profile's resolved servers.
+
+    Both directions are silent no-ops rather than access widenings, so they
+    warn: a rule naming an undefined server can never match (with no mcp.json
+    every mcp__ rule is inert), and a server no rule references has every tool
+    denied under dontAsk.
+    """
+    permissions = settings.get("permissions")
+    rules: list[str] = []
+    if isinstance(permissions, dict):
+        for list_name in ("allow", "ask", "deny"):
+            values = permissions.get(list_name)
+            if not isinstance(values, list):
+                continue
+            rules.extend(
+                rule for rule in values if isinstance(rule, str) and rule.startswith("mcp__")
+            )
+    warnings: list[str] = []
+    referenced: set[str] = set()
+    for rule in rules:
+        candidate = rule[len("mcp__"):]
+        # Server names may themselves contain "__", so match whole known names
+        # instead of splitting the rule.
+        matched = {
+            server for server in known if candidate == server or candidate.startswith(server + "__")
+        }
+        if matched:
+            referenced.update(matched)
+        else:
+            warnings.append(
+                f'permission rule "{rule}" matches no MCP server in claude/mcp.json '
+                "and can never apply"
+            )
+    for server in known:
+        if server not in referenced:
+            warnings.append(
+                f'MCP server "{server}" is referenced by no permission rule; '
+                "every tool on it will be denied under dontAsk"
+            )
+    return warnings
+
+
+def _claude_mcp_secret_warnings(servers: dict) -> list[str]:
+    """Flag credential-shaped literals in mcp.json; values belong in the environment."""
+    warnings: list[str] = []
+    for name in sorted(servers):
+        server = servers[name]
+        if not isinstance(server, dict):
+            continue
+        for section in ("headers", "env"):
+            block = server.get(section)
+            if not isinstance(block, dict):
+                continue
+            for key, value in block.items():
+                if not _SECRET_KEY_RE.search(key):
+                    continue
+                if isinstance(value, str) and value and "${" not in value:
+                    warnings.append(
+                        f'mcp.json server "{name}" has a secret-shaped literal in '
+                        f"{section}.{key}; use a ${{VAR}} reference"
+                    )
+    return warnings
 
 
 def _check_codex_config(path: str) -> list[str]:
@@ -286,7 +400,14 @@ def _policy_revision(access: AccessProfile, provider: str, path: str) -> str:
     if digest is None:
         raise OSError(f"could not hash {path}")
     manifest = {os.path.basename(path): digest}
-    if provider == "codex":
+    if provider == "claude":
+        mcp_path = _claude_mcp_path(access)
+        if os.path.lexists(mcp_path):
+            mcp_digest = regular_file_sha256(mcp_path)
+            if mcp_digest is None:
+                raise OSError(f"could not hash {mcp_path}")
+            manifest["mcp.json"] = mcp_digest
+    elif provider == "codex":
         manifest = _codex_manifest(_codex_source_root(access))
     return _manifest_revision(provider, manifest)
 
@@ -310,9 +431,12 @@ def prepare_launch(workspace: Workspace, access: AccessProfile, provider: str) -
         )
 
     assert check.policy_path is not None and check.policy_revision is not None
-    env = _minimal_env(provider)
+    env = _minimal_env(provider, access.env_passthrough)
     home: str | None = None
     ignore_rules = True
+    mcp_config: str | None = None
+    if provider == "claude" and check.mcp_servers:
+        mcp_config = _claude_mcp_path(access)
     if provider == "codex":
         try:
             home, ignore_rules = _stage_codex_home(access, check.policy_revision)
@@ -325,6 +449,12 @@ def prepare_launch(workspace: Workspace, access: AccessProfile, provider: str) -
                 provider, (f"could not stage the Codex runtime home: {exc}",)
             ) from exc
         env["CODEX_HOME"] = home
+    log.info(
+        "Policy launch for %s: MCP servers [%s], passthrough [%s]",
+        provider,
+        ", ".join(check.mcp_servers),
+        ", ".join(name for name in access.env_passthrough if name in env),
+    )
     return Launch(
         mode="policy",
         provider=provider,
@@ -333,14 +463,28 @@ def prepare_launch(workspace: Workspace, access: AccessProfile, provider: str) -
         policy_revision=check.policy_revision,
         env=env,
         ignore_rules=ignore_rules,
+        mcp_config=mcp_config,
     )
 
 
-def _minimal_env(provider: str) -> dict[str, str]:
-    """Allowlisted child environment: locale, controlled PATH, provider auth."""
+def _minimal_env(provider: str, passthrough: tuple[str, ...] = ()) -> dict[str, str]:
+    """Allowlisted child environment: locale, passthrough, controlled PATH, provider auth.
+
+    Profile ``env_passthrough`` names are copied before the launch-controlled
+    assignments (PATH, provider auth keys, CODEX_HOME) so a launch-controlled
+    value always wins even if validation of the reserved names is bypassed.
+    """
     from .providers import PROVIDER_CLASSES
 
     env = {key: os.environ[key] for key in _KEEP_ENV if key in os.environ}
+    missing = [name for name in passthrough if name not in os.environ]
+    if missing:
+        log.warning(
+            "env_passthrough names not set in the service environment: %s", ", ".join(missing)
+        )
+    for name in passthrough:
+        if name in os.environ:
+            env[name] = os.environ[name]
     env["PATH"] = _filtered_path()
     provider_cls = PROVIDER_CLASSES.get(provider)
     for key in provider_cls.env_keys if provider_cls else ():
