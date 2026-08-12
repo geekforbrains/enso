@@ -2,9 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.1.0] - 2026-08-12
 
-### Migration
+This release adds rich, structured Slack replies and requester-confirmed App Home and Canvas publication, while keeping persistent changes behind an exact preview and one-time human approval.
+
+### Migration from 1.0.0
 
 - Slack rich messages and persistent App Home/Canvas drafts now default to enabled when their config keys are absent. Existing Slack apps must apply the current bundled manifest, enable App Home and interactivity, grant `canvases:write` and `files:read`, reinstall or reauthorize when Slack requests new scope consent, and restart Enso. Set `transports.slack.persistent_surfaces` to `false` to disable only persistent drafts, or `transports.slack.rich_messages` to `false` to restore legacy text delivery and disable both rich paths. Running `enso setup` now refreshes `~/.enso/slack-app-manifest.yaml` even when credentials are left unchanged.
 
