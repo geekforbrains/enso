@@ -18,6 +18,7 @@ from typing import Annotated
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
@@ -2236,14 +2237,14 @@ def config_check() -> None:
         console.print(f"\n[bold]Access {name}[/] ({mode})")
         for problem in catalog.access_errors.get(name, ()):
             failed = True
-            console.print(f"  [red]✗[/] {problem}")
+            console.print(f"  [red]✗[/] {escape(problem)}")
         if not access.unrestricted and access.env_passthrough:
             console.print("  env_passthrough:")
             for env_name in access.env_passthrough:
                 if env_name in os.environ or env_name in secret_env:
-                    console.print(f"    [green]✓[/] {env_name}")
+                    console.print(f"    [green]✓[/] {escape(env_name)}")
                 else:
-                    console.print(f"    [yellow]![/] {env_name} not set")
+                    console.print(f"    [yellow]![/] {escape(env_name)} not set")
             console.print(
                 "  [dim]checked against this shell and ~/.enso/secrets/*.env; "
                 "the service environment may differ[/]"
@@ -2315,13 +2316,13 @@ def config_check() -> None:
             if check.ok:
                 revision = (check.policy_revision or "")[:12]
                 servers = f" mcp: {', '.join(check.mcp_servers)}" if check.mcp_servers else ""
-                console.print(f"  [green]✓[/] {provider} ({revision}){servers}")
+                console.print(f"  [green]✓[/] {provider} ({revision}){escape(servers)}")
                 for warning in check.warnings:
-                    console.print(f"    [yellow]![/] {warning}")
+                    console.print(f"    [yellow]![/] {escape(warning)}")
             else:
                 failed = True
                 for problem in check.problems:
-                    console.print(f"  [red]✗[/] {provider}: {problem}")
+                    console.print(f"  [red]✗[/] {provider}: {escape(problem)}")
 
     if failed:
         raise typer.Exit(1)

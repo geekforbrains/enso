@@ -143,9 +143,10 @@ def check_provider(workspace: Workspace, access: AccessProfile, provider: str) -
 
     warnings: list[str] = []
     mcp_servers: tuple[str, ...] = ()
+    mcp_digest: str | None = None
     if provider == "claude":
         problems, warnings, settings = _check_claude_settings(path)
-        mcp_problems, servers = _check_claude_mcp(access, workspace)
+        mcp_problems, servers, mcp_digest = _check_claude_mcp(access, workspace)
         problems.extend(mcp_problems)
         mcp_servers = tuple(sorted(servers))
         if not problems and settings is not None:
@@ -158,7 +159,7 @@ def check_provider(workspace: Workspace, access: AccessProfile, provider: str) -
     if problems:
         return PolicyCheck(provider=provider, ok=False, problems=tuple(problems), policy_path=path)
     try:
-        revision = _policy_revision(access, provider, path)
+        revision = _policy_revision(access, provider, path, claude_mcp_digest=mcp_digest)
     except OSError as exc:
         return PolicyCheck(
             provider=provider,
@@ -265,32 +266,38 @@ def _check_claude_settings(path: str) -> tuple[list[str], list[str], dict | None
     return problems, warnings, settings
 
 
-def _check_claude_mcp(access: AccessProfile, workspace: Workspace) -> tuple[list[str], dict]:
+def _check_claude_mcp(
+    access: AccessProfile, workspace: Workspace
+) -> tuple[list[str], dict, str | None]:
     """Validate the conventional claude/mcp.json when present.
 
-    Returns (problems, servers) where servers is the parsed mcpServers object,
-    empty when the file is absent or unusable. Presence is tested with lexists,
-    so a symlink at the conventional path is an integrity error, never absence.
+    Returns (problems, servers, digest) where servers is the parsed mcpServers
+    object and digest is the sha256 of the bytes those servers were parsed
+    from, so the policy revision and the launched server set come from a
+    single read; both are empty/None when the file is absent or unusable.
+    Presence is tested with lexists, so a symlink at the conventional path is
+    an integrity error, never absence.
     """
     path = _claude_mcp_path(access)
     if not os.path.lexists(path):
-        return [], {}
+        return [], {}, None
     problems = _file_problems(path, workspace)
     if problems:
-        return problems, {}
+        return problems, {}, None
     try:
-        with open(path, encoding="utf-8") as f:
-            mcp = json.load(f)
-    except (OSError, json.JSONDecodeError) as exc:
-        return [f"mcp.json does not parse: {exc}"], {}
+        with open(path, "rb") as f:
+            raw = f.read()
+        mcp = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return [f"mcp.json does not parse: {exc}"], {}, None
     if not isinstance(mcp, dict):
-        return ["mcp.json must be a JSON object"], {}
+        return ["mcp.json must be a JSON object"], {}, None
     servers = mcp.get("mcpServers")
     if not isinstance(servers, dict):
-        return ['mcp.json must define "mcpServers" as an object'], {}
+        return ['mcp.json must define "mcpServers" as an object'], {}, None
     if not servers:
-        return ['mcp.json "mcpServers" is empty; delete the file to disable MCP'], {}
-    return [], servers
+        return ['mcp.json "mcpServers" is empty; delete the file to disable MCP'], {}, None
+    return [], servers, hashlib.sha256(raw).hexdigest()
 
 
 def _claude_mcp_rule_warnings(settings: dict, known: tuple[str, ...]) -> list[str]:
@@ -298,39 +305,41 @@ def _claude_mcp_rule_warnings(settings: dict, known: tuple[str, ...]) -> list[st
 
     Both directions are silent no-ops rather than access widenings, so they
     warn: a rule naming an undefined server can never match (with no mcp.json
-    every mcp__ rule is inert), and a server no rule references has every tool
-    denied under dontAsk.
+    every mcp__ rule is inert), and a server no allow rule admits has every
+    tool denied under dontAsk — deny or ask references cannot make it usable.
     """
     permissions = settings.get("permissions")
-    rules: list[str] = []
+    rules: list[tuple[str, str]] = []
     if isinstance(permissions, dict):
         for list_name in ("allow", "ask", "deny"):
             values = permissions.get(list_name)
             if not isinstance(values, list):
                 continue
             rules.extend(
-                rule for rule in values if isinstance(rule, str) and rule.startswith("mcp__")
+                (list_name, rule)
+                for rule in values
+                if isinstance(rule, str) and rule.startswith("mcp__")
             )
     warnings: list[str] = []
-    referenced: set[str] = set()
-    for rule in rules:
+    allowed: set[str] = set()
+    for list_name, rule in rules:
         candidate = rule[len("mcp__"):]
         # Server names may themselves contain "__", so match whole known names
         # instead of splitting the rule.
         matched = {
             server for server in known if candidate == server or candidate.startswith(server + "__")
         }
-        if matched:
-            referenced.update(matched)
-        else:
+        if not matched:
             warnings.append(
                 f'permission rule "{rule}" matches no MCP server in claude/mcp.json '
                 "and can never apply"
             )
+        elif list_name == "allow":
+            allowed.update(matched)
     for server in known:
-        if server not in referenced:
+        if server not in allowed:
             warnings.append(
-                f'MCP server "{server}" is referenced by no permission rule; '
+                f'no allow rule references MCP server "{server}"; '
                 "every tool on it will be denied under dontAsk"
             )
     return warnings
@@ -394,19 +403,22 @@ def _codex_manifest(root: str) -> dict[str, str]:
     return manifest
 
 
-def _policy_revision(access: AccessProfile, provider: str, path: str) -> str:
-    """Digest of the complete policy source tree plus the launch contract."""
+def _policy_revision(
+    access: AccessProfile, provider: str, path: str, *, claude_mcp_digest: str | None = None
+) -> str:
+    """Digest of the complete policy source tree plus the launch contract.
+
+    ``claude_mcp_digest`` is the hash computed by ``_check_claude_mcp`` from
+    the same bytes the resolved server set was parsed from; re-reading
+    mcp.json here could hash a file that appeared or changed since the check.
+    """
     digest = regular_file_sha256(path)
     if digest is None:
         raise OSError(f"could not hash {path}")
     manifest = {os.path.basename(path): digest}
     if provider == "claude":
-        mcp_path = _claude_mcp_path(access)
-        if os.path.lexists(mcp_path):
-            mcp_digest = regular_file_sha256(mcp_path)
-            if mcp_digest is None:
-                raise OSError(f"could not hash {mcp_path}")
-            manifest["mcp.json"] = mcp_digest
+        if claude_mcp_digest is not None:
+            manifest["mcp.json"] = claude_mcp_digest
     elif provider == "codex":
         manifest = _codex_manifest(_codex_source_root(access))
     return _manifest_revision(provider, manifest)

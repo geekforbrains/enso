@@ -303,10 +303,12 @@ def test_mcp_rule_matching_a_defined_server_does_not_warn(tmp_path):
 
 
 def test_mcp_rule_matches_server_names_containing_underscores(tmp_path):
+    # A double underscore inside the server name defeats any split-based
+    # matching; only whole-known-name matching keeps this warning-free.
     write_claude_policy(
-        tmp_path, {**CLAUDE_SETTINGS, "permissions": {"allow": ["mcp__my_server__tool"]}}
+        tmp_path, {**CLAUDE_SETTINGS, "permissions": {"allow": ["mcp__my__server__tool"]}}
     )
-    write_claude_mcp(tmp_path, {"mcpServers": {"my_server": {"type": "http"}}})
+    write_claude_mcp(tmp_path, {"mcpServers": {"my__server": {"type": "http"}}})
     check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
     assert check.ok, check.problems
     assert check.warnings == ()
@@ -318,7 +320,21 @@ def test_unreferenced_mcp_server_warns(tmp_path):
     check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
     assert check.ok, check.problems
     assert any(
-        'MCP server "metrics" is referenced by no permission rule' in w for w in check.warnings
+        'no allow rule references MCP server "metrics"' in w for w in check.warnings
+    )
+
+
+def test_deny_only_mcp_server_reference_still_warns(tmp_path):
+    # A deny (or ask) rule cannot admit a tool under dontAsk, so a server
+    # referenced only there is as unusable as one never referenced at all.
+    write_claude_policy(
+        tmp_path, {**CLAUDE_SETTINGS, "permissions": {"deny": ["mcp__metrics"]}}
+    )
+    write_claude_mcp(tmp_path, {"mcpServers": {"metrics": {"type": "http"}}})
+    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    assert check.ok, check.problems
+    assert any(
+        'no allow rule references MCP server "metrics"' in w for w in check.warnings
     )
 
 

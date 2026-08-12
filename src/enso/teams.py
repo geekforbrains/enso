@@ -414,6 +414,7 @@ def _load_env_passthrough(
         problems.append("unrestricted: true is invalid alongside env_passthrough")
     if len(value) != len(set(value)):
         problems.append("env_passthrough contains duplicate names")
+    valid: list[str] = []
     for name in value:
         if not _ENV_NAME_RE.fullmatch(name):
             problems.append(f"env_passthrough name {name!r} must match [A-Z][A-Z0-9_]*")
@@ -422,7 +423,9 @@ def _load_env_passthrough(
                 f"env_passthrough may not name {name}; launch-controlled and "
                 "Enso-owned names are reserved"
             )
-    return tuple(value)
+        elif name not in valid:
+            valid.append(name)
+    return tuple(valid)
 
 
 def _check_topology(

@@ -188,7 +188,7 @@ def test_config_check_surfaces_mcp_cross_check_warnings(tmp_enso):
     assert result.exit_code == 0, result.output
     plain = " ".join(result.output.split())
     assert 'permission rule "mcp__ghost__tool" matches no MCP server' in plain
-    assert 'MCP server "metrics" is referenced by no permission rule' in plain
+    assert 'no allow rule references MCP server "metrics"' in plain
 
 
 def test_config_check_validates_catalog_without_slack_routes(tmp_enso):
