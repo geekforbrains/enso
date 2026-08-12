@@ -2,18 +2,28 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+import sqlite3
+from copy import deepcopy
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
+from enso import audit as audit_store
+from enso import surface_drafts
 from enso.formatting import md_to_mrkdwn
 from enso.outbound import (
+    AppHomePublication,
+    CanvasPublication,
     ChartAxis,
     ChartPoint,
     ChartSegment,
     ChartSeries,
     DataTableBlock,
     DataVisualizationBlock,
+    HomeDividerBlock,
+    HomeHeaderBlock,
+    HomeSectionBlock,
     MarkdownBlock,
     OutboundMessage,
     PieChart,
@@ -25,12 +35,18 @@ from enso.outbound import (
     TableNumberCell,
     TableTextCell,
 )
+from enso.surface_drafts import ChannelCanvasTarget, SurfaceDraftOrigin
 from enso.transports import safe_filename
 from enso.transports.slack import (
+    SLACK_MARKDOWN_BLOCK_LIMIT,
+    SURFACE_CANCEL_ACTION_ID,
+    SURFACE_PUBLISH_ACTION_ID,
     SlackContext,
     SlackTransport,
     _attachment_files,
     _attachments_prompt,
+    _channel_canvas_ids,
+    _parse_surface_action,
 )
 
 pytestmark = pytest.mark.usefixtures("tmp_enso")
@@ -48,6 +64,9 @@ def _make_client(**overrides: object) -> AsyncMock:
     client.chat_delete.return_value = {"ok": True}
     client.conversations_history.return_value = {"messages": []}
     client.conversations_replies.return_value = {"messages": []}
+    client.conversations_info.return_value = {
+        "channel": {"id": "C123", "properties": {}}
+    }
     for k, v in overrides.items():
         setattr(client, k, v)
     return client
@@ -110,7 +129,188 @@ def _make_runtime(**overrides: object) -> MagicMock:
 def _make_transport(rt: MagicMock) -> SlackTransport:
     transport = SlackTransport(rt)
     transport.teams_router.set_authenticated_account("TTEST")
+    transport._surface_reconciled = True
     return transport
+
+
+def _surface_origin(
+    *,
+    channel: str = "C123",
+    user: str = "U123",
+    thread_ts: str | None = "1234.5678",
+    route_kind: str = "channel",
+    audit: bool = False,
+) -> SurfaceDraftOrigin:
+    return SurfaceDraftOrigin(
+        account_id="TTEST",
+        route_id=(
+            f"slack.dm.{user}"
+            if route_kind == "dm"
+            else f"slack.channel.{channel}"
+        ),
+        route_kind=route_kind,
+        workspace_id="main",
+        access_profile="admin",
+        route_audit=audit,
+        user_id=user,
+        channel_id=channel,
+        thread_ts=thread_ts,
+        conversation_type="im" if route_kind == "dm" else "channel",
+        audit_turn_id="turn-1" if audit else None,
+    )
+
+
+def _app_home_origin(*, audit: bool = False) -> SurfaceDraftOrigin:
+    return _surface_origin(
+        channel="D123",
+        thread_ts=None,
+        route_kind="dm",
+        audit=audit,
+    )
+
+
+def _existing_canvas_channel(
+    *,
+    canvas_id: str = "FOLD",
+    edit_timestamp: int | None = 100,
+) -> tuple[dict[str, object], dict[str, object]]:
+    return (
+        {
+            "channel": {
+                "id": "C123",
+                "properties": {
+                    "tabs": [
+                        {
+                            "id": "TABCANVAS",
+                            "type": "canvas",
+                            "data": {"file_id": canvas_id},
+                        }
+                    ]
+                },
+            }
+        },
+        {
+            "file": {
+                "id": canvas_id,
+                "title": "Existing channel plan",
+                "permalink": f"https://example.slack.com/docs/{canvas_id}",
+                "editable": True,
+                "edit_timestamp": edit_timestamp,
+            }
+        },
+    )
+
+
+def _app_home_action_body(
+    draft_id: str,
+    *,
+    user: str = "U123",
+    action_id: str = SURFACE_PUBLISH_ACTION_ID,
+) -> tuple[dict[str, object], dict[str, object]]:
+    return _surface_action_body(
+        draft_id,
+        user=user,
+        channel="D123",
+        action_id=action_id,
+    )
+
+
+def _surface_action(
+    draft_id: str,
+    *,
+    action_id: str = SURFACE_PUBLISH_ACTION_ID,
+) -> dict[str, object]:
+    return {
+        "type": "button",
+        "action_id": action_id,
+        "block_id": f"enso.surface.{draft_id}.r3",
+        "value": draft_id,
+    }
+
+
+def _surface_action_body(
+    draft_id: str,
+    *,
+    user: str = "U123",
+    channel: str = "C123",
+    message_ts: str = "300.400",
+    action_id: str = SURFACE_PUBLISH_ACTION_ID,
+) -> tuple[dict[str, object], dict[str, object]]:
+    action = _surface_action(draft_id, action_id=action_id)
+    return (
+        {
+            "type": "block_actions",
+            "team": {"id": "TTEST"},
+            "user": {"id": user},
+            "api_app_id": "ATEST",
+            "container": {
+                "type": "message",
+                "channel_id": channel,
+                "message_ts": message_ts,
+                "is_ephemeral": False,
+            },
+            "channel": {"id": channel},
+            "message": {"ts": message_ts},
+            "actions": [action],
+        },
+        action,
+    )
+
+
+@pytest.mark.parametrize(
+    "properties",
+    [
+        {"canvas": {"file_id": "FCANVAS"}},
+        {
+            "tabs": [
+                {
+                    "id": "TAB123",
+                    "type": "canvas",
+                    "data": {"file_id": "FCANVAS"},
+                }
+            ]
+        },
+        {
+            "canvas": {"file_id": "FCANVAS"},
+            "tabs": [
+                {"type": "channel_canvas", "data": {"file_id": "FCANVAS"}}
+            ],
+        },
+    ],
+)
+def test_channel_canvas_discovery_supports_canonical_and_tab_shapes(properties):
+    assert _channel_canvas_ids(
+        {"channel": {"id": "C123", "properties": properties}},
+        channel_id="C123",
+    ) == ("FCANVAS",)
+
+
+class _SdkResponse:
+    """Slack SDK responses expose their mapping through `.data`."""
+
+    def __init__(self, data: dict[str, object]):
+        self.data = data
+
+
+def test_channel_canvas_discovery_accepts_slack_sdk_response_wrapper():
+    assert _channel_canvas_ids(
+        _SdkResponse(
+            {
+                "channel": {
+                    "id": "C123",
+                    "properties": {
+                        "tabs": [
+                            {
+                                "type": "canvas",
+                                "data": {"file_id": "FCANVAS"},
+                            }
+                        ]
+                    },
+                }
+            }
+        ),
+        channel_id="C123",
+    ) == ("FCANVAS",)
 
 
 class _FakeResponse:
@@ -127,6 +327,12 @@ class _FakeResponse:
 
     def read(self) -> bytes:
         return self._payload
+
+
+class _SlackApiError(Exception):
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.response = {"error": code}
 
 
 def _forwarded_attachment(*, with_file: bool = False) -> dict:
@@ -608,6 +814,1703 @@ class TestSlackContext:
         assert "```enso-message" in instructions
         assert "fallback_text" in instructions
         assert "otherwise respond normally" in instructions.lower()
+
+    def test_authorized_rich_context_exposes_surface_drafts_without_magic_syntax(self):
+        rich_ctx = SlackContext(
+            _make_client(),
+            "C123",
+            "1234.5678",
+            user_id="U123",
+            rich_messages=True,
+            persistent_surfaces=True,
+            surface_origin=_surface_origin(),
+        )
+        no_origin_ctx = SlackContext(
+            _make_client(),
+            "C123",
+            user_id="U123",
+            rich_messages=True,
+            persistent_surfaces=True,
+        )
+        plain_ctx = SlackContext(_make_client(), "C123")
+
+        assert "```enso-surface" in rich_ctx.get_surface_instructions()
+        assert "button confirmation" in rich_ctx.get_surface_instructions()
+        assert "```enso-surface" not in rich_ctx.get_output_instructions()
+        assert no_origin_ctx.get_surface_instructions() == ""
+        assert plain_ctx.get_surface_instructions() == ""
+
+    @pytest.mark.asyncio
+    async def test_surface_envelope_posts_bound_preview_buttons_without_publishing(self):
+        client = _make_client()
+        origin = _app_home_origin()
+        ctx = SlackContext(
+            client,
+            "D123",
+            user_id="U123",
+            rich_messages=True,
+            persistent_surfaces=True,
+            surface_origin=origin,
+            conversation_type="im",
+        )
+        publication = AppHomePublication(
+            fallback_text="A harmless summary that is not the approval payload.",
+            blocks=(
+                HomeHeaderBlock(text="Account dashboard"),
+                HomeSectionBlock(
+                    content=SectionField(
+                        kind="markdown",
+                        text="**Exact status:** Revenue is $42k. Notify <@U999>.",
+                    )
+                ),
+            ),
+        )
+        source_text = (
+            "```enso-surface\n"
+            '{"version":1,"surface":"app_home","fallback_text":'
+            '"A harmless summary that is not the approval payload.",'
+            '"blocks":[{"type":"header","text":"Account dashboard"},'
+            '{"type":"section","text":{"type":"markdown","text":'
+            '"**Exact status:** Revenue is $42k. Notify <@U999>."}}]}\n'
+            "```"
+        )
+
+        await ctx.offer_surface_draft(publication, source_text)
+
+        client.views_publish.assert_not_awaited()
+        client.canvases_create.assert_not_awaited()
+        client.chat_postMessage.assert_awaited_once()
+        payload = client.chat_postMessage.call_args.kwargs
+        assert payload["channel"] == "D123"
+        assert "thread_ts" not in payload
+        assert payload["mrkdwn"] is False
+        assert payload["unfurl_links"] is False
+        assert payload["unfurl_media"] is False
+        assert "draft" in payload["text"].lower()
+        assert "private App Home" in payload["text"]
+        assert "Account dashboard" in payload["text"]
+        assert "Exact status" in payload["text"]
+        assert "<@U999>" not in payload["text"]
+        assert "&lt;@U999&gt;" in payload["text"]
+        assert {
+            "type": "header",
+            "text": {"type": "plain_text", "text": "Account dashboard"},
+        } in payload["blocks"]
+        assert {
+            "type": "section",
+            "text": {
+                "type": "plain_text",
+                "text": "**Exact status:** Revenue is $42k. Notify <@U999>.",
+            },
+        } in payload["blocks"]
+        actions = payload["blocks"][-1]
+        assert actions["type"] == "actions"
+        publish, cancel = actions["elements"]
+        assert publish["action_id"] == SURFACE_PUBLISH_ACTION_ID
+        assert cancel["action_id"] == SURFACE_CANCEL_ACTION_ID
+        assert publish["value"] == cancel["value"]
+        assert publication.fallback_text not in publish["value"]
+        stored = surface_drafts.get_scoped(
+            publish["value"],
+            account_id="TTEST",
+            user_id="U123",
+            channel_id="D123",
+            message_ts="1234567890.123456",
+        )
+        assert stored is not None
+        assert stored.publication == publication
+
+    @pytest.mark.asyncio
+    async def test_confirmation_bind_failure_revokes_and_clears_posted_buttons(self):
+        client = _make_client()
+        ctx = SlackContext(
+            client,
+            "D123",
+            user_id="U123",
+            audit_turn_id="turn-1",
+            rich_messages=True,
+            persistent_surfaces=True,
+            surface_origin=_app_home_origin(),
+            conversation_type="im",
+        )
+        publication = AppHomePublication(
+            fallback_text="The dashboard draft could not be confirmed safely.",
+            blocks=(HomeHeaderBlock(text="Private dashboard"),),
+        )
+
+        with (
+            patch(
+                "enso.transports.slack.surface_drafts.bind_message",
+                side_effect=OSError("database unavailable"),
+            ),
+            patch(
+                "enso.transports.slack.audit_store.record_response"
+            ) as record_response,
+            patch("enso.transports.slack.audit_store.record_delivery"),
+        ):
+            await ctx.offer_surface_draft(publication, "validated model envelope")
+
+        client.views_publish.assert_not_awaited()
+        client.chat_update.assert_awaited_once_with(
+            channel="D123",
+            ts="1234567890.123456",
+            text=publication.fallback_text,
+            blocks=[],
+        )
+        assert record_response.call_args_list[-1].args == (
+            "turn-1",
+            publication.fallback_text,
+        )
+
+    @pytest.mark.asyncio
+    async def test_draft_store_failure_audits_only_delivered_fallback(self):
+        client = _make_client()
+        ctx = SlackContext(
+            client,
+            "C123",
+            user_id="U123",
+            audit_turn_id="turn-1",
+            rich_messages=True,
+            persistent_surfaces=True,
+            surface_origin=_surface_origin(thread_ts=None),
+            conversation_type="channel",
+        )
+        publication = CanvasPublication(
+            fallback_text="The Canvas draft could not be prepared.",
+            title="Private report",
+            markdown="# Private report\n\nSensitive draft content.",
+            placement="channel",
+        )
+
+        with (
+            patch(
+                "enso.transports.slack.surface_drafts.create",
+                side_effect=OSError("database unavailable"),
+            ),
+            patch(
+                "enso.transports.slack.audit_store.record_response"
+            ) as record_response,
+            patch("enso.transports.slack.audit_store.record_delivery"),
+        ):
+            await ctx.offer_surface_draft(publication, "validated model envelope")
+
+        record_response.assert_called_once_with("turn-1", publication.fallback_text)
+        client.chat_postMessage.assert_awaited_once_with(
+            channel="C123",
+            text=publication.fallback_text,
+        )
+
+    @pytest.mark.asyncio
+    async def test_app_home_draft_from_channel_falls_back_without_private_preview(self):
+        client = _make_client()
+        ctx = SlackContext(
+            client,
+            "C123",
+            user_id="U123",
+            rich_messages=True,
+            persistent_surfaces=True,
+            surface_origin=_surface_origin(thread_ts=None),
+            conversation_type="channel",
+        )
+        publication = AppHomePublication(
+            fallback_text="Private revenue is $42k.",
+            blocks=(HomeHeaderBlock(text="Private revenue dashboard"),),
+        )
+
+        await ctx.offer_surface_draft(publication, "validated model envelope")
+
+        client.views_publish.assert_not_awaited()
+        client.chat_postMessage.assert_awaited_once_with(
+            channel="C123",
+            text=(
+                "App Home dashboards can only be drafted from a 1:1 DM. Please send "
+                "this request to me there."
+            ),
+        )
+        assert "Private revenue dashboard" not in client.chat_postMessage.call_args.kwargs["text"]
+        assert "$42k" not in client.chat_postMessage.call_args.kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_canvas_confirmation_card_previews_exact_markdown(self):
+        client = _make_client()
+        ctx = SlackContext(
+            client,
+            "C123",
+            thread_ts="1234.5678",
+            user_id="U123",
+            rich_messages=True,
+            persistent_surfaces=True,
+            surface_origin=_surface_origin(),
+            conversation_type="channel",
+        )
+        publication = CanvasPublication(
+            fallback_text="Benign summary.",
+            title="Incident review",
+            markdown="# Incident review\n\n- Exact owner: Ada\n- Exact severity: High",
+            placement="channel",
+        )
+
+        await ctx.offer_surface_draft(publication, "validated model envelope")
+
+        payload = client.chat_postMessage.call_args.kwargs
+        assert publication.markdown in payload["text"]
+        assert {
+            "type": "section",
+            "text": {"type": "plain_text", "text": publication.markdown},
+        } in payload["blocks"]
+        assert "visible Canvas tab" in payload["text"]
+        assert "this channel" in payload["text"]
+        assert "created" in payload["text"].lower()
+        assert payload["blocks"][-1]["elements"][0]["text"]["text"] == (
+            "Create channel Canvas"
+        )
+        stored = surface_drafts.get_scoped(
+            payload["blocks"][-1]["elements"][0]["value"],
+            account_id="TTEST",
+            user_id="U123",
+            channel_id="C123",
+            message_ts="1234567890.123456",
+        )
+        assert stored is not None
+        assert stored.channel_canvas_target == ChannelCanvasTarget(operation="create")
+        client.canvases_create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_existing_channel_canvas_offer_is_an_explicit_bound_replacement(self):
+        client = _make_client()
+        channel_info, file_info = _existing_canvas_channel()
+        client.conversations_info.return_value = channel_info
+        client.files_info.return_value = file_info
+        ctx = SlackContext(
+            client,
+            "C123",
+            thread_ts="1234.5678",
+            user_id="U123",
+            rich_messages=True,
+            persistent_surfaces=True,
+            surface_origin=_surface_origin(),
+            conversation_type="channel",
+        )
+        publication = CanvasPublication(
+            fallback_text="Replacement channel plan draft.",
+            title="New channel plan",
+            markdown="# New channel plan\n\n- Owner: Ada",
+            placement="channel",
+        )
+
+        await ctx.offer_surface_draft(publication, "validated model envelope")
+
+        client.conversations_info.assert_awaited_once_with(channel="C123")
+        client.files_info.assert_awaited_once_with(file="FOLD")
+        client.canvases_create.assert_not_awaited()
+        client.canvases_edit.assert_not_awaited()
+        payload = client.chat_postMessage.call_args.kwargs
+        assert "fully replace" in payload["text"].lower()
+        assert "Existing channel plan" in payload["text"]
+        assert "https://example.slack.com/docs/FOLD" in payload["text"]
+        publish = payload["blocks"][-1]["elements"][0]
+        assert publish["text"]["text"] == "Replace channel Canvas"
+        stored = surface_drafts.get_scoped(
+            publish["value"],
+            account_id="TTEST",
+            user_id="U123",
+            channel_id="C123",
+            message_ts="1234567890.123456",
+        )
+        assert stored is not None
+        assert stored.channel_canvas_target == ChannelCanvasTarget(
+            operation="replace",
+            canvas_id="FOLD",
+            title="Existing channel plan",
+            permalink="https://example.slack.com/docs/FOLD",
+            edit_timestamp=100,
+        )
+
+    @pytest.mark.asyncio
+    async def test_existing_unedited_channel_canvas_with_null_revision_can_be_replaced(self):
+        client = _make_client()
+        channel_info, file_info = _existing_canvas_channel(edit_timestamp=None)
+        client.conversations_info.return_value = channel_info
+        client.files_info.return_value = file_info
+        ctx = SlackContext(
+            client,
+            "C123",
+            user_id="U123",
+            rich_messages=True,
+            persistent_surfaces=True,
+            surface_origin=_surface_origin(thread_ts=None),
+            conversation_type="channel",
+        )
+        publication = CanvasPublication(
+            fallback_text="Replace the blank channel Canvas.",
+            title="Plan",
+            markdown="# Plan",
+            placement="channel",
+        )
+
+        await ctx.offer_surface_draft(publication, "validated model envelope")
+
+        publish = client.chat_postMessage.await_args.kwargs["blocks"][-1]["elements"][0]
+        stored = surface_drafts.get_scoped(
+            publish["value"],
+            account_id="TTEST",
+            user_id="U123",
+            channel_id="C123",
+            message_ts="1234567890.123456",
+        )
+        assert stored is not None
+        assert stored.channel_canvas_target is not None
+        assert stored.channel_canvas_target.edit_timestamp is None
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_channel_canvas_offer_falls_back_without_buttons(self):
+        client = _make_client()
+        client.conversations_info.return_value = {
+            "channel": {
+                "id": "C123",
+                "properties": {
+                    "tabs": [
+                        {"type": "canvas", "data": {"file_id": "FONE"}},
+                        {"type": "canvas", "data": {"file_id": "FTWO"}},
+                    ]
+                },
+            }
+        }
+        ctx = SlackContext(
+            client,
+            "C123",
+            user_id="U123",
+            rich_messages=True,
+            persistent_surfaces=True,
+            surface_origin=_surface_origin(thread_ts=None),
+            conversation_type="channel",
+        )
+        publication = CanvasPublication(
+            fallback_text="I could not safely choose a channel Canvas to replace.",
+            title="Plan",
+            markdown="# Plan",
+            placement="channel",
+        )
+
+        await ctx.offer_surface_draft(publication, "validated model envelope")
+
+        client.chat_postMessage.assert_awaited_once_with(
+            channel="C123",
+            text=publication.fallback_text,
+        )
+        client.files_info.assert_not_awaited()
+        client.canvases_create.assert_not_awaited()
+        client.canvases_edit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unreviewable_canvas_falls_back_without_confirmation_buttons(self):
+        client = _make_client()
+        ctx = SlackContext(
+            client,
+            "C123",
+            user_id="U123",
+            rich_messages=True,
+            persistent_surfaces=True,
+            surface_origin=_surface_origin(thread_ts=None),
+        )
+        publication = CanvasPublication(
+            fallback_text="The Canvas draft is too large to review in Slack.",
+            title="Long report",
+            markdown="x" * (SLACK_MARKDOWN_BLOCK_LIMIT + 1),
+            placement="channel",
+        )
+
+        await ctx.offer_surface_draft(publication, "validated model envelope")
+
+        client.chat_postMessage.assert_awaited_once_with(
+            channel="C123",
+            text="The Canvas draft is too large to review in Slack.",
+        )
+        client.canvases_create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_surface_draft_without_trusted_origin_falls_back_without_buttons(self):
+        client = _make_client()
+        ctx = SlackContext(
+            client,
+            "C123",
+            user_id="U123",
+            rich_messages=True,
+            persistent_surfaces=True,
+        )
+        publication = AppHomePublication(
+            fallback_text="No mutation was authorized.",
+            blocks=(HomeHeaderBlock(text="Dashboard"),),
+        )
+
+        await ctx.offer_surface_draft(publication, "valid source")
+
+        client.views_publish.assert_not_awaited()
+        client.canvases_create.assert_not_awaited()
+        client.chat_postMessage.assert_awaited_once_with(
+            channel="C123",
+            text="No mutation was authorized.",
+        )
+
+    @pytest.mark.asyncio
+    async def test_publish_button_claims_exact_draft_once_without_rerunning_agent(self):
+        rt = _make_runtime()
+        rt.config["transports"]["slack"].update(
+            {"rich_messages": True, "persistent_surfaces": True}
+        )
+        transport = _make_transport(rt)
+        client = _make_client()
+        publication = AppHomePublication(
+            fallback_text="Dashboard with healthy status.",
+            blocks=(HomeHeaderBlock(text="Account dashboard"),),
+        )
+        draft = surface_drafts.create(
+            publication,
+            source_text="validated model envelope",
+            origin=_app_home_origin(),
+        )
+        assert surface_drafts.bind_message(draft.draft_id, message_ts="300.400")
+        body, action = _app_home_action_body(draft.draft_id)
+
+        await transport._handle_surface_action(body, action, client)
+        await transport._handle_surface_action(body, action, client)
+
+        client.views_publish.assert_awaited_once_with(
+            user_id="U123",
+            view={
+                "type": "home",
+                "blocks": [
+                    {
+                        "type": "header",
+                        "text": {"type": "plain_text", "text": "Account dashboard"},
+                    }
+                ],
+            },
+        )
+        rt.dispatch.assert_not_awaited()
+        final_update = client.chat_update.call_args_list[-1].kwargs
+        assert final_update["channel"] == "D123"
+        assert final_update["ts"] == "300.400"
+        assert "published" in final_update["text"].lower()
+        assert not any(
+            block.get("type") == "actions" for block in final_update["blocks"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_publish_button_executes_exact_stored_channel_canvas_once(self):
+        rt = _make_runtime()
+        rt.config["transports"]["slack"].update(
+            {"rich_messages": True, "persistent_surfaces": True}
+        )
+        transport = _make_transport(rt)
+        client = _make_client()
+        client.canvases_create.return_value = {"canvas_id": "F123"}
+        client.files_info.return_value = {
+            "file": {"permalink": "https://example.slack.com/docs/F123"}
+        }
+        publication = CanvasPublication(
+            fallback_text="Channel report draft.",
+            title="Exact channel report",
+            markdown="# Exact channel report\n\n- Owner: Ada",
+            placement="channel",
+        )
+        draft = surface_drafts.create(
+            publication,
+            source_text="validated model envelope",
+            origin=_surface_origin(thread_ts=None),
+            channel_canvas_target=ChannelCanvasTarget(operation="create"),
+        )
+        assert surface_drafts.bind_message(draft.draft_id, message_ts="300.400")
+        body, action = _surface_action_body(draft.draft_id)
+
+        await transport._handle_surface_action(body, action, client)
+        await transport._handle_surface_action(body, action, client)
+
+        client.canvases_create.assert_awaited_once_with(
+            title="Exact channel report",
+            document_content={
+                "type": "markdown",
+                "markdown": "# Exact channel report\n\n- Owner: Ada",
+            },
+            channel_id="C123",
+        )
+        client.files_info.assert_awaited_once_with(file="F123")
+        client.canvases_access_set.assert_not_awaited()
+        rt.dispatch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_publish_button_revalidates_and_replaces_existing_channel_canvas(self):
+        rt = _make_runtime()
+        rt.config["transports"]["slack"].update(
+            {"rich_messages": True, "persistent_surfaces": True}
+        )
+        transport = _make_transport(rt)
+        client = _make_client()
+        channel_info, file_info = _existing_canvas_channel()
+        client.conversations_info.return_value = channel_info
+        client.files_info.return_value = file_info
+        publication = CanvasPublication(
+            fallback_text="Replace the existing channel plan.",
+            title="New channel plan",
+            markdown="# New channel plan\n\n- Owner: Ada",
+            placement="channel",
+        )
+        target = ChannelCanvasTarget(
+            operation="replace",
+            canvas_id="FOLD",
+            title="Existing channel plan",
+            permalink="https://example.slack.com/docs/FOLD",
+            edit_timestamp=100,
+        )
+        draft = surface_drafts.create(
+            publication,
+            source_text="validated model envelope",
+            origin=_surface_origin(thread_ts=None),
+            channel_canvas_target=target,
+        )
+        assert surface_drafts.bind_message(draft.draft_id, message_ts="300.400")
+        body, action = _surface_action_body(draft.draft_id)
+
+        await transport._handle_surface_action(body, action, client)
+
+        assert client.canvases_edit.await_args_list == [
+            call(
+                canvas_id="FOLD",
+                changes=[
+                    {
+                        "operation": "replace",
+                        "document_content": {
+                            "type": "markdown",
+                            "markdown": "# New channel plan\n\n- Owner: Ada",
+                        },
+                    }
+                ],
+            ),
+            call(
+                canvas_id="FOLD",
+                changes=[
+                    {
+                        "operation": "rename",
+                        "title_content": {
+                            "type": "markdown",
+                            "markdown": "New channel plan",
+                        },
+                    }
+                ],
+            ),
+        ]
+        client.canvases_create.assert_not_awaited()
+        client.canvases_delete.assert_not_awaited()
+        rt.dispatch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("channel_info", "file_info"),
+        [
+            ({"channel": {"id": "C123", "properties": {}}}, None),
+            _existing_canvas_channel(canvas_id="FNEW"),
+            _existing_canvas_channel(edit_timestamp=101),
+        ],
+    )
+    async def test_changed_channel_canvas_target_is_not_mutated(
+        self,
+        channel_info,
+        file_info,
+    ):
+        rt = _make_runtime()
+        rt.config["transports"]["slack"].update(
+            {"rich_messages": True, "persistent_surfaces": True}
+        )
+        transport = _make_transport(rt)
+        client = _make_client()
+        client.conversations_info.return_value = channel_info
+        if file_info is not None:
+            client.files_info.return_value = file_info
+        publication = CanvasPublication(
+            fallback_text="Replace the existing plan.",
+            title="New plan",
+            markdown="# New plan",
+            placement="channel",
+        )
+        draft = surface_drafts.create(
+            publication,
+            source_text="validated model envelope",
+            origin=_surface_origin(thread_ts=None),
+            channel_canvas_target=ChannelCanvasTarget(
+                operation="replace",
+                canvas_id="FOLD",
+                title="Existing channel plan",
+                permalink="https://example.slack.com/docs/FOLD",
+                edit_timestamp=100,
+            ),
+        )
+        assert surface_drafts.bind_message(draft.draft_id, message_ts="300.400")
+        body, action = _surface_action_body(draft.draft_id)
+
+        await transport._handle_surface_action(body, action, client)
+
+        client.canvases_edit.assert_not_awaited()
+        client.canvases_create.assert_not_awaited()
+        final = client.chat_update.await_args_list[-1].kwargs
+        assert "changed since" in final["text"].lower()
+        assert not any(block.get("type") == "actions" for block in final["blocks"])
+
+    @pytest.mark.asyncio
+    async def test_channel_canvas_rename_failure_is_partial_without_retry_or_rollback(self):
+        client = _make_client()
+        channel_info, file_info = _existing_canvas_channel()
+        client.conversations_info.return_value = channel_info
+        client.files_info.return_value = file_info
+        client.canvases_edit.side_effect = [
+            {"ok": True},
+            _SlackApiError("canvas_editing_failed"),
+        ]
+        ctx = SlackContext(
+            client,
+            "C123",
+            user_id="U123",
+            rich_messages=True,
+            persistent_surfaces=True,
+            surface_origin=_surface_origin(thread_ts=None),
+            conversation_type="channel",
+        )
+        publication = CanvasPublication(
+            fallback_text="Replace the plan.",
+            title="New plan",
+            markdown="# New plan",
+            placement="channel",
+        )
+
+        result = await ctx.publish_confirmed_surface(
+            publication,
+            message_ts="300.400",
+            channel_canvas_target=ChannelCanvasTarget(
+                operation="replace",
+                canvas_id="FOLD",
+                title="Existing channel plan",
+                permalink="https://example.slack.com/docs/FOLD",
+                edit_timestamp=100,
+            ),
+        )
+
+        assert result.status == "partial"
+        assert "content" in result.text
+        assert "title" in result.text
+        assert client.canvases_edit.await_count == 2
+        client.canvases_create.assert_not_awaited()
+        client.canvases_delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_channel_canvas_replace_failure_skips_rename(self):
+        client = _make_client()
+        channel_info, file_info = _existing_canvas_channel()
+        client.conversations_info.return_value = channel_info
+        client.files_info.return_value = file_info
+        client.canvases_edit.side_effect = _SlackApiError("canvas_editing_failed")
+        ctx = SlackContext(
+            client,
+            "C123",
+            user_id="U123",
+            rich_messages=True,
+            persistent_surfaces=True,
+            surface_origin=_surface_origin(thread_ts=None),
+            conversation_type="channel",
+        )
+
+        result = await ctx.publish_confirmed_surface(
+            CanvasPublication(
+                fallback_text="Replace the plan.",
+                title="New plan",
+                markdown="# New plan",
+                placement="channel",
+            ),
+            message_ts="300.400",
+            channel_canvas_target=ChannelCanvasTarget(
+                operation="replace",
+                canvas_id="FOLD",
+                title="Existing channel plan",
+                permalink="https://example.slack.com/docs/FOLD",
+                edit_timestamp=100,
+            ),
+        )
+
+        assert result.status == "failed"
+        assert client.canvases_edit.await_count == 1
+        assert client.canvases_edit.await_args.kwargs["changes"][0]["operation"] == (
+            "replace"
+        )
+
+    @pytest.mark.asyncio
+    async def test_channel_canvas_creation_race_never_switches_to_replacement(self):
+        client = _make_client()
+        client.canvases_create.side_effect = _SlackApiError(
+            "free_team_canvas_tab_already_exists"
+        )
+        ctx = SlackContext(
+            client,
+            "C123",
+            user_id="U123",
+            rich_messages=True,
+            persistent_surfaces=True,
+            surface_origin=_surface_origin(thread_ts=None),
+            conversation_type="channel",
+        )
+
+        result = await ctx.publish_confirmed_surface(
+            CanvasPublication(
+                fallback_text="Create the plan.",
+                title="Plan",
+                markdown="# Plan",
+                placement="channel",
+            ),
+            message_ts="300.400",
+            channel_canvas_target=ChannelCanvasTarget(operation="create"),
+        )
+
+        assert result.status == "failed"
+        assert "appeared" in result.text
+        client.canvases_edit.assert_not_awaited()
+        client.canvases_delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_audited_publish_records_confirmation_before_surface_api(self):
+        rt = _make_runtime()
+        rt.config["transports"]["slack"].update(
+            {"rich_messages": True, "persistent_surfaces": True}
+        )
+        rt.config["routes"]["slack"]["dms"]["U123"]["audit"] = True
+        transport = _make_transport(rt)
+        client = _make_client()
+        publication = AppHomePublication(
+            fallback_text="Audited dashboard draft.",
+            blocks=(HomeHeaderBlock(text="Audited dashboard"),),
+        )
+        draft = surface_drafts.create(
+            publication,
+            source_text="validated model envelope",
+            origin=_app_home_origin(audit=True),
+        )
+        assert surface_drafts.bind_message(draft.draft_id, message_ts="300.400")
+        body, action = _app_home_action_body(draft.draft_id)
+        order = []
+        created_turn_ids = []
+        real_create_turn = audit_store.create_turn
+
+        def create_turn(**kwargs):
+            order.append("audit")
+            turn_id = real_create_turn(**kwargs)
+            created_turn_ids.append(turn_id)
+            return turn_id
+
+        async def publish(**_kwargs):
+            order.append("publish")
+            return {"ok": True}
+
+        client.views_publish.side_effect = publish
+        with patch(
+            "enso.transports.slack.audit_store.create_turn",
+            side_effect=create_turn,
+        ) as create_spy:
+            await transport._handle_surface_action(body, action, client)
+
+        assert order == ["audit", "publish"]
+        create_spy.assert_called_once()
+        assert create_spy.call_args.kwargs["kind"] == "surface_confirmation"
+        assert create_spy.call_args.kwargs["user_id"] == "U123"
+        action_turn = audit_store.get(created_turn_ids[0])
+        assert action_turn is not None
+        assert action_turn["outcome"] == "completed"
+        assert action_turn["delivery_status"] == "delivered"
+        assert "Published your App Home" in action_turn["response_text"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "action_id",
+        [SURFACE_PUBLISH_ACTION_ID, SURFACE_CANCEL_ACTION_ID],
+    )
+    async def test_audit_failure_leaves_surface_draft_pending(self, action_id):
+        rt = _make_runtime()
+        rt.config["transports"]["slack"].update(
+            {"rich_messages": True, "persistent_surfaces": True}
+        )
+        rt.config["routes"]["slack"]["dms"]["U123"]["audit"] = True
+        transport = _make_transport(rt)
+        client = _make_client()
+        publication = AppHomePublication(
+            fallback_text="Dashboard draft.",
+            blocks=(HomeHeaderBlock(text="Dashboard"),),
+        )
+        draft = surface_drafts.create(
+            publication,
+            source_text="validated model envelope",
+            origin=_app_home_origin(audit=True),
+        )
+        assert surface_drafts.bind_message(draft.draft_id, message_ts="300.400")
+        body, action = _app_home_action_body(draft.draft_id, action_id=action_id)
+
+        with patch(
+            "enso.transports.slack.audit_store.create_turn",
+            side_effect=OSError("audit unavailable"),
+        ):
+            await transport._handle_surface_action(body, action, client)
+
+        client.views_publish.assert_not_awaited()
+        client.canvases_create.assert_not_awaited()
+        client.chat_update.assert_not_awaited()
+        client.chat_postEphemeral.assert_awaited_once()
+        assert "audit" in client.chat_postEphemeral.call_args.kwargs["text"].lower()
+        scope = surface_drafts.get_origin_scoped(
+            draft.draft_id,
+            account_id="TTEST",
+            user_id="U123",
+            channel_id="D123",
+            message_ts="300.400",
+        )
+        assert scope is not None
+        assert scope.status == "pending"
+
+    @pytest.mark.asyncio
+    async def test_audit_response_failure_blocks_before_claim(self):
+        rt = _make_runtime()
+        rt.config["transports"]["slack"].update(
+            {"rich_messages": True, "persistent_surfaces": True}
+        )
+        rt.config["routes"]["slack"]["dms"]["U123"]["audit"] = True
+        transport = _make_transport(rt)
+        client = _make_client()
+        publication = AppHomePublication(
+            fallback_text="Dashboard draft.",
+            blocks=(HomeHeaderBlock(text="Dashboard"),),
+        )
+        draft = surface_drafts.create(
+            publication,
+            source_text="validated model envelope",
+            origin=_app_home_origin(audit=True),
+        )
+        assert surface_drafts.bind_message(draft.draft_id, message_ts="300.400")
+        body, action = _app_home_action_body(draft.draft_id)
+
+        with patch(
+            "enso.transports.slack.audit_store.record_response",
+            side_effect=OSError("audit unavailable"),
+        ):
+            await transport._handle_surface_action(body, action, client)
+
+        client.views_publish.assert_not_awaited()
+        client.canvases_create.assert_not_awaited()
+        scope = surface_drafts.get_origin_scoped(
+            draft.draft_id,
+            account_id="TTEST",
+            user_id="U123",
+            channel_id="D123",
+            message_ts="300.400",
+        )
+        assert scope is not None
+        assert scope.status == "pending"
+
+    @pytest.mark.asyncio
+    async def test_claim_storage_failure_leaves_draft_pending_and_closes_audit(self):
+        rt = _make_runtime()
+        rt.config["transports"]["slack"].update(
+            {"rich_messages": True, "persistent_surfaces": True}
+        )
+        rt.config["routes"]["slack"]["dms"]["U123"]["audit"] = True
+        transport = _make_transport(rt)
+        client = _make_client()
+        draft = surface_drafts.create(
+            AppHomePublication(
+                fallback_text="Dashboard draft.",
+                blocks=(HomeHeaderBlock(text="Dashboard"),),
+            ),
+            source_text="validated model envelope",
+            origin=_app_home_origin(audit=True),
+        )
+        assert surface_drafts.bind_message(draft.draft_id, message_ts="300.400")
+        body, action = _app_home_action_body(draft.draft_id)
+
+        with patch(
+            "enso.transports.slack.surface_drafts.claim",
+            side_effect=OSError("database unavailable"),
+        ):
+            await transport._handle_surface_action(body, action, client)
+
+        client.views_publish.assert_not_awaited()
+        client.canvases_create.assert_not_awaited()
+        client.chat_postEphemeral.assert_awaited_once()
+        assert "try again" in client.chat_postEphemeral.call_args.kwargs["text"].lower()
+        scope = surface_drafts.get_origin_scoped(
+            draft.draft_id,
+            account_id="TTEST",
+            user_id="U123",
+            channel_id="D123",
+            message_ts="300.400",
+        )
+        assert scope is not None
+        assert scope.status == "pending"
+
+    @pytest.mark.asyncio
+    async def test_terminal_draft_write_retries_without_republishing_surface(self):
+        rt = _make_runtime()
+        rt.config["transports"]["slack"].update(
+            {"rich_messages": True, "persistent_surfaces": True}
+        )
+        transport = _make_transport(rt)
+        client = _make_client()
+        publication = AppHomePublication(
+            fallback_text="Dashboard draft.",
+            blocks=(HomeHeaderBlock(text="Dashboard"),),
+        )
+        draft = surface_drafts.create(
+            publication,
+            source_text="validated model envelope",
+            origin=_app_home_origin(),
+        )
+        assert surface_drafts.bind_message(draft.draft_id, message_ts="300.400")
+        body, action = _app_home_action_body(draft.draft_id)
+        real_finish = surface_drafts.finish
+        attempts = 0
+
+        def flaky_finish(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise OSError("temporary database failure")
+            return real_finish(*args, **kwargs)
+
+        with patch(
+            "enso.transports.slack.surface_drafts.finish",
+            side_effect=flaky_finish,
+        ):
+            await transport._handle_surface_action(body, action, client)
+
+        assert attempts == 2
+        client.views_publish.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_terminal_write_queues_db_only_retry_after_foreground_failures(self):
+        rt = _make_runtime()
+        rt.config["transports"]["slack"].update(
+            {"rich_messages": True, "persistent_surfaces": True}
+        )
+        transport = _make_transport(rt)
+        client = _make_client()
+        publication = AppHomePublication(
+            fallback_text="Dashboard draft.",
+            blocks=(HomeHeaderBlock(text="Dashboard"),),
+        )
+        draft = surface_drafts.create(
+            publication,
+            source_text="validated model envelope",
+            origin=_app_home_origin(),
+        )
+        assert surface_drafts.bind_message(draft.draft_id, message_ts="300.400")
+        body, action = _app_home_action_body(draft.draft_id)
+        real_finish = surface_drafts.finish
+        attempts = 0
+
+        def delayed_finish(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts <= 3:
+                raise OSError("temporary database failure")
+            return real_finish(*args, **kwargs)
+
+        with patch(
+            "enso.transports.slack.surface_drafts.finish",
+            side_effect=delayed_finish,
+        ):
+            await transport._handle_surface_action(body, action, client)
+            assert transport._surface_terminal_retries == {
+                draft.draft_id: "published"
+            }
+            await transport._maintain_surface_drafts_once()
+
+        assert attempts == 4
+        assert transport._surface_terminal_retries == {}
+        client.views_publish.assert_awaited_once()
+        with sqlite3.connect(Path(surface_drafts.config.CONFIG_DIR) / "enso.db") as connection:
+            row = connection.execute(
+                "SELECT status, publication_json, source_text "
+                "FROM _enso_surface_drafts WHERE draft_id=?",
+                (draft.draft_id,),
+            ).fetchone()
+        assert row == ("published", None, None)
+
+    @pytest.mark.asyncio
+    async def test_surface_reconcile_runs_even_when_slack_authentication_fails(self):
+        transport = _make_transport(_make_runtime())
+        transport._surface_reconciled = False
+        client = _make_client()
+        client.auth_test.side_effect = RuntimeError("Slack unavailable")
+
+        with patch("enso.transports.slack.surface_drafts.reconcile") as reconcile:
+            await transport._start_routing(client)
+
+        reconcile.assert_called_once_with()
+        assert transport._surface_reconciled is True
+
+    @pytest.mark.asyncio
+    async def test_unreconciled_surface_store_blocks_confirmation(self):
+        rt = _make_runtime()
+        rt.config["transports"]["slack"].update(
+            {"rich_messages": True, "persistent_surfaces": True}
+        )
+        transport = _make_transport(rt)
+        transport._surface_reconciled = False
+        client = _make_client()
+        publication = AppHomePublication(
+            fallback_text="Dashboard draft.",
+            blocks=(HomeHeaderBlock(text="Dashboard"),),
+        )
+        draft = surface_drafts.create(
+            publication,
+            source_text="validated model envelope",
+            origin=_app_home_origin(),
+        )
+        assert surface_drafts.bind_message(draft.draft_id, message_ts="300.400")
+        body, action = _app_home_action_body(draft.draft_id)
+
+        await transport._handle_surface_action(body, action, client)
+
+        client.views_publish.assert_not_awaited()
+        client.canvases_create.assert_not_awaited()
+        scope = surface_drafts.get_origin_scoped(
+            draft.draft_id,
+            account_id="TTEST",
+            user_id="U123",
+            channel_id="D123",
+            message_ts="300.400",
+        )
+        assert scope is not None
+        assert scope.status == "revoked"
+
+    @pytest.mark.asyncio
+    async def test_other_user_cannot_consume_surface_draft(self):
+        rt = _make_runtime()
+        rt.config["transports"]["slack"].update(
+            {"rich_messages": True, "persistent_surfaces": True}
+        )
+        transport = _make_transport(rt)
+        client = _make_client()
+        publication = AppHomePublication(
+            fallback_text="Requester dashboard.",
+            blocks=(HomeHeaderBlock(text="Dashboard"),),
+        )
+        draft = surface_drafts.create(
+            publication,
+            source_text="validated model envelope",
+            origin=_app_home_origin(),
+        )
+        assert surface_drafts.bind_message(draft.draft_id, message_ts="300.400")
+        body, action = _app_home_action_body(draft.draft_id, user="U999")
+
+        await transport._handle_surface_action(body, action, client)
+
+        client.views_publish.assert_not_awaited()
+        client.chat_update.assert_not_awaited()
+        client.chat_postEphemeral.assert_awaited_once()
+        owner_claim = surface_drafts.claim(
+            draft.draft_id,
+            action="publish",
+            account_id="TTEST",
+            user_id="U123",
+            channel_id="D123",
+            message_ts="300.400",
+        )
+        assert owner_claim is not None
+
+    @pytest.mark.asyncio
+    async def test_corrupt_stored_surface_is_scrubbed_without_api_mutation(
+        self,
+        tmp_enso,
+    ):
+        rt = _make_runtime()
+        rt.config["transports"]["slack"].update(
+            {"rich_messages": True, "persistent_surfaces": True}
+        )
+        transport = _make_transport(rt)
+        client = _make_client()
+        publication = AppHomePublication(
+            fallback_text="Dashboard draft.",
+            blocks=(HomeHeaderBlock(text="Dashboard"),),
+        )
+        draft = surface_drafts.create(
+            publication,
+            source_text="validated model envelope",
+            origin=_app_home_origin(),
+        )
+        assert surface_drafts.bind_message(draft.draft_id, message_ts="300.400")
+        with sqlite3.connect(Path(tmp_enso) / "enso.db") as connection:
+            connection.execute(
+                "UPDATE _enso_surface_drafts SET publication_json=? WHERE draft_id=?",
+                ("{corrupt", draft.draft_id),
+            )
+        body, action = _app_home_action_body(draft.draft_id)
+
+        await transport._handle_surface_action(body, action, client)
+
+        client.views_publish.assert_not_awaited()
+        client.canvases_create.assert_not_awaited()
+        assert client.chat_update.call_args.kwargs["blocks"] == []
+        with sqlite3.connect(Path(tmp_enso) / "enso.db") as connection:
+            row = connection.execute(
+                "SELECT status, publication_json, source_text "
+                "FROM _enso_surface_drafts WHERE draft_id=?",
+                (draft.draft_id,),
+            ).fetchone()
+        assert row == ("failed", None, None)
+
+    @pytest.mark.asyncio
+    async def test_cancel_button_consumes_draft_without_surface_api(self):
+        rt = _make_runtime()
+        rt.config["transports"]["slack"].update(
+            {"rich_messages": True, "persistent_surfaces": True}
+        )
+        transport = _make_transport(rt)
+        client = _make_client()
+        publication = AppHomePublication(
+            fallback_text="Draft dashboard.",
+            blocks=(HomeHeaderBlock(text="Dashboard"),),
+        )
+        draft = surface_drafts.create(
+            publication,
+            source_text="validated model envelope",
+            origin=_app_home_origin(),
+        )
+        assert surface_drafts.bind_message(draft.draft_id, message_ts="300.400")
+        body, action = _app_home_action_body(
+            draft.draft_id,
+            action_id=SURFACE_CANCEL_ACTION_ID,
+        )
+
+        await transport._handle_surface_action(body, action, client)
+
+        client.views_publish.assert_not_awaited()
+        client.canvases_create.assert_not_awaited()
+        final_update = client.chat_update.call_args.kwargs
+        assert "cancelled" in final_update["text"].lower()
+        assert not any(
+            block.get("type") == "actions" for block in final_update["blocks"]
+        )
+        assert (
+            surface_drafts.claim(
+                draft.draft_id,
+                action="publish",
+                account_id="TTEST",
+                user_id="U123",
+                channel_id="D123",
+                message_ts="300.400",
+            )
+            is None
+        )
+
+    @pytest.mark.asyncio
+    async def test_cancel_update_failure_posts_fallback_without_surface_api(self):
+        rt = _make_runtime()
+        rt.config["transports"]["slack"].update(
+            {"rich_messages": True, "persistent_surfaces": True}
+        )
+        transport = _make_transport(rt)
+        client = _make_client()
+        client.chat_update.side_effect = RuntimeError("update failed")
+        publication = AppHomePublication(
+            fallback_text="Draft dashboard.",
+            blocks=(HomeHeaderBlock(text="Dashboard"),),
+        )
+        draft = surface_drafts.create(
+            publication,
+            source_text="validated model envelope",
+            origin=_app_home_origin(),
+        )
+        assert surface_drafts.bind_message(draft.draft_id, message_ts="300.400")
+        body, action = _app_home_action_body(
+            draft.draft_id,
+            action_id=SURFACE_CANCEL_ACTION_ID,
+        )
+
+        await transport._handle_surface_action(body, action, client)
+
+        client.views_publish.assert_not_awaited()
+        client.canvases_create.assert_not_awaited()
+        client.chat_postMessage.assert_awaited_once_with(
+            channel="D123",
+            text="Cancelled the App Home draft.",
+        )
+
+    def test_surface_action_payload_parser_fails_closed(self):
+        body, action = _surface_action_body("opaque-draft-id")
+        parsed = _parse_surface_action(body, action)
+        assert parsed is not None
+        assert parsed.draft_id == "opaque-draft-id"
+
+        invalid_payloads = []
+        for value in (True, None, "false", 0):
+            ephemeral = deepcopy(body)
+            ephemeral["container"]["is_ephemeral"] = value
+            invalid_payloads.append((ephemeral, ephemeral["actions"][0]))
+        missing_ephemeral = deepcopy(body)
+        del missing_ephemeral["container"]["is_ephemeral"]
+        invalid_payloads.append(
+            (missing_ephemeral, missing_ephemeral["actions"][0])
+        )
+        mismatched_channel = deepcopy(body)
+        mismatched_channel["channel"]["id"] = "C999"
+        invalid_payloads.append(
+            (mismatched_channel, mismatched_channel["actions"][0])
+        )
+        mismatched_message = deepcopy(body)
+        mismatched_message["message"]["ts"] = "999.999"
+        invalid_payloads.append(
+            (mismatched_message, mismatched_message["actions"][0])
+        )
+        wrong_block = deepcopy(body)
+        wrong_block["actions"][0]["block_id"] = "attacker-controlled"
+        invalid_payloads.append((wrong_block, wrong_block["actions"][0]))
+        multiple = deepcopy(body)
+        multiple["actions"].append(deepcopy(multiple["actions"][0]))
+        invalid_payloads.append((multiple, multiple["actions"][0]))
+        for revision in ("r1", "r2"):
+            legacy_revision = deepcopy(body)
+            legacy_revision["actions"][0]["block_id"] = (
+                f"enso.surface.{action['value']}.{revision}"
+            )
+            invalid_payloads.append(
+                (legacy_revision, legacy_revision["actions"][0])
+            )
+
+        for invalid_body, invalid_action in invalid_payloads:
+            assert _parse_surface_action(invalid_body, invalid_action) is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("channel", "conversation_type", "expected_access"),
+        [
+            ("D123", "im", {"user_ids": ["U123"]}),
+            ("C123", "channel", {"channel_ids": ["C123"]}),
+            ("G123", "group", {"channel_ids": ["G123"]}),
+        ],
+    )
+    async def test_publish_standalone_canvas_links_and_grants_origin_read_access(
+        self,
+        channel,
+        conversation_type,
+        expected_access,
+    ):
+        client = _make_client()
+        client.canvases_create.return_value = {"canvas_id": "F123"}
+        client.files_info.return_value = {
+            "file": {"permalink": "https://example.slack.com/docs/F123"}
+        }
+        route_kind = "dm" if conversation_type == "im" else "channel"
+        ctx = SlackContext(
+            client,
+            channel,
+            thread_ts="1234.5678",
+            user_id="U123",
+            rich_messages=True,
+            persistent_surfaces=True,
+            surface_origin=_surface_origin(
+                channel=channel,
+                route_kind=route_kind,
+            ),
+            conversation_type=conversation_type,
+        )
+        publication = CanvasPublication(
+            fallback_text="Quarterly report published.",
+            title="Quarterly report",
+            markdown="# Quarterly report\n\nRevenue grew **12%**.",
+            placement="standalone",
+        )
+
+        result = await ctx.publish_confirmed_surface(
+            publication,
+            message_ts="300.400",
+        )
+
+        assert result.status == "published"
+        client.canvases_create.assert_awaited_once_with(
+            title="Quarterly report",
+            document_content={
+                "type": "markdown",
+                "markdown": "# Quarterly report\n\nRevenue grew **12%**.",
+            },
+        )
+        client.files_info.assert_awaited_once_with(file="F123")
+        client.canvases_access_set.assert_awaited_once_with(
+            canvas_id="F123",
+            access_level="read",
+            **expected_access,
+        )
+        confirmation = client.chat_update.call_args.kwargs
+        assert confirmation["channel"] == channel
+        assert confirmation["ts"] == "300.400"
+        assert "Quarterly report" in confirmation["text"]
+        assert "https://example.slack.com/docs/F123" in confirmation["text"]
+        persistent_call_names = [
+            item[0]
+            for item in client.mock_calls
+            if item[0]
+            in {
+                "canvases_create",
+                "files_info",
+                "chat_update",
+                "canvases_access_set",
+            }
+        ]
+        assert persistent_call_names == [
+            "canvases_create",
+            "files_info",
+            "chat_update",
+            "canvases_access_set",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_canvas_from_mpdm_fails_before_surface_api(self):
+        client = _make_client()
+        ctx = SlackContext(
+            client,
+            "G456",
+            user_id="U123",
+            rich_messages=True,
+            persistent_surfaces=True,
+            surface_origin=_surface_origin(
+                channel="G456",
+                route_kind="channel",
+                thread_ts=None,
+            ),
+            conversation_type="mpim",
+        )
+        publication = CanvasPublication(
+            fallback_text="MPDM Canvas fallback.",
+            title="Report",
+            markdown="# Report",
+            placement="standalone",
+        )
+
+        result = await ctx.publish_confirmed_surface(
+            publication,
+            message_ts="300.400",
+        )
+
+        assert result.status == "failed"
+        client.canvases_create.assert_not_awaited()
+        client.canvases_access_set.assert_not_awaited()
+        client.chat_postMessage.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_direct_channel_canvas_publish_without_bound_target_fails_closed(self):
+        client = _make_client()
+        client.canvases_create.return_value = {"canvas_id": "F123"}
+        client.files_info.return_value = {
+            "file": {"permalink": "https://example.slack.com/docs/F123"}
+        }
+        ctx = SlackContext(
+            client,
+            "C123",
+            thread_ts="1234.5678",
+            user_id="U123",
+            rich_messages=True,
+            persistent_surfaces=True,
+            surface_origin=_surface_origin(),
+            conversation_type="channel",
+        )
+        publication = CanvasPublication(
+            fallback_text="Channel report published.",
+            title="Channel report",
+            markdown="# Channel report",
+            placement="channel",
+        )
+
+        result = await ctx.publish_confirmed_surface(
+            publication,
+            message_ts="300.400",
+        )
+
+        assert result.status == "failed"
+        assert "trusted target" in result.text
+        client.canvases_create.assert_not_awaited()
+        client.canvases_edit.assert_not_awaited()
+        client.files_info.assert_not_awaited()
+        client.canvases_access_set.assert_not_awaited()
+        client.chat_update.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_publish_app_home_targets_origin_user_and_replaces_full_view(self):
+        client = _make_client()
+        client.views_publish.return_value = {"ok": True}
+        ctx = SlackContext(
+            client,
+            "D123",
+            user_id="U123",
+            rich_messages=True,
+            persistent_surfaces=True,
+            surface_origin=_app_home_origin(),
+            conversation_type="im",
+        )
+        publication = AppHomePublication(
+            fallback_text="Your dashboard was updated.",
+            blocks=(
+                HomeHeaderBlock(text="Account dashboard"),
+                HomeSectionBlock(
+                    content=SectionField(kind="markdown", text="**Status:** Healthy")
+                ),
+                HomeDividerBlock(),
+                SectionFieldsBlock(
+                    fields=(
+                        SectionField(kind="markdown", text="**MRR**\n$42k"),
+                        SectionField(kind="text", text="On target"),
+                    )
+                ),
+                TableBlock(
+                    rows=(
+                        (TableTextCell(text="Owner"), TableTextCell(text="Status")),
+                        (TableTextCell(text="Ada"), TableTextCell(text="Ready")),
+                    )
+                ),
+            ),
+        )
+
+        result = await ctx.publish_confirmed_surface(
+            publication,
+            message_ts="300.400",
+        )
+
+        assert result.status == "published"
+        client.views_publish.assert_awaited_once_with(
+            user_id="U123",
+            view={
+                "type": "home",
+                "blocks": [
+                    {
+                        "type": "header",
+                        "text": {"type": "plain_text", "text": "Account dashboard"},
+                    },
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": "*Status:* Healthy"},
+                    },
+                    {"type": "divider"},
+                    {
+                        "type": "section",
+                        "fields": [
+                            {"type": "mrkdwn", "text": "*MRR*\n$42k"},
+                            {"type": "plain_text", "text": "On target"},
+                        ],
+                    },
+                    {
+                        "type": "table",
+                        "rows": [
+                            [
+                                {"type": "raw_text", "text": "Owner"},
+                                {"type": "raw_text", "text": "Status"},
+                            ],
+                            [
+                                {"type": "raw_text", "text": "Ada"},
+                                {"type": "raw_text", "text": "Ready"},
+                            ],
+                        ],
+                    },
+                ],
+            },
+        )
+        client.chat_postMessage.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_surface_api_failure_returns_unknown_without_automatic_retry(self):
+        client = _make_client()
+        client.views_publish.side_effect = RuntimeError("Slack unavailable")
+        ctx = SlackContext(
+            client,
+            "D123",
+            user_id="U123",
+            rich_messages=True,
+            persistent_surfaces=True,
+            surface_origin=_app_home_origin(),
+            conversation_type="im",
+        )
+        publication = AppHomePublication(
+            fallback_text="Complete dashboard summary.",
+            blocks=(HomeHeaderBlock(text="Dashboard"),),
+        )
+
+        result = await ctx.publish_confirmed_surface(
+            publication,
+            message_ts="300.400",
+        )
+
+        assert result.status == "unknown"
+        client.views_publish.assert_awaited_once()
+        client.chat_postMessage.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error_code", ["internal_error", "fatal_error"])
+    async def test_ambiguous_slack_surface_errors_are_unknown(self, error_code):
+        app_home_client = _make_client()
+        app_home_client.views_publish.side_effect = _SlackApiError(error_code)
+        app_home_ctx = SlackContext(
+            app_home_client,
+            "D123",
+            user_id="U123",
+            rich_messages=True,
+            persistent_surfaces=True,
+            surface_origin=_app_home_origin(),
+            conversation_type="im",
+        )
+        canvas_client = _make_client()
+        canvas_client.canvases_create.side_effect = _SlackApiError(error_code)
+        canvas_ctx = SlackContext(
+            canvas_client,
+            "C123",
+            user_id="U123",
+            rich_messages=True,
+            persistent_surfaces=True,
+            surface_origin=_surface_origin(thread_ts=None),
+            conversation_type="channel",
+        )
+
+        home_result = await app_home_ctx.publish_confirmed_surface(
+            AppHomePublication(
+                fallback_text="Dashboard summary.",
+                blocks=(HomeHeaderBlock(text="Dashboard"),),
+            ),
+            message_ts="300.400",
+        )
+        canvas_result = await canvas_ctx.publish_confirmed_surface(
+            CanvasPublication(
+                fallback_text="Canvas summary.",
+                title="Report",
+                markdown="# Report",
+                placement="channel",
+            ),
+            message_ts="300.400",
+            channel_canvas_target=ChannelCanvasTarget(operation="create"),
+        )
+
+        assert home_result.status == "unknown"
+        assert canvas_result.status == "unknown"
+
+    @pytest.mark.asyncio
+    async def test_canvas_link_lookup_failure_rolls_back_before_chat_fallback(self):
+        client = _make_client()
+        client.canvases_create.return_value = {"canvas_id": "F123"}
+        client.files_info.side_effect = RuntimeError("lookup failed")
+        ctx = SlackContext(
+            client,
+            "D123",
+            user_id="U123",
+            rich_messages=True,
+            persistent_surfaces=True,
+            surface_origin=_surface_origin(
+                channel="D123",
+                route_kind="dm",
+                thread_ts=None,
+            ),
+            conversation_type="im",
+        )
+        publication = CanvasPublication(
+            fallback_text="Complete Canvas fallback.",
+            title="Report",
+            markdown="# Report",
+            placement="standalone",
+        )
+
+        result = await ctx.publish_confirmed_surface(
+            publication,
+            message_ts="300.400",
+        )
+
+        assert result.status == "failed"
+        client.canvases_delete.assert_awaited_once_with(canvas_id="F123")
+        client.canvases_access_set.assert_not_awaited()
+        client.chat_postMessage.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_canvas_access_failure_returns_partial_with_shared_link(self):
+        client = _make_client()
+        client.canvases_create.return_value = {"canvas_id": "F123"}
+        client.files_info.return_value = {
+            "file": {"permalink": "https://example.slack.com/docs/F123"}
+        }
+        client.canvases_access_set.side_effect = RuntimeError("access failed")
+        ctx = SlackContext(
+            client,
+            "D123",
+            user_id="U123",
+            rich_messages=True,
+            persistent_surfaces=True,
+            surface_origin=_surface_origin(
+                channel="D123",
+                route_kind="dm",
+                thread_ts=None,
+            ),
+            conversation_type="im",
+        )
+        publication = CanvasPublication(
+            fallback_text="Complete Canvas fallback.",
+            title="Report",
+            markdown="# Report",
+            placement="standalone",
+        )
+
+        result = await ctx.publish_confirmed_surface(
+            publication,
+            message_ts="300.400",
+        )
+
+        assert result.status == "partial"
+        assert "could not grant" in result.text
+        assert "https://example.slack.com/docs/F123" in result.text
+
+    @pytest.mark.asyncio
+    async def test_oversized_app_home_view_falls_back_before_api_call(self):
+        client = _make_client()
+        ctx = SlackContext(
+            client,
+            "D123",
+            user_id="U123",
+            rich_messages=True,
+            persistent_surfaces=True,
+            surface_origin=_app_home_origin(),
+            conversation_type="im",
+        )
+        publication = AppHomePublication(
+            fallback_text="Dashboard was too large; here is the summary.",
+            blocks=tuple(
+                HomeSectionBlock(content=SectionField(kind="text", text="x" * 3000))
+                for _ in range(90)
+            ),
+        )
+
+        await ctx.offer_surface_draft(publication, "validated model envelope")
+
+        client.views_publish.assert_not_awaited()
+        client.chat_postMessage.assert_awaited_once_with(
+            channel="D123",
+            text="Dashboard was too large; here is the summary.",
+        )
+
+    @pytest.mark.asyncio
+    async def test_surface_draft_uses_fallback_when_rich_messages_are_disabled(self):
+        client = _make_client()
+        ctx = SlackContext(
+            client,
+            "C123",
+            user_id="U123",
+            persistent_surfaces=True,
+        )
+        publication = AppHomePublication(
+            fallback_text="Readable fallback.",
+            blocks=(HomeHeaderBlock(text="Dashboard"),),
+        )
+
+        await ctx.offer_surface_draft(publication, "validated model envelope")
+
+        client.views_publish.assert_not_awaited()
+        client.canvases_create.assert_not_awaited()
+        client.chat_postMessage.assert_awaited_once_with(
+            channel="C123",
+            text="Readable fallback.",
+        )
 
     @pytest.mark.asyncio
     async def test_reply_message_audits_only_the_fallback_text(self):
@@ -1790,16 +3693,26 @@ class TestTransportInit:
         assert transport.name == "slack"
         assert transport.message_limit == 40000
         assert transport.rich_messages is False
+        assert transport.persistent_surfaces is False
 
     def test_rich_messages_config_flows_to_context(self):
         rt = _make_runtime()
         rt.config["transports"]["slack"]["rich_messages"] = True
+        rt.config["transports"]["slack"]["persistent_surfaces"] = True
         transport = _make_transport(rt)
 
-        ctx = transport.make_context(_make_client(), "C123", "1234.5678")
+        ctx = transport.make_context(
+            _make_client(),
+            "C123",
+            "1234.5678",
+            user_id="U123",
+            surface_origin=_surface_origin(),
+        )
 
         assert transport.rich_messages is True
+        assert transport.persistent_surfaces is True
         assert ctx.rich_markdown_enabled is True
+        assert "```enso-surface" in ctx.get_surface_instructions()
 
     def test_empty_config(self):
         rt = _make_runtime()
@@ -1809,6 +3722,45 @@ class TestTransportInit:
         assert transport.bot_token == ""
         assert transport.teams_router is not None
         assert not transport.teams_router.teams.dispatchable
+
+    @pytest.mark.asyncio
+    async def test_surface_action_listener_acknowledges_before_any_work(self):
+        class FakeApp:
+            def __init__(self):
+                self.actions = {}
+
+            def event(self, _name):
+                return lambda handler: handler
+
+            def action(self, action_id):
+                def register(handler):
+                    self.actions[action_id] = handler
+                    return handler
+
+                return register
+
+        transport = _make_transport(_make_runtime())
+        transport._register_directory_listeners = MagicMock()
+        app = FakeApp()
+        order = []
+
+        async def handle(*_args):
+            order.append("handle")
+
+        async def ack():
+            order.append("ack")
+
+        transport._handle_surface_action = handle
+        transport._register_listeners(app)
+
+        await app.actions[SURFACE_PUBLISH_ACTION_ID](
+            ack=ack,
+            body={},
+            action={},
+            client=_make_client(),
+        )
+
+        assert order == ["ack", "handle"]
 
     def test_1password_token_references(self, monkeypatch):
         rt = _make_runtime()

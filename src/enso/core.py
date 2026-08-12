@@ -33,7 +33,12 @@ from .config import (
 from .fsutil import atomic_write_text, regular_file_sha256
 from .jobs import Job, job_binding_error, job_config_error, load_jobs
 from .logging_config import logging_flags
-from .outbound import parse_outbound_fallback, parse_outbound_message
+from .outbound import (
+    parse_outbound_fallback,
+    parse_outbound_message,
+    parse_surface_fallback,
+    parse_surface_publication,
+)
 from .providers import PROVIDER_NAMES, BaseProvider, StreamEvent, provider_class
 from .teams import load_catalog
 
@@ -1741,6 +1746,23 @@ class Runtime:
                     if output_instructions:
                         prompt = f"{prompt}\n\n{output_instructions}"
 
+        surface_instructions = ""
+        get_surface_instructions = getattr(ctx, "get_surface_instructions", None)
+        if callable(get_surface_instructions):
+            try:
+                candidate = get_surface_instructions()
+            except Exception:
+                log.warning(
+                    "get_surface_instructions failed for chat %s",
+                    chat_id,
+                    exc_info=True,
+                )
+            else:
+                if isinstance(candidate, str):
+                    surface_instructions = candidate.strip()
+                    if surface_instructions:
+                        prompt = f"{prompt}\n\n{surface_instructions}"
+
         model = (
             context.model
             if context.model is not None
@@ -1935,16 +1957,42 @@ class Runtime:
             if error_text:
                 await ctx.reply(_format_error(error_text[:4000]))
             elif response_text:
+                publication = (
+                    parse_surface_publication(response_text)
+                    if surface_instructions
+                    else None
+                )
+                surface_fallback = (
+                    parse_surface_fallback(response_text)
+                    if surface_instructions and publication is None
+                    else None
+                )
                 message = (
-                    parse_outbound_message(response_text) if output_instructions else None
+                    parse_outbound_message(response_text)
+                    if output_instructions
+                    and publication is None
+                    and surface_fallback is None
+                    else None
                 )
                 fallback_text = (
                     parse_outbound_fallback(response_text)
-                    if output_instructions and message is None
+                    if output_instructions
+                    and publication is None
+                    and surface_fallback is None
+                    and message is None
                     else None
                 )
+                offer_surface_draft = getattr(ctx, "offer_surface_draft", None)
                 reply_message = getattr(ctx, "reply_message", None)
-                if message is not None and callable(reply_message):
+                if publication is not None and callable(offer_surface_draft):
+                    await offer_surface_draft(publication, response_text)
+                elif publication is not None:
+                    for chunk in split_text(publication.fallback_text, limit=msg_limit):
+                        await ctx.reply(chunk)
+                elif surface_fallback is not None:
+                    for chunk in split_text(surface_fallback, limit=msg_limit):
+                        await ctx.reply(chunk)
+                elif message is not None and callable(reply_message):
                     await reply_message(message)
                 elif message is not None:
                     for chunk in split_text(message.fallback_text, limit=msg_limit):

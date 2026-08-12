@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ..core import Runtime
-    from ..outbound import OutboundMessage
+    from ..outbound import OutboundMessage, SurfacePublication
 
 log = logging.getLogger(__name__)
 
@@ -44,6 +44,14 @@ class TransportContext(ABC):
         """Send a structured response, falling back safely on plain text."""
         await self.reply(message.fallback_text)
 
+    async def offer_surface_draft(
+        self,
+        publication: SurfacePublication,
+        source_text: str,
+    ) -> None:
+        """Offer a persistent-surface draft, falling back safely on plain text."""
+        await self.reply(publication.fallback_text)
+
     @abstractmethod
     async def reply_status(self, text: str) -> Any:
         """Send a status message. Returns a handle for editing/deleting."""
@@ -72,6 +80,10 @@ class TransportContext(ABC):
 
     def get_output_instructions(self) -> str:
         """Return transport-specific final-output instructions for the agent."""
+        return ""
+
+    def get_surface_instructions(self) -> str:
+        """Return instructions for persistent-surface drafts."""
         return ""
 
 

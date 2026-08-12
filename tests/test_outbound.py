@@ -7,8 +7,10 @@ import json
 import pytest
 
 from enso.outbound import (
+    MAX_APP_HOME_BLOCKS,
     MAX_AXIS_LABEL,
     MAX_BLOCKS_PER_MESSAGE,
+    MAX_CANVAS_MARKDOWN,
     MAX_CHART_LABEL,
     MAX_CHART_POINTS,
     MAX_CHART_SERIES,
@@ -24,13 +26,19 @@ from enso.outbound import (
     MAX_TABLE_ROWS,
     MAX_TABLE_TEXT,
     MAX_VISUALIZATION_TITLE,
+    PERSISTENT_SURFACE_INSTRUCTIONS,
     STRUCTURED_OUTPUT_INSTRUCTIONS,
+    AppHomePublication,
+    CanvasPublication,
     ChartAxis,
     ChartPoint,
     ChartSegment,
     ChartSeries,
     DataTableBlock,
     DataVisualizationBlock,
+    HomeDividerBlock,
+    HomeHeaderBlock,
+    HomeSectionBlock,
     MarkdownBlock,
     OutboundMessage,
     PieChart,
@@ -43,6 +51,8 @@ from enso.outbound import (
     TableTextCell,
     parse_outbound_fallback,
     parse_outbound_message,
+    parse_surface_fallback,
+    parse_surface_publication,
 )
 from enso.transports import TransportContext
 
@@ -59,6 +69,10 @@ def _payload(**overrides: object) -> dict:
     }
     payload.update(overrides)
     return payload
+
+
+def _surface_envelope(payload: dict) -> str:
+    return f"```enso-surface\n{json.dumps(payload)}\n```"
 
 
 def test_parse_outbound_message_accepts_versioned_whole_response_envelope():
@@ -841,6 +855,333 @@ def test_parse_outbound_message_rejects_invalid_schema(payload):
     assert parse_outbound_message(_envelope(payload)) is None
 
 
+def test_parse_surface_publication_accepts_standalone_canvas_envelope():
+    publication = parse_surface_publication(
+        "\n "
+        + _surface_envelope(
+            {
+                "version": 1,
+                "surface": "canvas",
+                "fallback_text": "Quarterly report published to a Canvas.",
+                "title": "Quarterly report",
+                "markdown": "# Quarterly report\n\nRevenue grew **12%**.",
+                "placement": "standalone",
+            }
+        )
+        + " \n"
+    )
+
+    assert publication == CanvasPublication(
+        fallback_text="Quarterly report published to a Canvas.",
+        title="Quarterly report",
+        markdown="# Quarterly report\n\nRevenue grew **12%**.",
+        placement="standalone",
+    )
+
+
+def test_canvas_markdown_limit_uses_safe_fallback():
+    at_limit = {
+        "version": 1,
+        "surface": "canvas",
+        "fallback_text": "Canvas report fallback.",
+        "title": "Report",
+        "markdown": "x" * MAX_CANVAS_MARKDOWN,
+        "placement": "standalone",
+    }
+    over_limit = dict(at_limit, markdown="x" * (MAX_CANVAS_MARKDOWN + 1))
+
+    assert parse_surface_publication(_surface_envelope(at_limit)) == CanvasPublication(
+        fallback_text="Canvas report fallback.",
+        title="Report",
+        markdown="x" * MAX_CANVAS_MARKDOWN,
+        placement="standalone",
+    )
+    assert parse_surface_publication(_surface_envelope(over_limit)) is None
+    assert parse_surface_fallback(_surface_envelope(over_limit)) == (
+        "Canvas report fallback."
+    )
+
+
+def test_canvas_markdown_limit_counts_utf8_bytes():
+    at_limit_markdown = "😀" * (MAX_CANVAS_MARKDOWN // 4)
+    at_limit = {
+        "version": 1,
+        "surface": "canvas",
+        "fallback_text": "Canvas report fallback.",
+        "title": "Report",
+        "markdown": at_limit_markdown,
+        "placement": "standalone",
+    }
+    over_limit = dict(at_limit, markdown=at_limit_markdown + "😀")
+
+    assert parse_surface_publication(_surface_envelope(at_limit)) is not None
+    assert parse_surface_publication(_surface_envelope(over_limit)) is None
+    assert parse_surface_fallback(_surface_envelope(over_limit)) == (
+        "Canvas report fallback."
+    )
+
+
+def test_canvas_markdown_tables_enforce_300_cell_limit():
+    def table(columns: int) -> str:
+        header = "|" + "|".join(f"H{index}" for index in range(columns)) + "|"
+        delimiter = "|" + "|".join("---" for _ in range(columns)) + "|"
+        row = "|" + "|".join(f"V{index}" for index in range(columns)) + "|"
+        return "\n".join((header, delimiter, row))
+
+    payload = {
+        "version": 1,
+        "surface": "canvas",
+        "fallback_text": "Canvas table fallback.",
+        "title": "Table",
+        "markdown": table(150),
+        "placement": "standalone",
+    }
+    over_limit = dict(payload, markdown=table(151))
+
+    assert parse_surface_publication(_surface_envelope(payload)) is not None
+    assert parse_surface_publication(_surface_envelope(over_limit)) is None
+    assert parse_surface_fallback(_surface_envelope(over_limit)) == (
+        "Canvas table fallback."
+    )
+
+    ragged_rows = "\n".join(
+        "|" + "|".join("value" for _ in range(99)) + "|"
+        for _ in range(3)
+    )
+    ragged = dict(
+        payload,
+        markdown="\n".join(table(100).splitlines()[:2]) + "\n" + ragged_rows,
+    )
+    after_mixed_fence = dict(
+        payload,
+        markdown="```text\n~~~\n```\n\n" + table(151),
+    )
+    two_hyphen_delimiter = dict(
+        payload,
+        markdown=table(151).replace("---", "--"),
+    )
+    for invalid in (ragged, after_mixed_fence, two_hyphen_delimiter):
+        assert parse_surface_publication(_surface_envelope(invalid)) is None
+        assert parse_surface_fallback(_surface_envelope(invalid)) == (
+            "Canvas table fallback."
+        )
+
+
+def test_parse_surface_publication_accepts_app_home_blocks():
+    publication = parse_surface_publication(
+        _surface_envelope(
+            {
+                "version": 1,
+                "surface": "app_home",
+                "fallback_text": "Your dashboard was updated.",
+                "blocks": [
+                    {"type": "header", "text": "Account dashboard"},
+                    {
+                        "type": "section",
+                        "text": {"type": "markdown", "text": "**Status:** Healthy"},
+                    },
+                    {"type": "divider"},
+                    {
+                        "type": "section",
+                        "fields": [
+                            {"type": "markdown", "text": "**MRR**\n$42k"},
+                            {"type": "text", "text": "On target"},
+                        ],
+                    },
+                    {
+                        "type": "table",
+                        "rows": [
+                            [
+                                {"type": "text", "text": "Owner"},
+                                {"type": "text", "text": "Status"},
+                            ],
+                            [
+                                {"type": "text", "text": "Ada"},
+                                {"type": "text", "text": "Ready"},
+                            ],
+                        ],
+                    },
+                ],
+            }
+        )
+    )
+
+    assert publication == AppHomePublication(
+        fallback_text="Your dashboard was updated.",
+        blocks=(
+            HomeHeaderBlock(text="Account dashboard"),
+            HomeSectionBlock(
+                content=SectionField(kind="markdown", text="**Status:** Healthy")
+            ),
+            HomeDividerBlock(),
+            SectionFieldsBlock(
+                fields=(
+                    SectionField(kind="markdown", text="**MRR**\n$42k"),
+                    SectionField(kind="text", text="On target"),
+                )
+            ),
+            TableBlock(
+                rows=(
+                    (TableTextCell(text="Owner"), TableTextCell(text="Status")),
+                    (TableTextCell(text="Ada"), TableTextCell(text="Ready")),
+                )
+            ),
+        ),
+    )
+
+
+def test_persistent_surface_instructions_describe_confirmed_drafts_and_are_target_free():
+    instructions = PERSISTENT_SURFACE_INSTRUCTIONS
+
+    assert "current user clearly asks" in instructions.lower()
+    assert "draft" in instructions.lower()
+    assert "publish" in instructions.lower()
+    assert "confirmation" in instructions.lower()
+    assert "do not claim" in instructions.lower()
+    assert "```enso-surface" in instructions
+    assert "valid JSON" in instructions
+    assert "standalone" in instructions
+    assert "channel" in instructions
+    assert "visible channel tab" in instructions.lower()
+    assert "fully replace" in instructions.lower()
+    assert "re-checks the same Canvas" in instructions
+    assert "paid" in instructions.lower()
+    assert "utf-8 bytes" in instructions.lower()
+    assert "12,000" in instructions
+    assert "47" in instructions
+    assert "300 cells" in instructions
+    assert f"{MAX_CANVAS_MARKDOWN:,}" in instructions
+    assert "replaces the full" in instructions.lower()
+    assert f"1 to {MAX_APP_HOME_BLOCKS} blocks" in instructions
+    assert "Slack IDs" in instructions
+    assert "user_id" not in instructions
+    assert "channel_id" not in instructions
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "version": 1,
+            "surface": "canvas",
+            "fallback_text": "Done",
+            "title": "Report",
+            "markdown": "# Report",
+            "placement": "standalone",
+            "channel_id": "C123",
+        },
+        {
+            "version": 1,
+            "surface": "app_home",
+            "fallback_text": "Done",
+            "blocks": [{"type": "header", "text": "Dashboard", "block_id": "raw"}],
+        },
+        {
+            "version": 1,
+            "surface": "app_home",
+            "fallback_text": "Done",
+            "blocks": [{"type": "markdown", "text": "# Message-only"}],
+        },
+        {
+            "version": 1,
+            "surface": "app_home",
+            "fallback_text": "Done",
+            "blocks": [
+                {
+                    "type": "data_visualization",
+                    "title": "Not supported in Home",
+                    "chart": {
+                        "type": "pie",
+                        "segments": [{"label": "A", "value": 1}],
+                    },
+                }
+            ],
+        },
+        {
+            "version": 1,
+            "surface": "canvas",
+            "fallback_text": "Done",
+            "title": "Report",
+            "markdown": "# Report",
+            "placement": "dm",
+        },
+        {
+            "version": 1,
+            "surface": "canvas",
+            "fallback_text": "Done",
+            "title": "",
+            "markdown": "# Report",
+            "placement": "standalone",
+        },
+    ],
+)
+def test_parse_surface_publication_rejects_unsafe_or_invalid_schema(payload):
+    text = _surface_envelope(payload)
+
+    assert parse_surface_publication(text) is None
+    assert parse_surface_fallback(text) is None
+
+
+@pytest.mark.parametrize(
+    "blocks",
+    [
+        [{"type": "divider"}] * (MAX_APP_HOME_BLOCKS + 1),
+        [{"type": "header", "text": "x" * 151}],
+        [
+            {
+                "type": "section",
+                "text": {"type": "markdown", "text": "x" * 3001},
+            }
+        ],
+    ],
+)
+def test_parse_surface_fallback_handles_recognized_app_home_limits(blocks):
+    text = _surface_envelope(
+        {
+            "version": 1,
+            "surface": "app_home",
+            "fallback_text": "Complete dashboard fallback.",
+            "blocks": blocks,
+        }
+    )
+
+    assert parse_surface_publication(text) is None
+    assert parse_surface_fallback(text) == "Complete dashboard fallback."
+
+
+def test_surface_limit_does_not_hide_invalid_block_schema():
+    blocks = [{"type": "divider"}] * MAX_APP_HOME_BLOCKS
+    blocks.append({"type": "markdown", "text": "unsupported"})
+    text = _surface_envelope(
+        {
+            "version": 1,
+            "surface": "app_home",
+            "fallback_text": "Must not be exposed.",
+            "blocks": blocks,
+        }
+    )
+
+    assert parse_surface_publication(text) is None
+    assert parse_surface_fallback(text) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "ordinary reply",
+        "before\n```enso-surface\n{}\n```",
+        "```enso-surface\n{}\n```\nafter",
+        "```enso-surface\n{not json}\n```",
+        '```enso-surface\n{"version":1,"version":1,"surface":"canvas",'
+        '"fallback_text":"Done","title":"Report","markdown":"# Report",'
+        '"placement":"standalone"}\n```',
+    ],
+)
+def test_parse_surface_publication_ignores_non_envelopes_and_malformed_envelopes(text):
+    assert parse_surface_publication(text) is None
+    assert parse_surface_fallback(text) is None
+
+
 class _FallbackContext(TransportContext):
     def __init__(self):
         self.replies: list[str] = []
@@ -870,3 +1211,19 @@ async def test_transport_context_structured_reply_defaults_to_fallback_text():
 
     assert ctx.replies == ["Readable everywhere"]
     assert ctx.get_output_instructions() == ""
+
+
+@pytest.mark.asyncio
+async def test_transport_context_surface_draft_defaults_to_fallback_text():
+    ctx = _FallbackContext()
+    publication = CanvasPublication(
+        fallback_text="Readable everywhere",
+        title="Slack report",
+        markdown="# Slack-only Canvas",
+        placement="standalone",
+    )
+
+    await ctx.offer_surface_draft(publication, "validated source")
+
+    assert ctx.replies == ["Readable everywhere"]
+    assert ctx.get_surface_instructions() == ""

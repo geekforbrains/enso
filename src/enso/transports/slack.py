@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import uuid
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from urllib.request import Request, urlopen
 
@@ -21,7 +24,7 @@ except ImportError as e:
     ) from e
 
 from .. import audit as audit_store
-from .. import slack_cache
+from .. import slack_cache, surface_drafts
 from ..commands import (
     cmd_clear,
     cmd_compact_async,
@@ -36,13 +39,21 @@ from ..commands import (
 )
 from ..formatting import md_to_mrkdwn, split_markdown
 from ..outbound import (
+    MAX_APP_HOME_CONFIRMATION_BLOCKS,
+    MAX_CANVAS_CONFIRMATION_MARKDOWN,
+    PERSISTENT_SURFACE_INSTRUCTIONS,
     STRUCTURED_OUTPUT_INSTRUCTIONS,
+    AppHomePublication,
+    CanvasPublication,
     ChartAxis,
     ChartPoint,
     ChartSegment,
     ChartSeries,
     DataTableBlock,
     DataVisualizationBlock,
+    HomeDividerBlock,
+    HomeHeaderBlock,
+    HomeSectionBlock,
     MarkdownBlock,
     OutboundMessage,
     PieChart,
@@ -55,6 +66,7 @@ from ..outbound import (
     TableTextCell,
 )
 from ..secret_refs import resolve_config_secret
+from ..surface_drafts import ChannelCanvasTarget, SurfaceDraftOrigin
 from . import BaseTransport, TransportContext, safe_filename
 from .slack_teams import TeamsRouter
 
@@ -66,9 +78,36 @@ log = logging.getLogger(__name__)
 
 SLACK_MARKDOWN_BLOCK_LIMIT = 12000
 SLACK_TEXT_LIMIT = 40000
+SLACK_APP_HOME_VIEW_LIMIT = 250_000
+SURFACE_MAINTENANCE_SECONDS = 5 * 60
+SURFACE_PUBLISH_ACTION_ID = "enso.surface.publish.v1"
+SURFACE_CANCEL_ACTION_ID = "enso.surface.cancel.v1"
+SURFACE_ACTION_BLOCK_PREFIX = "enso.surface."
+SURFACE_ACTION_REVISION = "r3"
+APP_HOME_DM_REQUIRED_TEXT = (
+    "App Home dashboards can only be drafted from a 1:1 DM. Please send this "
+    "request to me there."
+)
 SLACK_BLOCK_FALLBACK_ERRORS = frozenset(
     {"invalid_blocks", "invalid_blocks_format", "msg_blocks_too_long"}
 )
+SLACK_AMBIGUOUS_SURFACE_ERRORS = frozenset({"fatal_error", "internal_error"})
+
+
+@dataclass(frozen=True, slots=True)
+class _SurfaceAction:
+    action: str
+    draft_id: str
+    account_id: str
+    user_id: str
+    channel_id: str
+    message_ts: str
+
+
+@dataclass(frozen=True, slots=True)
+class _SurfacePublishResult:
+    status: str
+    text: str
 
 
 def _slack_error_code(exc: Exception) -> str:
@@ -80,6 +119,66 @@ def _slack_error_code(exc: Exception) -> str:
     with contextlib.suppress(Exception):
         return str(getter("error", ""))
     return ""
+
+
+def _surface_error_status(exc: Exception) -> str:
+    code = _slack_error_code(exc)
+    if not code or code in SLACK_AMBIGUOUS_SURFACE_ERRORS:
+        return "unknown"
+    return "failed"
+
+
+def _response_mapping(response: Any, *, method: str) -> Mapping[str, Any]:
+    """Normalize Slack SDK responses and plain mappings without trusting scalars."""
+    if isinstance(response, Mapping):
+        return response
+    data = getattr(response, "data", None)
+    if isinstance(data, Mapping):
+        return data
+    raise ValueError(f"{method} returned an invalid response")
+
+
+def _channel_canvas_ids(response: Any, *, channel_id: str) -> tuple[str, ...]:
+    """Extract attached Canvas file IDs without choosing an ambiguous target."""
+    response = _response_mapping(response, method="conversations.info")
+    channel = response.get("channel")
+    if (
+        not isinstance(channel, Mapping)
+        or channel.get("id") != channel_id
+    ):
+        raise ValueError("conversations.info returned the wrong channel")
+    properties = channel.get("properties") or {}
+    if not isinstance(properties, Mapping):
+        raise ValueError("channel properties are invalid")
+
+    candidates: list[str] = []
+    canvas = properties.get("canvas")
+    if canvas is not None:
+        if not isinstance(canvas, Mapping):
+            raise ValueError("channel Canvas metadata is invalid")
+        file_id = canvas.get("file_id")
+        if type(file_id) is not str or not file_id:
+            raise ValueError("channel Canvas has no file ID")
+        candidates.append(file_id)
+
+    tabs = properties.get("tabs") or []
+    if type(tabs) is not list:
+        raise ValueError("channel tab metadata is invalid")
+    for tab in tabs:
+        if not isinstance(tab, Mapping):
+            raise ValueError("channel tab metadata is invalid")
+        if tab.get("type") not in {"canvas", "channel_canvas"}:
+            continue
+        data = tab.get("data")
+        file_id = data.get("file_id") if isinstance(data, Mapping) else None
+        if type(file_id) is not str or not file_id:
+            raise ValueError("attached Canvas tab has no file ID")
+        candidates.append(file_id)
+
+    unique = tuple(dict.fromkeys(candidates))
+    if len(unique) > 1:
+        raise ValueError("channel has multiple Canvas targets")
+    return unique
 
 
 def _render_table_cell(cell: TableTextCell | TableNumberCell) -> dict[str, Any]:
@@ -191,6 +290,288 @@ def _render_outbound_block(
             _render_column_setting(setting) for setting in block.column_settings
         ]
     return rendered
+
+
+def _render_app_home_block(
+    block: (
+        HomeHeaderBlock
+        | HomeSectionBlock
+        | HomeDividerBlock
+        | SectionFieldsBlock
+        | DataTableBlock
+        | TableBlock
+    ),
+) -> dict[str, Any]:
+    if isinstance(block, HomeHeaderBlock):
+        return {
+            "type": "header",
+            "text": {"type": "plain_text", "text": block.text},
+        }
+    if isinstance(block, HomeSectionBlock):
+        return {
+            "type": "section",
+            "text": _render_section_field(block.content),
+        }
+    if isinstance(block, HomeDividerBlock):
+        return {"type": "divider"}
+    return _render_outbound_block(block)
+
+
+def _surface_label(publication: CanvasPublication | AppHomePublication) -> str:
+    if isinstance(publication, AppHomePublication):
+        return "App Home"
+    return "Channel Canvas" if publication.placement == "channel" else "Standalone Canvas"
+
+
+def _surface_target_text(
+    publication: CanvasPublication | AppHomePublication,
+    origin: SurfaceDraftOrigin,
+    channel_canvas_target: ChannelCanvasTarget | None = None,
+) -> str:
+    """Describe the exact destination/access derived from trusted route state."""
+    if isinstance(publication, AppHomePublication):
+        return "Target: your private App Home will be fully replaced."
+    if publication.placement == "channel":
+        if (
+            channel_canvas_target is not None
+            and channel_canvas_target.operation == "replace"
+        ):
+            return (
+                "Target: fully replace the existing channel Canvas "
+                f"“{channel_canvas_target.title}” ({channel_canvas_target.permalink})."
+            )
+        return "Target: a visible Canvas tab will be created in this channel."
+    if origin.route_kind == "dm":
+        return "Access: the standalone Canvas will be shared read-only with you."
+    return "Access: the standalone Canvas will be shared read-only with this channel."
+
+
+def _surface_table_text(block: DataTableBlock | TableBlock) -> str:
+    def cell_text(cell: TableTextCell | TableNumberCell) -> str:
+        if isinstance(cell, TableNumberCell):
+            return f"{cell.text} (numeric value: {cell.value})"
+        return cell.text
+
+    lines = []
+    if isinstance(block, DataTableBlock):
+        lines.append(block.caption)
+    lines.extend("\t".join(cell_text(cell) for cell in row) for row in block.rows)
+    return "\n".join(lines)
+
+
+def _surface_preview_text(
+    publication: CanvasPublication | AppHomePublication,
+) -> str:
+    """Build a transport-derived plain-text view of the exact approval payload."""
+    if isinstance(publication, CanvasPublication):
+        return f"Canvas title: {publication.title}\n\n{publication.markdown}"
+
+    parts: list[str] = []
+    for block in publication.blocks:
+        if isinstance(block, HomeHeaderBlock):
+            parts.append(block.text)
+        elif isinstance(block, HomeSectionBlock):
+            parts.append(block.content.text)
+        elif isinstance(block, HomeDividerBlock):
+            parts.append("---")
+        elif isinstance(block, SectionFieldsBlock):
+            parts.append("\n".join(field.text for field in block.fields))
+        else:
+            parts.append(_surface_table_text(block))
+    return "\n\n".join(parts)
+
+
+def _inert_slack_text(text: str) -> str:
+    """Escape Slack control characters so approval text cannot notify users."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _render_app_home_preview_block(
+    block: (
+        HomeHeaderBlock
+        | HomeSectionBlock
+        | HomeDividerBlock
+        | SectionFieldsBlock
+        | DataTableBlock
+        | TableBlock
+    ),
+) -> dict[str, Any]:
+    """Render an inert exact preview without activating model-provided mentions."""
+    if isinstance(block, HomeHeaderBlock):
+        return {
+            "type": "header",
+            "text": {"type": "plain_text", "text": block.text},
+        }
+    if isinstance(block, HomeSectionBlock):
+        return {
+            "type": "section",
+            "text": {"type": "plain_text", "text": block.content.text},
+        }
+    if isinstance(block, HomeDividerBlock):
+        return {"type": "divider"}
+    if isinstance(block, SectionFieldsBlock):
+        return {
+            "type": "section",
+            "fields": [
+                {"type": "plain_text", "text": field.text}
+                for field in block.fields
+            ],
+        }
+    return _render_outbound_block(block)
+
+
+def _surface_card_blocks(
+    publication: CanvasPublication | AppHomePublication,
+    *,
+    status_text: str,
+    draft_id: str | None = None,
+    channel_canvas_target: ChannelCanvasTarget | None = None,
+) -> list[dict[str, Any]]:
+    label = _surface_label(publication)
+    blocks: list[dict[str, Any]] = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": f"{label} draft"[:150]},
+        }
+    ]
+    if isinstance(publication, CanvasPublication):
+        blocks.append(
+            {
+                "type": "section",
+                "text": {
+                    "type": "plain_text",
+                    "text": publication.title,
+                },
+            }
+        )
+        blocks.extend(
+            {
+                "type": "section",
+                "text": {
+                    "type": "plain_text",
+                    "text": publication.markdown[index : index + 3000],
+                },
+            }
+            for index in range(0, len(publication.markdown), 3000)
+        )
+    else:
+        blocks.extend(
+            _render_app_home_preview_block(block) for block in publication.blocks
+        )
+    blocks.append(
+        {
+            "type": "context",
+            "elements": [{"type": "plain_text", "text": status_text[:3000]}],
+        }
+    )
+    if draft_id is not None:
+        publish_label = (
+            "Replace my App Home"
+            if isinstance(publication, AppHomePublication)
+            else "Replace channel Canvas"
+            if publication.placement == "channel"
+            and channel_canvas_target is not None
+            and channel_canvas_target.operation == "replace"
+            else "Create channel Canvas"
+            if publication.placement == "channel"
+            else "Create standalone Canvas"
+        )
+        blocks.append(
+            {
+                "type": "actions",
+                "block_id": (
+                    f"{SURFACE_ACTION_BLOCK_PREFIX}{draft_id}.{SURFACE_ACTION_REVISION}"
+                ),
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": publish_label},
+                        "style": "primary",
+                        "action_id": SURFACE_PUBLISH_ACTION_ID,
+                        "value": draft_id,
+                        "accessibility_label": f"Publish this {label} draft",
+                    },
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Cancel"},
+                        "action_id": SURFACE_CANCEL_ACTION_ID,
+                        "value": draft_id,
+                        "accessibility_label": f"Cancel this {label} draft",
+                    },
+                ],
+            }
+        )
+    if len(blocks) > 50:
+        raise ValueError("surface confirmation message exceeds 50 blocks")
+    return blocks
+
+
+def _parse_surface_action(body: Any, action: Any) -> _SurfaceAction | None:
+    if type(body) is not dict or type(action) is not dict:
+        return None
+    action_id = action.get("action_id")
+    actions = body.get("actions")
+    if action_id == SURFACE_PUBLISH_ACTION_ID:
+        action_name = "publish"
+    elif action_id == SURFACE_CANCEL_ACTION_ID:
+        action_name = "cancel"
+    else:
+        return None
+    draft_id = action.get("value")
+    block_id = action.get("block_id")
+    if (
+        body.get("type") != "block_actions"
+        or action.get("type") != "button"
+        or type(draft_id) is not str
+        or not 1 <= len(draft_id) <= 200
+        or block_id
+        != f"{SURFACE_ACTION_BLOCK_PREFIX}{draft_id}.{SURFACE_ACTION_REVISION}"
+        or type(actions) is not list
+        or len(actions) != 1
+        or actions[0] != action
+        or type(body.get("api_app_id")) is not str
+        or not body["api_app_id"]
+    ):
+        return None
+
+    team = body.get("team")
+    user = body.get("user")
+    container = body.get("container")
+    if (
+        type(team) is not dict
+        or type(team.get("id")) is not str
+        or not team["id"]
+        or type(user) is not dict
+        or type(user.get("id")) is not str
+        or not user["id"]
+        or type(container) is not dict
+        or container.get("type") != "message"
+        or container.get("is_ephemeral") is not False
+    ):
+        return None
+    channel_id = container.get("channel_id")
+    message_ts = container.get("message_ts")
+    if (
+        type(channel_id) is not str
+        or not channel_id
+        or type(message_ts) is not str
+        or not message_ts
+    ):
+        return None
+    body_channel = body.get("channel")
+    body_message = body.get("message")
+    if type(body_channel) is dict and body_channel.get("id") != channel_id:
+        return None
+    if type(body_message) is dict and body_message.get("ts") != message_ts:
+        return None
+    return _SurfaceAction(
+        action=action_name,
+        draft_id=draft_id,
+        account_id=team["id"],
+        user_id=user["id"],
+        channel_id=channel_id,
+        message_ts=message_ts,
+    )
 
 # Slack message subtypes that aren't user-authored content — channel/group
 # lifecycle, message lifecycle, pin/reminder noise, etc. Anything not in this
@@ -381,6 +762,9 @@ class SlackContext(TransportContext):
         user_id: str = "",
         audit_turn_id: str | None = None,
         rich_messages: bool = False,
+        persistent_surfaces: bool = False,
+        surface_origin: SurfaceDraftOrigin | None = None,
+        conversation_type: str = "",
     ):
         self._client = client
         self._channel = channel
@@ -389,6 +773,15 @@ class SlackContext(TransportContext):
         self._audit_turn_id = audit_turn_id
         self._audit_parts: list[str] = []
         self.rich_markdown_enabled = rich_messages
+        self.persistent_surfaces_enabled = persistent_surfaces
+        if surface_origin is not None and (
+            surface_origin.user_id != user_id
+            or surface_origin.channel_id != channel
+            or surface_origin.thread_ts != thread_ts
+        ):
+            raise ValueError("surface draft origin does not match Slack context")
+        self._surface_origin = surface_origin
+        self._conversation_type = conversation_type
 
     async def _record_response(self, text: str) -> None:
         if self._audit_turn_id is not None:
@@ -397,6 +790,16 @@ class SlackContext(TransportContext):
                 audit_store.record_response,
                 self._audit_turn_id,
                 "\n\n".join(self._audit_parts),
+            )
+
+    async def _replace_recorded_response(self, text: str) -> None:
+        """Replace the audited response when a pending rich delivery falls back."""
+        if self._audit_turn_id is not None:
+            self._audit_parts = [text]
+            await asyncio.to_thread(
+                audit_store.record_response,
+                self._audit_turn_id,
+                text,
             )
 
     def _message_kwargs(
@@ -493,6 +896,539 @@ class SlackContext(TransportContext):
             fallback_payloads=[self._message_kwargs(message.fallback_text)],
         )
 
+    def _surface_draft_error(
+        self,
+        publication: CanvasPublication | AppHomePublication,
+    ) -> str:
+        if self._surface_origin is None:
+            return "persistent surface draft has no trusted Slack origin"
+        exact_preview = (
+            f"{_surface_label(publication)} draft ready for confirmation.\n\n"
+            f"{_surface_preview_text(publication)}"
+        )
+        if len(_inert_slack_text(exact_preview)) > SLACK_TEXT_LIMIT:
+            return f"surface confirmation text exceeds {SLACK_TEXT_LIMIT} characters"
+        if isinstance(publication, CanvasPublication):
+            is_direct = self._conversation_type in {"im", "mpim"} or self._channel.startswith(
+                "D"
+            )
+            if self._conversation_type == "mpim":
+                return "Canvas drafts from an MPDM are unsupported"
+            if publication.placement == "channel" and (
+                is_direct or not self._channel.startswith(("C", "G"))
+            ):
+                return "channel Canvas requested outside a channel"
+            if publication.placement == "standalone" and is_direct and not self._user_id:
+                return "standalone Canvas has no originating Slack user"
+            if len(publication.markdown) > MAX_CANVAS_CONFIRMATION_MARKDOWN:
+                return (
+                    "Canvas draft exceeds the exact Slack confirmation preview "
+                    f"limit of {MAX_CANVAS_CONFIRMATION_MARKDOWN} characters"
+                )
+            if len(publication.title) > 3000:
+                return "Canvas title exceeds the exact confirmation preview limit"
+            return ""
+        if not self._user_id:
+            return "App Home draft has no originating Slack user"
+        is_direct = (
+            self._channel.startswith("D")
+            and self._surface_origin.route_kind == "dm"
+            and self._conversation_type in {"", "im"}
+        )
+        if not is_direct:
+            return "App Home drafts must be requested in a 1:1 DM"
+        if len(publication.blocks) > MAX_APP_HOME_CONFIRMATION_BLOCKS:
+            return (
+                "App Home draft exceeds the exact confirmation preview limit of "
+                f"{MAX_APP_HOME_CONFIRMATION_BLOCKS} content blocks"
+            )
+        view = {
+            "type": "home",
+            "blocks": [_render_app_home_block(block) for block in publication.blocks],
+        }
+        view_size = len(
+            json.dumps(view, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        )
+        if view_size > SLACK_APP_HOME_VIEW_LIMIT:
+            return f"App Home view exceeds {SLACK_APP_HOME_VIEW_LIMIT} bytes"
+        return ""
+
+    async def _channel_canvas_target_from_file(
+        self,
+        canvas_id: str,
+    ) -> ChannelCanvasTarget:
+        response = await self._client.files_info(file=canvas_id)
+        response = _response_mapping(response, method="files.info")
+        file_info = response.get("file")
+        if not isinstance(file_info, Mapping) or file_info.get("id") != canvas_id:
+            raise ValueError("files.info returned the wrong Canvas")
+        title = file_info.get("title")
+        permalink = file_info.get("permalink")
+        edit_timestamp = file_info.get("edit_timestamp")
+        if type(title) is not str or not title.strip():
+            raise ValueError("existing Canvas has no title")
+        if type(permalink) is not str or not permalink.strip():
+            raise ValueError("existing Canvas has no permalink")
+        if edit_timestamp is not None and (
+            type(edit_timestamp) is not int or edit_timestamp < 0
+        ):
+            raise ValueError("existing Canvas has no stable edit revision")
+        if any(file_info.get(key) is True for key in ("is_deleted", "deleted")):
+            raise ValueError("existing Canvas has been deleted")
+        linked_channel_id = file_info.get("linked_channel_id")
+        if linked_channel_id not in {None, "", self._channel}:
+            raise ValueError("existing Canvas belongs to a different channel")
+        return ChannelCanvasTarget(
+            operation="replace",
+            canvas_id=canvas_id,
+            title=title,
+            permalink=permalink,
+            edit_timestamp=edit_timestamp,
+        )
+
+    async def _resolve_channel_canvas_target(self) -> ChannelCanvasTarget:
+        response = await self._client.conversations_info(channel=self._channel)
+        canvas_ids = _channel_canvas_ids(response, channel_id=self._channel)
+        if not canvas_ids:
+            return ChannelCanvasTarget(operation="create")
+        return await self._channel_canvas_target_from_file(canvas_ids[0])
+
+    async def offer_surface_draft(
+        self,
+        publication: CanvasPublication | AppHomePublication,
+        source_text: str,
+    ) -> None:
+        """Persist a validated draft and post one-time confirmation controls."""
+        if not self.rich_markdown_enabled or not self.persistent_surfaces_enabled:
+            await self.reply(publication.fallback_text)
+            return
+        error = self._surface_draft_error(publication)
+        if error:
+            response_text = (
+                APP_HOME_DM_REQUIRED_TEXT
+                if isinstance(publication, AppHomePublication)
+                and error == "App Home drafts must be requested in a 1:1 DM"
+                else publication.fallback_text
+            )
+            await self.reply(response_text)
+            log.warning("Slack surface draft refused: %s", error)
+            return
+        assert self._surface_origin is not None
+
+        channel_canvas_target: ChannelCanvasTarget | None = None
+        if isinstance(publication, CanvasPublication) and publication.placement == "channel":
+            try:
+                channel_canvas_target = await self._resolve_channel_canvas_target()
+            except Exception:
+                log.warning(
+                    "Could not resolve the current channel Canvas; refusing draft",
+                    exc_info=True,
+                )
+                await self.reply(publication.fallback_text)
+                return
+
+        preview_payload_text = _surface_preview_text(publication)
+        target_text = _surface_target_text(
+            publication,
+            self._surface_origin,
+            channel_canvas_target,
+        )
+        audit_preview_text = (
+            f"{_surface_label(publication)} draft ready for confirmation.\n\n"
+            f"{target_text}\n\n{preview_payload_text}"
+        )
+        preview_text = _inert_slack_text(audit_preview_text)
+        try:
+            draft = await asyncio.to_thread(
+                surface_drafts.create,
+                publication,
+                source_text=source_text,
+                origin=self._surface_origin,
+                channel_canvas_target=channel_canvas_target,
+            )
+        except Exception:
+            log.exception("Could not persist Slack surface draft; using chat fallback")
+            await self._replace_recorded_response(publication.fallback_text)
+            await self._deliver(self._legacy_payloads(publication.fallback_text))
+            return
+
+        await self._record_response(audit_preview_text)
+
+        preview_blocks = _surface_card_blocks(
+            publication,
+            status_text=(
+                f"{target_text} Nothing has been published. Only the requester can "
+                "confirm this draft within 15 minutes."
+            ),
+            draft_id=draft.draft_id,
+            channel_canvas_target=channel_canvas_target,
+        )
+        try:
+            preview_kwargs = self._message_kwargs(preview_text, blocks=preview_blocks)
+            preview_kwargs.update(
+                mrkdwn=False,
+                unfurl_links=False,
+                unfurl_media=False,
+            )
+            result = await self._client.chat_postMessage(
+                **preview_kwargs
+            )
+        except Exception as exc:
+            await asyncio.to_thread(surface_drafts.revoke, draft.draft_id)
+            if _slack_error_code(exc) in SLACK_BLOCK_FALLBACK_ERRORS:
+                await self._replace_recorded_response(publication.fallback_text)
+                await self._deliver(self._legacy_payloads(publication.fallback_text))
+                return
+            with contextlib.suppress(Exception):
+                await self._record_delivery(ok=False)
+            raise
+
+        message_ts = str(result.get("ts", ""))
+        try:
+            bound = bool(message_ts) and await asyncio.to_thread(
+                surface_drafts.bind_message,
+                draft.draft_id,
+                message_ts=message_ts,
+            )
+        except Exception:
+            bound = False
+            log.exception("Could not bind Slack surface confirmation message")
+        if not bound:
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(surface_drafts.revoke, draft.draft_id)
+            await self._replace_recorded_response(publication.fallback_text)
+            try:
+                if message_ts:
+                    await self._client.chat_update(
+                        channel=self._channel,
+                        ts=message_ts,
+                        text=publication.fallback_text,
+                        blocks=[],
+                    )
+                else:
+                    await self._client.chat_postMessage(
+                        **self._message_kwargs(publication.fallback_text)
+                    )
+            except Exception:
+                log.exception("Could not clear unbound Slack surface confirmation")
+                try:
+                    await self._client.chat_postMessage(
+                        **self._message_kwargs(publication.fallback_text)
+                    )
+                except Exception:
+                    with contextlib.suppress(Exception):
+                        await self._record_delivery(ok=False)
+                    raise
+            await self._record_delivery(ok=True)
+            return
+        await self._record_delivery(ok=True)
+
+    async def _publish_channel_canvas(
+        self,
+        publication: CanvasPublication,
+        target: ChannelCanvasTarget | None,
+    ) -> _SurfacePublishResult:
+        if target is None:
+            return _SurfacePublishResult(
+                "failed",
+                "The channel Canvas draft has no trusted target. Nothing was changed.",
+            )
+        try:
+            current = await self._resolve_channel_canvas_target()
+        except Exception:
+            log.warning("Slack channel Canvas revalidation failed", exc_info=True)
+            return _SurfacePublishResult(
+                "failed",
+                "Enso could not re-check the channel Canvas. Nothing was changed; "
+                "please request a fresh draft.",
+            )
+        if current != target:
+            return _SurfacePublishResult(
+                "failed",
+                "The channel Canvas changed since this draft was reviewed. Nothing "
+                "was changed; please request a fresh draft.",
+            )
+
+        if target.operation == "create":
+            try:
+                created = await self._client.canvases_create(
+                    title=publication.title,
+                    document_content={
+                        "type": "markdown",
+                        "markdown": publication.markdown,
+                    },
+                    channel_id=self._channel,
+                )
+                canvas_id = created.get("canvas_id")
+                if type(canvas_id) is not str or not canvas_id:
+                    raise ValueError("canvases.create returned no canvas_id")
+            except Exception as exc:
+                log.warning("Slack channel Canvas creation failed", exc_info=True)
+                code = _slack_error_code(exc)
+                if code in {
+                    "channel_canvas_already_exists",
+                    "free_team_canvas_tab_already_exists",
+                }:
+                    return _SurfacePublishResult(
+                        "failed",
+                        "A Canvas appeared after this draft was reviewed. Nothing was "
+                        "changed; please request a fresh draft to review its replacement.",
+                    )
+                status = _surface_error_status(exc)
+                return _SurfacePublishResult(
+                    status,
+                    "Slack could not create the channel Canvas. The draft was not retried."
+                    if status == "failed"
+                    else "Slack could not confirm whether the channel Canvas was created. "
+                    "The draft will not be retried automatically.",
+                )
+            try:
+                created_target = await self._channel_canvas_target_from_file(canvas_id)
+            except Exception:
+                log.warning(
+                    "Slack created the channel Canvas but link lookup failed",
+                    exc_info=True,
+                )
+                return _SurfacePublishResult(
+                    "partial",
+                    "Slack created the channel Canvas, but Enso could not resolve its "
+                    "link. Do not retry automatically.",
+                )
+            return _SurfacePublishResult(
+                "published",
+                f"Published the channel Canvas “{publication.title}”: "
+                f"{created_target.permalink}",
+            )
+
+        assert target.canvas_id is not None
+        try:
+            await self._client.canvases_edit(
+                canvas_id=target.canvas_id,
+                changes=[
+                    {
+                        "operation": "replace",
+                        "document_content": {
+                            "type": "markdown",
+                            "markdown": publication.markdown,
+                        },
+                    }
+                ],
+            )
+        except Exception as exc:
+            log.warning("Slack channel Canvas replacement failed", exc_info=True)
+            status = _surface_error_status(exc)
+            return _SurfacePublishResult(
+                status,
+                "Slack could not replace the channel Canvas. Nothing was confirmed "
+                "changed, and the draft was not retried."
+                if status == "failed"
+                else "Slack could not confirm whether the channel Canvas content was "
+                "replaced. The draft will not be retried automatically.",
+            )
+
+        try:
+            await self._client.canvases_edit(
+                canvas_id=target.canvas_id,
+                changes=[
+                    {
+                        "operation": "rename",
+                        "title_content": {
+                            "type": "markdown",
+                            "markdown": publication.title,
+                        },
+                    }
+                ],
+            )
+        except Exception:
+            log.warning(
+                "Slack replaced channel Canvas content but could not rename it",
+                exc_info=True,
+            )
+            return _SurfacePublishResult(
+                "partial",
+                "Slack replaced the channel Canvas content, but could not confirm its "
+                f"new title. The Canvas remains at {target.permalink}.",
+            )
+        return _SurfacePublishResult(
+            "published",
+            f"Replaced the channel Canvas with “{publication.title}”: {target.permalink}",
+        )
+
+    async def _publish_canvas(
+        self,
+        publication: CanvasPublication,
+        *,
+        message_ts: str,
+        channel_canvas_target: ChannelCanvasTarget | None = None,
+    ) -> _SurfacePublishResult:
+        error = self._surface_draft_error(publication)
+        if error:
+            return _SurfacePublishResult("failed", error)
+        if publication.placement == "channel":
+            return await self._publish_channel_canvas(
+                publication,
+                channel_canvas_target,
+            )
+        is_direct = self._conversation_type == "im" or self._channel.startswith("D")
+        create_kwargs: dict[str, Any] = {
+            "title": publication.title,
+            "document_content": {
+                "type": "markdown",
+                "markdown": publication.markdown,
+            },
+        }
+        try:
+            created = await self._client.canvases_create(**create_kwargs)
+            canvas_id = created.get("canvas_id")
+            if type(canvas_id) is not str or not canvas_id:
+                raise ValueError("canvases.create returned no canvas_id")
+        except Exception as exc:
+            log.warning("Slack Canvas creation failed", exc_info=True)
+            status = _surface_error_status(exc)
+            return _SurfacePublishResult(
+                status,
+                "Slack could not create the Canvas. The draft was not retried."
+                if status == "failed"
+                else "Slack could not confirm whether Canvas creation completed. "
+                "The draft will not be retried automatically.",
+            )
+
+        try:
+            info = await self._client.files_info(file=canvas_id)
+            file_info = info.get("file") or {}
+            permalink = str(file_info.get("permalink", ""))
+            if not permalink:
+                raise ValueError("files.info returned no Canvas permalink")
+        except Exception:
+            log.warning("Slack Canvas link lookup failed; rolling back", exc_info=True)
+            deleted = True
+            try:
+                await self._client.canvases_delete(canvas_id=canvas_id)
+            except Exception:
+                deleted = False
+                log.exception("Slack Canvas rollback failed for %s", canvas_id)
+            return _SurfacePublishResult(
+                "failed" if deleted else "partial",
+                "Canvas creation was rolled back because its link could not be resolved."
+                if deleted
+                else "Slack created a Canvas, but Enso could not resolve its link or "
+                "confirm rollback. Manual cleanup may be required.",
+            )
+
+        confirmation = _inert_slack_text(
+            f"Canvas created: {publication.title}\n{permalink}\n\n"
+            f"{_surface_preview_text(publication)}"
+        )
+        try:
+            await self._client.chat_update(
+                channel=self._channel,
+                ts=message_ts,
+                text=confirmation[:SLACK_TEXT_LIMIT],
+                blocks=_surface_card_blocks(
+                    publication,
+                    status_text=f"Canvas created: {permalink}",
+                ),
+            )
+        except Exception:
+            deleted = True
+            try:
+                await self._client.canvases_delete(canvas_id=canvas_id)
+            except Exception:
+                deleted = False
+                log.exception("Slack Canvas rollback failed after link sharing failure")
+            return _SurfacePublishResult(
+                "failed" if deleted else "partial",
+                "Canvas creation was rolled back because its link could not be shared."
+                if deleted
+                else "Slack created a Canvas, but Enso could not share its link or "
+                "confirm rollback. Manual cleanup may be required.",
+            )
+
+        access_kwargs: dict[str, Any]
+        if is_direct:
+            access_kwargs = {"user_ids": [self._user_id]}
+        else:
+            access_kwargs = {"channel_ids": [self._channel]}
+        try:
+            await self._client.canvases_access_set(
+                canvas_id=canvas_id,
+                access_level="read",
+                **access_kwargs,
+            )
+        except Exception:
+            log.warning(
+                "Slack Canvas was created but origin access could not be granted",
+                exc_info=True,
+            )
+            return _SurfacePublishResult(
+                "partial",
+                f"Slack created the Canvas, but could not grant origin access: {permalink}",
+            )
+        return _SurfacePublishResult(
+            "published",
+            f"Published the standalone Canvas “{publication.title}”: {permalink}",
+        )
+
+    async def _publish_app_home(
+        self,
+        publication: AppHomePublication,
+    ) -> _SurfacePublishResult:
+        error = self._surface_draft_error(publication)
+        if error:
+            return _SurfacePublishResult("failed", error)
+        try:
+            view = {
+                "type": "home",
+                "blocks": [
+                    _render_app_home_block(block) for block in publication.blocks
+                ],
+            }
+            view_size = len(
+                json.dumps(
+                    view,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            )
+            if view_size > SLACK_APP_HOME_VIEW_LIMIT:
+                raise ValueError(
+                    f"App Home view exceeds {SLACK_APP_HOME_VIEW_LIMIT} bytes"
+                )
+            await self._client.views_publish(user_id=self._user_id, view=view)
+        except Exception as exc:
+            log.warning("Slack App Home publication failed", exc_info=True)
+            status = _surface_error_status(exc)
+            return _SurfacePublishResult(
+                status,
+                "Slack could not update App Home. The prior dashboard remains in place."
+                if status == "failed"
+                else "Slack could not confirm whether App Home was updated. The draft "
+                "will not be retried automatically.",
+            )
+        return _SurfacePublishResult("published", "Published your App Home dashboard.")
+
+    async def publish_confirmed_surface(
+        self,
+        publication: CanvasPublication | AppHomePublication,
+        *,
+        message_ts: str,
+        channel_canvas_target: ChannelCanvasTarget | None = None,
+    ) -> _SurfacePublishResult:
+        """Execute a surface only after the draft store grants a one-time claim."""
+        if (
+            not self.rich_markdown_enabled
+            or not self.persistent_surfaces_enabled
+            or self._surface_origin is None
+        ):
+            return _SurfacePublishResult("failed", "Persistent surfaces are disabled.")
+        if isinstance(publication, CanvasPublication):
+            return await self._publish_canvas(
+                publication,
+                message_ts=message_ts,
+                channel_canvas_target=channel_canvas_target,
+            )
+        return await self._publish_app_home(publication)
+
     async def reply_status(self, text: str) -> Any:
         kwargs: dict[str, Any] = {
             "channel": self._channel,
@@ -551,6 +1487,16 @@ class SlackContext(TransportContext):
         """Advertise the explicit envelope only when rich delivery is enabled."""
         return STRUCTURED_OUTPUT_INSTRUCTIONS if self.rich_markdown_enabled else ""
 
+    def get_surface_instructions(self) -> str:
+        """Advertise draft creation only on an authorized rich Slack turn."""
+        if (
+            not self.rich_markdown_enabled
+            or not self.persistent_surfaces_enabled
+            or self._surface_origin is None
+        ):
+            return ""
+        return PERSISTENT_SURFACE_INSTRUCTIONS
+
 
 class SlackTransport(BaseTransport):
     """Slack bot transport using Socket Mode."""
@@ -567,7 +1513,10 @@ class SlackTransport(BaseTransport):
         self.notify_channel: str = slack_cfg.get("notify_channel", "")
         self.channel_context_messages: int = int(slack_cfg.get("channel_context_messages", 20))
         self.rich_messages: bool = slack_cfg.get("rich_messages") is True
+        self.persistent_surfaces: bool = slack_cfg.get("persistent_surfaces") is True
         self._client: AsyncWebClient | None = None
+        self._surface_reconciled = False
+        self._surface_terminal_retries: dict[str, str] = {}
 
         # Slack authorization is always resolved through exact DM/channel
         # routes. Invalid or missing route configuration remains represented
@@ -593,6 +1542,12 @@ class SlackTransport(BaseTransport):
     async def _start_routing(self, client: AsyncWebClient) -> None:
         """Verify the authenticated account and reconcile crash leftovers."""
         try:
+            await asyncio.to_thread(surface_drafts.reconcile)
+        except Exception:
+            log.exception("Slack surface draft reconciliation failed")
+        else:
+            self._surface_reconciled = True
+        try:
             auth = await client.auth_test()
         except Exception:
             # Fail closed: without a verified team ID no route may dispatch.
@@ -605,6 +1560,43 @@ class SlackTransport(BaseTransport):
             await asyncio.to_thread(self.teams_router.startup_reconcile)
         except Exception:
             log.exception("Teams startup reconciliation failed")
+
+    def _start_background_tasks(self) -> None:
+        super()._start_background_tasks()
+        self._surface_maintenance_task = asyncio.create_task(
+            self._run_surface_maintenance()
+        )
+
+    async def _maintain_surface_drafts_once(self) -> None:
+        """Expire idle drafts and retry only local terminal-state writes."""
+        try:
+            if self._surface_reconciled:
+                await asyncio.to_thread(surface_drafts.maintain)
+            else:
+                await asyncio.to_thread(surface_drafts.reconcile)
+                self._surface_reconciled = True
+        except Exception:
+            log.exception("Slack surface draft maintenance failed")
+        for draft_id, status in tuple(self._surface_terminal_retries.items()):
+            try:
+                await asyncio.to_thread(
+                    surface_drafts.finish,
+                    draft_id,
+                    status=status,
+                )
+            except Exception:
+                log.warning(
+                    "Slack surface terminal retry failed for %s",
+                    draft_id,
+                    exc_info=True,
+                )
+            else:
+                self._surface_terminal_retries.pop(draft_id, None)
+
+    async def _run_surface_maintenance(self) -> None:
+        while True:
+            await asyncio.sleep(SURFACE_MAINTENANCE_SECONDS)
+            await self._maintain_surface_drafts_once()
 
     async def _send_update_confirmation(self, pending: dict, text: str) -> bool:
         if not self._client:
@@ -647,6 +1639,26 @@ class SlackTransport(BaseTransport):
         @app.event("message")
         async def handle_message(event: dict, client: AsyncWebClient) -> None:
             await self._handle_message(event, client)
+
+        @app.action(SURFACE_PUBLISH_ACTION_ID)
+        async def handle_surface_publish(
+            ack: Any,
+            body: dict,
+            action: dict,
+            client: AsyncWebClient,
+        ) -> None:
+            await ack()
+            await self._handle_surface_action(body, action, client)
+
+        @app.action(SURFACE_CANCEL_ACTION_ID)
+        async def handle_surface_cancel(
+            ack: Any,
+            body: dict,
+            action: dict,
+            client: AsyncWebClient,
+        ) -> None:
+            await ack()
+            await self._handle_surface_action(body, action, client)
 
         self._register_directory_listeners(app)
 
@@ -743,6 +1755,8 @@ class SlackTransport(BaseTransport):
         *,
         user_id: str = "",
         audit_turn_id: str | None = None,
+        surface_origin: SurfaceDraftOrigin | None = None,
+        conversation_type: str = "",
     ) -> SlackContext:
         return SlackContext(
             client,
@@ -751,6 +1765,455 @@ class SlackTransport(BaseTransport):
             user_id=user_id,
             audit_turn_id=audit_turn_id,
             rich_messages=self.rich_messages,
+            persistent_surfaces=self.persistent_surfaces,
+            surface_origin=surface_origin,
+            conversation_type=conversation_type,
+        )
+
+    async def _surface_action_notice(
+        self,
+        client: AsyncWebClient,
+        action: _SurfaceAction,
+        text: str,
+    ) -> bool:
+        try:
+            await client.chat_postEphemeral(
+                channel=action.channel_id,
+                user=action.user_id,
+                text=text,
+            )
+        except Exception:
+            log.exception("Could not deliver Slack surface action notice")
+            return False
+        return True
+
+    async def _create_surface_action_audit(
+        self,
+        origin: SurfaceDraftOrigin,
+        *,
+        draft_id: str,
+        action: str,
+        message_ts: str,
+    ) -> tuple[str | None, bool]:
+        """Create the audited human-confirmation turn before any Slack mutation."""
+        if not origin.route_audit:
+            return None, True
+        conversation_id = (
+            f"{origin.channel_id}:{origin.thread_ts}"
+            if origin.thread_ts
+            else origin.channel_id
+        )
+        try:
+            turn_id = await asyncio.to_thread(
+                audit_store.create_turn,
+                account_id=origin.account_id,
+                delivery_id=f"surface:{draft_id}:{action}:{uuid.uuid4().hex}",
+                route_id=origin.route_id,
+                channel_id=origin.channel_id,
+                thread_id=origin.thread_ts,
+                source_message_id=message_ts,
+                conversation_id=conversation_id,
+                user_id=origin.user_id,
+                user_name=await asyncio.to_thread(
+                    self.lookup_user_name,
+                    origin.user_id,
+                ),
+                workspace_id=origin.workspace_id,
+                request_text=f"{action.title()} surface draft {draft_id}",
+                decision="accepted",
+                kind="surface_confirmation",
+            )
+        except Exception:
+            log.exception("Surface confirmation audit write failed")
+            return None, self.teams_router.teams.audit_on_failure != "block"
+        return turn_id, True
+
+    async def _record_surface_action_response(
+        self,
+        turn_id: str | None,
+        text: str,
+    ) -> bool:
+        if turn_id is None:
+            return True
+        try:
+            await asyncio.to_thread(audit_store.record_response, turn_id, text)
+        except Exception:
+            log.exception("Could not record surface confirmation response")
+            return False
+        return True
+
+    async def _finish_surface_draft(self, draft_id: str, *, status: str) -> bool:
+        """Retry only the local terminal write; never retry a Slack mutation."""
+        for attempt in range(3):
+            try:
+                return await asyncio.to_thread(
+                    surface_drafts.finish,
+                    draft_id,
+                    status=status,
+                )
+            except Exception:
+                log.warning(
+                    "Surface draft terminal write failed (attempt %d/3)",
+                    attempt + 1,
+                    exc_info=True,
+                )
+        self._surface_terminal_retries[draft_id] = status
+        return False
+
+    async def _complete_surface_action_audit(
+        self,
+        turn_id: str | None,
+        *,
+        delivered: bool,
+        outcome: str,
+        terminal_reason: str | None = None,
+    ) -> None:
+        if turn_id is None:
+            return
+        try:
+            await asyncio.to_thread(
+                audit_store.record_delivery,
+                turn_id,
+                ok=delivered,
+            )
+        except Exception:
+            log.exception("Could not record surface confirmation delivery")
+        try:
+            await asyncio.to_thread(
+                audit_store.complete_turn,
+                turn_id,
+                outcome,
+                terminal_reason=terminal_reason,
+            )
+        except Exception:
+            log.exception("Could not complete surface confirmation audit")
+
+    async def _replace_surface_card(
+        self,
+        client: AsyncWebClient,
+        *,
+        origin: SurfaceDraftOrigin,
+        message_ts: str,
+        text: str,
+        blocks: list[dict[str, Any]],
+    ) -> bool:
+        try:
+            await client.chat_update(
+                channel=origin.channel_id,
+                ts=message_ts,
+                text=text,
+                blocks=blocks,
+            )
+            return True
+        except Exception:
+            log.exception("Could not replace Slack surface confirmation card")
+        try:
+            payload: dict[str, Any] = {
+                "channel": origin.channel_id,
+                "text": text,
+            }
+            if origin.thread_ts:
+                payload["thread_ts"] = origin.thread_ts
+            await client.chat_postMessage(**payload)
+            return True
+        except Exception:
+            log.exception("Could not deliver Slack surface confirmation fallback")
+            return False
+
+    async def _handle_surface_action(
+        self,
+        body: dict,
+        action_payload: dict,
+        client: AsyncWebClient,
+    ) -> None:
+        """Validate and consume one post-ack surface confirmation action."""
+        action = _parse_surface_action(body, action_payload)
+        if action is None:
+            log.warning("Ignored malformed Slack surface action payload")
+            return
+        try:
+            scope = await asyncio.to_thread(
+                surface_drafts.get_origin_scoped,
+                action.draft_id,
+                account_id=action.account_id,
+                user_id=action.user_id,
+                channel_id=action.channel_id,
+                message_ts=action.message_ts,
+            )
+        except Exception:
+            log.exception("Could not load Slack surface draft")
+            await self._surface_action_notice(
+                client,
+                action,
+                "Enso could not load this draft. Please try again.",
+            )
+            return
+        if scope is None:
+            await self._surface_action_notice(
+                client,
+                action,
+                "This draft is unavailable, expired, or belongs to another user.",
+            )
+            return
+        origin = scope.origin
+        if scope.status != "pending":
+            if scope.status != "publishing":
+                await self._replace_surface_card(
+                    client,
+                    origin=origin,
+                    message_ts=action.message_ts,
+                    text=f"This surface draft is no longer available ({scope.status}).",
+                    blocks=[],
+                )
+                return
+            await self._surface_action_notice(
+                client,
+                action,
+                "This draft is expired or already handled.",
+            )
+            return
+        if (
+            not self.rich_messages
+            or not self.persistent_surfaces
+            or not self._surface_reconciled
+            or not self.teams_router.surface_origin_authorized(origin)
+        ):
+            await asyncio.to_thread(surface_drafts.revoke, action.draft_id)
+            with contextlib.suppress(Exception):
+                await client.chat_update(
+                    channel=origin.channel_id,
+                    ts=action.message_ts,
+                    text="This surface draft is no longer authorized.",
+                    blocks=[],
+                )
+            return
+
+        action_turn_id, audit_allowed = await self._create_surface_action_audit(
+            origin,
+            draft_id=action.draft_id,
+            action=action.action,
+            message_ts=action.message_ts,
+        )
+        if not audit_allowed:
+            await self._surface_action_notice(
+                client,
+                action,
+                "Enso could not create the required audit record. The draft is still "
+                "pending; please try again.",
+            )
+            return
+
+        audit_ready = await self._record_surface_action_response(
+            action_turn_id,
+            f"{action.action.title()} requested for surface draft {action.draft_id}.",
+        )
+        if (
+            not audit_ready
+            and origin.route_audit
+            and self.teams_router.teams.audit_on_failure == "block"
+        ):
+            await self._complete_surface_action_audit(
+                action_turn_id,
+                delivered=False,
+                outcome="error",
+                terminal_reason="surface_audit_response_failed",
+            )
+            await self._surface_action_notice(
+                client,
+                action,
+                "Enso could not update the required audit record. The draft is still "
+                "pending; please try again.",
+            )
+            return
+
+        try:
+            claimed = await asyncio.to_thread(
+                surface_drafts.claim,
+                action.draft_id,
+                action=action.action,
+                account_id=action.account_id,
+                user_id=action.user_id,
+                channel_id=action.channel_id,
+                message_ts=action.message_ts,
+            )
+        except Exception:
+            log.exception("Could not claim Slack surface draft")
+            failure_text = "Enso could not claim this draft. Please try again."
+            response_recorded = await self._record_surface_action_response(
+                action_turn_id,
+                failure_text,
+            )
+            delivered = await self._surface_action_notice(
+                client,
+                action,
+                failure_text,
+            )
+            await self._complete_surface_action_audit(
+                action_turn_id,
+                delivered=delivered,
+                outcome="error",
+                terminal_reason=(
+                    "surface_claim_failed"
+                    if response_recorded
+                    else "surface_audit_response_failed"
+                ),
+            )
+            return
+        if claimed is None:
+            unavailable_text = "This draft is expired, invalid, or already handled."
+            try:
+                latest = await asyncio.to_thread(
+                    surface_drafts.get_origin_scoped,
+                    action.draft_id,
+                    account_id=action.account_id,
+                    user_id=action.user_id,
+                    channel_id=action.channel_id,
+                    message_ts=action.message_ts,
+                )
+            except Exception:
+                latest = None
+                log.exception("Could not reload unclaimed Slack surface draft")
+            if latest is not None and latest.status == "pending":
+                unavailable_text = (
+                    "Another publication for this target is in progress. Try again "
+                    "after it finishes."
+                )
+            elif latest is not None and latest.status == "publishing":
+                unavailable_text = "This draft is already being published."
+            response_recorded = await self._record_surface_action_response(
+                action_turn_id,
+                unavailable_text,
+            )
+            if latest is not None and latest.status in {"pending", "publishing"}:
+                delivered = await self._surface_action_notice(
+                    client,
+                    action,
+                    unavailable_text,
+                )
+            else:
+                delivered = await self._replace_surface_card(
+                    client,
+                    origin=origin,
+                    message_ts=action.message_ts,
+                    text=unavailable_text,
+                    blocks=[],
+                )
+            await self._complete_surface_action_audit(
+                action_turn_id,
+                delivered=delivered,
+                outcome="ignored" if response_recorded else "error",
+                terminal_reason=(
+                    "surface_claim_lost"
+                    if response_recorded
+                    else "surface_audit_response_failed"
+                ),
+            )
+            return
+        if action.action == "cancel":
+            cancel_text = f"Cancelled the {_surface_label(claimed.publication)} draft."
+            response_recorded = await self._record_surface_action_response(
+                action_turn_id,
+                cancel_text,
+            )
+            delivered = await self._replace_surface_card(
+                client,
+                origin=claimed.origin,
+                message_ts=action.message_ts,
+                text=cancel_text,
+                blocks=_surface_card_blocks(
+                    claimed.publication,
+                    status_text="Cancelled. Nothing was published.",
+                    channel_canvas_target=claimed.channel_canvas_target,
+                ),
+            )
+            await self._complete_surface_action_audit(
+                action_turn_id,
+                delivered=delivered,
+                outcome="completed" if response_recorded else "error",
+                terminal_reason=(
+                    None if response_recorded else "surface_audit_response_failed"
+                ),
+            )
+            return
+
+        with contextlib.suppress(Exception):
+            await client.chat_update(
+                channel=claimed.origin.channel_id,
+                ts=action.message_ts,
+                text=f"Publishing the {_surface_label(claimed.publication)} draft…",
+                blocks=_surface_card_blocks(
+                    claimed.publication,
+                    status_text="Publishing… The one-time confirmation has been consumed.",
+                    channel_canvas_target=claimed.channel_canvas_target,
+                ),
+            )
+        context = SlackContext(
+            client,
+            claimed.origin.channel_id,
+            claimed.origin.thread_ts,
+            user_id=claimed.origin.user_id,
+            rich_messages=self.rich_messages,
+            persistent_surfaces=self.persistent_surfaces,
+            surface_origin=claimed.origin,
+            conversation_type=claimed.origin.conversation_type,
+        )
+        try:
+            result = await context.publish_confirmed_surface(
+                claimed.publication,
+                message_ts=action.message_ts,
+                channel_canvas_target=claimed.channel_canvas_target,
+            )
+        except Exception:
+            log.exception("Confirmed Slack surface publication failed unexpectedly")
+            result = _SurfacePublishResult(
+                "unknown",
+                "Enso could not confirm the publication outcome. It will not retry "
+                "this draft automatically.",
+            )
+        draft_finished = await self._finish_surface_draft(
+            claimed.draft_id,
+            status=result.status,
+        )
+        if not draft_finished:
+            log.error(
+                "Surface draft %s could not be terminalized; it will not be replayed",
+                claimed.draft_id,
+            )
+        audit_final_text = (
+            f"{result.text}\n\n{_surface_preview_text(claimed.publication)}"
+        )[:SLACK_TEXT_LIMIT]
+        final_text = _inert_slack_text(audit_final_text)[:SLACK_TEXT_LIMIT]
+        final_blocks = _surface_card_blocks(
+            claimed.publication,
+            status_text=result.text,
+            channel_canvas_target=claimed.channel_canvas_target,
+        )
+        response_recorded = await self._record_surface_action_response(
+            action_turn_id,
+            audit_final_text,
+        )
+        delivered = await self._replace_surface_card(
+            client,
+            origin=claimed.origin,
+            message_ts=action.message_ts,
+            text=final_text,
+            blocks=final_blocks,
+        )
+        await self._complete_surface_action_audit(
+            action_turn_id,
+            delivered=delivered,
+            outcome=(
+                "completed"
+                if result.status == "published" and response_recorded
+                else "error"
+            ),
+            terminal_reason=(
+                None
+                if result.status == "published" and response_recorded
+                else "surface_audit_response_failed"
+                if not response_recorded
+                else f"surface_{result.status}"
+            ),
         )
 
     def lookup_user_name(self, user_id: str) -> str:

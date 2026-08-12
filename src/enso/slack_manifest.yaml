@@ -15,7 +15,7 @@ features:
     display_name: Enso
     always_online: true
   app_home:
-    home_tab_enabled: false
+    home_tab_enabled: true
     messages_tab_enabled: true
     messages_tab_read_only_enabled: false
 
@@ -39,6 +39,7 @@ oauth_config:
       - mpim:read
       - mpim:write
       # File transfer
+      - canvases:write
       - files:read
       - files:write
       # Message search (enso slack search)
@@ -76,7 +77,7 @@ settings:
       - member_joined_channel
       - member_left_channel
   interactivity:
-    is_enabled: false
+    is_enabled: true
   org_deploy_enabled: false
   socket_mode_enabled: true
   token_rotation_enabled: false

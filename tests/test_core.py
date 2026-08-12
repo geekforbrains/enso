@@ -26,6 +26,7 @@ from enso.core import (
 )
 from enso.jobs import Job
 from enso.outbound import (
+    CanvasPublication,
     ChartAxis,
     ChartPoint,
     ChartSeries,
@@ -1279,6 +1280,233 @@ async def test_process_request_delivers_explicit_structured_response(sample_conf
     assert ctx.replies == []
     assert ctx.rich_replies == []
     assert received_prompts == ["hello\n\nStructured output instructions."]
+
+
+@pytest.mark.asyncio
+async def test_process_request_offers_persistent_surface_draft_without_publishing(
+    sample_config,
+):
+    rt = Runtime(sample_config)
+    response = (
+        "```enso-surface\n"
+        '{"version":1,"surface":"canvas","fallback_text":"Report published.",'
+        '"title":"Quarterly report","markdown":"# Quarterly report",'
+        '"placement":"standalone"}\n'
+        "```"
+    )
+
+    class FakeCtx:
+        rich_markdown_enabled = True
+
+        def __init__(self):
+            self.replies = []
+            self.rich_replies = []
+            self.drafts = []
+
+        async def reply(self, text): self.replies.append(text)
+        async def reply_markdown(self, text): self.rich_replies.append(text)
+        async def offer_surface_draft(self, publication, source_text):
+            self.drafts.append((publication, source_text))
+        async def reply_status(self, text): return "handle"
+        async def edit_status(self, handle, text): pass
+        async def delete_status(self, handle): pass
+        async def send_typing(self): pass
+        def get_origin_env(self): return {}
+        def get_output_instructions(self): return "Structured output instructions."
+        def get_surface_instructions(self): return "Persistent surface instructions."
+
+    received_prompts = []
+
+    async def fake_run(provider, prompt, *args, **kwargs):
+        received_prompts.append(prompt)
+        yield StreamEvent(kind="response", text=response)
+
+    ctx = FakeCtx()
+    rt.run_provider = fake_run
+
+    await rt.process_request(
+        "claude",
+        "Create a standalone Canvas for this quarterly report",
+        "1",
+        ctx,
+    )
+
+    assert ctx.drafts == [
+        (
+            CanvasPublication(
+                fallback_text="Report published.",
+                title="Quarterly report",
+                markdown="# Quarterly report",
+                placement="standalone",
+            ),
+            response,
+        )
+    ]
+    assert ctx.replies == []
+    assert ctx.rich_replies == []
+    assert received_prompts == [
+        "Create a standalone Canvas for this quarterly report\n\n"
+        "Structured output instructions.\n\nPersistent surface instructions."
+    ]
+
+
+@pytest.mark.asyncio
+async def test_process_request_surface_falls_back_for_legacy_context(sample_config):
+    rt = Runtime(sample_config)
+    response = (
+        "```enso-surface\n"
+        '{"version":1,"surface":"app_home","fallback_text":"Dashboard updated.",'
+        '"blocks":[{"type":"header","text":"Dashboard"}]}\n'
+        "```"
+    )
+
+    class FakeCtx:
+        def __init__(self):
+            self.replies = []
+
+        async def reply(self, text): self.replies.append(text)
+        async def reply_status(self, text): return "handle"
+        async def edit_status(self, handle, text): pass
+        async def delete_status(self, handle): pass
+        async def send_typing(self): pass
+        def get_origin_env(self): return {}
+        def get_output_instructions(self): return ""
+        def get_surface_instructions(self): return "Persistent surface instructions."
+
+    async def fake_run(*args, **kwargs):
+        yield StreamEvent(kind="response", text=response)
+
+    ctx = FakeCtx()
+    rt.run_provider = fake_run
+
+    await rt.process_request("claude", "hello", "1", ctx)
+
+    assert ctx.replies == ["Dashboard updated."]
+
+
+@pytest.mark.asyncio
+async def test_process_request_preserves_surface_fence_without_surface_capability(
+    sample_config,
+):
+    rt = Runtime(sample_config)
+    response = (
+        "```enso-surface\n"
+        '{"version":1,"surface":"canvas","fallback_text":"Must stay literal",'
+        '"title":"Report","markdown":"# Report","placement":"standalone"}\n'
+        "```"
+    )
+
+    class FakeCtx:
+        rich_markdown_enabled = True
+
+        def __init__(self):
+            self.replies = []
+            self.rich_replies = []
+            self.publications = []
+
+        async def reply(self, text): self.replies.append(text)
+        async def reply_markdown(self, text): self.rich_replies.append(text)
+        async def offer_surface_draft(self, publication, source_text):
+            self.publications.append((publication, source_text))
+        async def reply_status(self, text): return "handle"
+        async def edit_status(self, handle, text): pass
+        async def delete_status(self, handle): pass
+        async def send_typing(self): pass
+        def get_origin_env(self): return {}
+        def get_output_instructions(self): return "Structured output instructions."
+        def get_surface_instructions(self): return ""
+
+    async def fake_run(*args, **kwargs):
+        yield StreamEvent(kind="response", text=response)
+
+    ctx = FakeCtx()
+    rt.run_provider = fake_run
+
+    await rt.process_request("claude", "hello", "1", ctx)
+
+    assert ctx.publications == []
+    assert ctx.replies == []
+    assert ctx.rich_replies == [response]
+
+
+@pytest.mark.asyncio
+async def test_process_request_invalid_surface_stays_ordinary_text(sample_config):
+    rt = Runtime(sample_config)
+    response = "```enso-surface\n{not json}\n```"
+
+    class FakeCtx:
+        rich_markdown_enabled = True
+
+        def __init__(self):
+            self.rich_replies = []
+            self.publications = []
+
+        async def reply(self, text): raise AssertionError("unexpected plain reply")
+        async def reply_markdown(self, text): self.rich_replies.append(text)
+        async def offer_surface_draft(self, publication, source_text):
+            self.publications.append((publication, source_text))
+        async def reply_status(self, text): return "handle"
+        async def edit_status(self, handle, text): pass
+        async def delete_status(self, handle): pass
+        async def send_typing(self): pass
+        def get_origin_env(self): return {}
+        def get_output_instructions(self): return ""
+        def get_surface_instructions(self): return "Persistent surface instructions."
+
+    async def fake_run(*args, **kwargs):
+        yield StreamEvent(kind="response", text=response)
+
+    ctx = FakeCtx()
+    rt.run_provider = fake_run
+
+    await rt.process_request("claude", "hello", "1", ctx)
+
+    assert ctx.publications == []
+    assert ctx.rich_replies == [response]
+
+
+@pytest.mark.asyncio
+async def test_process_request_uses_safe_fallback_for_over_limit_app_home(sample_config):
+    rt = Runtime(sample_config)
+    response = (
+        "```enso-surface\n"
+        + json.dumps(
+            {
+                "version": 1,
+                "surface": "app_home",
+                "fallback_text": "Compact complete dashboard fallback.",
+                "blocks": [{"type": "divider"}] * 101,
+            }
+        )
+        + "\n```"
+    )
+
+    class FakeCtx:
+        def __init__(self):
+            self.replies = []
+            self.publications = []
+
+        async def reply(self, text): self.replies.append(text)
+        async def offer_surface_draft(self, publication, source_text):
+            self.publications.append((publication, source_text))
+        async def reply_status(self, text): return "handle"
+        async def edit_status(self, handle, text): pass
+        async def delete_status(self, handle): pass
+        async def send_typing(self): pass
+        def get_origin_env(self): return {}
+        def get_output_instructions(self): return ""
+        def get_surface_instructions(self): return "Persistent surface instructions."
+
+    async def fake_run(*args, **kwargs):
+        yield StreamEvent(kind="response", text=response)
+
+    ctx = FakeCtx()
+    rt.run_provider = fake_run
+
+    await rt.process_request("claude", "hello", "1", ctx)
+
+    assert ctx.replies == ["Compact complete dashboard fallback."]
+    assert ctx.publications == []
 
 
 @pytest.mark.asyncio

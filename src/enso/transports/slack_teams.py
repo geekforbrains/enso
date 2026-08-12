@@ -13,11 +13,13 @@ from typing import TYPE_CHECKING, Any
 
 from .. import audit, ledger, policy
 from ..core import ExecutionContext
+from ..surface_drafts import SurfaceDraftOrigin
 from ..teams import AccessProfile, Decision, Route, TeamsConfig, Workspace, load_teams, resolve
 
 if TYPE_CHECKING:
     from ..core import Runtime
     from ..policy import Launch
+    from ..surface_drafts import SurfaceDraftOrigin
     from .slack import SlackContext, SlackTransport
 
 log = logging.getLogger(__name__)
@@ -109,6 +111,26 @@ class TeamsRouter:
         audit.close_all_pending()
         ledger.prune()
         audit.prune(self.teams.audit_max_age_days)
+
+    def surface_origin_authorized(self, origin: SurfaceDraftOrigin) -> bool:
+        """Revalidate a stored surface draft against the current exact route."""
+        if not self.account_ok or origin.account_id != self.teams.account_id:
+            return False
+        decision = resolve(
+            self.teams,
+            user_id=origin.user_id,
+            channel_id=(None if origin.route_kind == "dm" else origin.channel_id),
+        )
+        route = decision.route
+        return bool(
+            decision.status == "authorized"
+            and route is not None
+            and route.route_id == origin.route_id
+            and route.kind == origin.route_kind
+            and route.workspace == origin.workspace_id
+            and route.access == origin.access_profile
+            and route.audit == origin.route_audit
+        )
 
     async def handle_event(
         self,
@@ -388,6 +410,24 @@ class TeamsRouter:
             reply_thread,
             user_id=user,
             audit_turn_id=turn_id,
+            surface_origin=SurfaceDraftOrigin(
+                account_id=account,
+                route_id=route.route_id,
+                route_kind=route.kind,
+                workspace_id=workspace.name,
+                access_profile=access.name,
+                route_audit=route.audit,
+                user_id=user,
+                channel_id=channel,
+                thread_ts=reply_thread,
+                conversation_type=(
+                    "im" if is_dm else str(event.get("channel_type") or "channel")
+                ),
+                audit_turn_id=turn_id,
+            ),
+            conversation_type=(
+                "im" if is_dm else str(event.get("channel_type") or "channel")
+            ),
         )
         execution = ExecutionContext(
             chat_key=chat_key,
