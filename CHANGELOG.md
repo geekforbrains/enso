@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- Interactive agent turns and `/compact` now default to a 30-minute (1,800-second) `agent.timeout`, up from 15 minutes (900 seconds); `0` still disables it.
+
 ## [1.1.0] - 2026-08-12
 
 This release adds rich, structured Slack replies and requester-confirmed App Home and Canvas publication, while keeping persistent changes behind an exact preview and one-time human approval.

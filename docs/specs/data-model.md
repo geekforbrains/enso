@@ -258,7 +258,7 @@ The three defaulted blocks documented here are backfilled by
 ```jsonc
 {
   "agent": {
-    "timeout": 900            // interactive turn timeout in seconds; 0 disables
+    "timeout": 1800           // interactive turn timeout in seconds; 0 disables
   },
   "web": {
     "enabled": true,

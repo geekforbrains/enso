@@ -45,7 +45,7 @@ DEFAULT_WEB = {
     "external_skill_roots": ["~/.claude/skills"],
 }
 
-DEFAULT_AGENT = {"timeout": 15 * 60}
+DEFAULT_AGENT = {"timeout": 30 * 60}
 DEFAULT_RUNS = {"keep": 500, "max_age_days": 30}
 
 

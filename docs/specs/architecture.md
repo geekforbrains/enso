@@ -119,7 +119,7 @@ failed edit is retried; status is abandoned only after `STATUS_MAX_EDIT_FAILURES
 consecutive failures.
 
 Each interactive provider turn has the shared `agent.timeout` budget from `config.json`
-(900 seconds by default; `0` disables it). Queue wait does not count. When the budget is
+(1,800 seconds by default; `0` disables it). Queue wait does not count. When the budget is
 reached, Enso cancels the provider, terminates its process tree, changes the progress
 message to a timeout notice, and stores conversation-scoped background context for the
 next turn. That context warns the next active provider that partial filesystem or

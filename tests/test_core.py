@@ -362,7 +362,7 @@ def test_runtime_defaults(sample_config):
     rt = Runtime(sample_config)
     assert rt.get_active_provider("1") == "claude"
     assert rt.get_active_model("1", "claude") == "opus"
-    assert rt.agent_timeout == 15 * 60
+    assert rt.agent_timeout == 30 * 60
     assert rt.debug_prompts is False
     assert rt.debug_events is False
 
