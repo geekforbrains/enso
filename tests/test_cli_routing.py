@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 import typer
@@ -220,9 +221,12 @@ def test_slack_setup_validates_resolved_existing_token(monkeypatch):
         else None,
     )
     monkeypatch.setattr("enso.cli.Confirm.ask", lambda *args, **kwargs: False)
+    write_manifest = Mock(return_value="/tmp/slack-manifest.yaml")
+    monkeypatch.setattr("enso.cli._write_slack_manifest_copy", write_manifest)
 
     assert _setup_slack(config) is None
     assert "bot_token" not in config["transports"]["slack"]
+    write_manifest.assert_called_once_with()
 
 
 def test_telegram_setup_reconfiguration_updates_reference_without_plaintext(
@@ -302,6 +306,8 @@ def test_slack_setup_reconfiguration_updates_references_without_plaintext(
                 "bot_token": "stale-bot-literal",
                 "app_token": "stale-app-literal",
                 "notify_channel": "COLD",
+                "rich_messages": False,
+                "persistent_surfaces": False,
             },
         },
         "workspaces": {
@@ -364,6 +370,8 @@ def test_slack_setup_reconfiguration_updates_references_without_plaintext(
     assert slack["bot_user_id"] == "UNEWBOT"
     assert "allowed_users" not in slack
     assert slack["notify_channel"] == "CNEW"
+    assert slack["rich_messages"] is False
+    assert slack["persistent_surfaces"] is False
     assert config["routes"]["slack"] == {
         "account_id": "T1",
         "dms": {"UOLD": {"workspace": "company", "access": "admin"}},

@@ -2,6 +2,8 @@
 
 Slack gives each exact conversation route a workspace and an access profile. The model is intentionally small: Slack decides who belongs in a channel, Enso selects where the provider CLI starts and which native policy it receives, and the installed CLI enforces that policy.
 
+This document owns who may invoke a Slack route. [slack-output.md](slack-output.md) owns how authorized replies render and how App Home or Canvas drafts are confirmed.
+
 Telegram is separate. It remains private, one-to-one, and authorized by exact numeric IDs in `transports.telegram.allowed_users`; interactive Telegram work uses the global `working_dir`.
 
 ## Model
@@ -172,6 +174,10 @@ An invalid route or native policy never falls back to another workspace, access 
 Slack DMs dispatch ordinary messages. Channels dispatch only explicit bot mentions, including inside threads. An unlisted DM receives `I haven't been enabled for your DMs yet. Ask an Enso admin for access.` An explicit mention in an unlisted channel receives `I haven't been enabled in this channel yet. Ask an Enso admin to set me up.` as a thread reply. These are fixed transport responses: Enso does not resolve a workspace or access profile, fetch context or attachments, invoke an LLM, or create an audit record. They pass through the delivery ledger so a retried Slack event receives at most one reply.
 
 For configured routes, route resolution still occurs before surrounding context or attachments are fetched. Channel context is untrusted input even though every member is authorized to invoke the route.
+
+Rich output does not add route authority. A structured reply receives the same destination as its ordinary text fallback. A persistent-surface draft captures the exact authenticated account, route, requester, workspace, access profile, audit setting, conversation, and confirmation message before it can be shown. Only that requester may use its controls. At click time Enso resolves the route again and requires those bindings to remain identical; a removed or changed route revokes the draft instead of falling back to another workspace or policy.
+
+On an audited route, Publish or Cancel creates a separate `surface_confirmation` audit turn before the draft is consumed. The existing `audit.on_failure` policy applies before any Canvas or App Home mutation. The original provider turn retains the full exact confirmation preview that was delivered; the click records the same preview plus the human decision and terminal publication result.
 
 `enso config check` inspects Enso's configuration and native-policy launch plumbing. `enso route explain slack <user-id> [channel-id]` explains the local routing decision. Neither command certifies that a native policy has the intended meaning; test policies with the installed provider CLI and disposable files.
 

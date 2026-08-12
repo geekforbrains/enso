@@ -42,6 +42,8 @@ enso table register <name> --description "What it contains"
 enso --help
 ```
 
+`enso message send` and attachment captions are text-only. They do not interpret interactive Slack structured-message or persistent-surface envelopes.
+
 Reference docs live in `~/.enso/docs/`. Check them before answering from memory about this setup — see the `docs` skill.
 
 Queryable user data lives in registered SQLite tables. Always use the `tables` skill when tracking, querying, or changing structured data.

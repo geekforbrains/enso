@@ -1,7 +1,6 @@
 # Data model
 
-The storage layer for jobs and reference material (files), runs (SQLite + log files),
-registered data tables (SQLite), and the config that governs them. See
+The storage layer for jobs and reference material (files), runs and Slack delivery state (SQLite + log files), registered data tables (SQLite), and the config that governs them. See
 [architecture.md](architecture.md) for how these are written and
 [tables.md](tables.md) for the data-table contract.
 
@@ -20,7 +19,7 @@ whose value comes from filtering, joining, and aggregation.
 ├── update.json          # updater-owned metadata (installed revision, pending confirmation)
 ├── slack-app-manifest.yaml  # copy of the bundled Slack app manifest (written by `enso setup`)
 ├── enso.log             # service log
-├── enso.db              # SQLite: runs, route audit, Slack delivery ledger, and registered user tables
+├── enso.db              # SQLite: runs, Slack delivery/drafts/audit, and registered user tables
 ├── cache/
 │   └── slack.json       # Slack name↔ID directory cache (`enso slack`)
 ├── secrets/             # *.env files loaded into the `enso serve` environment at
@@ -346,6 +345,13 @@ The catalogs are parsed independently of Slack. `routes.slack` is additionally r
 
 ```jsonc
 {
+  "transports": {
+    "slack": {
+      "rich_messages": true,
+      "persistent_surfaces": true
+    }
+  },
+
   "workspaces": {
     "company": {
       "path": "~/.enso/workspaces/company",
@@ -422,6 +428,7 @@ Schema rules:
 - `access.<name>` requires a non-empty `providers` list and a `default_provider` from that list. `chat_commands` is either a unique list or the explicit string `"*"`; omission means none. It governs Enso chat commands only, not provider-native tools, slash commands, skills, plugins, hooks, or MCP servers.
 - An access profile uses exactly one mode: explicit `unrestricted: true`, or native policy files under `policy_dir`. For a restricted profile the directory defaults to `~/.enso/policies/<access-name>`. Unrestricted mode does not imply providers or commands.
 - `routes.slack.account_id` must match the Slack account returned by the configured credentials.
+- `transports.slack.rich_messages` and `transports.slack.persistent_surfaces` default to `true`. An explicit JSON `false` disables that feature; a non-boolean value fails closed as disabled. Persistent surfaces are effective only while rich messages are enabled. These are transport-wide rendering controls, not route permissions, and changes require a restart.
 - `routes.slack.dms` is keyed by exact Slack user ID. `routes.slack.channels` is keyed by exact channel ID. There are no named DM rules, groups, allowlists, defaults, or wildcards. An unrouted explicit contact receives only the fixed transport-level access response; it does not create an implicit route.
 - Every route requires a known `workspace` and `access`. `audit` is optional and defaults to `false`.
 - A missing workspace, access profile, provider, or native policy is an error. Nothing falls back to `working_dir`, another profile, or unrestricted execution.
@@ -474,6 +481,50 @@ CREATE TABLE IF NOT EXISTS _enso_slack_events (
 
 The delivery ID is an opaque digest derived from the authenticated Slack account, channel, and canonical source-message timestamp. A duplicate is acknowledged without another provider run or response. This includes unrouted DMs and explicit channel mentions, whose fixed access response is therefore sent at most once. The ledger contains no message text. Pending claims left by a service crash are closed during startup rather than replayed automatically. Rows older than seven days are pruned at service startup.
 
+### Slack persistent-surface drafts
+
+App Home and Canvas requests use a private one-time draft store. A draft contains the exact validated publication, its original envelope, trusted route origin, destination lease, and—in the channel Canvas case—the server-resolved target snapshot. The model never supplies an account, recipient, channel, Canvas ID, route, or access profile.
+
+```sql
+CREATE TABLE IF NOT EXISTS _enso_surface_drafts (
+    draft_id          TEXT PRIMARY KEY,
+    account_id        TEXT NOT NULL,
+    route_id          TEXT NOT NULL,
+    route_kind        TEXT NOT NULL,
+    workspace_id      TEXT NOT NULL,
+    access_profile    TEXT NOT NULL,
+    route_audit       INTEGER NOT NULL,
+    user_id           TEXT NOT NULL,
+    channel_id        TEXT NOT NULL,
+    thread_ts         TEXT,
+    conversation_type TEXT NOT NULL,
+    audit_turn_id     TEXT,
+    target_key        TEXT NOT NULL,
+    publication_hash  TEXT NOT NULL,
+    publication_json  TEXT,
+    target_hash       TEXT,
+    target_json       TEXT,
+    source_text       TEXT,
+    status            TEXT NOT NULL,
+    message_ts        TEXT,
+    created_at        TEXT NOT NULL,
+    expires_at        TEXT NOT NULL,
+    completed_at      TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_surface_drafts_expiry
+ON _enso_surface_drafts (status, expires_at);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_surface_drafts_publishing_target
+ON _enso_surface_drafts (target_key) WHERE status='publishing';
+```
+
+A new draft starts `pending`, is bound exactly once to the bot message containing its controls, and expires after 15 minutes. Publish atomically changes it to `publishing`; Cancel changes it to `cancelled`. Publish completes as `published`, `failed`, `partial`, or `unknown`. Maintenance also uses `expired`, `superseded`, and `revoked`. The unique partial index prevents concurrent Enso mutations of one App Home or channel Canvas target while allowing independent standalone Canvases.
+
+Every terminal transition sets `publication_json`, `target_json`, and `source_text` to SQL `NULL`. This is logical application-level scrubbing, not a promise of forensic erasure from SQLite WAL pages or storage media; filesystem permissions around `~/.enso/enso.db` remain the at-rest boundary. Live maintenance runs every five minutes to expire pending rows and prune terminal metadata after seven days. It deliberately leaves `publishing` rows alone so a slow Slack call cannot lose its lease. Startup reconciliation changes a pre-crash `publishing` row to `unknown`, fails unsafe unbound or legacy channel drafts, expires overdue drafts, and never replays a Slack mutation. If Slack succeeds but the terminal database write transiently fails, Enso retries only that local write; it never repeats the external API call.
+
+On a route with `audit: true`, Publish and Cancel create a separate `kind='surface_confirmation'` audit turn before claim or external mutation. `audit.on_failure='block'` leaves the draft pending if that required evidence cannot be created. The original and confirmation audit turns retain the exact rendered preview plus the actor, decision, outcome, and delivery result according to `audit.max_age_days`; scrubbing `_enso_surface_drafts` therefore does not erase audit evidence on an audited route.
+
 ### Optional audit log
 
 A route with `audit: true` asks Enso to record its triggering message and terminal outcome. An unrouted DM or channel mention has no route and creates no audit row; its fixed response is represented only by the metadata-only delivery ledger. The audit store is operational evidence, not a complete transcript or security boundary. It excludes surrounding Slack context, attachments, status edits, reasoning, tool calls, native provider history, and unrelated outbound messages.
@@ -516,7 +567,7 @@ CREATE TABLE IF NOT EXISTS _enso_audit (
 
 Audit does not change routing, jobs, or ordinary `enso message send` behavior. If complete outbound-accounting is required, it needs a separate outbound-event design rather than stretching a one-row inbound-turn record.
 
-`_enso_audit` and `_enso_slack_events` are reserved Enso tables and never appear in the registered-tables catalog. Restricted policies must deny access to `~/.enso/enso.db`.
+`_enso_audit`, `_enso_slack_events`, and `_enso_surface_drafts` are reserved Enso tables and never appear in the registered-tables catalog. Restricted policies must deny access to `~/.enso/enso.db`.
 
 ## Cross-cutting rules
 

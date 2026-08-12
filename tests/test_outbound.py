@@ -105,7 +105,7 @@ def test_agent_instructions_match_the_strict_envelope_contract():
     assert f"1 to {MAX_TABLE_ROWS} rows" in instructions
     assert f"{MAX_DATA_TABLE_TEXT:,} cell characters" in instructions
     assert f"{MAX_TABLE_TEXT:,} cell characters" in instructions
-    assert "all native table blocks combined" in instructions
+    assert "simple table is present" in instructions
     assert '"type":"section"' in instructions
     assert '"type":"data_visualization"' in instructions
     assert all(chart_type in instructions for chart_type in ("pie", "bar", "area", "line"))
@@ -668,14 +668,12 @@ def test_parse_outbound_message_rejects_invalid_native_table_schema(block):
             _data_table(rows=[[_text_cell("H")], [_text_cell("y" * 9_998)]]),
         ],
         [
-            _table(rows=[[_text_cell("x" * MAX_TABLE_TEXT)]]),
-            _table(rows=[[_text_cell("y" * MAX_TABLE_TEXT)]]),
+            _table(rows=[[_text_cell("x" * 5_000)]]),
+            _table(rows=[[_text_cell("y" * 5_000)]]),
         ],
         [
-            _data_table(
-                rows=[[_text_cell("H")], [_text_cell("x" * 14_999)]]
-            ),
-            _table(rows=[[_text_cell("y" * 5_000)]]),
+            _data_table(rows=[[_text_cell("H")], [_text_cell("x" * 8_999)]]),
+            _table(rows=[[_text_cell("y" * 1_000)]]),
         ],
     ],
 )
@@ -707,15 +705,12 @@ def test_parse_outbound_message_accepts_native_table_shape_boundaries(block):
             _data_table(rows=[[_text_cell("H")], [_text_cell("y" * 10_000)]]),
         ],
         [
-            _table(rows=[[_text_cell("x" * 7_000)]]),
-            _table(rows=[[_text_cell("y" * 7_000)]]),
-            _table(rows=[[_text_cell("z" * 7_000)]]),
+            _table(rows=[[_text_cell("x" * 5_001)]]),
+            _table(rows=[[_text_cell("y" * 5_000)]]),
         ],
         [
-            _data_table(
-                rows=[[_text_cell("H")], [_text_cell("x" * 14_999)]]
-            ),
-            _table(rows=[[_text_cell("y" * 5_001)]]),
+            _data_table(rows=[[_text_cell("H")], [_text_cell("x" * 9_000)]]),
+            _table(rows=[[_text_cell("y" * 1_000)]]),
         ],
     ],
 )
@@ -1132,6 +1127,14 @@ def test_parse_surface_publication_rejects_unsafe_or_invalid_schema(payload):
                 "type": "section",
                 "text": {"type": "markdown", "text": "x" * 3001},
             }
+        ],
+        [
+            _table(rows=[[_text_cell("x" * 5_001)]]),
+            _table(rows=[[_text_cell("y" * 5_000)]]),
+        ],
+        [
+            _data_table(rows=[[_text_cell("H")], [_text_cell("x" * 9_000)]]),
+            _table(rows=[[_text_cell("y" * 1_000)]]),
         ],
     ],
 )

@@ -95,6 +95,7 @@ def test_worker_threads_do_not_share_run_database_connections(tmp_enso, monkeypa
     created_on = {}
     selected_on = []
     closed = set()
+    connections = []
     records_lock = threading.Lock()
 
     class TrackingConnection(sqlite3.Connection):
@@ -113,6 +114,9 @@ def test_worker_threads_do_not_share_run_database_connections(tmp_enso, monkeypa
         kwargs["factory"] = TrackingConnection
         conn = real_connect(*args, **kwargs)
         with records_lock:
+            # Retain closed objects so older CPython versions cannot reuse an
+            # address and make two distinct connections appear identical.
+            connections.append(conn)
             created_on[id(conn)] = threading.get_ident()
         return conn
 

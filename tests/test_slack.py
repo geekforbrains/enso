@@ -389,7 +389,7 @@ class TestSlackContext:
     @pytest.mark.asyncio
     async def test_reply_without_thread(self):
         client = _make_client()
-        ctx = SlackContext(client, "C123")
+        ctx = SlackContext(client, "C123", rich_messages=False)
         await ctx.reply("no thread")
 
         call_kwargs = client.chat_postMessage.call_args.kwargs
@@ -793,7 +793,7 @@ class TestSlackContext:
     @pytest.mark.asyncio
     async def test_reply_message_uses_fallback_only_when_rich_messages_are_disabled(self):
         client = _make_client()
-        ctx = SlackContext(client, "C123")
+        ctx = SlackContext(client, "C123", rich_messages=False)
         message = OutboundMessage(
             fallback_text="Readable fallback",
             blocks=(MarkdownBlock(text="# Rich summary"),),
@@ -1884,6 +1884,39 @@ class TestSlackContext:
         assert scope is not None
         assert scope.status == "revoked"
 
+    @pytest.mark.parametrize("disabled_flag", ["rich_messages", "persistent_surfaces"])
+    @pytest.mark.asyncio
+    async def test_surface_opt_out_revokes_existing_confirmation(self, disabled_flag):
+        rt = _make_runtime()
+        rt.config["transports"]["slack"][disabled_flag] = False
+        transport = _make_transport(rt)
+        client = _make_client()
+        publication = AppHomePublication(
+            fallback_text="Dashboard draft.",
+            blocks=(HomeHeaderBlock(text="Dashboard"),),
+        )
+        draft = surface_drafts.create(
+            publication,
+            source_text="validated model envelope",
+            origin=_app_home_origin(),
+        )
+        assert surface_drafts.bind_message(draft.draft_id, message_ts="300.400")
+        body, action = _app_home_action_body(draft.draft_id)
+
+        await transport._handle_surface_action(body, action, client)
+
+        client.views_publish.assert_not_awaited()
+        client.canvases_create.assert_not_awaited()
+        scope = surface_drafts.get_origin_scoped(
+            draft.draft_id,
+            account_id="TTEST",
+            user_id="U123",
+            channel_id="D123",
+            message_ts="300.400",
+        )
+        assert scope is not None
+        assert scope.status == "revoked"
+
     @pytest.mark.asyncio
     async def test_other_user_cannot_consume_surface_draft(self):
         rt = _make_runtime()
@@ -2496,6 +2529,7 @@ class TestSlackContext:
             client,
             "C123",
             user_id="U123",
+            rich_messages=False,
             persistent_surfaces=True,
         )
         publication = AppHomePublication(
@@ -3692,13 +3726,11 @@ class TestTransportInit:
         assert transport.teams_router.teams.dispatchable
         assert transport.name == "slack"
         assert transport.message_limit == 40000
-        assert transport.rich_messages is False
-        assert transport.persistent_surfaces is False
+        assert transport.rich_messages is True
+        assert transport.persistent_surfaces is True
 
-    def test_rich_messages_config_flows_to_context(self):
+    def test_rich_messages_default_config_flows_to_context(self):
         rt = _make_runtime()
-        rt.config["transports"]["slack"]["rich_messages"] = True
-        rt.config["transports"]["slack"]["persistent_surfaces"] = True
         transport = _make_transport(rt)
 
         ctx = transport.make_context(
@@ -3714,6 +3746,55 @@ class TestTransportInit:
         assert ctx.rich_markdown_enabled is True
         assert "```enso-surface" in ctx.get_surface_instructions()
 
+    @pytest.mark.parametrize(
+        ("settings", "rich_enabled", "surfaces_enabled"),
+        [
+            ({}, True, True),
+            ({"rich_messages": False}, False, True),
+            ({"persistent_surfaces": False}, True, False),
+            (
+                {"rich_messages": False, "persistent_surfaces": False},
+                False,
+                False,
+            ),
+        ],
+    )
+    def test_rich_message_flags_are_independent(
+        self,
+        settings,
+        rich_enabled,
+        surfaces_enabled,
+    ):
+        rt = _make_runtime()
+        rt.config["transports"]["slack"].update(settings)
+        transport = _make_transport(rt)
+
+        ctx = transport.make_context(
+            _make_client(),
+            "C123",
+            "1234.5678",
+            user_id="U123",
+            surface_origin=_surface_origin(),
+        )
+
+        assert transport.rich_messages is rich_enabled
+        assert transport.persistent_surfaces is surfaces_enabled
+        assert ctx.rich_markdown_enabled is rich_enabled
+        assert bool(ctx.get_output_instructions()) is rich_enabled
+        assert bool(ctx.get_surface_instructions()) is (
+            rich_enabled and surfaces_enabled
+        )
+
+    @pytest.mark.parametrize("value", [None, 0, 1, "true", "false", [], {}])
+    def test_rich_message_flags_reject_non_boolean_values(self, value):
+        rt = _make_runtime()
+        rt.config["transports"]["slack"]["rich_messages"] = value
+        rt.config["transports"]["slack"]["persistent_surfaces"] = value
+        transport = _make_transport(rt)
+
+        assert transport.rich_messages is False
+        assert transport.persistent_surfaces is False
+
     def test_empty_config(self):
         rt = _make_runtime()
         rt.config = {"transports": {}}
@@ -3722,6 +3803,8 @@ class TestTransportInit:
         assert transport.bot_token == ""
         assert transport.teams_router is not None
         assert not transport.teams_router.teams.dispatchable
+        assert transport.rich_messages is True
+        assert transport.persistent_surfaces is True
 
     @pytest.mark.asyncio
     async def test_surface_action_listener_acknowledges_before_any_work(self):

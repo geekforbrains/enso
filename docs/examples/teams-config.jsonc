@@ -6,6 +6,8 @@
 // without an LLM launch; ordinary unrouted channel messages are ignored.
 // Telegram, when used instead, remains private and uses exact numeric IDs under
 // transports.telegram.allowed_users plus the global working_dir.
+// Rich messages and persistent surfaces require the current bundled Slack app
+// manifest, including App Home, interactivity, canvases:write, and files:read.
 //
 // Config changes require an Enso restart. Before restarting, run:
 //
@@ -21,7 +23,13 @@
       "bot_token": "xoxb-...",
       "app_token": "xapp-...",
       "bot_user_id": "UBOT000000",
-      "notify_channel": "C0COMPANY"
+      "notify_channel": "C0COMPANY",
+
+      // Both rich settings default to true; they are shown explicitly here.
+      // Set persistent_surfaces false to keep rich replies without App Home or
+      // Canvas drafts. Setting rich_messages false disables both rich paths.
+      "rich_messages": true,
+      "persistent_surfaces": true
     }
   },
 

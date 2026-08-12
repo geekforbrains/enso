@@ -1512,8 +1512,10 @@ class SlackTransport(BaseTransport):
         self.bot_user_id: str = slack_cfg.get("bot_user_id", "")
         self.notify_channel: str = slack_cfg.get("notify_channel", "")
         self.channel_context_messages: int = int(slack_cfg.get("channel_context_messages", 20))
-        self.rich_messages: bool = slack_cfg.get("rich_messages") is True
-        self.persistent_surfaces: bool = slack_cfg.get("persistent_surfaces") is True
+        self.rich_messages: bool = slack_cfg.get("rich_messages", True) is True
+        self.persistent_surfaces: bool = (
+            slack_cfg.get("persistent_surfaces", True) is True
+        )
         self._client: AsyncWebClient | None = None
         self._surface_reconciled = False
         self._surface_terminal_retries: dict[str, str] = {}

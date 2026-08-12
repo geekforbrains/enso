@@ -5,7 +5,7 @@ description: Create and manage scheduled background jobs. Use when the user asks
 
 # Jobs
 
-Background jobs are scheduled tasks that run autonomously via the Enso service. Each job selects a named workspace and access profile, then spawns a CLI agent there on a cron schedule. Scheduled failures notify the configured destination automatically. Manual runs print their result and suppress Enso's automatic failure notification. Successful jobs are silent unless their prompt deliberately sends a message.
+Background jobs are scheduled tasks that run autonomously via the Enso service. Each job selects a named workspace and access profile, then spawns a CLI agent there on a cron schedule. Scheduled failures notify the configured destination automatically. Manual runs print their result and suppress Enso's automatic failure notification. Successful jobs are silent unless their prompt deliberately sends a message. Job alerts and messages sent with `enso message send` are text-only; interactive Slack structured blocks and persistent-surface drafts are not parsed on this path.
 
 ## Workflow
 

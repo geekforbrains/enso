@@ -62,9 +62,10 @@ STRUCTURED_OUTPUT_INSTRUCTIONS = (
     '"text":"nonblank display text"}; a numeric cell is exactly {"type":"number",'
     '"value":42,"text":"42"}. Use 1 to '
     f"{MAX_TABLE_COLUMNS} columns. Each data_table allows {MAX_DATA_TABLE_TEXT:,} "
-    f"cell characters; each table allows {MAX_TABLE_TEXT:,} cell characters; all "
-    "native table "
-    f"blocks combined allow {MAX_NATIVE_TABLE_TEXT:,} cell characters per message.\n"
+    f"cell characters; each table allows {MAX_TABLE_TEXT:,} cell characters. "
+    f"Data-table-only messages allow {MAX_NATIVE_TABLE_TEXT:,} combined cell "
+    f"characters; if any simple table is present, all native table blocks combined "
+    f"allow {MAX_TABLE_TEXT:,}.\n"
     '- Compact two-column fields: {"type":"section","fields":['
     '{"type":"markdown","text":"**MRR**\\n$42k"},'
     '{"type":"text","text":"On target"}]}. Use 1 to '
@@ -571,6 +572,20 @@ OutboundBlock = (
 )
 
 
+def _validate_native_table_text(blocks: tuple[object, ...]) -> None:
+    native_table_text = sum(
+        _table_text_length(block.rows)
+        for block in blocks
+        if isinstance(block, (DataTableBlock, TableBlock))
+    )
+    has_simple_table = any(isinstance(block, TableBlock) for block in blocks)
+    limit = MAX_TABLE_TEXT if has_simple_table else MAX_NATIVE_TABLE_TEXT
+    if native_table_text > limit:
+        raise _OutboundLimitError(
+            f"native table blocks exceed {limit} cumulative cell characters"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class OutboundMessage:
     """A rich presentation plus its complete human-readable fallback."""
@@ -607,18 +622,7 @@ class OutboundMessage:
                 f"markdown blocks exceed {MAX_MARKDOWN_TEXT} cumulative characters"
             )
 
-        native_table_text = sum(
-            _table_text_length(block.rows)
-            for block in self.blocks
-            if isinstance(block, (DataTableBlock, TableBlock))
-        )
-        # Slack's current backend caps each simple TableBlock at 10k (checked
-        # by TableBlock) and all native table blocks together at 20k.
-        if native_table_text > MAX_NATIVE_TABLE_TEXT:
-            raise _OutboundLimitError(
-                "native table blocks exceed "
-                f"{MAX_NATIVE_TABLE_TEXT} cumulative cell characters"
-            )
+        _validate_native_table_text(self.blocks)
         visualization_count = sum(
             isinstance(block, DataVisualizationBlock) for block in self.blocks
         )
@@ -770,16 +774,7 @@ class AppHomePublication:
         ):
             raise ValueError("App Home contains an unsupported block type")
 
-        native_table_text = sum(
-            _table_text_length(block.rows)
-            for block in self.blocks
-            if isinstance(block, (DataTableBlock, TableBlock))
-        )
-        if native_table_text > MAX_NATIVE_TABLE_TEXT:
-            raise _OutboundLimitError(
-                "App Home native table blocks exceed "
-                f"{MAX_NATIVE_TABLE_TEXT} cumulative cell characters"
-            )
+        _validate_native_table_text(self.blocks)
 
 
 SurfacePublication = CanvasPublication | AppHomePublication

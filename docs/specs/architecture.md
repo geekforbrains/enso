@@ -170,6 +170,20 @@ Connections are opened lazily per operation and the DB is created on first write
 runtime sends each complete telemetry operation through a worker thread; no SQLite
 connection is cached, shared across threads, or allowed to block the event loop.
 
+## Slack output resolution
+
+Slack's output contract is described in [slack-output.md](slack-output.md). On an authorized interactive turn, the Slack context advertises transport-neutral structured-message instructions when rich output is enabled and persistent-surface draft instructions when both rich settings and a trusted route origin are available. Context, attachments, and history remain untrusted input; they cannot provide destination IDs or authorization.
+
+After the provider's final response has been assembled, `Runtime` resolves it in this order:
+
+1. Parse an exact whole-response persistent-surface draft and ask the Slack context to stage it.
+1. Otherwise parse an exact whole-response structured message and ask the context to render its typed blocks.
+1. Otherwise send the ordinary answer through Slack's standard-Markdown path.
+
+Only successful final provider output follows this order. Errors, commands, status updates, direct notifications, and scheduled-job messages remain on their existing text paths. The transport-neutral context methods fall back to complete text for every other transport. Slack rendering keeps a top-level accessibility/notification fallback and retries only known block-validation rejection as text; it does not retry an ambiguous post.
+
+Staging a surface stores a validated exact payload and posts an inert preview with requester-bound controls. It does not call a persistent Slack API. The Bolt block-action listener acknowledges the click first, then validates the Slack payload and draft scope, reauthorizes the exact route, creates required audit evidence, atomically claims the destination lease, and revalidates any channel Canvas target/revision. Only that handler invokes Canvas or App Home APIs, without another provider turn. Interrupted or ambiguous mutations are terminal and never replayed automatically.
+
 ## Request resolution
 
 Slack routing is described in [teams.md](teams.md), native CLI invocation in [permissions.md](permissions.md), and storage in [data-model.md](data-model.md). Slack always uses exact routes. Telegram retains its exact numeric user-ID allowlist and global `working_dir` and rejects non-private chat types.
@@ -270,9 +284,14 @@ internet and the PRD makes that a non-goal.
 
 | Area                     | Change                                                                                        |
 | ------------------------ | --------------------------------------------------------------------------------------------- |
-| `core.py`                | Records scheduled runs around `_execute_job` and enforces retention                           |
+| `core.py`                | Records scheduled runs and resolves final text, structured messages, and surface drafts       |
 | `cli.py`                 | Provides standalone `enso web` and manual job-run commands                                    |
 | `config.py`              | Backfills `web` (including `allowed_hosts` / `external_skill_roots`) and `runs` defaults      |
+| `formatting.py`          | Converts legacy Markdown and supplies standard-Markdown-aware splitting                       |
+| `outbound.py`            | Owns strict typed message/surface contracts, parsers, and Slack-aligned limits                |
+| `surface_drafts.py`      | Owns expiring confirmation drafts, atomic claim/lease, scrubbing, and crash reconciliation    |
+| `transports/slack.py`    | Renders rich blocks, stages previews, handles confirmed actions, and invokes Slack APIs       |
+| `slack_manifest.yaml`    | Declares Socket Mode, App Home, interactivity, events, and required bot scopes                |
 | `jobs.py`                | Loads YAML scalars with `BaseLoader`, then falls back for malformed legacy headers            |
 | `frontmatter.py`         | Provides fence-aware raw edits and YAML serialization, writing through `fsutil`               |
 | `fsutil.py`              | Owns atomic text writes, containment checks, pristine-file hashing, and SQLite file hardening |

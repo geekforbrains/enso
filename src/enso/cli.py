@@ -1028,6 +1028,7 @@ def _write_slack_manifest_copy() -> str:
 def _setup_slack(config: dict) -> None:
     """Configure Slack credentials and one exact routed owner DM."""
     slack_cfg = config.get("transports", {}).get("slack", {})
+    manifest_path = _write_slack_manifest_copy()
     routes_block = config.get("routes")
     existing_routes = (
         routes_block.get("slack")
@@ -1054,25 +1055,35 @@ def _setup_slack(config: dict) -> None:
                 "\n  Migrate Slack now?" if needs_allowlist_migration else "\n  Reconfigure Slack?",
                 default=needs_allowlist_migration,
             ):
+                console.print(
+                    "  Slack credentials unchanged. Apply the current app manifest"
+                    " before restarting: "
+                    f"[bold]{manifest_path}[/]"
+                )
                 return
         else:
             console.print("[yellow]  Existing token is invalid.[/]")
 
     # Offer a one-paste app manifest to short-circuit the Slack app wizard.
-    manifest_path = _write_slack_manifest_copy()
     console.print("  To create the Slack app, paste the bundled manifest:\n")
     console.print("   1. Open [bold]https://api.slack.com/apps?new_app=1[/]")
     console.print("   2. Choose [bold]From an app manifest[/]")
     console.print("   3. Pick your workspace")
     console.print(f"   4. Paste the contents of [bold]{manifest_path}[/]")
-    console.print("      (scopes, events, and Socket Mode are all pre-configured)")
+    console.print(
+        "      (scopes, events, App Home, interactivity, and Socket Mode"
+        " are pre-configured)"
+    )
     console.print("   5. [bold]Install to workspace[/] — this gives you the Bot Token")
     console.print(
         "   6. Basic Information \u2192 [bold]App-Level Tokens[/]"
         " \u2192 Generate, with scope [bold]connections:write[/]"
     )
     console.print("   7. Copy both tokens; paste them when prompted below.\n")
-    console.print("  [dim]If you already have an app, jump straight to copying the tokens.[/]\n")
+    console.print(
+        "  [dim]For an existing app, apply this manifest and reinstall if Slack"
+        " requests new scope consent before reusing its tokens.[/]\n"
+    )
 
     while True:
         bot_token = Prompt.ask("  Bot Token (xoxb-...)", password=True)
@@ -1729,7 +1740,7 @@ def message_send(
         ),
     ] = "",
 ) -> None:
-    """Send a message via the configured transport."""
+    """Send a text-only message via the configured transport."""
     cfg = load_config()
     transport, token, targets, thread_ts = _resolve_send_targets(cfg, to)
 

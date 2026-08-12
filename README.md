@@ -14,6 +14,7 @@ Design docs live in [`docs/`](docs/) and are the source of truth for planned and
 | [`docs/specs/architecture.md`](docs/specs/architecture.md) | Dashboard/bot process boundaries and shared storage                                 |
 | [`docs/specs/data-model.md`](docs/specs/data-model.md)     | SQLite schemas, config, and the `~/.enso/` layout                                   |
 | [`docs/specs/docs.md`](docs/specs/docs.md)                 | Operator-authored reference docs and their dashboard/CLI workflow                   |
+| [`docs/specs/slack-output.md`](docs/specs/slack-output.md) | Rich Slack replies, typed blocks, confirmed App Home, and Canvas publication        |
 | [`docs/specs/teams.md`](docs/specs/teams.md)               | Exact Slack routes, shared workspaces, access profiles, and optional audit metadata |
 | [`docs/specs/permissions.md`](docs/specs/permissions.md)   | Native Claude/Codex policy selection and invocation                                 |
 | [`docs/specs/tables.md`](docs/specs/tables.md)             | Registered SQLite data tables, discovery, and bounded read-only views               |
@@ -102,11 +103,11 @@ Telegram autocompletes these when you type `/`. On Slack, use `!` instead (e.g. 
 | `/logs`    | Last 25 log entries                                                                   |
 | `/help`    | Show all commands                                                                     |
 
-You can also send files — they're downloaded and passed to the active agent. Responses render with per-transport formatting (Telegram HTML; Slack mrkdwn). While a request runs, Enso keeps one transient status message showing which provider, model, and effort are handling it, how long it has been running, and what the agent is doing right now (`Reading core.py`, `Running pytest`, `Writing report.md`) — including for Antigravity, whose headless mode prints only a final answer. The elapsed counter updates every second through 30 seconds, then every five seconds to stay within transport limits; each edit includes the latest activity. The final response contains only the agent's answer. Interactive turns stop after `agent.timeout` seconds (900 by default; set it to `0` to disable). A timeout leaves a conversation-scoped background notice for the next turn so the active provider knows partial work may remain.
+You can also send files — they're downloaded and passed to the active agent. Responses render with per-transport formatting: Telegram uses HTML, while successful interactive Slack answers use standard Markdown by default, including headings, links, fenced code, task lists, and Markdown tables. Slack agents can also choose validated native tables, compact fields, and line, bar, area, or pie charts when those layouts are useful. While a request runs, Enso keeps one transient status message showing which provider, model, and effort are handling it, how long it has been running, and what the agent is doing right now (`Reading core.py`, `Running pytest`, `Writing report.md`) — including for Antigravity, whose headless mode prints only a final answer. The elapsed counter updates every second through 30 seconds, then every five seconds to stay within transport limits; each edit includes the latest activity. The final response contains only the agent's answer. Interactive turns stop after `agent.timeout` seconds (900 by default; set it to `0` to disable). A timeout leaves a conversation-scoped background notice for the next turn so the active provider knows partial work may remain.
 
 Effort is stored separately for each conversation, provider, and model. Claude supports its existing model-dependent range through `max`. Codex Sol and Terra support `low` through `ultra`; Luna supports `low` through `max`. Antigravity's concrete model names already encode effort (for example, `gemini-3.6-flash-low`), so choose the desired variant with `/model`. Enso clamps an unsupported higher Claude/Codex choice to the active model's maximum and reports the effective level.
 
-**Slack specifics.** Every authorized Slack location is an exact route. Configured DMs dispatch every ordinary message. In channels, Enso only responds when mentioned (`@bot help me`); once a thread starts, it stays attentive to that thread only if you keep mentioning it. For configured routes, the bot fetches the last few thread/channel messages as context so it knows what's going on. Explicit contact at an unconfigured location gets a fixed local response as described below.
+**Slack specifics.** Every authorized Slack location is an exact route. Configured DMs dispatch every ordinary message. In channels, Enso only responds when mentioned (`@bot help me`); once a thread starts, it stays attentive to that thread only if you keep mentioning it. For configured routes, the bot fetches the last few thread/channel messages as context so it knows what's going on. Explicit contact at an unconfigured location gets a fixed local response as described below. Rich output and persistent surfaces are enabled by default. A natural-language request for an App Home or Canvas produces an exact preview with requester-bound **Publish** and **Cancel** buttons; Slack is not mutated before confirmation. App Home requests are accepted only in a configured one-to-one DM. A channel Canvas request creates a tab when none exists or clearly proposes a full replacement of the one unambiguous existing Canvas. See [`docs/specs/slack-output.md`](docs/specs/slack-output.md) for limits, fallbacks, security, and opt-outs.
 
 ## Slack directory (`enso slack`)
 
@@ -134,9 +135,7 @@ skill teaches agents when and how to use these commands.
 
 ### Slack app setup
 
-Enso ships a Slack app manifest with every scope and event subscription
-pre-configured. `enso setup` copies it to `~/.enso/slack-app-manifest.yaml`
-and walks you through the one-paste flow. To do it manually:
+Enso ships a Slack app manifest with its scopes, events, App Home, interactivity, and Socket Mode preconfigured. `enso setup` refreshes `~/.enso/slack-app-manifest.yaml` even when you keep existing credentials, then walks new installations through the one-paste flow. To do it manually:
 
 1. Open https://api.slack.com/apps?new_app=1
 1. Choose **From an app manifest**
@@ -147,9 +146,7 @@ and walks you through the one-paste flow. To do it manually:
    with scope `connections:write` — that's the xapp- token
 1. `enso setup` and paste both tokens when prompted
 
-The manifest is a reasonable default; prune scopes or events if you
-don't need a feature. Without the directory-cache events the cache
-still works, it just refreshes lazily instead of in real time.
+For an existing Enso Slack app, apply the current manifest to that app before upgrading: enable its Home tab and interactivity, add `canvases:write` and `files:read` if missing, reinstall or reauthorize when Slack requests consent, then restart Enso. Block actions continue over Socket Mode; no public interactivity URL or `block_actions` event subscription is required. `chat:write` covers replies and confirmation-card updates, while App Home publication adds no special bot scope. The manifest is a reasonable default; prune features only when you also disable their Enso configuration. Without the directory-cache events the cache still works, but refreshes lazily instead of in real time.
 
 ## Sending messages from the CLI
 
@@ -167,7 +164,7 @@ Pass `--to` to target a single destination. Without it, an interactive agent cal
 | Telegram  | send to that numeric chat ID    | use the interactive origin, then `notify_channel` |
 | Slack     | send to that channel/DM/user ID | use the interactive origin, then `notify_channel` |
 
-Neither transport auto-broadcasts. Always pass `--to`, call from an interactive turn with an origin, or configure `notify_channel`. Slack file uploads accept any type up to 1 GB.
+Neither transport auto-broadcasts. Always pass `--to`, call from an interactive turn with an origin, or configure `notify_channel`. Slack file uploads accept any type up to 1 GB. CLI messages, file captions, scheduled-job notifications, and other direct notifications are intentionally text-only in this release; rich structured rendering applies to interactive Slack final answers.
 
 Telegram accepts private chats only and authorizes exact numeric strings in `transports.telegram.allowed_users`. The `"*"` wildcard and old `allowed_user_ids` spelling are not supported.
 
@@ -285,6 +282,8 @@ development is in progress.
 
 Everything lives under `~/.enso/`. Config is at `~/.enso/config.json` — the setup wizard writes it for you, but you can edit it directly to add models, define workspaces/access profiles/routes, change Telegram's global working directory, or set the interactive timeout through `agent.timeout` (whole seconds). Upgrades backfill newly supported providers without replacing existing paths or custom model lists. Set `notify_channel` to give `enso message send`, job alerts, and autocompact hooks a default destination when no interactive origin or explicit destination exists. No transport broadcasts implicitly.
 
+Slack's `rich_messages` and `persistent_surfaces` settings both default to `true`. Set `persistent_surfaces` to the JSON boolean `false` to keep standard Markdown and structured message blocks while disabling App Home and Canvas drafts; set `rich_messages` to `false` to restore legacy text delivery and implicitly disable surfaces too. Non-boolean values fail closed as disabled. Restart Enso after changing either setting.
+
 ### Secrets
 
 `enso serve` loads every `~/.enso/secrets/*.env` file into its own environment at startup,
@@ -338,7 +337,9 @@ reference also requires the helper's `op_set_secret` function.
         "item": "Enso - Transport - Slack",
         "field": "SLACK_APP_TOKEN"
       },
-      "notify_channel": "C12345678"
+      "notify_channel": "C12345678",
+      "rich_messages": true,
+      "persistent_surfaces": true
     }
   },
   "web": {
@@ -350,7 +351,7 @@ reference also requires the helper's `op_set_secret` function.
 }
 ```
 
-That fragment demonstrates credential storage only. A valid Slack configuration also needs the top-level `workspaces`, `access`, and exact `routes.slack` blocks shown in [`docs/examples/teams-config.jsonc`](docs/examples/teams-config.jsonc).
+That fragment demonstrates credential storage and makes the default Slack output settings explicit. A valid Slack configuration also needs the top-level `workspaces`, `access`, and exact `routes.slack` blocks shown in [`docs/examples/teams-config.jsonc`](docs/examples/teams-config.jsonc).
 
 The service-account credential needed by the helper may still use the bootstrap
 `~/.enso/secrets/1password.env` file. Existing literal `bot_token` and `app_token`

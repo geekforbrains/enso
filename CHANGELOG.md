@@ -4,9 +4,25 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Migration
+
+- Slack rich messages and persistent App Home/Canvas drafts now default to enabled when their config keys are absent. Existing Slack apps must apply the current bundled manifest, enable App Home and interactivity, grant `canvases:write` and `files:read`, reinstall or reauthorize when Slack requests new scope consent, and restart Enso. Set `transports.slack.persistent_surfaces` to `false` to disable only persistent drafts, or `transports.slack.rich_messages` to `false` to restore legacy text delivery and disable both rich paths. Running `enso setup` now refreshes `~/.enso/slack-app-manifest.yaml` even when credentials are left unchanged.
+
+### Added
+
+- Interactive Slack final answers render through Slack's standard Markdown block, including headings, links, fenced code, task lists, and Markdown tables. Long replies are split within Slack's 12,000-character limit without breaking fenced code or table rows, and known block-validation rejection falls back once to complete text.
+- Agents can emit validated transport-neutral layouts for compact two-column fields, aligned/wrapped tables, pageable/sortable/filterable data tables, and native line, bar, area, or pie charts. Every layout carries a complete text fallback for accessibility, auditing, and non-Slack transports.
+- Natural-language requests can prepare an App Home dashboard, standalone Canvas, or create-or-replace channel Canvas draft. Enso shows an exact inert preview with requester-bound Publish and Cancel controls before any persistent Slack API runs. Channel replacements identify and re-check the same Canvas and edit revision before replacing its complete body and title.
+
 ### Changed
 
+- Slack rich replies and persistent surfaces are enabled by default, with independent explicit `false` rollback flags. CLI sends, file captions, status/error messages, direct notifications, and scheduled-job notifications remain text-only in this release.
+- Native table validation follows Slack's published aggregate limits: 20,000 cell characters for data-table-only output and 10,000 when any simple table is present.
 - The status message now shows `↳ Processing` from the moment it is posted, instead of only the model line, until the provider reports its first real status (e.g. `↳ Thinking`).
+
+### Security
+
+- Persistent-surface drafts expire after 15 minutes, are scoped to the authenticated account, exact route, requester, origin conversation, confirmation message, workspace, and access profile, and are consumed through an atomic one-time claim. Confirmation reauthorizes the route, creates required audit evidence before mutation, revalidates Canvas targets, serializes competing target updates, and never automatically retries an interrupted or ambiguous Slack mutation.
 
 ## [1.0.0] - 2026-08-10
 

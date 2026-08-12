@@ -177,9 +177,6 @@ async def test_natural_surface_request_receives_trusted_draft_capability(
     monkeypatch,
 ):
     config = _teams_config(tmp_enso)
-    config["transports"]["slack"].update(
-        {"rich_messages": True, "persistent_surfaces": True}
-    )
     transport, rt = _make_transport(tmp_enso, monkeypatch, config)
     client = _make_client()
 
@@ -197,6 +194,25 @@ async def test_natural_surface_request_receives_trusted_draft_capability(
     assert ctx._surface_origin.account_id == ACCOUNT
     assert ctx._surface_origin.user_id == DEV
     assert ctx._surface_origin.channel_id == "C0ACME"
+
+
+async def test_persistent_surface_opt_out_keeps_rich_message_capability(
+    tmp_enso,
+    monkeypatch,
+):
+    config = _teams_config(tmp_enso)
+    config["transports"]["slack"]["persistent_surfaces"] = False
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+
+    await transport._handle_app_mention(
+        _mention(text="<@UBOT> Build a channel Canvas"),
+        _make_client(),
+    )
+
+    rt.dispatch.assert_awaited_once()
+    ctx = rt.dispatch.call_args.args[2]
+    assert "```enso-message" in ctx.get_output_instructions()
+    assert ctx.get_surface_instructions() == ""
 
 
 async def test_untrusted_history_cannot_supply_surface_confirmation_origin(

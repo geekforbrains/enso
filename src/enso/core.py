@@ -163,6 +163,7 @@ _PRISTINE_AGENTS_SHA256: frozenset[str] = frozenset(
         _LEGACY_TASKS_AGENTS_SHA256,
         "18e29e570f07237eea24a2b329090ccae9b572cdbc7e35f38e22916f3e5acf7f",
         "b5676b7f1b571a813554c0c580c93a6c9269d82625161f01f2c00e205888da20",
+        "8f9bacc078f4b6bd826c59501f7e110de4e2caacc42fd3975ad3aeab624164f7",
     }
 )
 
@@ -179,12 +180,14 @@ _BUNDLED_SKILL_PRISTINE_HASHES: dict[tuple[str, str], frozenset[str]] = {
             "1756397ae5838a5aba08c6371cb721f9e1b4f815c8b1907a19b017e7aca53be0",
             "dabb0fa66f276cd78c8e88e17c38155ad537aa52938e50622dcc2955b70f036a",
             "ecde110e219de184ccf52594d02d9ae458022a4813dcc8ac417a975c5010f282",
+            "1a97b59fb3361cac02af0d62d0cb472ad0315fe710ece162977a602211161e28",
         }
     ),
     ("slack", "SKILL.md"): frozenset(
         {
             "5d9f76e2bcb757b27ab294a6f7322e07a59ebafbe08566f218348f8d15ac178a",
             "646d0ab64c0713baf32eec4f0639b4d709d4b1c7a2a1a320e2eed84d55fc5582",
+            "70f2dd312d001f23a49aeadb2f556df76e259b80f8591093eb7d36a6ea56b2bd",
         }
     ),
 }

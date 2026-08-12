@@ -1,9 +1,9 @@
 # Enso — Slack app manifest
 #
 # Paste this into https://api.slack.com/apps?new_app=1 → "From an app
-# manifest" to create a Slack app with every scope and event subscription
-# Enso uses. Rename the bot and adjust permissions to taste before you
-# install to your workspace.
+# manifest" to create a Slack app with every scope, event subscription, and
+# feature setting Enso uses. Rename the bot and adjust permissions to taste
+# before you install to your workspace.
 
 display_information:
   name: Enso
@@ -15,6 +15,7 @@ features:
     display_name: Enso
     always_online: true
   app_home:
+    # Required for confirmed per-user App Home publication.
     home_tab_enabled: true
     messages_tab_enabled: true
     messages_tab_read_only_enabled: false
@@ -38,9 +39,10 @@ oauth_config:
       - mpim:history
       - mpim:read
       - mpim:write
-      # File transfer
+      # Persistent Canvas discovery and publication
       - canvases:write
       - files:read
+      # File transfer
       - files:write
       # Message search (enso slack search)
       - search:read.public
@@ -77,6 +79,8 @@ settings:
       - member_joined_channel
       - member_left_channel
   interactivity:
+    # Required for persistent-surface Publish and Cancel buttons. Actions use
+    # Socket Mode, so no public request URL is needed.
     is_enabled: true
   org_deploy_enabled: false
   socket_mode_enabled: true
