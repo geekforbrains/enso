@@ -306,9 +306,9 @@ Notes:
 
 ## Execution catalog and Slack routes
 
-The top-level `workspaces` and `access` blocks form a transport-independent execution catalog. Every job selects one entry from each block. Slack additionally requires `routes.slack`, where every exact DM user or channel selects the same pair. Telegram interaction remains private and uses its global `working_dir`; Telegram jobs still use the catalog.
+The top-level `workspaces` and `access` blocks form a transport-independent execution catalog. Every job selects one entry from each block. Slack additionally requires `routes.slack`, where every exact DM user or channel selects the same pair; channel routes may also carry the optional `mention_required` / `thread_mention_required` response triggers, which shape when a routed channel dispatches but select nothing. Telegram interaction remains private and uses its global `working_dir`; Telegram jobs still use the catalog.
 
-See [teams.md](teams.md) for route behavior and [permissions.md](permissions.md) for provider launches.
+See [teams.md](teams.md) for route behavior, [slack-triggers.md](slack-triggers.md) for channel response triggers, and [permissions.md](permissions.md) for provider launches.
 
 ### Filesystem layout
 
@@ -395,6 +395,10 @@ The catalogs are parsed independently of Slack. `routes.slack` is additionally r
   "routes": {
     "slack": {
       "account_id": "T0ENSO",
+      "channel_defaults": {
+        "mention_required": false,
+        "thread_mention_required": false
+      },
       "dms": {
         "U01OWNER": {
           "workspace": "company",
@@ -406,7 +410,9 @@ The catalogs are parsed independently of Slack. `routes.slack` is additionally r
         "C0ACME": {
           "workspace": "acme",
           "access": "client-readonly",
-          "audit": true
+          "audit": true,
+          "mention_required": true,
+          "thread_mention_required": true
         },
         "C0ACMEINTERNAL": {
           "workspace": "acme",
@@ -432,7 +438,8 @@ Schema rules:
 - An access profile uses exactly one mode: explicit `unrestricted: true`, or native policy files under `policy_dir`. For a restricted profile the directory defaults to `~/.enso/policies/<access-name>`. Unrestricted mode does not imply providers or commands.
 - `routes.slack.account_id` must match the Slack account returned by the configured credentials.
 - `transports.slack.rich_messages` and `transports.slack.persistent_surfaces` default to `true`. An explicit JSON `false` disables that feature; a non-boolean value fails closed as disabled. Persistent surfaces are effective only while rich messages are enabled. These are transport-wide rendering controls, not route permissions, and changes require a restart.
-- `routes.slack.dms` is keyed by exact Slack user ID. `routes.slack.channels` is keyed by exact channel ID. There are no named DM rules, groups, allowlists, defaults, or wildcards. An unrouted explicit contact receives only the fixed transport-level access response; it does not create an implicit route.
+- `routes.slack.dms` is keyed by exact Slack user ID. `routes.slack.channels` is keyed by exact channel ID. There are no named DM rules, groups, allowlists, default routes, or wildcards: `routes.slack.channel_defaults` supplies settings defaults for routed channels, never synthesizes a route, and unrouted channels stay unrouted. An unrouted explicit contact receives only the fixed transport-level access response; it does not create an implicit route.
+- Channel routes and `routes.slack.channel_defaults` accept the optional booleans `mention_required` and `thread_mention_required` (see [slack-triggers.md](slack-triggers.md)). Effective values resolve route key, then `channel_defaults`, then the built-in `true`, which reproduces the original mention-gated behavior. `channel_defaults` must be an object with no unknown keys, both settings must be booleans wherever they appear, and neither key is valid on a DM route.
 - Every route requires a known `workspace` and `access`. `audit` is optional and defaults to `false`.
 - A missing workspace, access profile, provider, or native policy is an error. Nothing falls back to `working_dir`, another profile, or unrestricted execution.
 - `config.json` is loaded at service startup. Slack loads and validates its route catalog then; jobs are loaded from disk on scheduler ticks and manual runs and revalidated before execution. `config.json` changes take effect only after restart, and invalid bindings never receive permissive defaults.
@@ -482,7 +489,7 @@ CREATE TABLE IF NOT EXISTS _enso_slack_events (
 );
 ```
 
-The delivery ID is an opaque digest derived from the authenticated Slack account, channel, and canonical source-message timestamp. A duplicate is acknowledged without another provider run or response. This includes unrouted DMs and explicit channel mentions, whose fixed access response is therefore sent at most once. The ledger contains no message text. Pending claims left by a service crash are closed during startup rather than replayed automatically. Rows older than seven days are pruned at service startup.
+The delivery ID is an opaque digest derived from the authenticated Slack account, channel, and canonical source-message timestamp. A duplicate is acknowledged without another provider run or response. This includes unrouted DMs and explicit channel mentions, whose fixed access response is therefore sent at most once; a channel mention still arrives as `message` and `app_mention` twins, which the delivery claim keeps to one dispatch. Non-mention channel messages that the route's effective response triggers ignore are dropped before any ledger claim, so a busy fully-ignored channel writes no rows. The ledger contains no message text. Pending claims left by a service crash are closed during startup rather than replayed automatically. Rows older than seven days are pruned at service startup.
 
 ### Slack persistent-surface drafts
 

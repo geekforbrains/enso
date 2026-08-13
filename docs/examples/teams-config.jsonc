@@ -2,7 +2,11 @@
 //
 // Slack requires routes.slack: exact DM users and channel IDs select one workspace
 // and one access profile. There is no Slack allowlist, wildcard, or default route.
-// An unrouted DM or explicit channel mention gets a fixed local access response
+// Routed channels dispatch on @-mention by default; per-route mention_required
+// and thread_mention_required relax that, with routes.slack.channel_defaults
+// supplying defaults those per-route keys override. channel_defaults is
+// settings inheritance, not a route: it authorizes no channel by itself. An
+// unrouted DM or explicit channel mention gets a fixed local access response
 // without an LLM launch; ordinary unrouted channel messages are ignored.
 // Telegram, when used instead, remains private and uses exact numeric IDs under
 // transports.telegram.allowed_users plus the global working_dir.
@@ -87,6 +91,15 @@
     "slack": {
       "account_id": "T0YOURTEAM",
 
+      // Response-trigger defaults for channel routes; per-route keys override
+      // them, and an absent key falls back to the built-in true (mention-only).
+      // Settings inheritance, not a route: this authorizes no channel. Here a
+      // mention starts a thread and Enso then follows its replies.
+      "channel_defaults": {
+        "mention_required": true,
+        "thread_mention_required": false
+      },
+
       // DMs are keyed by exact Slack user ID. This authorizes only the owner.
       "dms": {
         "U01OWNER": {
@@ -110,10 +123,16 @@
           "access": "staff",
           "audit": false
         },
+        // Fully responsive override: false/false dispatches every top-level
+        // message (replies always land in its thread) and follows joined
+        // threads. true/true is mention-only; mixed values give the two
+        // in-between modes.
         "C0COMPANY": {
           "workspace": "company",
           "access": "staff",
-          "audit": false
+          "audit": false,
+          "mention_required": false,
+          "thread_mention_required": false
         }
       }
     }
