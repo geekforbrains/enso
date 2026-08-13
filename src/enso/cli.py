@@ -14,6 +14,7 @@ import sys
 import time
 import urllib.request
 import uuid
+from datetime import datetime
 from typing import Annotated
 
 import typer
@@ -45,6 +46,11 @@ from .secret_refs import (
     SecretResolutionError,
     resolve_config_secret,
     update_config_secret_reference,
+)
+from .slack_text import (
+    IGNORED_SUBTYPES,
+    _flatten_mention_text,
+    _message_context_text,
 )
 from .transports import BaseTransport
 
@@ -2152,38 +2158,125 @@ def slack_search(
         console.print()
 
 
+_SINCE_RE = re.compile(r"^(\d+)([smhd])$")
+_SINCE_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+
+
+def _parse_since(value: str) -> float:
+    """Turn a ``30m``/``24h``/``7d`` window into an absolute epoch floor."""
+    match = _SINCE_RE.match(value.strip().lower())
+    if not match:
+        console.print(
+            f"[red]\u2717[/] Could not read --since {escape(repr(value))}."
+            " Use a count and a unit, e.g. 30m, 24h, 7d."
+        )
+        raise typer.Exit(1)
+    return time.time() - int(match.group(1)) * _SINCE_UNITS[match.group(2)]
+
+
+def _message_author(msg: dict, cache: dict) -> str:
+    """Name the author of a fetched message, falling back to raw IDs."""
+    user_id = msg.get("user", "")
+    user = cache.get("users", {}).get("items", {}).get(user_id, {})
+    name = user.get("display_name") or user.get("real_name") or user.get("name") or ""
+    if not name:
+        name = (msg.get("bot_profile") or {}).get("name", "")
+    if name and user_id:
+        return f"{name} ({user_id})"
+    return name or user_id or "unknown"
+
+
+def _print_messages(messages: list[dict], *, show_all: bool = False) -> None:
+    """Render fetched Slack messages for an agent (or a human) to read.
+
+    Matches what the transport used to inject into prompts: resolved names,
+    inert mention text, forwarded bodies, and no channel lifecycle noise.
+    Timestamps print in both forms because the readable one is what gets
+    reasoned about and the raw one is what ``enso slack thread`` takes.
+    """
+    cache = slack_cache.load()
+
+    def _name(user_id: str) -> str:
+        entry = cache.get("users", {}).get("items", {}).get(user_id, {})
+        return entry.get("display_name") or entry.get("real_name") or entry.get("name") or ""
+
+    for msg in messages:
+        if not show_all and msg.get("subtype") in IGNORED_SUBTYPES:
+            continue
+        body = _flatten_mention_text(
+            _message_context_text(msg),
+            bot_user_id="",
+            bot_label="",
+            lookup=_name,
+            strip_addressing=False,
+        )
+        if not body:
+            continue
+        ts = msg.get("ts", "?")
+        try:
+            when = datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d %H:%M")
+        except (TypeError, ValueError):
+            when = "?"
+        header = f"{when}  {_message_author(msg, cache)}  ts={ts}"
+        replies = msg.get("reply_count")
+        if replies:
+            header += f"  [{replies} {'reply' if replies == 1 else 'replies'}]"
+        # markup=False: message bodies carry bracketed text of their own.
+        console.print(header, markup=False)
+        console.print(f"  {body}", markup=False)
+        console.print()
+
+
 @slack_app.command("history")
 def slack_history(
-    channel: Annotated[str, typer.Argument(help="Channel ID (C…, G…, D…)")],
+    channel: Annotated[str, typer.Argument(help="Channel ID (C\u2026, G\u2026, D\u2026)")],
     count: Annotated[int, typer.Option("--count", "-n", help="Max messages")] = 10,
+    since: Annotated[
+        str | None,
+        typer.Option("--since", help="Only messages newer than e.g. 30m, 24h, 7d"),
+    ] = None,
+    show_all: Annotated[
+        bool,
+        typer.Option("--all", help="Include joins, pins and other lifecycle noise"),
+    ] = False,
 ) -> None:
-    """Fetch recent messages from a channel."""
+    """Fetch recent top-level messages from a channel.
+
+    Thread replies are not included \u2014 Slack keeps them out of channel
+    history. Read one with ``enso slack thread`` and the parent's ts.
+    """
     token = _slack_token_or_exit()
-    data = slack_cache.api_get(
-        token,
-        "conversations.history",
-        {"channel": channel, "limit": str(count)},
-    )
+    params = {"channel": channel, "limit": str(count)}
+    if since is not None:
+        params["oldest"] = f"{_parse_since(since):.6f}"
+    data = slack_cache.api_get(token, "conversations.history", params)
     if not data.get("ok"):
         console.print(f"[red]\u2717[/] conversations.history: {data.get('error', '?')}")
         raise typer.Exit(1)
-    messages = list(reversed(data.get("messages", [])))
-    for msg in messages:
-        user = msg.get("user", "bot")
-        ts = msg.get("ts", "?")
-        thread = f" [thread: {msg['thread_ts']}]" if msg.get("thread_ts") else ""
-        text = msg.get("text", "")
-        console.print(f"{ts}  {user}{thread}")
-        console.print(f"  {text}")
-        console.print()
+    _print_messages(list(reversed(data.get("messages", []))), show_all=show_all)
 
 
 @slack_app.command("thread")
 def slack_thread(
     channel: Annotated[str, typer.Argument(help="Channel ID")],
     thread_ts: Annotated[str, typer.Argument(help="Thread timestamp (parent ts)")],
+    count: Annotated[
+        int,
+        typer.Option("--count", "-n", help="Keep the root plus this many recent messages"),
+    ] = 100,
+    show_all: Annotated[
+        bool,
+        typer.Option("--all", help="Include joins, pins and other lifecycle noise"),
+    ] = False,
 ) -> None:
-    """Fetch every message in a thread."""
+    """Fetch every message in a thread, oldest first.
+
+    A long thread can be more text than a caller wants at once, so ``-n``
+    keeps the most recent messages. The root always survives the trim \u2014 it
+    is what the thread is about \u2014 and anything dropped is reported rather
+    than silently cut, so a truncated read is never mistaken for the whole
+    thread.
+    """
     token = _slack_token_or_exit()
     data = slack_cache.api_get(
         token,
@@ -2193,13 +2286,15 @@ def slack_thread(
     if not data.get("ok"):
         console.print(f"[red]\u2717[/] conversations.replies: {data.get('error', '?')}")
         raise typer.Exit(1)
-    for msg in data.get("messages", []):
-        user = msg.get("user", "bot")
-        ts = msg.get("ts", "?")
-        text = msg.get("text", "")
-        console.print(f"{ts}  {user}")
-        console.print(f"  {text}")
-        console.print()
+    messages = data.get("messages", [])
+    hidden = 0
+    if count > 0 and len(messages) > count:
+        hidden = len(messages) - count
+        messages = messages[:1] + messages[-(count - 1) :] if count > 1 else messages[:1]
+    _print_messages(messages, show_all=show_all)
+    if hidden:
+        noun = "reply" if hidden == 1 else "replies"
+        console.print(f"[dim]\u2026 {hidden} earlier {noun} not shown (raise -n to see them)[/]")
 
 
 # ---------------------------------------------------------------------------
