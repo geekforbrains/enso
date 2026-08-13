@@ -1026,7 +1026,9 @@ def _write_slack_manifest_copy() -> str:
     return dest
 
 
-def _setup_slack(config: dict) -> None:
+# A linear interactive wizard: every branch is one prompt in a fixed sequence,
+# so splitting it would only scatter the script the user is walked through.
+def _setup_slack(config: dict) -> None:  # noqa: C901
     """Configure Slack credentials and one exact routed owner DM."""
     slack_cfg = config.get("transports", {}).get("slack", {})
     manifest_path = _write_slack_manifest_copy()
@@ -2207,8 +2209,10 @@ def slack_thread(
 # -- Routed configuration / route / audit --
 
 
+# A linear diagnostic report: each branch prints one more finding, and the
+# order of the printed sections is the feature.
 @config_app.command("check")
-def config_check() -> None:
+def config_check() -> None:  # noqa: C901
     """Validate execution bindings and native-policy launch plumbing."""
     from .policy import check_provider
     from .teams import load_catalog, load_teams

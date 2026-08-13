@@ -13,7 +13,7 @@ import shlex
 import signal
 from asyncio.subprocess import Process
 from collections import deque
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Iterable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -202,6 +202,49 @@ def _redacted_command(cmd: list[str]) -> str:
                 redacted[prompt_index] = f"<prompt chars={len(cmd[prompt_index])}>"
                 return shlex.join(redacted)
     return shlex.join(cmd)
+
+
+def _state_rows(raw: object, migrate: Callable[[dict], list[dict]]) -> tuple[Iterable, bool]:
+    """Normalize one persisted state collection into rows.
+
+    Returns the rows plus whether state must be rewritten: both the v1 dict
+    form and an unrecognized shape need persisting back in the list form.
+    """
+    if isinstance(raw, dict):
+        return migrate(raw), True
+    if isinstance(raw, list):
+        return raw, False
+    return (), True
+
+
+def _migrate_v1_pairs(raw: dict, value_key: str) -> list[dict]:
+    """Expand v1 ``<chat>:<provider>`` keys into explicit row dicts.
+
+    The provider was the final delimiter-separated component; split from the
+    right so ``teams:<digest>`` chat keys survive.
+    """
+    return [
+        {"chat": key.rsplit(":", 1)[0], "provider": key.rsplit(":", 1)[1], value_key: value}
+        for key, value in raw.items()
+        if ":" in key
+    ]
+
+
+def _migrate_v1_efforts(raw: dict) -> list[dict]:
+    """Expand v1 ``<chat>:<provider>:<model>`` effort keys into row dicts."""
+    rows = []
+    for key, value in raw.items():
+        parts = key.rsplit(":", 2)
+        if len(parts) == 3:
+            rows.append(
+                {
+                    "chat": parts[0],
+                    "provider": parts[1],
+                    "model": parts[2],
+                    "effort": value,
+                }
+            )
+    return rows
 
 
 @dataclass
@@ -681,106 +724,9 @@ class Runtime:
                     self.active_provider_by_chat[k] = v
                 else:
                     state_changed = True
-            raw_models = data.get("active_model_by_chat_provider", [])
-            if isinstance(raw_models, dict):
-                # v1 migration: provider was the final delimiter-separated
-                # component; split from the right so ``teams:<digest>`` works.
-                model_rows = (
-                    {"chat": k.rsplit(":", 1)[0], "provider": k.rsplit(":", 1)[1], "model": v}
-                    for k, v in raw_models.items()
-                    if ":" in k
-                )
-                state_changed = True
-            elif isinstance(raw_models, list):
-                model_rows = iter(raw_models)
-            else:
-                model_rows = iter(())
-                state_changed = True
-            for row in model_rows:
-                if not isinstance(row, dict):
-                    state_changed = True
-                    continue
-                cid = row.get("chat")
-                provider = row.get("provider")
-                v = row.get("model")
-                # Entries for retired providers or models removed from config
-                # are inert (selection falls back anyway) — prune them.
-                if (
-                    isinstance(cid, str)
-                    and isinstance(provider, str)
-                    and v in self.models.get(provider, [])
-                ):
-                    self.active_model_by_chat_provider[(cid, provider)] = v
-                else:
-                    state_changed = True
-            raw_efforts = data.get("effort_by_chat_provider_model", [])
-            if isinstance(raw_efforts, dict):
-                effort_rows = []
-                for key, value in raw_efforts.items():
-                    parts = key.rsplit(":", 2)
-                    if len(parts) == 3:
-                        effort_rows.append(
-                            {
-                                "chat": parts[0],
-                                "provider": parts[1],
-                                "model": parts[2],
-                                "effort": value,
-                            }
-                        )
-                state_changed = True
-            elif isinstance(raw_efforts, list):
-                effort_rows = raw_efforts
-            else:
-                effort_rows = []
-                state_changed = True
-            for row in effort_rows:
-                if not isinstance(row, dict):
-                    state_changed = True
-                    continue
-                cid = row.get("chat")
-                provider = row.get("provider")
-                model = row.get("model")
-                effort = row.get("effort")
-                if (
-                    isinstance(cid, str)
-                    and isinstance(provider, str)
-                    and isinstance(model, str)
-                    and isinstance(effort, str)
-                    and model in self.models.get(provider, [])
-                    and provider_class(provider).effort_levels
-                ):
-                    self.effort_by_chat_provider_model[(cid, provider, model)] = effort
-                else:
-                    state_changed = True
-            raw_sessions = data.get("session_by_chat_provider", [])
-            if isinstance(raw_sessions, dict):
-                session_rows = (
-                    {"chat": k.rsplit(":", 1)[0], "provider": k.rsplit(":", 1)[1], "session": v}
-                    for k, v in raw_sessions.items()
-                    if ":" in k
-                )
-                state_changed = True
-            elif isinstance(raw_sessions, list):
-                session_rows = iter(raw_sessions)
-            else:
-                session_rows = iter(())
-                state_changed = True
-            for row in session_rows:
-                if not isinstance(row, dict):
-                    state_changed = True
-                    continue
-                cid = row.get("chat")
-                provider = row.get("provider")
-                sid = row.get("session")
-                if (
-                    isinstance(cid, str)
-                    and isinstance(provider, str)
-                    and isinstance(sid, str)
-                    and provider in PROVIDER_NAMES
-                ):
-                    self.session_by_chat_provider[(cid, provider)] = sid
-                else:
-                    state_changed = True
+            state_changed |= self._load_model_rows(data.get("active_model_by_chat_provider", []))
+            state_changed |= self._load_effort_rows(data.get("effort_by_chat_provider_model", []))
+            state_changed |= self._load_session_rows(data.get("session_by_chat_provider", []))
             for k, v in data.get("compact_seed_by_chat", {}).items():
                 self.compact_seed_by_chat[k] = v
             for name, ts in data.get("job_last_run", {}).items():
@@ -805,6 +751,73 @@ class Runtime:
                 self.save_state()
         except Exception:
             log.exception("Failed to load state, starting fresh")
+
+    def _load_model_rows(self, raw: object) -> bool:
+        """Restore per-chat model selections. True when state needs rewriting."""
+        rows, changed = _state_rows(raw, lambda data: _migrate_v1_pairs(data, "model"))
+        for row in rows:
+            if not isinstance(row, dict):
+                changed = True
+                continue
+            cid = row.get("chat")
+            provider = row.get("provider")
+            model = row.get("model")
+            # Entries for retired providers or models removed from config
+            # are inert (selection falls back anyway) — prune them.
+            if (
+                isinstance(cid, str)
+                and isinstance(provider, str)
+                and model in self.models.get(provider, [])
+            ):
+                self.active_model_by_chat_provider[(cid, provider)] = model
+            else:
+                changed = True
+        return changed
+
+    def _load_effort_rows(self, raw: object) -> bool:
+        """Restore per-chat effort levels. True when state needs rewriting."""
+        rows, changed = _state_rows(raw, _migrate_v1_efforts)
+        for row in rows:
+            if not isinstance(row, dict):
+                changed = True
+                continue
+            cid = row.get("chat")
+            provider = row.get("provider")
+            model = row.get("model")
+            effort = row.get("effort")
+            if (
+                isinstance(cid, str)
+                and isinstance(provider, str)
+                and isinstance(model, str)
+                and isinstance(effort, str)
+                and model in self.models.get(provider, [])
+                and provider_class(provider).effort_levels
+            ):
+                self.effort_by_chat_provider_model[(cid, provider, model)] = effort
+            else:
+                changed = True
+        return changed
+
+    def _load_session_rows(self, raw: object) -> bool:
+        """Restore per-chat provider sessions. True when state needs rewriting."""
+        rows, changed = _state_rows(raw, lambda data: _migrate_v1_pairs(data, "session"))
+        for row in rows:
+            if not isinstance(row, dict):
+                changed = True
+                continue
+            cid = row.get("chat")
+            provider = row.get("provider")
+            sid = row.get("session")
+            if (
+                isinstance(cid, str)
+                and isinstance(provider, str)
+                and isinstance(sid, str)
+                and provider in PROVIDER_NAMES
+            ):
+                self.session_by_chat_provider[(cid, provider)] = sid
+            else:
+                changed = True
+        return changed
 
     def touch_session(self, chat_key: str) -> None:
         """Mark a state key active so stale-session pruning can reach it.
@@ -1426,7 +1439,10 @@ class Runtime:
 
     # -- Core streaming --
 
-    async def run_provider(
+    # An async generator whose branches interleave with its yields and share
+    # spawn/stream/teardown state; splitting it would mean restructuring the
+    # streaming protocol itself.
+    async def run_provider(  # noqa: C901
         self,
         provider: BaseProvider,
         prompt: str,

@@ -514,6 +514,105 @@ class JobRunner:
             access=access,
         ), None
 
+    async def _validated_job_execution(
+        self,
+        job: Job,
+    ) -> tuple[ExecutionContext | None, str | None]:
+        """Resolve a job's execution context, rejecting anything it cannot launch."""
+        config_error = job_config_error(job.provider, job.model, self.runtime.models)
+        if config_error:
+            return None, config_error
+        execution, config_error = self._job_execution_context(job)
+        if config_error or execution is None:
+            return None, config_error
+
+        from .policy import prepare_launch
+
+        assert execution.workspace is not None
+        assert execution.access is not None
+        try:
+            # Prove the complete native launch can be constructed before
+            # running the trusted host-side prerun. The resulting launch is
+            # deliberately discarded: policy is prepared again inside the
+            # workspace slot at the actual provider spawn boundary.
+            await asyncio.to_thread(
+                prepare_launch,
+                execution.workspace,
+                execution.access,
+                job.provider,
+            )
+        except Exception as exc:
+            detail = self._sanitize_job_diagnostic(str(exc))
+            return None, (
+                "native launch is unavailable"
+                f"{f': {detail}' if detail else ''}"
+            )
+        return execution, None
+
+    async def _failed_run_result(
+        self,
+        job: Job,
+        *,
+        run_id: str | None,
+        output: str,
+        exit_code: int | None,
+        status: Literal["error", "timeout"],
+        tag: str,
+        notify_failures: bool,
+    ) -> JobRunResult:
+        """Record a failed run, alert when enabled, and return its terminal result."""
+        await self._record_run_finish(run_id, output, exit_code, status, tag)
+        if notify_failures:
+            await self._send_job_notification(
+                job,
+                f"⚠️ [{job.name}] {output}",
+                tag,
+            )
+        return JobRunResult(
+            status,
+            run_id=run_id,
+            output=output,
+            exit_code=exit_code,
+        )
+
+    async def _prerun_failure_result(
+        self,
+        job: Job,
+        prerun: PrerunResult,
+        *,
+        trigger: Literal["schedule", "manual"],
+        tag: str,
+        started_at: str,
+        notify_failures: bool,
+    ) -> JobRunResult:
+        """Record and announce a prerun that errored or timed out."""
+        status: Literal["prerun_error", "prerun_timeout"] = (
+            "prerun_timeout" if prerun.outcome == "timeout" else "prerun_error"
+        )
+        run_id = await self._create_job_run(job, trigger, tag, started_at)
+        output = f"{status.replace('_', ' ').title()}: {prerun.diagnostic}"
+        await self._record_run_finish(
+            run_id,
+            output,
+            prerun.exit_code,
+            status,
+            tag,
+        )
+        if notify_failures:
+            await self._notify_prerun_failure(
+                job,
+                status,
+                prerun.diagnostic,
+                prerun.exit_code,
+                tag,
+            )
+        return JobRunResult(
+            status,
+            run_id=run_id,
+            output=output,
+            exit_code=prerun.exit_code,
+        )
+
     async def _execute_job(
         self,
         job: Job,
@@ -543,48 +642,19 @@ class JobRunner:
             log.warning("%s %s", tag, output)
             return JobRunResult("error", output=output, exit_code=-1)
         try:
-            config_error = job_config_error(job.provider, job.model, self.runtime.models)
-            execution: ExecutionContext | None = None
-            if config_error is None:
-                execution, config_error = self._job_execution_context(job)
-            if config_error is None and execution is not None:
-                from .policy import prepare_launch
-
-                assert execution.workspace is not None
-                assert execution.access is not None
-                try:
-                    # Prove the complete native launch can be constructed before
-                    # running the trusted host-side prerun. The resulting launch is
-                    # deliberately discarded: policy is prepared again inside the
-                    # workspace slot at the actual provider spawn boundary.
-                    await asyncio.to_thread(
-                        prepare_launch,
-                        execution.workspace,
-                        execution.access,
-                        job.provider,
-                    )
-                except Exception as exc:
-                    detail = self._sanitize_job_diagnostic(str(exc))
-                    config_error = (
-                        "native launch is unavailable"
-                        f"{f': {detail}' if detail else ''}"
-                    )
+            execution, config_error = await self._validated_job_execution(job)
             if config_error:
                 run_id = await self._create_job_run(job, trigger, tag, started_at)
                 output = f"Invalid job config: {config_error}"
                 log.warning("%s %s", tag, output)
-                await self._record_run_finish(run_id, output, -1, "error", tag)
-                if notify_failures:
-                    await self._send_job_notification(
-                        job,
-                        f"⚠️ [{job.name}] {output}",
-                        tag,
-                    )
-                return JobRunResult(
-                    "error",
+                return await self._failed_run_result(
+                    job,
                     run_id=run_id,
                     output=output,
                     exit_code=-1,
+                    status="error",
+                    tag=tag,
+                    notify_failures=notify_failures,
                 )
 
             prerun = await self._run_job_prerun(job, tag)
@@ -594,31 +664,13 @@ class JobRunner:
                 return JobRunResult("no_work", exit_code=1)
 
             if prerun.outcome in {"error", "timeout"}:
-                status: Literal["prerun_error", "prerun_timeout"] = (
-                    "prerun_timeout" if prerun.outcome == "timeout" else "prerun_error"
-                )
-                run_id = await self._create_job_run(job, trigger, tag, started_at)
-                output = f"{status.replace('_', ' ').title()}: {prerun.diagnostic}"
-                await self._record_run_finish(
-                    run_id,
-                    output,
-                    prerun.exit_code,
-                    status,
-                    tag,
-                )
-                if notify_failures:
-                    await self._notify_prerun_failure(
-                        job,
-                        status,
-                        prerun.diagnostic,
-                        prerun.exit_code,
-                        tag,
-                    )
-                return JobRunResult(
-                    status,
-                    run_id=run_id,
-                    output=output,
-                    exit_code=prerun.exit_code,
+                return await self._prerun_failure_result(
+                    job,
+                    prerun,
+                    trigger=trigger,
+                    tag=tag,
+                    started_at=started_at,
+                    notify_failures=notify_failures,
                 )
 
             if notify_failures:
@@ -678,24 +730,14 @@ class JobRunner:
                             job.timeout,
                             elapsed,
                         )
-                        await self._record_run_finish(
-                            run_id,
-                            output,
-                            proc.returncode,
-                            "timeout",
-                            tag,
-                        )
-                        if notify_failures:
-                            await self._send_job_notification(
-                                job,
-                                f"⚠️ [{job.name}] {output}",
-                                tag,
-                            )
-                        return JobRunResult(
-                            "timeout",
+                        return await self._failed_run_result(
+                            job,
                             run_id=run_id,
                             output=output,
                             exit_code=proc.returncode,
+                            status="timeout",
+                            tag=tag,
+                            notify_failures=notify_failures,
                         )
                     output = provider.parse_batch_output(stdout.decode(errors="replace"))
             except Exception as exc:
@@ -703,18 +745,14 @@ class JobRunner:
                 output = f"Job could not start or complete{f': {detail}' if detail else ''}"
                 exit_code = proc.returncode if proc and proc.returncode is not None else -1
                 log.warning("%s %s", tag, output, exc_info=True)
-                await self._record_run_finish(run_id, output, exit_code, "error", tag)
-                if notify_failures:
-                    await self._send_job_notification(
-                        job,
-                        f"⚠️ [{job.name}] {output}",
-                        tag,
-                    )
-                return JobRunResult(
-                    "error",
+                return await self._failed_run_result(
+                    job,
                     run_id=run_id,
                     output=output,
                     exit_code=exit_code,
+                    status="error",
+                    tag=tag,
+                    notify_failures=notify_failures,
                 )
 
             exit_code = proc.returncode if proc.returncode is not None else -1

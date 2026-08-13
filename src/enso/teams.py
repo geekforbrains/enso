@@ -499,6 +499,68 @@ def _load_channel_defaults(value: object, errors: list[str]) -> dict[str, bool]:
     return defaults
 
 
+def _build_route(
+    cfg: dict,
+    *,
+    kind: str,
+    key: str,
+    route_id: str,
+    allowed: set[str],
+    defaults: dict[str, bool],
+) -> tuple[Route, list[str]]:
+    """Build one route from its config block, collecting its own problems.
+
+    Problems are per-route rather than global so one bad route disables only
+    itself; the returned Route still exists so dispatch can report why.
+    """
+    problems = _unknown_keys(cfg, allowed, route_id)
+    if "allow" in cfg:
+        problems.append(
+            "allow is no longer supported; channel membership and exact DM user "
+            "routes define authorization"
+        )
+    if kind == "dm":
+        for setting in _MENTION_SETTING_DEFAULTS:
+            if setting in cfg:
+                problems.append(
+                    f"{setting} is not valid on a DM route; DM behavior is fixed"
+                )
+    workspace = cfg.get("workspace")
+    if not isinstance(workspace, str) or not workspace:
+        problems.append("workspace is required and must be a string")
+        workspace = ""
+    access = cfg.get("access")
+    if not isinstance(access, str) or not access:
+        problems.append("access is required and must be a string")
+        access = ""
+    audit_raw = cfg.get("audit", False)
+    if not isinstance(audit_raw, bool):
+        problems.append("audit must be a boolean")
+        audit_value = False
+    else:
+        audit_value = audit_raw
+    triggers = dict(defaults)
+    if kind == "channel":
+        for setting in _MENTION_SETTING_DEFAULTS:
+            if setting not in cfg:
+                continue
+            if isinstance(cfg[setting], bool):
+                triggers[setting] = cfg[setting]
+            else:
+                problems.append(f"{setting} must be a boolean")
+    route = Route(
+        route_id=route_id,
+        kind=kind,
+        key=key,
+        workspace=workspace,
+        access=access,
+        audit=audit_value,
+        mention_required=triggers["mention_required"],
+        thread_mention_required=triggers["thread_mention_required"],
+    )
+    return route, problems
+
+
 def _load_routes(
     block: object,
     kind: str,
@@ -525,50 +587,13 @@ def _load_routes(
         if not isinstance(cfg, dict):
             errors.append(f"{route_id} must be an object")
             continue
-        problems = _unknown_keys(cfg, allowed, route_id)
-        if "allow" in cfg:
-            problems.append(
-                "allow is no longer supported; channel membership and exact DM user "
-                "routes define authorization"
-            )
-        if kind == "dm":
-            for setting in _MENTION_SETTING_DEFAULTS:
-                if setting in cfg:
-                    problems.append(
-                        f"{setting} is not valid on a DM route; DM behavior is fixed"
-                    )
-        workspace = cfg.get("workspace")
-        if not isinstance(workspace, str) or not workspace:
-            problems.append("workspace is required and must be a string")
-            workspace = ""
-        access = cfg.get("access")
-        if not isinstance(access, str) or not access:
-            problems.append("access is required and must be a string")
-            access = ""
-        audit_raw = cfg.get("audit", False)
-        if not isinstance(audit_raw, bool):
-            problems.append("audit must be a boolean")
-            audit_value = False
-        else:
-            audit_value = audit_raw
-        triggers = dict(defaults)
-        if kind == "channel":
-            for setting in _MENTION_SETTING_DEFAULTS:
-                if setting not in cfg:
-                    continue
-                if isinstance(cfg[setting], bool):
-                    triggers[setting] = cfg[setting]
-                else:
-                    problems.append(f"{setting} must be a boolean")
-        route = Route(
-            route_id=route_id,
+        route, problems = _build_route(
+            cfg,
             kind=kind,
             key=key,
-            workspace=workspace,
-            access=access,
-            audit=audit_value,
-            mention_required=triggers["mention_required"],
-            thread_mention_required=triggers["thread_mention_required"],
+            route_id=route_id,
+            allowed=allowed,
+            defaults=defaults,
         )
         routes[key] = route
         if problems:
