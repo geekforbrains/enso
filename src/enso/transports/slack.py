@@ -2406,7 +2406,7 @@ class SlackTransport(BaseTransport):
             )
         return f"[{header}]\n" + "\n".join(lines)
 
-    async def _fetch_thread_context(
+    async def fetch_thread_context(
         self,
         client: AsyncWebClient,
         channel: str,
@@ -2450,7 +2450,7 @@ class SlackTransport(BaseTransport):
         )
         return self._context_block("Thread context", lines, untrusted=untrusted)
 
-    async def _fetch_channel_context(
+    async def fetch_channel_context(
         self,
         client: AsyncWebClient,
         channel: str,
@@ -2486,7 +2486,7 @@ class SlackTransport(BaseTransport):
         )
         return self._context_block("Channel context", lines, untrusted=untrusted)
 
-    async def _handle_command(
+    async def handle_command(
         self,
         text: str,
         conv_id: str,
@@ -2622,7 +2622,7 @@ class SlackTransport(BaseTransport):
             return file_info
         return {**file_info, **hydrated}
 
-    async def _download_files(
+    async def download_files(
         self,
         files: list[dict],
         client: AsyncWebClient,

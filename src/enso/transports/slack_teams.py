@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import uuid
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from .. import audit, ledger, policy
@@ -40,6 +41,45 @@ def _key_digest(kind: str, *parts: object) -> str:
     """Build an opaque, delimiter-safe state key for a routed conversation."""
     payload = json.dumps({"v": 2, "kind": kind, "parts": list(parts)}, sort_keys=True)
     return f"teams:{hashlib.sha256(payload.encode()).hexdigest()[:32]}"
+
+
+@dataclass(frozen=True)
+class TurnContext:
+    """One claimed Slack delivery and everything routing derives from it.
+
+    Built once per event, immediately after the ledger claim. ``text`` and
+    ``turn_fields`` are filled in afterwards because an unrouted location must
+    reach its fixed reply without flattening mentions, resolving a name, or
+    assembling an audit record.
+    """
+
+    transport: SlackTransport
+    client: Any
+    event: dict
+    decision: Decision
+    account: str
+    delivery: str
+    channel: str
+    ts: str
+    thread_ts: str | None
+    thread_key: str | None
+    conv_label: str
+    reply_thread: str | None
+    user: str
+    is_dm: bool
+    is_mention: bool
+    text: str = ""
+    turn_fields: dict = field(default_factory=dict)
+
+    @property
+    def addressed(self) -> bool:
+        """Whether the message contacted Enso explicitly (a mention, or any DM).
+
+        Explicit contact may receive fixed error replies; unaddressed traffic
+        admitted by relaxed triggers must fail silently instead of spamming a
+        broken responsive channel on every message.
+        """
+        return self.is_mention or self.is_dm
 
 
 class TeamsRouter:
@@ -173,74 +213,60 @@ class TeamsRouter:
             log.info("Duplicate Slack delivery acknowledged (%s…)", delivery[:12])
             return
 
-        # A reply to a channel message always lands in that message's thread.
-        reply_thread = thread_ts or (None if is_dm else ts)
-        if decision.status == "unconfigured":
-            if self.teams.dispatchable:
-                await self._finish_unconfigured(
-                    transport,
-                    client,
-                    account,
-                    delivery,
-                    channel,
-                    reply_thread,
-                    user,
-                    is_dm=is_dm,
-                )
-            else:
-                await self._complete_ledger(account, delivery, None)
-            return
-
-        text = transport.flatten_mentions(event.get("text", ""), strip_addressing=True).strip()
         thread_key = thread_ts or (ts if not is_dm else None)
-        conv_label = f"{channel}:{thread_key}" if thread_key else channel
-        location_route = decision.route
-        turn_fields = {
-            "account_id": account,
-            "delivery_id": delivery,
-            "route_id": (location_route.route_id if location_route else "slack.unrouted"),
-            "channel_id": channel,
-            "thread_id": thread_ts,
-            "source_message_id": ts,
-            "conversation_id": conv_label,
-            "user_id": user,
-            "user_name": await asyncio.to_thread(transport.lookup_user_name, user),
-            "request_text": text,
-        }
-
-        if decision.status == "error":
-            await self._finish_config_error(
-                transport,
-                client,
-                location_route,
-                turn_fields,
-                account,
-                delivery,
-                channel,
-                reply_thread,
-                user,
-            )
-            return
-
-        await self._dispatch_authorized(
-            transport,
-            client,
-            event,
-            decision,
-            turn_fields=turn_fields,
+        turn = TurnContext(
+            transport=transport,
+            client=client,
+            event=event,
+            decision=decision,
             account=account,
             delivery=delivery,
             channel=channel,
             ts=ts,
             thread_ts=thread_ts,
             thread_key=thread_key,
-            conv_label=conv_label,
-            reply_thread=reply_thread,
+            conv_label=f"{channel}:{thread_key}" if thread_key else channel,
+            # A reply to a channel message always lands in that message's thread.
+            reply_thread=thread_ts or (None if is_dm else ts),
             user=user,
-            text=text,
             is_dm=is_dm,
             is_mention=is_mention,
         )
+
+        if decision.status == "unconfigured":
+            if self.teams.dispatchable:
+                await self._finish_fixed_reply(
+                    turn,
+                    UNCONFIGURED_DM_REPLY if is_dm else UNCONFIGURED_CHANNEL_REPLY,
+                )
+            else:
+                await self._complete_ledger(account, delivery, None)
+            return
+
+        text = transport.flatten_mentions(event.get("text", ""), strip_addressing=True).strip()
+        location_route = decision.route
+        turn = replace(
+            turn,
+            text=text,
+            turn_fields={
+                "account_id": account,
+                "delivery_id": delivery,
+                "route_id": (location_route.route_id if location_route else "slack.unrouted"),
+                "channel_id": channel,
+                "thread_id": thread_ts,
+                "source_message_id": ts,
+                "conversation_id": turn.conv_label,
+                "user_id": user,
+                "user_name": await asyncio.to_thread(transport.lookup_user_name, user),
+                "request_text": text,
+            },
+        )
+
+        if decision.status == "error":
+            await self._finish_fixed_reply(turn, CONFIG_ERROR_REPLY)
+            return
+
+        await self._dispatch_authorized(turn)
 
     def _passes_response_triggers(
         self,
@@ -280,42 +306,21 @@ class TeamsRouter:
         )
         return chat_key in self.runtime.active_provider_by_chat
 
-    async def _finish_unconfigured(
+    async def _finish_fixed_reply(
         self,
-        transport: SlackTransport,
-        client: Any,
-        account: str,
-        delivery: str,
-        channel: str,
-        reply_thread: str | None,
-        user: str,
+        turn: TurnContext,
+        reply: str,
         *,
-        is_dm: bool,
-    ) -> None:
-        """Reply deterministically to explicit contact at an unrouted location."""
-        ctx = transport.make_context(client, channel, reply_thread, user_id=user)
-        reply = UNCONFIGURED_DM_REPLY if is_dm else UNCONFIGURED_CHANNEL_REPLY
-        try:
-            await ctx.reply(reply)
-        except Exception:
-            log.exception("Failed to deliver unconfigured-location reply")
-        await self._complete_ledger(account, delivery, None)
-
-    async def _finish_config_error(
-        self,
-        transport: SlackTransport,
-        client: Any,
-        route: Route | None,
-        turn_fields: dict,
-        account: str,
-        delivery: str,
-        channel: str,
-        reply_thread: str | None,
-        user: str,
-        *,
+        audit_decision: str = "unconfigured",
+        kind: str | None = None,
         notify: bool = True,
     ) -> None:
-        """Reply to an authorized location whose binding is unusable.
+        """Record, deliver, and close one fixed transport reply.
+
+        Covers every terminal refusal: an unrouted location (no route, so no
+        audit record), an authorized location whose binding is unusable, and a
+        command the access profile does not allow. An audited route records the
+        refusal before it is sent and records whether it landed.
 
         ``notify=False`` (unaddressed traffic admitted by relaxed response
         triggers) keeps the audit record and ledger bookkeeping but stays
@@ -323,69 +328,56 @@ class TeamsRouter:
         otherwise a broken responsive channel would be spammed on every
         message.
         """
+        route = turn.decision.route
         turn_id = None
         if route is not None and route.audit:
             try:
-                fields = dict(turn_fields)
+                fields = dict(turn.turn_fields)
                 fields.setdefault("workspace_id", route.workspace)
                 turn_id = await asyncio.to_thread(
                     audit.create_turn,
-                    decision="unconfigured",
-                    response_text=CONFIG_ERROR_REPLY if notify else None,
+                    decision=audit_decision,
+                    kind=kind,
+                    response_text=reply if notify else None,
                     **fields,
                 )
             except Exception:
-                log.exception("Failed to record unconfigured turn")
+                log.exception("Failed to record %s turn", audit_decision)
         if not notify:
-            log.warning("Suppressed config-error reply for unaddressed message in %s", channel)
-            await self._complete_ledger(account, delivery, turn_id)
+            log.warning(
+                "Suppressed config-error reply for unaddressed message in %s",
+                turn.channel,
+            )
+            await self._complete_ledger(turn.account, turn.delivery, turn_id)
             return
-        ctx = transport.make_context(client, channel, reply_thread, user_id=user)
+        ctx = turn.transport.make_context(
+            turn.client,
+            turn.channel,
+            turn.reply_thread,
+            user_id=turn.user,
+        )
         delivered = True
         try:
-            await ctx.reply(CONFIG_ERROR_REPLY)
+            await ctx.reply(reply)
         except Exception:
             delivered = False
-            log.exception("Failed to deliver configuration error")
+            log.exception("Failed to deliver fixed %s reply", audit_decision)
         if turn_id is not None:
             with contextlib.suppress(Exception):
                 await asyncio.to_thread(audit.record_delivery, turn_id, ok=delivered)
-        await self._complete_ledger(account, delivery, turn_id)
+        await self._complete_ledger(turn.account, turn.delivery, turn_id)
 
-    async def _dispatch_authorized(
-        self,
-        transport: SlackTransport,
-        client: Any,
-        event: dict,
-        decision: Decision,
-        *,
-        turn_fields: dict,
-        account: str,
-        delivery: str,
-        channel: str,
-        ts: str,
-        thread_ts: str | None,
-        thread_key: str | None,
-        conv_label: str,
-        reply_thread: str | None,
-        user: str,
-        text: str,
-        is_dm: bool,
-        is_mention: bool,
-    ) -> None:
-        route = decision.route
+    async def _dispatch_authorized(self, turn: TurnContext) -> None:
+        route = turn.decision.route
         assert route is not None
-        # Explicit contact may receive fixed error replies; unaddressed
-        # traffic admitted by relaxed triggers must fail silently instead of
-        # spamming a broken responsive channel on every message.
-        addressed = is_mention or is_dm
+        transport = turn.transport
         workspace = self.teams.workspaces[route.workspace]
         access = self.teams.access_profiles[route.access]
         chat_key = _key_digest(
             "conversation",
-            account,
-            channel,
-            thread_key,
+            turn.account,
+            turn.channel,
+            turn.thread_key,
             workspace.name,
             access.name,
         )
@@ -394,62 +386,35 @@ class TeamsRouter:
         if provider not in access.providers:
             provider = access.default_provider
         if provider is None:
-            await self._finish_config_error(
-                transport,
-                client,
-                route,
-                turn_fields,
-                account,
-                delivery,
-                channel,
-                reply_thread,
-                user,
-                notify=addressed,
-            )
+            await self._finish_fixed_reply(turn, CONFIG_ERROR_REPLY, notify=turn.addressed)
             return
         self.runtime.active_provider_by_chat[chat_key] = provider
         self.runtime.touch_session(chat_key)
 
         # Commands require explicit addressing (a mention, or any DM); an
         # unaddressed "!text" in a responsive channel is ordinary prompt text.
-        command_parts = text[1:].split(None, 1) if addressed and text.startswith("!") else []
+        text = turn.text
+        command_parts = text[1:].split(None, 1) if turn.addressed and text.startswith("!") else []
         command_name = command_parts[0].lower() if command_parts else None
         model = self.runtime.get_active_model(chat_key, provider)
         effort = self.runtime.get_active_effort(chat_key, provider, model)
-        turn_fields.update(
+        turn.turn_fields.update(
             workspace_id=workspace.name,
             provider=None if command_name else provider,
             model=None if command_name else model,
         )
 
         if command_name is not None and not access.allows_command(command_name):
-            await self._finish_denied_command(
-                transport,
-                client,
-                route,
-                turn_fields,
-                account,
-                delivery,
-                channel,
-                reply_thread,
-                user,
-                command_name,
+            await self._finish_fixed_reply(
+                turn,
+                f"!{command_name} is not available in this conversation.",
+                audit_decision="denied",
+                kind="command",
             )
             return
 
         if command_name is None and not policy.check_provider(workspace, access, provider).ok:
-            await self._finish_config_error(
-                transport,
-                client,
-                route,
-                turn_fields,
-                account,
-                delivery,
-                channel,
-                reply_thread,
-                user,
-                notify=addressed,
-            )
+            await self._finish_fixed_reply(turn, CONFIG_ERROR_REPLY, notify=turn.addressed)
             return
 
         turn_id = None
@@ -459,43 +424,52 @@ class TeamsRouter:
                     audit.create_turn,
                     decision="accepted",
                     kind="command" if command_name else "provider",
-                    **turn_fields,
+                    **turn.turn_fields,
                 )
-                await asyncio.to_thread(ledger.link_audit_turn, account, delivery, turn_id)
+                await asyncio.to_thread(
+                    ledger.link_audit_turn,
+                    turn.account,
+                    turn.delivery,
+                    turn_id,
+                )
             except Exception:
                 log.exception("Audit write failed for %s", route.route_id)
                 if self.teams.audit_on_failure == "block":
-                    if addressed:
-                        ctx = transport.make_context(client, channel, reply_thread, user_id=user)
+                    if turn.addressed:
+                        ctx = transport.make_context(
+                            turn.client,
+                            turn.channel,
+                            turn.reply_thread,
+                            user_id=turn.user,
+                        )
                         with contextlib.suppress(Exception):
                             await ctx.reply(AUDIT_FAILURE_REPLY)
-                    await self._complete_ledger(account, delivery, None)
+                    await self._complete_ledger(turn.account, turn.delivery, None)
                     return
 
+        conversation_type = (
+            "im" if turn.is_dm else str(turn.event.get("channel_type") or "channel")
+        )
         ctx = transport.make_context(
-            client,
-            channel,
-            reply_thread,
-            user_id=user,
+            turn.client,
+            turn.channel,
+            turn.reply_thread,
+            user_id=turn.user,
             audit_turn_id=turn_id,
             surface_origin=SurfaceDraftOrigin(
-                account_id=account,
+                account_id=turn.account,
                 route_id=route.route_id,
                 route_kind=route.kind,
                 workspace_id=workspace.name,
                 access_profile=access.name,
                 route_audit=route.audit,
-                user_id=user,
-                channel_id=channel,
-                thread_ts=reply_thread,
-                conversation_type=(
-                    "im" if is_dm else str(event.get("channel_type") or "channel")
-                ),
+                user_id=turn.user,
+                channel_id=turn.channel,
+                thread_ts=turn.reply_thread,
+                conversation_type=conversation_type,
                 audit_turn_id=turn_id,
             ),
-            conversation_type=(
-                "im" if is_dm else str(event.get("channel_type") or "channel")
-            ),
+            conversation_type=conversation_type,
         )
         execution = ExecutionContext(
             chat_key=chat_key,
@@ -511,42 +485,21 @@ class TeamsRouter:
                 provider,
                 model,
             ),
-            on_complete=self._make_completer(account, delivery, turn_id),
+            on_complete=self._make_completer(turn.account, turn.delivery, turn_id),
         )
 
         if command_name is not None:
-            await self._run_command(
-                transport,
-                ctx,
-                text,
-                chat_key,
-                workspace,
-                access,
-                account,
-                delivery,
-                turn_id,
-                execution,
-            )
+            await self._run_command(turn, ctx, workspace, access, execution, turn_id)
             return
 
         try:
-            prompt = await self._build_prompt(
-                transport,
-                client,
-                event,
-                workspace,
-                channel=channel,
-                ts=ts,
-                thread_ts=thread_ts,
-                text=text,
-                is_dm=is_dm,
-            )
+            prompt = await self._build_prompt(turn, workspace)
         except Exception:
             log.exception("Could not build Slack prompt for %s", route.route_id)
             with contextlib.suppress(Exception):
                 await ctx.reply("I couldn't prepare that request. Please try again.")
             await asyncio.to_thread(
-                self._make_completer(account, delivery, turn_id),
+                self._make_completer(turn.account, turn.delivery, turn_id),
                 "error",
                 "prompt_build_failed",
             )
@@ -554,7 +507,7 @@ class TeamsRouter:
 
         if not prompt:
             await asyncio.to_thread(
-                self._make_completer(account, delivery, turn_id),
+                self._make_completer(turn.account, turn.delivery, turn_id),
                 "ignored",
                 "empty_request",
             )
@@ -570,66 +523,27 @@ class TeamsRouter:
         )
         preview = text[:50].replace("\n", " ")
         await self.runtime.dispatch(
-            conv_label,
+            turn.conv_label,
             prompt,
             ctx,
             preview=preview,
             context=execution,
         )
 
-    async def _finish_denied_command(
-        self,
-        transport: SlackTransport,
-        client: Any,
-        route: Route,
-        turn_fields: dict,
-        account: str,
-        delivery: str,
-        channel: str,
-        reply_thread: str | None,
-        user: str,
-        command_name: str,
-    ) -> None:
-        reply = f"!{command_name} is not available in this conversation."
-        turn_id = None
-        if route.audit:
-            with contextlib.suppress(Exception):
-                turn_id = await asyncio.to_thread(
-                    audit.create_turn,
-                    decision="denied",
-                    kind="command",
-                    response_text=reply,
-                    **turn_fields,
-                )
-        ctx = transport.make_context(client, channel, reply_thread, user_id=user)
-        delivered = True
-        try:
-            await ctx.reply(reply)
-        except Exception:
-            delivered = False
-        if turn_id is not None:
-            with contextlib.suppress(Exception):
-                await asyncio.to_thread(audit.record_delivery, turn_id, ok=delivered)
-        await self._complete_ledger(account, delivery, turn_id)
-
     async def _run_command(
         self,
-        transport: SlackTransport,
+        turn: TurnContext,
         ctx: SlackContext,
-        text: str,
-        chat_key: str,
         workspace: Workspace,
         access: AccessProfile,
-        account: str,
-        delivery: str,
-        turn_id: str | None,
         command_context: ExecutionContext,
+        turn_id: str | None,
     ) -> None:
         outcome, reason = "error", "exception"
         try:
-            response = await transport._handle_command(
-                text,
-                chat_key,
+            response = await turn.transport.handle_command(
+                turn.text,
+                command_context.chat_key,
                 ctx=ctx,
                 workspace=workspace,
                 access=access,
@@ -648,7 +562,7 @@ class TeamsRouter:
                         outcome,
                         terminal_reason=reason,
                     )
-            await self._complete_ledger(account, delivery, turn_id)
+            await self._complete_ledger(turn.account, turn.delivery, turn_id)
 
     @staticmethod
     def _usable_providers(workspace: Workspace, access: AccessProfile) -> list[str]:
@@ -657,50 +571,43 @@ class TeamsRouter:
             name for name in access.providers if policy.check_provider(workspace, access, name).ok
         ]
 
-    async def _build_prompt(
-        self,
-        transport: SlackTransport,
-        client: Any,
-        event: dict,
-        workspace: Workspace,
-        *,
-        channel: str,
-        ts: str,
-        thread_ts: str | None,
-        text: str,
-        is_dm: bool,
-    ) -> str:
+    async def _build_prompt(self, turn: TurnContext, workspace: Workspace) -> str:
         """Build provider input from route context, attachments, and text."""
         from .slack import _attachment_files, _attachments_prompt, _file_prompt
 
+        transport = turn.transport
         context_text = ""
-        if thread_ts:
-            context_text = await transport._fetch_thread_context(
-                client,
-                channel,
-                thread_ts,
+        if turn.thread_ts:
+            context_text = await transport.fetch_thread_context(
+                turn.client,
+                turn.channel,
+                turn.thread_ts,
                 author_filter=None,
                 untrusted=True,
             )
-        elif not is_dm:
-            context_text = await transport._fetch_channel_context(
-                client,
-                channel,
-                ts,
+        elif not turn.is_dm:
+            context_text = await transport.fetch_channel_context(
+                turn.client,
+                turn.channel,
+                turn.ts,
                 author_filter=None,
                 untrusted=True,
             )
 
-        attachments = event.get("attachments") or []
+        attachments = turn.event.get("attachments") or []
         shared_prompt = transport.flatten_mentions(_attachments_prompt(attachments))
-        files = (event.get("files") or []) + _attachment_files(attachments)
+        files = (turn.event.get("files") or []) + _attachment_files(attachments)
         downloaded: list[str] = []
         if files:
             uploads_dir = transport.turn_uploads_dir(workspace.path, uuid.uuid4().hex[:8])
-            downloaded = await transport._download_files(files, client, uploads_dir=uploads_dir)
+            downloaded = await transport.download_files(
+                files,
+                turn.client,
+                uploads_dir=uploads_dir,
+            )
         file_prompt = _file_prompt(downloaded, files)
         return "\n\n".join(
-            part for part in (context_text, shared_prompt, file_prompt, text) if part
+            part for part in (context_text, shared_prompt, file_prompt, turn.text) if part
         )
 
     @staticmethod
