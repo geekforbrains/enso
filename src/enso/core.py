@@ -13,7 +13,7 @@ import shlex
 import signal
 from asyncio.subprocess import Process
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -1688,6 +1688,101 @@ class Runtime:
         (via cancellation in the caller) ``stopped``.
         """
         context = context or self.global_context(chat_id)
+        prompt, output_instructions, surface_instructions = self._assemble_prompt(
+            prompt, chat_id, provider_name, ctx, context
+        )
+        provider, model, effort, origin_env = self._resolve_request(
+            provider_name, prompt, chat_id, ctx, context
+        )
+
+        await ctx.send_typing()
+        header = status_header(provider_name, model, effort)
+        status_msg = await self._post_initial_status(ctx, chat_id, header)
+        state: dict[str, Any] = {
+            "elapsed": 0,
+            "header": header,
+            "action": STATUS_INITIAL_ACTION,
+        }
+        stop = asyncio.Event()
+        ticker = asyncio.create_task(self._run_ticker(ctx, status_msg, state, stop))
+        msg_limit = self.transport.message_limit if self.transport else 4096
+
+        try:
+            response_parts, error_text, timed_out = await self._collect_provider_output(
+                provider,
+                prompt,
+                chat_id,
+                model,
+                effort=effort,
+                origin_env=origin_env,
+                context=context,
+                state=state,
+            )
+            if timed_out:
+                await self._stop_ticker(ticker, stop, chat_id)
+                await self._report_timeout(ctx, chat_id, provider_name, status_msg)
+                return "timeout", None
+
+            await self._stop_ticker(ticker, stop, chat_id)
+            if status_msg is not None:
+                await ctx.delete_status(status_msg)
+
+            response_text = provider.format_response(response_parts)
+            log.info(
+                "[%s] request complete chat=%s response_parts=%d "
+                "response_len=%d error=%s elapsed=%s",
+                provider_name,
+                chat_id,
+                len(response_parts),
+                len(response_text),
+                bool(error_text),
+                state["elapsed"],
+            )
+
+            if error_text:
+                await ctx.reply(_format_error(error_text[:4000]))
+            elif response_text:
+                await self._deliver_response(
+                    ctx,
+                    response_text,
+                    output_instructions=output_instructions,
+                    surface_instructions=surface_instructions,
+                    msg_limit=msg_limit,
+                )
+            else:
+                await ctx.reply("(No response)")
+            return ("error", "provider_error") if error_text else ("completed", None)
+
+        except asyncio.CancelledError:
+            await self._stop_ticker(ticker, stop, chat_id)
+            if status_msg is not None:
+                with contextlib.suppress(Exception):
+                    await ctx.edit_status(status_msg, "Stopped.")
+            raise
+
+        except Exception as exc:
+            await self._stop_ticker(ticker, stop, chat_id)
+            log.error("Error processing %s request: %s", provider_name, exc, exc_info=True)
+            if status_msg is not None:
+                with contextlib.suppress(Exception):
+                    await ctx.delete_status(status_msg)
+            for chunk in split_text(_format_error(str(exc)), limit=msg_limit):
+                await ctx.reply(chunk)
+            return "error", "exception"
+
+    def _assemble_prompt(
+        self,
+        prompt: str,
+        chat_id: str,
+        provider_name: str,
+        ctx: TransportContext,
+        context: ExecutionContext,
+    ) -> tuple[str, str, str]:
+        """Build the prompt to send, with the transport instructions it carries.
+
+        The instruction strings come back alongside the prompt because response
+        delivery may only honour a fence the agent was actually told to emit.
+        """
         # Inject background messages. Teams executions consume only messages
         # explicitly addressed to them — a global message must not leak into
         # an arbitrary route's context.
@@ -1699,40 +1794,25 @@ class Runtime:
         # Inject compact seed if one is pending for this chat.
         prompt = self._consume_compact_seed(chat_id, prompt, provider_name)
 
-        output_instructions = ""
-        get_output_instructions = getattr(ctx, "get_output_instructions", None)
-        if callable(get_output_instructions):
-            try:
-                candidate = get_output_instructions()
-            except Exception:
-                log.warning(
-                    "get_output_instructions failed for chat %s",
-                    chat_id,
-                    exc_info=True,
-                )
-            else:
-                if isinstance(candidate, str):
-                    output_instructions = candidate.strip()
-                    if output_instructions:
-                        prompt = f"{prompt}\n\n{output_instructions}"
+        output_instructions = ctx.get_output_instructions().strip()
+        if output_instructions:
+            prompt = f"{prompt}\n\n{output_instructions}"
 
-        surface_instructions = ""
-        get_surface_instructions = getattr(ctx, "get_surface_instructions", None)
-        if callable(get_surface_instructions):
-            try:
-                candidate = get_surface_instructions()
-            except Exception:
-                log.warning(
-                    "get_surface_instructions failed for chat %s",
-                    chat_id,
-                    exc_info=True,
-                )
-            else:
-                if isinstance(candidate, str):
-                    surface_instructions = candidate.strip()
-                    if surface_instructions:
-                        prompt = f"{prompt}\n\n{surface_instructions}"
+        surface_instructions = ctx.get_surface_instructions().strip()
+        if surface_instructions:
+            prompt = f"{prompt}\n\n{surface_instructions}"
 
+        return prompt, output_instructions, surface_instructions
+
+    def _resolve_request(
+        self,
+        provider_name: str,
+        prompt: str,
+        chat_id: str,
+        ctx: TransportContext,
+        context: ExecutionContext,
+    ) -> tuple[BaseProvider, str, str | None, dict[str, str]]:
+        """Resolve what to run this request with, and log that decision."""
         model = (
             context.model
             if context.model is not None
@@ -1768,37 +1848,57 @@ class Runtime:
         log.debug("[%s] origin_env_keys=%s", provider_name, sorted(origin_env))
         if self.debug_prompts and not is_bound:
             log.debug("[%s] full_prompt:\n%s", provider_name, prompt)
+        return provider, model, effort, origin_env
 
-        await ctx.send_typing()
-        header = status_header(provider_name, model, effort)
-        status_msg = None
+    async def _post_initial_status(
+        self, ctx: TransportContext, chat_id: str, header: str
+    ) -> Any | None:
+        """Post the status message the ticker will edit, or None if it fails.
+
+        A transport that cannot post status must not fail the whole request;
+        the ticker then runs typing-only.
+        """
         try:
-            status_msg = await ctx.reply_status(
-                status_text(header, 0, STATUS_INITIAL_ACTION)
-            )
+            return await ctx.reply_status(status_text(header, 0, STATUS_INITIAL_ACTION))
         except Exception:
             log.warning("Failed to send initial status message for chat %s", chat_id, exc_info=True)
-        state: dict[str, Any] = {
-            "elapsed": 0,
-            "header": header,
-            "action": STATUS_INITIAL_ACTION,
-        }
-        stop = asyncio.Event()
-        ticker = asyncio.create_task(self._run_ticker(ctx, status_msg, state, stop))
+            return None
 
-        async def stop_ticker() -> None:
-            # Must run before the status message is edited or deleted; a
-            # late tick would overwrite the final status.
-            stop.set()
-            error = await _cancel_and_wait(ticker)
-            if error is not None and not isinstance(error, asyncio.CancelledError):
-                log.warning(
-                    "Status ticker failed while stopping for chat %s: %s",
-                    chat_id,
-                    error,
-                )
+    async def _stop_ticker(
+        self, ticker: asyncio.Task, stop: asyncio.Event, chat_id: str
+    ) -> None:
+        """Halt the status ticker.
 
-        msg_limit = self.transport.message_limit if self.transport else 4096
+        Must run before the status message is edited or deleted; a late tick
+        would overwrite the final status.
+        """
+        stop.set()
+        error = await _cancel_and_wait(ticker)
+        if error is not None and not isinstance(error, asyncio.CancelledError):
+            log.warning(
+                "Status ticker failed while stopping for chat %s: %s",
+                chat_id,
+                error,
+            )
+
+    async def _collect_provider_output(
+        self,
+        provider: BaseProvider,
+        prompt: str,
+        chat_id: str,
+        model: str,
+        *,
+        effort: str | None,
+        origin_env: dict[str, str],
+        context: ExecutionContext,
+        state: dict[str, Any],
+    ) -> tuple[list[str], str, bool]:
+        """Stream the provider to completion under the configured deadline.
+
+        Returns the response parts, the last error text, and whether *our*
+        deadline expired — which is not the same as a provider-reported
+        timeout, and must not be labelled as one.
+        """
         response_parts: list[str] = []
         error_text = ""
 
@@ -1816,7 +1916,7 @@ class Runtime:
                 if self.debug_events:
                     log.debug(
                         "[%s] handling_event kind=%s text_len=%d session=%s",
-                        provider_name,
+                        provider.name,
                         event.kind,
                         len(event.text or ""),
                         event.session_id or "-",
@@ -1829,176 +1929,138 @@ class Runtime:
                 elif event.kind == "error":
                     error_text = event.text
 
-        async def run_with_timeout() -> bool:
-            """Run the provider and return True only when our deadline expires."""
-            if not self.agent_timeout:
-                await consume_provider_events()
-                return False
+        timed_out = await self._run_until_deadline(consume_provider_events(), chat_id)
+        return response_parts, error_text, timed_out
 
-            provider_task = asyncio.create_task(consume_provider_events())
+    async def _run_until_deadline(
+        self, work: Coroutine[Any, Any, None], chat_id: str
+    ) -> bool:
+        """Run ``work`` and return True only when our deadline expires."""
+        if not self.agent_timeout:
+            await work
+            return False
 
-            async def cancel_provider() -> None:
-                error = await _cancel_and_wait(provider_task)
-                if error is not None and not isinstance(error, asyncio.CancelledError):
-                    log.warning(
-                        "Provider cleanup failed for chat %s: %s",
-                        chat_id,
-                        error,
-                    )
+        provider_task = asyncio.create_task(work)
 
-            try:
-                done, _ = await asyncio.wait(
-                    {provider_task},
-                    timeout=self.agent_timeout,
+        async def cancel_provider() -> None:
+            error = await _cancel_and_wait(provider_task)
+            if error is not None and not isinstance(error, asyncio.CancelledError):
+                log.warning(
+                    "Provider cleanup failed for chat %s: %s",
+                    chat_id,
+                    error,
                 )
-                if provider_task in done:
-                    await provider_task
-                    return False
-                await cancel_provider()
-                return True
-            except BaseException:
-                if not provider_task.done():
-                    await cancel_provider()
-                raise
 
         try:
-            if await run_with_timeout():
-                await stop_ticker()
-                duration = self._format_duration(self.agent_timeout)
-                user_notice = f"Stopped after reaching the {duration} timeout."
-                agent_notice = (
-                    "Enso stopped the previous agent turn after it reached the "
-                    f"configured {duration} timeout. Partial work may remain; inspect "
-                    "the current workspace and prior session before continuing."
-                )
-                log.warning(
-                    "[%s] request timed out chat=%s after %ss",
-                    provider_name,
-                    chat_id,
-                    self.agent_timeout,
-                )
-                try:
-                    messages.send(
-                        agent_notice,
-                        source="enso:timeout",
-                        conversation_id=chat_id,
-                    )
-                except Exception:
-                    log.exception("Could not persist timeout notice for chat %s", chat_id)
-
-                delivered = False
-                if status_msg is not None:
-                    try:
-                        await ctx.edit_status(status_msg, user_notice)
-                        delivered = True
-                    except Exception:
-                        log.warning(
-                            "Could not finalize timeout status for chat %s",
-                            chat_id,
-                            exc_info=True,
-                        )
-                if not delivered:
-                    try:
-                        await ctx.reply(user_notice)
-                    except Exception:
-                        log.warning(
-                            "Could not send timeout notice for chat %s",
-                            chat_id,
-                            exc_info=True,
-                        )
-                return "timeout", None
-
-            await stop_ticker()
-            if status_msg is not None:
-                await ctx.delete_status(status_msg)
-
-            response_text = provider.format_response(response_parts)
-            log.info(
-                "[%s] request complete chat=%s response_parts=%d "
-                "response_len=%d error=%s elapsed=%s",
-                provider_name,
-                chat_id,
-                len(response_parts),
-                len(response_text),
-                bool(error_text),
-                state["elapsed"],
+            done, _ = await asyncio.wait(
+                {provider_task},
+                timeout=self.agent_timeout,
             )
-
-            if error_text:
-                await ctx.reply(_format_error(error_text[:4000]))
-            elif response_text:
-                publication = (
-                    parse_surface_publication(response_text)
-                    if surface_instructions
-                    else None
-                )
-                surface_fallback = (
-                    parse_surface_fallback(response_text)
-                    if surface_instructions and publication is None
-                    else None
-                )
-                message = (
-                    parse_outbound_message(response_text)
-                    if output_instructions
-                    and publication is None
-                    and surface_fallback is None
-                    else None
-                )
-                fallback_text = (
-                    parse_outbound_fallback(response_text)
-                    if output_instructions
-                    and publication is None
-                    and surface_fallback is None
-                    and message is None
-                    else None
-                )
-                offer_surface_draft = getattr(ctx, "offer_surface_draft", None)
-                reply_message = getattr(ctx, "reply_message", None)
-                if publication is not None and callable(offer_surface_draft):
-                    await offer_surface_draft(publication, response_text)
-                elif publication is not None:
-                    for chunk in split_text(publication.fallback_text, limit=msg_limit):
-                        await ctx.reply(chunk)
-                elif surface_fallback is not None:
-                    for chunk in split_text(surface_fallback, limit=msg_limit):
-                        await ctx.reply(chunk)
-                elif message is not None and callable(reply_message):
-                    await reply_message(message)
-                elif message is not None:
-                    for chunk in split_text(message.fallback_text, limit=msg_limit):
-                        await ctx.reply(chunk)
-                elif fallback_text is not None:
-                    for chunk in split_text(fallback_text, limit=msg_limit):
-                        await ctx.reply(chunk)
-                else:
-                    reply_markdown = getattr(ctx, "reply_markdown", None)
-                    if getattr(ctx, "rich_markdown_enabled", False) and callable(
-                        reply_markdown
-                    ):
-                        await reply_markdown(response_text)
-                    else:
-                        for chunk in split_text(response_text, limit=msg_limit):
-                            await ctx.reply(chunk)
-            else:
-                await ctx.reply("(No response)")
-            return ("error", "provider_error") if error_text else ("completed", None)
-
-        except asyncio.CancelledError:
-            await stop_ticker()
-            if status_msg is not None:
-                with contextlib.suppress(Exception):
-                    await ctx.edit_status(status_msg, "Stopped.")
+            if provider_task in done:
+                await provider_task
+                return False
+            await cancel_provider()
+            return True
+        except BaseException:
+            if not provider_task.done():
+                await cancel_provider()
             raise
 
-        except Exception as exc:
-            await stop_ticker()
-            log.error("Error processing %s request: %s", provider_name, exc, exc_info=True)
-            if status_msg is not None:
-                with contextlib.suppress(Exception):
-                    await ctx.delete_status(status_msg)
-            for chunk in split_text(_format_error(str(exc)), limit=msg_limit):
+    async def _report_timeout(
+        self,
+        ctx: TransportContext,
+        chat_id: str,
+        provider_name: str,
+        status_msg: Any | None,
+    ) -> None:
+        """Queue the agent-facing timeout notice and tell the user about it."""
+        duration = self._format_duration(self.agent_timeout)
+        user_notice = f"Stopped after reaching the {duration} timeout."
+        agent_notice = (
+            "Enso stopped the previous agent turn after it reached the "
+            f"configured {duration} timeout. Partial work may remain; inspect "
+            "the current workspace and prior session before continuing."
+        )
+        log.warning(
+            "[%s] request timed out chat=%s after %ss",
+            provider_name,
+            chat_id,
+            self.agent_timeout,
+        )
+        try:
+            messages.send(
+                agent_notice,
+                source="enso:timeout",
+                conversation_id=chat_id,
+            )
+        except Exception:
+            log.exception("Could not persist timeout notice for chat %s", chat_id)
+
+        delivered = False
+        if status_msg is not None:
+            try:
+                await ctx.edit_status(status_msg, user_notice)
+                delivered = True
+            except Exception:
+                log.warning(
+                    "Could not finalize timeout status for chat %s",
+                    chat_id,
+                    exc_info=True,
+                )
+        if not delivered:
+            try:
+                await ctx.reply(user_notice)
+            except Exception:
+                log.warning(
+                    "Could not send timeout notice for chat %s",
+                    chat_id,
+                    exc_info=True,
+                )
+
+    async def _deliver_response(
+        self,
+        ctx: TransportContext,
+        response_text: str,
+        *,
+        output_instructions: str,
+        surface_instructions: str,
+        msg_limit: int,
+    ) -> None:
+        """Send a completed response over the richest channel it qualifies for.
+
+        A persistent-surface draft outranks a structured message, which
+        outranks plain text. Each parser only runs when its instructions were
+        injected — a fence the agent was never told to emit stays literal text.
+        """
+
+        async def reply_in_chunks(text: str) -> None:
+            for chunk in split_text(text, limit=msg_limit):
                 await ctx.reply(chunk)
-            return "error", "exception"
+
+        if surface_instructions:
+            publication = parse_surface_publication(response_text)
+            if publication is not None:
+                await ctx.offer_surface_draft(publication, response_text)
+                return
+            surface_fallback = parse_surface_fallback(response_text)
+            if surface_fallback is not None:
+                await reply_in_chunks(surface_fallback)
+                return
+
+        if output_instructions:
+            message = parse_outbound_message(response_text)
+            if message is not None:
+                await ctx.reply_message(message)
+                return
+            fallback_text = parse_outbound_fallback(response_text)
+            if fallback_text is not None:
+                await reply_in_chunks(fallback_text)
+                return
+
+        if ctx.rich_markdown_enabled:
+            await ctx.reply_markdown(response_text)
+        else:
+            await reply_in_chunks(response_text)
 
     @staticmethod
     def _format_duration(seconds: int | float) -> str:
