@@ -13,6 +13,7 @@ route that references them unusable.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 
 from .providers import PROVIDER_NAMES
@@ -25,6 +26,15 @@ POLICY_FILES = {
     "claude": os.path.join("claude", "settings.json"),
     "codex": os.path.join("codex", "config.toml"),
 }
+
+# Names env_passthrough may never carry: the launch owns these (policy.py's
+# _KEEP_ENV allowlist plus PATH and CODEX_HOME), and ENSO_* is Enso's own
+# namespace. Defined literally because policy.py imports teams.py, so
+# importing _KEEP_ENV back would be circular.
+_ENV_PASSTHROUGH_RESERVED = frozenset(
+    {"HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "USER", "SHELL", "PATH", "CODEX_HOME"}
+)
+_ENV_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*")
 
 
 def _default_policy_dir(access_name: str) -> str:
@@ -71,6 +81,7 @@ class AccessProfile:
     providers: tuple[str, ...]
     default_provider: str | None
     chat_commands: tuple[str, ...] | str
+    env_passthrough: tuple[str, ...] = ()
 
     def allows_provider(self, name: str) -> bool:
         return name in self.providers
@@ -311,6 +322,7 @@ def _load_access(
         "providers",
         "default_provider",
         "chat_commands",
+        "env_passthrough",
     }
     for raw_name, cfg in block.items():
         if not isinstance(raw_name, str) or not raw_name:
@@ -357,6 +369,7 @@ def _load_access(
             default_provider = None
 
         commands = _load_capability(cfg.get("chat_commands"), "chat_commands", problems)
+        passthrough = _load_env_passthrough(cfg.get("env_passthrough"), unrestricted, problems)
         profiles[name] = AccessProfile(
             name=name,
             policy_dir=policy_dir,
@@ -364,6 +377,7 @@ def _load_access(
             providers=tuple(providers_raw),
             default_provider=default_provider,
             chat_commands=commands,
+            env_passthrough=passthrough,
         )
         if problems:
             profile_errors[name] = tuple(problems)
@@ -383,6 +397,35 @@ def _load_capability(value: object, key: str, problems: list[str]) -> tuple[str,
         return tuple(value)
     problems.append(f'{key} must be "*" or a list of names')
     return ()
+
+
+def _load_env_passthrough(
+    value: object, unrestricted: bool, problems: list[str]
+) -> tuple[str, ...]:
+    """Load environment variable names admitted into policy-controlled launches."""
+    if value is None:
+        return ()
+    if not _is_str_list(value):
+        problems.append("env_passthrough must be a list of strings")
+        return ()
+    if unrestricted:
+        # An unrestricted profile inherits the full environment; accepting the
+        # key would let the operator believe they scoped something.
+        problems.append("unrestricted: true is invalid alongside env_passthrough")
+    if len(value) != len(set(value)):
+        problems.append("env_passthrough contains duplicate names")
+    valid: list[str] = []
+    for name in value:
+        if not _ENV_NAME_RE.fullmatch(name):
+            problems.append(f"env_passthrough name {name!r} must match [A-Z][A-Z0-9_]*")
+        elif name in _ENV_PASSTHROUGH_RESERVED or name.startswith("ENSO_"):
+            problems.append(
+                f"env_passthrough may not name {name}; launch-controlled and "
+                "Enso-owned names are reserved"
+            )
+        elif name not in valid:
+            valid.append(name)
+    return tuple(valid)
 
 
 def _check_topology(

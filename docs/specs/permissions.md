@@ -51,11 +51,11 @@ Policy directories must be absolute after expansion, outside every writable work
 
 This is not semantic policy validation. A syntactically valid native rule can still grant too much, match the wrong path, rely on a feature unsupported by the installed CLI version, or expose authority through MCP and other tool surfaces. Enso must describe this command as a static plumbing check, never as proof that a workspace is sandboxed or safe.
 
-Before using a restricted profile, test it with the installed provider CLI in a disposable workspace. At minimum, try an allowed read, allowed write if applicable, forbidden read, forbidden write, command execution, network access, environment-secret access, policy-file modification, and an approval/escalation attempt. The operator owns the native policy's meaning and must repeat those checks after material CLI upgrades.
+Before using a restricted profile, test it with the installed provider CLI in a disposable workspace. At minimum, try an allowed read, allowed write if applicable, forbidden read, forbidden write, command execution, network access, environment-secret access, policy-file modification, and an approval/escalation attempt. A profile that grants MCP servers needs two more checks, run from inside the restricted profile: (a) write a workspace `.mcp.json` and a workspace `.claude/settings.json` that tries to enable it (for example `enableAllProjectMcpServers`), take a **new turn**, and confirm no new servers appear — the workspace is agent-writable and `--setting-sources project` loads it, so this is the cross-turn self-escalation path to rule out; (b) confirm `${VAR}` references in the MCP config resolve from the launch environment (a passthrough variable works) and that an unlisted variable does not — in the current CLI an unresolvable reference reaches the server as the literal `${VAR}` text rather than an empty string. The operator owns the native policy's meaning and must repeat those checks after material CLI upgrades.
 
 ## Process boundary
 
-Enso starts provider binaries directly, never through a shell. A policy-controlled child receives a small allowlisted environment containing basic process variables and only the credential needed by the active provider. Enso's transport tokens, 1Password token, database authority, and unrelated provider credentials must not be inherited.
+Enso starts provider binaries directly, never through a shell. A policy-controlled child receives a small allowlisted environment containing basic process variables, only the credential needed by the active provider, and any variables the profile's `env_passthrough` explicitly names. Enso's transport tokens, 1Password token, database authority, and unrelated provider credentials must not be inherited.
 
 Filtering `PATH` is useful friction but is not an isolation boundary: an agent may invoke an executable by absolute path or through an interpreter. The native filesystem/process policy or an outer sandbox must protect:
 
@@ -77,12 +77,13 @@ For a restricted profile Enso invokes Claude with its native settings file and n
 ```text
 claude -p --settings <policy-dir>/claude/settings.json \
   --permission-mode dontAsk --setting-sources project \
-  --strict-mcp-config --model <model> -- <prompt>
+  --strict-mcp-config [--mcp-config <policy-dir>/claude/mcp.json] \
+  --model <model> -- <prompt>
 ```
 
-The exact output and session flags vary by interactive operation, but the policy selection does not. Enso removes its unrestricted `--dangerously-skip-permissions` flag.
+with `--mcp-config` appended exactly when the conventional file exists. The exact output and session flags vary by interactive operation, but the policy selection does not. Enso removes its unrestricted `--dangerously-skip-permissions` flag.
 
-`dontAsk` is necessary because nobody can answer an interactive approval prompt inside a Slack turn. `--strict-mcp-config` keeps ambient MCP configuration out of the launch. `--setting-sources project` preserves the CLI's project-native instruction and skill discovery; Enso does not recreate that discovery.
+`dontAsk` is necessary because nobody can answer an interactive approval prompt inside a Slack turn. `--strict-mcp-config` is what makes the conventional file an exact allowlist: the launch loads only servers named by `--mcp-config` and ignores every other MCP configuration source, so ambient servers the operator configured for themselves stay out, and the profile's own `mcp.json` — when present — is passed explicitly beside it. With no `mcp.json`, that resolves to zero MCP servers. `--setting-sources project` preserves the CLI's project-native instruction and skill discovery; Enso does not recreate that discovery.
 
 A restricted Claude policy must set:
 
@@ -103,6 +104,71 @@ Under `--permission-mode dontAsk`, unmatched tool calls default to deny for Bash
 Because `--setting-sources project` also loads the workspace's own `.claude/settings.json`, treat that file as attacker-influenced. A `permissions` deny there cannot widen the launch (deny always wins), but a scalar such as `sandbox.enabled: false` can turn the sandbox off on the next launch. Any profile that grants writes must therefore deny writes to the control files a stricter profile trusts — `.claude/**`, `.codex/**`, `AGENTS.md`, `CLAUDE.md`, and skill directories. A Claude `deny` on those paths blocks the Write and Edit tools and Bash redirection to them; a read-only profile that grants no write tool cannot plant them at all.
 
 An access profile does not create instructions or copy skills. When Enso bootstraps a missing workspace, it writes a small `AGENTS.md` and a sibling `CLAUDE.md` symlink; after that, workspace instructions and native skill directories remain the operator's responsibility.
+
+### Granting credentials and MCP servers to a restricted profile
+
+A restricted launch deliberately withholds the operator's environment and ambient MCP configuration. When a restricted route legitimately needs one credential or one internal MCP server, two narrow grants exist so that `unrestricted: true` — which discards the entire privilege boundary for the route — is never the answer:
+
+- `env_passthrough` on the access profile names environment variables (names, never values) to copy into the otherwise fixed child environment. It is provider-neutral and applies identically to every policy-controlled provider.
+- The conventional file `<policy-dir>/claude/mcp.json`, sibling to `settings.json`, declares the profile's exact Claude MCP server set. There is no new config key: the file present means those servers and only those; the file absent means zero servers. Codex needs no Enso mechanism — it declares MCP servers natively in the profile's `codex/config.toml`, which is already staged, hashed, and integrity-checked; the environment half still comes from `env_passthrough`, and how Codex forwards environment to its MCP server processes is native behavior the operator owns and verifies.
+
+Grant nothing by default. If the profile does not need a credential, do not pass one through; if it does not need an MCP server, leave the file absent. Every passed-through variable is readable by the profile, and every declared server is reachable from it.
+
+**Keep secrets out of the file.** The two halves are designed to pair: `mcp.json` carries `${VAR}` references only, so it stays a committable, reviewable artifact, while values arrive at runtime through the service environment — drop `METRICS_API_TOKEN=...` into a `~/.enso/secrets/*.env` file, which `enso serve` loads at startup, then name the variable in the profile. For stdio servers, `${VAR}` references in the server's `env` block resolve against the same minimal-plus-passthrough launch environment, and the server's `command` resolves against the filtered `PATH`, so it must be on that PATH or absolute.
+
+A worked example. The profile:
+
+```jsonc
+"reporting": {
+  "policy_dir": "~/.enso/policies/reporting",
+  "providers": ["claude"],
+  "default_provider": "claude",
+  "chat_commands": ["status", "clear", "stop", "help"],
+
+  // names, never values
+  "env_passthrough": ["METRICS_API_TOKEN"]
+}
+```
+
+The server file, `~/.enso/policies/reporting/claude/mcp.json` — a protected owner-only regular file like every other policy file:
+
+```jsonc
+{
+  "mcpServers": {
+    "metrics": {
+      "type": "http",
+      "url": "https://metrics.internal.example/mcp",
+      "headers": { "Authorization": "${METRICS_API_TOKEN}" }
+    }
+  }
+}
+```
+
+And permission rules in the same profile's `settings.json`, because under `dontAsk` a declared server that no allow rule references has every tool denied (deny or ask references cannot admit a tool):
+
+```json
+"permissions": {
+  "allow": [
+    "mcp__metrics__query_series",
+    "mcp__metrics__list_dashboards"
+  ]
+}
+```
+
+`mcp__<server>` covers a server's entire tool surface; `mcp__<server>__<tool>` covers one tool. The [example MCP file](../examples/acme-claude-mcp.json) is a copyable starting point.
+
+Validation and failure semantics:
+
+- `env_passthrough` names must match `[A-Z][A-Z0-9_]*`, contain no duplicates, and must not name launch-controlled or Enso-owned variables (`HOME`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TERM`, `TMPDIR`, `USER`, `SHELL`, `PATH`, `CODEX_HOME`, or anything `ENSO_`-prefixed). Neither grant is meaningful on an unrestricted profile: `env_passthrough` there is a config error — the profile already inherits the full environment, and silently accepting the key would let the operator believe they scoped something — and an unrestricted profile has no policy directory to hold the conventional file.
+- `mcp.json` fails closed. Present but unusable — an integrity failure, unparseable JSON, not a JSON object, a missing or non-object `mcpServers`, or an empty `mcpServers` (delete the file to disable MCP) — refuses the turn as a policy error rather than silently launching with fewer servers. A symlink at the conventional path is an integrity error, never "absent". The file is hashed into `policy_revision`, so adding, editing, or removing it rotates the revision and audit rows describe the server set each turn actually had.
+- A configured passthrough name absent from the service environment warns at spawn (names only, never values) and the turn proceeds: environment presence varies by deployment, and the downstream failure — the MCP server rejects authentication — is contained and attributable. Note the shape of that failure: the current Claude CLI passes an unresolvable `${VAR}` reference to the server as the literal text `${VAR}`, not as an empty string, so a server-side "invalid credential" with that literal is the signature of a missing passthrough variable.
+
+Verify what a profile actually has with `enso config check`. It prints each policy-controlled profile's passthrough names with a resolvability mark (checked against the invoking shell plus `~/.enso/secrets/*.env`; the service environment may differ), lists the resolved server names on each Claude native-launch line (`✓ claude (a1b2c3d4e5f6) mcp: metrics`), and warns when a `mcp__` permission rule matches no declared server (the rule can never apply — with no `mcp.json`, every `mcp__` rule is inert) or when a declared server is referenced by no allow rule (every tool on it denied under `dontAsk`; deny or ask references cannot make it usable). It also warns when a header or `env` value in `mcp.json` has a credential-shaped key (`auth`, `token`, `secret`, `key`, `password`, `bearer`) and a literal value containing no `${` reference — precisely the anti-pattern the pairing exists to avoid. As everywhere else, this is a plumbing check, not proof that the grant is safe.
+
+Two security properties to hold in mind when granting:
+
+- **MCP servers bypass the sandbox's network rules.** Servers are dialled by the provider process itself, not by sandboxed Bash, so an allowlisted server is reachable regardless of what the OS sandbox permits on the network. Grant only servers whose *entire* tool surface is acceptable for the profile, then narrow within it using `mcp__<server>__<tool>` permission rules.
+- **Passthrough is a delivery mechanism, not a confidentiality one.** If the profile can run Bash at all, the agent can read its own environment; `env_passthrough` hands the profile the real value. Prefer narrowly-scoped, read-only tokens, and where the deployment supports it, a credential mask or egress proxy so the child sees a sentinel.
 
 ## Codex
 

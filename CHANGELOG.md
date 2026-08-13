@@ -4,9 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Restricted access profiles gain `env_passthrough`, a list of environment-variable names (names, never values) copied from the service environment into the otherwise fixed child environment for every policy-controlled provider. Names are validated (shape, no duplicates, launch-controlled and `ENSO_`-prefixed names reserved) and the key is invalid on an unrestricted profile. A configured-but-absent name warns at spawn; `enso config check` shows each name's resolvability against the invoking shell and `~/.enso/secrets/*.env`.
+- Restricted Claude profiles gain an exact MCP server allowlist by convention: an optional `<policy_dir>/claude/mcp.json` beside `settings.json`, integrity-checked, hashed into `policy_revision`, and passed as `--mcp-config` with `--strict-mcp-config` retained so the profile sees those servers and never ambient ones. Absent means zero servers; present but unusable fails the turn closed. `enso config check` lists each profile's resolved server names and warns about `mcp__` permission rules matching no declared server, declared servers no allow rule references, and secret-shaped literals in `mcp.json`.
+
 ### Changed
 
 - Interactive agent turns and `/compact` now default to a 30-minute (1,800-second) `agent.timeout`, up from 15 minutes (900 seconds); `0` still disables it.
+- The launch contract version is bumped to 3 (restricted Claude flags and child-environment construction changed), which rotates every `policy_revision`, including the unrestricted sentinel. Both new grants default to off; an install that adopts neither sees only the rotation.
 
 ## [1.1.0] - 2026-08-12
 

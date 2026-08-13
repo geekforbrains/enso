@@ -61,7 +61,13 @@
       "policy_dir": "~/.enso/policies/staff",
       "providers": ["claude", "codex"],
       "default_provider": "claude",
-      "chat_commands": ["status", "clear", "stop", "help", "use", "model", "effort", "compact"]
+      "chat_commands": ["status", "clear", "stop", "help", "use", "model", "effort", "compact"],
+
+      // Names, never values: each variable is copied from the service
+      // environment (e.g. loaded from ~/.enso/secrets/*.env at startup)
+      // into the child environment. Invalid on an unrestricted profile.
+      // See docs/specs/permissions.md for the MCP pairing and cautions.
+      "env_passthrough": ["METRICS_API_TOKEN"]
     },
     "client-readonly": {
       "policy_dir": "~/.enso/policies/client-readonly",

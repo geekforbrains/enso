@@ -331,6 +331,8 @@ A practical installation may use:
         └── codex/{config.toml,rules/*.rules}
 ```
 
+Beside `claude/settings.json`, a profile's `claude/` directory may hold an optional conventional `claude/mcp.json` declaring that profile's exact Claude MCP server set. Its presence turns MCP on for the profile and is hashed into the launch's `policy_revision`; absence means zero MCP servers. Like every policy source file, it must be a protected owner-only regular file, and a present-but-unusable file fails the launch closed. See [permissions.md](permissions.md#granting-credentials-and-mcp-servers-to-a-restricted-profile).
+
 A workspace is a shared content root and provider cwd, not a security boundary. It may contain project knowledge, `AGENTS.md`/`CLAUDE.md`, and provider-native `.agents/skills/` and `.claude/skills/` directories. The CLIs may additionally load native user, managed, plugin, system, or bundled skill scopes; project placement is not an allowlist. When a named workspace is missing its instruction file, Enso seeds a small `AGENTS.md` plus a `CLAUDE.md` symlink but does not add global skill links.
 
 A policy directory belongs to an access profile and stays outside all writable workspaces and Telegram's global `working_dir`. This separation lets one profile serve several project directories. Paths are expanded and canonicalized before topology checks or child-process use. Workspaces may live at normalized operator-chosen paths, but configured workspace roots must not overlap each other; policy paths must not overlap any workspace. Aliases and hard links must not provide a writable path back to protected policy bytes.
@@ -426,6 +428,7 @@ Schema rules:
 
 - `workspaces.<name>.path` is required and resolves to an absolute directory. `concurrency` is a positive integer and defaults to `1`. Workspaces do not contain provider, command, skill, or permission settings.
 - `access.<name>` requires a non-empty `providers` list and a `default_provider` from that list. `chat_commands` is either a unique list or the explicit string `"*"`; omission means none. It governs Enso chat commands only, not provider-native tools, slash commands, skills, plugins, hooks, or MCP servers.
+- A policy-controlled profile may add `env_passthrough`, a list of environment-variable names (names, never values) copied from the service environment into the child environment. Names must match `[A-Z][A-Z0-9_]*`, be unique, and not name launch-controlled or `ENSO_`-prefixed variables; the key is invalid alongside `unrestricted: true`. See [permissions.md](permissions.md#granting-credentials-and-mcp-servers-to-a-restricted-profile).
 - An access profile uses exactly one mode: explicit `unrestricted: true`, or native policy files under `policy_dir`. For a restricted profile the directory defaults to `~/.enso/policies/<access-name>`. Unrestricted mode does not imply providers or commands.
 - `routes.slack.account_id` must match the Slack account returned by the configured credentials.
 - `transports.slack.rich_messages` and `transports.slack.persistent_surfaces` default to `true`. An explicit JSON `false` disables that feature; a non-boolean value fails closed as disabled. Persistent surfaces are effective only while rich messages are enabled. These are transport-wide rendering controls, not route permissions, and changes require a restart.

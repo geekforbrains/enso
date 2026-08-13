@@ -82,6 +82,115 @@ def test_config_check_fails_on_missing_policy(tmp_enso):
     assert "claude" in result.output
 
 
+def _isolate_secrets(tmp_enso, monkeypatch) -> Path:
+    """Point the config-check secrets scan away from the developer's ~/.enso."""
+    secrets = Path(tmp_enso) / "secrets"
+    monkeypatch.setattr("enso.cli.SECRETS_DIR", str(secrets))
+    return secrets
+
+
+def test_config_check_prints_resolvable_passthrough_names(tmp_enso, monkeypatch):
+    _isolate_secrets(tmp_enso, monkeypatch)
+    monkeypatch.setenv("CLIENT_METRICS_TOKEN", "tok")
+    config = _teams_config(tmp_enso)
+    config["access"]["client"]["env_passthrough"] = ["CLIENT_METRICS_TOKEN"]
+    save_config(config)
+
+    result = runner.invoke(app, ["config", "check"])
+
+    assert result.exit_code == 0, result.output
+    plain = " ".join(result.output.split())
+    assert "env_passthrough:" in plain
+    assert "✓ CLIENT_METRICS_TOKEN" in plain
+    assert "the service environment may differ" in plain
+
+
+def test_config_check_marks_unset_passthrough_name_without_failing(tmp_enso, monkeypatch):
+    _isolate_secrets(tmp_enso, monkeypatch)
+    monkeypatch.delenv("CLIENT_METRICS_TOKEN", raising=False)
+    config = _teams_config(tmp_enso)
+    config["access"]["client"]["env_passthrough"] = ["CLIENT_METRICS_TOKEN"]
+    save_config(config)
+
+    result = runner.invoke(app, ["config", "check"])
+
+    assert result.exit_code == 0, result.output
+    plain = " ".join(result.output.split())
+    assert "! CLIENT_METRICS_TOKEN not set" in plain
+
+
+def test_config_check_resolves_passthrough_from_secrets_files(tmp_enso, monkeypatch):
+    secrets = _isolate_secrets(tmp_enso, monkeypatch)
+    secrets.mkdir()
+    (secrets / "tokens.env").write_text("CLIENT_METRICS_TOKEN=tok\n")
+    monkeypatch.delenv("CLIENT_METRICS_TOKEN", raising=False)
+    config = _teams_config(tmp_enso)
+    config["access"]["client"]["env_passthrough"] = ["CLIENT_METRICS_TOKEN"]
+    save_config(config)
+
+    result = runner.invoke(app, ["config", "check"])
+
+    assert result.exit_code == 0, result.output
+    plain = " ".join(result.output.split())
+    assert "✓ CLIENT_METRICS_TOKEN" in plain
+    assert "not set" not in plain
+
+
+def test_config_check_lists_mcp_servers_on_native_launch_line(tmp_enso):
+    config = _teams_config(tmp_enso)
+    policies = Path(tmp_enso) / "policies" / "client" / "claude"
+    settings = policies / "settings.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "sandbox": {"enabled": True},
+                "disableAllHooks": True,
+                "permissions": {"allow": ["mcp__metrics__query", "mcp__tickets__list"]},
+            }
+        )
+    )
+    settings.chmod(0o600)
+    mcp = policies / "mcp.json"
+    mcp.write_text(
+        json.dumps({"mcpServers": {"tickets": {"type": "http"}, "metrics": {"type": "http"}}})
+    )
+    mcp.chmod(0o600)
+    save_config(config)
+
+    result = runner.invoke(app, ["config", "check"])
+
+    assert result.exit_code == 0, result.output
+    plain = " ".join(result.output.split())
+    assert "mcp: metrics, tickets" in plain
+
+
+def test_config_check_surfaces_mcp_cross_check_warnings(tmp_enso):
+    config = _teams_config(tmp_enso)
+    policies = Path(tmp_enso) / "policies" / "client" / "claude"
+    settings = policies / "settings.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "sandbox": {"enabled": True},
+                "disableAllHooks": True,
+                "permissions": {"allow": ["mcp__ghost__tool"]},
+            }
+        )
+    )
+    settings.chmod(0o600)
+    mcp = policies / "mcp.json"
+    mcp.write_text(json.dumps({"mcpServers": {"metrics": {"type": "http"}}}))
+    mcp.chmod(0o600)
+    save_config(config)
+
+    result = runner.invoke(app, ["config", "check"])
+
+    assert result.exit_code == 0, result.output
+    plain = " ".join(result.output.split())
+    assert 'permission rule "mcp__ghost__tool" matches no MCP server' in plain
+    assert 'no allow rule references MCP server "metrics"' in plain
+
+
 def test_config_check_validates_catalog_without_slack_routes(tmp_enso):
     config = _teams_config(tmp_enso)
     del config["routes"]
