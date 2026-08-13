@@ -544,6 +544,33 @@ async def test_completer_finishes_audit_and_ledger(tmp_enso, monkeypatch):
     assert status == "completed"
 
 
+# -- mention flattening --
+
+
+async def test_request_text_flattens_other_user_mentions(tmp_enso, monkeypatch):
+    """The model sees who a request is about; raw <@U..> never reaches it."""
+    transport, rt = _make_transport(tmp_enso, monkeypatch)
+    monkeypatch.setattr(
+        transport,
+        "lookup_user_name",
+        lambda uid: {CLIENT: "Cleo Client"}.get(uid, ""),
+    )
+    client = _make_client()
+
+    await transport._handle_app_mention(
+        _mention(text=f"<@UBOT> ask <@{CLIENT}> for the report"),
+        client,
+    )
+
+    rt.dispatch.assert_awaited_once()
+    prompt = rt.dispatch.call_args.args[1]
+    assert prompt.endswith(f"ask @Cleo Client ({CLIENT}) for the report")
+    assert "<@" not in prompt
+    # The audit trail records the flattened request, not raw mention syntax.
+    (row,) = _audit_rows(tmp_enso)
+    assert row["request_text"] == f"ask @Cleo Client ({CLIENT}) for the report"
+
+
 # -- exact-route-only migration --
 
 

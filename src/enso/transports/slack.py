@@ -7,8 +7,9 @@ import contextlib
 import json
 import logging
 import os
+import re
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from urllib.request import Request, urlopen
@@ -713,6 +714,46 @@ def _attachments_prompt(attachments: list[dict]) -> str:
         if isinstance(att, dict) and _is_shared_message(att)
     ]
     return "\n\n".join(r for r in rendered if r)
+
+
+_MENTION_TOKEN_RE = re.compile(r"<@([A-Z0-9]+)(?:\|[^>]*)?>")
+
+
+def _flatten_mention_text(
+    text: str,
+    *,
+    bot_user_id: str,
+    bot_label: str,
+    lookup: Callable[[str], str],
+    strip_addressing: bool = True,
+) -> str:
+    """Rewrite ``<@U…>`` mention tokens as inert readable text.
+
+    Raw mention syntax must never reach a prompt: outbound mrkdwn is not
+    escaped, so a token the model echoes back would ping the mentioned
+    person. With ``strip_addressing`` a leading bot mention is treated as
+    addressing rather than content and removed, which also keeps a
+    following ``!command`` at position zero. Remaining bot mentions become
+    ``@<bot name>``; anyone else becomes ``@<name> (<ID>)``, or ``@<ID>``
+    when the directory cache has no name. ``<!here>``-style specials carry
+    no user identity and pass through.
+    """
+    if strip_addressing and bot_user_id:
+        leading = re.compile(rf"^\s*<@{re.escape(bot_user_id)}(?:\|[^>]*)?>[\s,:]*")
+        while True:
+            stripped = leading.sub("", text, count=1)
+            if stripped == text:
+                break
+            text = stripped
+
+    def _replace(match: re.Match) -> str:
+        user_id = match.group(1)
+        if bot_user_id and user_id == bot_user_id:
+            return f"@{bot_label}"
+        name = lookup(user_id)
+        return f"@{name} ({user_id})" if name else f"@{user_id}"
+
+    return _MENTION_TOKEN_RE.sub(_replace, text)
 
 
 def _message_context_text(msg: dict) -> str:
@@ -2227,6 +2268,25 @@ class SlackTransport(BaseTransport):
         except Exception:
             return ""
 
+    def flatten_mentions(self, text: str, *, strip_addressing: bool = False) -> str:
+        """Flatten inbound mention tokens through the directory cache.
+
+        ``strip_addressing`` is for live request text, where a leading bot
+        mention is addressing; history and forwarded bodies keep the bot
+        reference as ``@<name>`` because it is content there.
+        """
+        if not text or "<@" not in text:
+            return text
+        bot_id = self.bot_user_id
+        bot_label = (self.lookup_user_name(bot_id) if bot_id else "") or bot_id or "bot"
+        return _flatten_mention_text(
+            text,
+            bot_user_id=bot_id,
+            bot_label=bot_label,
+            lookup=self.lookup_user_name,
+            strip_addressing=strip_addressing,
+        )
+
     def turn_uploads_dir(self, workspace_path: str, turn_id: str) -> str:
         """A unique per-turn uploads directory inside the workspace."""
         return os.path.join(workspace_path, "uploads", turn_id)
@@ -2276,7 +2336,7 @@ class SlackTransport(BaseTransport):
             is_bot = author == self.bot_user_id
             if author_filter is not None and not is_bot and author not in author_filter:
                 continue
-            body = _message_context_text(msg)
+            body = self.flatten_mentions(_message_context_text(msg))
             if not body:
                 continue
             if untrusted:

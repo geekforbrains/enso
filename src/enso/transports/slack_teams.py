@@ -7,7 +7,6 @@ import contextlib
 import hashlib
 import json
 import logging
-import re
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -23,8 +22,6 @@ if TYPE_CHECKING:
     from .slack import SlackContext, SlackTransport
 
 log = logging.getLogger(__name__)
-
-_MENTION_RE = re.compile(r"<@\w+>\s*")
 
 CONFIG_ERROR_REPLY = (
     "This conversation isn't fully configured for Enso — ask an admin to run `enso config check`."
@@ -183,7 +180,7 @@ class TeamsRouter:
                 await self._complete_ledger(account, delivery, None)
             return
 
-        text = _MENTION_RE.sub("", event.get("text", "")).strip()
+        text = transport.flatten_mentions(event.get("text", ""), strip_addressing=True).strip()
         thread_key = thread_ts or (ts if not is_dm else None)
         conv_label = f"{channel}:{thread_key}" if thread_key else channel
         location_route = decision.route
@@ -626,7 +623,7 @@ class TeamsRouter:
             )
 
         attachments = event.get("attachments") or []
-        shared_prompt = _attachments_prompt(attachments)
+        shared_prompt = transport.flatten_mentions(_attachments_prompt(attachments))
         files = (event.get("files") or []) + _attachment_files(attachments)
         downloaded: list[str] = []
         if files:
