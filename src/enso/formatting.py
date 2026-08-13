@@ -234,7 +234,12 @@ def _split_table(lines: list[str], limit: int) -> list[str] | None:
 
 
 def _hard_chunks(text: str, limit: int) -> list[str]:
-    """Cut *text* at the limit. Used only when no Markdown boundary can help."""
+    """Cut *text* at the limit. Used only when no Markdown boundary can help.
+
+    Callers must pass a non-empty *text*; the sole call site returns early
+    unless the piece is longer than the limit, and it relies on the last
+    chunk existing.
+    """
     return [text[start : start + limit] for start in range(0, len(text), limit)]
 
 

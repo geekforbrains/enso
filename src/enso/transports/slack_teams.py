@@ -398,10 +398,14 @@ class TeamsRouter:
         command_name = command_parts[0].lower() if command_parts else None
         model = self.runtime.get_active_model(chat_key, provider)
         effort = self.runtime.get_active_effort(chat_key, provider, model)
-        turn.turn_fields.update(
-            workspace_id=workspace.name,
-            provider=None if command_name else provider,
-            model=None if command_name else model,
+        turn = replace(
+            turn,
+            turn_fields={
+                **turn.turn_fields,
+                "workspace_id": workspace.name,
+                "provider": None if command_name else provider,
+                "model": None if command_name else model,
+            },
         )
 
         if command_name is not None and not access.allows_command(command_name):
