@@ -2,7 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.2.0] - 2026-08-13
+
+This release adds per-channel Slack response triggers and two restricted-profile grants — environment passthrough and an exact Claude MCP server allowlist — alongside an internal restructuring of the runtime that leaves behavior unchanged.
 
 ### Added
 
@@ -18,6 +20,7 @@ All notable changes to this project will be documented in this file.
 - Machine-authored Slack posts never dispatch: Enso's own messages, other apps' posts (`bot_id`/`bot_profile`, which modern posts carry with no subtype), and Slackbot are dropped by both event paths before routing. Channel routes authorize human members, so bot content embedding a mention token cannot become an authorized request and two auto-responsive bots cannot reply to each other in a loop.
 - A route whose binding fails at dispatch time reports the fixed configuration-error and audit-failure replies only to explicit contact (a mention, or any DM). Unaddressed traffic admitted by relaxed response triggers fails silently — audited routes still record the blocked turn — so a broken responsive channel is not spammed on every message.
 - `!` commands always require explicit addressing: a mention in a channel (in every response-trigger mode) or any DM message. An unaddressed message starting with `!` in a responsive channel or followed thread is ordinary prompt text, never a command — a fixed rule, not a setting, so making a channel responsive never widens its command surface.
+- Job scheduling and execution moved out of the runtime into a dedicated `enso.job_runner` module. Scheduler, prerun, and job-run log records now carry the `enso.job_runner` logger name instead of `enso.core` — log filters and alerts matching on logger name need updating. Scheduling, notification, locking, and run-recording behavior is unchanged.
 
 ## [1.1.0] - 2026-08-12
 
