@@ -10,7 +10,7 @@ from typer.testing import CliRunner
 from enso import cli as cli_mod
 from enso import core as core_mod
 from enso.config import load_config, save_config
-from enso.core import JobRunResult
+from enso.job_runner import JobRunResult
 
 runner = CliRunner()
 
@@ -34,14 +34,15 @@ def configure_job_catalog(tmp_enso: str) -> None:
 
 
 def stub_runtime(monkeypatch, result: JobRunResult | Exception) -> None:
-    class FakeRuntime:
-        def __init__(self, _config):
-            pass
-
-        async def run_job_now(self, _name: str) -> JobRunResult:
+    class FakeJobRunner:
+        async def run_now(self, _name: str) -> JobRunResult:
             if isinstance(result, Exception):
                 raise result
             return result
+
+    class FakeRuntime:
+        def __init__(self, _config):
+            self.jobs = FakeJobRunner()
 
     monkeypatch.setattr(core_mod, "Runtime", FakeRuntime)
     monkeypatch.setattr(cli_mod, "load_config", lambda: {})

@@ -7,8 +7,10 @@ Read [PRD.md](../PRD.md) first for the what & why. Sibling specs:
 ## Runtime and process layout
 
 `enso serve` builds a `Runtime` (`core.py`) and starts a Telegram or Slack transport.
-The transport starts `Runtime.run_job_scheduler` alongside its chat loop; the scheduler
-loads `JOB.md` files every 60 seconds and fires due jobs through `_execute_job`.
+Each `Runtime` owns a `JobRunner` (`job_runner.py`) at `runtime.jobs`, which holds the
+scheduler, the job execution pipeline, and failure alerting. The transport starts
+`Runtime.jobs.run_scheduler` alongside its chat loop; the scheduler loads `JOB.md` files
+every 60 seconds and fires due jobs through `_execute_job`.
 
 `enso web` builds its own `Runtime` and runs Starlette/Uvicorn as a separate process.
 The dashboard and bot therefore do not share memory or an event loop. They coordinate
@@ -29,7 +31,7 @@ database. Starting `enso serve` does not start the dashboard.
                  SQLite (enso.db, WAL mode)
 ```
 
-The dashboard's **Run now** action calls the same `Runtime.run_job_now` execution path
+The dashboard's **Run now** action calls the same `Runtime.jobs.run_now` execution path
 as the CLI, but on the dashboard's Runtime instance. Its in-memory scheduler state is
 not shared with the bot process. File writes are atomic and SQLite uses WAL mode to
 handle this cross-process boundary.
@@ -63,11 +65,11 @@ offline. Package data includes `web/templates/**` and `web/static/**`.
 
 ## Run recording
 
-Run history is captured by the `Runtime` around the shared job-execution pipeline used
+Run history is captured by the `JobRunner` around the shared job-execution pipeline used
 for background work:
 
 - `_execute_job` — scheduled jobs.
-- `run_job_now` — CLI and dashboard manual runs (recorded with trigger `manual`).
+- `run_now` — CLI and dashboard manual runs (recorded with trigger `manual`).
 
 Interactive **chat** requests are *not* runs — they are session-based and ephemeral, and
 belong to the transport, not the run log.
@@ -119,7 +121,7 @@ failed edit is retried; status is abandoned only after `STATUS_MAX_EDIT_FAILURES
 consecutive failures.
 
 Each interactive provider turn has the shared `agent.timeout` budget from `config.json`
-(900 seconds by default; `0` disables it). Queue wait does not count. When the budget is
+(1,800 seconds by default; `0` disables it). Queue wait does not count. When the budget is
 reached, Enso cancels the provider, terminates its process tree, changes the progress
 message to a timeout notice, and stores conversation-scoped background context for the
 next turn. That context warns the next active provider that partial filesystem or
@@ -193,21 +195,21 @@ Conversation work carries an immutable `ExecutionContext` instead of reading a s
 The top-level workspace/access catalog is parsed independently of Slack so jobs can use it on any transport. Slack routes are loaded and validated when `enso serve` starts. They are not hot-reloaded; changing authorization requires a restart. For each Slack event the transport performs this fixed sequence before fetching surrounding context or downloading attachments:
 
 1. Verify the event belongs to the configured Slack account.
-1. Accept an ordinary `im` message or an explicit mention in a channel. Ignore ordinary channel messages.
+1. Accept an ordinary `im` message. Whether a channel message dispatches depends on the resolved route's effective `mention_required`/`thread_mention_required` response triggers; the full decision order lives in [slack-triggers.md](slack-triggers.md). A mention is detected from the message text, not from which Slack event type delivered it, and non-mention drops happen before the delivery-ledger claim.
 1. Resolve an `im` conversation by exact sender ID, or any other conversation by exact channel ID. A thread inherits its parent channel route.
 1. Claim the Slack delivery ID for retry deduplication.
-1. If no route exists, send the fixed DM response directly or the fixed channel response in a thread, then stop without resolving execution state.
+1. If no route exists, explicit contact (a mention, or any DM) gets the fixed DM response directly or the fixed channel response in a thread, then processing stops without resolving execution state; a non-mention message in an unrouted channel is dropped silently.
 1. Resolve a configured route's workspace and access profile.
 1. Validate the selected provider's launch plumbing and start optional audit recording for the route.
 1. Process the command or provider request using the resolved execution context; prepare the native launch after acquiring the workspace slot.
 
-There are no groups, sender rankings, wildcard routes, Slack allowlists, or composed policies. A configured channel authorizes every human member who can post there; an administrator posting in a client channel gets the client channel's access profile. An invalid configured route never falls back to another workspace, access profile, global `working_dir`, or unrestricted launch. A configured route that cannot launch reports a configuration error.
+There are no groups, sender rankings, wildcard routes, Slack allowlists, or composed policies. `routes.slack.channel_defaults` supplies response-trigger settings to channels that are already routed — it never authorizes a location, so an unrouted channel stays unrouted and the no-wildcard invariant stands. A configured channel authorizes every human member who can post there; an administrator posting in a client channel gets the client channel's access profile. An invalid configured route never falls back to another workspace, access profile, global `working_dir`, or unrestricted launch. A configured route that cannot launch reports a configuration error.
 
 The two no-route replies are fixed transport strings. They do not invoke an LLM, select a workspace or access profile, construct an `ExecutionContext`, fetch message context or attachments, or start an audit turn. A globally invalid Slack configuration or wrong-account event remains silent and is logged.
 
 ### Execution and session keys
 
-Cwd alone does not isolate sessions. Provider, model, effort, session, compaction, lock, queue, process, and activity state use a route-scoped `chat_key`. A Slack thread is distinct from its parent channel, and two channels sharing one workspace keep separate sessions. Provider selection is scoped to that conversation; `!use` never changes another route's selection.
+Cwd alone does not isolate sessions. Provider, model, effort, session, compaction, lock, queue, process, and activity state use a route-scoped `chat_key`. A Slack thread is distinct from its parent channel, and two channels sharing one workspace keep separate sessions. The per-thread session also doubles as the thread-participation marker that `thread_mention_required: false` follows ([slack-triggers.md](slack-triggers.md)). Provider selection is scoped to that conversation; `!use` never changes another route's selection.
 
 The key is serialized as structured data rather than by splitting a delimiter-bearing string. This matters because provider and route identifiers can already contain punctuation. It includes the Slack location, thread, workspace name, and access-profile name; it deliberately remains stable across `!use`, model, and policy-revision changes so stop, queues, and per-provider sessions remain reachable.
 

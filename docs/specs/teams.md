@@ -2,7 +2,7 @@
 
 Slack gives each exact conversation route a workspace and an access profile. The model is intentionally small: Slack decides who belongs in a channel, Enso selects where the provider CLI starts and which native policy it receives, and the installed CLI enforces that policy.
 
-This document owns who may invoke a Slack route. [slack-output.md](slack-output.md) owns how authorized replies render and how App Home or Canvas drafts are confirmed.
+This document owns who may invoke a Slack route. [slack-triggers.md](slack-triggers.md) owns when a channel message engages Enso at all — per-channel mention requirements, thread following, and `!` command addressing. [slack-output.md](slack-output.md) owns how authorized replies render and how App Home or Canvas drafts are confirmed.
 
 Telegram is separate. It remains private, one-to-one, and authorized by exact numeric IDs in `transports.telegram.allowed_users`; interactive Telegram work uses the global `working_dir`.
 
@@ -20,9 +20,9 @@ A user does not carry a permission level into every room:
 - An exact DM route authorizes that Slack user.
 - An exact channel route authorizes every human member who can post in that channel.
 - Everyone using a channel gets the same workspace and access profile, including administrators.
-- Threads inherit their parent channel route but keep their own conversation session.
-- An unlisted DM or explicit mention in an unlisted channel receives a fixed local access message. Ordinary messages in unlisted channels are ignored.
-- There is no default route, wildcard route, group overlay, sender ranking, or Slack `allowed_users` mode.
+- Threads inherit their parent channel route — including its response-trigger settings ([slack-triggers.md](slack-triggers.md)) — but keep their own conversation session.
+- An unlisted DM or explicit mention in an unlisted channel receives a fixed local access message. Ordinary messages in unlisted channels are ignored; `mention_required` and `channel_defaults` configure routed channels only and never make an unrouted channel responsive.
+- There is no default route, wildcard route, group overlay, sender ranking, or Slack `allowed_users` mode. `routes.slack.channel_defaults` supplies default response-trigger settings to channel routes ([slack-triggers.md](slack-triggers.md)); it is settings inheritance, not authorization, and routes nothing by itself.
 
 The workspace is not a security boundary. It is shared content and cwd. Authority comes from the route's access profile and the selected CLI's native policy, plus any outer operating-system isolation the operator chooses to add.
 
@@ -122,6 +122,10 @@ The complete schema is in [data-model.md](data-model.md#execution-catalog-and-sl
   "routes": {
     "slack": {
       "account_id": "T0YOURTEAM",
+      "channel_defaults": {
+        "mention_required": false,
+        "thread_mention_required": false
+      },
       "dms": {
         "U01OWNER": {
           "workspace": "company",
@@ -133,7 +137,9 @@ The complete schema is in [data-model.md](data-model.md#execution-catalog-and-sl
         "C0ACME": {
           "workspace": "acme",
           "access": "client-readonly",
-          "audit": true
+          "audit": true,
+          "mention_required": true,
+          "thread_mention_required": true
         },
         "C0ACMEINTERNAL": {
           "workspace": "acme",
@@ -153,6 +159,8 @@ The complete schema is in [data-model.md](data-model.md#execution-catalog-and-sl
 
 Slack requires `routes.slack`. The same top-level workspace and access catalogs also serve jobs and are parsed independently of Slack, so a Telegram-only installation can still run policy-bound jobs.
 
+Here `channel_defaults` makes routed channels fully responsive, and `C0ACME` opts back into mention-only; both settings, their defaults, and their validation rules are specified in [slack-triggers.md](slack-triggers.md). Neither key is valid on a DM route.
+
 The same access profile may be reused across many workspaces when its native policy is written in terms of the invocation workspace. For example, every external client channel can use `client-readonly`; each route still starts in its own client's directory.
 
 ## Resolution and lifecycle
@@ -162,7 +170,7 @@ At Slack startup Enso authenticates the account, loads the exact routes and exec
 For each Slack event Enso:
 
 1. Verifies the authenticated Slack account.
-1. Accepts an ordinary DM or explicit channel mention. Other channel messages are ignored.
+1. Accepts an ordinary DM or explicit channel mention always, and a non-mention channel message only when its channel's route settings allow it ([slack-triggers.md](slack-triggers.md)): effective `mention_required: false` for a top-level message, or effective `thread_mention_required: false` for a reply in a thread Enso already participates in. Other channel messages are ignored.
 1. Resolves the exact DM user ID or channel ID and claims its delivery ID for retry deduplication.
 1. If the location is unlisted, returns the fixed local response described below and stops.
 1. Resolves a configured route's workspace and access profile.
@@ -171,7 +179,7 @@ For each Slack event Enso:
 
 An invalid route or native policy never falls back to another workspace, access profile, global `working_dir`, or unrestricted execution. Configuration errors for an otherwise authorized route are reported. A globally invalid configuration cannot establish usable Slack routing, and an event from the wrong Slack account remains silent and is logged rather than receiving an access response.
 
-Slack DMs dispatch ordinary messages. Channels dispatch only explicit bot mentions, including inside threads. An unlisted DM receives `I haven't been enabled for your DMs yet. Ask an Enso admin for access.` An explicit mention in an unlisted channel receives `I haven't been enabled in this channel yet. Ask an Enso admin to set me up.` as a thread reply. These are fixed transport responses: Enso does not resolve a workspace or access profile, fetch context or attachments, invoke an LLM, or create an audit record. They pass through the delivery ledger so a retried Slack event receives at most one reply.
+Slack DMs dispatch ordinary messages. Channels always dispatch explicit bot mentions, including inside threads; a routed channel additionally dispatches non-mention messages where its effective `mention_required` or `thread_mention_required` is `false` ([slack-triggers.md](slack-triggers.md)), and replies to channel messages always land in the message's thread. Unlisted locations respond only to explicit contact. An unlisted DM receives `I haven't been enabled for your DMs yet. Ask an Enso admin for access.` An explicit mention in an unlisted channel receives `I haven't been enabled in this channel yet. Ask an Enso admin to set me up.` as a thread reply. These are fixed transport responses: Enso does not resolve a workspace or access profile, fetch context or attachments, invoke an LLM, or create an audit record. They pass through the delivery ledger so a retried Slack event receives at most one reply.
 
 For configured routes, route resolution still occurs before surrounding context or attachments are fetched. Channel context is untrusted input even though every member is authorized to invoke the route.
 
@@ -185,7 +193,9 @@ On an audited route, Publish or Cancel creates a separate `surface_confirmation`
 
 An access profile declares available providers, a default provider, and allowed Enso chat commands. `!help` and `!use` show only capabilities offered by the route's access profile. Service-wide Enso commands such as update, restart, and logs normally belong only to an administrative profile.
 
-`chat_commands` controls Enso's `!` command surface. It does not hide or authorize the provider CLI's own tools, slash commands, skills, plugins, hooks, or MCP servers. Commands such as `!status`, `!clear`, and `!stop` are handled by Enso; `!compact` launches the active provider and therefore also remains subject to the selected native policy.
+A policy-controlled profile can additionally grant named environment variables through `env_passthrough` (names, never values) and, for Claude, an exact MCP server allowlist through the conventional `<policy_dir>/claude/mcp.json`. Both default to off, and both are real grants: MCP servers are dialled by the provider process itself and bypass the sandbox's network rules, so grant only servers whose entire tool surface is acceptable, and a passthrough variable's value is readable by any profile that can run Bash — passthrough delivers a credential, it does not scope one. Neither applies to an unrestricted profile, which already inherits everything (`env_passthrough` there is a config error). See [permissions.md](permissions.md#granting-credentials-and-mcp-servers-to-a-restricted-profile) for how and when to use them.
+
+`chat_commands` controls Enso's `!` command surface. It does not hide or authorize the provider CLI's own tools, slash commands, skills, plugins, hooks, or MCP servers. A `!` command is recognized only when explicitly addressed — a bot mention in a channel, whatever the route's response triggers, or any DM message; an unaddressed `!`-prefixed message in a responsive channel is ordinary prompt text, never a command. This is a fixed rule, not a setting ([slack-triggers.md](slack-triggers.md)), so making a channel responsive never widens its command surface. Commands such as `!status`, `!clear`, and `!stop` are handled by Enso; `!compact` launches the active provider and therefore also remains subject to the selected native policy.
 
 Enso never combines user-level permissions with a channel's access profile and never translates policies between providers. A route selects one complete access profile, and that profile selects one native policy for the active CLI.
 

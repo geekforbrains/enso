@@ -191,7 +191,7 @@ def parse(text: str) -> tuple[dict, str]:
 
 def dumps(meta: dict, body: str) -> str:
     """Render metadata + body into a frontmatter document string."""
-    front = yaml.safe_dump(meta, sort_keys=False).strip()
+    front: str = yaml.safe_dump(meta, sort_keys=False).strip()
     return "---\n" + front + "\n---\n\n" + body.rstrip() + "\n"
 
 

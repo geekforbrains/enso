@@ -86,7 +86,7 @@ tailnet/reverse-proxy access controls.
 
 ## Chat Commands
 
-Telegram autocompletes these when you type `/`. On Slack, use `!` instead (e.g. `!status`).
+Telegram autocompletes these when you type `/`. On Slack, use `!` instead (e.g. `!status`). Commands always require explicit addressing: in a channel that means mentioning the bot — whatever the channel's response settings — while every DM message is already addressed. An unaddressed `!text` in a responsive channel is ordinary prompt text, not a command.
 
 | Command    | What it does                                                                          |
 | ---------- | ------------------------------------------------------------------------------------- |
@@ -103,11 +103,11 @@ Telegram autocompletes these when you type `/`. On Slack, use `!` instead (e.g. 
 | `/logs`    | Last 25 log entries                                                                   |
 | `/help`    | Show all commands                                                                     |
 
-You can also send files — they're downloaded and passed to the active agent. Responses render with per-transport formatting: Telegram uses HTML, while successful interactive Slack answers use standard Markdown by default, including headings, links, fenced code, task lists, and Markdown tables. Slack agents can also choose validated native tables, compact fields, and line, bar, area, or pie charts when those layouts are useful. While a request runs, Enso keeps one transient status message showing which provider, model, and effort are handling it, how long it has been running, and what the agent is doing right now (`Reading core.py`, `Running pytest`, `Writing report.md`) — including for Antigravity, whose headless mode prints only a final answer. The elapsed counter updates every second through 30 seconds, then every five seconds to stay within transport limits; each edit includes the latest activity. The final response contains only the agent's answer. Interactive turns stop after `agent.timeout` seconds (900 by default; set it to `0` to disable). A timeout leaves a conversation-scoped background notice for the next turn so the active provider knows partial work may remain.
+You can also send files — they're downloaded and passed to the active agent. Responses render with per-transport formatting: Telegram uses HTML, while successful interactive Slack answers use standard Markdown by default, including headings, links, fenced code, task lists, and Markdown tables. Slack agents can also choose validated native tables, compact fields, and line, bar, area, or pie charts when those layouts are useful. While a request runs, Enso keeps one transient status message showing which provider, model, and effort are handling it, how long it has been running, and what the agent is doing right now (`Reading core.py`, `Running pytest`, `Writing report.md`) — including for Antigravity, whose headless mode prints only a final answer. The elapsed counter updates every second through 30 seconds, then every five seconds to stay within transport limits; each edit includes the latest activity. The final response contains only the agent's answer. Interactive turns stop after `agent.timeout` seconds (1,800 by default; set it to `0` to disable). A timeout leaves a conversation-scoped background notice for the next turn so the active provider knows partial work may remain.
 
 Effort is stored separately for each conversation, provider, and model. Claude supports its existing model-dependent range through `max`. Codex Sol and Terra support `low` through `ultra`; Luna supports `low` through `max`. Antigravity's concrete model names already encode effort (for example, `gemini-3.6-flash-low`), so choose the desired variant with `/model`. Enso clamps an unsupported higher Claude/Codex choice to the active model's maximum and reports the effective level.
 
-**Slack specifics.** Every authorized Slack location is an exact route. Configured DMs dispatch every ordinary message. In channels, Enso only responds when mentioned (`@bot help me`); once a thread starts, it stays attentive to that thread only if you keep mentioning it. For configured routes, the bot fetches the last few thread/channel messages as context so it knows what's going on. Explicit contact at an unconfigured location gets a fixed local response as described below. Rich output and persistent surfaces are enabled by default. A natural-language request for an App Home or Canvas produces an exact preview with requester-bound **Publish** and **Cancel** buttons; Slack is not mutated before confirmation. App Home requests are accepted only in a configured one-to-one DM. A channel Canvas request creates a tab when none exists or clearly proposes a full replacement of the one unambiguous existing Canvas. See [`docs/specs/slack-output.md`](docs/specs/slack-output.md) for limits, fallbacks, security, and opt-outs.
+**Slack specifics.** Every authorized Slack location is an exact route. Configured DMs dispatch every ordinary message. In channels, the default is mention-gated: Enso responds only when mentioned (`@bot help me`), and thread replies need a mention too. Two per-channel booleans relax this — `mention_required: false` dispatches every top-level message, and `thread_mention_required: false` follows every reply in a thread Enso already participates in (first contact in a pre-existing thread still needs a mention). A `routes.slack.channel_defaults` block supplies defaults that individual channel routes override. Either way, replies to channel messages always land in that message's thread, and posts from other bots and apps never dispatch in any mode — only human members engage a route. For configured routes, the bot fetches the last few thread/channel messages as context so it knows what's going on. Explicit contact at an unconfigured location gets a fixed local response as described below. Rich output and persistent surfaces are enabled by default. A natural-language request for an App Home or Canvas produces an exact preview with requester-bound **Publish** and **Cancel** buttons; Slack is not mutated before confirmation. App Home requests are accepted only in a configured one-to-one DM. A channel Canvas request creates a tab when none exists or clearly proposes a full replacement of the one unambiguous existing Canvas. See [`docs/specs/slack-output.md`](docs/specs/slack-output.md) for limits, fallbacks, security, and opt-outs.
 
 ## Slack directory (`enso slack`)
 
@@ -170,11 +170,11 @@ Telegram accepts private chats only and authorizes exact numeric strings in `tra
 
 ## Slack routes, workspaces, and access
 
-Slack binds each exact DM user or channel route to two named objects: a workspace containing shared project knowledge and an access profile containing providers, Enso chat commands, and either unrestricted execution or protected native CLI policies. Slack has no default route, wildcard, or `allowed_users` mode.
+Slack binds each exact DM user or channel route to two named objects: a workspace containing shared project knowledge and an access profile containing providers, Enso chat commands, and either unrestricted execution or protected native CLI policies. Channel routes may also carry the optional response-trigger settings `mention_required` and `thread_mention_required`, with fallback defaults in `routes.slack.channel_defaults`. Slack has no default route, wildcard, or `allowed_users` mode: `channel_defaults` is settings inheritance for channels that are already routed, not authorization — unrouted channels stay unrouted.
 
 Channel membership is the authorization boundary. Everyone in a configured channel uses its route's same access profile, including administrators. A client channel and an internal staff channel can point at the same project workspace while using read-only and broader profiles respectively. Exact DMs are keyed by Slack user ID, so an owner DM can use an unrestricted administrative profile without granting that authority in shared channels.
 
-An unlisted DM receives a fixed access message, and an explicit mention in an unlisted channel receives a fixed thread reply; neither response invokes an LLM, resolves a workspace, fetches context, or creates a route audit record. Ordinary messages in unlisted channels remain ignored. A broken configured route or native policy reports a configuration error and never falls back to another workspace or unrestricted execution.
+An unlisted DM receives a fixed access message, and an explicit mention in an unlisted channel receives a fixed thread reply; neither response invokes an LLM, resolves a workspace, fetches context, or creates a route audit record. Ordinary messages in unlisted channels remain ignored — only a configured channel route can dispatch an un-mentioned message, and only when its effective `mention_required` is `false`. A broken configured route or native policy reports a configuration error and never falls back to another workspace or unrestricted execution.
 
 ```bash
 enso config check                          # check routes, jobs, and native policy plumbing
@@ -376,6 +376,7 @@ A few advanced knobs are environment variables rather than config keys: `ENSO_SE
 ```bash
 pip install -e ".[dev,telegram,slack,web]"
 ruff check src/
+mypy
 pytest
 ```
 
@@ -392,11 +393,30 @@ pytest
 1. Create a feature branch off `main` (or `dev` if building on unreleased work)
 1. Do the work, commit with [conventional commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, etc.)
 1. Merge into `dev` — this is where changes accumulate before release
-1. When ready to release: bump the version in `pyproject.toml`, finalize the `[Unreleased]` section in `CHANGELOG.md` with the date, merge `dev` → `main`, and tag
+1. When ready to release: follow the release checklist under [Versioning](#versioning) — it covers every place a version bump has to land
 
 ### Versioning
 
-Version lives in `pyproject.toml` and is the single source of truth — the package reads it back through `importlib.metadata`, so nothing else needs bumping. When cutting a release: bump the version, change the `CHANGELOG.md` heading from `[Unreleased]` to `[X.Y.Z] - YYYY-MM-DD`, commit as `chore(release): X.Y.Z`, merge `dev` → `main`, and tag `vX.Y.Z` (annotated).
+`pyproject.toml` holds the version and is the only place the number is written by hand. Everything else derives from it: `__version__` reads the *installed* distribution metadata through `importlib.metadata`, and that is what `enso --version`, the `Starting Enso vX.Y.Z` startup log line, and the post-update confirmation message all report.
+
+That indirection is the trap. Bumping `pyproject.toml` does not change what a checkout reports, because the metadata is written at install time — an editable install keeps announcing the previous version until it is reinstalled. Re-run the install to resync it:
+
+```bash
+pip install -e . --no-deps   # refresh dist-info after a version bump
+```
+
+`--no-deps` restricts the reinstall to metadata, so it cannot upgrade or reshuffle an environment that already has the transport extras resolved.
+
+**Release checklist.** A version bump has to touch every one of these or the number drifts:
+
+1. `pyproject.toml` — bump `version`
+1. `CHANGELOG.md` — rename the `[Unreleased]` heading to `[X.Y.Z] - YYYY-MM-DD`
+1. Commit as `chore(release): X.Y.Z`
+1. Merge `dev` → `main`, then tag `vX.Y.Z` (annotated)
+1. `pip install -e . --no-deps` on every editable checkout — dev machines, and any host running `enso serve` or `enso web` from source
+1. Restart long-running services (`enso service restart`) so the new version reaches the logs
+
+Only the installed metadata drifts. The updater's up-to-date check compares git revisions rather than version strings, and for an editable install it reads the checkout's own revision, so a stale number misreports but never causes a spurious update.
 
 ### Changelog
 

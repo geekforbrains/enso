@@ -77,16 +77,20 @@ class ClaudeProvider(BaseProvider):
         the operator's user settings (so their personal rules cannot widen a
         workspace) while leaving the CLI's own instruction and skill discovery
         working, denies anything a prompt would have asked about (headless has
-        nobody to ask), and keeps ambient MCP servers out. Otherwise: today's
-        bypass invocation.
+        nobody to ask), and loads exactly the profile's declared MCP servers —
+        the conventional mcp.json when present, none otherwise — never the
+        operator's ambient ones. Otherwise: today's bypass invocation.
         """
         if launch is not None and launch.mode == "policy":
-            return [
+            args = [
                 "--settings", launch.policy_path,
                 "--permission-mode", "dontAsk",
                 "--setting-sources", "project",
                 "--strict-mcp-config",
             ]
+            if launch.mcp_config:
+                args.extend(["--mcp-config", launch.mcp_config])
+            return args
         return ["--dangerously-skip-permissions"]
 
     def build_command(
@@ -160,14 +164,18 @@ class ClaudeProvider(BaseProvider):
                         text=_tool_status(block.get("name", ""), block.get("input", {})),
                 ))
                 elif block_type == "text" and block.get("text"):
-                    kind = "error" if is_api_error else "response"
-                    events.append(StreamEvent(kind=kind, text=block["text"]))
+                    events.append(StreamEvent(
+                        kind="error" if is_api_error else "response",
+                        text=block["text"],
+                    ))
 
         elif event_type == "result":
             result_text = event.get("result", "")
             if isinstance(result_text, str) and result_text:
-                kind = "error" if event.get("is_error") else "response"
-                events.append(StreamEvent(kind=kind, text=result_text))
+                events.append(StreamEvent(
+                    kind="error" if event.get("is_error") else "response",
+                    text=result_text,
+                ))
             elif event.get("is_error"):
                 reason = event.get("terminal_reason")
                 text = reason if isinstance(reason, str) and reason else "unknown error"

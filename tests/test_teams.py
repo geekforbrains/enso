@@ -328,6 +328,88 @@ def test_unrestricted_and_policy_dir_is_access_error(tmp_path):
     assert "admin" in parsed.access_errors
 
 
+# -- env_passthrough --
+
+
+def test_env_passthrough_valid_list_is_stored_as_tuple(tmp_path):
+    config = make_config(tmp_path)
+    config["access"]["client-readonly"]["env_passthrough"] = [
+        "METRICS_API_TOKEN",
+        "TICKETS_API_TOKEN",
+    ]
+    parsed = load_teams(config)
+    assert "client-readonly" not in parsed.access_errors
+    assert parsed.access_profiles["client-readonly"].env_passthrough == (
+        "METRICS_API_TOKEN",
+        "TICKETS_API_TOKEN",
+    )
+
+
+def test_env_passthrough_defaults_to_empty(tmp_path):
+    parsed = load_teams(make_config(tmp_path))
+    assert parsed.access_profiles["client-readonly"].env_passthrough == ()
+
+
+@pytest.mark.parametrize("bad", ["METRICS_API_TOKEN", 5, [1], ["OK_NAME", None], {"A": "B"}])
+def test_env_passthrough_must_be_a_string_list(tmp_path, bad):
+    config = make_config(tmp_path)
+    config["access"]["client-readonly"]["env_passthrough"] = bad
+    parsed = load_teams(config)
+    problems = parsed.access_errors["client-readonly"]
+    assert any("env_passthrough must be a list of strings" in p for p in problems)
+    assert parsed.access_profiles["client-readonly"].env_passthrough == ()
+
+
+def test_env_passthrough_rejects_duplicates(tmp_path):
+    config = make_config(tmp_path)
+    config["access"]["client-readonly"]["env_passthrough"] = ["A_TOKEN", "A_TOKEN"]
+    parsed = load_teams(config)
+    problems = parsed.access_errors["client-readonly"]
+    assert any("duplicate" in p for p in problems)
+
+
+@pytest.mark.parametrize("name", ["metrics_token", "FOO=BAR", "1FOO", ""])
+def test_env_passthrough_rejects_malformed_names(tmp_path, name):
+    config = make_config(tmp_path)
+    config["access"]["client-readonly"]["env_passthrough"] = [name]
+    parsed = load_teams(config)
+    problems = parsed.access_errors["client-readonly"]
+    assert any("must match" in p for p in problems)
+
+
+@pytest.mark.parametrize("name", ["HOME", "PATH", "CODEX_HOME", "ENSO_ANYTHING"])
+def test_env_passthrough_rejects_reserved_names(tmp_path, name):
+    config = make_config(tmp_path)
+    config["access"]["client-readonly"]["env_passthrough"] = [name]
+    parsed = load_teams(config)
+    problems = parsed.access_errors["client-readonly"]
+    assert any("reserved" in p for p in problems)
+
+
+def test_env_passthrough_is_rejected_on_unrestricted_profile(tmp_path):
+    config = make_config(tmp_path)
+    config["access"]["admin"]["env_passthrough"] = ["METRICS_API_TOKEN"]
+    parsed = load_teams(config)
+    problems = parsed.access_errors["admin"]
+    assert any("unrestricted: true is invalid alongside env_passthrough" in p for p in problems)
+
+
+def test_env_passthrough_key_typo_is_unknown_key_error(tmp_path):
+    config = make_config(tmp_path)
+    config["access"]["client-readonly"]["env_passthru"] = ["METRICS_API_TOKEN"]
+    parsed = load_teams(config)
+    problems = parsed.access_errors["client-readonly"]
+    assert any("unknown keys" in p and "env_passthru" in p for p in problems)
+
+
+def test_reserved_names_cover_every_launch_controlled_variable():
+    """teams.py defines the reserved set locally (circular import); guard drift."""
+    from enso import policy, teams
+
+    launch_controlled = set(policy._KEEP_ENV) | {"PATH", "CODEX_HOME"}
+    assert launch_controlled <= teams._ENV_PASSTHROUGH_RESERVED
+
+
 @pytest.mark.parametrize(
     ("key", "value"),
     [
@@ -413,3 +495,107 @@ def test_global_error_is_reported_on_exact_route(tmp_path):
     decision = resolve(parsed, user_id="UANY", channel_id="C0ACME")
     assert decision.status == "error"
     assert decision.reason == "teams_config_invalid"
+
+
+# -- response trigger settings --
+
+
+def test_mention_settings_default_to_required(tmp_path):
+    """Absent settings reproduce original behavior: mention-gated everywhere."""
+    parsed = load_teams(make_config(tmp_path))
+    route = parsed.channel_routes["C0ACME"]
+    assert route.mention_required is True
+    assert route.thread_mention_required is True
+    assert not parsed.errors
+    assert "slack.channel.C0ACME" not in parsed.route_errors
+
+
+def test_route_level_mention_settings_are_stored(tmp_path):
+    config = make_config(tmp_path)
+    config["routes"]["slack"]["channels"]["C0ACME"].update(
+        mention_required=False,
+        thread_mention_required=False,
+    )
+    parsed = load_teams(config)
+    route = parsed.channel_routes["C0ACME"]
+    assert route.mention_required is False
+    assert route.thread_mention_required is False
+    assert parsed.dispatchable
+    assert "slack.channel.C0ACME" not in parsed.route_errors
+
+
+def test_channel_defaults_apply_to_routes_without_overrides(tmp_path):
+    config = make_config(tmp_path)
+    config["routes"]["slack"]["channel_defaults"] = {
+        "mention_required": False,
+        "thread_mention_required": False,
+    }
+    parsed = load_teams(config)
+    route = parsed.channel_routes["C0ACME"]
+    assert route.mention_required is False
+    assert route.thread_mention_required is False
+    assert parsed.dispatchable
+
+
+def test_route_setting_overrides_channel_defaults(tmp_path):
+    config = make_config(tmp_path)
+    config["routes"]["slack"]["channel_defaults"] = {
+        "mention_required": False,
+        "thread_mention_required": False,
+    }
+    config["routes"]["slack"]["channels"]["C0ACME"]["mention_required"] = True
+    parsed = load_teams(config)
+    route = parsed.channel_routes["C0ACME"]
+    assert route.mention_required is True
+    assert route.thread_mention_required is False
+
+
+def test_channel_defaults_do_not_affect_dm_routes(tmp_path):
+    config = make_config(tmp_path)
+    config["routes"]["slack"]["channel_defaults"] = {"mention_required": False}
+    parsed = load_teams(config)
+    assert parsed.dispatchable
+    assert "slack.dm.U01ADMIN" not in parsed.route_errors
+
+
+@pytest.mark.parametrize("bad", ["yes", 1, None, []])
+def test_channel_defaults_values_must_be_boolean(tmp_path, bad):
+    config = make_config(tmp_path)
+    config["routes"]["slack"]["channel_defaults"] = {"mention_required": bad}
+    parsed = load_teams(config)
+    assert not parsed.dispatchable
+
+
+@pytest.mark.parametrize("bad", ["mention", ["mention_required"], 5])
+def test_channel_defaults_must_be_an_object(tmp_path, bad):
+    config = make_config(tmp_path)
+    config["routes"]["slack"]["channel_defaults"] = bad
+    parsed = load_teams(config)
+    assert not parsed.dispatchable
+
+
+def test_channel_defaults_unknown_keys_disable_dispatch(tmp_path):
+    config = make_config(tmp_path)
+    config["routes"]["slack"]["channel_defaults"] = {"mentions_required": True}
+    parsed = load_teams(config)
+    assert not parsed.dispatchable
+
+
+@pytest.mark.parametrize("key", ["mention_required", "thread_mention_required"])
+@pytest.mark.parametrize("bad", ["true", 0, None])
+def test_route_mention_settings_must_be_boolean(tmp_path, key, bad):
+    config = make_config(tmp_path)
+    config["routes"]["slack"]["channels"]["C0ACME"][key] = bad
+    parsed = load_teams(config)
+    assert parsed.dispatchable
+    assert "slack.channel.C0ACME" in parsed.route_errors
+
+
+@pytest.mark.parametrize("key", ["mention_required", "thread_mention_required"])
+def test_mention_settings_are_rejected_on_dm_routes(tmp_path, key):
+    """DM behavior is fixed; accepting the key would misrepresent the config."""
+    config = make_config(tmp_path)
+    config["routes"]["slack"]["dms"]["U01ADMIN"][key] = False
+    parsed = load_teams(config)
+    assert parsed.dispatchable
+    assert "slack.dm.U01ADMIN" in parsed.route_errors

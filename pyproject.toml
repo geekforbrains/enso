@@ -1,6 +1,6 @@
 [project]
 name = "enso"
-version = "1.1.0"
+version = "1.2.0"
 description = "Control your favourite AI agent CLIs from any chat platform."
 readme = "README.md"
 license = "MIT"
@@ -36,7 +36,7 @@ Issues = "https://github.com/geekforbrains/enso/issues"
 telegram = ["python-telegram-bot>=22.6"]
 slack = ["slack-bolt>=1.28", "aiohttp>=3.9"]
 web = ["starlette>=0.37", "uvicorn>=0.30", "jinja2>=3.1", "python-multipart>=0.0.18"]
-dev = ["ruff>=0.15.0", "pytest>=8.0", "pytest-asyncio>=0.23"]
+dev = ["ruff>=0.15.0", "mypy>=1.11", "pytest>=8.0", "pytest-asyncio>=0.23"]
 
 [project.scripts]
 enso = "enso.cli:main"
@@ -74,10 +74,58 @@ select = [
     "B",     # flake8-bugbear
     "SIM",   # flake8-simplify
     "RUF",   # ruff-specific rules
+    "C90",   # mccabe complexity
 ]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
 
 [tool.ruff.lint.isort]
 known-first-party = ["enso"]
+
+[tool.mypy]
+# The type-checking foothold is deliberately narrow. The package predates any
+# checker, so the global baseline only enforces the annotations that already
+# exist; the strict-ish override below lists the modules that pass a stricter
+# bar today. That list is meant to grow one module at a time, rather than
+# flipping global strictness in a single sweep.
+python_version = "3.10"
+files = ["src/enso"]
+# The optional transport extras (slack_bolt, telegram, starlette, uvicorn,
+# jinja2) are not installed in every environment, and PyYAML ships no stubs.
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+    "enso.audit",
+    "enso.auth",
+    "enso.config",
+    "enso.docs",
+    "enso.formatting",
+    "enso.frontmatter",
+    "enso.fsutil",
+    "enso.jobs",
+    "enso.ledger",
+    "enso.logging_config",
+    "enso.policy",
+    "enso.runs",
+    "enso.secret_refs",
+    "enso.sqlite_store",
+    "enso.surface_drafts",
+    "enso.teams",
+]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+warn_return_any = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+# python-telegram-bot declares nearly every Update field Optional, but the
+# handlers are registered behind filters that guarantee the field is present.
+# Narrowing all ~50 access sites is its own change; suppress just this code so
+# the rest of the module stays checked.
+module = "enso.transports.telegram"
+disable_error_code = ["union-attr"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

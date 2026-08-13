@@ -7,10 +7,11 @@ import contextlib
 import json
 import logging
 import os
+import re
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.request import Request, urlopen
 
 try:
@@ -66,7 +67,12 @@ from ..outbound import (
     TableTextCell,
 )
 from ..secret_refs import resolve_config_secret
-from ..surface_drafts import ChannelCanvasTarget, SurfaceDraftOrigin
+from ..surface_drafts import (
+    ChannelCanvasTarget,
+    DraftAction,
+    SurfaceDraftOrigin,
+    TerminalStatus,
+)
 from . import BaseTransport, TransportContext, safe_filename
 from .slack_teams import TeamsRouter
 
@@ -96,7 +102,7 @@ SLACK_AMBIGUOUS_SURFACE_ERRORS = frozenset({"fatal_error", "internal_error"})
 
 @dataclass(frozen=True, slots=True)
 class _SurfaceAction:
-    action: str
+    action: DraftAction
     draft_id: str
     account_id: str
     user_id: str
@@ -106,7 +112,7 @@ class _SurfaceAction:
 
 @dataclass(frozen=True, slots=True)
 class _SurfacePublishResult:
-    status: str
+    status: TerminalStatus
     text: str
 
 
@@ -121,7 +127,7 @@ def _slack_error_code(exc: Exception) -> str:
     return ""
 
 
-def _surface_error_status(exc: Exception) -> str:
+def _surface_error_status(exc: Exception) -> Literal["failed", "unknown"]:
     code = _slack_error_code(exc)
     if not code or code in SLACK_AMBIGUOUS_SURFACE_ERRORS:
         return "unknown"
@@ -270,7 +276,7 @@ def _render_outbound_block(
             "chart": _render_visualization_chart(block.chart),
         }
     if isinstance(block, DataTableBlock):
-        rendered = {
+        rendered: dict[str, Any] = {
             "type": "data_table",
             "caption": block.caption,
             "rows": _render_table_rows(block.rows),
@@ -281,15 +287,15 @@ def _render_outbound_block(
             rendered["row_header_column_index"] = block.row_header_column_index
         return rendered
 
-    rendered = {
+    table: dict[str, Any] = {
         "type": "table",
         "rows": _render_table_rows(block.rows),
     }
     if block.column_settings:
-        rendered["column_settings"] = [
+        table["column_settings"] = [
             _render_column_setting(setting) for setting in block.column_settings
         ]
-    return rendered
+    return table
 
 
 def _render_app_home_block(
@@ -511,6 +517,7 @@ def _parse_surface_action(body: Any, action: Any) -> _SurfaceAction | None:
         return None
     action_id = action.get("action_id")
     actions = body.get("actions")
+    action_name: DraftAction
     if action_id == SURFACE_PUBLISH_ACTION_ID:
         action_name = "publish"
     elif action_id == SURFACE_CANCEL_ACTION_ID:
@@ -713,6 +720,58 @@ def _attachments_prompt(attachments: list[dict]) -> str:
         if isinstance(att, dict) and _is_shared_message(att)
     ]
     return "\n\n".join(r for r in rendered if r)
+
+
+_MENTION_TOKEN_RE = re.compile(r"<@([A-Z0-9]+)(?:\|[^>]*)?>")
+
+# Characters a profile name may not carry into a prompt: angle brackets would
+# reintroduce live <@U…>/<!channel> syntax through a hostile display name,
+# square brackets and line breaks could forge the [user …]: context labels.
+_UNSAFE_NAME_RE = re.compile(r"[<>\[\]\r\n]+")
+
+
+def _safe_name(name: str | None) -> str:
+    """Neutralize a user-controlled profile name for prompt interpolation."""
+    if not name:
+        return ""
+    return " ".join(_UNSAFE_NAME_RE.sub(" ", name).split())
+
+
+def _flatten_mention_text(
+    text: str,
+    *,
+    bot_user_id: str,
+    bot_label: str,
+    lookup: Callable[[str], str],
+    strip_addressing: bool = True,
+) -> str:
+    """Rewrite ``<@U…>`` mention tokens as inert readable text.
+
+    Raw mention syntax must never reach a prompt: outbound mrkdwn is not
+    escaped, so a token the model echoes back would ping the mentioned
+    person. With ``strip_addressing`` a leading bot mention is treated as
+    addressing rather than content and removed, which also keeps a
+    following ``!command`` at position zero. Remaining bot mentions become
+    ``@<bot name>``; anyone else becomes ``@<name> (<ID>)``, or ``@<ID>``
+    when the directory cache has no name. ``<!here>``-style specials carry
+    no user identity and pass through.
+    """
+    if strip_addressing and bot_user_id:
+        leading = re.compile(rf"^\s*<@{re.escape(bot_user_id)}(?:\|[^>]*)?>[\s,:]*")
+        while True:
+            stripped = leading.sub("", text, count=1)
+            if stripped == text:
+                break
+            text = stripped
+
+    def _replace(match: re.Match) -> str:
+        user_id = match.group(1)
+        if bot_user_id and user_id == bot_user_id:
+            return f"@{_safe_name(bot_label)}" if bot_label else f"@{user_id}"
+        name = _safe_name(lookup(user_id))
+        return f"@{name} ({user_id})" if name else f"@{user_id}"
+
+    return _MENTION_TOKEN_RE.sub(_replace, text)
 
 
 def _message_context_text(msg: dict) -> str:
@@ -958,8 +1017,8 @@ class SlackContext(TransportContext):
         canvas_id: str,
     ) -> ChannelCanvasTarget:
         response = await self._client.files_info(file=canvas_id)
-        response = _response_mapping(response, method="files.info")
-        file_info = response.get("file")
+        payload = _response_mapping(response, method="files.info")
+        file_info = payload.get("file")
         if not isinstance(file_info, Mapping) or file_info.get("id") != canvas_id:
             raise ValueError("files.info returned the wrong Canvas")
         title = file_info.get("title")
@@ -1518,7 +1577,7 @@ class SlackTransport(BaseTransport):
         )
         self._client: AsyncWebClient | None = None
         self._surface_reconciled = False
-        self._surface_terminal_retries: dict[str, str] = {}
+        self._surface_terminal_retries: dict[str, TerminalStatus] = {}
 
         # Slack authorization is always resolved through exact DM/channel
         # routes. Invalid or missing route configuration remains represented
@@ -1609,7 +1668,9 @@ class SlackTransport(BaseTransport):
         }
         if pending.get("thread"):
             payload["thread_ts"] = str(pending["thread"])
-        await self._client.chat_postMessage(**payload)
+        # The SDK types every keyword individually, so an unpacked dict of str
+        # can't be matched against them.
+        await self._client.chat_postMessage(**payload)  # type: ignore[arg-type]
         return True
 
     def _warm_directory_cache(self) -> None:
@@ -1672,6 +1733,12 @@ class SlackTransport(BaseTransport):
         falls back to refresh-on-miss via the ``enso slack`` CLI, so missing
         subscriptions just make the cache less immediate — not broken.
         """
+        self._register_user_listeners(app)
+        self._register_channel_listeners(app)
+        self._register_membership_listeners(app)
+
+    def _register_user_listeners(self, app: AsyncApp) -> None:
+        """Directory events that create or update a cached user."""
 
         async def _apply_user(event: dict) -> None:
             user = event.get("user") or {}
@@ -1685,6 +1752,9 @@ class SlackTransport(BaseTransport):
         @app.event("team_join")
         async def on_team_join(event: dict) -> None:
             await _apply_user(event)
+
+    def _register_channel_listeners(self, app: AsyncApp) -> None:
+        """Directory events that create, update, or remove a cached channel."""
 
         async def _apply_channel_upsert(event: dict) -> None:
             channel = event.get("channel")
@@ -1727,6 +1797,9 @@ class SlackTransport(BaseTransport):
             channel_id = event.get("channel", "")
             if channel_id:
                 await asyncio.to_thread(slack_cache.apply_channel_delete, channel_id)
+
+    def _register_membership_listeners(self, app: AsyncApp) -> None:
+        """Track the bot's own channel membership in the cache."""
 
         async def _on_membership(event: dict, *, joined: bool) -> None:
             if event.get("user") != self.bot_user_id:
@@ -1844,7 +1917,7 @@ class SlackTransport(BaseTransport):
             return False
         return True
 
-    async def _finish_surface_draft(self, draft_id: str, *, status: str) -> bool:
+    async def _finish_surface_draft(self, draft_id: str, *, status: TerminalStatus) -> bool:
         """Retry only the local terminal write; never retry a Slack mutation."""
         for attempt in range(3):
             try:
@@ -1922,17 +1995,16 @@ class SlackTransport(BaseTransport):
             log.exception("Could not deliver Slack surface confirmation fallback")
             return False
 
-    async def _handle_surface_action(
+    async def _actionable_surface_draft(
         self,
-        body: dict,
-        action_payload: dict,
         client: AsyncWebClient,
-    ) -> None:
-        """Validate and consume one post-ack surface confirmation action."""
-        action = _parse_surface_action(body, action_payload)
-        if action is None:
-            log.warning("Ignored malformed Slack surface action payload")
-            return
+        action: _SurfaceAction,
+    ) -> surface_drafts.SurfaceDraftScope | None:
+        """Load the draft behind an action, or answer the user and return None.
+
+        Returns the scope only while the draft is still claimable and the
+        surface path is still authorized for its origin.
+        """
         try:
             scope = await asyncio.to_thread(
                 surface_drafts.get_origin_scoped,
@@ -1949,14 +2021,14 @@ class SlackTransport(BaseTransport):
                 action,
                 "Enso could not load this draft. Please try again.",
             )
-            return
+            return None
         if scope is None:
             await self._surface_action_notice(
                 client,
                 action,
                 "This draft is unavailable, expired, or belongs to another user.",
             )
-            return
+            return None
         origin = scope.origin
         if scope.status != "pending":
             if scope.status != "publishing":
@@ -1967,13 +2039,13 @@ class SlackTransport(BaseTransport):
                     text=f"This surface draft is no longer available ({scope.status}).",
                     blocks=[],
                 )
-                return
+                return None
             await self._surface_action_notice(
                 client,
                 action,
                 "This draft is expired or already handled.",
             )
-            return
+            return None
         if (
             not self.rich_messages
             or not self.persistent_surfaces
@@ -1988,7 +2060,24 @@ class SlackTransport(BaseTransport):
                     text="This surface draft is no longer authorized.",
                     blocks=[],
                 )
+            return None
+        return scope
+
+    async def _handle_surface_action(
+        self,
+        body: dict,
+        action_payload: dict,
+        client: AsyncWebClient,
+    ) -> None:
+        """Validate and consume one post-ack surface confirmation action."""
+        action = _parse_surface_action(body, action_payload)
+        if action is None:
+            log.warning("Ignored malformed Slack surface action payload")
             return
+        scope = await self._actionable_surface_draft(client, action)
+        if scope is None:
+            return
+        origin = scope.origin
 
         action_turn_id, audit_allowed = await self._create_surface_action_audit(
             origin,
@@ -2227,9 +2316,49 @@ class SlackTransport(BaseTransport):
         except Exception:
             return ""
 
+    def text_mentions_bot(self, text: str) -> bool:
+        """Whether the text carries an explicit mention token for the bot."""
+        if not self.bot_user_id or not text:
+            return False
+        return bool(re.search(rf"<@{re.escape(self.bot_user_id)}(?:\|[^>]*)?>", text))
+
+    def flatten_mentions(self, text: str, *, strip_addressing: bool = False) -> str:
+        """Flatten inbound mention tokens through the directory cache.
+
+        ``strip_addressing`` is for live request text, where a leading bot
+        mention is addressing; history and forwarded bodies keep the bot
+        reference as ``@<name>`` because it is content there.
+        """
+        if not text or "<@" not in text:
+            return text
+        bot_id = self.bot_user_id
+        bot_label = (self.lookup_user_name(bot_id) if bot_id else "") or bot_id or "bot"
+        return _flatten_mention_text(
+            text,
+            bot_user_id=bot_id,
+            bot_label=bot_label,
+            lookup=self.lookup_user_name,
+            strip_addressing=strip_addressing,
+        )
+
     def turn_uploads_dir(self, workspace_path: str, turn_id: str) -> str:
         """A unique per-turn uploads directory inside the workspace."""
         return os.path.join(workspace_path, "uploads", turn_id)
+
+    def _routable_author(self, event: dict) -> bool:
+        """Whether the event has a human author routes may dispatch for.
+
+        Channel routes authorize human members. Machine-authored posts —
+        Enso itself, other Slack apps (``bot_id``/``bot_profile`` with no
+        subtype on modern posts), and Slackbot — must never dispatch: a
+        feed bot whose content embeds a mention token would otherwise
+        become an authorized request, and two auto-responsive bots would
+        reply to each other in a loop.
+        """
+        user = event.get("user")
+        if not user or user == self.bot_user_id or user == "USLACKBOT":
+            return False
+        return not (event.get("bot_id") or event.get("bot_profile"))
 
     async def _handle_app_mention(
         self,
@@ -2239,6 +2368,8 @@ class SlackTransport(BaseTransport):
         """Route a channel @mention through exact Slack routes."""
         if event.get("subtype") in IGNORED_SUBTYPES:
             return
+        if not self._routable_author(event):
+            return
         await self.teams_router.handle_event(self, client, event, is_mention=True)
 
     async def _handle_message(
@@ -2246,13 +2377,25 @@ class SlackTransport(BaseTransport):
         event: dict,
         client: AsyncWebClient,
     ) -> None:
-        """Route DMs; ignore ordinary channel messages without a mention."""
+        """Route DMs and channel messages; response gating lives in the router.
+
+        A channel mention is delivered both here and as ``app_mention``, so
+        the mention flag is derived from the message text — either event may
+        win the delivery-ledger race and must carry identical semantics.
+        """
         if event.get("subtype") in IGNORED_SUBTYPES:
             return
-        if event.get("user") is None:
+        if not self._routable_author(event):
             return
         if event.get("channel_type") == "im":
             await self.teams_router.handle_event(self, client, event, is_mention=False)
+            return
+        await self.teams_router.handle_event(
+            self,
+            client,
+            event,
+            is_mention=self.text_mentions_bot(event.get("text", "")),
+        )
 
     # -- Helpers --
 
@@ -2276,12 +2419,12 @@ class SlackTransport(BaseTransport):
             is_bot = author == self.bot_user_id
             if author_filter is not None and not is_bot and author not in author_filter:
                 continue
-            body = _message_context_text(msg)
+            body = self.flatten_mentions(_message_context_text(msg))
             if not body:
                 continue
             if untrusted:
                 label = "assistant" if is_bot else f"user {author}"
-                name = "" if is_bot else self.lookup_user_name(author)
+                name = "" if is_bot else _safe_name(self.lookup_user_name(author))
                 if name:
                     label += f" ({name})"
             else:
@@ -2299,7 +2442,7 @@ class SlackTransport(BaseTransport):
             )
         return f"[{header}]\n" + "\n".join(lines)
 
-    async def _fetch_thread_context(
+    async def fetch_thread_context(
         self,
         client: AsyncWebClient,
         channel: str,
@@ -2323,7 +2466,7 @@ class SlackTransport(BaseTransport):
             log.exception("Failed to fetch thread context")
             return ""
 
-        messages = result.get("messages", [])
+        messages: list[Any] = result.get("messages", [])
         if len(messages) <= 1:
             return ""
 
@@ -2343,7 +2486,7 @@ class SlackTransport(BaseTransport):
         )
         return self._context_block("Thread context", lines, untrusted=untrusted)
 
-    async def _fetch_channel_context(
+    async def fetch_channel_context(
         self,
         client: AsyncWebClient,
         channel: str,
@@ -2352,10 +2495,10 @@ class SlackTransport(BaseTransport):
         author_filter: frozenset[str] | None = None,
         untrusted: bool = False,
     ) -> str:
-        """Fetch recent channel messages before a top-level mention.
+        """Fetch recent channel messages before a top-level message.
 
         Gives the agent awareness of what was said in the channel
-        leading up to the mention.
+        leading up to the message that engaged it.
         """
         try:
             result = await client.conversations_history(
@@ -2368,7 +2511,7 @@ class SlackTransport(BaseTransport):
             log.exception("Failed to fetch channel context")
             return ""
 
-        messages = result.get("messages", [])
+        messages: list[Any] = result.get("messages", [])
         # API returns newest-first, reverse for chronological
         messages.reverse()
 
@@ -2379,7 +2522,30 @@ class SlackTransport(BaseTransport):
         )
         return self._context_block("Channel context", lines, untrusted=untrusted)
 
-    async def _handle_command(
+    async def _cmd_update(self, conv_id: str, ctx: SlackContext | None) -> str:
+        """Run !update and, when it restarts the service, queue the confirmation."""
+        if ctx is not None:
+            await ctx.reply("Checking the latest stable Enso release…")
+        result = await cmd_update_async(self.runtime)
+        if result.restart_required:
+            from ..updater import queue_update_confirmation, schedule_service_restart
+
+            origin = ctx.get_origin_env() if ctx is not None else {}
+            channel = origin.get("ENSO_ORIGIN_CHANNEL", "")
+            thread = origin.get("ENSO_ORIGIN_THREAD_TS", "")
+            if not channel:
+                channel, _, fallback_thread = conv_id.partition(":")
+                thread = thread or fallback_thread
+            queue_update_confirmation(
+                result,
+                transport=self.name,
+                channel=channel,
+                thread=thread,
+            )
+            schedule_service_restart()
+        return result.message
+
+    async def handle_command(
         self,
         text: str,
         conv_id: str,
@@ -2455,26 +2621,7 @@ class SlackTransport(BaseTransport):
             return await cmd_compact_async(rt, conv_id, context=context)
 
         if cmd_name == "update":
-            if ctx is not None:
-                await ctx.reply("Checking the latest stable Enso release…")
-            result = await cmd_update_async(rt)
-            if result.restart_required:
-                from ..updater import queue_update_confirmation, schedule_service_restart
-
-                origin = ctx.get_origin_env() if ctx is not None else {}
-                channel = origin.get("ENSO_ORIGIN_CHANNEL", "")
-                thread = origin.get("ENSO_ORIGIN_THREAD_TS", "")
-                if not channel:
-                    channel, _, fallback_thread = conv_id.partition(":")
-                    thread = thread or fallback_thread
-                queue_update_confirmation(
-                    result,
-                    transport=self.name,
-                    channel=channel,
-                    thread=thread,
-                )
-                schedule_service_restart()
-            return result.message
+            return await self._cmd_update(conv_id, ctx)
 
         if cmd_name == "logs":
             return cmd_logs()[-40000:]
@@ -2515,7 +2662,7 @@ class SlackTransport(BaseTransport):
             return file_info
         return {**file_info, **hydrated}
 
-    async def _download_files(
+    async def download_files(
         self,
         files: list[dict],
         client: AsyncWebClient,

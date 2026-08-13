@@ -36,9 +36,17 @@ class TransportContext(ABC):
     uses it to deliver status updates and final responses.
     """
 
+    # Set by transports that can render markdown themselves (Slack). When it
+    # is False the runtime keeps ownership of splitting long plain text.
+    rich_markdown_enabled: bool = False
+
     @abstractmethod
     async def reply(self, text: str) -> None:
         """Send a final response message."""
+
+    async def reply_markdown(self, text: str) -> None:
+        """Send markdown-formatted text, falling back safely on plain text."""
+        await self.reply(text)
 
     async def reply_message(self, message: OutboundMessage) -> None:
         """Send a structured response, falling back safely on plain text."""
@@ -116,7 +124,7 @@ class BaseTransport(ABC):
 
         Must be called from within the transport's running event loop.
         """
-        self._scheduler_task = asyncio.create_task(self.runtime.run_job_scheduler())
+        self._scheduler_task = asyncio.create_task(self.runtime.jobs.run_scheduler())
         self._scheduler_task.add_done_callback(
             lambda task: _warn_if_task_died(task, "Job scheduler")
         )

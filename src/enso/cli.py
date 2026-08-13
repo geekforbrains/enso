@@ -18,6 +18,7 @@ from typing import Annotated
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
@@ -145,7 +146,7 @@ _AUDIO_EXTENSIONS = {".mp3", ".ogg", ".wav", ".flac", ".m4a"}
 _VOICE_EXTENSIONS = {".oga"}
 
 
-def _tg_send_file(token: str, chat_id: int, file_path: str, caption: str = "") -> bool:
+def _tg_send_file(token: str, chat_id: int | str, file_path: str, caption: str = "") -> bool:
     """Send a file to Telegram. Auto-selects method based on extension."""
     import mimetypes
     from io import BytesIO
@@ -232,7 +233,7 @@ def _tg_send_file(token: str, chat_id: int, file_path: str, caption: str = "") -
     return False
 
 
-def _tg_send_message(token: str, chat_id: int, text: str) -> bool:
+def _tg_send_message(token: str, chat_id: int | str, text: str) -> bool:
     """Send a message with HTML formatting. Returns True on success."""
     from .formatting import md_to_html
 
@@ -1025,7 +1026,9 @@ def _write_slack_manifest_copy() -> str:
     return dest
 
 
-def _setup_slack(config: dict) -> None:
+# A linear interactive wizard: every branch is one prompt in a fixed sequence,
+# so splitting it would only scatter the script the user is walked through.
+def _setup_slack(config: dict) -> None:  # noqa: C901
     """Configure Slack credentials and one exact routed owner DM."""
     slack_cfg = config.get("transports", {}).get("slack", {})
     manifest_path = _write_slack_manifest_copy()
@@ -1330,18 +1333,15 @@ def _load_transport(name: str, runtime) -> BaseTransport:
 SECRETS_DIR = os.path.expanduser("~/.enso/secrets")
 
 
-def _load_secret_env() -> list[str]:
-    """Load ~/.enso/secrets/*.env into os.environ.
+def _read_secret_env() -> dict[str, str]:
+    """Parse ~/.enso/secrets/*.env without touching os.environ.
 
-    launchd gives the daemon a minimal environment, and jobs (both prerun
-    scripts and the provider process) inherit from it. Secrets that CLIs read
-    from the environment — GOG_KEYRING_PASSWORD, OP_SERVICE_ACCOUNT_TOKEN —
-    have to be injected here or unattended runs fail. Existing values win, so
-    an explicit export still overrides the file.
+    The first occurrence of a key wins, matching how _load_secret_env has
+    always applied the files.
     """
-    loaded: list[str] = []
+    values: dict[str, str] = {}
     if not os.path.isdir(SECRETS_DIR):
-        return loaded
+        return values
     for name in sorted(os.listdir(SECRETS_DIR)):
         if not name.endswith(".env"):
             continue
@@ -1362,10 +1362,26 @@ def _load_secret_env() -> list[str]:
                 continue
             key = key.strip()
             val = val.strip().strip("'\"")
-            if not key or key in os.environ:
-                continue
-            os.environ[key] = val
-            loaded.append(key)
+            if key:
+                values.setdefault(key, val)
+    return values
+
+
+def _load_secret_env() -> list[str]:
+    """Load ~/.enso/secrets/*.env into os.environ.
+
+    launchd gives the daemon a minimal environment, and jobs (both prerun
+    scripts and the provider process) inherit from it. Secrets that CLIs read
+    from the environment — GOG_KEYRING_PASSWORD, OP_SERVICE_ACCOUNT_TOKEN —
+    have to be injected here or unattended runs fail. Existing values win, so
+    an explicit export still overrides the file.
+    """
+    loaded: list[str] = []
+    for key, val in _read_secret_env().items():
+        if key in os.environ:
+            continue
+        os.environ[key] = val
+        loaded.append(key)
     return loaded
 
 
@@ -1547,7 +1563,7 @@ def job_run(
     config = load_config()
     runtime = Runtime(config)
     try:
-        result = asyncio.run(runtime.run_job_now(name))
+        result = asyncio.run(runtime.jobs.run_now(name))
     except ValueError:
         console.print(f"[red]Job '{name}' not found.[/]")
         raise typer.Exit(1) from None
@@ -2193,8 +2209,10 @@ def slack_thread(
 # -- Routed configuration / route / audit --
 
 
+# A linear diagnostic report: each branch prints one more finding, and the
+# order of the printed sections is the feature.
 @config_app.command("check")
-def config_check() -> None:
+def config_check() -> None:  # noqa: C901
     """Validate execution bindings and native-policy launch plumbing."""
     from .policy import check_provider
     from .teams import load_catalog, load_teams
@@ -2217,12 +2235,24 @@ def config_check() -> None:
             failed = True
             console.print("  [red]✗[/] workspace path does not exist")
 
+    secret_env = _read_secret_env()
     for name, access in sorted(catalog.access_profiles.items()):
         mode = "unrestricted" if access.unrestricted else "policy-controlled"
         console.print(f"\n[bold]Access {name}[/] ({mode})")
         for problem in catalog.access_errors.get(name, ()):
             failed = True
-            console.print(f"  [red]✗[/] {problem}")
+            console.print(f"  [red]✗[/] {escape(problem)}")
+        if not access.unrestricted and access.env_passthrough:
+            console.print("  env_passthrough:")
+            for env_name in access.env_passthrough:
+                if env_name in os.environ or env_name in secret_env:
+                    console.print(f"    [green]✓[/] {escape(env_name)}")
+                else:
+                    console.print(f"    [yellow]![/] {escape(env_name)} not set")
+            console.print(
+                "  [dim]checked against this shell and ~/.enso/secrets/*.env; "
+                "the service environment may differ[/]"
+            )
 
     pairs: dict[tuple[str, str], set[str]] = {}
     routes_cfg = config.get("routes")
@@ -2289,13 +2319,14 @@ def config_check() -> None:
             check = check_provider(workspace, access, provider)
             if check.ok:
                 revision = (check.policy_revision or "")[:12]
-                console.print(f"  [green]✓[/] {provider} ({revision})")
+                servers = f" mcp: {', '.join(check.mcp_servers)}" if check.mcp_servers else ""
+                console.print(f"  [green]✓[/] {provider} ({revision}){escape(servers)}")
                 for warning in check.warnings:
-                    console.print(f"    [yellow]![/] {warning}")
+                    console.print(f"    [yellow]![/] {escape(warning)}")
             else:
                 failed = True
                 for problem in check.problems:
-                    console.print(f"  [red]✗[/] {provider}: {problem}")
+                    console.print(f"  [red]✗[/] {provider}: {escape(problem)}")
 
     if failed:
         raise typer.Exit(1)
@@ -2330,6 +2361,12 @@ def route_explain(
         console.print(f"Workspace: {route.workspace}")
         console.print(f"Access: {route.access}")
         console.print(f"Audit: {'on' if route.audit else 'off'}")
+        if route.kind == "channel":
+            console.print(f"Mention required: {'yes' if route.mention_required else 'no'}")
+            console.print(
+                "Thread mention required: "
+                f"{'yes' if route.thread_mention_required else 'no'}"
+            )
     if not teams.dispatchable:
         console.print(
             "[red]Teams dispatch is disabled by config errors (see 'enso config check').[/]"

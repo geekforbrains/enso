@@ -13,7 +13,9 @@ route that references them unusable.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
+from typing import TypeGuard
 
 from .providers import PROVIDER_NAMES
 
@@ -26,6 +28,15 @@ POLICY_FILES = {
     "codex": os.path.join("codex", "config.toml"),
 }
 
+# Names env_passthrough may never carry: the launch owns these (policy.py's
+# _KEEP_ENV allowlist plus PATH and CODEX_HOME), and ENSO_* is Enso's own
+# namespace. Defined literally because policy.py imports teams.py, so
+# importing _KEEP_ENV back would be circular.
+_ENV_PASSTHROUGH_RESERVED = frozenset(
+    {"HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "USER", "SHELL", "PATH", "CODEX_HOME"}
+)
+_ENV_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*")
+
 
 def _default_policy_dir(access_name: str) -> str:
     from . import config as config_mod
@@ -33,7 +44,7 @@ def _default_policy_dir(access_name: str) -> str:
     return os.path.join(config_mod.CONFIG_DIR, "policies", access_name)
 
 
-def _is_str_list(value: object) -> bool:
+def _is_str_list(value: object) -> TypeGuard[list[str]]:
     return isinstance(value, list) and all(isinstance(v, str) for v in value)
 
 
@@ -71,6 +82,7 @@ class AccessProfile:
     providers: tuple[str, ...]
     default_provider: str | None
     chat_commands: tuple[str, ...] | str
+    env_passthrough: tuple[str, ...] = ()
 
     def allows_provider(self, name: str) -> bool:
         return name in self.providers
@@ -81,7 +93,13 @@ class AccessProfile:
 
 @dataclass(frozen=True)
 class Route:
-    """One exact Slack DM-user or channel route."""
+    """One exact Slack DM-user or channel route.
+
+    ``mention_required`` and ``thread_mention_required`` are channel response
+    triggers resolved at load time (route override, then
+    ``routes.slack.channel_defaults``, then the built-in ``True``). DM routes
+    always carry the defaults; DM behavior is not configurable.
+    """
 
     route_id: str  # "slack.dm.<USER_ID>" | "slack.channel.<CHANNEL_ID>"
     kind: str  # "dm" | "channel"
@@ -89,6 +107,8 @@ class Route:
     workspace: str
     access: str
     audit: bool
+    mention_required: bool = True
+    thread_mention_required: bool = True
 
 
 @dataclass(frozen=True)
@@ -213,16 +233,26 @@ def load_teams(config: dict) -> TeamsConfig:
     if not isinstance(slack_routes, dict):
         errors.append("routes.slack must be an object")
         slack_routes = {}
-    errors.extend(_unknown_keys(slack_routes, {"account_id", "dms", "channels"}, "routes.slack"))
+    errors.extend(
+        _unknown_keys(
+            slack_routes,
+            {"account_id", "dms", "channels", "channel_defaults"},
+            "routes.slack",
+        )
+    )
 
     account_id = slack_routes.get("account_id")
     if not isinstance(account_id, str) or not account_id:
         errors.append("routes.slack.account_id is required and must be a string")
         account_id = ""
 
+    channel_defaults = _load_channel_defaults(slack_routes.get("channel_defaults"), errors)
     dm_routes, dm_schema_errors = _load_routes(slack_routes.get("dms", {}), "dm", errors)
     channel_routes, channel_schema_errors = _load_routes(
-        slack_routes.get("channels", {}), "channel", errors
+        slack_routes.get("channels", {}),
+        "channel",
+        errors,
+        channel_defaults=channel_defaults,
     )
 
     route_errors: dict[str, tuple[str, ...]] = {}
@@ -311,6 +341,7 @@ def _load_access(
         "providers",
         "default_provider",
         "chat_commands",
+        "env_passthrough",
     }
     for raw_name, cfg in block.items():
         if not isinstance(raw_name, str) or not raw_name:
@@ -357,6 +388,7 @@ def _load_access(
             default_provider = None
 
         commands = _load_capability(cfg.get("chat_commands"), "chat_commands", problems)
+        passthrough = _load_env_passthrough(cfg.get("env_passthrough"), unrestricted, problems)
         profiles[name] = AccessProfile(
             name=name,
             policy_dir=policy_dir,
@@ -364,6 +396,7 @@ def _load_access(
             providers=tuple(providers_raw),
             default_provider=default_provider,
             chat_commands=commands,
+            env_passthrough=passthrough,
         )
         if problems:
             profile_errors[name] = tuple(problems)
@@ -383,6 +416,35 @@ def _load_capability(value: object, key: str, problems: list[str]) -> tuple[str,
         return tuple(value)
     problems.append(f'{key} must be "*" or a list of names')
     return ()
+
+
+def _load_env_passthrough(
+    value: object, unrestricted: bool, problems: list[str]
+) -> tuple[str, ...]:
+    """Load environment variable names admitted into policy-controlled launches."""
+    if value is None:
+        return ()
+    if not _is_str_list(value):
+        problems.append("env_passthrough must be a list of strings")
+        return ()
+    if unrestricted:
+        # An unrestricted profile inherits the full environment; accepting the
+        # key would let the operator believe they scoped something.
+        problems.append("unrestricted: true is invalid alongside env_passthrough")
+    if len(value) != len(set(value)):
+        problems.append("env_passthrough contains duplicate names")
+    valid: list[str] = []
+    for name in value:
+        if not _ENV_NAME_RE.fullmatch(name):
+            problems.append(f"env_passthrough name {name!r} must match [A-Z][A-Z0-9_]*")
+        elif name in _ENV_PASSTHROUGH_RESERVED or name.startswith("ENSO_"):
+            problems.append(
+                f"env_passthrough may not name {name}; launch-controlled and "
+                "Enso-owned names are reserved"
+            )
+        elif name not in valid:
+            valid.append(name)
+    return tuple(valid)
 
 
 def _check_topology(
@@ -410,12 +472,110 @@ def _check_topology(
                 errors.append(f"policy_dir of access profile {profile_name} overlaps {root_name}")
 
 
+# Channel response triggers: config key -> built-in default.
+_MENTION_SETTING_DEFAULTS = {
+    "mention_required": True,
+    "thread_mention_required": True,
+}
+
+
+def _load_channel_defaults(value: object, errors: list[str]) -> dict[str, bool]:
+    """Parse ``routes.slack.channel_defaults`` into effective trigger defaults."""
+    defaults = dict(_MENTION_SETTING_DEFAULTS)
+    if value is None:
+        return defaults
+    if not isinstance(value, dict):
+        errors.append("routes.slack.channel_defaults must be an object")
+        return defaults
+    errors.extend(
+        _unknown_keys(value, set(_MENTION_SETTING_DEFAULTS), "routes.slack.channel_defaults")
+    )
+    for key in _MENTION_SETTING_DEFAULTS:
+        if key not in value:
+            continue
+        if isinstance(value[key], bool):
+            defaults[key] = value[key]
+        else:
+            errors.append(f"routes.slack.channel_defaults.{key} must be a boolean")
+    return defaults
+
+
+def _build_route(
+    cfg: dict,
+    *,
+    kind: str,
+    key: str,
+    route_id: str,
+    allowed: set[str],
+    defaults: dict[str, bool],
+) -> tuple[Route, list[str]]:
+    """Build one route from its config block, collecting its own problems.
+
+    Problems are per-route rather than global so one bad route disables only
+    itself; the returned Route still exists so dispatch can report why.
+    """
+    problems = _unknown_keys(cfg, allowed, route_id)
+    if "allow" in cfg:
+        problems.append(
+            "allow is no longer supported; channel membership and exact DM user "
+            "routes define authorization"
+        )
+    if kind == "dm":
+        for setting in _MENTION_SETTING_DEFAULTS:
+            if setting in cfg:
+                problems.append(
+                    f"{setting} is not valid on a DM route; DM behavior is fixed"
+                )
+    workspace = cfg.get("workspace")
+    if not isinstance(workspace, str) or not workspace:
+        problems.append("workspace is required and must be a string")
+        workspace = ""
+    access = cfg.get("access")
+    if not isinstance(access, str) or not access:
+        problems.append("access is required and must be a string")
+        access = ""
+    audit_raw = cfg.get("audit", False)
+    if not isinstance(audit_raw, bool):
+        problems.append("audit must be a boolean")
+        audit_value = False
+    else:
+        audit_value = audit_raw
+    triggers = dict(defaults)
+    if kind == "channel":
+        for setting in _MENTION_SETTING_DEFAULTS:
+            if setting not in cfg:
+                continue
+            if isinstance(cfg[setting], bool):
+                triggers[setting] = cfg[setting]
+            else:
+                problems.append(f"{setting} must be a boolean")
+    route = Route(
+        route_id=route_id,
+        kind=kind,
+        key=key,
+        workspace=workspace,
+        access=access,
+        audit=audit_value,
+        mention_required=triggers["mention_required"],
+        thread_mention_required=triggers["thread_mention_required"],
+    )
+    return route, problems
+
+
 def _load_routes(
-    block: object, kind: str, errors: list[str]
+    block: object,
+    kind: str,
+    errors: list[str],
+    *,
+    channel_defaults: dict[str, bool] | None = None,
 ) -> tuple[dict[str, Route], dict[str, tuple[str, ...]]]:
     routes: dict[str, Route] = {}
     route_errors: dict[str, tuple[str, ...]] = {}
     label = "dms" if kind == "dm" else "channels"
+    allowed = {"workspace", "access", "audit"}
+    if kind == "channel":
+        allowed |= set(_MENTION_SETTING_DEFAULTS)
+    defaults = channel_defaults or dict(_MENTION_SETTING_DEFAULTS)
     if not isinstance(block, dict):
         errors.append(f"routes.slack.{label} must be an object")
         return routes, route_errors
@@ -428,33 +588,13 @@ def _load_routes(
         if not isinstance(cfg, dict):
             errors.append(f"{route_id} must be an object")
             continue
-        problems = _unknown_keys(cfg, {"workspace", "access", "audit"}, route_id)
-        if "allow" in cfg:
-            problems.append(
-                "allow is no longer supported; channel membership and exact DM user "
-                "routes define authorization"
-            )
-        workspace = cfg.get("workspace")
-        if not isinstance(workspace, str) or not workspace:
-            problems.append("workspace is required and must be a string")
-            workspace = ""
-        access = cfg.get("access")
-        if not isinstance(access, str) or not access:
-            problems.append("access is required and must be a string")
-            access = ""
-        audit_raw = cfg.get("audit", False)
-        if not isinstance(audit_raw, bool):
-            problems.append("audit must be a boolean")
-            audit_value = False
-        else:
-            audit_value = audit_raw
-        route = Route(
-            route_id=route_id,
+        route, problems = _build_route(
+            cfg,
             kind=kind,
             key=key,
-            workspace=workspace,
-            access=access,
-            audit=audit_value,
+            route_id=route_id,
+            allowed=allowed,
+            defaults=defaults,
         )
         routes[key] = route
         if problems:

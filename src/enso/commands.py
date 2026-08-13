@@ -215,23 +215,20 @@ async def cmd_update_async(runtime: Runtime) -> UpdateResult:
 
     from .updater import UpdateResult, update_enso
 
-    if runtime._update_in_progress:
+    if runtime.update_in_progress:
         return UpdateResult("blocked", "Another Enso update is already running.")
 
-    runtime._update_in_progress = True
+    runtime.update_in_progress = True
     restart_pending = False
     try:
         active_chats = [
             task for task in runtime.running_task_by_chat.values()
             if not task.done()
         ]
-        active_jobs = [
-            task for task in runtime._running_job_tasks.values()
-            if not task.done()
-        ]
+        active_jobs = runtime.jobs.running_here()
         # Jobs triggered from the dashboard or CLI run in other processes;
         # their cross-process run locks are the only visible signal here.
-        external_jobs = runtime.jobs_running_elsewhere()
+        external_jobs = runtime.jobs.running_elsewhere()
         if active_chats or active_jobs or external_jobs:
             return UpdateResult(
                 "blocked",
@@ -243,7 +240,7 @@ async def cmd_update_async(runtime: Runtime) -> UpdateResult:
         return result
     finally:
         if not restart_pending:
-            runtime._update_in_progress = False
+            runtime.update_in_progress = False
 
 
 def cmd_clear(

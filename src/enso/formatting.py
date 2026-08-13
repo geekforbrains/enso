@@ -233,6 +233,40 @@ def _split_table(lines: list[str], limit: int) -> list[str] | None:
     return chunks
 
 
+def _hard_chunks(text: str, limit: int) -> list[str]:
+    """Cut *text* at the limit. Used only when no Markdown boundary can help.
+
+    Callers must pass a non-empty *text*; the sole call site returns early
+    unless the piece is longer than the limit, and it relies on the last
+    chunk existing.
+    """
+    return [text[start : start + limit] for start in range(0, len(text), limit)]
+
+
+def _collect_fence(lines: list[str], index: int, marker: str) -> tuple[list[str], bool]:
+    """Return the fenced block opened at *index* plus whether it was closed.
+
+    An unterminated fence gets a synthetic closing marker appended so the
+    emitted chunks are still valid Markdown on their own.
+    """
+    end = index + 1
+    while end < len(lines) and not _fence_close(lines[end], marker):
+        end += 1
+    if end < len(lines):
+        return lines[index : end + 1], True
+    body = lines[index + 1 :]
+    separator = "" if not body or body[-1].endswith(("\n", "\r")) else "\n"
+    return [lines[index], *body, separator + marker], False
+
+
+def _collect_table(lines: list[str], index: int) -> list[str]:
+    """Return the pipe-table rows starting at *index* (header and delimiter included)."""
+    end = index + 2
+    while end < len(lines) and _table_cells(lines[end]) is not None:
+        end += 1
+    return lines[index:end]
+
+
 def _split_fence(lines: list[str], limit: int) -> list[str] | None:
     """Split a code fence while balancing every emitted chunk."""
     opener = lines[0]
@@ -291,26 +325,15 @@ def split_markdown(text: str, *, limit: int = 12000) -> list[str] | None:
             return
 
         flush()
-        while len(piece) > limit:
-            chunks.append(piece[:limit])
-            piece = piece[limit:]
-        current = piece
+        oversized = _hard_chunks(piece, limit)
+        chunks.extend(oversized[:-1])
+        current = oversized[-1]
 
     index = 0
     while index < len(lines):
         opener_match = _FENCE_OPEN.fullmatch(_line_content(lines[index]))
         if opener_match:
-            marker = opener_match.group(2)
-            end = index + 1
-            while end < len(lines) and not _fence_close(lines[end], marker):
-                end += 1
-            closed = end < len(lines)
-            if closed:
-                fence_lines = lines[index : end + 1]
-            else:
-                body = lines[index + 1 :]
-                separator = "" if not body or body[-1].endswith(("\n", "\r")) else "\n"
-                fence_lines = [lines[index], *body, separator + marker]
+            fence_lines, closed = _collect_fence(lines, index, opener_match.group(2))
             fence = "".join(fence_lines)
             if closed and len(fence) <= limit:
                 add_ordinary(fence)
@@ -320,14 +343,12 @@ def split_markdown(text: str, *, limit: int = 12000) -> list[str] | None:
                     return None
                 flush()
                 chunks.extend(fence_chunks)
-            index = end + 1 if closed else len(lines)
+            # An unclosed fence swallowed the rest of the input.
+            index = index + len(fence_lines) if closed else len(lines)
             continue
 
         if index + 1 < len(lines) and _is_table_start(lines[index], lines[index + 1]):
-            end = index + 2
-            while end < len(lines) and _table_cells(lines[end]) is not None:
-                end += 1
-            table_lines = lines[index:end]
+            table_lines = _collect_table(lines, index)
             table = "".join(table_lines)
             if len(table) <= limit:
                 add_ordinary(table)
@@ -337,7 +358,7 @@ def split_markdown(text: str, *, limit: int = 12000) -> list[str] | None:
                     return None
                 flush()
                 chunks.extend(table_chunks)
-            index = end
+            index += len(table_lines)
             continue
 
         add_ordinary(lines[index])

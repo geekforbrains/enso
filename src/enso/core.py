@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import fcntl
-import hashlib
 import importlib.resources
 import json
 import logging
@@ -15,14 +13,12 @@ import shlex
 import signal
 from asyncio.subprocess import Process
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine, Iterable
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from datetime import datetime, timedelta
+from typing import TYPE_CHECKING, Any, ClassVar
 
-from croniter import croniter
-
-from . import messages, runs
+from . import messages
 from .config import (
     CONFIG_DIR,
     DEFAULT_AGENT,
@@ -31,7 +27,6 @@ from .config import (
     provider_models,
 )
 from .fsutil import atomic_write_text, regular_file_sha256
-from .jobs import Job, job_binding_error, job_config_error, load_jobs
 from .logging_config import logging_flags
 from .outbound import (
     parse_outbound_fallback,
@@ -43,6 +38,7 @@ from .providers import PROVIDER_NAMES, BaseProvider, StreamEvent, provider_class
 from .teams import load_catalog
 
 if TYPE_CHECKING:
+    from .job_runner import JobRunner
     from .policy import Launch
     from .teams import AccessProfile, Workspace
     from .transports import BaseTransport, TransportContext
@@ -134,20 +130,7 @@ def split_text(text: str, limit: int = 4096) -> list[str]:
 
 MAX_QUEUE_SIZE = 5
 SESSION_TTL_DAYS = int(os.environ.get("ENSO_SESSION_TTL_DAYS", "30"))
-JOB_CONCURRENCY = int(os.environ.get("ENSO_JOB_CONCURRENCY", "2"))
 PROCESS_TERMINATE_GRACE_SECS = float(os.environ.get("ENSO_PROCESS_TERMINATE_GRACE_SECS", "5"))
-JOB_FAILURE_RENOTIFY_SECS = int(os.environ.get("ENSO_JOB_FAILURE_RENOTIFY_SECS", str(24 * 60 * 60)))
-PRERUN_DIAGNOSTIC_LIMIT = 500
-
-_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-_BEARER_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+")
-_SECRET_ASSIGNMENT_RE = re.compile(
-    r"(?i)([A-Za-z0-9_-]*(?:api[_-]?key|token|secret|password|authorization)"
-    r"[A-Za-z0-9_-]*)"
-    r"(\s*[:=]\s*)([^\s,;]+)"
-)
-_URL_CREDENTIAL_RE = re.compile(r"(?i)(https?://)([^/@\s]+)@")
-_SENSITIVE_KEY_RE = re.compile(r"(?i)(api[_-]?key|token|secret|password|authorization)")
 
 # Upgrade markers for artifacts bundled immediately before the built-in task
 # system was removed. Hashes let us recognize pristine installer-owned files
@@ -205,26 +188,6 @@ _RETIRED_SKILL_TOOL_HASHES: dict[tuple[str, str], frozenset[str]] = {
 }
 
 
-@dataclass(frozen=True)
-class PrerunResult:
-    """Structured result from the deterministic gate before a job provider."""
-
-    outcome: Literal["open", "no_work", "error", "timeout"]
-    output: str = ""
-    diagnostic: str = ""
-    exit_code: int | None = None
-
-
-@dataclass(frozen=True)
-class JobRunResult:
-    """Terminal result shared by scheduled, CLI, and web job execution."""
-
-    status: Literal["ok", "error", "timeout", "no_work", "prerun_error", "prerun_timeout"]
-    run_id: str | None = None
-    output: str = ""
-    exit_code: int | None = None
-
-
 def _redacted_command(cmd: list[str]) -> str:
     """Return a shell-like command string with the prompt argument redacted."""
     if "--" in cmd:
@@ -239,6 +202,49 @@ def _redacted_command(cmd: list[str]) -> str:
                 redacted[prompt_index] = f"<prompt chars={len(cmd[prompt_index])}>"
                 return shlex.join(redacted)
     return shlex.join(cmd)
+
+
+def _state_rows(raw: object, migrate: Callable[[dict], list[dict]]) -> tuple[Iterable, bool]:
+    """Normalize one persisted state collection into rows.
+
+    Returns the rows plus whether state must be rewritten: both the v1 dict
+    form and an unrecognized shape need persisting back in the list form.
+    """
+    if isinstance(raw, dict):
+        return migrate(raw), True
+    if isinstance(raw, list):
+        return raw, False
+    return (), True
+
+
+def _migrate_v1_pairs(raw: dict, value_key: str) -> list[dict]:
+    """Expand v1 ``<chat>:<provider>`` keys into explicit row dicts.
+
+    The provider was the final delimiter-separated component; split from the
+    right so ``teams:<digest>`` chat keys survive.
+    """
+    return [
+        {"chat": key.rsplit(":", 1)[0], "provider": key.rsplit(":", 1)[1], value_key: value}
+        for key, value in raw.items()
+        if ":" in key
+    ]
+
+
+def _migrate_v1_efforts(raw: dict) -> list[dict]:
+    """Expand v1 ``<chat>:<provider>:<model>`` effort keys into row dicts."""
+    rows = []
+    for key, value in raw.items():
+        parts = key.rsplit(":", 2)
+        if len(parts) == 3:
+            rows.append(
+                {
+                    "chat": parts[0],
+                    "provider": parts[1],
+                    "model": parts[2],
+                    "effort": value,
+                }
+            )
+    return rows
 
 
 @dataclass
@@ -284,7 +290,11 @@ class ExecutionContext:
 
 
 class Runtime:
-    """Central runtime holding all state, process management, and job scheduling."""
+    """Central runtime holding all state and process management.
+
+    Job scheduling and execution live on ``self.jobs`` (see
+    :class:`~enso.job_runner.JobRunner`).
+    """
 
     def __init__(self, config: dict):
         self.config = config
@@ -331,15 +341,15 @@ class Runtime:
         # Activity tracking for session pruning
         self._last_active: dict[str, datetime] = {}
 
-        # Job scheduler state
-        self._job_last_run: dict[str, datetime] = {}
-        self._job_failure_alerts: dict[str, dict[str, Any]] = {}
-        self._running_job_tasks: dict[str, asyncio.Task] = {}
-        self._job_semaphore = asyncio.Semaphore(JOB_CONCURRENCY)
-
         # Set while the self-updater validates and installs a release. New
         # agent turns and scheduler ticks pause until the operation finishes.
-        self._update_in_progress = False
+        self.update_in_progress = False
+
+        # Job scheduling and execution. Imported here because job_runner
+        # imports this module for the runtime pieces the pipeline reuses.
+        from .job_runner import JobRunner
+
+        self.jobs: JobRunner = JobRunner(self)
 
     # -- Workspace setup --
 
@@ -370,7 +380,7 @@ class Runtime:
         # System prompt. AGENTS.md is canonical; Claude reads CLAUDE.md, so
         # it's symlinked to AGENTS.md. Codex reads AGENTS.md natively, so no
         # further symlinks are needed.
-        source = importlib.resources.files("enso").joinpath("prompts", "AGENTS.md")
+        source = importlib.resources.files("enso").joinpath("prompts").joinpath("AGENTS.md")
         content = source.read_text(encoding="utf-8")
 
         canonical = os.path.join(self.working_dir, "AGENTS.md")
@@ -436,7 +446,8 @@ class Runtime:
 
         canonical = os.path.join(workspace.path, "AGENTS.md")
         if not os.path.lexists(canonical):
-            source = importlib.resources.files("enso").joinpath("prompts", "WORKSPACE_AGENTS.md")
+            prompts = importlib.resources.files("enso").joinpath("prompts")
+            source = prompts.joinpath("WORKSPACE_AGENTS.md")
             atomic_write_text(canonical, source.read_text(encoding="utf-8"))
             log.info("Wrote AGENTS.md in workspace %s", workspace.name)
         self._ensure_symlink(os.path.join(workspace.path, "CLAUDE.md"), "AGENTS.md")
@@ -686,8 +697,8 @@ class Runtime:
                 for (cid, prov), sid in self.session_by_chat_provider.items()
             ],
             "compact_seed_by_chat": dict(self.compact_seed_by_chat),
-            "job_last_run": {name: ts.isoformat() for name, ts in self._job_last_run.items()},
-            "job_failure_alerts": dict(self._job_failure_alerts),
+            "job_last_run": {name: ts.isoformat() for name, ts in self.jobs.last_run.items()},
+            "job_failure_alerts": dict(self.jobs.failure_alerts),
             "last_active": {cid: ts.isoformat() for cid, ts in self._last_active.items()},
         }
         try:
@@ -714,118 +725,21 @@ class Runtime:
                     self.active_provider_by_chat[k] = v
                 else:
                     state_changed = True
-            raw_models = data.get("active_model_by_chat_provider", [])
-            if isinstance(raw_models, dict):
-                # v1 migration: provider was the final delimiter-separated
-                # component; split from the right so ``teams:<digest>`` works.
-                model_rows = (
-                    {"chat": k.rsplit(":", 1)[0], "provider": k.rsplit(":", 1)[1], "model": v}
-                    for k, v in raw_models.items()
-                    if ":" in k
-                )
-                state_changed = True
-            elif isinstance(raw_models, list):
-                model_rows = iter(raw_models)
-            else:
-                model_rows = iter(())
-                state_changed = True
-            for row in model_rows:
-                if not isinstance(row, dict):
-                    state_changed = True
-                    continue
-                cid = row.get("chat")
-                provider = row.get("provider")
-                v = row.get("model")
-                # Entries for retired providers or models removed from config
-                # are inert (selection falls back anyway) — prune them.
-                if (
-                    isinstance(cid, str)
-                    and isinstance(provider, str)
-                    and v in self.models.get(provider, [])
-                ):
-                    self.active_model_by_chat_provider[(cid, provider)] = v
-                else:
-                    state_changed = True
-            raw_efforts = data.get("effort_by_chat_provider_model", [])
-            if isinstance(raw_efforts, dict):
-                effort_rows = []
-                for key, value in raw_efforts.items():
-                    parts = key.rsplit(":", 2)
-                    if len(parts) == 3:
-                        effort_rows.append(
-                            {
-                                "chat": parts[0],
-                                "provider": parts[1],
-                                "model": parts[2],
-                                "effort": value,
-                            }
-                        )
-                state_changed = True
-            elif isinstance(raw_efforts, list):
-                effort_rows = raw_efforts
-            else:
-                effort_rows = []
-                state_changed = True
-            for row in effort_rows:
-                if not isinstance(row, dict):
-                    state_changed = True
-                    continue
-                cid = row.get("chat")
-                provider = row.get("provider")
-                model = row.get("model")
-                effort = row.get("effort")
-                if (
-                    isinstance(cid, str)
-                    and isinstance(provider, str)
-                    and isinstance(model, str)
-                    and isinstance(effort, str)
-                    and model in self.models.get(provider, [])
-                    and provider_class(provider).effort_levels
-                ):
-                    self.effort_by_chat_provider_model[(cid, provider, model)] = effort
-                else:
-                    state_changed = True
-            raw_sessions = data.get("session_by_chat_provider", [])
-            if isinstance(raw_sessions, dict):
-                session_rows = (
-                    {"chat": k.rsplit(":", 1)[0], "provider": k.rsplit(":", 1)[1], "session": v}
-                    for k, v in raw_sessions.items()
-                    if ":" in k
-                )
-                state_changed = True
-            elif isinstance(raw_sessions, list):
-                session_rows = iter(raw_sessions)
-            else:
-                session_rows = iter(())
-                state_changed = True
-            for row in session_rows:
-                if not isinstance(row, dict):
-                    state_changed = True
-                    continue
-                cid = row.get("chat")
-                provider = row.get("provider")
-                sid = row.get("session")
-                if (
-                    isinstance(cid, str)
-                    and isinstance(provider, str)
-                    and isinstance(sid, str)
-                    and provider in PROVIDER_NAMES
-                ):
-                    self.session_by_chat_provider[(cid, provider)] = sid
-                else:
-                    state_changed = True
+            state_changed |= self._load_model_rows(data.get("active_model_by_chat_provider", []))
+            state_changed |= self._load_effort_rows(data.get("effort_by_chat_provider_model", []))
+            state_changed |= self._load_session_rows(data.get("session_by_chat_provider", []))
             for k, v in data.get("compact_seed_by_chat", {}).items():
                 self.compact_seed_by_chat[k] = v
             for name, ts in data.get("job_last_run", {}).items():
                 if name == _LEGACY_TASK_RUNNER_STATE_KEY:
                     state_changed = True
                     continue
-                self._job_last_run[name] = datetime.fromisoformat(ts)
+                self.jobs.last_run[name] = datetime.fromisoformat(ts)
             failure_alerts = data.get("job_failure_alerts", {})
             if isinstance(failure_alerts, dict):
                 for name, alert in failure_alerts.items():
                     if isinstance(alert, dict):
-                        self._job_failure_alerts[name] = alert
+                        self.jobs.failure_alerts[name] = alert
             for cid, ts in data.get("last_active", {}).items():
                 self._last_active[cid] = datetime.fromisoformat(ts)
             log.info(
@@ -838,6 +752,73 @@ class Runtime:
                 self.save_state()
         except Exception:
             log.exception("Failed to load state, starting fresh")
+
+    def _load_model_rows(self, raw: object) -> bool:
+        """Restore per-chat model selections. True when state needs rewriting."""
+        rows, changed = _state_rows(raw, lambda data: _migrate_v1_pairs(data, "model"))
+        for row in rows:
+            if not isinstance(row, dict):
+                changed = True
+                continue
+            cid = row.get("chat")
+            provider = row.get("provider")
+            model = row.get("model")
+            # Entries for retired providers or models removed from config
+            # are inert (selection falls back anyway) — prune them.
+            if (
+                isinstance(cid, str)
+                and isinstance(provider, str)
+                and model in self.models.get(provider, [])
+            ):
+                self.active_model_by_chat_provider[(cid, provider)] = model
+            else:
+                changed = True
+        return changed
+
+    def _load_effort_rows(self, raw: object) -> bool:
+        """Restore per-chat effort levels. True when state needs rewriting."""
+        rows, changed = _state_rows(raw, _migrate_v1_efforts)
+        for row in rows:
+            if not isinstance(row, dict):
+                changed = True
+                continue
+            cid = row.get("chat")
+            provider = row.get("provider")
+            model = row.get("model")
+            effort = row.get("effort")
+            if (
+                isinstance(cid, str)
+                and isinstance(provider, str)
+                and isinstance(model, str)
+                and isinstance(effort, str)
+                and model in self.models.get(provider, [])
+                and provider_class(provider).effort_levels
+            ):
+                self.effort_by_chat_provider_model[(cid, provider, model)] = effort
+            else:
+                changed = True
+        return changed
+
+    def _load_session_rows(self, raw: object) -> bool:
+        """Restore per-chat provider sessions. True when state needs rewriting."""
+        rows, changed = _state_rows(raw, lambda data: _migrate_v1_pairs(data, "session"))
+        for row in rows:
+            if not isinstance(row, dict):
+                changed = True
+                continue
+            cid = row.get("chat")
+            provider = row.get("provider")
+            sid = row.get("session")
+            if (
+                isinstance(cid, str)
+                and isinstance(provider, str)
+                and isinstance(sid, str)
+                and provider in PROVIDER_NAMES
+            ):
+                self.session_by_chat_provider[(cid, provider)] = sid
+            else:
+                changed = True
+        return changed
 
     def touch_session(self, chat_key: str) -> None:
         """Mark a state key active so stale-session pruning can reach it.
@@ -855,12 +836,12 @@ class Runtime:
             return
         for cid in stale:
             self.active_provider_by_chat.pop(cid, None)
-            for key in [k for k in self.session_by_chat_provider if k[0] == cid]:
-                self.session_by_chat_provider.pop(key)
-            for key in [k for k in self.active_model_by_chat_provider if k[0] == cid]:
-                self.active_model_by_chat_provider.pop(key)
-            for key in [k for k in self.effort_by_chat_provider_model if k[0] == cid]:
-                self.effort_by_chat_provider_model.pop(key)
+            for session_key in [k for k in self.session_by_chat_provider if k[0] == cid]:
+                self.session_by_chat_provider.pop(session_key)
+            for model_key in [k for k in self.active_model_by_chat_provider if k[0] == cid]:
+                self.active_model_by_chat_provider.pop(model_key)
+            for effort_key in [k for k in self.effort_by_chat_provider_model if k[0] == cid]:
+                self.effort_by_chat_provider_model.pop(effort_key)
             self.compact_seed_by_chat.pop(cid, None)
             self._last_active.pop(cid)
         log.info("Pruned %d stale conversation(s) (>%dd)", len(stale), SESSION_TTL_DAYS)
@@ -1018,7 +999,7 @@ class Runtime:
         context (global working_dir, conversation-keyed state).
         """
         context = context or self.global_context(conversation_id)
-        if self._update_in_progress:
+        if self.update_in_progress:
             await ctx.reply("Enso is updating. Please try again after it restarts.")
             await self._finalize_unrun(context, "update_in_progress")
             return
@@ -1459,7 +1440,10 @@ class Runtime:
 
     # -- Core streaming --
 
-    async def run_provider(
+    # An async generator whose branches interleave with its yields and share
+    # spawn/stream/teardown state; splitting it would mean restructuring the
+    # streaming protocol itself.
+    async def run_provider(  # noqa: C901
         self,
         provider: BaseProvider,
         prompt: str,
@@ -1721,6 +1705,101 @@ class Runtime:
         (via cancellation in the caller) ``stopped``.
         """
         context = context or self.global_context(chat_id)
+        prompt, output_instructions, surface_instructions = self._assemble_prompt(
+            prompt, chat_id, provider_name, ctx, context
+        )
+        provider, model, effort, origin_env = self._resolve_request(
+            provider_name, prompt, chat_id, ctx, context
+        )
+
+        await ctx.send_typing()
+        header = status_header(provider_name, model, effort)
+        status_msg = await self._post_initial_status(ctx, chat_id, header)
+        state: dict[str, Any] = {
+            "elapsed": 0,
+            "header": header,
+            "action": STATUS_INITIAL_ACTION,
+        }
+        stop = asyncio.Event()
+        ticker = asyncio.create_task(self._run_ticker(ctx, status_msg, state, stop))
+        msg_limit = self.transport.message_limit if self.transport else 4096
+
+        try:
+            response_parts, error_text, timed_out = await self._collect_provider_output(
+                provider,
+                prompt,
+                chat_id,
+                model,
+                effort=effort,
+                origin_env=origin_env,
+                context=context,
+                state=state,
+            )
+            if timed_out:
+                await self._stop_ticker(ticker, stop, chat_id)
+                await self._report_timeout(ctx, chat_id, provider_name, status_msg)
+                return "timeout", None
+
+            await self._stop_ticker(ticker, stop, chat_id)
+            if status_msg is not None:
+                await ctx.delete_status(status_msg)
+
+            response_text = provider.format_response(response_parts)
+            log.info(
+                "[%s] request complete chat=%s response_parts=%d "
+                "response_len=%d error=%s elapsed=%s",
+                provider_name,
+                chat_id,
+                len(response_parts),
+                len(response_text),
+                bool(error_text),
+                state["elapsed"],
+            )
+
+            if error_text:
+                await ctx.reply(_format_error(error_text[:4000]))
+            elif response_text:
+                await self._deliver_response(
+                    ctx,
+                    response_text,
+                    output_instructions=output_instructions,
+                    surface_instructions=surface_instructions,
+                    msg_limit=msg_limit,
+                )
+            else:
+                await ctx.reply("(No response)")
+            return ("error", "provider_error") if error_text else ("completed", None)
+
+        except asyncio.CancelledError:
+            await self._stop_ticker(ticker, stop, chat_id)
+            if status_msg is not None:
+                with contextlib.suppress(Exception):
+                    await ctx.edit_status(status_msg, "Stopped.")
+            raise
+
+        except Exception as exc:
+            await self._stop_ticker(ticker, stop, chat_id)
+            log.error("Error processing %s request: %s", provider_name, exc, exc_info=True)
+            if status_msg is not None:
+                with contextlib.suppress(Exception):
+                    await ctx.delete_status(status_msg)
+            for chunk in split_text(_format_error(str(exc)), limit=msg_limit):
+                await ctx.reply(chunk)
+            return "error", "exception"
+
+    def _assemble_prompt(
+        self,
+        prompt: str,
+        chat_id: str,
+        provider_name: str,
+        ctx: TransportContext,
+        context: ExecutionContext,
+    ) -> tuple[str, str, str]:
+        """Build the prompt to send, with the transport instructions it carries.
+
+        The instruction strings come back alongside the prompt because response
+        delivery may only honour a fence the agent was actually told to emit.
+        """
         # Inject background messages. Teams executions consume only messages
         # explicitly addressed to them — a global message must not leak into
         # an arbitrary route's context.
@@ -1732,40 +1811,25 @@ class Runtime:
         # Inject compact seed if one is pending for this chat.
         prompt = self._consume_compact_seed(chat_id, prompt, provider_name)
 
-        output_instructions = ""
-        get_output_instructions = getattr(ctx, "get_output_instructions", None)
-        if callable(get_output_instructions):
-            try:
-                candidate = get_output_instructions()
-            except Exception:
-                log.warning(
-                    "get_output_instructions failed for chat %s",
-                    chat_id,
-                    exc_info=True,
-                )
-            else:
-                if isinstance(candidate, str):
-                    output_instructions = candidate.strip()
-                    if output_instructions:
-                        prompt = f"{prompt}\n\n{output_instructions}"
+        output_instructions = ctx.get_output_instructions().strip()
+        if output_instructions:
+            prompt = f"{prompt}\n\n{output_instructions}"
 
-        surface_instructions = ""
-        get_surface_instructions = getattr(ctx, "get_surface_instructions", None)
-        if callable(get_surface_instructions):
-            try:
-                candidate = get_surface_instructions()
-            except Exception:
-                log.warning(
-                    "get_surface_instructions failed for chat %s",
-                    chat_id,
-                    exc_info=True,
-                )
-            else:
-                if isinstance(candidate, str):
-                    surface_instructions = candidate.strip()
-                    if surface_instructions:
-                        prompt = f"{prompt}\n\n{surface_instructions}"
+        surface_instructions = ctx.get_surface_instructions().strip()
+        if surface_instructions:
+            prompt = f"{prompt}\n\n{surface_instructions}"
 
+        return prompt, output_instructions, surface_instructions
+
+    def _resolve_request(
+        self,
+        provider_name: str,
+        prompt: str,
+        chat_id: str,
+        ctx: TransportContext,
+        context: ExecutionContext,
+    ) -> tuple[BaseProvider, str, str | None, dict[str, str]]:
+        """Resolve what to run this request with, and log that decision."""
         model = (
             context.model
             if context.model is not None
@@ -1801,37 +1865,57 @@ class Runtime:
         log.debug("[%s] origin_env_keys=%s", provider_name, sorted(origin_env))
         if self.debug_prompts and not is_bound:
             log.debug("[%s] full_prompt:\n%s", provider_name, prompt)
+        return provider, model, effort, origin_env
 
-        await ctx.send_typing()
-        header = status_header(provider_name, model, effort)
-        status_msg = None
+    async def _post_initial_status(
+        self, ctx: TransportContext, chat_id: str, header: str
+    ) -> Any | None:
+        """Post the status message the ticker will edit, or None if it fails.
+
+        A transport that cannot post status must not fail the whole request;
+        the ticker then runs typing-only.
+        """
         try:
-            status_msg = await ctx.reply_status(
-                status_text(header, 0, STATUS_INITIAL_ACTION)
-            )
+            return await ctx.reply_status(status_text(header, 0, STATUS_INITIAL_ACTION))
         except Exception:
             log.warning("Failed to send initial status message for chat %s", chat_id, exc_info=True)
-        state: dict[str, Any] = {
-            "elapsed": 0,
-            "header": header,
-            "action": STATUS_INITIAL_ACTION,
-        }
-        stop = asyncio.Event()
-        ticker = asyncio.create_task(self._run_ticker(ctx, status_msg, state, stop))
+            return None
 
-        async def stop_ticker() -> None:
-            # Must run before the status message is edited or deleted; a
-            # late tick would overwrite the final status.
-            stop.set()
-            error = await _cancel_and_wait(ticker)
-            if error is not None and not isinstance(error, asyncio.CancelledError):
-                log.warning(
-                    "Status ticker failed while stopping for chat %s: %s",
-                    chat_id,
-                    error,
-                )
+    async def _stop_ticker(
+        self, ticker: asyncio.Task, stop: asyncio.Event, chat_id: str
+    ) -> None:
+        """Halt the status ticker.
 
-        msg_limit = self.transport.message_limit if self.transport else 4096
+        Must run before the status message is edited or deleted; a late tick
+        would overwrite the final status.
+        """
+        stop.set()
+        error = await _cancel_and_wait(ticker)
+        if error is not None and not isinstance(error, asyncio.CancelledError):
+            log.warning(
+                "Status ticker failed while stopping for chat %s: %s",
+                chat_id,
+                error,
+            )
+
+    async def _collect_provider_output(
+        self,
+        provider: BaseProvider,
+        prompt: str,
+        chat_id: str,
+        model: str,
+        *,
+        effort: str | None,
+        origin_env: dict[str, str],
+        context: ExecutionContext,
+        state: dict[str, Any],
+    ) -> tuple[list[str], str, bool]:
+        """Stream the provider to completion under the configured deadline.
+
+        Returns the response parts, the last error text, and whether *our*
+        deadline expired — which is not the same as a provider-reported
+        timeout, and must not be labelled as one.
+        """
         response_parts: list[str] = []
         error_text = ""
 
@@ -1849,7 +1933,7 @@ class Runtime:
                 if self.debug_events:
                     log.debug(
                         "[%s] handling_event kind=%s text_len=%d session=%s",
-                        provider_name,
+                        provider.name,
                         event.kind,
                         len(event.text or ""),
                         event.session_id or "-",
@@ -1862,176 +1946,138 @@ class Runtime:
                 elif event.kind == "error":
                     error_text = event.text
 
-        async def run_with_timeout() -> bool:
-            """Run the provider and return True only when our deadline expires."""
-            if not self.agent_timeout:
-                await consume_provider_events()
-                return False
+        timed_out = await self._run_until_deadline(consume_provider_events(), chat_id)
+        return response_parts, error_text, timed_out
 
-            provider_task = asyncio.create_task(consume_provider_events())
+    async def _run_until_deadline(
+        self, work: Coroutine[Any, Any, None], chat_id: str
+    ) -> bool:
+        """Run ``work`` and return True only when our deadline expires."""
+        if not self.agent_timeout:
+            await work
+            return False
 
-            async def cancel_provider() -> None:
-                error = await _cancel_and_wait(provider_task)
-                if error is not None and not isinstance(error, asyncio.CancelledError):
-                    log.warning(
-                        "Provider cleanup failed for chat %s: %s",
-                        chat_id,
-                        error,
-                    )
+        provider_task = asyncio.create_task(work)
 
-            try:
-                done, _ = await asyncio.wait(
-                    {provider_task},
-                    timeout=self.agent_timeout,
+        async def cancel_provider() -> None:
+            error = await _cancel_and_wait(provider_task)
+            if error is not None and not isinstance(error, asyncio.CancelledError):
+                log.warning(
+                    "Provider cleanup failed for chat %s: %s",
+                    chat_id,
+                    error,
                 )
-                if provider_task in done:
-                    await provider_task
-                    return False
-                await cancel_provider()
-                return True
-            except BaseException:
-                if not provider_task.done():
-                    await cancel_provider()
-                raise
 
         try:
-            if await run_with_timeout():
-                await stop_ticker()
-                duration = self._format_duration(self.agent_timeout)
-                user_notice = f"Stopped after reaching the {duration} timeout."
-                agent_notice = (
-                    "Enso stopped the previous agent turn after it reached the "
-                    f"configured {duration} timeout. Partial work may remain; inspect "
-                    "the current workspace and prior session before continuing."
-                )
-                log.warning(
-                    "[%s] request timed out chat=%s after %ss",
-                    provider_name,
-                    chat_id,
-                    self.agent_timeout,
-                )
-                try:
-                    messages.send(
-                        agent_notice,
-                        source="enso:timeout",
-                        conversation_id=chat_id,
-                    )
-                except Exception:
-                    log.exception("Could not persist timeout notice for chat %s", chat_id)
-
-                delivered = False
-                if status_msg is not None:
-                    try:
-                        await ctx.edit_status(status_msg, user_notice)
-                        delivered = True
-                    except Exception:
-                        log.warning(
-                            "Could not finalize timeout status for chat %s",
-                            chat_id,
-                            exc_info=True,
-                        )
-                if not delivered:
-                    try:
-                        await ctx.reply(user_notice)
-                    except Exception:
-                        log.warning(
-                            "Could not send timeout notice for chat %s",
-                            chat_id,
-                            exc_info=True,
-                        )
-                return "timeout", None
-
-            await stop_ticker()
-            if status_msg is not None:
-                await ctx.delete_status(status_msg)
-
-            response_text = provider.format_response(response_parts)
-            log.info(
-                "[%s] request complete chat=%s response_parts=%d "
-                "response_len=%d error=%s elapsed=%s",
-                provider_name,
-                chat_id,
-                len(response_parts),
-                len(response_text),
-                bool(error_text),
-                state["elapsed"],
+            done, _ = await asyncio.wait(
+                {provider_task},
+                timeout=self.agent_timeout,
             )
-
-            if error_text:
-                await ctx.reply(_format_error(error_text[:4000]))
-            elif response_text:
-                publication = (
-                    parse_surface_publication(response_text)
-                    if surface_instructions
-                    else None
-                )
-                surface_fallback = (
-                    parse_surface_fallback(response_text)
-                    if surface_instructions and publication is None
-                    else None
-                )
-                message = (
-                    parse_outbound_message(response_text)
-                    if output_instructions
-                    and publication is None
-                    and surface_fallback is None
-                    else None
-                )
-                fallback_text = (
-                    parse_outbound_fallback(response_text)
-                    if output_instructions
-                    and publication is None
-                    and surface_fallback is None
-                    and message is None
-                    else None
-                )
-                offer_surface_draft = getattr(ctx, "offer_surface_draft", None)
-                reply_message = getattr(ctx, "reply_message", None)
-                if publication is not None and callable(offer_surface_draft):
-                    await offer_surface_draft(publication, response_text)
-                elif publication is not None:
-                    for chunk in split_text(publication.fallback_text, limit=msg_limit):
-                        await ctx.reply(chunk)
-                elif surface_fallback is not None:
-                    for chunk in split_text(surface_fallback, limit=msg_limit):
-                        await ctx.reply(chunk)
-                elif message is not None and callable(reply_message):
-                    await reply_message(message)
-                elif message is not None:
-                    for chunk in split_text(message.fallback_text, limit=msg_limit):
-                        await ctx.reply(chunk)
-                elif fallback_text is not None:
-                    for chunk in split_text(fallback_text, limit=msg_limit):
-                        await ctx.reply(chunk)
-                else:
-                    reply_markdown = getattr(ctx, "reply_markdown", None)
-                    if getattr(ctx, "rich_markdown_enabled", False) and callable(
-                        reply_markdown
-                    ):
-                        await reply_markdown(response_text)
-                    else:
-                        for chunk in split_text(response_text, limit=msg_limit):
-                            await ctx.reply(chunk)
-            else:
-                await ctx.reply("(No response)")
-            return ("error", "provider_error") if error_text else ("completed", None)
-
-        except asyncio.CancelledError:
-            await stop_ticker()
-            if status_msg is not None:
-                with contextlib.suppress(Exception):
-                    await ctx.edit_status(status_msg, "Stopped.")
+            if provider_task in done:
+                await provider_task
+                return False
+            await cancel_provider()
+            return True
+        except BaseException:
+            if not provider_task.done():
+                await cancel_provider()
             raise
 
-        except Exception as exc:
-            await stop_ticker()
-            log.error("Error processing %s request: %s", provider_name, exc, exc_info=True)
-            if status_msg is not None:
-                with contextlib.suppress(Exception):
-                    await ctx.delete_status(status_msg)
-            for chunk in split_text(_format_error(str(exc)), limit=msg_limit):
+    async def _report_timeout(
+        self,
+        ctx: TransportContext,
+        chat_id: str,
+        provider_name: str,
+        status_msg: Any | None,
+    ) -> None:
+        """Queue the agent-facing timeout notice and tell the user about it."""
+        duration = self._format_duration(self.agent_timeout)
+        user_notice = f"Stopped after reaching the {duration} timeout."
+        agent_notice = (
+            "Enso stopped the previous agent turn after it reached the "
+            f"configured {duration} timeout. Partial work may remain; inspect "
+            "the current workspace and prior session before continuing."
+        )
+        log.warning(
+            "[%s] request timed out chat=%s after %ss",
+            provider_name,
+            chat_id,
+            self.agent_timeout,
+        )
+        try:
+            messages.send(
+                agent_notice,
+                source="enso:timeout",
+                conversation_id=chat_id,
+            )
+        except Exception:
+            log.exception("Could not persist timeout notice for chat %s", chat_id)
+
+        delivered = False
+        if status_msg is not None:
+            try:
+                await ctx.edit_status(status_msg, user_notice)
+                delivered = True
+            except Exception:
+                log.warning(
+                    "Could not finalize timeout status for chat %s",
+                    chat_id,
+                    exc_info=True,
+                )
+        if not delivered:
+            try:
+                await ctx.reply(user_notice)
+            except Exception:
+                log.warning(
+                    "Could not send timeout notice for chat %s",
+                    chat_id,
+                    exc_info=True,
+                )
+
+    async def _deliver_response(
+        self,
+        ctx: TransportContext,
+        response_text: str,
+        *,
+        output_instructions: str,
+        surface_instructions: str,
+        msg_limit: int,
+    ) -> None:
+        """Send a completed response over the richest channel it qualifies for.
+
+        A persistent-surface draft outranks a structured message, which
+        outranks plain text. Each parser only runs when its instructions were
+        injected — a fence the agent was never told to emit stays literal text.
+        """
+
+        async def reply_in_chunks(text: str) -> None:
+            for chunk in split_text(text, limit=msg_limit):
                 await ctx.reply(chunk)
-            return "error", "exception"
+
+        if surface_instructions:
+            publication = parse_surface_publication(response_text)
+            if publication is not None:
+                await ctx.offer_surface_draft(publication, response_text)
+                return
+            surface_fallback = parse_surface_fallback(response_text)
+            if surface_fallback is not None:
+                await reply_in_chunks(surface_fallback)
+                return
+
+        if output_instructions:
+            message = parse_outbound_message(response_text)
+            if message is not None:
+                await ctx.reply_message(message)
+                return
+            fallback_text = parse_outbound_fallback(response_text)
+            if fallback_text is not None:
+                await reply_in_chunks(fallback_text)
+                return
+
+        if ctx.rich_markdown_enabled:
+            await ctx.reply_markdown(response_text)
+        else:
+            await reply_in_chunks(response_text)
 
     @staticmethod
     def _format_duration(seconds: int | float) -> str:
@@ -2081,752 +2127,3 @@ class Runtime:
             if elapsed % 4 == 0:
                 with contextlib.suppress(Exception):
                     await ctx.send_typing()
-
-    # -- Job scheduler --
-
-    async def run_job_scheduler(self) -> None:
-        """Check for jobs to run every 60 seconds.
-
-        Runs as a background task inside ``enso serve``. Each tick fires any
-        due cron jobs.
-        """
-        log.info("Job scheduler started")
-        while True:
-            await asyncio.sleep(60)
-            now = datetime.now()
-
-            if self._update_in_progress:
-                log.info("Job scheduler paused while Enso updates")
-                continue
-
-            for job in load_jobs():
-                try:
-                    if not job.enabled:
-                        continue
-                    if job.dir_name in self._running_job_tasks:
-                        continue
-                    if self._should_run_job(job, now):
-                        log.info(
-                            "[job:%s] scheduler dispatch (schedule=%r)",
-                            job.dir_name,
-                            job.schedule,
-                        )
-                        self._job_last_run[job.dir_name] = now
-                        self.save_state()
-                        task = asyncio.create_task(self._run_job_task(job))
-                        self._running_job_tasks[job.dir_name] = task
-                        task.add_done_callback(
-                            lambda _task, name=job.dir_name: self._running_job_tasks.pop(
-                                name,
-                                None,
-                            )
-                        )
-                except Exception:
-                    # One broken job must not stop the others from being
-                    # considered — or kill the scheduler task outright.
-                    log.exception(
-                        "[job:%s] scheduler dispatch failed",
-                        job.dir_name,
-                    )
-
-    def _runs_cfg(self) -> dict:
-        """Return the ``runs`` config block (defensive against bad shapes)."""
-        cfg = self.config.get("runs")
-        return cfg if isinstance(cfg, dict) else {}
-
-    async def _run_job_task(self, job: Job) -> None:
-        """Run one scheduled job without blocking the scheduler loop."""
-        async with self._job_semaphore:
-            try:
-                await self._execute_job(job)
-            except Exception:
-                log.exception("Job '%s' failed", job.name)
-
-    def _should_run_job(self, job: Job, now: datetime) -> bool:
-        """Check if a job should run based on its cron schedule."""
-        last_run = self._job_last_run.get(job.dir_name)
-        if last_run is None:
-            # First time seeing this job — record now, don't fire immediately
-            self._job_last_run[job.dir_name] = now
-            self.save_state()
-            return False
-        try:
-            cron = croniter(job.schedule, last_run)
-            next_run = cron.get_next(datetime)
-        except (ValueError, KeyError):
-            # JOB.md schedules are free-form user-edited text; one bad
-            # expression must not take down the scheduler for every job.
-            log.warning(
-                "Job '%s' has an invalid cron schedule %r; skipping",
-                job.name,
-                job.schedule,
-            )
-            return False
-        if next_run > now:
-            return False
-        if not job.catch_up and (now - next_run).total_seconds() > job.misfire_grace_seconds:
-            log.warning(
-                "Job '%s' missed scheduled run at %s by more than %ss; skipping catch-up",
-                job.name,
-                next_run.isoformat(),
-                job.misfire_grace_seconds,
-            )
-            self._job_last_run[job.dir_name] = now
-            self.save_state()
-            return False
-        return True
-
-    def _sensitive_values(self) -> set[str]:
-        """Return configured/environment secret values that diagnostics must redact."""
-        values: set[str] = set()
-
-        def visit(value: Any, key: str = "") -> None:
-            if isinstance(value, dict):
-                for child_key, child_value in value.items():
-                    visit(child_value, str(child_key))
-            elif (
-                _SENSITIVE_KEY_RE.search(key)
-                and isinstance(value, (str, int))
-                and len(str(value)) >= 4
-            ):
-                values.add(str(value))
-
-        visit(self.config)
-        for key, value in os.environ.items():
-            if _SENSITIVE_KEY_RE.search(key) and len(value) >= 4:
-                values.add(value)
-        return values
-
-    def _sanitize_job_diagnostic(self, text: str) -> str:
-        """Redact and bound a one-line diagnostic intended for notifications."""
-        cleaned = _ANSI_ESCAPE_RE.sub("", text)
-        for secret in sorted(self._sensitive_values(), key=len, reverse=True):
-            cleaned = cleaned.replace(secret, "<redacted>")
-        cleaned = _BEARER_RE.sub("Bearer <redacted>", cleaned)
-        cleaned = _SECRET_ASSIGNMENT_RE.sub(r"\1\2<redacted>", cleaned)
-        cleaned = _URL_CREDENTIAL_RE.sub(r"\1<redacted>@", cleaned)
-        cleaned = "".join(ch if ch.isprintable() or ch.isspace() else " " for ch in cleaned)
-        cleaned = " ".join(cleaned.split())
-        if len(cleaned) > PRERUN_DIAGNOSTIC_LIMIT:
-            cleaned = cleaned[: PRERUN_DIAGNOSTIC_LIMIT - 1].rstrip() + "…"
-        return cleaned
-
-    def _safe_prerun_diagnostic(self, stderr: bytes, fallback: str) -> str:
-        """Extract only an explicitly safe ``ENSO_ERROR:`` stderr summary.
-
-        Arbitrary stderr can contain source records or credentials, so it is never
-        copied into a notification or run record. Preruns may opt into a useful
-        one-line summary by prefixing it with ``ENSO_ERROR:``.
-        """
-        decoded = stderr.decode(errors="replace")
-        for line in decoded.splitlines():
-            stripped = line.lstrip()
-            if stripped.startswith("ENSO_ERROR:"):
-                detail = stripped.removeprefix("ENSO_ERROR:").strip()
-                return self._sanitize_job_diagnostic(detail) or fallback
-        return fallback
-
-    async def _run_job_prerun(self, job: Job, tag: str) -> PrerunResult:
-        """Run a job's deterministic gate and classify its documented outcomes."""
-        if not job.prerun:
-            return PrerunResult("open")
-
-        script = os.path.join(job.job_dir, job.prerun)
-        if not os.path.isfile(script):
-            diagnostic = f"Configured prerun script not found: {job.prerun}"
-            log.warning("%s prerun error: %s", tag, diagnostic)
-            return PrerunResult("error", diagnostic=diagnostic)
-
-        log.info(
-            "%s prerun start script=%s timeout=%ss",
-            tag,
-            job.prerun,
-            job.prerun_timeout,
-        )
-        try:
-            proc = await self._spawn_process(
-                "bash",
-                script,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=job.job_dir,
-            )
-            stdout, stderr, timed_out = await self._communicate_with_timeout(
-                proc,
-                f"Job '{job.name}' prerun",
-                job.prerun_timeout,
-            )
-        except Exception as exc:
-            detail = self._sanitize_job_diagnostic(f"{type(exc).__name__}: {exc}")
-            diagnostic = f"Could not start prerun{f': {detail}' if detail else ''}"
-            log.warning("%s prerun error: %s", tag, diagnostic, exc_info=True)
-            return PrerunResult("error", diagnostic=diagnostic)
-
-        if timed_out:
-            diagnostic = f"Prerun timed out after {job.prerun_timeout}s"
-            log.warning("%s %s", tag, diagnostic.lower())
-            return PrerunResult("timeout", diagnostic=diagnostic)
-
-        exit_code = proc.returncode if proc.returncode is not None else -1
-        if exit_code == 0:
-            output = stdout.decode(errors="replace").strip()
-            log.info("%s prerun gate open (exit 0) output_len=%d", tag, len(output))
-            return PrerunResult("open", output=output, exit_code=0)
-        if exit_code == 1:
-            log.info("%s prerun gate closed (exit 1) — no work, skipping", tag)
-            return PrerunResult("no_work", exit_code=1)
-
-        fallback = f"Prerun exited with status {exit_code}"
-        diagnostic = self._safe_prerun_diagnostic(stderr, fallback)
-        log.warning("%s prerun error (exit %s): %s", tag, exit_code, diagnostic)
-        return PrerunResult("error", diagnostic=diagnostic, exit_code=exit_code)
-
-    async def _create_job_run(
-        self,
-        job: Job,
-        trigger: str,
-        tag: str,
-        started_at: str,
-    ) -> str | None:
-        """Create a run-history row without allowing telemetry to abort the job."""
-        try:
-            return await asyncio.to_thread(
-                runs.create,
-                kind="job",
-                name=job.dir_name,
-                title=job.name,
-                trigger=trigger,
-                provider=job.provider,
-                model=job.model,
-                started_at=started_at,
-            )
-        except Exception:
-            log.warning("%s could not create run record", tag, exc_info=True)
-            return None
-
-    async def _send_job_notification(self, job: Job, text: str, tag: str) -> bool:
-        """Send a job notification without allowing transport faults to abort work."""
-        if self.transport is None:
-            return False
-        try:
-            await self.transport.notify(
-                text[: self.transport.message_limit],
-                destination=job.notify,
-            )
-        except Exception:
-            log.warning("%s could not send job notification", tag, exc_info=True)
-            return False
-        return True
-
-    def _failure_alert_fingerprint(
-        self,
-        job: Job,
-        status: str,
-        diagnostic: str,
-        exit_code: int | None,
-    ) -> str:
-        transport = self.transport.name if self.transport is not None else ""
-        material = "\0".join(
-            (
-                job.dir_name,
-                transport,
-                job.notify or "",
-                status,
-                str(exit_code),
-                diagnostic,
-            )
-        )
-        return hashlib.sha256(material.encode()).hexdigest()
-
-    async def _notify_prerun_failure(
-        self,
-        job: Job,
-        status: Literal["prerun_error", "prerun_timeout"],
-        diagnostic: str,
-        exit_code: int | None,
-        tag: str,
-    ) -> bool:
-        """Notify once per failure fingerprint and re-notify after the cooldown."""
-        if self.transport is None:
-            return False
-
-        now = datetime.now(timezone.utc)
-        fingerprint = self._failure_alert_fingerprint(
-            job,
-            status,
-            diagnostic,
-            exit_code,
-        )
-        previous = self._job_failure_alerts.get(job.dir_name, {})
-        last_notified: datetime | None = None
-        try:
-            if previous.get("last_notified_at"):
-                last_notified = datetime.fromisoformat(previous["last_notified_at"])
-                if last_notified.tzinfo is None:
-                    last_notified = last_notified.replace(tzinfo=timezone.utc)
-        except (TypeError, ValueError):
-            last_notified = None
-
-        same_failure = previous.get("fingerprint") == fingerprint
-        within_cooldown = bool(
-            last_notified and (now - last_notified).total_seconds() < JOB_FAILURE_RENOTIFY_SECS
-        )
-        if same_failure and within_cooldown:
-            previous["last_seen_at"] = now.isoformat()
-            try:
-                suppressed = int(previous.get("suppressed", 0)) + 1
-            except (TypeError, ValueError):
-                suppressed = 1
-            previous["suppressed"] = suppressed
-            self._job_failure_alerts[job.dir_name] = previous
-            self.save_state()
-            log.info(
-                "%s duplicate prerun alert suppressed count=%s",
-                tag,
-                previous["suppressed"],
-            )
-            return False
-
-        headline = "prerun timed out" if status == "prerun_timeout" else "prerun failed"
-        sent = await self._send_job_notification(
-            job,
-            f"⚠️ [{job.name}] {headline}\n{diagnostic}",
-            tag,
-        )
-        if not sent:
-            return False
-
-        self._job_failure_alerts[job.dir_name] = {
-            "fingerprint": fingerprint,
-            "status": status,
-            "destination": job.notify or "",
-            "last_notified_at": now.isoformat(),
-            "last_seen_at": now.isoformat(),
-            "suppressed": 0,
-        }
-        self.save_state()
-        return True
-
-    async def _notify_prerun_recovery(self, job: Job, tag: str) -> bool:
-        """Send one recovery after a previously reported prerun failure."""
-        if job.dir_name not in self._job_failure_alerts:
-            return False
-        sent = await self._send_job_notification(
-            job,
-            f"✅ [{job.name}] prerun recovered",
-            tag,
-        )
-        self._job_failure_alerts.pop(job.dir_name, None)
-        self.save_state()
-        return sent
-
-    _JOB_LOCK_FILENAME: ClassVar[str] = ".run.lock"
-
-    def _acquire_job_lock(self, job: Job):
-        """Take the cross-process per-job lock, or return ``None`` when held.
-
-        The scheduler, the ``enso job run`` CLI, and the dashboard all run
-        in separate processes with separate Runtimes; an in-memory guard
-        cannot see the others, so overlap protection lives in an flock on
-        a file in the job's directory. Falls back to running unlocked when
-        the lock file cannot be created (the pipeline will then fail with
-        its own clearer diagnostics).
-        """
-        path = os.path.join(job.job_dir, self._JOB_LOCK_FILENAME)
-        try:
-            # Deliberately outlives this scope; released in _execute_job's
-            # finally via close().
-            lock_file = open(path, "a")  # noqa: SIM115
-        except OSError:
-            log.warning(
-                "[job:%s] could not create run lock; continuing unlocked",
-                job.dir_name,
-                exc_info=True,
-            )
-            return "unlocked"
-        try:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            lock_file.close()
-            return None
-        return lock_file
-
-    def jobs_running_elsewhere(self) -> list[str]:
-        """Names of jobs whose cross-process run lock is currently held.
-
-        Includes this process's own running jobs; callers that care about
-        the distinction (e.g. the update busy-check) already track those.
-        """
-        held: list[str] = []
-        for job in load_jobs():
-            path = os.path.join(job.job_dir, self._JOB_LOCK_FILENAME)
-            if not os.path.exists(path):
-                continue
-            try:
-                with open(path, "a") as probe:
-                    try:
-                        fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                        fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
-                    except OSError:
-                        held.append(job.dir_name)
-            except OSError:
-                continue
-        return held
-
-    def _job_execution_context(
-        self,
-        job: Job,
-    ) -> tuple[ExecutionContext | None, str | None]:
-        """Resolve a job's named workspace/access pair without any fallback."""
-        if not job.workspace:
-            return None, "workspace is required"
-        if not job.access:
-            return None, "access is required"
-
-        catalog = load_catalog(self.config)
-        error = job_binding_error(
-            job.workspace,
-            job.access,
-            job.provider,
-            catalog,
-        )
-        if error:
-            return None, error
-
-        workspace = catalog.workspaces[job.workspace]
-        access = catalog.access_profiles[job.access]
-        if not os.path.isdir(workspace.path):
-            return None, (
-                "workspace path does not exist or is not a directory: "
-                f"{workspace.path}"
-            )
-        return ExecutionContext(
-            chat_key=f"job:{job.dir_name}",
-            path=workspace.path,
-            workspace_id=workspace.name,
-            concurrency=workspace.concurrency,
-            workspace=workspace,
-            access=access,
-        ), None
-
-    async def _execute_job(
-        self,
-        job: Job,
-        *,
-        trigger: Literal["schedule", "manual"] = "schedule",
-        notify_failures: bool = True,
-    ) -> JobRunResult:
-        """Run the shared prerun/provider pipeline and return a terminal result."""
-        tag = f"[job:{job.dir_name}]"
-        started = datetime.now()
-        started_at = datetime.now(timezone.utc).isoformat()
-        log.info(
-            "%s start name=%r provider=%s model=%s timeout=%ss prerun=%s",
-            tag,
-            job.name,
-            job.provider,
-            job.model,
-            job.timeout,
-            job.prerun or "-",
-        )
-        lock_file = self._acquire_job_lock(job)
-        if lock_file is None:
-            output = (
-                f"Job '{job.name}' is already running (possibly in another "
-                "process); skipped this trigger."
-            )
-            log.warning("%s %s", tag, output)
-            return JobRunResult("error", output=output, exit_code=-1)
-        try:
-            config_error = job_config_error(job.provider, job.model, self.models)
-            execution: ExecutionContext | None = None
-            if config_error is None:
-                execution, config_error = self._job_execution_context(job)
-            if config_error is None and execution is not None:
-                from .policy import prepare_launch
-
-                assert execution.workspace is not None
-                assert execution.access is not None
-                try:
-                    # Prove the complete native launch can be constructed before
-                    # running the trusted host-side prerun. The resulting launch is
-                    # deliberately discarded: policy is prepared again inside the
-                    # workspace slot at the actual provider spawn boundary.
-                    await asyncio.to_thread(
-                        prepare_launch,
-                        execution.workspace,
-                        execution.access,
-                        job.provider,
-                    )
-                except Exception as exc:
-                    detail = self._sanitize_job_diagnostic(str(exc))
-                    config_error = (
-                        "native launch is unavailable"
-                        f"{f': {detail}' if detail else ''}"
-                    )
-            if config_error:
-                run_id = await self._create_job_run(job, trigger, tag, started_at)
-                output = f"Invalid job config: {config_error}"
-                log.warning("%s %s", tag, output)
-                await self._record_run_finish(run_id, output, -1, "error", tag)
-                if notify_failures:
-                    await self._send_job_notification(
-                        job,
-                        f"⚠️ [{job.name}] {output}",
-                        tag,
-                    )
-                return JobRunResult(
-                    "error",
-                    run_id=run_id,
-                    output=output,
-                    exit_code=-1,
-                )
-
-            prerun = await self._run_job_prerun(job, tag)
-            if prerun.outcome == "no_work":
-                if notify_failures:
-                    await self._notify_prerun_recovery(job, tag)
-                return JobRunResult("no_work", exit_code=1)
-
-            if prerun.outcome in {"error", "timeout"}:
-                status: Literal["prerun_error", "prerun_timeout"] = (
-                    "prerun_timeout" if prerun.outcome == "timeout" else "prerun_error"
-                )
-                run_id = await self._create_job_run(job, trigger, tag, started_at)
-                output = f"{status.replace('_', ' ').title()}: {prerun.diagnostic}"
-                await self._record_run_finish(
-                    run_id,
-                    output,
-                    prerun.exit_code,
-                    status,
-                    tag,
-                )
-                if notify_failures:
-                    await self._notify_prerun_failure(
-                        job,
-                        status,
-                        prerun.diagnostic,
-                        prerun.exit_code,
-                        tag,
-                    )
-                return JobRunResult(
-                    status,
-                    run_id=run_id,
-                    output=output,
-                    exit_code=prerun.exit_code,
-                )
-
-            if notify_failures:
-                await self._notify_prerun_recovery(job, tag)
-
-            prompt = job.prompt.replace("{{prerun_output}}", prerun.output)
-
-            run_id = await self._create_job_run(job, trigger, tag, started_at)
-            proc: Process | None = None
-            try:
-                assert execution is not None
-                async with self._workspace_slot(execution):
-                    execution = await self._prepare_execution_context(
-                        job.provider,
-                        execution,
-                    )
-                    provider = self.make_provider(
-                        job.provider,
-                        timeout=job.timeout,
-                        context=execution,
-                    )
-                    cmd = provider.build_batch_command(
-                        prompt,
-                        job.model,
-                        launch=execution.launch,
-                    )
-                    log.info(
-                        "%s spawning provider_class=%s cwd=%s prompt_len=%d",
-                        tag,
-                        provider.__class__.__name__,
-                        execution.path,
-                        len(prompt),
-                    )
-                    log.debug("%s command=%s", tag, _redacted_command(cmd))
-                    spawn_kwargs: dict[str, Any] = {
-                        "stdin": asyncio.subprocess.DEVNULL,
-                        "stdout": asyncio.subprocess.PIPE,
-                        "stderr": asyncio.subprocess.STDOUT,
-                        "cwd": execution.path,
-                    }
-                    launch = execution.launch
-                    if launch is not None and launch.env is not None:
-                        spawn_kwargs["env"] = dict(launch.env)
-                    proc = await self._spawn_process(*cmd, **spawn_kwargs)
-                    log.info("%s pid=%s", tag, proc.pid)
-                    stdout, _, timed_out = await self._communicate_with_timeout(
-                        proc,
-                        f"Job '{job.name}'",
-                        job.timeout,
-                    )
-                    elapsed = (datetime.now() - started).total_seconds()
-                    if timed_out:
-                        output = f"Job timed out after {job.timeout}s; process tree was terminated"
-                        log.warning(
-                            "%s timeout after %ss (elapsed=%.1fs); process tree terminated",
-                            tag,
-                            job.timeout,
-                            elapsed,
-                        )
-                        await self._record_run_finish(
-                            run_id,
-                            output,
-                            proc.returncode,
-                            "timeout",
-                            tag,
-                        )
-                        if notify_failures:
-                            await self._send_job_notification(
-                                job,
-                                f"⚠️ [{job.name}] {output}",
-                                tag,
-                            )
-                        return JobRunResult(
-                            "timeout",
-                            run_id=run_id,
-                            output=output,
-                            exit_code=proc.returncode,
-                        )
-                    output = provider.parse_batch_output(stdout.decode(errors="replace"))
-            except Exception as exc:
-                detail = self._sanitize_job_diagnostic(f"{type(exc).__name__}: {exc}")
-                output = f"Job could not start or complete{f': {detail}' if detail else ''}"
-                exit_code = proc.returncode if proc and proc.returncode is not None else -1
-                log.warning("%s %s", tag, output, exc_info=True)
-                await self._record_run_finish(run_id, output, exit_code, "error", tag)
-                if notify_failures:
-                    await self._send_job_notification(
-                        job,
-                        f"⚠️ [{job.name}] {output}",
-                        tag,
-                    )
-                return JobRunResult(
-                    "error",
-                    run_id=run_id,
-                    output=output,
-                    exit_code=exit_code,
-                )
-
-            exit_code = proc.returncode if proc.returncode is not None else -1
-            status = "ok" if exit_code == 0 else "error"
-            await self._record_run_finish(run_id, output, exit_code, status, tag)
-            notified = False
-            if exit_code != 0 and notify_failures:
-                log.warning(
-                    "%s nonzero exit=%s output_len=%d notify=%s",
-                    tag,
-                    exit_code,
-                    len(output),
-                    job.notify or "default",
-                )
-                label = f"{job.name} (exit {exit_code})"
-                notified = await self._send_job_notification(
-                    job,
-                    f"⚠️ [{label}]\n{output}",
-                    tag,
-                )
-
-            elapsed = (datetime.now() - started).total_seconds()
-            log.info(
-                "%s complete exit=%s duration=%.1fs output_len=%d notified=%s",
-                tag,
-                exit_code,
-                elapsed,
-                len(output),
-                notified,
-            )
-            return JobRunResult(
-                status,
-                run_id=run_id,
-                output=output,
-                exit_code=exit_code,
-            )
-        finally:
-            if lock_file != "unlocked":
-                with contextlib.suppress(OSError):
-                    lock_file.close()
-            if trigger == "schedule":
-                self._job_last_run[job.dir_name] = datetime.now()
-                self.save_state()
-
-    # -- Run history instrumentation --
-
-    async def _record_run_finish(
-        self,
-        run_id: str | None,
-        output: str,
-        exit_code: int | None,
-        status: str,
-        tag: str,
-    ) -> None:
-        """Record a terminal run in a worker so SQLite cannot block the loop."""
-        await asyncio.to_thread(
-            self._record_run_finish_sync,
-            run_id,
-            output,
-            exit_code,
-            status,
-            tag,
-        )
-
-    def _record_run_finish_sync(
-        self,
-        run_id: str | None,
-        output: str,
-        exit_code: int | None,
-        status: str,
-        tag: str,
-    ) -> None:
-        """Write captured output and mark a run terminal (best-effort).
-
-        Never raises: run instrumentation must not break the job it is
-        observing. ``exit_code`` of ``None`` (e.g. a killed process) is stored
-        as ``-1`` so the column is always populated.
-        """
-        if run_id is None:
-            return
-        if output:
-            try:
-                runs.append_output(run_id, output)
-            except Exception:
-                log.warning(
-                    "%s could not append output for run id=%s",
-                    tag,
-                    run_id,
-                    exc_info=True,
-                )
-        try:
-            runs.finish(run_id, exit_code if exit_code is not None else -1, status)
-        except Exception:
-            log.warning("%s could not finish run record id=%s", tag, run_id, exc_info=True)
-            return
-
-        runs_cfg = self._runs_cfg()
-        try:
-            keep = max(0, int(runs_cfg.get("keep", 500)))
-            max_age_days = max(0, int(runs_cfg.get("max_age_days", 30)))
-        except (TypeError, ValueError):
-            log.warning("%s invalid run-retention config; using defaults", tag)
-            keep, max_age_days = 500, 30
-        try:
-            runs.prune(keep=keep, max_age_days=max_age_days)
-        except Exception:
-            log.warning("%s could not prune run history", tag, exc_info=True)
-
-    # -- Run-now (manual triggers from CLI / web) --
-
-    async def run_job_now(self, name: str) -> JobRunResult:
-        """Run a job's full pipeline manually without sending notifications."""
-        job = next((j for j in load_jobs() if j.dir_name == name), None)
-        if job is None:
-            raise ValueError(f"No such job: {name}")
-        return await self._execute_job(
-            job,
-            trigger="manual",
-            notify_failures=False,
-        )

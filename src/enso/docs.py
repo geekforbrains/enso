@@ -101,16 +101,18 @@ def parse_doc(rel_path: str, path: str) -> Doc:
         log.warning("Could not read doc %s", path)
         return Doc(rel_path, title_from_path(rel_path), "", path, has_frontmatter=False)
 
-    name = meta.get("name")
-    description = meta.get("description")
-    has_name = isinstance(name, str) and bool(name.strip())
-    has_description = isinstance(description, str) and bool(description.strip())
+    raw_name = meta.get("name")
+    raw_description = meta.get("description")
+    name = raw_name if isinstance(raw_name, str) and raw_name.strip() else ""
+    description = (
+        raw_description if isinstance(raw_description, str) and raw_description.strip() else ""
+    )
     return Doc(
         rel_path=rel_path,
-        name=name if has_name else title_from_path(rel_path),
-        description=description if has_description else "",
+        name=name or title_from_path(rel_path),
+        description=description,
         path=path,
-        has_frontmatter=has_name and has_description,
+        has_frontmatter=bool(name) and bool(description),
     )
 
 
