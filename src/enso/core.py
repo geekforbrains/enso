@@ -850,6 +850,19 @@ class Runtime:
 
     # -- Accessors --
 
+    def has_session_memory(self, chat_id: str, provider: str) -> bool:
+        """Whether a provider session for this conversation already holds history.
+
+        Transports inject conversation history on the assumption that whatever
+        the agent said itself is already in its session. That assumption needs
+        this check: a ``new:``-prefixed ID is reserved but unused, so the
+        provider has not seen a single turn yet.
+        """
+        session_id = self.session_by_chat_provider.get((chat_id, provider))
+        if not session_id:
+            return False
+        return not session_id.startswith("new:")
+
     def get_active_provider(self, chat_id: str) -> str:
         """Return active provider for chat, defaulting to claude."""
         provider = self.active_provider_by_chat.get(chat_id)

@@ -170,7 +170,7 @@ At Slack startup Enso authenticates the account, loads the exact routes and exec
 For each Slack event Enso:
 
 1. Verifies the authenticated Slack account.
-1. Accepts an ordinary DM or explicit channel mention always, and a non-mention channel message only when its channel's route settings allow it ([slack-triggers.md](slack-triggers.md)): effective `mention_required: false` for a top-level message, or effective `thread_mention_required: false` for a reply in a thread Enso already participates in. Other channel messages are ignored.
+1. Accepts an ordinary DM or explicit channel mention always, and a non-mention channel message only when its channel's route settings allow it ([slack-triggers.md](slack-triggers.md)): effective `mention_required: false` for a top-level message, or effective `thread_mention_required: false` for a reply in a thread Enso already participates in (a thread a prior dispatch joined, or one rooted by a message Enso posted itself). Other channel messages are ignored.
 1. Resolves the exact DM user ID or channel ID and claims its delivery ID for retry deduplication.
 1. If the location is unlisted, returns the fixed local response described below and stops.
 1. Resolves a configured route's workspace and access profile.

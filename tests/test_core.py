@@ -113,6 +113,21 @@ def _legacy_agents_prompt() -> tuple[str, str]:
     return current, legacy
 
 
+def test_has_session_memory_reports_only_used_sessions(sample_config):
+    """A reserved `new:` ID has sent the provider nothing, so it holds no memory."""
+    runtime = Runtime(sample_config)
+
+    assert not runtime.has_session_memory("chat", "claude")
+
+    runtime.session_by_chat_provider[("chat", "claude")] = "new:abc-123"
+    assert not runtime.has_session_memory("chat", "claude")
+
+    runtime.session_by_chat_provider[("chat", "claude")] = "abc-123"
+    assert runtime.has_session_memory("chat", "claude")
+    # Sessions are per provider, never shared across them.
+    assert not runtime.has_session_memory("chat", "codex")
+
+
 def test_install_system_prompts_migrates_exact_legacy_template(sample_config):
     current, legacy = _legacy_agents_prompt()
     agents_file = Path(sample_config["working_dir"], "AGENTS.md")
