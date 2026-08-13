@@ -544,6 +544,337 @@ async def test_completer_finishes_audit_and_ledger(tmp_enso, monkeypatch):
     assert status == "completed"
 
 
+# -- response triggers --
+
+
+def _channel_message(
+    user=DEV,
+    channel="C0ACME",
+    ts="100.1",
+    text="hello there",
+    thread_ts=None,
+    channel_type="channel",
+):
+    event = {
+        "user": user,
+        "channel": channel,
+        "ts": ts,
+        "text": text,
+        "channel_type": channel_type,
+    }
+    if thread_ts is not None:
+        event["thread_ts"] = thread_ts
+    return event
+
+
+def _ledger_rows(tmp_enso):
+    db = Path(tmp_enso) / "enso.db"
+    if not db.exists():
+        return []
+    conn = sqlite3.connect(db)
+    try:
+        return conn.execute("SELECT * FROM _enso_slack_events").fetchall()
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+
+
+def _triggers_config(tmp_enso, **settings):
+    config = _teams_config(tmp_enso)
+    config["routes"]["slack"]["channels"]["C0ACME"].update(settings)
+    return config
+
+
+async def test_non_mention_channel_message_is_ignored_by_default(tmp_enso, monkeypatch):
+    """Original behavior holds without config: silent drop, no ledger row."""
+    transport, rt = _make_transport(tmp_enso, monkeypatch)
+    client = _make_client()
+
+    await transport._handle_message(_channel_message(), client)
+
+    rt.dispatch.assert_not_awaited()
+    client.chat_postMessage.assert_not_awaited()
+    assert _ledger_rows(tmp_enso) == []
+
+
+async def test_mention_optional_channel_dispatches_top_level_into_thread(
+    tmp_enso, monkeypatch
+):
+    config = _triggers_config(tmp_enso, mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    await transport._handle_message(_channel_message(text="deploy failed, thoughts?"), client)
+
+    rt.dispatch.assert_awaited_once()
+    args, _kwargs = rt.dispatch.call_args
+    assert args[0] == "C0ACME:100.1"
+    assert "deploy failed, thoughts?" in args[1]
+    # The reply must land in a thread under the triggering message.
+    assert args[2]._thread_ts == "100.1"
+    (row,) = _audit_rows(tmp_enso)
+    assert row["decision"] == "accepted"
+    assert row["request_text"] == "deploy failed, thoughts?"
+
+
+async def test_mention_optional_channel_still_gates_thread_replies(tmp_enso, monkeypatch):
+    """mention_required: false alone leaves thread replies mention-gated."""
+    config = _triggers_config(tmp_enso, mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    await transport._handle_message(_channel_message(), client)
+    rt.dispatch.assert_awaited_once()
+
+    await transport._handle_message(
+        _channel_message(ts="100.2", thread_ts="100.1", text="and another thing"),
+        client,
+    )
+    rt.dispatch.assert_awaited_once()  # unchanged: the reply was ignored
+
+
+async def test_followed_thread_dispatches_unmentioned_replies(tmp_enso, monkeypatch):
+    config = _triggers_config(tmp_enso, thread_mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    await transport._handle_app_mention(_mention(), client)
+    rt.dispatch.assert_awaited_once()
+
+    await transport._handle_message(
+        _channel_message(ts="100.2", thread_ts="100.1", text="follow-up question"),
+        client,
+    )
+    assert rt.dispatch.await_count == 2
+    args, _kwargs = rt.dispatch.call_args
+    assert args[0] == "C0ACME:100.1"  # same conversation as the mention
+    assert "follow-up question" in args[1]
+
+
+async def test_unjoined_thread_stays_gated_until_first_mention(tmp_enso, monkeypatch):
+    """First contact in a pre-existing thread still requires a mention."""
+    config = _triggers_config(tmp_enso, thread_mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    await transport._handle_message(
+        _channel_message(ts="50.2", thread_ts="50.1", text="anyone?"), client
+    )
+    rt.dispatch.assert_not_awaited()
+
+    await transport._handle_app_mention(
+        _mention(ts="50.3", thread_ts="50.1", text="<@UBOT> can you help?"), client
+    )
+    rt.dispatch.assert_awaited_once()
+
+    await transport._handle_message(
+        _channel_message(ts="50.4", thread_ts="50.1", text="also this"), client
+    )
+    assert rt.dispatch.await_count == 2
+
+
+async def test_thread_following_lapses_without_a_session(tmp_enso, monkeypatch):
+    """Participation rides the conversation session; pruning ends following."""
+    config = _triggers_config(tmp_enso, thread_mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    await transport._handle_app_mention(_mention(), client)
+    rt.dispatch.assert_awaited_once()
+
+    rt.active_provider_by_chat.clear()  # simulate session retention pruning
+    await transport._handle_message(
+        _channel_message(ts="100.2", thread_ts="100.1", text="still there?"), client
+    )
+    rt.dispatch.assert_awaited_once()  # unchanged: the reply was ignored
+
+
+async def test_unrouted_channels_ignore_unmentioned_messages_despite_defaults(
+    tmp_enso, monkeypatch
+):
+    """channel_defaults is settings inheritance, never authorization."""
+    config = _teams_config(tmp_enso)
+    config["routes"]["slack"]["channel_defaults"] = {
+        "mention_required": False,
+        "thread_mention_required": False,
+    }
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    await transport._handle_message(_channel_message(channel="CUNROUTED"), client)
+
+    rt.dispatch.assert_not_awaited()
+    client.chat_postMessage.assert_not_awaited()
+    assert _ledger_rows(tmp_enso) == []
+
+
+async def test_double_delivered_mention_dispatches_once_in_optional_channel(
+    tmp_enso, monkeypatch
+):
+    """A mention arrives as message + app_mention twins; one dispatch survives."""
+    config = _triggers_config(tmp_enso, mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    await transport._handle_message(
+        _channel_message(text="<@UBOT> hello there"), client
+    )
+    await transport._handle_app_mention(_mention(text="<@UBOT> hello there"), client)
+
+    rt.dispatch.assert_awaited_once()
+    assert rt.dispatch.call_args.args[2]._thread_ts == "100.1"
+
+
+async def test_channel_context_injected_for_unmentioned_top_level(tmp_enso, monkeypatch):
+    config = _triggers_config(tmp_enso, mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+    client.conversations_history.return_value = {
+        "messages": [{"user": DEV, "text": "the deploy failed"}]
+    }
+
+    await transport._handle_message(_channel_message(text="can someone look?"), client)
+
+    prompt = rt.dispatch.call_args.args[1]
+    assert "Channel context" in prompt
+    assert "the deploy failed" in prompt
+
+
+async def test_unaddressed_command_text_is_ordinary_prompt(tmp_enso, monkeypatch):
+    """Commands always require addressing; bare !text dispatches as prompt."""
+    config = _triggers_config(tmp_enso, mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    await transport._handle_message(_channel_message(text="!status"), client)
+
+    rt.dispatch.assert_awaited_once()
+    assert rt.dispatch.call_args.args[1].endswith("!status")
+
+
+async def test_mentioned_command_still_runs_in_optional_channel(tmp_enso, monkeypatch):
+    config = _triggers_config(tmp_enso, mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    await transport._handle_app_mention(_mention(text="<@UBOT> !status"), client)
+
+    rt.dispatch.assert_not_awaited()
+    reply = client.chat_postMessage.call_args.kwargs["text"]
+    assert "claude" in reply
+
+
+async def test_bot_authored_channel_messages_never_dispatch(tmp_enso, monkeypatch):
+    config = _triggers_config(
+        tmp_enso, mention_required=False, thread_mention_required=False
+    )
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    await transport._handle_message(_channel_message(user="UBOT"), client)
+
+    rt.dispatch.assert_not_awaited()
+    assert _ledger_rows(tmp_enso) == []
+
+
+async def test_foreign_bot_messages_never_dispatch(tmp_enso, monkeypatch):
+    """Channel routes authorize humans; other apps' posts must not engage."""
+    config = _triggers_config(
+        tmp_enso, mention_required=False, thread_mention_required=False
+    )
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    event = _channel_message(user="U0OTHERBOT", text="Deploy failed: build 123")
+    event["bot_id"] = "B0FEED"  # modern app post: no subtype, bot_id set
+    await transport._handle_message(event, client)
+
+    rt.dispatch.assert_not_awaited()
+    client.chat_postMessage.assert_not_awaited()
+    assert _ledger_rows(tmp_enso) == []
+
+
+async def test_bot_authored_mention_tokens_never_dispatch(tmp_enso, monkeypatch):
+    """Machine content embedding <@bot> must not become an authorized request."""
+    transport, rt = _make_transport(tmp_enso, monkeypatch)
+    client = _make_client()
+
+    mention = _mention(user="U0OTHERBOT", text="RSS item: <@UBOT> look at this")
+    mention["bot_profile"] = {"id": "B0FEED"}
+    await transport._handle_app_mention(mention, client)
+
+    twin = _channel_message(user="U0OTHERBOT", text="RSS item: <@UBOT> look at this")
+    twin["bot_id"] = "B0FEED"
+    await transport._handle_message(twin, client)
+
+    rt.dispatch.assert_not_awaited()
+    client.chat_postMessage.assert_not_awaited()
+    assert _ledger_rows(tmp_enso) == []
+
+
+async def test_channel_defaults_relax_channels_at_the_transport_level(
+    tmp_enso, monkeypatch
+):
+    config = _teams_config(tmp_enso)
+    config["routes"]["slack"]["channel_defaults"] = {"mention_required": False}
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    await transport._handle_message(_channel_message(), client)
+
+    rt.dispatch.assert_awaited_once()
+    assert rt.dispatch.call_args.args[2]._thread_ts == "100.1"
+
+
+async def test_unaddressed_traffic_fails_silently_on_broken_route(tmp_enso, monkeypatch):
+    """Only explicit contact surfaces the fixed config-error reply."""
+    config = _triggers_config(tmp_enso, mention_required=False)
+    Path(tmp_enso, "policies", "client", "claude", "settings.json").unlink()
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    await transport._handle_message(_channel_message(), client)
+    rt.dispatch.assert_not_awaited()
+    client.chat_postMessage.assert_not_awaited()
+    # The audited route still records the silently blocked turn.
+    (row,) = _audit_rows(tmp_enso)
+    assert row["decision"] == "unconfigured"
+    assert row["response_text"] is None
+
+    # An explicit mention in the same broken channel still gets the reply.
+    await transport._handle_app_mention(_mention(ts="100.9"), client)
+    reply = client.chat_postMessage.call_args.kwargs["text"]
+    assert "enso config check" in reply
+
+
+# -- mention flattening --
+
+
+async def test_request_text_flattens_other_user_mentions(tmp_enso, monkeypatch):
+    """The model sees who a request is about; raw <@U..> never reaches it."""
+    transport, rt = _make_transport(tmp_enso, monkeypatch)
+    monkeypatch.setattr(
+        transport,
+        "lookup_user_name",
+        lambda uid: {CLIENT: "Cleo Client"}.get(uid, ""),
+    )
+    client = _make_client()
+
+    await transport._handle_app_mention(
+        _mention(text=f"<@UBOT> ask <@{CLIENT}> for the report"),
+        client,
+    )
+
+    rt.dispatch.assert_awaited_once()
+    prompt = rt.dispatch.call_args.args[1]
+    assert prompt.endswith(f"ask @Cleo Client ({CLIENT}) for the report")
+    assert "<@" not in prompt
+    # The audit trail records the flattened request, not raw mention syntax.
+    (row,) = _audit_rows(tmp_enso)
+    assert row["request_text"] == f"ask @Cleo Client ({CLIENT}) for the report"
+
+
 # -- exact-route-only migration --
 
 

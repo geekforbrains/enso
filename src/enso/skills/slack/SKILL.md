@@ -30,6 +30,8 @@ Once you have an ID, embed it in your Slack message using Slack mention syntax:
 
 Slack renders these as clickable mentions/links automatically.
 
+Note: inbound mentions reach you flattened as plain text — `@Display Name (U0123456789)`, or `@U0123456789` on a cache miss — so IDs you see in a request or fetched context are inert and ping no one. Constructing a live `<@U…>` mention in your output is a deliberate act, governed by the guidance above.
+
 ## Opening a DM
 
 To send someone a direct message, you need the DM channel ID (`D…`), not their user ID:

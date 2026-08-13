@@ -7,7 +7,6 @@ import contextlib
 import hashlib
 import json
 import logging
-import re
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -23,8 +22,6 @@ if TYPE_CHECKING:
     from .slack import SlackContext, SlackTransport
 
 log = logging.getLogger(__name__)
-
-_MENTION_RE = re.compile(r"<@\w+>\s*")
 
 CONFIG_ERROR_REPLY = (
     "This conversation isn't fully configured for Enso — ask an admin to run `enso config check`."
@@ -155,6 +152,16 @@ class TeamsRouter:
             channel_id=None if is_dm else channel,
         )
 
+        # Unaddressed channel traffic engages only through a routed channel's
+        # relaxed response triggers, and its drops happen before the ledger
+        # claim so a busy fully-ignored channel writes nothing.
+        if (
+            not is_mention
+            and not is_dm
+            and not self._passes_response_triggers(decision, channel, thread_ts)
+        ):
+            return
+
         account = self.teams.account_id
         delivery = ledger.delivery_id(account, channel, ts)
         try:
@@ -166,7 +173,8 @@ class TeamsRouter:
             log.info("Duplicate Slack delivery acknowledged (%s…)", delivery[:12])
             return
 
-        reply_thread = thread_ts or (ts if is_mention and not is_dm else None)
+        # A reply to a channel message always lands in that message's thread.
+        reply_thread = thread_ts or (None if is_dm else ts)
         if decision.status == "unconfigured":
             if self.teams.dispatchable:
                 await self._finish_unconfigured(
@@ -183,7 +191,7 @@ class TeamsRouter:
                 await self._complete_ledger(account, delivery, None)
             return
 
-        text = _MENTION_RE.sub("", event.get("text", "")).strip()
+        text = transport.flatten_mentions(event.get("text", ""), strip_addressing=True).strip()
         thread_key = thread_ts or (ts if not is_dm else None)
         conv_label = f"{channel}:{thread_key}" if thread_key else channel
         location_route = decision.route
@@ -234,6 +242,44 @@ class TeamsRouter:
             is_mention=is_mention,
         )
 
+    def _passes_response_triggers(
+        self,
+        decision: Decision,
+        channel: str,
+        thread_ts: str | None,
+    ) -> bool:
+        """Whether an unaddressed channel message engages its route.
+
+        Only an authorized route's settings can admit one: unrouted and
+        misconfigured channels stay silent for unaddressed traffic (explicit
+        contact still receives their fixed replies through the normal flow).
+        """
+        route = decision.route
+        if decision.status != "authorized" or route is None:
+            return False
+        if thread_ts is None:
+            return not route.mention_required
+        if route.thread_mention_required:
+            return False
+        return self._thread_participating(route, channel, thread_ts)
+
+    def _thread_participating(self, route: Route, channel: str, thread_ts: str) -> bool:
+        """Whether a prior authorized dispatch joined this thread.
+
+        The per-thread conversation session doubles as the participation
+        marker: it is recorded on every dispatch, persists with session
+        state across restarts, and lapses with session retention pruning.
+        """
+        chat_key = _key_digest(
+            "conversation",
+            self.teams.account_id,
+            channel,
+            thread_ts,
+            route.workspace,
+            route.access,
+        )
+        return chat_key in self.runtime.active_provider_by_chat
+
     async def _finish_unconfigured(
         self,
         transport: SlackTransport,
@@ -266,8 +312,17 @@ class TeamsRouter:
         channel: str,
         reply_thread: str | None,
         user: str,
+        *,
+        notify: bool = True,
     ) -> None:
-        """Reply to an authorized location whose binding is unusable."""
+        """Reply to an authorized location whose binding is unusable.
+
+        ``notify=False`` (unaddressed traffic admitted by relaxed response
+        triggers) keeps the audit record and ledger bookkeeping but stays
+        silent: only explicit contact may surface the fixed error reply,
+        otherwise a broken responsive channel would be spammed on every
+        message.
+        """
         turn_id = None
         if route is not None and route.audit:
             try:
@@ -276,11 +331,15 @@ class TeamsRouter:
                 turn_id = await asyncio.to_thread(
                     audit.create_turn,
                     decision="unconfigured",
-                    response_text=CONFIG_ERROR_REPLY,
+                    response_text=CONFIG_ERROR_REPLY if notify else None,
                     **fields,
                 )
             except Exception:
                 log.exception("Failed to record unconfigured turn")
+        if not notify:
+            log.warning("Suppressed config-error reply for unaddressed message in %s", channel)
+            await self._complete_ledger(account, delivery, turn_id)
+            return
         ctx = transport.make_context(client, channel, reply_thread, user_id=user)
         delivered = True
         try:
@@ -316,6 +375,10 @@ class TeamsRouter:
     ) -> None:
         route = decision.route
         assert route is not None
+        # Explicit contact may receive fixed error replies; unaddressed
+        # traffic admitted by relaxed triggers must fail silently instead of
+        # spamming a broken responsive channel on every message.
+        addressed = is_mention or is_dm
         workspace = self.teams.workspaces[route.workspace]
         access = self.teams.access_profiles[route.access]
         chat_key = _key_digest(
@@ -341,12 +404,15 @@ class TeamsRouter:
                 channel,
                 reply_thread,
                 user,
+                notify=addressed,
             )
             return
         self.runtime.active_provider_by_chat[chat_key] = provider
         self.runtime.touch_session(chat_key)
 
-        command_parts = text[1:].split(None, 1) if text.startswith("!") else []
+        # Commands require explicit addressing (a mention, or any DM); an
+        # unaddressed "!text" in a responsive channel is ordinary prompt text.
+        command_parts = text[1:].split(None, 1) if addressed and text.startswith("!") else []
         command_name = command_parts[0].lower() if command_parts else None
         model = self.runtime.get_active_model(chat_key, provider)
         effort = self.runtime.get_active_effort(chat_key, provider, model)
@@ -382,6 +448,7 @@ class TeamsRouter:
                 channel,
                 reply_thread,
                 user,
+                notify=addressed,
             )
             return
 
@@ -398,9 +465,10 @@ class TeamsRouter:
             except Exception:
                 log.exception("Audit write failed for %s", route.route_id)
                 if self.teams.audit_on_failure == "block":
-                    ctx = transport.make_context(client, channel, reply_thread, user_id=user)
-                    with contextlib.suppress(Exception):
-                        await ctx.reply(AUDIT_FAILURE_REPLY)
+                    if addressed:
+                        ctx = transport.make_context(client, channel, reply_thread, user_id=user)
+                        with contextlib.suppress(Exception):
+                            await ctx.reply(AUDIT_FAILURE_REPLY)
                     await self._complete_ledger(account, delivery, None)
                     return
 
@@ -471,7 +539,6 @@ class TeamsRouter:
                 ts=ts,
                 thread_ts=thread_ts,
                 text=text,
-                is_mention=is_mention,
                 is_dm=is_dm,
             )
         except Exception:
@@ -601,7 +668,6 @@ class TeamsRouter:
         ts: str,
         thread_ts: str | None,
         text: str,
-        is_mention: bool,
         is_dm: bool,
     ) -> str:
         """Build provider input from route context, attachments, and text."""
@@ -616,7 +682,7 @@ class TeamsRouter:
                 author_filter=None,
                 untrusted=True,
             )
-        elif is_mention and not is_dm:
+        elif not is_dm:
             context_text = await transport._fetch_channel_context(
                 client,
                 channel,
@@ -626,7 +692,7 @@ class TeamsRouter:
             )
 
         attachments = event.get("attachments") or []
-        shared_prompt = _attachments_prompt(attachments)
+        shared_prompt = transport.flatten_mentions(_attachments_prompt(attachments))
         files = (event.get("files") or []) + _attachment_files(attachments)
         downloaded: list[str] = []
         if files:

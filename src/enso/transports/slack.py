@@ -7,8 +7,9 @@ import contextlib
 import json
 import logging
 import os
+import re
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from urllib.request import Request, urlopen
@@ -713,6 +714,58 @@ def _attachments_prompt(attachments: list[dict]) -> str:
         if isinstance(att, dict) and _is_shared_message(att)
     ]
     return "\n\n".join(r for r in rendered if r)
+
+
+_MENTION_TOKEN_RE = re.compile(r"<@([A-Z0-9]+)(?:\|[^>]*)?>")
+
+# Characters a profile name may not carry into a prompt: angle brackets would
+# reintroduce live <@U…>/<!channel> syntax through a hostile display name,
+# square brackets and line breaks could forge the [user …]: context labels.
+_UNSAFE_NAME_RE = re.compile(r"[<>\[\]\r\n]+")
+
+
+def _safe_name(name: str | None) -> str:
+    """Neutralize a user-controlled profile name for prompt interpolation."""
+    if not name:
+        return ""
+    return " ".join(_UNSAFE_NAME_RE.sub(" ", name).split())
+
+
+def _flatten_mention_text(
+    text: str,
+    *,
+    bot_user_id: str,
+    bot_label: str,
+    lookup: Callable[[str], str],
+    strip_addressing: bool = True,
+) -> str:
+    """Rewrite ``<@U…>`` mention tokens as inert readable text.
+
+    Raw mention syntax must never reach a prompt: outbound mrkdwn is not
+    escaped, so a token the model echoes back would ping the mentioned
+    person. With ``strip_addressing`` a leading bot mention is treated as
+    addressing rather than content and removed, which also keeps a
+    following ``!command`` at position zero. Remaining bot mentions become
+    ``@<bot name>``; anyone else becomes ``@<name> (<ID>)``, or ``@<ID>``
+    when the directory cache has no name. ``<!here>``-style specials carry
+    no user identity and pass through.
+    """
+    if strip_addressing and bot_user_id:
+        leading = re.compile(rf"^\s*<@{re.escape(bot_user_id)}(?:\|[^>]*)?>[\s,:]*")
+        while True:
+            stripped = leading.sub("", text, count=1)
+            if stripped == text:
+                break
+            text = stripped
+
+    def _replace(match: re.Match) -> str:
+        user_id = match.group(1)
+        if bot_user_id and user_id == bot_user_id:
+            return f"@{_safe_name(bot_label)}" if bot_label else f"@{user_id}"
+        name = _safe_name(lookup(user_id))
+        return f"@{name} ({user_id})" if name else f"@{user_id}"
+
+    return _MENTION_TOKEN_RE.sub(_replace, text)
 
 
 def _message_context_text(msg: dict) -> str:
@@ -2227,9 +2280,49 @@ class SlackTransport(BaseTransport):
         except Exception:
             return ""
 
+    def text_mentions_bot(self, text: str) -> bool:
+        """Whether the text carries an explicit mention token for the bot."""
+        if not self.bot_user_id or not text:
+            return False
+        return bool(re.search(rf"<@{re.escape(self.bot_user_id)}(?:\|[^>]*)?>", text))
+
+    def flatten_mentions(self, text: str, *, strip_addressing: bool = False) -> str:
+        """Flatten inbound mention tokens through the directory cache.
+
+        ``strip_addressing`` is for live request text, where a leading bot
+        mention is addressing; history and forwarded bodies keep the bot
+        reference as ``@<name>`` because it is content there.
+        """
+        if not text or "<@" not in text:
+            return text
+        bot_id = self.bot_user_id
+        bot_label = (self.lookup_user_name(bot_id) if bot_id else "") or bot_id or "bot"
+        return _flatten_mention_text(
+            text,
+            bot_user_id=bot_id,
+            bot_label=bot_label,
+            lookup=self.lookup_user_name,
+            strip_addressing=strip_addressing,
+        )
+
     def turn_uploads_dir(self, workspace_path: str, turn_id: str) -> str:
         """A unique per-turn uploads directory inside the workspace."""
         return os.path.join(workspace_path, "uploads", turn_id)
+
+    def _routable_author(self, event: dict) -> bool:
+        """Whether the event has a human author routes may dispatch for.
+
+        Channel routes authorize human members. Machine-authored posts —
+        Enso itself, other Slack apps (``bot_id``/``bot_profile`` with no
+        subtype on modern posts), and Slackbot — must never dispatch: a
+        feed bot whose content embeds a mention token would otherwise
+        become an authorized request, and two auto-responsive bots would
+        reply to each other in a loop.
+        """
+        user = event.get("user")
+        if not user or user == self.bot_user_id or user == "USLACKBOT":
+            return False
+        return not (event.get("bot_id") or event.get("bot_profile"))
 
     async def _handle_app_mention(
         self,
@@ -2239,6 +2332,8 @@ class SlackTransport(BaseTransport):
         """Route a channel @mention through exact Slack routes."""
         if event.get("subtype") in IGNORED_SUBTYPES:
             return
+        if not self._routable_author(event):
+            return
         await self.teams_router.handle_event(self, client, event, is_mention=True)
 
     async def _handle_message(
@@ -2246,13 +2341,25 @@ class SlackTransport(BaseTransport):
         event: dict,
         client: AsyncWebClient,
     ) -> None:
-        """Route DMs; ignore ordinary channel messages without a mention."""
+        """Route DMs and channel messages; response gating lives in the router.
+
+        A channel mention is delivered both here and as ``app_mention``, so
+        the mention flag is derived from the message text — either event may
+        win the delivery-ledger race and must carry identical semantics.
+        """
         if event.get("subtype") in IGNORED_SUBTYPES:
             return
-        if event.get("user") is None:
+        if not self._routable_author(event):
             return
         if event.get("channel_type") == "im":
             await self.teams_router.handle_event(self, client, event, is_mention=False)
+            return
+        await self.teams_router.handle_event(
+            self,
+            client,
+            event,
+            is_mention=self.text_mentions_bot(event.get("text", "")),
+        )
 
     # -- Helpers --
 
@@ -2276,12 +2383,12 @@ class SlackTransport(BaseTransport):
             is_bot = author == self.bot_user_id
             if author_filter is not None and not is_bot and author not in author_filter:
                 continue
-            body = _message_context_text(msg)
+            body = self.flatten_mentions(_message_context_text(msg))
             if not body:
                 continue
             if untrusted:
                 label = "assistant" if is_bot else f"user {author}"
-                name = "" if is_bot else self.lookup_user_name(author)
+                name = "" if is_bot else _safe_name(self.lookup_user_name(author))
                 if name:
                     label += f" ({name})"
             else:
@@ -2352,10 +2459,10 @@ class SlackTransport(BaseTransport):
         author_filter: frozenset[str] | None = None,
         untrusted: bool = False,
     ) -> str:
-        """Fetch recent channel messages before a top-level mention.
+        """Fetch recent channel messages before a top-level message.
 
         Gives the agent awareness of what was said in the channel
-        leading up to the mention.
+        leading up to the message that engaged it.
         """
         try:
             result = await client.conversations_history(

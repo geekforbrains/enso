@@ -92,7 +92,13 @@ class AccessProfile:
 
 @dataclass(frozen=True)
 class Route:
-    """One exact Slack DM-user or channel route."""
+    """One exact Slack DM-user or channel route.
+
+    ``mention_required`` and ``thread_mention_required`` are channel response
+    triggers resolved at load time (route override, then
+    ``routes.slack.channel_defaults``, then the built-in ``True``). DM routes
+    always carry the defaults; DM behavior is not configurable.
+    """
 
     route_id: str  # "slack.dm.<USER_ID>" | "slack.channel.<CHANNEL_ID>"
     kind: str  # "dm" | "channel"
@@ -100,6 +106,8 @@ class Route:
     workspace: str
     access: str
     audit: bool
+    mention_required: bool = True
+    thread_mention_required: bool = True
 
 
 @dataclass(frozen=True)
@@ -224,16 +232,26 @@ def load_teams(config: dict) -> TeamsConfig:
     if not isinstance(slack_routes, dict):
         errors.append("routes.slack must be an object")
         slack_routes = {}
-    errors.extend(_unknown_keys(slack_routes, {"account_id", "dms", "channels"}, "routes.slack"))
+    errors.extend(
+        _unknown_keys(
+            slack_routes,
+            {"account_id", "dms", "channels", "channel_defaults"},
+            "routes.slack",
+        )
+    )
 
     account_id = slack_routes.get("account_id")
     if not isinstance(account_id, str) or not account_id:
         errors.append("routes.slack.account_id is required and must be a string")
         account_id = ""
 
+    channel_defaults = _load_channel_defaults(slack_routes.get("channel_defaults"), errors)
     dm_routes, dm_schema_errors = _load_routes(slack_routes.get("dms", {}), "dm", errors)
     channel_routes, channel_schema_errors = _load_routes(
-        slack_routes.get("channels", {}), "channel", errors
+        slack_routes.get("channels", {}),
+        "channel",
+        errors,
+        channel_defaults=channel_defaults,
     )
 
     route_errors: dict[str, tuple[str, ...]] = {}
@@ -453,12 +471,48 @@ def _check_topology(
                 errors.append(f"policy_dir of access profile {profile_name} overlaps {root_name}")
 
 
+# Channel response triggers: config key -> built-in default.
+_MENTION_SETTING_DEFAULTS = {
+    "mention_required": True,
+    "thread_mention_required": True,
+}
+
+
+def _load_channel_defaults(value: object, errors: list[str]) -> dict[str, bool]:
+    """Parse ``routes.slack.channel_defaults`` into effective trigger defaults."""
+    defaults = dict(_MENTION_SETTING_DEFAULTS)
+    if value is None:
+        return defaults
+    if not isinstance(value, dict):
+        errors.append("routes.slack.channel_defaults must be an object")
+        return defaults
+    errors.extend(
+        _unknown_keys(value, set(_MENTION_SETTING_DEFAULTS), "routes.slack.channel_defaults")
+    )
+    for key in _MENTION_SETTING_DEFAULTS:
+        if key not in value:
+            continue
+        if isinstance(value[key], bool):
+            defaults[key] = value[key]
+        else:
+            errors.append(f"routes.slack.channel_defaults.{key} must be a boolean")
+    return defaults
+
+
 def _load_routes(
-    block: object, kind: str, errors: list[str]
+    block: object,
+    kind: str,
+    errors: list[str],
+    *,
+    channel_defaults: dict[str, bool] | None = None,
 ) -> tuple[dict[str, Route], dict[str, tuple[str, ...]]]:
     routes: dict[str, Route] = {}
     route_errors: dict[str, tuple[str, ...]] = {}
     label = "dms" if kind == "dm" else "channels"
+    allowed = {"workspace", "access", "audit"}
+    if kind == "channel":
+        allowed |= set(_MENTION_SETTING_DEFAULTS)
+    defaults = channel_defaults or dict(_MENTION_SETTING_DEFAULTS)
     if not isinstance(block, dict):
         errors.append(f"routes.slack.{label} must be an object")
         return routes, route_errors
@@ -471,12 +525,18 @@ def _load_routes(
         if not isinstance(cfg, dict):
             errors.append(f"{route_id} must be an object")
             continue
-        problems = _unknown_keys(cfg, {"workspace", "access", "audit"}, route_id)
+        problems = _unknown_keys(cfg, allowed, route_id)
         if "allow" in cfg:
             problems.append(
                 "allow is no longer supported; channel membership and exact DM user "
                 "routes define authorization"
             )
+        if kind == "dm":
+            for setting in _MENTION_SETTING_DEFAULTS:
+                if setting in cfg:
+                    problems.append(
+                        f"{setting} is not valid on a DM route; DM behavior is fixed"
+                    )
         workspace = cfg.get("workspace")
         if not isinstance(workspace, str) or not workspace:
             problems.append("workspace is required and must be a string")
@@ -491,6 +551,15 @@ def _load_routes(
             audit_value = False
         else:
             audit_value = audit_raw
+        triggers = dict(defaults)
+        if kind == "channel":
+            for setting in _MENTION_SETTING_DEFAULTS:
+                if setting not in cfg:
+                    continue
+                if isinstance(cfg[setting], bool):
+                    triggers[setting] = cfg[setting]
+                else:
+                    problems.append(f"{setting} must be a boolean")
         route = Route(
             route_id=route_id,
             kind=kind,
@@ -498,6 +567,8 @@ def _load_routes(
             workspace=workspace,
             access=access,
             audit=audit_value,
+            mention_required=triggers["mention_required"],
+            thread_mention_required=triggers["thread_mention_required"],
         )
         routes[key] = route
         if problems:
