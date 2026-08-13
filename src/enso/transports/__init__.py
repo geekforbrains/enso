@@ -116,7 +116,7 @@ class BaseTransport(ABC):
 
         Must be called from within the transport's running event loop.
         """
-        self._scheduler_task = asyncio.create_task(self.runtime.run_job_scheduler())
+        self._scheduler_task = asyncio.create_task(self.runtime.jobs.run_scheduler())
         self._scheduler_task.add_done_callback(
             lambda task: _warn_if_task_died(task, "Job scheduler")
         )

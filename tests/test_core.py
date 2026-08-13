@@ -556,8 +556,8 @@ def test_load_state_retires_legacy_task_runner_key(tmp_enso, sample_config):
     rt = Runtime(sample_config)
     rt.load_state()
 
-    assert "__task_runner__" not in rt._job_last_run
-    assert rt._job_last_run["real-job"] == datetime.fromisoformat(timestamp)
+    assert "__task_runner__" not in rt.jobs.last_run
+    assert rt.jobs.last_run["real-job"] == datetime.fromisoformat(timestamp)
     persisted = json.loads(state_file.read_text())
     assert "__task_runner__" not in persisted["job_last_run"]
     assert persisted["job_last_run"]["real-job"] == timestamp
@@ -830,8 +830,8 @@ def test_should_run_job_first_time(sample_config):
         dir_name="test", name="Test", schedule="* * * * *",
         provider="claude", model="sonnet", workspace="unused", access="unused",
     )
-    assert rt._should_run_job(job, datetime.now()) is False
-    assert "test" in rt._job_last_run
+    assert rt.jobs._should_run_job(job, datetime.now()) is False
+    assert "test" in rt.jobs.last_run
 
 
 def test_should_run_job_due(sample_config):
@@ -841,8 +841,8 @@ def test_should_run_job_due(sample_config):
         dir_name="test", name="Test", schedule="* * * * *",
         provider="claude", model="sonnet", workspace="unused", access="unused",
     )
-    rt._job_last_run["test"] = datetime.now() - timedelta(minutes=2)
-    assert rt._should_run_job(job, datetime.now()) is True
+    rt.jobs.last_run["test"] = datetime.now() - timedelta(minutes=2)
+    assert rt.jobs._should_run_job(job, datetime.now()) is True
 
 
 def test_should_run_job_skips_stale_misfire(sample_config):
@@ -858,10 +858,10 @@ def test_should_run_job_skips_stale_misfire(sample_config):
         access="unused",
     )
     now = datetime(2026, 5, 14, 21, 0)
-    rt._job_last_run["today"] = datetime(2026, 5, 13, 6, 30)
+    rt.jobs.last_run["today"] = datetime(2026, 5, 13, 6, 30)
 
-    assert rt._should_run_job(job, now) is False
-    assert rt._job_last_run["today"] == now
+    assert rt.jobs._should_run_job(job, now) is False
+    assert rt.jobs.last_run["today"] == now
 
 
 def test_should_run_job_allows_explicit_catch_up(sample_config):
@@ -878,9 +878,9 @@ def test_should_run_job_allows_explicit_catch_up(sample_config):
         catch_up=True,
     )
     now = datetime(2026, 5, 14, 21, 0)
-    rt._job_last_run["catch-up"] = datetime(2026, 5, 13, 6, 30)
+    rt.jobs.last_run["catch-up"] = datetime(2026, 5, 13, 6, 30)
 
-    assert rt._should_run_job(job, now) is True
+    assert rt.jobs._should_run_job(job, now) is True
 
 
 def test_should_run_job_not_due(sample_config):
@@ -890,8 +890,8 @@ def test_should_run_job_not_due(sample_config):
         dir_name="test", name="Test", schedule="0 9 * * *",
         provider="claude", model="sonnet", workspace="unused", access="unused",
     )
-    rt._job_last_run["test"] = datetime.now()
-    assert rt._should_run_job(job, datetime.now()) is False
+    rt.jobs.last_run["test"] = datetime.now()
+    assert rt.jobs._should_run_job(job, datetime.now()) is False
 
 
 def _pid_exists(pid: int) -> bool:
@@ -1117,10 +1117,10 @@ async def test_early_returns_finalize_teams_turn(sample_config):
     )
 
     # update-in-progress
-    rt._update_in_progress = True
+    rt.update_in_progress = True
     await rt.dispatch("conv", "hi", _OutcomeCtx(), context=ctx_obj)
     assert finalized == [("blocked", "update_in_progress")]
-    rt._update_in_progress = False
+    rt.update_in_progress = False
 
     # queue-full: hold the lock and fill the queue
     finalized.clear()
@@ -2368,8 +2368,8 @@ def test_should_run_job_invalid_schedule_is_skipped(sample_config):
         dir_name="bad", name="Bad", schedule="0 9 * *",
         provider="claude", model="sonnet", workspace="unused", access="unused",
     )
-    rt._job_last_run["bad"] = datetime.now() - timedelta(days=1)
-    assert rt._should_run_job(job, datetime.now()) is False
+    rt.jobs.last_run["bad"] = datetime.now() - timedelta(days=1)
+    assert rt.jobs._should_run_job(job, datetime.now()) is False
 
 
 class _SilentStream:

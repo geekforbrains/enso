@@ -1561,7 +1561,7 @@ def job_run(
     config = load_config()
     runtime = Runtime(config)
     try:
-        result = asyncio.run(runtime.run_job_now(name))
+        result = asyncio.run(runtime.jobs.run_now(name))
     except ValueError:
         console.print(f"[red]Job '{name}' not found.[/]")
         raise typer.Exit(1) from None

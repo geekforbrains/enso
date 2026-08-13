@@ -872,12 +872,12 @@ async def job_toggle(request):
 async def job_run(request):
     name = request.path_params["name"]
     runtime = request.app.state.runtime
-    if runtime is None or not hasattr(runtime, "run_job_now"):
+    if runtime is None or not hasattr(runtime, "jobs"):
         return _redirect(f"/jobs/{name}?msg=Run+now+is+unavailable")
     try:
-        result = await runtime.run_job_now(name)
+        result = await runtime.jobs.run_now(name)
     except Exception as exc:
-        log.warning("run_job_now failed for %s", name, exc_info=True)
+        log.warning("run_now failed for %s", name, exc_info=True)
         return _redirect(f"/jobs/{name}?msg=Run+failed:+{exc}")
     if result.run_id:
         return _redirect(f"/runs/{result.run_id}")

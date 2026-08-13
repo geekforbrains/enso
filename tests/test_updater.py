@@ -177,7 +177,7 @@ async def test_command_refuses_while_agent_work_is_active(sample_config):
 
     assert result.status == "blocked"
     assert "active agent work" in result.message
-    assert runtime._update_in_progress is False
+    assert runtime.update_in_progress is False
 
 
 @pytest.mark.asyncio
@@ -189,4 +189,4 @@ async def test_command_holds_update_gate_until_restart(sample_config, monkeypatc
     result = await cmd_update_async(runtime)
 
     assert result is installed
-    assert runtime._update_in_progress is True
+    assert runtime.update_in_progress is True
