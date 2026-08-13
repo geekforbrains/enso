@@ -352,6 +352,24 @@ def test_route_explain_dm_requires_exact_user_id(tmp_enso):
     assert "unconfigured" in result.output
 
 
+def test_route_explain_shows_effective_response_triggers(tmp_enso):
+    config = _teams_config(tmp_enso)
+    config["routes"]["slack"]["channels"]["C1"]["mention_required"] = False
+    save_config(config)
+    result = runner.invoke(app, ["route", "explain", "slack", "U02DEV", "C1"])
+    assert result.exit_code == 0, result.output
+    assert "Mention required: no" in result.output
+    assert "Thread mention required: yes" in result.output
+
+
+def test_route_explain_omits_response_triggers_for_dms(tmp_enso):
+    save_config(_teams_config(tmp_enso))
+    result = runner.invoke(app, ["route", "explain", "slack", "U01ADMIN"])
+    assert result.exit_code == 0, result.output
+    assert "authorized" in result.output
+    assert "Mention required" not in result.output
+
+
 def test_audit_tail_and_export(tmp_enso):
     save_config(_teams_config(tmp_enso))
     audit.create_turn(

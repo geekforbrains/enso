@@ -2357,6 +2357,12 @@ def route_explain(
         console.print(f"Workspace: {route.workspace}")
         console.print(f"Access: {route.access}")
         console.print(f"Audit: {'on' if route.audit else 'off'}")
+        if route.kind == "channel":
+            console.print(f"Mention required: {'yes' if route.mention_required else 'no'}")
+            console.print(
+                "Thread mention required: "
+                f"{'yes' if route.thread_mention_required else 'no'}"
+            )
     if not teams.dispatchable:
         console.print(
             "[red]Teams dispatch is disabled by config errors (see 'enso config check').[/]"

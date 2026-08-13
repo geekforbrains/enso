@@ -2431,10 +2431,10 @@ class SlackTransport(BaseTransport):
         author_filter: frozenset[str] | None = None,
         untrusted: bool = False,
     ) -> str:
-        """Fetch recent channel messages before a top-level mention.
+        """Fetch recent channel messages before a top-level message.
 
         Gives the agent awareness of what was said in the channel
-        leading up to the mention.
+        leading up to the message that engaged it.
         """
         try:
             result = await client.conversations_history(
