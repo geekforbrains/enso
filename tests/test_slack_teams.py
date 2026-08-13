@@ -921,6 +921,20 @@ async def test_double_delivered_mention_dispatches_once_in_optional_channel(
     assert rt.dispatch.call_args.args[2]._thread_ts == "100.1"
 
 
+async def test_injected_context_unescapes_slack_entities(tmp_enso, monkeypatch):
+    config = _triggers_config(tmp_enso, mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+    client.conversations_history.return_value = {
+        "messages": [{"user": DEV, "text": "compare a &lt; b &amp;&amp; c &gt; d"}]
+    }
+
+    await transport._handle_message(_channel_message(text="thoughts?"), client)
+
+    prompt = rt.dispatch.call_args.args[1]
+    assert "compare a < b && c > d" in prompt
+
+
 async def test_restricted_channel_still_gets_pushed_context_it_cannot_pull(
     tmp_enso, monkeypatch
 ):

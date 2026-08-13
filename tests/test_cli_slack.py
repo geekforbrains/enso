@@ -160,6 +160,64 @@ def test_history_surfaces_forwarded_message_bodies(slack_cli):
     assert "invoice is still open" in out
 
 
+def test_history_unescapes_slack_entities(slack_cli):
+    """Slack stores typed <, > and & escaped; an agent should not read them raw."""
+    box, _calls = slack_cli
+    box["response"] = {
+        "ok": True,
+        "messages": [
+            {
+                "user": "U02DEV",
+                "ts": "100.1",
+                "text": "run `enso slack thread C0OPS &lt;ts&gt;` &amp; report back",
+            }
+        ],
+    }
+
+    out = _flat(runner.invoke(app, ["slack", "history", "C0OPS"]))
+
+    assert "enso slack thread C0OPS <ts>` & report back" in out
+    assert "&lt;" not in out
+    assert "&amp;" not in out
+
+
+def test_thread_keeps_the_root_when_trimmed_and_says_what_it_hid(slack_cli):
+    box, _calls = slack_cli
+    box["response"] = {
+        "ok": True,
+        "messages": [
+            {"user": "U02DEV", "ts": "100.1", "text": "the root question"},
+            {"user": "UBOT", "ts": "100.2", "text": "first reply"},
+            {"user": "UBOT", "ts": "100.3", "text": "second reply"},
+            {"user": "UBOT", "ts": "100.4", "text": "third reply"},
+        ],
+    }
+
+    out = _flat(runner.invoke(app, ["slack", "thread", "C0OPS", "100.1", "-n", "3"]))
+
+    # The root is the subject of the thread, so trimming never drops it.
+    assert "the root question" in out
+    assert "second reply" in out
+    assert "third reply" in out
+    assert "first reply" not in out
+    assert "1 earlier reply not shown" in out
+
+
+def test_thread_says_nothing_about_trimming_when_nothing_was_trimmed(slack_cli):
+    box, _calls = slack_cli
+    box["response"] = {
+        "ok": True,
+        "messages": [
+            {"user": "U02DEV", "ts": "100.1", "text": "the root question"},
+            {"user": "UBOT", "ts": "100.2", "text": "only reply"},
+        ],
+    }
+
+    out = _flat(runner.invoke(app, ["slack", "thread", "C0OPS", "100.1", "-n", "5"]))
+
+    assert "not shown" not in out
+
+
 def test_history_reports_a_slack_error_without_a_traceback(slack_cli):
     box, _calls = slack_cli
     box["response"] = {"ok": False, "error": "channel_not_found"}

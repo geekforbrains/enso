@@ -2260,12 +2260,23 @@ def slack_history(
 def slack_thread(
     channel: Annotated[str, typer.Argument(help="Channel ID")],
     thread_ts: Annotated[str, typer.Argument(help="Thread timestamp (parent ts)")],
+    count: Annotated[
+        int,
+        typer.Option("--count", "-n", help="Keep the root plus this many recent messages"),
+    ] = 100,
     show_all: Annotated[
         bool,
         typer.Option("--all", help="Include joins, pins and other lifecycle noise"),
     ] = False,
 ) -> None:
-    """Fetch every message in a thread, oldest first."""
+    """Fetch every message in a thread, oldest first.
+
+    A long thread can be more text than a caller wants at once, so ``-n``
+    keeps the most recent messages. The root always survives the trim \u2014 it
+    is what the thread is about \u2014 and anything dropped is reported rather
+    than silently cut, so a truncated read is never mistaken for the whole
+    thread.
+    """
     token = _slack_token_or_exit()
     data = slack_cache.api_get(
         token,
@@ -2275,7 +2286,15 @@ def slack_thread(
     if not data.get("ok"):
         console.print(f"[red]\u2717[/] conversations.replies: {data.get('error', '?')}")
         raise typer.Exit(1)
-    _print_messages(data.get("messages", []), show_all=show_all)
+    messages = data.get("messages", [])
+    hidden = 0
+    if count > 0 and len(messages) > count:
+        hidden = len(messages) - count
+        messages = messages[:1] + messages[-(count - 1) :] if count > 1 else messages[:1]
+    _print_messages(messages, show_all=show_all)
+    if hidden:
+        noun = "reply" if hidden == 1 else "replies"
+        console.print(f"[dim]\u2026 {hidden} earlier {noun} not shown (raise -n to see them)[/]")
 
 
 # ---------------------------------------------------------------------------

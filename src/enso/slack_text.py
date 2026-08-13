@@ -154,6 +154,22 @@ def _flatten_mention_text(
     return _MENTION_TOKEN_RE.sub(_replace, text)
 
 
+def _unescape_slack(text: str) -> str:
+    """Undo the three entity escapes Slack applies to typed message text.
+
+    Slack stores a literal ``<``, ``>``, or ``&`` a user typed as ``&lt;``,
+    ``&gt;``, and ``&amp;``. Left alone they reach the model as noise — a
+    command example someone posted comes through as ``thread C0… &lt;ts&gt;``.
+    Ampersands are decoded last so ``&amp;lt;`` stays the literal text
+    ``&lt;`` rather than collapsing into a bracket.
+
+    This runs before mention flattening, never after: unescaping can expose a
+    typed ``<@U…>`` that then has to be flattened like any other token, and
+    raw mention syntax must never reach a prompt.
+    """
+    return text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+
+
 def _message_context_text(msg: dict) -> str:
     """Combine a history message's text with any forwarded-message content.
 
@@ -163,4 +179,4 @@ def _message_context_text(msg: dict) -> str:
     """
     text = msg.get("text", "")
     shared = _attachments_prompt(msg.get("attachments") or [])
-    return "\n".join(part for part in (text, shared) if part)
+    return _unescape_slack("\n".join(part for part in (text, shared) if part))
