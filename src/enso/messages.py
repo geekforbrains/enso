@@ -64,6 +64,8 @@ def consume(
     """
     with _queue_lock():
         queued = _load()
+        consumed: list[dict]
+        remaining: list[dict]
         if conversation_id is None:
             consumed, remaining = queued, []
         else:

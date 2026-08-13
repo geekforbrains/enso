@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
+from typing import TypeGuard
 
 from .providers import PROVIDER_NAMES
 
@@ -43,7 +44,7 @@ def _default_policy_dir(access_name: str) -> str:
     return os.path.join(config_mod.CONFIG_DIR, "policies", access_name)
 
 
-def _is_str_list(value: object) -> bool:
+def _is_str_list(value: object) -> TypeGuard[list[str]]:
     return isinstance(value, list) and all(isinstance(v, str) for v in value)
 
 

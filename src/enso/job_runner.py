@@ -120,12 +120,12 @@ class JobRunner:
                         self.runtime.save_state()
                         task = asyncio.create_task(self._run_job_task(job))
                         self._running_tasks[job.dir_name] = task
-                        task.add_done_callback(
-                            lambda _task, name=job.dir_name: self._running_tasks.pop(
-                                name,
-                                None,
-                            )
-                        )
+                        # ``name`` is bound as a default so each callback forgets
+                        # its own job rather than the loop's last one.
+                        def _forget(_task: object, name: str = job.dir_name) -> None:
+                            self._running_tasks.pop(name, None)
+
+                        task.add_done_callback(_forget)
                 except Exception:
                     # One broken job must not stop the others from being
                     # considered — or kill the scheduler task outright.
@@ -282,7 +282,7 @@ class JobRunner:
             return PrerunResult("no_work", exit_code=1)
 
         fallback = f"Prerun exited with status {exit_code}"
-        diagnostic = self._safe_prerun_diagnostic(stderr, fallback)
+        diagnostic = self._safe_prerun_diagnostic(stderr or b"", fallback)
         log.warning("%s prerun error (exit %s): %s", tag, exit_code, diagnostic)
         return PrerunResult("error", diagnostic=diagnostic, exit_code=exit_code)
 
@@ -756,7 +756,7 @@ class JobRunner:
                 )
 
             exit_code = proc.returncode if proc.returncode is not None else -1
-            status = "ok" if exit_code == 0 else "error"
+            status: Literal["ok", "error"] = "ok" if exit_code == 0 else "error"
             await self._record_run_finish(run_id, output, exit_code, status, tag)
             notified = False
             if exit_code != 0 and notify_failures:

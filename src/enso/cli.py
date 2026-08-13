@@ -146,7 +146,7 @@ _AUDIO_EXTENSIONS = {".mp3", ".ogg", ".wav", ".flac", ".m4a"}
 _VOICE_EXTENSIONS = {".oga"}
 
 
-def _tg_send_file(token: str, chat_id: int, file_path: str, caption: str = "") -> bool:
+def _tg_send_file(token: str, chat_id: int | str, file_path: str, caption: str = "") -> bool:
     """Send a file to Telegram. Auto-selects method based on extension."""
     import mimetypes
     from io import BytesIO
@@ -233,7 +233,7 @@ def _tg_send_file(token: str, chat_id: int, file_path: str, caption: str = "") -
     return False
 
 
-def _tg_send_message(token: str, chat_id: int, text: str) -> bool:
+def _tg_send_message(token: str, chat_id: int | str, text: str) -> bool:
     """Send a message with HTML formatting. Returns True on success."""
     from .formatting import md_to_html
 

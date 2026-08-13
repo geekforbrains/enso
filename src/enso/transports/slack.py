@@ -11,7 +11,7 @@ import re
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.request import Request, urlopen
 
 try:
@@ -67,7 +67,12 @@ from ..outbound import (
     TableTextCell,
 )
 from ..secret_refs import resolve_config_secret
-from ..surface_drafts import ChannelCanvasTarget, SurfaceDraftOrigin
+from ..surface_drafts import (
+    ChannelCanvasTarget,
+    DraftAction,
+    SurfaceDraftOrigin,
+    TerminalStatus,
+)
 from . import BaseTransport, TransportContext, safe_filename
 from .slack_teams import TeamsRouter
 
@@ -97,7 +102,7 @@ SLACK_AMBIGUOUS_SURFACE_ERRORS = frozenset({"fatal_error", "internal_error"})
 
 @dataclass(frozen=True, slots=True)
 class _SurfaceAction:
-    action: str
+    action: DraftAction
     draft_id: str
     account_id: str
     user_id: str
@@ -107,7 +112,7 @@ class _SurfaceAction:
 
 @dataclass(frozen=True, slots=True)
 class _SurfacePublishResult:
-    status: str
+    status: TerminalStatus
     text: str
 
 
@@ -122,7 +127,7 @@ def _slack_error_code(exc: Exception) -> str:
     return ""
 
 
-def _surface_error_status(exc: Exception) -> str:
+def _surface_error_status(exc: Exception) -> Literal["failed", "unknown"]:
     code = _slack_error_code(exc)
     if not code or code in SLACK_AMBIGUOUS_SURFACE_ERRORS:
         return "unknown"
@@ -271,7 +276,7 @@ def _render_outbound_block(
             "chart": _render_visualization_chart(block.chart),
         }
     if isinstance(block, DataTableBlock):
-        rendered = {
+        rendered: dict[str, Any] = {
             "type": "data_table",
             "caption": block.caption,
             "rows": _render_table_rows(block.rows),
@@ -282,15 +287,15 @@ def _render_outbound_block(
             rendered["row_header_column_index"] = block.row_header_column_index
         return rendered
 
-    rendered = {
+    table: dict[str, Any] = {
         "type": "table",
         "rows": _render_table_rows(block.rows),
     }
     if block.column_settings:
-        rendered["column_settings"] = [
+        table["column_settings"] = [
             _render_column_setting(setting) for setting in block.column_settings
         ]
-    return rendered
+    return table
 
 
 def _render_app_home_block(
@@ -512,6 +517,7 @@ def _parse_surface_action(body: Any, action: Any) -> _SurfaceAction | None:
         return None
     action_id = action.get("action_id")
     actions = body.get("actions")
+    action_name: DraftAction
     if action_id == SURFACE_PUBLISH_ACTION_ID:
         action_name = "publish"
     elif action_id == SURFACE_CANCEL_ACTION_ID:
@@ -1011,8 +1017,8 @@ class SlackContext(TransportContext):
         canvas_id: str,
     ) -> ChannelCanvasTarget:
         response = await self._client.files_info(file=canvas_id)
-        response = _response_mapping(response, method="files.info")
-        file_info = response.get("file")
+        payload = _response_mapping(response, method="files.info")
+        file_info = payload.get("file")
         if not isinstance(file_info, Mapping) or file_info.get("id") != canvas_id:
             raise ValueError("files.info returned the wrong Canvas")
         title = file_info.get("title")
@@ -1571,7 +1577,7 @@ class SlackTransport(BaseTransport):
         )
         self._client: AsyncWebClient | None = None
         self._surface_reconciled = False
-        self._surface_terminal_retries: dict[str, str] = {}
+        self._surface_terminal_retries: dict[str, TerminalStatus] = {}
 
         # Slack authorization is always resolved through exact DM/channel
         # routes. Invalid or missing route configuration remains represented
@@ -1662,7 +1668,9 @@ class SlackTransport(BaseTransport):
         }
         if pending.get("thread"):
             payload["thread_ts"] = str(pending["thread"])
-        await self._client.chat_postMessage(**payload)
+        # The SDK types every keyword individually, so an unpacked dict of str
+        # can't be matched against them.
+        await self._client.chat_postMessage(**payload)  # type: ignore[arg-type]
         return True
 
     def _warm_directory_cache(self) -> None:
@@ -1909,7 +1917,7 @@ class SlackTransport(BaseTransport):
             return False
         return True
 
-    async def _finish_surface_draft(self, draft_id: str, *, status: str) -> bool:
+    async def _finish_surface_draft(self, draft_id: str, *, status: TerminalStatus) -> bool:
         """Retry only the local terminal write; never retry a Slack mutation."""
         for attempt in range(3):
             try:
@@ -2458,7 +2466,7 @@ class SlackTransport(BaseTransport):
             log.exception("Failed to fetch thread context")
             return ""
 
-        messages = result.get("messages", [])
+        messages: list[Any] = result.get("messages", [])
         if len(messages) <= 1:
             return ""
 
@@ -2503,7 +2511,7 @@ class SlackTransport(BaseTransport):
             log.exception("Failed to fetch channel context")
             return ""
 
-        messages = result.get("messages", [])
+        messages: list[Any] = result.get("messages", [])
         # API returns newest-first, reverse for chronological
         messages.reverse()
 

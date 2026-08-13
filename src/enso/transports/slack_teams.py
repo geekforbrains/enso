@@ -539,7 +539,8 @@ class TeamsRouter:
         command_context: ExecutionContext,
         turn_id: str | None,
     ) -> None:
-        outcome, reason = "error", "exception"
+        outcome: str = "error"
+        reason: str | None = "exception"
         try:
             response = await turn.transport.handle_command(
                 turn.text,

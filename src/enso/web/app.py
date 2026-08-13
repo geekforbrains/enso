@@ -122,7 +122,9 @@ def _fmt_duration(ms: object) -> str:
     if ms is None or ms == "":
         return ""
     try:
-        total = int(ms)
+        # Values arrive straight from SQLite rows, so the except below is the
+        # only real guard on the type.
+        total = int(ms)  # type: ignore[call-overload]
     except (TypeError, ValueError):
         return ""
     if total < 1000:
@@ -142,7 +144,8 @@ def _fmt_bytes(size: object) -> str:
     if size is None or size == "":
         return ""
     try:
-        n = float(size)
+        # Same untrusted-row caveat as _fmt_duration.
+        n = float(size)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return ""
     for unit in ("B", "KB", "MB", "GB"):
@@ -537,7 +540,7 @@ def _skills_base() -> str:
 
 
 def _is_bundled_skill(name: str) -> bool:
-    bundled = importlib.resources.files("enso").joinpath("skills", name)
+    bundled = importlib.resources.files("enso").joinpath("skills").joinpath(name)
     return bundled.is_dir()
 
 

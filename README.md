@@ -376,6 +376,7 @@ A few advanced knobs are environment variables rather than config keys: `ENSO_SE
 ```bash
 pip install -e ".[dev,telegram,slack,web]"
 ruff check src/
+mypy
 pytest
 ```
 

@@ -380,7 +380,7 @@ class Runtime:
         # System prompt. AGENTS.md is canonical; Claude reads CLAUDE.md, so
         # it's symlinked to AGENTS.md. Codex reads AGENTS.md natively, so no
         # further symlinks are needed.
-        source = importlib.resources.files("enso").joinpath("prompts", "AGENTS.md")
+        source = importlib.resources.files("enso").joinpath("prompts").joinpath("AGENTS.md")
         content = source.read_text(encoding="utf-8")
 
         canonical = os.path.join(self.working_dir, "AGENTS.md")
@@ -446,7 +446,8 @@ class Runtime:
 
         canonical = os.path.join(workspace.path, "AGENTS.md")
         if not os.path.lexists(canonical):
-            source = importlib.resources.files("enso").joinpath("prompts", "WORKSPACE_AGENTS.md")
+            prompts = importlib.resources.files("enso").joinpath("prompts")
+            source = prompts.joinpath("WORKSPACE_AGENTS.md")
             atomic_write_text(canonical, source.read_text(encoding="utf-8"))
             log.info("Wrote AGENTS.md in workspace %s", workspace.name)
         self._ensure_symlink(os.path.join(workspace.path, "CLAUDE.md"), "AGENTS.md")
@@ -835,12 +836,12 @@ class Runtime:
             return
         for cid in stale:
             self.active_provider_by_chat.pop(cid, None)
-            for key in [k for k in self.session_by_chat_provider if k[0] == cid]:
-                self.session_by_chat_provider.pop(key)
-            for key in [k for k in self.active_model_by_chat_provider if k[0] == cid]:
-                self.active_model_by_chat_provider.pop(key)
-            for key in [k for k in self.effort_by_chat_provider_model if k[0] == cid]:
-                self.effort_by_chat_provider_model.pop(key)
+            for session_key in [k for k in self.session_by_chat_provider if k[0] == cid]:
+                self.session_by_chat_provider.pop(session_key)
+            for model_key in [k for k in self.active_model_by_chat_provider if k[0] == cid]:
+                self.active_model_by_chat_provider.pop(model_key)
+            for effort_key in [k for k in self.effort_by_chat_provider_model if k[0] == cid]:
+                self.effort_by_chat_provider_model.pop(effort_key)
             self.compact_seed_by_chat.pop(cid, None)
             self._last_active.pop(cid)
         log.info("Pruned %d stale conversation(s) (>%dd)", len(stale), SESSION_TTL_DAYS)

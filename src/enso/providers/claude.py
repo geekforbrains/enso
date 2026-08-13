@@ -164,14 +164,18 @@ class ClaudeProvider(BaseProvider):
                         text=_tool_status(block.get("name", ""), block.get("input", {})),
                 ))
                 elif block_type == "text" and block.get("text"):
-                    kind = "error" if is_api_error else "response"
-                    events.append(StreamEvent(kind=kind, text=block["text"]))
+                    events.append(StreamEvent(
+                        kind="error" if is_api_error else "response",
+                        text=block["text"],
+                    ))
 
         elif event_type == "result":
             result_text = event.get("result", "")
             if isinstance(result_text, str) and result_text:
-                kind = "error" if event.get("is_error") else "response"
-                events.append(StreamEvent(kind=kind, text=result_text))
+                events.append(StreamEvent(
+                    kind="error" if event.get("is_error") else "response",
+                    text=result_text,
+                ))
             elif event.get("is_error"):
                 reason = event.get("terminal_reason")
                 text = reason if isinstance(reason, str) and reason else "unknown error"
