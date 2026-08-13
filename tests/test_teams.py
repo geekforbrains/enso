@@ -495,3 +495,107 @@ def test_global_error_is_reported_on_exact_route(tmp_path):
     decision = resolve(parsed, user_id="UANY", channel_id="C0ACME")
     assert decision.status == "error"
     assert decision.reason == "teams_config_invalid"
+
+
+# -- response trigger settings --
+
+
+def test_mention_settings_default_to_required(tmp_path):
+    """Absent settings reproduce original behavior: mention-gated everywhere."""
+    parsed = load_teams(make_config(tmp_path))
+    route = parsed.channel_routes["C0ACME"]
+    assert route.mention_required is True
+    assert route.thread_mention_required is True
+    assert not parsed.errors
+    assert "slack.channel.C0ACME" not in parsed.route_errors
+
+
+def test_route_level_mention_settings_are_stored(tmp_path):
+    config = make_config(tmp_path)
+    config["routes"]["slack"]["channels"]["C0ACME"].update(
+        mention_required=False,
+        thread_mention_required=False,
+    )
+    parsed = load_teams(config)
+    route = parsed.channel_routes["C0ACME"]
+    assert route.mention_required is False
+    assert route.thread_mention_required is False
+    assert parsed.dispatchable
+    assert "slack.channel.C0ACME" not in parsed.route_errors
+
+
+def test_channel_defaults_apply_to_routes_without_overrides(tmp_path):
+    config = make_config(tmp_path)
+    config["routes"]["slack"]["channel_defaults"] = {
+        "mention_required": False,
+        "thread_mention_required": False,
+    }
+    parsed = load_teams(config)
+    route = parsed.channel_routes["C0ACME"]
+    assert route.mention_required is False
+    assert route.thread_mention_required is False
+    assert parsed.dispatchable
+
+
+def test_route_setting_overrides_channel_defaults(tmp_path):
+    config = make_config(tmp_path)
+    config["routes"]["slack"]["channel_defaults"] = {
+        "mention_required": False,
+        "thread_mention_required": False,
+    }
+    config["routes"]["slack"]["channels"]["C0ACME"]["mention_required"] = True
+    parsed = load_teams(config)
+    route = parsed.channel_routes["C0ACME"]
+    assert route.mention_required is True
+    assert route.thread_mention_required is False
+
+
+def test_channel_defaults_do_not_affect_dm_routes(tmp_path):
+    config = make_config(tmp_path)
+    config["routes"]["slack"]["channel_defaults"] = {"mention_required": False}
+    parsed = load_teams(config)
+    assert parsed.dispatchable
+    assert "slack.dm.U01ADMIN" not in parsed.route_errors
+
+
+@pytest.mark.parametrize("bad", ["yes", 1, None, []])
+def test_channel_defaults_values_must_be_boolean(tmp_path, bad):
+    config = make_config(tmp_path)
+    config["routes"]["slack"]["channel_defaults"] = {"mention_required": bad}
+    parsed = load_teams(config)
+    assert not parsed.dispatchable
+
+
+@pytest.mark.parametrize("bad", ["mention", ["mention_required"], 5])
+def test_channel_defaults_must_be_an_object(tmp_path, bad):
+    config = make_config(tmp_path)
+    config["routes"]["slack"]["channel_defaults"] = bad
+    parsed = load_teams(config)
+    assert not parsed.dispatchable
+
+
+def test_channel_defaults_unknown_keys_disable_dispatch(tmp_path):
+    config = make_config(tmp_path)
+    config["routes"]["slack"]["channel_defaults"] = {"mentions_required": True}
+    parsed = load_teams(config)
+    assert not parsed.dispatchable
+
+
+@pytest.mark.parametrize("key", ["mention_required", "thread_mention_required"])
+@pytest.mark.parametrize("bad", ["true", 0, None])
+def test_route_mention_settings_must_be_boolean(tmp_path, key, bad):
+    config = make_config(tmp_path)
+    config["routes"]["slack"]["channels"]["C0ACME"][key] = bad
+    parsed = load_teams(config)
+    assert parsed.dispatchable
+    assert "slack.channel.C0ACME" in parsed.route_errors
+
+
+@pytest.mark.parametrize("key", ["mention_required", "thread_mention_required"])
+def test_mention_settings_are_rejected_on_dm_routes(tmp_path, key):
+    """DM behavior is fixed; accepting the key would misrepresent the config."""
+    config = make_config(tmp_path)
+    config["routes"]["slack"]["dms"]["U01ADMIN"][key] = False
+    parsed = load_teams(config)
+    assert parsed.dispatchable
+    assert "slack.dm.U01ADMIN" in parsed.route_errors
