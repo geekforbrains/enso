@@ -152,6 +152,16 @@ class TeamsRouter:
             channel_id=None if is_dm else channel,
         )
 
+        # Unaddressed channel traffic engages only through a routed channel's
+        # relaxed response triggers, and its drops happen before the ledger
+        # claim so a busy fully-ignored channel writes nothing.
+        if (
+            not is_mention
+            and not is_dm
+            and not self._passes_response_triggers(decision, channel, thread_ts)
+        ):
+            return
+
         account = self.teams.account_id
         delivery = ledger.delivery_id(account, channel, ts)
         try:
@@ -163,7 +173,8 @@ class TeamsRouter:
             log.info("Duplicate Slack delivery acknowledged (%s…)", delivery[:12])
             return
 
-        reply_thread = thread_ts or (ts if is_mention and not is_dm else None)
+        # A reply to a channel message always lands in that message's thread.
+        reply_thread = thread_ts or (None if is_dm else ts)
         if decision.status == "unconfigured":
             if self.teams.dispatchable:
                 await self._finish_unconfigured(
@@ -230,6 +241,44 @@ class TeamsRouter:
             is_dm=is_dm,
             is_mention=is_mention,
         )
+
+    def _passes_response_triggers(
+        self,
+        decision: Decision,
+        channel: str,
+        thread_ts: str | None,
+    ) -> bool:
+        """Whether an unaddressed channel message engages its route.
+
+        Only an authorized route's settings can admit one: unrouted and
+        misconfigured channels stay silent for unaddressed traffic (explicit
+        contact still receives their fixed replies through the normal flow).
+        """
+        route = decision.route
+        if decision.status != "authorized" or route is None:
+            return False
+        if thread_ts is None:
+            return not route.mention_required
+        if route.thread_mention_required:
+            return False
+        return self._thread_participating(route, channel, thread_ts)
+
+    def _thread_participating(self, route: Route, channel: str, thread_ts: str) -> bool:
+        """Whether a prior authorized dispatch joined this thread.
+
+        The per-thread conversation session doubles as the participation
+        marker: it is recorded on every dispatch, persists with session
+        state across restarts, and lapses with session retention pruning.
+        """
+        chat_key = _key_digest(
+            "conversation",
+            self.teams.account_id,
+            channel,
+            thread_ts,
+            route.workspace,
+            route.access,
+        )
+        return chat_key in self.runtime.active_provider_by_chat
 
     async def _finish_unconfigured(
         self,
@@ -343,7 +392,10 @@ class TeamsRouter:
         self.runtime.active_provider_by_chat[chat_key] = provider
         self.runtime.touch_session(chat_key)
 
-        command_parts = text[1:].split(None, 1) if text.startswith("!") else []
+        # Commands require explicit addressing (a mention, or any DM); an
+        # unaddressed "!text" in a responsive channel is ordinary prompt text.
+        addressed = is_mention or is_dm
+        command_parts = text[1:].split(None, 1) if addressed and text.startswith("!") else []
         command_name = command_parts[0].lower() if command_parts else None
         model = self.runtime.get_active_model(chat_key, provider)
         effort = self.runtime.get_active_effort(chat_key, provider, model)
@@ -468,7 +520,6 @@ class TeamsRouter:
                 ts=ts,
                 thread_ts=thread_ts,
                 text=text,
-                is_mention=is_mention,
                 is_dm=is_dm,
             )
         except Exception:
@@ -598,7 +649,6 @@ class TeamsRouter:
         ts: str,
         thread_ts: str | None,
         text: str,
-        is_mention: bool,
         is_dm: bool,
     ) -> str:
         """Build provider input from route context, attachments, and text."""
@@ -613,7 +663,7 @@ class TeamsRouter:
                 author_filter=None,
                 untrusted=True,
             )
-        elif is_mention and not is_dm:
+        elif not is_dm:
             context_text = await transport._fetch_channel_context(
                 client,
                 channel,

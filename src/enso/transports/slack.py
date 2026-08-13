@@ -2268,6 +2268,12 @@ class SlackTransport(BaseTransport):
         except Exception:
             return ""
 
+    def text_mentions_bot(self, text: str) -> bool:
+        """Whether the text carries an explicit mention token for the bot."""
+        if not self.bot_user_id or not text:
+            return False
+        return bool(re.search(rf"<@{re.escape(self.bot_user_id)}(?:\|[^>]*)?>", text))
+
     def flatten_mentions(self, text: str, *, strip_addressing: bool = False) -> str:
         """Flatten inbound mention tokens through the directory cache.
 
@@ -2306,13 +2312,26 @@ class SlackTransport(BaseTransport):
         event: dict,
         client: AsyncWebClient,
     ) -> None:
-        """Route DMs; ignore ordinary channel messages without a mention."""
+        """Route DMs and channel messages; response gating lives in the router.
+
+        A channel mention is delivered both here and as ``app_mention``, so
+        the mention flag is derived from the message text — either event may
+        win the delivery-ledger race and must carry identical semantics.
+        """
         if event.get("subtype") in IGNORED_SUBTYPES:
             return
-        if event.get("user") is None:
+        user = event.get("user")
+        if user is None or user == self.bot_user_id:
             return
         if event.get("channel_type") == "im":
             await self.teams_router.handle_event(self, client, event, is_mention=False)
+            return
+        await self.teams_router.handle_event(
+            self,
+            client,
+            event,
+            is_mention=self.text_mentions_bot(event.get("text", "")),
+        )
 
     # -- Helpers --
 
