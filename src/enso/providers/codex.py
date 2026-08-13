@@ -39,7 +39,7 @@ def _item_status(item: dict) -> str | None:
         case "file_change":
             changes = item.get("changes") or []
             names = [
-                f"{_FILE_CHANGE_VERBS.get(change.get('kind'), 'Editing')} "
+                f"{_FILE_CHANGE_VERBS.get(change.get('kind') or '', 'Editing')} "
                 f"{os.path.basename(change.get('path', 'file'))}"
                 for change in changes
                 if isinstance(change, dict)

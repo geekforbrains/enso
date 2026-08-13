@@ -362,6 +362,10 @@ class SeriesChart:
                     "each chart series must cover every category exactly once"
                 )
 
+        self._check_limits(names)
+
+    def _check_limits(self, names: tuple[str, ...]) -> None:
+        """Enforce the size caps, which surface to the model as a retryable error."""
         if len(self.series) > MAX_CHART_SERIES:
             raise _OutboundLimitError(
                 f"chart exceeds {MAX_CHART_SERIES} series"

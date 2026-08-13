@@ -142,10 +142,12 @@ class TelegramContext(TransportContext):
         user = self._update.effective_user
         name_parts: list[str] = []
         if user is not None:
-            if getattr(user, "first_name", None):
-                name_parts.append(user.first_name)
-            if getattr(user, "last_name", None):
-                name_parts.append(user.last_name)
+            first_name = getattr(user, "first_name", None)
+            last_name = getattr(user, "last_name", None)
+            if first_name:
+                name_parts.append(first_name)
+            if last_name:
+                name_parts.append(last_name)
         return {
             "ENSO_ORIGIN_TRANSPORT": "telegram",
             "ENSO_ORIGIN_CHANNEL": str(getattr(chat, "id", "")) if chat else "",

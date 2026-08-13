@@ -1230,3 +1230,15 @@ async def test_transport_context_surface_draft_defaults_to_fallback_text():
 
     assert ctx.replies == ["Readable everywhere"]
     assert ctx.get_surface_instructions() == ""
+
+
+@pytest.mark.asyncio
+async def test_transport_context_markdown_reply_defaults_to_plain_text():
+    ctx = _FallbackContext()
+
+    await ctx.reply_markdown("# Slack-only heading")
+
+    assert ctx.replies == ["# Slack-only heading"]
+    # Off by default, so the runtime keeps splitting long text for this
+    # transport rather than handing it over whole.
+    assert ctx.rich_markdown_enabled is False

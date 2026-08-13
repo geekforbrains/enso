@@ -219,14 +219,14 @@ def _with_config_defaults(config: dict) -> dict:
 
     # Backfill web/runs blocks added in newer versions without overwriting
     # values the user has already set.
-    for key, defaults in (("web", DEFAULT_WEB), ("runs", DEFAULT_RUNS)):
+    for key, block_defaults in (("web", DEFAULT_WEB), ("runs", DEFAULT_RUNS)):
         existing = merged.get(key)
         if isinstance(existing, dict):
             migrated = legacy_runs if key == "runs" else {}
-            merged[key] = {**defaults, **migrated, **existing}
+            merged[key] = {**block_defaults, **migrated, **existing}
         elif key not in merged:
             migrated = legacy_runs if key == "runs" else {}
-            merged[key] = {**defaults, **migrated}
+            merged[key] = {**block_defaults, **migrated}
 
     return merged
 

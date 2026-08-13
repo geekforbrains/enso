@@ -38,6 +38,7 @@ from enso.outbound import (
 from enso.providers import BaseProvider, StreamEvent
 from enso.providers.agy import AgyProvider
 from enso.providers.claude import ClaudeProvider
+from enso.transports import TransportContext
 
 # -- split_text --
 
@@ -556,8 +557,8 @@ def test_load_state_retires_legacy_task_runner_key(tmp_enso, sample_config):
     rt = Runtime(sample_config)
     rt.load_state()
 
-    assert "__task_runner__" not in rt._job_last_run
-    assert rt._job_last_run["real-job"] == datetime.fromisoformat(timestamp)
+    assert "__task_runner__" not in rt.jobs.last_run
+    assert rt.jobs.last_run["real-job"] == datetime.fromisoformat(timestamp)
     persisted = json.loads(state_file.read_text())
     assert "__task_runner__" not in persisted["job_last_run"]
     assert persisted["job_last_run"]["real-job"] == timestamp
@@ -830,8 +831,8 @@ def test_should_run_job_first_time(sample_config):
         dir_name="test", name="Test", schedule="* * * * *",
         provider="claude", model="sonnet", workspace="unused", access="unused",
     )
-    assert rt._should_run_job(job, datetime.now()) is False
-    assert "test" in rt._job_last_run
+    assert rt.jobs._should_run_job(job, datetime.now()) is False
+    assert "test" in rt.jobs.last_run
 
 
 def test_should_run_job_due(sample_config):
@@ -841,8 +842,8 @@ def test_should_run_job_due(sample_config):
         dir_name="test", name="Test", schedule="* * * * *",
         provider="claude", model="sonnet", workspace="unused", access="unused",
     )
-    rt._job_last_run["test"] = datetime.now() - timedelta(minutes=2)
-    assert rt._should_run_job(job, datetime.now()) is True
+    rt.jobs.last_run["test"] = datetime.now() - timedelta(minutes=2)
+    assert rt.jobs._should_run_job(job, datetime.now()) is True
 
 
 def test_should_run_job_skips_stale_misfire(sample_config):
@@ -858,10 +859,10 @@ def test_should_run_job_skips_stale_misfire(sample_config):
         access="unused",
     )
     now = datetime(2026, 5, 14, 21, 0)
-    rt._job_last_run["today"] = datetime(2026, 5, 13, 6, 30)
+    rt.jobs.last_run["today"] = datetime(2026, 5, 13, 6, 30)
 
-    assert rt._should_run_job(job, now) is False
-    assert rt._job_last_run["today"] == now
+    assert rt.jobs._should_run_job(job, now) is False
+    assert rt.jobs.last_run["today"] == now
 
 
 def test_should_run_job_allows_explicit_catch_up(sample_config):
@@ -878,9 +879,9 @@ def test_should_run_job_allows_explicit_catch_up(sample_config):
         catch_up=True,
     )
     now = datetime(2026, 5, 14, 21, 0)
-    rt._job_last_run["catch-up"] = datetime(2026, 5, 13, 6, 30)
+    rt.jobs.last_run["catch-up"] = datetime(2026, 5, 13, 6, 30)
 
-    assert rt._should_run_job(job, now) is True
+    assert rt.jobs._should_run_job(job, now) is True
 
 
 def test_should_run_job_not_due(sample_config):
@@ -890,8 +891,8 @@ def test_should_run_job_not_due(sample_config):
         dir_name="test", name="Test", schedule="0 9 * * *",
         provider="claude", model="sonnet", workspace="unused", access="unused",
     )
-    rt._job_last_run["test"] = datetime.now()
-    assert rt._should_run_job(job, datetime.now()) is False
+    rt.jobs.last_run["test"] = datetime.now()
+    assert rt.jobs._should_run_job(job, datetime.now()) is False
 
 
 def _pid_exists(pid: int) -> bool:
@@ -983,7 +984,7 @@ async def test_process_request_injects_messages(tmp_enso, sample_config):
     prompts_received: list[str] = []
 
     # Mock the provider and run_provider to capture the prompt
-    class FakeCtx:
+    class FakeCtx(TransportContext):
         async def reply(self, text): pass
         async def reply_status(self, text): return "handle"
         async def edit_status(self, handle, text): pass
@@ -1008,7 +1009,7 @@ async def test_process_request_injects_messages(tmp_enso, sample_config):
     assert "user message" in prompts_received[0]
 
 
-class _OutcomeCtx:
+class _OutcomeCtx(TransportContext):
     def __init__(self): self.replies = []
     async def reply(self, text): self.replies.append(text)
     async def reply_status(self, text): return "h"
@@ -1117,10 +1118,10 @@ async def test_early_returns_finalize_teams_turn(sample_config):
     )
 
     # update-in-progress
-    rt._update_in_progress = True
+    rt.update_in_progress = True
     await rt.dispatch("conv", "hi", _OutcomeCtx(), context=ctx_obj)
     assert finalized == [("blocked", "update_in_progress")]
-    rt._update_in_progress = False
+    rt.update_in_progress = False
 
     # queue-full: hold the lock and fill the queue
     finalized.clear()
@@ -1141,7 +1142,7 @@ async def test_process_request_uses_normalized_status_and_plain_final_response(s
     rt = Runtime(sample_config)
     rt.effort_by_chat_provider_model[("1", "claude", "opus")] = "high"
 
-    class FakeCtx:
+    class FakeCtx(TransportContext):
         def __init__(self):
             self.statuses = []
             self.replies = []
@@ -1173,7 +1174,7 @@ async def test_process_request_sends_rich_markdown_before_legacy_splitting(sampl
     rt = Runtime(sample_config)
     response = "```text\n" + ("a" * 100 + "\n") * 410 + "```"
 
-    class FakeCtx:
+    class FakeCtx(TransportContext):
         rich_markdown_enabled = True
 
         def __init__(self):
@@ -1205,7 +1206,7 @@ async def test_process_request_sends_rich_markdown_before_legacy_splitting(sampl
 async def test_process_request_keeps_provider_errors_on_plain_reply_path(sample_config):
     rt = Runtime(sample_config)
 
-    class FakeCtx:
+    class FakeCtx(TransportContext):
         rich_markdown_enabled = True
 
         def __init__(self):
@@ -1242,7 +1243,7 @@ async def test_process_request_delivers_explicit_structured_response(sample_conf
         "```"
     )
 
-    class FakeCtx:
+    class FakeCtx(TransportContext):
         rich_markdown_enabled = True
 
         def __init__(self):
@@ -1295,7 +1296,7 @@ async def test_process_request_offers_persistent_surface_draft_without_publishin
         "```"
     )
 
-    class FakeCtx:
+    class FakeCtx(TransportContext):
         rich_markdown_enabled = True
 
         def __init__(self):
@@ -1360,7 +1361,7 @@ async def test_process_request_surface_falls_back_for_legacy_context(sample_conf
         "```"
     )
 
-    class FakeCtx:
+    class FakeCtx(TransportContext):
         def __init__(self):
             self.replies = []
 
@@ -1396,7 +1397,7 @@ async def test_process_request_preserves_surface_fence_without_surface_capabilit
         "```"
     )
 
-    class FakeCtx:
+    class FakeCtx(TransportContext):
         rich_markdown_enabled = True
 
         def __init__(self):
@@ -1434,7 +1435,7 @@ async def test_process_request_invalid_surface_stays_ordinary_text(sample_config
     rt = Runtime(sample_config)
     response = "```enso-surface\n{not json}\n```"
 
-    class FakeCtx:
+    class FakeCtx(TransportContext):
         rich_markdown_enabled = True
 
         def __init__(self):
@@ -1481,7 +1482,7 @@ async def test_process_request_uses_safe_fallback_for_over_limit_app_home(sample
         + "\n```"
     )
 
-    class FakeCtx:
+    class FakeCtx(TransportContext):
         def __init__(self):
             self.replies = []
             self.publications = []
@@ -1545,7 +1546,7 @@ async def test_process_request_delivers_explicit_chart_response(sample_config):
         + "\n```"
     )
 
-    class FakeCtx:
+    class FakeCtx(TransportContext):
         rich_markdown_enabled = True
 
         def __init__(self):
@@ -1608,7 +1609,7 @@ async def test_process_request_structured_response_falls_back_for_legacy_context
         "```"
     )
 
-    class FakeCtx:
+    class FakeCtx(TransportContext):
         def __init__(self):
             self.replies = []
 
@@ -1641,7 +1642,7 @@ async def test_process_request_preserves_structured_fence_without_capability(sam
         "```"
     )
 
-    class FakeCtx:
+    class FakeCtx(TransportContext):
         rich_markdown_enabled = False
 
         def __init__(self):
@@ -1674,7 +1675,7 @@ async def test_process_request_invalid_structured_response_stays_ordinary_text(s
     rt = Runtime(sample_config)
     response = "```enso-message\n{not json}\n```"
 
-    class FakeCtx:
+    class FakeCtx(TransportContext):
         rich_markdown_enabled = True
 
         def __init__(self):
@@ -1730,7 +1731,7 @@ async def test_process_request_uses_safe_fallback_for_over_limit_native_table(
         + "\n```"
     )
 
-    class FakeCtx:
+    class FakeCtx(TransportContext):
         rich_markdown_enabled = True
 
         def __init__(self):
@@ -1771,7 +1772,7 @@ async def test_process_request_error_wins_over_structured_looking_response(sampl
         "```"
     )
 
-    class FakeCtx:
+    class FakeCtx(TransportContext):
         def __init__(self):
             self.replies = []
             self.messages = []
@@ -1801,7 +1802,7 @@ async def test_process_request_error_wins_over_structured_looking_response(sampl
 async def test_process_request_terminal_error_wins_over_partial_response(sample_config):
     rt = Runtime(sample_config)
 
-    class FakeCtx:
+    class FakeCtx(TransportContext):
         def __init__(self):
             self.replies = []
 
@@ -1830,7 +1831,7 @@ async def test_process_request_collapses_repeated_case_insensitive_error_prefixe
 ):
     rt = Runtime(sample_config)
 
-    class FakeCtx:
+    class FakeCtx(TransportContext):
         def __init__(self): self.replies = []
         async def reply(self, text): self.replies.append(text)
         async def reply_status(self, text): return "handle"
@@ -1858,7 +1859,7 @@ async def test_process_request_timeout_stops_provider_and_queues_scoped_notice(
     rt.agent_timeout = 0.01
     provider_cancelled = asyncio.Event()
 
-    class FakeCtx:
+    class FakeCtx(TransportContext):
         def __init__(self):
             self.statuses = []
             self.edits = []
@@ -1909,7 +1910,7 @@ async def test_provider_timeout_error_is_not_mislabeled_as_configured_timeout(
 ):
     rt = Runtime(sample_config)
 
-    class FakeCtx:
+    class FakeCtx(TransportContext):
         def __init__(self):
             self.replies = []
             self.deleted = []
@@ -1948,7 +1949,7 @@ async def test_timeout_notice_is_injected_once_after_provider_switch(
     rt = Runtime(sample_config)
     prompts_received: list[tuple[str, str]] = []
 
-    class FakeCtx:
+    class FakeCtx(TransportContext):
         async def reply(self, text): pass
         async def reply_status(self, text): return "handle"
         async def edit_status(self, handle, text): pass
@@ -1979,7 +1980,7 @@ async def test_manual_cancellation_does_not_queue_timeout_notice(
     rt = Runtime(sample_config)
     started = asyncio.Event()
 
-    class FakeCtx:
+    class FakeCtx(TransportContext):
         def __init__(self): self.edits = []
         async def reply(self, text): pass
         async def reply_status(self, text): return "handle"
@@ -2040,7 +2041,7 @@ async def test_agy_timeout_captures_session_and_removes_private_log(
     async def fake_terminate(process, label, *, grace=1.0):
         process.returncode = -15
 
-    class FakeCtx:
+    class FakeCtx(TransportContext):
         async def reply(self, text): pass
         async def reply_status(self, text): return "handle"
         async def edit_status(self, handle, text): pass
@@ -2070,7 +2071,7 @@ async def test_timeout_notice_wins_over_in_flight_ticker_edit(
     edit_started = asyncio.Event()
     release_edit = asyncio.Event()
 
-    class FakeCtx:
+    class FakeCtx(TransportContext):
         def __init__(self): self.edits = []
         async def reply(self, text): pass
         async def reply_status(self, text): return "handle"
@@ -2118,7 +2119,7 @@ async def test_manual_cancellation_wins_race_with_timeout_cleanup(
     cleanup_started = asyncio.Event()
     release_cleanup = asyncio.Event()
 
-    class FakeCtx:
+    class FakeCtx(TransportContext):
         def __init__(self): self.edits = []
         async def reply(self, text): pass
         async def reply_status(self, text): return "handle"
@@ -2368,8 +2369,8 @@ def test_should_run_job_invalid_schedule_is_skipped(sample_config):
         dir_name="bad", name="Bad", schedule="0 9 * *",
         provider="claude", model="sonnet", workspace="unused", access="unused",
     )
-    rt._job_last_run["bad"] = datetime.now() - timedelta(days=1)
-    assert rt._should_run_job(job, datetime.now()) is False
+    rt.jobs.last_run["bad"] = datetime.now() - timedelta(days=1)
+    assert rt.jobs._should_run_job(job, datetime.now()) is False
 
 
 class _SilentStream:

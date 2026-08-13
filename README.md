@@ -376,6 +376,7 @@ A few advanced knobs are environment variables rather than config keys: `ENSO_SE
 ```bash
 pip install -e ".[dev,telegram,slack,web]"
 ruff check src/
+mypy
 pytest
 ```
 
@@ -392,11 +393,30 @@ pytest
 1. Create a feature branch off `main` (or `dev` if building on unreleased work)
 1. Do the work, commit with [conventional commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, etc.)
 1. Merge into `dev` — this is where changes accumulate before release
-1. When ready to release: bump the version in `pyproject.toml`, finalize the `[Unreleased]` section in `CHANGELOG.md` with the date, merge `dev` → `main`, and tag
+1. When ready to release: follow the release checklist under [Versioning](#versioning) — it covers every place a version bump has to land
 
 ### Versioning
 
-Version lives in `pyproject.toml` and is the single source of truth — the package reads it back through `importlib.metadata`, so nothing else needs bumping. When cutting a release: bump the version, change the `CHANGELOG.md` heading from `[Unreleased]` to `[X.Y.Z] - YYYY-MM-DD`, commit as `chore(release): X.Y.Z`, merge `dev` → `main`, and tag `vX.Y.Z` (annotated).
+`pyproject.toml` holds the version and is the only place the number is written by hand. Everything else derives from it: `__version__` reads the *installed* distribution metadata through `importlib.metadata`, and that is what `enso --version`, the `Starting Enso vX.Y.Z` startup log line, and the post-update confirmation message all report.
+
+That indirection is the trap. Bumping `pyproject.toml` does not change what a checkout reports, because the metadata is written at install time — an editable install keeps announcing the previous version until it is reinstalled. Re-run the install to resync it:
+
+```bash
+pip install -e . --no-deps   # refresh dist-info after a version bump
+```
+
+`--no-deps` restricts the reinstall to metadata, so it cannot upgrade or reshuffle an environment that already has the transport extras resolved.
+
+**Release checklist.** A version bump has to touch every one of these or the number drifts:
+
+1. `pyproject.toml` — bump `version`
+1. `CHANGELOG.md` — rename the `[Unreleased]` heading to `[X.Y.Z] - YYYY-MM-DD`
+1. Commit as `chore(release): X.Y.Z`
+1. Merge `dev` → `main`, then tag `vX.Y.Z` (annotated)
+1. `pip install -e . --no-deps` on every editable checkout — dev machines, and any host running `enso serve` or `enso web` from source
+1. Restart long-running services (`enso service restart`) so the new version reaches the logs
+
+Only the installed metadata drifts. The updater's up-to-date check compares git revisions rather than version strings, and for an editable install it reads the checkout's own revision, so a stale number misreports but never causes a spurious update.
 
 ### Changelog
 

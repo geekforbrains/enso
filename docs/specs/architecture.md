@@ -7,8 +7,10 @@ Read [PRD.md](../PRD.md) first for the what & why. Sibling specs:
 ## Runtime and process layout
 
 `enso serve` builds a `Runtime` (`core.py`) and starts a Telegram or Slack transport.
-The transport starts `Runtime.run_job_scheduler` alongside its chat loop; the scheduler
-loads `JOB.md` files every 60 seconds and fires due jobs through `_execute_job`.
+Each `Runtime` owns a `JobRunner` (`job_runner.py`) at `runtime.jobs`, which holds the
+scheduler, the job execution pipeline, and failure alerting. The transport starts
+`Runtime.jobs.run_scheduler` alongside its chat loop; the scheduler loads `JOB.md` files
+every 60 seconds and fires due jobs through `_execute_job`.
 
 `enso web` builds its own `Runtime` and runs Starlette/Uvicorn as a separate process.
 The dashboard and bot therefore do not share memory or an event loop. They coordinate
@@ -29,7 +31,7 @@ database. Starting `enso serve` does not start the dashboard.
                  SQLite (enso.db, WAL mode)
 ```
 
-The dashboard's **Run now** action calls the same `Runtime.run_job_now` execution path
+The dashboard's **Run now** action calls the same `Runtime.jobs.run_now` execution path
 as the CLI, but on the dashboard's Runtime instance. Its in-memory scheduler state is
 not shared with the bot process. File writes are atomic and SQLite uses WAL mode to
 handle this cross-process boundary.
@@ -63,11 +65,11 @@ offline. Package data includes `web/templates/**` and `web/static/**`.
 
 ## Run recording
 
-Run history is captured by the `Runtime` around the shared job-execution pipeline used
+Run history is captured by the `JobRunner` around the shared job-execution pipeline used
 for background work:
 
 - `_execute_job` — scheduled jobs.
-- `run_job_now` — CLI and dashboard manual runs (recorded with trigger `manual`).
+- `run_now` — CLI and dashboard manual runs (recorded with trigger `manual`).
 
 Interactive **chat** requests are *not* runs — they are session-based and ephemeral, and
 belong to the transport, not the run log.

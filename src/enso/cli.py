@@ -146,7 +146,7 @@ _AUDIO_EXTENSIONS = {".mp3", ".ogg", ".wav", ".flac", ".m4a"}
 _VOICE_EXTENSIONS = {".oga"}
 
 
-def _tg_send_file(token: str, chat_id: int, file_path: str, caption: str = "") -> bool:
+def _tg_send_file(token: str, chat_id: int | str, file_path: str, caption: str = "") -> bool:
     """Send a file to Telegram. Auto-selects method based on extension."""
     import mimetypes
     from io import BytesIO
@@ -233,7 +233,7 @@ def _tg_send_file(token: str, chat_id: int, file_path: str, caption: str = "") -
     return False
 
 
-def _tg_send_message(token: str, chat_id: int, text: str) -> bool:
+def _tg_send_message(token: str, chat_id: int | str, text: str) -> bool:
     """Send a message with HTML formatting. Returns True on success."""
     from .formatting import md_to_html
 
@@ -1026,7 +1026,9 @@ def _write_slack_manifest_copy() -> str:
     return dest
 
 
-def _setup_slack(config: dict) -> None:
+# A linear interactive wizard: every branch is one prompt in a fixed sequence,
+# so splitting it would only scatter the script the user is walked through.
+def _setup_slack(config: dict) -> None:  # noqa: C901
     """Configure Slack credentials and one exact routed owner DM."""
     slack_cfg = config.get("transports", {}).get("slack", {})
     manifest_path = _write_slack_manifest_copy()
@@ -1561,7 +1563,7 @@ def job_run(
     config = load_config()
     runtime = Runtime(config)
     try:
-        result = asyncio.run(runtime.run_job_now(name))
+        result = asyncio.run(runtime.jobs.run_now(name))
     except ValueError:
         console.print(f"[red]Job '{name}' not found.[/]")
         raise typer.Exit(1) from None
@@ -2207,8 +2209,10 @@ def slack_thread(
 # -- Routed configuration / route / audit --
 
 
+# A linear diagnostic report: each branch prints one more finding, and the
+# order of the printed sections is the feature.
 @config_app.command("check")
-def config_check() -> None:
+def config_check() -> None:  # noqa: C901
     """Validate execution bindings and native-policy launch plumbing."""
     from .policy import check_provider
     from .teams import load_catalog, load_teams
