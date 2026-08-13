@@ -2699,6 +2699,74 @@ class TestFetchThreadContext:
         assert "current message" not in result
 
     @pytest.mark.asyncio
+    async def test_includes_bot_history_without_session_memory(self):
+        """A conversation with no session memory gets the whole thread.
+
+        An Enso-rooted thread (job notification, `enso message send`) has the
+        bot as the last speaker before every reply, so the since-last-spoke
+        slice is empty and the root would never reach the model.
+        """
+        client = _make_client()
+        client.conversations_replies.return_value = {
+            "messages": [
+                {"user": "UBOT", "text": "nightly job report"},
+                {"user": "U123", "text": "current message"},
+            ],
+        }
+
+        rt = _make_runtime()
+        transport = _make_transport(rt)
+
+        result = await transport.fetch_thread_context(
+            client, "C123", "1234.5678", include_bot_history=True
+        )
+
+        assert "[assistant]: nightly job report" in result
+        assert "current message" not in result
+
+    @pytest.mark.asyncio
+    async def test_bot_rooted_thread_is_empty_without_the_flag(self):
+        """The default stays since-last-spoke: session memory is the backstop."""
+        client = _make_client()
+        client.conversations_replies.return_value = {
+            "messages": [
+                {"user": "UBOT", "text": "nightly job report"},
+                {"user": "U123", "text": "current message"},
+            ],
+        }
+
+        rt = _make_runtime()
+        transport = _make_transport(rt)
+
+        result = await transport.fetch_thread_context(client, "C123", "1234.5678")
+        assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_full_history_keeps_ordering_and_labels(self):
+        client = _make_client()
+        client.conversations_replies.return_value = {
+            "messages": [
+                {"user": "UBOT", "text": "job report"},
+                {"user": "U123", "text": "why did it fail?"},
+                {"user": "UBOT", "text": "checking"},
+                {"user": "U123", "text": "current message"},
+            ],
+        }
+
+        rt = _make_runtime()
+        transport = _make_transport(rt)
+
+        result = await transport.fetch_thread_context(
+            client, "C123", "1234.5678", include_bot_history=True
+        )
+
+        assert result.index("job report") < result.index("why did it fail?")
+        assert result.index("why did it fail?") < result.index("checking")
+        assert "[assistant]: job report" in result
+        assert "[user]: why did it fail?" in result
+        assert "current message" not in result
+
+    @pytest.mark.asyncio
     async def test_empty_for_single_message(self):
         client = _make_client()
         client.conversations_replies.return_value = {

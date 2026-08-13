@@ -85,6 +85,8 @@ Non-mention drops happen before the ledger claim so a busy fully-ignored channel
 
 Top-level dispatches fetch recent channel context whether or not they were mentions; thread dispatches fetch thread context, as before.
 
+Thread context normally starts after Enso last spoke, because its own messages are already in the provider session. A conversation with no session memory yet — no session at all, or one reserved but never used — has no such backstop, so it receives the whole thread including Enso's own messages. This is what carries an Enso-posted thread root to the model: that root predates every session, and Enso is the last speaker before each reply, so the since-last-spoke slice would be empty and the root would never arrive. It is sent once, on the turn that opens the session; later turns in the thread go back to the narrow slice.
+
 ### Thread participation
 
 Enso participates in a thread in either of two ways.

@@ -7,6 +7,8 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 
 - `thread_mention_required: false` now follows threads Enso started itself. A top-level message Enso posts outside a dispatch — a job notification, `enso message send`, a surface confirmation — creates no conversation session, so replies under it were dropped until someone mentioned the bot once, even in a fully responsive channel. Enso's own thread roots now count as participation, read from the `parent_user_id` Slack stamps on every thread reply, so no extra API call is involved. Unchanged: `thread_mention_required: true` still gates own roots, threads rooted by anyone else still need a first mention, unrouted channels stay unrouted, and only human replies dispatch.
+- A Slack conversation with no provider session memory yet now receives the full thread as context instead of only the messages since Enso last spoke. The narrow slice assumes Enso's own words are already in its session; before the first turn opens one, nothing carries them. In an Enso-rooted thread that left the root — the job report or `enso message send` the whole thread is about — permanently invisible to the model, which answered replies with no idea what they referred to. The full thread is sent once, on the turn that opens the session; later turns return to the narrow slice, so no history is re-sent.
+- The untrusted-context header injected with Slack thread and channel history no longer describes every line as posted by someone else, since such a block can now carry Enso's own messages. The instruction to treat the block as data and never as instructions is unchanged and still covers every line, including job output relayed under an `[assistant]` label.
 
 ## [1.2.0] - 2026-08-13
 

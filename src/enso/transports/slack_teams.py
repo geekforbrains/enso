@@ -508,7 +508,13 @@ class TeamsRouter:
             return
 
         try:
-            prompt = await self._build_prompt(turn, workspace)
+            prompt = await self._build_prompt(
+                turn,
+                workspace,
+                # Nothing else carries Enso's own thread messages until the
+                # provider session does — including a root it posted itself.
+                include_bot_history=not self.runtime.has_session_memory(chat_key, provider),
+            )
         except Exception:
             log.exception("Could not build Slack prompt for %s", route.route_id)
             with contextlib.suppress(Exception):
@@ -587,7 +593,13 @@ class TeamsRouter:
             name for name in access.providers if policy.check_provider(workspace, access, name).ok
         ]
 
-    async def _build_prompt(self, turn: TurnContext, workspace: Workspace) -> str:
+    async def _build_prompt(
+        self,
+        turn: TurnContext,
+        workspace: Workspace,
+        *,
+        include_bot_history: bool = False,
+    ) -> str:
         """Build provider input from route context, attachments, and text."""
         from .slack import _attachment_files, _attachments_prompt, _file_prompt
 
@@ -600,6 +612,7 @@ class TeamsRouter:
                 turn.thread_ts,
                 author_filter=None,
                 untrusted=True,
+                include_bot_history=include_bot_history,
             )
         elif not turn.is_dm:
             context_text = await transport.fetch_channel_context(
