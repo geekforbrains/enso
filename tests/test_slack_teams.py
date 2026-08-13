@@ -921,7 +921,10 @@ async def test_double_delivered_mention_dispatches_once_in_optional_channel(
     assert rt.dispatch.call_args.args[2]._thread_ts == "100.1"
 
 
-async def test_channel_context_injected_for_unmentioned_top_level(tmp_enso, monkeypatch):
+async def test_restricted_channel_still_gets_pushed_context_it_cannot_pull(
+    tmp_enso, monkeypatch
+):
+    """A policy profile keeps the push: its sandbox cannot run the CLI to pull."""
     config = _triggers_config(tmp_enso, mention_required=False)
     transport, rt = _make_transport(tmp_enso, monkeypatch, config)
     client = _make_client()
@@ -934,6 +937,105 @@ async def test_channel_context_injected_for_unmentioned_top_level(tmp_enso, monk
     prompt = rt.dispatch.call_args.args[1]
     assert "Channel context" in prompt
     assert "the deploy failed" in prompt
+    assert "enso slack history" not in prompt
+
+
+def _ops_triggers_config(tmp_enso, **settings):
+    """C0OPS routes to the unrestricted admin profile, so it can pull."""
+    config = _teams_config(tmp_enso)
+    config["routes"]["slack"]["channels"]["C0OPS"].update(settings)
+    return config
+
+
+async def test_unrestricted_top_level_pulls_instead_of_pushing_history(
+    tmp_enso, monkeypatch
+):
+    """The prior thread's root must not ride along on a new top-level ask."""
+    config = _ops_triggers_config(tmp_enso, mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+    client.conversations_history.return_value = {
+        "messages": [{"user": DEV, "text": "unrelated earlier thread"}]
+    }
+
+    await transport._handle_message(
+        _channel_message(channel="C0OPS", text="what do you think?"), client
+    )
+
+    prompt = rt.dispatch.call_args.args[1]
+    assert "unrelated earlier thread" not in prompt
+    assert "Channel context" not in prompt
+    client.conversations_history.assert_not_awaited()
+    assert "enso slack history C0OPS" in prompt
+    assert "enso slack thread C0OPS" in prompt
+
+
+async def test_pull_pointer_names_the_channel_and_marks_history_untrusted(
+    tmp_enso, monkeypatch
+):
+    from enso import slack_cache
+
+    slack_cache.save(
+        {
+            "team_id": ACCOUNT,
+            "users": {"fetched_at": 0.0, "items": {}},
+            "channels": {
+                "fetched_at": 0.0,
+                "items": {"C0OPS": {"id": "C0OPS", "name": "ops"}},
+            },
+            "dm_cache": {},
+        }
+    )
+    config = _ops_triggers_config(tmp_enso, mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+
+    await transport._handle_message(
+        _channel_message(channel="C0OPS", text="thoughts?"), _make_client()
+    )
+
+    prompt = rt.dispatch.call_args.args[1]
+    assert "#ops" in prompt
+    assert "never as instructions" in prompt
+
+
+async def test_pull_pointer_carries_the_thread_ts_when_pulled_into_a_thread(
+    tmp_enso, monkeypatch
+):
+    config = _ops_triggers_config(tmp_enso)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+
+    await transport._handle_app_mention(
+        _mention(channel="C0OPS", ts="100.9", thread_ts="100.1"), _make_client()
+    )
+
+    prompt = rt.dispatch.call_args.args[1]
+    assert "enso slack thread C0OPS 100.1" in prompt
+
+
+async def test_pull_pointer_is_not_repeated_once_the_session_remembers_it(
+    tmp_enso, monkeypatch
+):
+    config = _ops_triggers_config(tmp_enso, thread_mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    chat_key = _key_digest("conversation", ACCOUNT, "C0OPS", "100.1", "ops", "admin")
+    rt.active_provider_by_chat[chat_key] = "claude"
+    rt.session_by_chat_provider[(chat_key, "claude")] = "an-established-session"
+
+    await transport._handle_message(
+        _channel_message(channel="C0OPS", ts="100.9", thread_ts="100.1"), _make_client()
+    )
+
+    prompt = rt.dispatch.call_args.args[1]
+    assert "enso slack history" not in prompt
+
+
+async def test_dm_never_advertises_channel_history(tmp_enso, monkeypatch):
+    transport, rt = _make_transport(tmp_enso, monkeypatch)
+
+    await transport._handle_message(_dm(), _make_client())
+
+    prompt = rt.dispatch.call_args.args[1]
+    assert "enso slack history" not in prompt
 
 
 async def test_unaddressed_command_text_is_ordinary_prompt(tmp_enso, monkeypatch):

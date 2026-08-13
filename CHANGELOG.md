@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- Slack channel history is pulled on demand instead of pushed into every new conversation. A top-level message used to arrive with the last 20 channel messages prepended, which in a channel where each request starts its own thread meant the roots of unrelated earlier threads — and the agent answered them. An unrestricted profile now receives, once per conversation, a `[Channel access]` block naming the channel and the `enso slack history` / `enso slack thread` commands for it, and reads history only when the request calls for it. Thread context is unchanged and still pushed. A restricted profile cannot be assumed to reach the network from its sandbox, so it keeps receiving the channel context it cannot fetch for itself.
+- `enso slack history` and `enso slack thread` render what the transport's own injector did: display names instead of raw user IDs, inert `@name (ID)` mention text instead of live `<@U…>` tokens, forwarded-message bodies, and readable timestamps alongside the raw `ts` that `enso slack thread` takes. Channel lifecycle noise (joins, pins, archive events) is dropped unless `--all` is passed, and `enso slack history` gains `--since` (`30m`, `24h`, `7d`) to bound the window.
+
 ### Fixed
 
 - `thread_mention_required: false` now follows threads Enso started itself. A top-level message Enso posts outside a dispatch — a job notification, `enso message send`, a surface confirmation — creates no conversation session, so replies under it were dropped until someone mentioned the bot once, even in a fully responsive channel. Enso's own thread roots now count as participation, read from the `parent_user_id` Slack stamps on every thread reply, so no extra API call is involved. Unchanged: `thread_mention_required: true` still gates own roots, threads rooted by anyone else still need a first mention, unrouted channels stay unrouted, and only human replies dispatch.

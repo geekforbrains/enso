@@ -110,6 +110,7 @@ module = [
     "enso.policy",
     "enso.runs",
     "enso.secret_refs",
+    "enso.slack_text",
     "enso.sqlite_store",
     "enso.surface_drafts",
     "enso.teams",

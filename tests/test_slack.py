@@ -35,6 +35,7 @@ from enso.outbound import (
     TableNumberCell,
     TableTextCell,
 )
+from enso.slack_text import _attachments_prompt, _flatten_mention_text
 from enso.surface_drafts import ChannelCanvasTarget, SurfaceDraftOrigin
 from enso.transports import safe_filename
 from enso.transports.slack import (
@@ -44,9 +45,7 @@ from enso.transports.slack import (
     SlackContext,
     SlackTransport,
     _attachment_files,
-    _attachments_prompt,
     _channel_canvas_ids,
-    _flatten_mention_text,
     _parse_surface_action,
 )
 
