@@ -107,7 +107,7 @@ You can also send files — they're downloaded and passed to the active agent. R
 
 Effort is stored separately for each conversation, provider, and model. Claude supports its existing model-dependent range through `max`. Codex Sol and Terra support `low` through `ultra`; Luna supports `low` through `max`. Antigravity's concrete model names already encode effort (for example, `gemini-3.6-flash-low`), so choose the desired variant with `/model`. Enso clamps an unsupported higher Claude/Codex choice to the active model's maximum and reports the effective level.
 
-**Slack specifics.** Every authorized Slack location is an exact route. Configured DMs dispatch every ordinary message. In channels, the default is mention-gated: Enso responds only when mentioned (`@bot help me`), and thread replies need a mention too. Two per-channel booleans relax this — `mention_required: false` dispatches every top-level message, and `thread_mention_required: false` follows every reply in a thread Enso already participates in — one a prior dispatch joined, or one rooted by a message Enso posted itself, such as a job notification or `enso message send` (first contact in a thread someone else started still needs a mention). A `routes.slack.channel_defaults` block supplies defaults that individual channel routes override. Either way, replies to channel messages always land in that message's thread, and posts from other bots and apps never dispatch in any mode — only human members engage a route. For configured routes, the bot fetches the last few thread/channel messages as context so it knows what's going on. Explicit contact at an unconfigured location gets a fixed local response as described below. Rich output and persistent surfaces are enabled by default. A natural-language request for an App Home or Canvas produces an exact preview with requester-bound **Publish** and **Cancel** buttons; Slack is not mutated before confirmation. App Home requests are accepted only in a configured one-to-one DM. A channel Canvas request creates a tab when none exists or clearly proposes a full replacement of the one unambiguous existing Canvas. See [`docs/specs/slack-output.md`](docs/specs/slack-output.md) for limits, fallbacks, security, and opt-outs.
+**Slack specifics.** Every authorized Slack location is an exact route. Configured DMs dispatch every ordinary message. In channels, the default is mention-gated: Enso responds only when mentioned (`@bot help me`), and thread replies need a mention too. Two per-channel booleans relax this — `mention_required: false` dispatches every top-level message, and `thread_mention_required: false` follows every reply in a thread Enso already participates in — one a prior dispatch joined, or one rooted by a message Enso posted itself, such as a job notification or `enso message send` (first contact in a thread someone else started still needs a mention). A `routes.slack.channel_defaults` block supplies defaults that individual channel routes override. Either way, replies to channel messages always land in that message's thread, and posts from other bots and apps never dispatch in any mode — only human members engage a route. For configured routes, the bot fetches the last few messages of a thread it is replying in as context so it knows what's going on. Channel history is not injected: an unrestricted profile is instead told, once per conversation, how to read the channel with `enso slack history` and `enso slack thread`, and pulls it only when the request calls for it — so a new top-level ask no longer arrives carrying unrelated earlier threads. A restricted profile, whose sandbox may have no route to Slack, keeps receiving the channel context it cannot fetch for itself. Explicit contact at an unconfigured location gets a fixed local response as described below. Rich output and persistent surfaces are enabled by default. A natural-language request for an App Home or Canvas produces an exact preview with requester-bound **Publish** and **Cancel** buttons; Slack is not mutated before confirmation. App Home requests are accepted only in a configured one-to-one DM. A channel Canvas request creates a tab when none exists or clearly proposes a full replacement of the one unambiguous existing Canvas. See [`docs/specs/slack-output.md`](docs/specs/slack-output.md) for limits, fallbacks, security, and opt-outs.
 
 ## Slack directory (`enso slack`)
 
@@ -125,9 +125,18 @@ enso slack list [users|channels]          # dump cache (auto-refresh if empty)
 enso slack refresh [--users|--channels]   # force refresh
 
 enso slack search "deploy failed"         # search.messages (public channels)
-enso slack history C0123456789            # channel history
+enso slack history C0123456789            # channel history (top-level messages)
+enso slack history C0123456789 --since 24h   # bound the window
+enso slack history C0123456789 --all      # keep joins, pins and other noise
 enso slack thread C0123456789 <ts>        # full thread
+enso slack thread C0123456789 <ts> -n 20  # root plus the 19 most recent
 ```
+
+`history` and `thread` are also what an agent uses to read the channel it
+was invoked from — its ID arrives in `ENSO_ORIGIN_CHANNEL`. Both resolve
+display names, render mentions inert, and decode Slack's entity escaping.
+Thread replies never appear in `history`; Slack keeps them out of channel
+history, so reach them with `thread` and the parent's `ts`.
 
 Lookups refresh automatically on a miss (guarded to at most once every 60
 seconds so a typo-happy agent can't hammer the API). The bundled `slack`
