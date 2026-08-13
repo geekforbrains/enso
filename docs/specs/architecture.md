@@ -209,7 +209,7 @@ The two no-route replies are fixed transport strings. They do not invoke an LLM,
 
 ### Execution and session keys
 
-Cwd alone does not isolate sessions. Provider, model, effort, session, compaction, lock, queue, process, and activity state use a route-scoped `chat_key`. A Slack thread is distinct from its parent channel, and two channels sharing one workspace keep separate sessions. The per-thread session also doubles as the thread-participation marker that `thread_mention_required: false` follows ([slack-triggers.md](slack-triggers.md)). Provider selection is scoped to that conversation; `!use` never changes another route's selection.
+Cwd alone does not isolate sessions. Provider, model, effort, session, compaction, lock, queue, process, and activity state use a route-scoped `chat_key`. A Slack thread is distinct from its parent channel, and two channels sharing one workspace keep separate sessions. The per-thread session also doubles as one of the two thread-participation markers that `thread_mention_required: false` follows; the other is a thread root Enso posted itself, read from the event's `parent_user_id` ([slack-triggers.md](slack-triggers.md)). Provider selection is scoped to that conversation; `!use` never changes another route's selection.
 
 The key is serialized as structured data rather than by splitting a delimiter-bearing string. This matters because provider and route identifiers can already contain punctuation. It includes the Slack location, thread, workspace name, and access-profile name; it deliberately remains stable across `!use`, model, and policy-revision changes so stop, queues, and per-provider sessions remain reachable.
 

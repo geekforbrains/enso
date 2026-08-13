@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- `thread_mention_required: false` now follows threads Enso started itself. A top-level message Enso posts outside a dispatch — a job notification, `enso message send`, a surface confirmation — creates no conversation session, so replies under it were dropped until someone mentioned the bot once, even in a fully responsive channel. Enso's own thread roots now count as participation, read from the `parent_user_id` Slack stamps on every thread reply, so no extra API call is involved. Unchanged: `thread_mention_required: true` still gates own roots, threads rooted by anyone else still need a first mention, unrouted channels stay unrouted, and only human replies dispatch.
+
 ## [1.2.0] - 2026-08-13
 
 This release adds per-channel Slack response triggers and two restricted-profile grants — environment passthrough and an exact Claude MCP server allowlist — alongside an internal restructuring of the runtime that leaves behavior unchanged.

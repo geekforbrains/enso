@@ -2322,6 +2322,19 @@ class SlackTransport(BaseTransport):
             return False
         return bool(re.search(rf"<@{re.escape(self.bot_user_id)}(?:\|[^>]*)?>", text))
 
+    def authored_thread_parent(self, event: dict) -> bool:
+        """Whether Enso itself posted the root of this event's thread.
+
+        Slack stamps every thread reply with ``parent_user_id``, so this needs
+        no API call. Roots Enso posts outside a dispatch — job notifications,
+        ``enso message send``, surface confirmations — never create a
+        conversation session, so without this a channel that follows threads
+        would ignore every reply under its own top-level posts until someone
+        mentioned it once. An event that carries no ``parent_user_id`` falls
+        back to the session-based participation check.
+        """
+        return bool(self.bot_user_id) and event.get("parent_user_id") == self.bot_user_id
+
     def flatten_mentions(self, text: str, *, strip_addressing: bool = False) -> str:
         """Flatten inbound mention tokens through the directory cache.
 

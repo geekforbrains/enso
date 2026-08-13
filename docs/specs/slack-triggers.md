@@ -26,7 +26,7 @@ The four combinations:
 
 Regardless of settings, a reply to a **channel** message is always delivered in that message's thread. A non-mention top-level dispatch threads its reply exactly like a mention does today.
 
-`thread_mention_required: false` applies only to threads Enso is already in. The first contact inside a pre-existing thread still requires a mention; that dispatch joins the thread and following begins with the next reply. A top-level dispatch (mention, or any message when `mention_required: false`) joins the thread it starts.
+`thread_mention_required: false` applies only to threads Enso is already in. The first contact inside a thread someone else started still requires a mention; that dispatch joins the thread and following begins with the next reply. A top-level dispatch (mention, or any message when `mention_required: false`) joins the thread it starts, and so does a top-level message Enso posts itself — see [Thread participation](#thread-participation).
 
 ## Configuration
 
@@ -76,7 +76,7 @@ For a channel message the decision order is:
 1. Ignored subtypes, messages without a user, and machine-authored posts are dropped: Enso's own messages, other Slack apps' posts (`bot_id`/`bot_profile` — modern app posts carry no subtype), and Slackbot. Channel routes authorize human members, so a feed bot whose content embeds a mention token never becomes an authorized request, and two auto-responsive bots cannot reply to each other in a loop.
 1. The channel is resolved against exact routes. A non-mention message in an unrouted channel is dropped silently — no reply, no ledger row. Explicit contact (a mention, or any DM) at an unrouted location keeps its fixed local response, unchanged.
 1. A top-level message without a mention is dropped unless the route's effective `mention_required` is `false`.
-1. A thread reply without a mention is dropped unless the route's effective `thread_mention_required` is `false` **and** Enso participates in that thread.
+1. A thread reply without a mention is dropped unless the route's effective `thread_mention_required` is `false` **and** Enso participates in that thread — a prior dispatch's session, or a thread root Enso posted itself.
 1. Everything that survives claims the delivery ledger and dispatches through the normal route pipeline: same session keys, same audit rules, same policy checks.
 
 A route whose binding fails at dispatch time (unusable native policy, no launchable provider, blocked audit) reports its fixed error reply only to explicit contact. Unaddressed traffic admitted by relaxed triggers fails silently — audited routes still record the blocked turn — so a broken responsive channel is not spammed on every message.
@@ -87,9 +87,13 @@ Top-level dispatches fetch recent channel context whether or not they were menti
 
 ### Thread participation
 
-Enso "participates in" a thread when the thread has a conversation session: the per-thread session key recorded on every authorized dispatch. The marker is persisted with session state, so following survives restarts, and it expires with session retention (`ENSO_SESSION_TTL_DAYS`, default 30 days idle) — a thread that has been quiet that long needs a fresh mention, which re-joins it.
+Enso participates in a thread in either of two ways.
 
-Threads under messages Enso posted itself (job notifications, surface confirmations) have no dispatch session, so following does not engage there until someone mentions the bot once.
+**A prior authorized dispatch**, which records the per-thread conversation session key. The marker is persisted with session state, so following survives restarts, and it expires with session retention (`ENSO_SESSION_TTL_DAYS`, default 30 days idle) — a thread that has been quiet that long needs a fresh mention, which re-joins it.
+
+**Enso posted the thread root itself.** A top-level message Enso posts outside a dispatch — a job notification, `enso message send`, a surface confirmation — creates no conversation session, so the session marker alone would ignore every reply under Enso's own posts until someone mentioned the bot once. Slack stamps each thread reply with `parent_user_id`, so this is read from the event itself and costs no API call. It is not time-limited: unlike the session marker, a reply under an old Enso post still engages, starting a fresh session. An event without `parent_user_id` falls back to the session check.
+
+Only Enso's own roots count. A thread rooted by another person or another app still requires a first mention, and `thread_mention_required: true` gates own roots like any other. As everywhere else, only human replies dispatch — Enso's own messages in the thread never do, so it cannot answer itself.
 
 ## Mention rewriting
 

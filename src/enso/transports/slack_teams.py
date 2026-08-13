@@ -198,7 +198,12 @@ class TeamsRouter:
         if (
             not is_mention
             and not is_dm
-            and not self._passes_response_triggers(decision, channel, thread_ts)
+            and not self._passes_response_triggers(
+                decision,
+                channel,
+                thread_ts,
+                own_thread_root=transport.authored_thread_parent(event),
+            )
         ):
             return
 
@@ -273,12 +278,16 @@ class TeamsRouter:
         decision: Decision,
         channel: str,
         thread_ts: str | None,
+        *,
+        own_thread_root: bool = False,
     ) -> bool:
         """Whether an unaddressed channel message engages its route.
 
         Only an authorized route's settings can admit one: unrouted and
         misconfigured channels stay silent for unaddressed traffic (explicit
         contact still receives their fixed replies through the normal flow).
+        ``own_thread_root`` marks a thread Enso started itself, which counts
+        as participation even though no dispatch ever created its session.
         """
         route = decision.route
         if decision.status != "authorized" or route is None:
@@ -287,7 +296,7 @@ class TeamsRouter:
             return not route.mention_required
         if route.thread_mention_required:
             return False
-        return self._thread_participating(route, channel, thread_ts)
+        return own_thread_root or self._thread_participating(route, channel, thread_ts)
 
     def _thread_participating(self, route: Route, channel: str, thread_ts: str) -> bool:
         """Whether a prior authorized dispatch joined this thread.
@@ -295,6 +304,8 @@ class TeamsRouter:
         The per-thread conversation session doubles as the participation
         marker: it is recorded on every dispatch, persists with session
         state across restarts, and lapses with session retention pruning.
+        A thread Enso itself started has no such session; that case is
+        handled by ``own_thread_root`` in :meth:`_passes_response_triggers`.
         """
         chat_key = _key_digest(
             "conversation",

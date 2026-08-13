@@ -554,6 +554,7 @@ def _channel_message(
     text="hello there",
     thread_ts=None,
     channel_type="channel",
+    parent_user_id=None,
 ):
     event = {
         "user": user,
@@ -564,6 +565,8 @@ def _channel_message(
     }
     if thread_ts is not None:
         event["thread_ts"] = thread_ts
+    if parent_user_id is not None:
+        event["parent_user_id"] = parent_user_id
     return event
 
 
@@ -688,6 +691,111 @@ async def test_thread_following_lapses_without_a_session(tmp_enso, monkeypatch):
         _channel_message(ts="100.2", thread_ts="100.1", text="still there?"), client
     )
     rt.dispatch.assert_awaited_once()  # unchanged: the reply was ignored
+
+
+async def test_enso_rooted_thread_follows_unmentioned_replies(tmp_enso, monkeypatch):
+    """A thread Enso started itself is one Enso is in, with no prior dispatch.
+
+    Job notifications and `enso message send` post a top-level message
+    without dispatching, so the thread has no conversation session.
+    """
+    config = _triggers_config(tmp_enso, thread_mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    await transport._handle_message(
+        _channel_message(
+            ts="300.2",
+            thread_ts="300.1",
+            text="why did that job fail?",
+            parent_user_id="UBOT",
+        ),
+        client,
+    )
+
+    rt.dispatch.assert_awaited_once()
+    args, _kwargs = rt.dispatch.call_args
+    assert args[0] == "C0ACME:300.1"
+    assert "why did that job fail?" in args[1]
+    assert args[2]._thread_ts == "300.1"
+
+
+async def test_enso_rooted_thread_stays_gated_when_thread_mentions_required(
+    tmp_enso, monkeypatch
+):
+    """thread_mention_required: true is unconditional — own roots included."""
+    config = _triggers_config(tmp_enso, thread_mention_required=True)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    await transport._handle_message(
+        _channel_message(ts="300.2", thread_ts="300.1", parent_user_id="UBOT"),
+        client,
+    )
+
+    rt.dispatch.assert_not_awaited()
+    assert _ledger_rows(tmp_enso) == []
+
+
+async def test_thread_rooted_by_another_human_stays_gated(tmp_enso, monkeypatch):
+    """Only Enso's own roots join a thread; someone else's still needs a mention."""
+    config = _triggers_config(tmp_enso, thread_mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    await transport._handle_message(
+        _channel_message(ts="300.2", thread_ts="300.1", parent_user_id=CLIENT),
+        client,
+    )
+
+    rt.dispatch.assert_not_awaited()
+    assert _ledger_rows(tmp_enso) == []
+
+
+async def test_enso_rooted_dispatch_joins_the_thread(tmp_enso, monkeypatch):
+    """The first own-root reply records the session every later reply rides."""
+    config = _triggers_config(tmp_enso, thread_mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    await transport._handle_message(
+        _channel_message(ts="300.2", thread_ts="300.1", parent_user_id="UBOT"),
+        client,
+    )
+    rt.dispatch.assert_awaited_once()
+
+    # A later reply carrying no parent_user_id still follows, via the session.
+    await transport._handle_message(
+        _channel_message(ts="300.3", thread_ts="300.1", text="and another thing"),
+        client,
+    )
+    assert rt.dispatch.await_count == 2
+    assert rt.dispatch.call_args.args[0] == "C0ACME:300.1"
+
+
+async def test_unrouted_channel_ignores_enso_rooted_thread_replies(tmp_enso, monkeypatch):
+    """Enso posting into an unrouted channel never authorizes that channel."""
+    config = _teams_config(tmp_enso)
+    config["routes"]["slack"]["channel_defaults"] = {
+        "mention_required": False,
+        "thread_mention_required": False,
+    }
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    await transport._handle_message(
+        _channel_message(
+            channel="CUNROUTED",
+            ts="300.2",
+            thread_ts="300.1",
+            parent_user_id="UBOT",
+        ),
+        client,
+    )
+
+    rt.dispatch.assert_not_awaited()
+    client.chat_postMessage.assert_not_awaited()
+    assert _ledger_rows(tmp_enso) == []
 
 
 async def test_unrouted_channels_ignore_unmentioned_messages_despite_defaults(
