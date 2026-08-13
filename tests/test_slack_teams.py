@@ -778,6 +778,76 @@ async def test_bot_authored_channel_messages_never_dispatch(tmp_enso, monkeypatc
     assert _ledger_rows(tmp_enso) == []
 
 
+async def test_foreign_bot_messages_never_dispatch(tmp_enso, monkeypatch):
+    """Channel routes authorize humans; other apps' posts must not engage."""
+    config = _triggers_config(
+        tmp_enso, mention_required=False, thread_mention_required=False
+    )
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    event = _channel_message(user="U0OTHERBOT", text="Deploy failed: build 123")
+    event["bot_id"] = "B0FEED"  # modern app post: no subtype, bot_id set
+    await transport._handle_message(event, client)
+
+    rt.dispatch.assert_not_awaited()
+    client.chat_postMessage.assert_not_awaited()
+    assert _ledger_rows(tmp_enso) == []
+
+
+async def test_bot_authored_mention_tokens_never_dispatch(tmp_enso, monkeypatch):
+    """Machine content embedding <@bot> must not become an authorized request."""
+    transport, rt = _make_transport(tmp_enso, monkeypatch)
+    client = _make_client()
+
+    mention = _mention(user="U0OTHERBOT", text="RSS item: <@UBOT> look at this")
+    mention["bot_profile"] = {"id": "B0FEED"}
+    await transport._handle_app_mention(mention, client)
+
+    twin = _channel_message(user="U0OTHERBOT", text="RSS item: <@UBOT> look at this")
+    twin["bot_id"] = "B0FEED"
+    await transport._handle_message(twin, client)
+
+    rt.dispatch.assert_not_awaited()
+    client.chat_postMessage.assert_not_awaited()
+    assert _ledger_rows(tmp_enso) == []
+
+
+async def test_channel_defaults_relax_channels_at_the_transport_level(
+    tmp_enso, monkeypatch
+):
+    config = _teams_config(tmp_enso)
+    config["routes"]["slack"]["channel_defaults"] = {"mention_required": False}
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    await transport._handle_message(_channel_message(), client)
+
+    rt.dispatch.assert_awaited_once()
+    assert rt.dispatch.call_args.args[2]._thread_ts == "100.1"
+
+
+async def test_unaddressed_traffic_fails_silently_on_broken_route(tmp_enso, monkeypatch):
+    """Only explicit contact surfaces the fixed config-error reply."""
+    config = _triggers_config(tmp_enso, mention_required=False)
+    Path(tmp_enso, "policies", "client", "claude", "settings.json").unlink()
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    await transport._handle_message(_channel_message(), client)
+    rt.dispatch.assert_not_awaited()
+    client.chat_postMessage.assert_not_awaited()
+    # The audited route still records the silently blocked turn.
+    (row,) = _audit_rows(tmp_enso)
+    assert row["decision"] == "unconfigured"
+    assert row["response_text"] is None
+
+    # An explicit mention in the same broken channel still gets the reply.
+    await transport._handle_app_mention(_mention(ts="100.9"), client)
+    reply = client.chat_postMessage.call_args.kwargs["text"]
+    assert "enso config check" in reply
+
+
 # -- mention flattening --
 
 

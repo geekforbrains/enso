@@ -312,8 +312,17 @@ class TeamsRouter:
         channel: str,
         reply_thread: str | None,
         user: str,
+        *,
+        notify: bool = True,
     ) -> None:
-        """Reply to an authorized location whose binding is unusable."""
+        """Reply to an authorized location whose binding is unusable.
+
+        ``notify=False`` (unaddressed traffic admitted by relaxed response
+        triggers) keeps the audit record and ledger bookkeeping but stays
+        silent: only explicit contact may surface the fixed error reply,
+        otherwise a broken responsive channel would be spammed on every
+        message.
+        """
         turn_id = None
         if route is not None and route.audit:
             try:
@@ -322,11 +331,15 @@ class TeamsRouter:
                 turn_id = await asyncio.to_thread(
                     audit.create_turn,
                     decision="unconfigured",
-                    response_text=CONFIG_ERROR_REPLY,
+                    response_text=CONFIG_ERROR_REPLY if notify else None,
                     **fields,
                 )
             except Exception:
                 log.exception("Failed to record unconfigured turn")
+        if not notify:
+            log.warning("Suppressed config-error reply for unaddressed message in %s", channel)
+            await self._complete_ledger(account, delivery, turn_id)
+            return
         ctx = transport.make_context(client, channel, reply_thread, user_id=user)
         delivered = True
         try:
@@ -362,6 +375,10 @@ class TeamsRouter:
     ) -> None:
         route = decision.route
         assert route is not None
+        # Explicit contact may receive fixed error replies; unaddressed
+        # traffic admitted by relaxed triggers must fail silently instead of
+        # spamming a broken responsive channel on every message.
+        addressed = is_mention or is_dm
         workspace = self.teams.workspaces[route.workspace]
         access = self.teams.access_profiles[route.access]
         chat_key = _key_digest(
@@ -387,6 +404,7 @@ class TeamsRouter:
                 channel,
                 reply_thread,
                 user,
+                notify=addressed,
             )
             return
         self.runtime.active_provider_by_chat[chat_key] = provider
@@ -394,7 +412,6 @@ class TeamsRouter:
 
         # Commands require explicit addressing (a mention, or any DM); an
         # unaddressed "!text" in a responsive channel is ordinary prompt text.
-        addressed = is_mention or is_dm
         command_parts = text[1:].split(None, 1) if addressed and text.startswith("!") else []
         command_name = command_parts[0].lower() if command_parts else None
         model = self.runtime.get_active_model(chat_key, provider)
@@ -431,6 +448,7 @@ class TeamsRouter:
                 channel,
                 reply_thread,
                 user,
+                notify=addressed,
             )
             return
 
@@ -447,9 +465,10 @@ class TeamsRouter:
             except Exception:
                 log.exception("Audit write failed for %s", route.route_id)
                 if self.teams.audit_on_failure == "block":
-                    ctx = transport.make_context(client, channel, reply_thread, user_id=user)
-                    with contextlib.suppress(Exception):
-                        await ctx.reply(AUDIT_FAILURE_REPLY)
+                    if addressed:
+                        ctx = transport.make_context(client, channel, reply_thread, user_id=user)
+                        with contextlib.suppress(Exception):
+                            await ctx.reply(AUDIT_FAILURE_REPLY)
                     await self._complete_ledger(account, delivery, None)
                     return
 

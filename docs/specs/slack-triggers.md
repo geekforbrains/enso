@@ -73,11 +73,13 @@ Validation is fail-closed like the rest of `routes.slack`:
 
 For a channel message the decision order is:
 
-1. Ignored subtypes, messages without a user, and the bot's own messages are dropped.
+1. Ignored subtypes, messages without a user, and machine-authored posts are dropped: Enso's own messages, other Slack apps' posts (`bot_id`/`bot_profile` — modern app posts carry no subtype), and Slackbot. Channel routes authorize human members, so a feed bot whose content embeds a mention token never becomes an authorized request, and two auto-responsive bots cannot reply to each other in a loop.
 1. The channel is resolved against exact routes. A non-mention message in an unrouted channel is dropped silently — no reply, no ledger row. Explicit contact (a mention, or any DM) at an unrouted location keeps its fixed local response, unchanged.
 1. A top-level message without a mention is dropped unless the route's effective `mention_required` is `false`.
 1. A thread reply without a mention is dropped unless the route's effective `thread_mention_required` is `false` **and** Enso participates in that thread.
 1. Everything that survives claims the delivery ledger and dispatches through the normal route pipeline: same session keys, same audit rules, same policy checks.
+
+A route whose binding fails at dispatch time (unusable native policy, no launchable provider, blocked audit) reports its fixed error reply only to explicit contact. Unaddressed traffic admitted by relaxed triggers fails silently — audited routes still record the blocked turn — so a broken responsive channel is not spammed on every message.
 
 Non-mention drops happen before the ledger claim so a busy fully-ignored channel writes nothing. Mentions are delivered by Slack both as `app_mention` and as `message` events; whether a message counts as a mention is decided by inspecting its text for the bot's user ID, not by which event delivered it, and the ledger's delivery claim keeps the duplicate pair to one dispatch.
 
@@ -98,6 +100,8 @@ Inbound user mentions are flattened to inert text before the model sees them, in
 - A mention of anyone else becomes `@<display name> (<user ID>)`, resolved through the Slack directory cache, falling back to `@<user ID>` on a cache miss. The name is for reading; the ID stays authoritative for lookups (`enso slack`).
 
 Raw `<@U…>` syntax never reaches the prompt. This fixes two problems at once: the model previously never saw who a request was about (mentions were stripped wholesale), and raw mention syntax echoed back by the model would render as a live ping, since outbound mrkdwn is not escaped. Flattened text pings no one. Special mentions such as `<!here>` are untouched by this pass; they carry no user identity.
+
+Display names are user-controlled, so they are neutralized before interpolation — angle brackets, square brackets, and line breaks are removed. A crafted profile name can neither reintroduce live mention syntax through the flattener nor forge the `[user …]` author labels on injected context.
 
 Audit turns record the flattened request text.
 

@@ -718,6 +718,18 @@ def _attachments_prompt(attachments: list[dict]) -> str:
 
 _MENTION_TOKEN_RE = re.compile(r"<@([A-Z0-9]+)(?:\|[^>]*)?>")
 
+# Characters a profile name may not carry into a prompt: angle brackets would
+# reintroduce live <@U…>/<!channel> syntax through a hostile display name,
+# square brackets and line breaks could forge the [user …]: context labels.
+_UNSAFE_NAME_RE = re.compile(r"[<>\[\]\r\n]+")
+
+
+def _safe_name(name: str | None) -> str:
+    """Neutralize a user-controlled profile name for prompt interpolation."""
+    if not name:
+        return ""
+    return " ".join(_UNSAFE_NAME_RE.sub(" ", name).split())
+
 
 def _flatten_mention_text(
     text: str,
@@ -749,8 +761,8 @@ def _flatten_mention_text(
     def _replace(match: re.Match) -> str:
         user_id = match.group(1)
         if bot_user_id and user_id == bot_user_id:
-            return f"@{bot_label}"
-        name = lookup(user_id)
+            return f"@{_safe_name(bot_label)}" if bot_label else f"@{user_id}"
+        name = _safe_name(lookup(user_id))
         return f"@{name} ({user_id})" if name else f"@{user_id}"
 
     return _MENTION_TOKEN_RE.sub(_replace, text)
@@ -2297,6 +2309,21 @@ class SlackTransport(BaseTransport):
         """A unique per-turn uploads directory inside the workspace."""
         return os.path.join(workspace_path, "uploads", turn_id)
 
+    def _routable_author(self, event: dict) -> bool:
+        """Whether the event has a human author routes may dispatch for.
+
+        Channel routes authorize human members. Machine-authored posts —
+        Enso itself, other Slack apps (``bot_id``/``bot_profile`` with no
+        subtype on modern posts), and Slackbot — must never dispatch: a
+        feed bot whose content embeds a mention token would otherwise
+        become an authorized request, and two auto-responsive bots would
+        reply to each other in a loop.
+        """
+        user = event.get("user")
+        if not user or user == self.bot_user_id or user == "USLACKBOT":
+            return False
+        return not (event.get("bot_id") or event.get("bot_profile"))
+
     async def _handle_app_mention(
         self,
         event: dict,
@@ -2304,6 +2331,8 @@ class SlackTransport(BaseTransport):
     ) -> None:
         """Route a channel @mention through exact Slack routes."""
         if event.get("subtype") in IGNORED_SUBTYPES:
+            return
+        if not self._routable_author(event):
             return
         await self.teams_router.handle_event(self, client, event, is_mention=True)
 
@@ -2320,8 +2349,7 @@ class SlackTransport(BaseTransport):
         """
         if event.get("subtype") in IGNORED_SUBTYPES:
             return
-        user = event.get("user")
-        if user is None or user == self.bot_user_id:
+        if not self._routable_author(event):
             return
         if event.get("channel_type") == "im":
             await self.teams_router.handle_event(self, client, event, is_mention=False)
@@ -2360,7 +2388,7 @@ class SlackTransport(BaseTransport):
                 continue
             if untrusted:
                 label = "assistant" if is_bot else f"user {author}"
-                name = "" if is_bot else self.lookup_user_name(author)
+                name = "" if is_bot else _safe_name(self.lookup_user_name(author))
                 if name:
                     label += f" ({name})"
             else:
