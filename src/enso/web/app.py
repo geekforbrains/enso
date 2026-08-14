@@ -2,7 +2,7 @@
 
 Exposes ``create_app(runtime) -> Starlette``. The runtime is stashed on
 ``app.state.runtime`` and every handler reads configuration via
-``runtime.config`` and the working directory via ``runtime.working_dir``.
+``runtime.config``.
 
 Data comes from the file/DB-backed modules (``enso.jobs``, ``enso.runs``,
 ``enso.tables``, ``enso.frontmatter``); this module only renders and mutates — it never owns
@@ -41,10 +41,16 @@ from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
 from .. import docs, frontmatter, runs, sqlite_store, tables
-from ..config import CONFIG_DIR, JOBS_DIR, SKILL_TOMBSTONES_DIRNAME
+from ..config import (
+    CONFIG_DIR,
+    DEFAULT_WORKSPACE_NAME,
+    JOBS_DIR,
+    SKILL_TOMBSTONES_DIRNAME,
+)
 from ..fsutil import atomic_write_text, is_within, regular_file_sha256
 from ..jobs import Job, load_jobs
 from ..secret_refs import resolve_config_secret
+from ..teams import load_catalog
 
 log = logging.getLogger(__name__)
 
@@ -587,10 +593,16 @@ def _create_skill_tombstone(name: str) -> None:
 def _skill_tool_cleanup_candidates(request, name: str) -> list[tuple[str, str]]:
     """Find unmodified installed tools owned only by the skill being deleted."""
     runtime = request.app.state.runtime
-    working_dir = getattr(runtime, "working_dir", None)
-    if not isinstance(working_dir, str) or not working_dir:
+    config = getattr(runtime, "config", None)
+    if not isinstance(config, dict):
         return []
-    tools_dir = os.path.join(working_dir, "tools")
+    catalog = load_catalog(config)
+    if not catalog.usable(DEFAULT_WORKSPACE_NAME):
+        return []
+    tools_dir = os.path.join(
+        catalog.workspaces[DEFAULT_WORKSPACE_NAME].path,
+        "tools",
+    )
     if os.path.islink(tools_dir) or not os.path.isdir(tools_dir):
         return []
 
@@ -1324,13 +1336,12 @@ def _bounded_page(value: object, maximum: int) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _agents_path(request) -> str:
-    runtime = request.app.state.runtime
-    return os.path.join(runtime.working_dir, "AGENTS.md")
+def _agents_path() -> str:
+    return os.path.join(CONFIG_DIR, "AGENTS.md")
 
 
 async def agents_view(request):
-    path = _agents_path(request)
+    path = _agents_path()
     content = ""
     if os.path.isfile(path):
         try:
@@ -1342,7 +1353,7 @@ async def agents_view(request):
 
 
 async def agents_edit(request):
-    path = _agents_path(request)
+    path = _agents_path()
     form = await request.form()
     content = (form.get("content") or "").replace("\r\n", "\n")
     # Write the symlink target directly; the CLAUDE.md -> AGENTS.md symlink is

@@ -27,10 +27,14 @@ class FakeProvider:
     def __init__(self):
         self.prompts: list[tuple[str, str]] = []
         self.launches = []
+        self.instructions = []
 
-    def build_batch_command(self, prompt: str, model: str, *, launch=None) -> list[str]:
+    def build_batch_command(
+        self, prompt: str, model: str, *, launch=None, instructions=None
+    ) -> list[str]:
         self.prompts.append((prompt, model))
         self.launches.append(launch)
+        self.instructions.append(instructions)
         return ["fake-provider"]
 
     @staticmethod
@@ -459,6 +463,7 @@ async def test_scheduled_open_prerun_injects_output_and_runs_provider(
 
     assert result.status == "ok"
     assert provider.prompts == [("Use this: captured context", "sonnet")]
+    assert provider.instructions[0].content == "# Test shared instructions\n"
     runtime.make_provider.assert_called_once()
     assert runtime.make_provider.call_args.args == ("claude",)
     assert runtime.make_provider.call_args.kwargs["timeout"] == job.timeout
@@ -838,6 +843,26 @@ async def test_job_policy_preparation_failure_never_falls_back(
     runtime.jobs._run_job_prerun.assert_not_awaited()
     runtime.make_provider.assert_not_called()
     runtime._spawn_process.assert_not_awaited()
+
+
+async def test_job_missing_shared_instructions_fails_before_prerun(
+    tmp_enso,
+    sample_config,
+):
+    Path(tmp_enso, "AGENTS.md").unlink()
+    runtime = Runtime(sample_config)
+    job = make_job(tmp_enso)
+    runtime.jobs._run_job_prerun = AsyncMock()
+    runtime.make_provider = MagicMock()
+
+    result = await runtime.jobs._execute_job(
+        job, trigger="manual", notify_failures=False
+    )
+
+    assert result.status == "error"
+    assert "shared instruction file is missing" in result.output
+    runtime.jobs._run_job_prerun.assert_not_awaited()
+    runtime.make_provider.assert_not_called()
 
 
 async def test_job_policy_preflight_failure_happens_before_prerun(

@@ -27,7 +27,6 @@ def _teams_config(tmp_enso: str) -> dict:
     settings.write_text(json.dumps({"sandbox": {"enabled": True}, "disableAllHooks": True}))
     settings.chmod(0o600)
     return {
-        "working_dir": str(base / "workspace"),
         "transport": "slack",
         "transports": {
             "slack": {
@@ -71,6 +70,18 @@ def test_config_check_passes_valid_config(tmp_enso):
     result = runner.invoke(app, ["config", "check"])
     assert result.exit_code == 0, result.output
     assert "All checks passed" in result.output
+    assert "Shared instructions" in result.output
+    assert not Path(tmp_enso, "runtime").exists()
+
+
+def test_config_check_fails_when_shared_instructions_are_missing(tmp_enso):
+    Path(tmp_enso, "AGENTS.md").unlink()
+    save_config(_teams_config(tmp_enso))
+
+    result = runner.invoke(app, ["config", "check"])
+
+    assert result.exit_code == 1
+    assert "shared instruction file is missing" in result.output
 
 
 def test_config_check_fails_on_missing_policy(tmp_enso):
@@ -199,12 +210,33 @@ def test_config_check_validates_catalog_without_slack_routes(tmp_enso):
             "bot_token": "x",
             "allowed_users": ["123"],
             "notify_channel": "123",
+            "workspace": "ops",
         }
     }
     save_config(config)
     result = runner.invoke(app, ["config", "check"])
     assert result.exit_code == 0
     assert "All checks passed" in result.output
+    assert "ops → admin" in result.output
+
+
+@pytest.mark.parametrize("workspace", [None, "missing"])
+def test_config_check_rejects_invalid_telegram_workspace(tmp_enso, workspace):
+    config = _teams_config(tmp_enso)
+    config["transport"] = "telegram"
+    telegram = {
+        "bot_token": "x",
+        "allowed_users": ["123"],
+    }
+    if workspace is not None:
+        telegram["workspace"] = workspace
+    config["transports"] = {"telegram": telegram}
+    save_config(config)
+
+    result = runner.invoke(app, ["config", "check"])
+
+    assert result.exit_code == 1
+    assert "transports.telegram.workspace" in result.output
 
 
 @pytest.mark.parametrize(
@@ -227,6 +259,7 @@ def test_config_check_rejects_malformed_telegram_allowlist(
             "bot_token": "x",
             "allowed_users": allowed_users,
             "notify_channel": "123",
+            "workspace": "ops",
         },
     }
     save_config(config)
@@ -246,6 +279,7 @@ def test_config_check_rejects_telegram_alias_with_valid_allowlist(tmp_enso):
             "allowed_users": ["123"],
             "allowed_user_ids": [123],
             "notify_channel": "123",
+            "workspace": "ops",
         },
     }
     save_config(config)
@@ -262,6 +296,7 @@ def test_config_check_validates_inactive_configured_telegram(tmp_enso):
         "bot_token": "x",
         "allowed_users": ["123", "0"],
         "allowed_user_ids": [123],
+        "workspace": "ops",
     }
     save_config(config)
 
@@ -280,6 +315,7 @@ def test_config_check_validates_inactive_configured_slack(tmp_enso):
             "bot_token": "x",
             "allowed_users": ["123"],
             "notify_channel": "123",
+            "workspace": "ops",
         },
         "slack": {
             "bot_token": "x",
@@ -304,6 +340,7 @@ def test_config_check_rejects_legacy_top_level_routes_when_slack_is_inactive(tmp
             "bot_token": "x",
             "allowed_users": ["123"],
             "notify_channel": "123",
+            "workspace": "ops",
         }
     }
     config["routes"] = {"slack": {"account_id": "T1"}}
@@ -428,3 +465,17 @@ def test_install_workspaces_keeps_instructions_local(tmp_enso):
         assert (root / "CLAUDE.md").is_symlink()
         for cli_dir in (".claude", ".agents"):
             assert not (root / cli_dir / "skills").exists()
+
+
+def test_install_workspaces_writes_nothing_when_catalog_topology_is_invalid(tmp_enso):
+    config = _teams_config(tmp_enso)
+    policy_root = Path(config["policies"]["client"]["policy_dir"])
+    config["workspaces"]["acme"]["path"] = str(policy_root)
+    ops_root = Path(config["workspaces"]["ops"]["path"])
+
+    Runtime(config).install_workspaces()
+
+    assert not (policy_root / "AGENTS.md").exists()
+    assert not (policy_root / "CLAUDE.md").exists()
+    assert not (policy_root / "uploads").exists()
+    assert not (ops_root / "AGENTS.md").exists()

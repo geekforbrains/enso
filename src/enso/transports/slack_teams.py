@@ -527,6 +527,7 @@ class TeamsRouter:
             chat_key=chat_key,
             path=workspace.path,
             workspace_id=workspace.name,
+            include_global_messages=False,
             concurrency=workspace.concurrency,
             workspace=workspace,
             policy=execution_policy,
@@ -610,8 +611,6 @@ class TeamsRouter:
                 turn.text,
                 command_context.chat_key,
                 ctx=ctx,
-                workspace=workspace,
-                policy=execution_policy,
                 allowed_providers=self._usable_providers(workspace, execution_policy),
                 context=command_context,
             )

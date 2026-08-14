@@ -19,8 +19,8 @@ def _tables_web_app(tmp_path, monkeypatch):
     from starlette.testclient import TestClient
 
     config_dir = tmp_path / "enso"
-    working_dir = tmp_path / "workspace"
-    working_dir.mkdir()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
     config_dir.mkdir()
     monkeypatch.setattr(tables_mod.config, "CONFIG_DIR", str(config_dir))
     monkeypatch.setattr(web_app, "CONFIG_DIR", str(config_dir))
@@ -28,7 +28,26 @@ def _tables_web_app(tmp_path, monkeypatch):
     monkeypatch.setattr(web_app.runs, "list_runs", lambda **_kwargs: [])
     monkeypatch.setattr(web_app.docs, "load_docs", lambda: SimpleNamespace(docs=[]))
     monkeypatch.setattr(web_app, "_skill_inventory", lambda _request: ([], []))
-    runtime = SimpleNamespace(working_dir=str(working_dir), config={"web": {}})
+    runtime = SimpleNamespace(
+        config={
+            "web": {},
+            "workspaces": {
+                "default": {
+                    "path": str(workspace),
+                    "policy": "admin",
+                    "concurrency": 1,
+                }
+            },
+            "policies": {
+                "admin": {
+                    "unrestricted": True,
+                    "providers": ["claude"],
+                    "default_provider": "claude",
+                    "chat_commands": "*",
+                }
+            },
+        }
+    )
     client = TestClient(web_app.create_app(runtime), base_url="http://127.0.0.1")
     return config_dir, client
 

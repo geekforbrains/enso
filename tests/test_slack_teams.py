@@ -40,7 +40,6 @@ def _teams_config(tmp_enso: str) -> dict:
     )
     codex.chmod(0o600)
     return {
-        "working_dir": str(base / "workspace"),
         "transport": "slack",
         "transports": {
             "slack": {

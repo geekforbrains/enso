@@ -516,6 +516,7 @@ class JobRunner:
             chat_key=_job_chat_key(job, workspace.name, execution_policy.name),
             path=workspace.path,
             workspace_id=workspace.name,
+            include_global_messages=False,
             concurrency=workspace.concurrency,
             workspace=workspace,
             policy=execution_policy,
@@ -533,25 +534,26 @@ class JobRunner:
         if config_error or execution is None:
             return None, config_error
 
+        from .instructions import validate_shared_instructions
         from .policy import prepare_launch
 
         assert execution.workspace is not None
         assert execution.policy is not None
         try:
-            # Prove the complete native launch can be constructed before
-            # running the trusted host-side prerun. The resulting launch is
-            # deliberately discarded: policy is prepared again inside the
-            # workspace slot at the actual provider spawn boundary.
+            # Prove the native launch and shared control file are usable before
+            # running the trusted host-side prerun. They are resolved again
+            # inside the workspace slot at the actual provider spawn boundary.
             await asyncio.to_thread(
                 prepare_launch,
                 execution.workspace,
                 execution.policy,
                 job.provider,
             )
+            await asyncio.to_thread(validate_shared_instructions)
         except Exception as exc:
             detail = self._sanitize_job_diagnostic(str(exc))
             return None, (
-                "native launch is unavailable"
+                "execution is unavailable"
                 f"{f': {detail}' if detail else ''}"
             )
         return execution, None
@@ -699,10 +701,12 @@ class JobRunner:
                         timeout=job.timeout,
                         context=execution,
                     )
+                    assert execution.instructions is not None
                     cmd = provider.build_batch_command(
                         prompt,
                         job.model,
                         launch=execution.launch,
+                        instructions=execution.instructions,
                     )
                     log.info(
                         "%s spawning provider_class=%s cwd=%s prompt_len=%d",
@@ -710,6 +714,11 @@ class JobRunner:
                         provider.__class__.__name__,
                         execution.path,
                         len(prompt),
+                    )
+                    log.info(
+                        "%s shared instructions revision=%s",
+                        tag,
+                        execution.instructions.revision[:12],
                     )
                     log.debug("%s command=%s", tag, _redacted_command(cmd))
                     spawn_kwargs: dict[str, Any] = {

@@ -79,18 +79,21 @@ from ..surface_drafts import (
     SurfaceDraftOrigin,
     TerminalStatus,
 )
-from . import BaseTransport, TransportContext, safe_filename
+from . import BaseTransport, SecureUploadDirectory, TransportContext, safe_filename
 from .slack_teams import TeamsRouter
 
 if TYPE_CHECKING:
     from ..core import ExecutionContext, Runtime
-    from ..teams import Policy, Workspace
 
 log = logging.getLogger(__name__)
 
 SLACK_MARKDOWN_BLOCK_LIMIT = 12000
 SLACK_TEXT_LIMIT = 40000
 SLACK_APP_HOME_VIEW_LIMIT = 250_000
+# Enso retains Slack uploads locally, so cap each file at 100 MiB to bound disk use
+# independently of Slack's plan-dependent upload limits.
+SLACK_FILE_DOWNLOAD_LIMIT = 100 * 1024 * 1024
+SLACK_FILE_DOWNLOAD_CHUNK = 1024 * 1024
 SURFACE_MAINTENANCE_SECONDS = 5 * 60
 SURFACE_PUBLISH_ACTION_ID = "enso.surface.publish.v1"
 SURFACE_CANCEL_ACTION_ID = "enso.surface.cancel.v1"
@@ -120,6 +123,10 @@ class _SurfaceAction:
 class _SurfacePublishResult:
     status: TerminalStatus
     text: str
+
+
+class _SlackFileTooLargeError(Exception):
+    """A Slack download exceeded Enso's retained-file safety limit."""
 
 
 def _slack_error_code(exc: Exception) -> str:
@@ -628,6 +635,29 @@ def _download_filename(file_info: dict) -> str:
     name = safe_filename(str(raw_name)) or "file"
     prefix = safe_filename(str(file_info.get("id") or "")) or uuid.uuid4().hex[:8]
     return f"{prefix}-{name}"
+
+
+def _advertised_file_size(file_info: dict) -> int | None:
+    """Return Slack's non-negative byte count when its metadata is usable."""
+    raw_size = file_info.get("size")
+    if isinstance(raw_size, bool) or not isinstance(raw_size, (int, str)):
+        return None
+    try:
+        size = int(raw_size)
+    except ValueError:
+        return None
+    return size if size >= 0 else None
+
+
+def _stream_file_with_limit(response: Any, destination: Any, limit: int) -> int:
+    """Stream a response while enforcing a hard byte limit."""
+    written = 0
+    while chunk := response.read(SLACK_FILE_DOWNLOAD_CHUNK):
+        written += len(chunk)
+        if written > limit:
+            raise _SlackFileTooLargeError
+        destination.write(chunk)
+    return written
 
 
 def _file_label(file_info: dict) -> str:
@@ -2445,20 +2475,16 @@ class SlackTransport(BaseTransport):
         conv_id: str,
         ctx: SlackContext | None = None,
         *,
-        workspace: Workspace | None = None,
-        policy: Policy | None = None,
-        allowed_providers: list[str] | None = None,
-        sel_key: str | None = None,
-        context: ExecutionContext | None = None,
+        allowed_providers: list[str],
+        context: ExecutionContext,
     ) -> str | None:
         """Parse and execute a !command. Returns response text or None.
 
         ``ctx`` is optional but commands that need to post a progress message
         before doing slow work (e.g. ``!compact``) will use it when given.
 
-        Teams routes pass their workspace, policy, policy-usable
-        provider list, and execution context for commands that spawn a
-        provider.
+        Teams routes pass the policy-usable provider list and complete
+        workspace-policy execution context.
         """
         parts = text[1:].split(None, 1)
         cmd_name = parts[0].lower() if parts else ""
@@ -2466,7 +2492,7 @@ class SlackTransport(BaseTransport):
 
         rt = self.runtime
 
-        if policy is not None and not policy.allows_command(cmd_name):
+        if not context.policy.allows_command(cmd_name):
             return f"!{cmd_name} is not available in this conversation."
 
         if cmd_name == "stop":
@@ -2475,7 +2501,7 @@ class SlackTransport(BaseTransport):
         if cmd_name == "use":
             response, options = cmd_use(
                 rt,
-                sel_key or conv_id,
+                conv_id,
                 cmd_args,
                 providers=allowed_providers,
             )
@@ -2502,8 +2528,8 @@ class SlackTransport(BaseTransport):
             parts_list = cmd_clear(
                 rt,
                 conv_id,
+                context=context,
                 clear_all=bool(clear_all),
-                working_dir=workspace.path if workspace is not None else None,
             )
             return "\n".join(parts_list)
 
@@ -2521,11 +2547,9 @@ class SlackTransport(BaseTransport):
             return cmd_logs()[-40000:]
 
         if cmd_name == "help":
-            available = (
-                SLACK_COMMANDS
-                if policy is None
-                else [c for c in SLACK_COMMANDS if policy.allows_command(c[0])]
-            )
+            available = [
+                c for c in SLACK_COMMANDS if context.policy.allows_command(c[0])
+            ]
             return cmd_help(available, prefix="!")
 
         return f"Unknown command: !{cmd_name}. Use !help for available commands."
@@ -2561,7 +2585,7 @@ class SlackTransport(BaseTransport):
         files: list[dict],
         client: AsyncWebClient,
         *,
-        uploads_dir: str | None = None,
+        uploads_dir: str,
     ) -> list[str]:
         hydrated = await asyncio.gather(
             *(self._hydrate_file_info(file_info, client) for file_info in files)
@@ -2571,34 +2595,72 @@ class SlackTransport(BaseTransport):
     def _download_files_sync(
         self,
         files: list[dict],
-        uploads_dir: str | None = None,
+        uploads_dir: str,
     ) -> list[str]:
         """Download Slack file uploads into the workspace's uploads dir.
 
         Returns the local paths of files that downloaded successfully; failed
         downloads are logged and skipped so a single broken attachment doesn't
-        drop the whole message.
+        drop the whole message. Each file is limited to 100 MiB, checked first
+        from Slack metadata and again against the streamed byte count.
         """
-        if uploads_dir is None:
-            uploads_dir = os.path.join(self.runtime.working_dir, "uploads")
-        os.makedirs(uploads_dir, exist_ok=True)
+        try:
+            upload_directory = SecureUploadDirectory.create_for_path(uploads_dir)
+        except (OSError, ValueError):
+            log.exception("Failed to create secure Slack upload directory at %s", uploads_dir)
+            return []
 
-        downloaded: list[str] = []
-        for file_info in files:
-            url = _file_download_url(file_info)
-            if not url:
-                continue
-            name = _download_filename(file_info)
-            dest_path = os.path.join(uploads_dir, name)
-            try:
-                req = Request(url, headers={"Authorization": f"Bearer {self.bot_token}"})
-                with urlopen(req) as resp, open(dest_path, "wb") as f:
-                    f.write(resp.read())
-                downloaded.append(dest_path)
-                log.info("Downloaded file to %s", dest_path)
-            except Exception:
-                log.exception("Failed to download file %s", name)
-        return downloaded
+        downloaded: list[tuple[str, str]] = []
+        verified_downloads: list[str] = []
+        with upload_directory:
+            for file_info in files:
+                url = _file_download_url(file_info)
+                if not url:
+                    continue
+                name = _download_filename(file_info)
+                advertised_size = _advertised_file_size(file_info)
+                if (
+                    advertised_size is not None
+                    and advertised_size > SLACK_FILE_DOWNLOAD_LIMIT
+                ):
+                    log.warning(
+                        "Skipped oversized Slack file %s (%d bytes; limit %d)",
+                        name,
+                        advertised_size,
+                        SLACK_FILE_DOWNLOAD_LIMIT,
+                    )
+                    continue
+                try:
+                    req = Request(
+                        url,
+                        headers={"Authorization": f"Bearer {self.bot_token}"},
+                    )
+                    with (
+                        urlopen(req) as response,
+                        upload_directory.open_file(name) as destination,
+                    ):
+                        _stream_file_with_limit(
+                            response,
+                            destination,
+                            SLACK_FILE_DOWNLOAD_LIMIT,
+                        )
+                    dest_path = upload_directory.file_path(name)
+                    downloaded.append((name, dest_path))
+                    log.info("Downloaded file to %s", dest_path)
+                except _SlackFileTooLargeError:
+                    log.warning(
+                        "Stopped oversized Slack file %s after exceeding %d bytes",
+                        name,
+                        SLACK_FILE_DOWNLOAD_LIMIT,
+                    )
+                except Exception:
+                    log.exception("Failed to download file %s", name)
+            for name, dest_path in downloaded:
+                if upload_directory.verified_file_path(name) == dest_path:
+                    verified_downloads.append(dest_path)
+                else:
+                    log.error("Discarding Slack upload path changed during download: %s", name)
+        return verified_downloads
 
     async def notify(self, text: str, *, destination: str | None = None) -> None:
         """Send a one-way notification. Requires an explicit destination.

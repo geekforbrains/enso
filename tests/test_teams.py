@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from enso.teams import load_catalog, load_teams, resolve
+from enso.teams import load_catalog, load_teams, load_telegram, resolve
 
 
 def make_config(tmp_path, **overrides) -> dict:
@@ -17,7 +17,6 @@ def make_config(tmp_path, **overrides) -> dict:
     for directory in (company, acme, client_policy):
         directory.mkdir(parents=True, exist_ok=True)
     config = {
-        "working_dir": str(tmp_path / "legacy"),
         "transports": {
             "slack": {
                 "bot_token": "x",
@@ -179,6 +178,67 @@ def test_catalog_loads_without_slack_routes(tmp_path):
     assert catalog.usable("company")
 
 
+def test_catalog_rejects_legacy_working_dir(tmp_path):
+    config = make_config(tmp_path)
+    config["working_dir"] = str(tmp_path / "legacy")
+
+    catalog = load_catalog(config)
+
+    assert any(
+        "working_dir is no longer supported" in error and "workspaces" in error
+        for error in catalog.errors
+    )
+
+
+def test_telegram_binds_one_workspace_and_derived_policy(tmp_path):
+    config = make_config(tmp_path)
+    config["transports"]["telegram"] = {
+        "bot_token": "token",
+        "allowed_users": ["123"],
+        "notify_channel": "123",
+        "workspace": "client-a",
+    }
+
+    parsed = load_telegram(config)
+
+    assert parsed.errors == ()
+    assert parsed.allowed_users == ("123",)
+    assert parsed.workspace.name == "client-a"
+    assert parsed.policy.name == "client-readonly"
+
+
+@pytest.mark.parametrize("workspace", [None, "missing"])
+def test_telegram_requires_a_usable_workspace(tmp_path, workspace):
+    config = make_config(tmp_path)
+    telegram = {
+        "bot_token": "token",
+        "allowed_users": ["123"],
+    }
+    if workspace is not None:
+        telegram["workspace"] = workspace
+    config["transports"]["telegram"] = telegram
+
+    parsed = load_telegram(config)
+
+    assert parsed.workspace is None
+    assert parsed.policy is None
+    assert any("transports.telegram.workspace" in error for error in parsed.errors)
+
+
+def test_telegram_rejects_unknown_transport_keys(tmp_path):
+    config = make_config(tmp_path)
+    config["transports"]["telegram"] = {
+        "bot_token": "token",
+        "allowed_users": ["123"],
+        "workspace": "company",
+        "fallback_workspace": "client-a",
+    }
+
+    parsed = load_telegram(config)
+
+    assert any("unknown keys ['fallback_workspace']" in error for error in parsed.errors)
+
+
 def test_catalog_rejects_unknown_or_invalid_bindings(tmp_path):
     config = make_config(tmp_path)
     config["policies"]["client-readonly"]["providers"] = []
@@ -229,12 +289,13 @@ def test_missing_slack_account_id_is_actionable_invalid_config(tmp_path):
     )
 
 
-def test_paths_are_canonical_absolute(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
+def test_paths_are_canonical_absolute(tmp_path):
     config = make_config(tmp_path)
-    config["workspaces"]["company"]["path"] = "workspaces/../workspaces/company"
+    config["workspaces"]["company"]["path"] = str(
+        tmp_path / "workspaces" / ".." / "workspaces" / "company"
+    )
     config["policies"]["client-readonly"]["policy_dir"] = (
-        "policies/../policies/client-readonly"
+        str(tmp_path / "policies" / ".." / "policies" / "client-readonly")
     )
     parsed = load_teams(config)
     assert parsed.workspaces["company"].path == os.path.realpath(
@@ -243,6 +304,30 @@ def test_paths_are_canonical_absolute(tmp_path, monkeypatch):
     assert parsed.policies["client-readonly"].policy_dir == os.path.realpath(
         tmp_path / "policies" / "client-readonly"
     )
+
+
+@pytest.mark.parametrize(
+    ("section", "name", "field"),
+    [
+        ("workspaces", "company", "path"),
+        ("policies", "client-readonly", "policy_dir"),
+    ],
+)
+def test_catalog_rejects_cwd_dependent_relative_paths(
+    tmp_path, section, name, field
+):
+    config = make_config(tmp_path)
+    config[section][name][field] = "relative/path"
+
+    catalog = load_catalog(config)
+
+    problems = (
+        catalog.workspace_errors[name]
+        if section == "workspaces"
+        else catalog.policy_errors[name]
+    )
+    assert any("must be absolute" in problem for problem in problems)
+    assert not catalog.usable("company" if section == "workspaces" else "client-a")
 
 
 def test_policy_dir_defaults_from_policy_name(tmp_path, monkeypatch):
@@ -393,22 +478,6 @@ def test_policy_dir_may_not_overlap_any_workspace(tmp_path, direction):
     policy = workspace / "policy" if direction == "inside" else tmp_path / "workspaces" / "clients"
     config["policies"]["client-readonly"]["policy_dir"] = str(policy)
     assert not load_teams(config).dispatchable
-
-
-@pytest.mark.parametrize("direction", ["inside", "contains"])
-def test_policy_dir_may_not_overlap_legacy_global_working_dir(tmp_path, direction):
-    config = make_config(tmp_path)
-    legacy = tmp_path / "legacy"
-    policy = legacy / "policy" if direction == "inside" else tmp_path
-    config["policies"]["client-readonly"]["policy_dir"] = str(policy)
-
-    parsed = load_teams(config)
-
-    assert not parsed.dispatchable
-    assert any(
-        "policy_dir of policy client-readonly overlaps global working_dir" in error
-        for error in parsed.errors
-    )
 
 
 # -- item-scoped fail-closed errors --

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from enso.commands import (
+    cmd_clear,
     cmd_compact_async,
     cmd_effort,
     cmd_model,
@@ -17,6 +18,29 @@ from enso.commands import (
 from enso.core import ExecutionContext, Runtime
 from enso.providers import PROVIDER_NAMES
 from enso.providers.agy import AgyProvider
+from enso.teams import Policy, Workspace
+
+
+def _execution_context(
+    sample_config: dict,
+    chat_key: str,
+    *,
+    providers: tuple[str, ...] = tuple(PROVIDER_NAMES),
+    include_global_messages: bool = False,
+    **kwargs,
+) -> ExecutionContext:
+    path = sample_config["workspaces"]["default"]["path"]
+    workspace = Workspace("test", path, "test", 1)
+    policy = Policy("test", None, True, providers, providers[0], "*")
+    return ExecutionContext(
+        chat_key=chat_key,
+        path=path,
+        workspace_id=workspace.name,
+        workspace=workspace,
+        policy=policy,
+        include_global_messages=include_global_messages,
+        **kwargs,
+    )
 
 
 def test_cmd_model_selects_codex_alias(sample_config):
@@ -194,15 +218,42 @@ def test_cmd_status_reports_provider_and_model_only(sample_config):
     assert "Runner" not in out
 
 
+def test_cmd_clear_only_touches_policy_allowed_providers(sample_config, monkeypatch):
+    rt = Runtime(sample_config)
+    rt.session_by_chat_provider[("42", "claude")] = "claude-session"
+    rt.session_by_chat_provider[("42", "codex")] = "codex-session"
+    context = _execution_context(sample_config, "42", providers=("claude",))
+    cleared: list[tuple[str, str | None, str]] = []
+
+    class _FakeProvider:
+        def __init__(self, name: str):
+            self.name = name
+
+        def clear_session(self, session_id, working_dir):
+            cleared.append((self.name, session_id, working_dir))
+            return "deleted"
+
+    monkeypatch.setattr(
+        rt,
+        "make_provider",
+        lambda name, *, context: _FakeProvider(name),
+    )
+
+    parts = cmd_clear(rt, "42", context=context, clear_all=True)
+
+    assert parts == ["Claude: deleted"]
+    assert cleared == [("claude", "claude-session", context.path)]
+    assert rt.session_by_chat_provider[("42", "codex")] == "codex-session"
+
+
 @pytest.mark.asyncio
 async def test_cmd_stop_finalizes_cleared_queue_items(sample_config):
     rt = Runtime(sample_config)
     chat_key = "teams:stable"
     completed = []
-    context = ExecutionContext(
-        chat_key=chat_key,
-        path=rt.working_dir,
-        workspace_id="acme",
+    context = _execution_context(
+        sample_config,
+        chat_key,
         on_complete=lambda outcome, reason: completed.append((outcome, reason)),
     )
     lock = rt.get_chat_lock(chat_key)
@@ -225,10 +276,8 @@ async def test_cmd_stop_finalizes_cleared_queue_items(sample_config):
 @pytest.mark.asyncio
 async def test_compact_happy_path(tmp_enso, sample_config, monkeypatch):
     """Successful compaction stashes summary as seed and clears the session."""
-    import os as _os
-
-    sample_config["working_dir"] = _os.path.join(tmp_enso, "workspace")
     rt = Runtime(sample_config)
+    context = _execution_context(sample_config, "42")
     rt.session_by_chat_provider[("42", "claude")] = "sess_existing"
     rt.run_compaction = AsyncMock(return_value="distilled context")
 
@@ -240,12 +289,12 @@ async def test_compact_happy_path(tmp_enso, sample_config, monkeypatch):
             captured["cleared"] = (sid, working_dir)
             return "deleted"
 
-    monkeypatch.setattr(rt, "make_provider", lambda _name: _FakeProvider())
+    monkeypatch.setattr(rt, "make_provider", lambda _name, *, context: _FakeProvider())
 
-    reply = await cmd_compact_async(rt, "42")
+    reply = await cmd_compact_async(rt, "42", context=context)
 
     assert "Compacted" in reply
-    rt.run_compaction.assert_awaited_once_with("42", "claude", context=None)
+    rt.run_compaction.assert_awaited_once_with("42", "claude", context=context)
     assert rt.compact_seed_by_chat["42"] == "distilled context"
     # cmd_clear should have removed the active provider's session.
     assert ("42", "claude") not in rt.session_by_chat_provider
@@ -258,7 +307,7 @@ async def test_compact_no_session_refuses(sample_config):
     rt = Runtime(sample_config)
     rt.run_compaction = AsyncMock()  # should never run
 
-    reply = await cmd_compact_async(rt, "42")
+    reply = await cmd_compact_async(rt, "42", context=_execution_context(sample_config, "42"))
 
     assert "Nothing to compact" in reply
     rt.run_compaction.assert_not_awaited()
@@ -273,7 +322,9 @@ async def test_compact_refuses_while_busy(sample_config):
     lock = rt.get_chat_lock("42")
     await lock.acquire()
     try:
-        reply = await cmd_compact_async(rt, "42")
+        reply = await cmd_compact_async(
+            rt, "42", context=_execution_context(sample_config, "42")
+        )
     finally:
         lock.release()
 
@@ -284,14 +335,11 @@ async def test_compact_refuses_while_busy(sample_config):
 @pytest.mark.asyncio
 async def test_compact_summary_empty_leaves_session(tmp_enso, sample_config):
     """If run_compaction returns empty, we don't clear or stash."""
-    import os as _os
-
-    sample_config["working_dir"] = _os.path.join(tmp_enso, "workspace")
     rt = Runtime(sample_config)
     rt.session_by_chat_provider[("42", "claude")] = "sess_existing"
     rt.run_compaction = AsyncMock(return_value="")
 
-    reply = await cmd_compact_async(rt, "42")
+    reply = await cmd_compact_async(rt, "42", context=_execution_context(sample_config, "42"))
 
     assert "failed" in reply.lower()
     assert rt.session_by_chat_provider[("42", "claude")] == "sess_existing"

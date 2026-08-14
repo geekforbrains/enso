@@ -49,7 +49,26 @@ def _database_web_app(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(config_mod, "CONFIG_DIR", str(config_dir))
     for module in (config_mod, jobs_mod, web_app):
         monkeypatch.setattr(module, "JOBS_DIR", str(jobs_dir))
-    runtime = SimpleNamespace(working_dir=str(workspace), config={"web": {}})
+    runtime = SimpleNamespace(
+        config={
+            "web": {},
+            "workspaces": {
+                "default": {
+                    "path": str(workspace),
+                    "policy": "admin",
+                    "concurrency": 1,
+                }
+            },
+            "policies": {
+                "admin": {
+                    "unrestricted": True,
+                    "providers": ["claude"],
+                    "default_provider": "claude",
+                    "chat_commands": "*",
+                }
+            },
+        }
+    )
     return config_dir, web_app.create_app(runtime)
 
 

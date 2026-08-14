@@ -14,6 +14,27 @@ pytest.importorskip("jinja2")
 from enso.web import app as web_app
 
 
+def _runtime_config(workspace: Path, web: dict | None = None) -> dict:
+    return {
+        "web": web or {},
+        "workspaces": {
+            "default": {
+                "path": str(workspace),
+                "policy": "admin",
+                "concurrency": 1,
+            }
+        },
+        "policies": {
+            "admin": {
+                "unrestricted": True,
+                "providers": ["claude"],
+                "default_provider": "claude",
+                "chat_commands": "*",
+            }
+        },
+    }
+
+
 def _write_skill(root: Path, name: str, description: str = "") -> Path:
     skill_dir = root / name
     skill_dir.mkdir(parents=True)
@@ -38,12 +59,14 @@ def _skill_web_app(tmp_path, monkeypatch, *external_roots: Path):
     config_dir = tmp_path / "enso"
     skills_dir = config_dir / "skills"
     skills_dir.mkdir(parents=True)
-    working_dir = tmp_path / "workspace"
-    working_dir.mkdir()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
     monkeypatch.setattr(web_app, "CONFIG_DIR", str(config_dir))
     runtime = SimpleNamespace(
-        working_dir=str(working_dir),
-        config={"web": {"external_skill_roots": [str(root) for root in external_roots]}},
+        config=_runtime_config(
+            workspace,
+            {"external_skill_roots": [str(root) for root in external_roots]},
+        ),
     )
     return skills_dir, TestClient(web_app.create_app(runtime), base_url="http://127.0.0.1")
 
@@ -198,6 +221,54 @@ def test_skill_delete_preserves_modified_installed_tool(tmp_path, monkeypatch):
     assert response.status_code == 303
     assert not skill_path.parent.exists()
     assert installed_tool.read_text(encoding="utf-8") == "print('locally modified')\n"
+
+
+def test_skill_delete_skips_tool_cleanup_without_usable_default_workspace(
+    tmp_path, monkeypatch
+):
+    from starlette.testclient import TestClient
+
+    config_dir = tmp_path / "enso"
+    skills_dir = config_dir / "skills"
+    skill_path = _write_skill(skills_dir, "custom")
+    tool = skill_path.parent / "custom_tool.py"
+    tool.write_text("print('source')\n", encoding="utf-8")
+    other_workspace = tmp_path / "other-workspace"
+    installed_tool = other_workspace / "tools" / tool.name
+    installed_tool.parent.mkdir(parents=True)
+    installed_tool.write_bytes(tool.read_bytes())
+    monkeypatch.setattr(web_app, "CONFIG_DIR", str(config_dir))
+    runtime = SimpleNamespace(
+        config={
+            "web": {},
+            "workspaces": {
+                "other": {
+                    "path": str(other_workspace),
+                    "policy": "admin",
+                    "concurrency": 1,
+                }
+            },
+            "policies": {
+                "admin": {
+                    "unrestricted": True,
+                    "providers": ["claude"],
+                    "default_provider": "claude",
+                    "chat_commands": "*",
+                }
+            },
+        }
+    )
+    client = TestClient(web_app.create_app(runtime), base_url="http://127.0.0.1")
+
+    response = client.post(
+        "/skills/custom/delete",
+        data={"_csrf": client.app.state.csrf_token},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert not skill_path.parent.exists()
+    assert installed_tool.is_file()
 
 
 def test_skill_delete_tombstone_prevents_bundled_skill_reseed(tmp_path, monkeypatch):

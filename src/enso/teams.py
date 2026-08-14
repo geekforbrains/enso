@@ -17,6 +17,7 @@ import re
 from dataclasses import dataclass, field
 from typing import TypeGuard
 
+from .auth import parse_telegram_allowed_users
 from .providers import PROVIDER_NAMES
 
 AUDIT_ON_FAILURE_VALUES = ("block", "warn")
@@ -56,6 +57,14 @@ _SLACK_TRANSPORT_KEYS = {
     # unknown-key error.
     "allowed_users",
 }
+_TELEGRAM_TRANSPORT_KEYS = {
+    "allowed_user_ids",  # dedicated migration error
+    "allowed_users",
+    "bot_token",
+    "bot_token_1password",
+    "notify_channel",
+    "workspace",
+}
 
 
 def _default_policy_dir(policy_name: str) -> str:
@@ -71,6 +80,13 @@ def _is_str_list(value: object) -> TypeGuard[list[str]]:
 def _canonical(path: str) -> str:
     """Return an expanded, absolute, symlink-resolved filesystem path."""
     return os.path.realpath(os.path.abspath(os.path.expanduser(path)))
+
+
+def _catalog_path(path: str, label: str, problems: list[str]) -> str:
+    """Canonicalize a configured path while rejecting process-cwd dependence."""
+    if not os.path.isabs(os.path.expanduser(path)):
+        problems.append(f"{label} must be absolute or start with ~/")
+    return _canonical(path)
 
 
 def _within(child: str, parent: str) -> bool:
@@ -216,6 +232,21 @@ class TeamsConfig:
         return self.catalog.usable(route.workspace)
 
 
+@dataclass(frozen=True)
+class TelegramConfig:
+    """Parsed private Telegram authorization and workspace binding."""
+
+    catalog: ExecutionCatalog
+    allowed_users: tuple[str, ...]
+    workspace: Workspace | None
+    policy: Policy | None
+    errors: tuple[str, ...] = ()
+
+    @property
+    def usable(self) -> bool:
+        return not self.errors and self.workspace is not None and self.policy is not None
+
+
 def load_catalog(config: dict) -> ExecutionCatalog:
     """Parse reusable workspace/policy configuration without a transport."""
     errors: list[str] = []
@@ -230,19 +261,81 @@ def load_catalog(config: dict) -> ExecutionCatalog:
         errors.append(
             "routes is no longer supported; move routes.slack fields into transports.slack"
         )
+    if "working_dir" in config:
+        errors.append(
+            "working_dir is no longer supported; define named workspaces and bind each "
+            "transport to one"
+        )
     for name, workspace in workspaces.items():
         if workspace.policy and workspace.policy not in policies:
             workspace_errors[name] = (
                 *workspace_errors.get(name, ()),
                 f"unknown policy {workspace.policy!r}",
             )
-    _check_topology(workspaces, policies, config.get("working_dir"), errors)
+    _check_topology(workspaces, policies, errors)
     return ExecutionCatalog(
         workspaces=workspaces,
         policies=policies,
         errors=tuple(errors),
         workspace_errors=workspace_errors,
         policy_errors=policy_errors,
+    )
+
+
+def load_telegram(config: dict) -> TelegramConfig:
+    """Parse Telegram's exact users and single workspace-owned policy."""
+    catalog = load_catalog(config)
+    errors = list(catalog.errors)
+    transports = config.get("transports", {})
+    if not isinstance(transports, dict):
+        errors.append("transports must be an object")
+        telegram_cfg: dict = {}
+    else:
+        raw_telegram = transports.get("telegram", {})
+        if not isinstance(raw_telegram, dict):
+            errors.append("transports.telegram must be an object")
+            telegram_cfg = {}
+        else:
+            telegram_cfg = raw_telegram
+
+    errors.extend(
+        _unknown_keys(telegram_cfg, _TELEGRAM_TRANSPORT_KEYS, "transports.telegram")
+    )
+    if "allowed_user_ids" in telegram_cfg:
+        errors.append(
+            "transports.telegram.allowed_user_ids is no longer supported; use "
+            "allowed_users with exact numeric string IDs"
+        )
+    allowed_users = parse_telegram_allowed_users(telegram_cfg)
+    if not allowed_users:
+        errors.append(
+            "transports.telegram.allowed_users must be a non-empty list of unique "
+            "positive numeric strings"
+        )
+
+    workspace: Workspace | None = None
+    execution_policy: Policy | None = None
+    workspace_name = telegram_cfg.get("workspace")
+    if not isinstance(workspace_name, str) or not workspace_name:
+        errors.append("transports.telegram.workspace is required and must be a string")
+    elif workspace_name not in catalog.workspaces:
+        errors.append(
+            f"transports.telegram.workspace references unknown workspace {workspace_name!r}"
+        )
+    elif not catalog.usable(workspace_name):
+        errors.append(
+            f"transports.telegram.workspace {workspace_name!r} does not have a usable policy"
+        )
+    else:
+        workspace = catalog.workspaces[workspace_name]
+        execution_policy = catalog.policy_for(workspace)
+
+    return TelegramConfig(
+        catalog=catalog,
+        allowed_users=tuple(allowed_users),
+        workspace=workspace,
+        policy=execution_policy,
+        errors=tuple(errors),
     )
 
 
@@ -357,7 +450,7 @@ def _load_workspaces(
             concurrency = 1
         workspaces[name] = Workspace(
             name=name,
-            path=_canonical(path) if path else "",
+            path=_catalog_path(path, "path", problems) if path else "",
             policy=policy,
             concurrency=concurrency,
         )
@@ -412,9 +505,14 @@ def _load_policies(
             explicit_policy_dir = None
         if unrestricted and explicit_policy_dir is not None:
             problems.append("unrestricted: true is invalid alongside policy_dir")
-        policy_dir = (
-            None if unrestricted else _canonical(explicit_policy_dir or _default_policy_dir(name))
-        )
+        policy_dir = None
+        if not unrestricted:
+            configured_policy_dir = explicit_policy_dir or _default_policy_dir(name)
+            policy_dir = _catalog_path(
+                configured_policy_dir,
+                "policy_dir",
+                problems,
+            )
 
         providers_raw = cfg.get("providers")
         if not _is_str_list(providers_raw) or not providers_raw:
@@ -494,7 +592,6 @@ def _load_env_passthrough(
 def _check_topology(
     workspaces: dict[str, Workspace],
     policies: dict[str, Policy],
-    working_dir: object,
     errors: list[str],
 ) -> None:
     """Validate that mutable workspaces cannot overlap policy locations."""
@@ -505,13 +602,10 @@ def _check_topology(
             if _within(paths[first], paths[second]) or _within(paths[second], paths[first]):
                 errors.append(f"workspaces {first} and {second} have overlapping or nested paths")
 
-    protected_roots = dict(paths)
-    if isinstance(working_dir, str) and working_dir:
-        protected_roots["global working_dir"] = _canonical(working_dir)
     for policy_name, policy in policies.items():
         if policy.policy_dir is None:
             continue
-        for workspace_name, root in protected_roots.items():
+        for workspace_name, root in paths.items():
             if _within(policy.policy_dir, root) or _within(root, policy.policy_dir):
                 errors.append(f"policy_dir of policy {policy_name} overlaps {workspace_name}")
 

@@ -22,6 +22,7 @@ from . import messages
 from .config import (
     CONFIG_DIR,
     DEFAULT_AGENT,
+    DEFAULT_WORKSPACE_NAME,
     SKILL_TOMBSTONES_DIRNAME,
     STATE_FILE,
     provider_models,
@@ -38,6 +39,7 @@ from .providers import PROVIDER_NAMES, BaseProvider, StreamEvent, provider_class
 from .teams import load_catalog
 
 if TYPE_CHECKING:
+    from .instructions import InstructionBundle
     from .job_runner import JobRunner
     from .policy import Launch
     from .teams import Policy, Workspace
@@ -189,19 +191,22 @@ _RETIRED_SKILL_TOOL_HASHES: dict[tuple[str, str], frozenset[str]] = {
 
 
 def _redacted_command(cmd: list[str]) -> str:
-    """Return a shell-like command string with the prompt argument redacted."""
-    if "--" in cmd:
-        sep = cmd.index("--")
+    """Return a shell-like command string with instruction text redacted."""
+    redacted = list(cmd)
+    for index, part in enumerate(redacted[:-1]):
+        if part == "-c" and redacted[index + 1].startswith("developer_instructions="):
+            redacted[index + 1] = "developer_instructions=<redacted>"
+    if "--" in redacted:
+        sep = redacted.index("--")
         prompt_chars = sum(len(part) for part in cmd[sep + 1 :])
-        return shlex.join([*cmd[: sep + 1], f"<prompt chars={prompt_chars}>"])
+        return shlex.join([*redacted[: sep + 1], f"<prompt chars={prompt_chars}>"])
     for flag in ("--prompt", "--print", "-p"):
-        if flag in cmd:
-            prompt_index = cmd.index(flag) + 1
-            if prompt_index < len(cmd):
-                redacted = list(cmd)
+        if flag in redacted:
+            prompt_index = redacted.index(flag) + 1
+            if prompt_index < len(redacted):
                 redacted[prompt_index] = f"<prompt chars={len(cmd[prompt_index])}>"
                 return shlex.join(redacted)
-    return shlex.join(cmd)
+    return shlex.join(redacted)
 
 
 def _state_rows(raw: object, migrate: Callable[[dict], list[dict]]) -> tuple[Iterable, bool]:
@@ -255,27 +260,30 @@ class _QueuedItem:
     ctx: TransportContext
     preview: str
     provider: str
-    context: ExecutionContext | None = None
+    context: ExecutionContext
 
 
 @dataclass(frozen=True)
 class ExecutionContext:
     """Immutable execution binding for one conversation's work.
 
-    Telegram conversations bind the global ``working_dir`` with the unrestricted
-    invocation and use the conversation ID as their state key. Slack routes and
-    jobs bind a named workspace and its policy. The native launch is prepared
-    only after the workspace slot is acquired, immediately before the provider
-    process starts.
+    Every transport and job binds a named workspace and its policy. The native
+    launch is prepared only after the workspace slot is acquired, immediately
+    before the provider process starts. ``include_global_messages`` is an
+    explicit transport choice: Telegram opts in, while Slack and jobs do not.
     """
 
     chat_key: str  # key for all per-chat state: sessions, queues, locks
     path: str  # subprocess cwd — the workspace root
-    workspace_id: str | None = None
-    launch: Launch | None = None  # None → unrestricted global invocation
+    workspace_id: str
+    workspace: Workspace = field(compare=False, repr=False)
+    policy: Policy = field(compare=False, repr=False)
+    include_global_messages: bool
+    launch: Launch | None = None
+    instructions: InstructionBundle | None = field(
+        default=None, compare=False, repr=False
+    )
     concurrency: int = 1  # max concurrent provider runs sharing the workspace
-    workspace: Workspace | None = field(default=None, compare=False, repr=False)
-    policy: Policy | None = field(default=None, compare=False, repr=False)
     model: str | None = None
     effort: str | None = None
     on_launch: Callable[[Launch], None] | None = field(default=None, compare=False, repr=False)
@@ -301,8 +309,6 @@ class Runtime:
         flags = logging_flags(config)
         self.debug_prompts: bool = flags["debug_prompts"]
         self.debug_events: bool = flags["debug_events"]
-        self.working_dir: str = config.get("working_dir", os.getcwd())
-        os.makedirs(self.working_dir, exist_ok=True)
         self.models: dict[str, list[str]] = provider_models(config)
         agent_config = config.get("agent")
         timeout = (
@@ -354,12 +360,12 @@ class Runtime:
     # -- Workspace setup --
 
     def install_system_prompts(self) -> None:
-        """Set up working directory, system prompts, skills, hooks, and config dirs.
+        """Set up shared system prompts, skills, hooks, and config directories.
 
         Creates:
         - ~/.enso/docs/, ~/.enso/jobs/, and ~/.enso/skills/
         - Bundled skills seeded into ~/.enso/skills/
-        - AGENTS.md in working_dir (from bundled template on first install)
+        - AGENTS.md in ~/.enso/ (from bundled template on first install)
         - CLAUDE.md as a symlink to AGENTS.md (Claude reads CLAUDE.md;
           Codex reads AGENTS.md natively)
         - .claude/skills and .agents/skills symlinked to ~/.enso/skills/
@@ -383,13 +389,13 @@ class Runtime:
         source = importlib.resources.files("enso").joinpath("prompts").joinpath("AGENTS.md")
         content = source.read_text(encoding="utf-8")
 
-        canonical = os.path.join(self.working_dir, "AGENTS.md")
+        canonical = os.path.join(CONFIG_DIR, "AGENTS.md")
         is_pristine_template = regular_file_sha256(canonical) in _PRISTINE_AGENTS_SHA256
         if not os.path.lexists(canonical) or is_pristine_template:
             try:
                 atomic_write_text(canonical, content)
                 action = "Updated" if is_pristine_template else "Wrote"
-                log.info("%s AGENTS.md in %s", action, self.working_dir)
+                log.info("%s AGENTS.md in %s", action, CONFIG_DIR)
             except OSError:
                 log.warning("Could not write AGENTS.md", exc_info=True)
                 return
@@ -400,13 +406,13 @@ class Runtime:
                 canonical,
             )
 
-        self._ensure_symlink(os.path.join(self.working_dir, "CLAUDE.md"), "AGENTS.md")
+        self._ensure_symlink(os.path.join(CONFIG_DIR, "CLAUDE.md"), "AGENTS.md")
 
         # Symlink skills into CLI-specific discovery paths
         # .claude/skills -> ~/.enso/skills (Claude Code)
         # .agents/skills -> ~/.enso/skills (Codex)
         for cli_dir in (".claude", ".agents"):
-            parent = os.path.join(self.working_dir, cli_dir)
+            parent = os.path.join(CONFIG_DIR, cli_dir)
             os.makedirs(parent, exist_ok=True)
             self._ensure_symlink(os.path.join(parent, "skills"), skills_dir)
 
@@ -417,7 +423,7 @@ class Runtime:
         # Codex: no compaction hooks available
         notify_cmd = "enso message send 'Autocompacting context, this might take a moment...'"
         self._ensure_hook_entry(
-            os.path.join(self.working_dir, ".claude", "settings.json"),
+            os.path.join(CONFIG_DIR, ".claude", "settings.json"),
             event="PreCompact",
             matcher="auto",
             command=notify_cmd,
@@ -432,6 +438,12 @@ class Runtime:
         never linked in.
         """
         catalog = load_catalog(self.config)
+        if not catalog.valid:
+            log.warning(
+                "Skipping workspace bootstrap because the execution catalog is invalid: %s",
+                "; ".join(catalog.errors),
+            )
+            return
         for name, workspace in catalog.workspaces.items():
             if name in catalog.workspace_errors or not workspace.path:
                 continue
@@ -572,14 +584,19 @@ class Runtime:
         """Remove retired pristine bundled tool scripts and their installed copies.
 
         Removing the skill copy alone is not enough: ``_install_skill_tools``
-        reinstalls any ``.py`` it finds in a skill dir, so the stale
-        ``workspace/tools/`` twin is removed first.
+        reinstalls any ``.py`` it finds in a skill dir, so a stale copy in the
+        configured default workspace is removed first when that binding is usable.
         """
+        workspace_path = self._default_workspace_path()
         for (skill_name, filename), pristine in _RETIRED_SKILL_TOOL_HASHES.items():
             skill_copy = os.path.join(skills_dir, skill_name, filename)
-            tool_copy = os.path.join(self.working_dir, "tools", filename)
+            tool_copy = (
+                os.path.join(workspace_path, "tools", filename)
+                if workspace_path is not None
+                else None
+            )
             skill_hash = regular_file_sha256(skill_copy)
-            if regular_file_sha256(tool_copy) in pristine:
+            if tool_copy is not None and regular_file_sha256(tool_copy) in pristine:
                 with contextlib.suppress(OSError):
                     os.remove(tool_copy)
                     log.info("Removed retired installed tool: %s", filename)
@@ -649,8 +666,11 @@ class Runtime:
                     )
 
     def _install_skill_tools(self, skills_dir: str) -> None:
-        """Copy executable tool scripts from skills into workspace/tools/."""
-        tools_dir = os.path.join(self.working_dir, "tools")
+        """Copy skill tools into the usable configured default workspace."""
+        workspace_path = self._default_workspace_path()
+        if workspace_path is None:
+            return
+        tools_dir = os.path.join(workspace_path, "tools")
         for entry in os.listdir(skills_dir):
             skill_path = os.path.join(skills_dir, entry)
             if not os.path.isdir(skill_path):
@@ -674,6 +694,13 @@ class Runtime:
                     log.info("Installed tool: %s", fname)
                 except OSError:
                     log.warning("Could not install tool %s", fname, exc_info=True)
+
+    def _default_workspace_path(self) -> str | None:
+        """Return the usable configured default workspace path, if any."""
+        catalog = load_catalog(self.config)
+        if not catalog.usable(DEFAULT_WORKSPACE_NAME):
+            return None
+        return catalog.workspaces[DEFAULT_WORKSPACE_NAME].path
 
     # -- State persistence --
 
@@ -904,22 +931,14 @@ class Runtime:
 
     # -- Provider management --
 
-    def global_context(self, conv_id: str) -> ExecutionContext:
-        """The Telegram execution binding: global working_dir, unrestricted."""
-        return ExecutionContext(chat_key=conv_id, path=self.working_dir)
-
     @contextlib.asynccontextmanager
     async def _workspace_slot(self, context: ExecutionContext):
         """Hold the workspace's concurrency slot for the duration of a run.
 
-        A no-op for global (non-workspace) contexts, which stay unbounded.
         The semaphore is shared across Slack chats, compaction, and jobs bound
         to the same workspace; the default limit is one active writer.
         """
         workspace_id = context.workspace_id
-        if workspace_id is None:
-            yield
-            return
         sem = self._workspace_sems.get(workspace_id)
         if sem is None:
             sem = asyncio.Semaphore(max(1, context.concurrency))
@@ -930,35 +949,39 @@ class Runtime:
     async def _prepare_execution_context(
         self, provider: str, context: ExecutionContext
     ) -> ExecutionContext:
-        """Resolve a workspace policy into a native launch at the spawn boundary."""
-        if context.launch is not None or context.policy is None:
+        """Resolve policy and shared instructions at the spawn boundary."""
+        if context.launch is not None and context.instructions is not None:
             return context
-        if context.workspace is None:
-            raise RuntimeError("policy is missing its workspace binding")
+        from .instructions import load_shared_instructions
         from .policy import prepare_launch
 
-        launch = await asyncio.to_thread(
-            prepare_launch, context.workspace, context.policy, provider
-        )
-        if context.on_launch is not None:
+        launch = context.launch
+        prepared_launch = launch is None
+        if launch is None:
+            launch = await asyncio.to_thread(
+                prepare_launch, context.workspace, context.policy, provider
+            )
+        instructions = context.instructions
+        if instructions is None:
+            instructions = await asyncio.to_thread(load_shared_instructions)
+        if prepared_launch and context.on_launch is not None:
             await asyncio.to_thread(context.on_launch, launch)
-        return replace(context, launch=launch)
+        return replace(context, launch=launch, instructions=instructions)
 
     def make_provider(
         self,
         provider_name: str,
         *,
+        context: ExecutionContext,
         timeout: int | float | None = None,
-        context: ExecutionContext | None = None,
     ) -> BaseProvider:
-        """Create a fresh provider instance using the configured CLI path."""
+        """Create a provider bound to an explicit workspace execution context."""
         provider_cfg = self.config.get("providers", {}).get(provider_name, {})
         path = provider_cfg.get("path", provider_name)
         effective_timeout = self.agent_timeout if timeout is None else timeout
-        working_dir = context.path if context is not None else self.working_dir
         return provider_class(provider_name)(
             path,
-            working_dir=working_dir,
+            working_dir=context.path,
             timeout=effective_timeout,
         )
 
@@ -1003,15 +1026,10 @@ class Runtime:
         prompt: str,
         ctx: TransportContext,
         *,
+        context: ExecutionContext,
         preview: str = "",
-        context: ExecutionContext | None = None,
     ) -> None:
-        """Dispatch a prompt, queuing if a request is already running.
-
-        ``context`` is the resolved execution binding; None binds the global
-        context (global working_dir, conversation-keyed state).
-        """
-        context = context or self.global_context(conversation_id)
+        """Dispatch a prompt under its resolved workspace-policy binding."""
         if self.update_in_progress:
             await ctx.reply("Enso is updating. Please try again after it restarts.")
             await self._finalize_unrun(context, "update_in_progress")
@@ -1039,8 +1057,7 @@ class Runtime:
             pos = len(queue)
             label = f"{preview}\u2026" if len(preview) == 50 else preview
             await ctx.reply(f"Queued (#{pos}): {label}")
-            # Teams-mode logs are metadata-only; the preview is content.
-            logged = "<redacted>" if context.workspace_id is not None else preview
+            logged = preview if context.include_global_messages else "<redacted>"
             log.info("Queued #%d for %s: %s", pos, conversation_id, logged)
             return
 
@@ -1050,9 +1067,8 @@ class Runtime:
             provider,
             len(prompt),
         )
-        if context.workspace_id is None:
+        if context.include_global_messages:
             log.debug("Dispatch prompt:\n%s", prompt)
-
         async with lock:
             await self._run_request(provider, prompt, ctx, context)
             await self._drain_queue(chat_key)
@@ -1113,13 +1129,13 @@ class Runtime:
             try:
                 prepared = await self._prepare_execution_context(provider, context)
             except Exception:
-                log.exception("Native policy launch failed for conv=%s", chat_key)
+                log.exception("Execution preparation failed for conv=%s", chat_key)
                 with contextlib.suppress(Exception):
                     await ctx.reply(
                         "This conversation isn't fully configured for Enso — "
                         "ask an admin to run `enso config check`."
                     )
-                return "blocked", "policy_unavailable"
+                return "blocked", "execution_unavailable"
             return await self.process_request(provider, prompt, chat_key, ctx, context=prepared)
 
     async def _drain_queue(self, chat_key: str) -> None:
@@ -1133,10 +1149,9 @@ class Runtime:
                 "Dequeuing for conv=%s (%d remaining): %s",
                 chat_key,
                 len(queue),
-                "<redacted>" if item.context and item.context.workspace_id else item.preview,
+                item.preview if item.context.include_global_messages else "<redacted>",
             )
-            context = item.context or self.global_context(chat_key)
-            await self._run_request(item.provider, item.prompt, item.ctx, context)
+            await self._run_request(item.provider, item.prompt, item.ctx, item.context)
 
     def kick_queue(self, conv_id: str) -> None:
         """Schedule a queue drain outside dispatch (e.g. after /compact).
@@ -1176,8 +1191,7 @@ class Runtime:
         items = list(queue)
         queue.clear()
         for item in items:
-            if item.context is not None:
-                await self._finalize_unrun(item.context, "queue_cleared")
+            await self._finalize_unrun(item.context, "queue_cleared")
         return len(items)
 
     async def remove_from_queue(self, conv_id: str, index: int) -> bool:
@@ -1186,8 +1200,7 @@ class Runtime:
         if queue and 0 <= index < len(queue):
             item = queue[index]
             del queue[index]
-            if item.context is not None:
-                await self._finalize_unrun(item.context, "queue_removed")
+            await self._finalize_unrun(item.context, "queue_removed")
             log.info("Removed queue item %d for conv=%s", index, conv_id)
             return True
         return False
@@ -1247,7 +1260,7 @@ class Runtime:
         chat_id: str,
         provider_name: str,
         *,
-        context: ExecutionContext | None = None,
+        context: ExecutionContext,
     ) -> str:
         """Run a hidden summarisation pass and return the summary text.
 
@@ -1262,25 +1275,23 @@ class Runtime:
             log.warning("run_compaction skipped — chat %s is busy", chat_id)
             return ""
 
-        slot = self._workspace_slot(context) if context is not None else contextlib.nullcontext()
-        async with lock, slot:
-            if context is not None:
-                try:
-                    context = await self._prepare_execution_context(provider_name, context)
-                except Exception:
-                    log.exception(
-                        "Native policy launch failed during compaction for chat=%s",
-                        chat_id,
-                    )
-                    return ""
+        async with lock, self._workspace_slot(context):
+            try:
+                context = await self._prepare_execution_context(provider_name, context)
+            except Exception:
+                log.exception(
+                    "Execution preparation failed during compaction for chat=%s",
+                    chat_id,
+                )
+                return ""
             model = (
                 context.model
-                if context is not None and context.model is not None
+                if context.model is not None
                 else self.get_active_model(chat_id, provider_name)
             )
             effort = (
                 context.effort
-                if context is not None and context.model is not None
+                if context.effort is not None
                 else self.get_active_effort(chat_id, provider_name, model)
             )
             provider = self.make_provider(
@@ -1463,9 +1474,9 @@ class Runtime:
         chat_id: str,
         model: str,
         *,
+        context: ExecutionContext,
         effort: str | None = None,
         extra_env: dict[str, str] | None = None,
-        context: ExecutionContext | None = None,
     ):
         """Spawn a provider subprocess and yield StreamEvents.
 
@@ -1474,14 +1485,23 @@ class Runtime:
         ``ENSO_ORIGIN_*`` so commands like ``enso message send`` can route
         back to the triggering conversation without an explicit ``--to``.
 
-        ``context`` selects the execution binding: cwd, the policy launch
-        (non-bypass flags), and — for policy launches — the allowlisted
-        minimal environment instead of the full parent environment.
+        ``context`` must already carry the policy launch prepared under its
+        workspace slot. It selects the cwd, non-bypass flags, and — for
+        restricted launches — the allowlisted environment.
         """
-        context = context or self.global_context(chat_id)
         launch = context.launch
+        instructions = context.instructions
+        if launch is None or instructions is None:
+            raise RuntimeError("execution context must be prepared before provider execution")
         session_id = self._get_or_create_session(chat_id, provider.name)
-        cmd = provider.build_command(prompt, model, session_id, effort=effort, launch=launch)
+        cmd = provider.build_command(
+            prompt,
+            model,
+            session_id,
+            effort=effort,
+            launch=launch,
+            instructions=instructions,
+        )
         log.info(
             "[%s] spawning class=%s chat=%s model=%s effort=%s session=%s prompt_len=%d",
             provider.name,
@@ -1491,6 +1511,11 @@ class Runtime:
             effort or "-",
             session_id or "-",
             len(prompt),
+        )
+        log.info(
+            "[%s] shared instructions revision=%s",
+            provider.name,
+            instructions.revision[:12],
         )
         log.debug("[%s] command=%s", provider.name, _redacted_command(cmd))
 
@@ -1530,9 +1555,9 @@ class Runtime:
         limit = provider.stdout_limit()
         if limit:
             kwargs["limit"] = limit
-        # A policy launch supplies a complete allowlisted environment; the
-        # unrestricted/legacy path inherits the parent environment as before.
-        base_env = launch.env if launch is not None and launch.env is not None else None
+        # A restricted policy launch supplies a complete allowlisted
+        # environment; an explicitly prepared unrestricted policy inherits.
+        base_env = launch.env
         if base_env is not None or extra_env:
             merged = dict(base_env) if base_env is not None else os.environ.copy()
             merged.update(extra_env or {})
@@ -1541,7 +1566,7 @@ class Runtime:
             "[%s] subprocess cwd=%s launch=%s extra_env_keys=%s",
             provider.name,
             context.path,
-            launch.mode if launch is not None else "legacy",
+            launch.mode,
             sorted(extra_env) if extra_env else [],
         )
 
@@ -1708,7 +1733,7 @@ class Runtime:
         chat_id: str,
         ctx: TransportContext,
         *,
-        context: ExecutionContext | None = None,
+        context: ExecutionContext,
     ) -> tuple[str, str | None]:
         """Run a full provider request with status ticker and response delivery.
 
@@ -1717,7 +1742,6 @@ class Runtime:
         record it on the audit turn: ``completed``, ``error``, ``timeout``, or
         (via cancellation in the caller) ``stopped``.
         """
-        context = context or self.global_context(chat_id)
         prompt, output_instructions, surface_instructions = self._assemble_prompt(
             prompt, chat_id, provider_name, ctx, context
         )
@@ -1813,10 +1837,9 @@ class Runtime:
         The instruction strings come back alongside the prompt because response
         delivery may only honour a fence the agent was actually told to emit.
         """
-        # Inject background messages. Teams executions consume only messages
-        # explicitly addressed to them — a global message must not leak into
-        # an arbitrary route's context.
-        bg = messages.consume(chat_id, include_global=context.workspace_id is None)
+        # Global message consumption is an explicit transport decision. Slack
+        # and jobs keep it off so a shared message cannot leak into their work.
+        bg = messages.consume(chat_id, include_global=context.include_global_messages)
         if bg:
             prompt = f"{messages.format_for_injection(bg)}\n\n{prompt}"
             log.info("[%s] Injected %d background message(s) into prompt", provider_name, len(bg))
@@ -1861,10 +1884,9 @@ class Runtime:
             log.warning("get_origin_env failed for chat %s", chat_id, exc_info=True)
             origin_env = {}
 
-        # Named-workspace operational logs are metadata-only; global Telegram
-        # work retains the existing optional prompt logging behavior.
-        is_bound = context.workspace_id is not None
-        preview = "<redacted>" if is_bound else f"{prompt[:120]}"
+        # Shared Slack/job work is metadata-only; personal Telegram work keeps
+        # its existing opt-in prompt diagnostics.
+        preview = f"{prompt[:120]}" if context.include_global_messages else "<redacted>"
         log.info(
             "[%s] request chat=%s provider_class=%s model=%s effort=%s prompt_len=%d preview=%s",
             provider_name,
@@ -1876,7 +1898,7 @@ class Runtime:
             preview,
         )
         log.debug("[%s] origin_env_keys=%s", provider_name, sorted(origin_env))
-        if self.debug_prompts and not is_bound:
+        if self.debug_prompts and context.include_global_messages:
             log.debug("[%s] full_prompt:\n%s", provider_name, prompt)
         return provider, model, effort, origin_env
 
