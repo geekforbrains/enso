@@ -319,6 +319,7 @@ def test_dashboard_shows_visible_skill_total_and_tier_counts(tmp_path, monkeypat
     runtime = SimpleNamespace(config={"web": {"external_skill_roots": [str(external_root)]}})
     monkeypatch.setattr(web_app, "CONFIG_DIR", str(config_dir))
     monkeypatch.setattr(web_app, "load_jobs", lambda: [])
+    monkeypatch.setattr(web_app, "load_jobs_with_errors", lambda _config: ([], {}))
     monkeypatch.setattr(web_app.runs, "list_runs", lambda **_kwargs: [])
     client = TestClient(web_app.create_app(runtime), base_url="http://127.0.0.1")
 
@@ -337,7 +338,7 @@ def test_dashboard_shows_visible_skill_total_and_tier_counts(tmp_path, monkeypat
     favicon = '<link rel="icon" type="image/svg+xml" href="/static/enso-mark.svg?v=1">'
     assert favicon in response.text
     assert response.text.count('src="/static/enso-mark.svg?v=1"') == 3
-    assert response.text.count('<nav aria-label="Primary" class="space-y-1">') == 2
+    assert response.text.count('<nav aria-label="Primary" class="space-y-5">') == 2
     assert "hx-" not in response.text.lower()
     assert "htmx" not in response.text.lower()
     assert '<main id="main-content" tabindex="-1"' in response.text

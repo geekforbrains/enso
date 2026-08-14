@@ -41,6 +41,7 @@ def _docs_web_app(tmp_path, monkeypatch):
     monkeypatch.setattr(web_app, "CONFIG_DIR", str(config_dir))
     monkeypatch.setattr(docs_mod, "DOCS_DIR", str(docs_dir))
     monkeypatch.setattr(web_app, "load_jobs", lambda: [])
+    monkeypatch.setattr(web_app, "load_jobs_with_errors", lambda _config: ([], {}))
     monkeypatch.setattr(web_app.runs, "list_runs", lambda **_kwargs: [])
     runtime = SimpleNamespace(
         config={

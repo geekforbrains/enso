@@ -50,6 +50,39 @@
   </span>
 {% endmacro %}
 
+{% macro status_badge(status, label="") %}
+  <span class="inline-flex shrink-0 items-center whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium
+               {% if status == 'ready' %}
+                 bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300
+               {% elif status == 'warning' %}
+                 bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300
+               {% elif status == 'error' %}
+                 bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300
+               {% else %}
+                 bg-surface-muted text-muted
+               {% endif %}">
+    {{ label or status }}
+  </span>
+{% endmacro %}
+
+{% macro problem_list(problems, title="Needs attention", tone="error") %}
+  {% if problems %}
+    <div class="rounded-lg border px-4 py-3 text-sm
+                {% if tone == 'warning' %}
+                  border-amber-200 bg-amber-50 text-amber-800
+                  dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-300
+                {% else %}
+                  border-red-200 bg-red-50 text-red-800
+                  dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-300
+                {% endif %}">
+      {% if title %}<p class="font-semibold">{{ title }}</p>{% endif %}
+      <ul class="mt-1 list-disc space-y-1 pl-5">
+        {% for problem in problems %}<li class="break-anywhere">{{ problem }}</li>{% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+{% endmacro %}
+
 {% macro database_alert(kind, scope="database", compact=false) %}
   <div role="alert"
        {% if kind == "busy" %}data-database-busy{% else %}data-database-unavailable{% endif %}
@@ -111,11 +144,12 @@
 {# Card-styled POST form with a monospace textarea and a save button.
    Use {% call editor_form(...) %} to add a heading above the textarea. #}
 {% macro editor_form(action, field_id, label, content, button_label, rows, csrf_token,
-                     extra="", hidden_name="", hidden_value="") %}
+                     extra="", hidden_name="", hidden_value="", revision=none) %}
   <form method="post" action="{{ action }}"
         class="rounded-xl border border-border bg-surface p-5 {{ extra }}">
     <input type="hidden" name="_csrf" value="{{ csrf_token }}">
     {% if hidden_name %}<input type="hidden" name="{{ hidden_name }}" value="{{ hidden_value }}">{% endif %}
+    {% if revision is not none %}<input type="hidden" name="revision" value="{{ revision }}">{% endif %}
     {% if caller %}{{ caller() }}{% endif %}
     <label for="{{ field_id }}" class="sr-only">{{ label }}</label>
     <textarea id="{{ field_id }}" name="content" rows="{{ rows }}" spellcheck="false"

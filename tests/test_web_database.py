@@ -225,6 +225,7 @@ def test_dashboard_keeps_other_sections_and_identifies_busy_run_history(
         _sqlite_error("database is locked sentinel", _SQLITE_BUSY, "SQLITE_BUSY"),
     )
     monkeypatch.setattr(web_app, "load_jobs", lambda: [])
+    monkeypatch.setattr(web_app, "load_jobs_with_errors", lambda _config: ([], {}))
     monkeypatch.setattr(web_app, "_skill_inventory", lambda _request: ([], []))
     monkeypatch.setattr(web_app.docs, "load_docs", lambda: SimpleNamespace(docs=[]))
     monkeypatch.setattr(
@@ -241,7 +242,7 @@ def test_dashboard_keeps_other_sections_and_identifies_busy_run_history(
     response = client.get("/")
 
     assert response.status_code == 200
-    assert "Dashboard" in response.text
+    assert "Overview" in response.text
     assert "data-runs-unavailable" in response.text
     assert "data-database-busy" in response.text
     assert "Database busy" in response.text

@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% from "macros.html" import problem_list, status_badge %}
+{% block title %}Slack routes · enso{% endblock %}
+
+{% block content %}
+<div class="mb-6 flex flex-wrap items-start justify-between gap-3">
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight">Slack routes</h1>
+    <p class="mt-1 text-sm text-muted">Exact channels and direct-message users bound to named workspaces. Configured routes still rely on the linked policy's native checks.</p>
+  </div>
+  {% if slack.configured %}
+    {{ status_badge(slack.status, "configured" if slack.dispatchable and slack.status == "configured" else slack.status) }}
+  {% else %}
+    {{ status_badge("unused", "not configured") }}
+  {% endif %}
+</div>
+
+{% if slack.problems %}
+  <div class="mb-5">{{ problem_list(slack.problems, "Slack configuration errors") }}</div>
+{% endif %}
+{% if slack.warnings %}
+  <div class="mb-5">{{ problem_list(slack.warnings, "Slack cache warnings", "warning") }}</div>
+{% endif %}
+{% if catalog_errors %}
+  <div class="mb-5">{{ problem_list(catalog_errors, "Catalog configuration errors") }}</div>
+{% endif %}
+
+<section aria-labelledby="slack-account" class="mb-6 rounded-xl border border-border bg-surface p-5">
+  <h2 id="slack-account" class="mb-4 text-lg font-semibold">Account and cache</h2>
+  <dl class="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2 xl:grid-cols-4">
+    <div>
+      <dt class="text-xs font-medium uppercase tracking-wide text-faint">Configured account</dt>
+      <dd class="break-anywhere mt-1 font-mono text-xs">{{ slack.account_id or "None" }}</dd>
+    </div>
+    <div>
+      <dt class="text-xs font-medium uppercase tracking-wide text-faint">Cached account</dt>
+      <dd class="break-anywhere mt-1 font-mono text-xs">{{ slack.cache_team_id or "Unavailable" }}</dd>
+    </div>
+    <div>
+      <dt class="text-xs font-medium uppercase tracking-wide text-faint">Channel directory</dt>
+      <dd class="mt-1">{{ "Cached" if slack.channel_cache_fetched_at else "Not cached" }}</dd>
+    </div>
+    <div>
+      <dt class="text-xs font-medium uppercase tracking-wide text-faint">User directory</dt>
+      <dd class="mt-1">{{ "Cached" if slack.user_cache_fetched_at else "Not cached" }}</dd>
+    </div>
+  </dl>
+  <p class="mt-4 text-xs text-muted">Friendly names come from the local Slack cache. Exact IDs remain authoritative.</p>
+</section>
+
+<section aria-labelledby="configured-routes">
+  <div class="mb-3 flex items-baseline gap-2">
+    <h2 id="configured-routes" class="text-lg font-semibold">Configured routes</h2>
+    <span class="text-xs text-muted">{{ routes | length }}</span>
+  </div>
+
+  {% if routes %}
+    <div class="grid gap-3 xl:grid-cols-2">
+      {% for route in routes %}
+        <article class="min-w-0 rounded-xl border border-border bg-surface p-5">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <h3 class="break-words font-semibold">{{ route.label }}</h3>
+              <p class="break-anywhere mt-1 font-mono text-xs text-muted">{{ route.key }}</p>
+            </div>
+            {{ status_badge(route.status) }}
+          </div>
+
+          <dl class="mt-4 grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+            <div>
+              <dt class="text-xs font-medium uppercase tracking-wide text-faint">Workspace</dt>
+              <dd class="break-anywhere mt-1 font-medium">
+                {% if route.workspace_name %}
+                  <a href="/workspaces/{{ route.workspace_name }}" class="hover:underline">{{ route.workspace_name }}</a>
+                {% else %}None{% endif %}
+              </dd>
+            </div>
+            <div>
+              <dt class="text-xs font-medium uppercase tracking-wide text-faint">Policy</dt>
+              <dd class="break-anywhere mt-1 font-medium">
+                {% if route.policy_name %}
+                  <a href="/policies/{{ route.policy_name }}" class="hover:underline">{{ route.policy_name }}</a>
+                {% else %}Unavailable{% endif %}
+              </dd>
+            </div>
+            <div>
+              <dt class="text-xs font-medium uppercase tracking-wide text-faint">Type</dt>
+              <dd class="mt-1">{{ "Channel" if route.kind == "channel" else "Direct message" }}</dd>
+            </div>
+            <div>
+              <dt class="text-xs font-medium uppercase tracking-wide text-faint">Audit</dt>
+              <dd class="mt-1">Audit {{ "on" if route.audit else "off" }}</dd>
+            </div>
+          </dl>
+
+          {% if route.kind == "channel" %}
+            <div class="mt-4 flex flex-wrap gap-2 text-xs text-muted">
+              <span class="rounded-full bg-surface-muted px-2 py-1">
+                {% if route.mention_required %}Top-level mention required{% else %}Top-level messages do not require a mention{% endif %}
+              </span>
+              <span class="rounded-full bg-surface-muted px-2 py-1">
+                {% if route.thread_mention_required %}Thread mention required{% else %}Thread replies do not require a mention{% endif %}
+              </span>
+            </div>
+          {% endif %}
+
+          {% if route.problems %}
+            <div class="mt-4">{{ problem_list(route.problems, "Route unavailable") }}</div>
+          {% endif %}
+        </article>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="rounded-xl border border-dashed border-border-strong bg-surface px-4 py-8 text-center">
+      <p class="font-medium">No Slack routes configured</p>
+      <p class="mt-1 text-sm text-muted">Add exact channel or DM routes under transports.slack.</p>
+    </div>
+  {% endif %}
+</section>
+{% endblock %}

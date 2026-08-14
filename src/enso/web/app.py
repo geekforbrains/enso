@@ -40,7 +40,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
-from .. import docs, frontmatter, runs, sqlite_store, tables
+from .. import docs, frontmatter, runs, slack_cache, sqlite_store, tables
 from ..config import (
     CONFIG_DIR,
     DEFAULT_WORKSPACE_NAME,
@@ -48,9 +48,33 @@ from ..config import (
     SKILL_TOMBSTONES_DIRNAME,
 )
 from ..fsutil import atomic_write_text, is_within, regular_file_sha256
-from ..jobs import Job, load_jobs
+from ..instructions import MAX_SHARED_INSTRUCTION_BYTES
+from ..jobs import Job, load_jobs, load_jobs_with_errors
+from ..policy import PolicyCheck, check_provider
 from ..secret_refs import resolve_config_secret
 from ..teams import load_catalog
+from .configuration import (
+    ConfigurationView,
+    build_configuration_view,
+    build_policy_check_view,
+    with_policy_checks,
+    with_workspace_agents,
+)
+from .workspace_instructions import (
+    AGENT_FILENAME,
+    AgentConflict,
+    AgentEncodingError,
+    AgentFileError,
+    AgentFilesystemError,
+    AgentIntegrityError,
+    AgentListing,
+    AgentNotFound,
+    AgentTooLarge,
+    UnsafeAgentPath,
+    discover_agents,
+    read_agent,
+    write_agent,
+)
 
 log = logging.getLogger(__name__)
 
@@ -68,6 +92,7 @@ _MAX_TABLE_PAGE = tables.MAX_OFFSET // _TABLE_PAGE_SIZE + 1
 _MAX_TABLE_SCHEMA_SQL_CHARS = 20_000
 _MAX_TABLE_INDEXES = 25
 _MAX_TABLE_INDEX_SQL_CHARS = 4_000
+_MAX_WORKSPACE_INSTRUCTION_BYTES = 128 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +393,36 @@ def _allowed_web_hosts(web_cfg: dict) -> frozenset[str]:
 def _find_job(name: str) -> Job | None:
     """Return the job whose ``dir_name`` matches ``name``."""
     return next((j for j in load_jobs() if j.dir_name == name), None)
+
+
+def _active_config(request) -> dict:
+    """Return the exact configuration held by the running service."""
+    runtime = request.app.state.runtime
+    config = getattr(runtime, "config", None)
+    return config if isinstance(config, dict) else {}
+
+
+def _configuration_view(
+    request,
+    *,
+    loaded_jobs: list[Job] | None = None,
+    job_errors: dict[str, tuple[str, ...]] | None = None,
+) -> ConfigurationView:
+    """Build one request-local, cache-only view of active execution bindings."""
+    config = _active_config(request)
+    if loaded_jobs is None or job_errors is None:
+        loaded_jobs, job_errors = load_jobs_with_errors(config)
+    try:
+        slack_directory = slack_cache.load()
+    except (AttributeError, OSError, TypeError, ValueError):
+        log.warning("Could not load Slack directory cache for web UI", exc_info=True)
+        slack_directory = {}
+    return build_configuration_view(
+        config,
+        jobs=loaded_jobs,
+        job_errors=job_errors,
+        slack_directory=slack_directory,
+    )
 
 
 def _safe_name(name: str) -> bool:
@@ -740,7 +795,12 @@ def _resolve_skill(request, name: str) -> tuple[str | None, bool]:
 
 
 async def dashboard(request):
-    jobs = load_jobs()
+    jobs, job_errors = load_jobs_with_errors(_active_config(request))
+    configuration = _configuration_view(
+        request,
+        loaded_jobs=jobs,
+        job_errors=job_errors,
+    )
     jobs_enabled = sum(1 for j in jobs if j.enabled)
     enso_skills, system_skills = _skill_inventory(request)
     try:
@@ -773,6 +833,8 @@ async def dashboard(request):
         latest_runs=latest,
         runs_available=runs_error is None,
         runs_error=runs_error,
+        configuration=configuration,
+        configuration_summary=configuration.summary,
     )
 
 
@@ -1332,6 +1394,300 @@ def _bounded_page(value: object, maximum: int) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Routes — execution configuration
+# ---------------------------------------------------------------------------
+
+
+def _managed_workspace(path: str) -> bool:
+    """Whether a canonical workspace lives under Enso's managed workspace root."""
+    managed_root = os.path.abspath(os.path.join(CONFIG_DIR, "workspaces"))
+    candidate = os.path.abspath(path)
+    # A symlinked Enso/workspaces directory changes the browser write boundary
+    # to an arbitrary target. Fail closed instead of treating that target as
+    # managed. Workspace paths are already canonicalized by load_catalog; do
+    # not resolve them again after startup and accidentally follow a swap.
+    if os.path.realpath(managed_root) != managed_root:
+        return False
+    try:
+        return candidate != managed_root and os.path.commonpath(
+            (managed_root, candidate)
+        ) == managed_root
+    except ValueError:
+        return False
+
+
+def _agent_error_response(error: AgentFileError) -> Response:
+    if isinstance(error, (UnsafeAgentPath, AgentIntegrityError)):
+        status_code = 403
+    elif isinstance(error, AgentNotFound):
+        status_code = 404
+    elif isinstance(error, AgentConflict):
+        status_code = 409
+    elif isinstance(error, AgentTooLarge):
+        status_code = 413
+    elif isinstance(error, AgentEncodingError):
+        status_code = 422
+    else:
+        status_code = 503
+        if not isinstance(error, AgentFilesystemError):
+            log.warning("Unexpected instruction file failure", exc_info=True)
+    return PlainTextResponse(str(error), status_code=status_code)
+
+
+def _child_agent_listing(listing: AgentListing) -> AgentListing:
+    """Remove the root file and its diagnostics from the nested-file list."""
+    return AgentListing(
+        files=tuple(entry for entry in listing.files if entry.rel_path != AGENT_FILENAME),
+        truncated=listing.truncated,
+        errors=tuple(error for error in listing.errors if error.rel_path != AGENT_FILENAME),
+    )
+
+
+async def _workspace_agent_inventory(workspace_view, workspace):
+    """Safely enrich one workspace view and prepare its detail-page documents."""
+    managed = _managed_workspace(workspace.path)
+    root_editable = workspace_view.usable and managed
+    empty_listing = AgentListing(files=(), truncated=False, errors=())
+    if not workspace_view.usable:
+        return (
+            with_workspace_agents(
+                workspace_view,
+                agent_files=(),
+                truncated=False,
+                managed=managed,
+                root_editable=False,
+            ),
+            empty_listing,
+            None,
+            "Instructions are unavailable until the workspace binding is valid.",
+        )
+    try:
+        listing = await run_in_threadpool(discover_agents, workspace.path)
+    except AgentFileError as exc:
+        problem = f"Workspace instructions could not be inspected: {exc}"
+        return (
+            with_workspace_agents(
+                workspace_view,
+                agent_files=(),
+                truncated=False,
+                managed=managed,
+                root_editable=False,
+                problem=problem,
+            ),
+            empty_listing,
+            None,
+            problem,
+        )
+
+    root_document = None
+    root_problem = None
+    try:
+        root_document = await run_in_threadpool(
+            read_agent,
+            workspace.path,
+            AGENT_FILENAME,
+            _MAX_WORKSPACE_INSTRUCTION_BYTES,
+        )
+    except AgentNotFound:
+        pass
+    except AgentFileError as exc:
+        root_editable = False
+        root_problem = str(exc)
+
+    enriched = with_workspace_agents(
+        workspace_view,
+        agent_files=[entry.rel_path for entry in listing.files],
+        truncated=listing.truncated,
+        managed=managed,
+        root_editable=root_editable,
+        problem=root_problem,
+    )
+    return enriched, _child_agent_listing(listing), root_document, root_problem
+
+
+async def workspaces_list(request):
+    configuration = _configuration_view(request)
+    catalog = load_catalog(_active_config(request))
+    workspaces = []
+    for workspace_view in configuration.workspaces:
+        workspace = catalog.workspaces.get(workspace_view.name)
+        if workspace is None:
+            workspaces.append(workspace_view)
+            continue
+        enriched, _, _, _ = await _workspace_agent_inventory(workspace_view, workspace)
+        workspaces.append(enriched)
+    return _render(
+        request,
+        "workspaces.html",
+        configuration=configuration,
+        workspaces=tuple(workspaces),
+        catalog_errors=configuration.catalog_errors,
+    )
+
+
+async def workspace_detail(request):
+    name = request.path_params["name"]
+    configuration = _configuration_view(request)
+    workspace_view = configuration.workspace(name)
+    catalog = load_catalog(_active_config(request))
+    workspace = catalog.workspaces.get(name)
+    if workspace_view is None or workspace is None:
+        return PlainTextResponse("Workspace not found", status_code=404)
+    workspace_view, agent_listing, root_document, root_problem = (
+        await _workspace_agent_inventory(workspace_view, workspace)
+    )
+    return _render(
+        request,
+        "workspace_detail.html",
+        configuration=configuration,
+        workspace=workspace_view,
+        catalog_errors=configuration.catalog_errors,
+        agent_listing=agent_listing,
+        root_document=root_document,
+        root_revision=root_document.revision if root_document is not None else "",
+        root_editable=workspace_view.root_editable,
+        root_problem=root_problem,
+    )
+
+
+async def workspace_agent_view(request):
+    name = request.path_params["name"]
+    rel_path = request.path_params["path"]
+    if rel_path == AGENT_FILENAME:
+        return PlainTextResponse("Instruction file not found", status_code=404)
+    config = _active_config(request)
+    catalog = load_catalog(config)
+    if name not in catalog.workspaces:
+        return PlainTextResponse("Workspace not found", status_code=404)
+    if not catalog.usable(name):
+        return PlainTextResponse("Workspace unavailable", status_code=403)
+    workspace = catalog.workspaces[name]
+    try:
+        document = await run_in_threadpool(
+            read_agent,
+            workspace.path,
+            rel_path,
+            _MAX_WORKSPACE_INSTRUCTION_BYTES,
+        )
+    except AgentFileError as exc:
+        return _agent_error_response(exc)
+    configuration = _configuration_view(request)
+    workspace_view = configuration.workspace(name)
+    assert workspace_view is not None
+    return _render(
+        request,
+        "workspace_agents.html",
+        configuration=configuration,
+        workspace=workspace_view,
+        agent_document=document,
+        root_editable=False,
+    )
+
+
+async def workspace_agents_edit(request):
+    name = request.path_params["name"]
+    config = _active_config(request)
+    catalog = load_catalog(config)
+    workspace = catalog.workspaces.get(name)
+    if workspace is None:
+        return PlainTextResponse("Workspace not found", status_code=404)
+    if not catalog.usable(name) or not _managed_workspace(workspace.path):
+        return PlainTextResponse("Forbidden", status_code=403)
+    form = await request.form()
+    content = form.get("content")
+    if not isinstance(content, str):
+        return PlainTextResponse("Instruction content must be text", status_code=422)
+    raw_revision = form.get("revision")
+    revision = raw_revision if isinstance(raw_revision, str) and raw_revision else None
+    try:
+        await run_in_threadpool(
+            write_agent,
+            workspace.path,
+            AGENT_FILENAME,
+            content,
+            revision,
+            _MAX_WORKSPACE_INSTRUCTION_BYTES,
+            True,
+        )
+    except AgentFileError as exc:
+        return _agent_error_response(exc)
+    return _redirect(f"/workspaces/{name}?msg=Workspace+instructions+saved")
+
+
+async def policies_list(request):
+    configuration = _configuration_view(request)
+    return _render(
+        request,
+        "policies.html",
+        configuration=configuration,
+        policies=configuration.policies,
+        catalog_errors=configuration.catalog_errors,
+    )
+
+
+async def policy_detail(request):
+    name = request.path_params["name"]
+    config = _active_config(request)
+    configuration = _configuration_view(request)
+    policy_view = configuration.policy(name)
+    if policy_view is None:
+        return PlainTextResponse("Policy not found", status_code=404)
+
+    catalog = load_catalog(config)
+    execution_policy = catalog.policies.get(name)
+    checks = []
+    if execution_policy is not None and name not in catalog.policy_errors:
+        for workspace_name in policy_view.workspace_names:
+            workspace = catalog.workspaces.get(workspace_name)
+            if workspace is None or not catalog.usable(workspace_name):
+                problems = [*catalog.errors]
+                problems.extend(catalog.workspace_errors.get(workspace_name, ()))
+                problems.extend(catalog.policy_errors.get(name, ()))
+                if not problems:
+                    problems.append("workspace binding is not usable")
+                for provider in execution_policy.providers:
+                    checks.append(
+                        build_policy_check_view(
+                            workspace_name,
+                            PolicyCheck(
+                                provider=provider,
+                                ok=False,
+                                problems=tuple(dict.fromkeys(problems)),
+                            ),
+                        )
+                    )
+                continue
+            for provider in execution_policy.providers:
+                check = await run_in_threadpool(
+                    check_provider,
+                    workspace,
+                    execution_policy,
+                    provider,
+                )
+                checks.append(build_policy_check_view(workspace_name, check))
+    policy_view = with_policy_checks(policy_view, checks)
+    return _render(
+        request,
+        "policy_detail.html",
+        configuration=configuration,
+        policy=policy_view,
+        catalog_errors=configuration.catalog_errors,
+    )
+
+
+async def slack_routes(request):
+    configuration = _configuration_view(request)
+    return _render(
+        request,
+        "slack_routes.html",
+        configuration=configuration,
+        slack=configuration.slack,
+        routes=configuration.slack.routes,
+        catalog_errors=configuration.catalog_errors,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Routes — AGENTS.md
 # ---------------------------------------------------------------------------
 
@@ -1342,23 +1698,58 @@ def _agents_path() -> str:
 
 async def agents_view(request):
     path = _agents_path()
-    content = ""
-    if os.path.isfile(path):
-        try:
-            with open(path, encoding="utf-8") as f:
-                content = f.read()
-        except OSError:
-            content = ""
-    return _render(request, "agents.html", path=path, content=content)
+    try:
+        document = await run_in_threadpool(
+            read_agent,
+            CONFIG_DIR,
+            AGENT_FILENAME,
+            MAX_SHARED_INSTRUCTION_BYTES,
+        )
+    except AgentNotFound:
+        content = ""
+        revision = None
+        editable = True
+        problem = "Shared instruction file is missing; provider launches fail until it is created."
+    except AgentFileError as exc:
+        content = ""
+        revision = None
+        editable = False
+        problem = str(exc)
+    else:
+        content = document.content
+        revision = document.revision
+        editable = True
+        problem = None
+    return _render(
+        request,
+        "agents.html",
+        path=path,
+        content=content,
+        revision=revision,
+        editable=editable,
+        problem=problem,
+    )
 
 
 async def agents_edit(request):
-    path = _agents_path()
     form = await request.form()
-    content = (form.get("content") or "").replace("\r\n", "\n")
-    # Write the symlink target directly; the CLAUDE.md -> AGENTS.md symlink is
-    # left untouched (os.replace onto the resolved regular file).
-    atomic_write_text(path, content)
+    content = form.get("content")
+    if not isinstance(content, str):
+        return PlainTextResponse("Instruction content must be text", status_code=422)
+    raw_revision = form.get("revision")
+    revision = raw_revision if isinstance(raw_revision, str) and raw_revision else None
+    try:
+        await run_in_threadpool(
+            write_agent,
+            CONFIG_DIR,
+            AGENT_FILENAME,
+            content,
+            revision,
+            MAX_SHARED_INSTRUCTION_BYTES,
+            True,
+        )
+    except AgentFileError as exc:
+        return _agent_error_response(exc)
     return _redirect("/agents")
 
 
@@ -1489,6 +1880,17 @@ def create_app(runtime) -> Starlette:
         Route("/docs/{path:path}", doc_detail),
         Route("/tables", tables_list),
         Route("/tables/{name}", table_detail),
+        Route("/workspaces", workspaces_list),
+        Route(
+            "/workspaces/{name}/agents/edit",
+            _csrf_protected(workspace_agents_edit),
+            methods=["POST"],
+        ),
+        Route("/workspaces/{name}/agents/{path:path}", workspace_agent_view),
+        Route("/workspaces/{name}", workspace_detail),
+        Route("/policies", policies_list),
+        Route("/policies/{name}", policy_detail),
+        Route("/slack", slack_routes),
         Route("/agents", agents_view),
         Route("/agents/edit", _csrf_protected(agents_edit), methods=["POST"]),
         Mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static"),

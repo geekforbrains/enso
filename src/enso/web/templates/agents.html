@@ -1,14 +1,36 @@
 {% extends "base.html" %}
-{% from "macros.html" import editor_form %}
-{% block title %}AGENTS.md · enso{% endblock %}
+{% from "macros.html" import editor_form, problem_list, status_badge %}
+{% block title %}Shared instructions · enso{% endblock %}
 
 {% block content %}
-<div class="mb-4">
-  <h1 class="text-2xl font-semibold tracking-tight">AGENTS.md</h1>
-  <p class="mt-1 text-sm text-muted">Shared instructions applied to every workspace launch.</p>
-  <div class="break-anywhere mt-2 font-mono text-xs text-faint">{{ path }}</div>
+<div class="mb-4 flex flex-wrap items-start justify-between gap-3">
+  <div class="min-w-0">
+    <h1 class="text-2xl font-semibold tracking-tight">Shared instructions</h1>
+    <p class="mt-1 text-sm text-muted">The top-level AGENTS.md applied before each workspace's focused instructions.</p>
+  </div>
+  {{ status_badge("error" if problem else "ready") }}
 </div>
 
-{{ editor_form("/agents/edit", "agents-content", "AGENTS.md content",
-               content, "Save AGENTS.md", 28, csrf_token) }}
+<div class="mb-4">
+  <div class="break-anywhere mt-2 font-mono text-xs text-faint">{{ path }}</div>
+  {% if revision %}
+    <div class="break-anywhere mt-1 text-xs text-muted">
+      Revision <span class="font-mono text-ink">{{ revision }}</span>
+    </div>
+  {% endif %}
+</div>
+
+{% if problem %}
+  <div class="mb-4">{{ problem_list([problem], "Shared AGENTS.md unavailable") }}</div>
+{% endif %}
+
+{% if editable %}
+  {{ editor_form("/agents/edit", "agents-content", "AGENTS.md content",
+                 content, "Save AGENTS.md", 28, csrf_token, revision=revision) }}
+{% else %}
+  <div class="min-w-0 overflow-x-auto rounded-xl border border-border bg-surface p-5">
+    <div class="mb-3 flex justify-end">{{ status_badge("unused", "Read-only") }}</div>
+    <pre class="break-anywhere whitespace-pre-wrap font-mono text-sm text-ink">{{ content }}</pre>
+  </div>
+{% endif %}
 {% endblock %}

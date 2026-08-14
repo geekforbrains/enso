@@ -92,14 +92,25 @@
             text-sm font-medium text-action-text transition focus:translate-y-0">
     Skip to content
   </a>
-  {% set nav = [
-    ("/", "Dashboard"),
-    ("/jobs", "Jobs"),
-    ("/runs", "Runs"),
-    ("/tables", "Tables"),
-    ("/skills", "Skills"),
-    ("/docs", "Docs"),
-    ("/agents", "AGENTS.md"),
+  {% set nav_sections = [
+    (none, [
+      ("/", "Overview"),
+    ]),
+    ("Configuration", [
+      ("/workspaces", "Workspaces"),
+      ("/policies", "Policies"),
+      ("/slack", "Slack routes"),
+      ("/agents", "Shared instructions"),
+    ]),
+    ("Operations", [
+      ("/jobs", "Jobs"),
+      ("/runs", "Runs"),
+    ]),
+    ("Resources", [
+      ("/tables", "Tables"),
+      ("/skills", "Skills"),
+      ("/docs", "Docs"),
+    ]),
   ] %}
 
   {% macro brand(extra_classes="", onclick="") %}
@@ -113,18 +124,29 @@
   {% endmacro %}
 
   {% macro nav_links(mobile=false) %}
-    <nav aria-label="Primary" class="space-y-1">
-      {% for href, label in nav %}
-        {% set active = (href == "/" and current_path == "/")
-             or (href != "/" and current_path.startswith(href)) %}
-        <a href="{{ href }}"
-           {% if mobile %}onclick="setMobileNav(false)"{% endif %}
-           {% if active %}aria-current="page"{% endif %}
-           class="primary-nav-link block rounded-lg px-3 py-2.5 text-sm font-medium text-muted transition-colors
-                  focus:outline-none focus-visible:ring-2 focus-visible:ring-focus
-                  hover:bg-surface-muted hover:text-ink">
-          {{ label }}
-        </a>
+    <nav aria-label="Primary" class="space-y-5">
+      {% for section, links in nav_sections %}
+        <div>
+          {% if section %}
+            <p class="mb-1 px-3 text-xs font-medium uppercase tracking-wider text-faint">
+              {{ section }}
+            </p>
+          {% endif %}
+          <div class="space-y-1">
+            {% for href, label in links %}
+              {% set active = (href == "/" and current_path == "/")
+                   or (href != "/" and current_path.startswith(href)) %}
+              <a href="{{ href }}"
+                 {% if mobile %}onclick="setMobileNav(false)"{% endif %}
+                 {% if active %}aria-current="page"{% endif %}
+                 class="primary-nav-link block rounded-lg px-3 py-2.5 text-sm font-medium text-muted transition-colors
+                        focus:outline-none focus-visible:ring-2 focus-visible:ring-focus
+                        hover:bg-surface-muted hover:text-ink">
+                {{ label }}
+              </a>
+            {% endfor %}
+          </div>
+        </div>
       {% endfor %}
     </nav>
   {% endmacro %}
@@ -165,7 +187,7 @@
        aria-hidden="true" onclick="setMobileNav(false, true)"></div>
   <aside id="mobile-nav" aria-label="Mobile navigation" aria-hidden="true"
          class="fixed inset-y-0 left-0 z-50 hidden w-72 max-w-[85vw] border-r border-border
-                bg-surface p-4 shadow-xl lg:hidden">
+                overflow-y-auto bg-surface p-4 shadow-xl lg:hidden">
     <div class="flex h-full flex-col">
       <div class="mb-6 flex h-10 items-center justify-between px-2">
         {{ brand(onclick="setMobileNav(false)") }}
@@ -190,7 +212,7 @@
     <div class="flex h-20 items-center border-b border-border px-6">
       {{ brand() }}
     </div>
-    <div class="flex min-h-0 flex-1 flex-col px-4 py-5">
+    <div class="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-5">
       {{ nav_links() }}
       <div class="mt-auto border-t border-border pt-4">
         {{ theme_picker() }}

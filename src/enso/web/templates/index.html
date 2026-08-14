@@ -1,12 +1,48 @@
 {% extends "base.html" %}
-{% from "macros.html" import database_alert, run_card, run_row, text_link %}
-{% block title %}Dashboard · enso{% endblock %}
+{% from "macros.html" import database_alert, run_card, run_row, status_badge, text_link %}
+{% block title %}Overview · enso{% endblock %}
 
 {% block content %}
 <div class="mb-6">
-  <h1 class="text-2xl font-semibold tracking-tight">Dashboard</h1>
-  <p class="mt-1 text-sm text-muted">A quick look at what Enso is doing.</p>
+  <h1 class="text-2xl font-semibold tracking-tight">Overview</h1>
+  <p class="mt-1 text-sm text-muted">What Enso is configured to use and what it is doing.</p>
 </div>
+
+{% if configuration_summary is defined %}
+  <section aria-labelledby="configuration-overview" class="mb-6 overflow-hidden rounded-xl border border-border bg-surface">
+    <div class="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4">
+      <div>
+        <h2 id="configuration-overview" class="text-lg font-semibold">Configuration</h2>
+        <p class="mt-0.5 text-sm text-muted">
+          {% if configuration_summary.problems_total %}
+            {{ configuration_summary.problems_total }} issue{% if configuration_summary.problems_total != 1 %}s{% endif %}
+            {% if configuration_summary.problems_total == 1 %}needs{% else %}need{% endif %} attention
+          {% else %}
+            Workspace and transport bindings are structurally configured
+          {% endif %}
+        </p>
+      </div>
+      {{ status_badge(configuration_summary.status) }}
+    </div>
+    <div class="grid grid-cols-1 divide-y divide-border sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+      <a href="/workspaces" class="p-5 transition-colors hover:bg-surface-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus">
+        <div class="text-xs font-medium uppercase tracking-wider text-faint">Workspaces</div>
+        <div class="mt-2 text-3xl font-semibold tracking-tight">{{ configuration_summary.workspaces_total }}</div>
+        <div class="mt-2 text-sm text-muted">Focused filesystem contexts</div>
+      </a>
+      <a href="/policies" class="p-5 transition-colors hover:bg-surface-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus">
+        <div class="text-xs font-medium uppercase tracking-wider text-faint">Policies</div>
+        <div class="mt-2 text-3xl font-semibold tracking-tight">{{ configuration_summary.policies_total }}</div>
+        <div class="mt-2 text-sm text-muted">Reusable launch authority</div>
+      </a>
+      <a href="/slack" class="p-5 transition-colors hover:bg-surface-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus">
+        <div class="text-xs font-medium uppercase tracking-wider text-faint">Slack routes</div>
+        <div class="mt-2 text-3xl font-semibold tracking-tight">{{ configuration_summary.slack_routes_total }}</div>
+        <div class="mt-2 text-sm text-muted">Exact channel and DM bindings</div>
+      </a>
+    </div>
+  </section>
+{% endif %}
 
 <div class="mb-6 overflow-hidden rounded-xl border border-border bg-border">
   <div class="grid grid-cols-1 gap-px sm:grid-cols-2 xl:grid-cols-4">

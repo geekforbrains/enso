@@ -25,6 +25,7 @@ def _tables_web_app(tmp_path, monkeypatch):
     monkeypatch.setattr(tables_mod.config, "CONFIG_DIR", str(config_dir))
     monkeypatch.setattr(web_app, "CONFIG_DIR", str(config_dir))
     monkeypatch.setattr(web_app, "load_jobs", lambda: [])
+    monkeypatch.setattr(web_app, "load_jobs_with_errors", lambda _config: ([], {}))
     monkeypatch.setattr(web_app.runs, "list_runs", lambda **_kwargs: [])
     monkeypatch.setattr(web_app.docs, "load_docs", lambda: SimpleNamespace(docs=[]))
     monkeypatch.setattr(web_app, "_skill_inventory", lambda _request: ([], []))
