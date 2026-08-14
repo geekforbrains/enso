@@ -63,7 +63,7 @@ table_app = typer.Typer(help="Manage registered SQLite data tables")
 message_app = typer.Typer(help="Send messages and files via the configured transport")
 service_app = typer.Typer(help="Manage the background service")
 slack_app = typer.Typer(help="Slack directory lookups and message search")
-config_app = typer.Typer(help="Validate routes, workspaces, access, jobs, and policies")
+config_app = typer.Typer(help="Validate routes, workspaces, policies, and jobs")
 route_app = typer.Typer(help="Explain Slack routing decisions")
 audit_app = typer.Typer(help="Inspect the Slack audit trail")
 app.add_typer(job_app, name="job")
@@ -593,14 +593,14 @@ def _setup_providers(config: dict) -> None:
         console.print(f"Install at least one of: {', '.join(PROVIDER_NAMES)}")
 
 
-def _ensure_default_execution_config(config: dict) -> tuple[str, str]:
-    """Seed the default workspace and unrestricted admin access profile.
+def _ensure_default_execution_config(config: dict) -> str:
+    """Seed the default workspace and its reusable unrestricted admin policy.
 
-    Setup uses these names for the first exact Slack DM route and new jobs.
-    Existing definitions are preserved verbatim.
+    Setup uses the workspace for the first exact Slack DM route and new jobs.
+    Existing definitions are retained; a missing workspace policy is filled in.
     """
     workspace_name = "default"
-    access_name = "admin"
+    policy_name = "admin"
     working_dir = os.path.abspath(
         os.path.expanduser(
             str(config.get("working_dir") or os.path.join("~", ".enso", "workspace"))
@@ -611,22 +611,38 @@ def _ensure_default_execution_config(config: dict) -> tuple[str, str]:
     if not isinstance(workspaces, dict):
         workspaces = {}
         config["workspaces"] = workspaces
-    workspaces.setdefault(
+    if workspace_name not in workspaces:
+        canonical_working_dir = os.path.realpath(working_dir)
+        for name, candidate in workspaces.items():
+            if not isinstance(name, str) or not isinstance(candidate, dict):
+                continue
+            candidate_path = candidate.get("path")
+            if not isinstance(candidate_path, str) or not candidate_path:
+                continue
+            resolved = os.path.realpath(
+                os.path.abspath(os.path.expanduser(candidate_path))
+            )
+            if resolved == canonical_working_dir:
+                workspace_name = name
+                break
+    workspace = workspaces.setdefault(
         workspace_name,
-        {"path": working_dir, "concurrency": 1},
+        {"path": working_dir, "policy": policy_name, "concurrency": 1},
     )
+    if isinstance(workspace, dict):
+        workspace.setdefault("policy", policy_name)
 
-    access = config.get("access")
-    if not isinstance(access, dict):
-        access = {}
-        config["access"] = access
+    policies = config.get("policies")
+    if not isinstance(policies, dict):
+        policies = {}
+        config["policies"] = policies
     configured = provider_models(config)
     providers = [name for name in PROVIDER_NAMES if name in configured]
     if not providers:
         providers = list(PROVIDER_NAMES)
     default_provider = "claude" if "claude" in providers else providers[0]
-    access.setdefault(
-        access_name,
+    policies.setdefault(
+        policy_name,
         {
             "unrestricted": True,
             "providers": providers,
@@ -634,7 +650,7 @@ def _ensure_default_execution_config(config: dict) -> tuple[str, str]:
             "chat_commands": "*",
         },
     )
-    return workspace_name, access_name
+    return workspace_name
 
 
 def _setup_transport(config: dict) -> int | None:
@@ -1191,13 +1207,12 @@ def _setup_slack(config: dict) -> None:  # noqa: C901
     )
     config.setdefault("transports", {})["slack"] = next_cfg
     if reset_routes:
-        workspace, access = _ensure_default_execution_config(config)
+        workspace = _ensure_default_execution_config(config)
         config.setdefault("routes", {})["slack"] = {
             "account_id": team_id,
             "dms": {
                 owner_id: {
                     "workspace": workspace,
-                    "access": access,
                 },
             },
             "channels": {},
@@ -1504,7 +1519,6 @@ def job_list() -> None:
     table.add_column("Provider")
     table.add_column("Model")
     table.add_column("Workspace")
-    table.add_column("Access")
     table.add_column("Enabled")
     for job in jobs:
         enabled = "[green]\u2713[/]" if job.enabled else "[red]\u2717[/]"
@@ -1514,7 +1528,6 @@ def job_list() -> None:
             job.provider,
             job.model,
             job.workspace,
-            job.access,
             enabled,
         )
     console.print(table)
@@ -1531,9 +1544,6 @@ def job_create(
     workspace: Annotated[
         str, typer.Option("--workspace", help="Named workspace where the provider runs")
     ],
-    access: Annotated[
-        str, typer.Option("--access", help="Named access profile for the provider launch")
-    ],
 ) -> None:
     """Create a new background job. Edit the JOB.md to add the prompt and optional prerun."""
     dir_name = re.sub(r"[^\w]+", "-", name.casefold()).strip("-_")
@@ -1548,7 +1558,6 @@ def job_create(
             model,
             schedule,
             workspace=workspace,
-            access=access,
         )
     except (FileExistsError, ValueError) as exc:
         console.print(f"[red]Could not create job:[/] {exc}")
@@ -2331,15 +2340,15 @@ def config_check() -> None:  # noqa: C901
             console.print("  [red]✗[/] workspace path does not exist")
 
     secret_env = _read_secret_env()
-    for name, access in sorted(catalog.access_profiles.items()):
-        mode = "unrestricted" if access.unrestricted else "policy-controlled"
-        console.print(f"\n[bold]Access {name}[/] ({mode})")
-        for problem in catalog.access_errors.get(name, ()):
+    for name, execution_policy in sorted(catalog.policies.items()):
+        mode = "unrestricted" if execution_policy.unrestricted else "policy-controlled"
+        console.print(f"\n[bold]Policy {name}[/] ({mode})")
+        for problem in catalog.policy_errors.get(name, ()):
             failed = True
             console.print(f"  [red]✗[/] {escape(problem)}")
-        if not access.unrestricted and access.env_passthrough:
+        if not execution_policy.unrestricted and execution_policy.env_passthrough:
             console.print("  env_passthrough:")
-            for env_name in access.env_passthrough:
+            for env_name in execution_policy.env_passthrough:
                 if env_name in os.environ or env_name in secret_env:
                     console.print(f"    [green]✓[/] {escape(env_name)}")
                 else:
@@ -2349,7 +2358,7 @@ def config_check() -> None:  # noqa: C901
                 "the service environment may differ[/]"
             )
 
-    pairs: dict[tuple[str, str], set[str]] = {}
+    bindings: dict[str, set[str]] = {}
     routes_cfg = config.get("routes")
     has_slack_routes = isinstance(routes_cfg, dict) and "slack" in routes_cfg
     transports_cfg = config.get("transports", {})
@@ -2365,8 +2374,8 @@ def config_check() -> None:  # noqa: C901
         routes = (*teams.dm_routes.values(), *teams.channel_routes.values())
         for route in sorted(routes, key=lambda item: item.route_id):
             if teams.route_usable(route):
-                key = (route.workspace, route.access)
-                pairs.setdefault(key, set()).update(teams.access_profiles[route.access].providers)
+                execution_policy = teams.catalog.policy_for(route.workspace)
+                bindings.setdefault(route.workspace, set()).update(execution_policy.providers)
         for route_id, problems in sorted(teams.route_errors.items()):
             failed = True
             for problem in problems:
@@ -2402,16 +2411,17 @@ def config_check() -> None:  # noqa: C901
     for job in jobs:
         if job.dir_name in job_errors:
             continue
-        key = (job.workspace, job.access)
-        if catalog.usable(*key):
-            pairs.setdefault(key, set()).add(job.provider)
+        if catalog.usable(job.workspace):
+            bindings.setdefault(job.workspace, set()).add(job.provider)
 
-    for (workspace_name, access_name), providers in sorted(pairs.items()):
+    for workspace_name, providers in sorted(bindings.items()):
         workspace = catalog.workspaces[workspace_name]
-        access = catalog.access_profiles[access_name]
-        console.print(f"\n[bold]{workspace_name} + {access_name}[/] native launch")
+        execution_policy = catalog.policy_for(workspace)
+        console.print(
+            f"\n[bold]{workspace_name} → {execution_policy.name}[/] native launch"
+        )
         for provider in sorted(providers):
-            check = check_provider(workspace, access, provider)
+            check = check_provider(workspace, execution_policy, provider)
             if check.ok:
                 revision = (check.policy_revision or "")[:12]
                 servers = f" mcp: {', '.join(check.mcp_servers)}" if check.mcp_servers else ""
@@ -2428,7 +2438,7 @@ def config_check() -> None:  # noqa: C901
     console.print("\n[green]All checks passed.[/]")
     console.print(
         "[dim]Plumbing only: this confirms Enso can select each native policy, not that "
-        "the policy is safe. Before trusting a restricted profile, test it with the "
+        "the policy is safe. Before trusting a restricted policy, test it with the "
         "installed CLI — a forbidden read, a forbidden write, and command execution.[/]"
     )
 
@@ -2454,7 +2464,8 @@ def route_explain(
         route = decision.route
         console.print(f"Route: {route.route_id}")
         console.print(f"Workspace: {route.workspace}")
-        console.print(f"Access: {route.access}")
+        workspace = teams.workspaces.get(route.workspace)
+        console.print(f"Policy: {workspace.policy if workspace is not None else 'unresolved'}")
         console.print(f"Audit: {'on' if route.audit else 'off'}")
         if route.kind == "channel":
             console.print(f"Mention required: {'yes' if route.mention_required else 'no'}")

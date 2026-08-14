@@ -5,24 +5,24 @@ description: Create and manage scheduled background jobs. Use when the user asks
 
 # Jobs
 
-Background jobs are scheduled tasks that run autonomously via the Enso service. Each job selects a named workspace and access profile, then spawns a CLI agent there on a cron schedule. Scheduled failures notify the configured destination automatically. Manual runs print their result and suppress Enso's automatic failure notification. Successful jobs are silent unless their prompt deliberately sends a message. Job alerts and messages sent with `enso message send` are text-only; interactive Slack structured blocks and persistent-surface drafts are not parsed on this path.
+Background jobs are scheduled tasks that run autonomously via the Enso service. Each job selects a named workspace and derives its policy from that workspace, then spawns a CLI agent there on a cron schedule. Scheduled failures notify the configured destination automatically. Manual runs print their result and suppress Enso's automatic failure notification. Successful jobs are silent unless their prompt deliberately sends a message. Job alerts and messages sent with `enso message send` are text-only; interactive Slack structured blocks and persistent-surface drafts are not parsed on this path.
 
 ## Workflow
 
-1. **Scaffold**: `enso job create --name "Name" --provider claude --model sonnet --schedule "0 9 * * *" --workspace company --access automation` — creates the directory and a `JOB.md` with `enabled: false`
-1. **Edit**: Write the prompt in the JOB.md body, add a prerun script if needed
-1. **Enable**: Set `enabled: true` in the frontmatter
-1. **Test**: `enso job run <name>` to verify it works
-1. The job scheduler picks it up automatically on the next tick
+1. **Scaffold**: `enso job create --name "Name" --provider claude --model sonnet --schedule "0 9 * * *" --workspace company` — creates the directory and a `JOB.md` with `enabled: false`
+2. **Edit**: Write the prompt in the JOB.md body, add a prerun script if needed
+3. **Enable**: Set `enabled: true` in the frontmatter
+4. **Test**: `enso job run <name>` to verify it works
+5. The job scheduler picks it up automatically on the next tick
 
 ## CLI
 
 ```bash
 enso job list                    # show all jobs with status
 enso job run <name>              # manual run (output to stdout)
-enso job create --name "Name" --provider claude --model sonnet --schedule "0 9 * * *" --workspace company --access automation
-enso job create --name "Name" --provider codex --model terra --schedule "0 9 * * *" --workspace company --access automation
-enso job create --name "Name" --provider agy --model gemini-3.6-flash-high --schedule "0 9 * * *" --workspace company --access automation
+enso job create --name "Name" --provider claude --model sonnet --schedule "0 9 * * *" --workspace company
+enso job create --name "Name" --provider codex --model terra --schedule "0 9 * * *" --workspace company
+enso job create --name "Name" --provider agy --model gemini-3.6-flash-high --schedule "0 9 * * *" --workspace company
 ```
 
 ## Directory structure
@@ -43,7 +43,6 @@ schedule: "0 9 * * *"
 provider: claude
 model: sonnet
 workspace: company
-access: automation
 enabled: true
 prerun: prerun.sh
 ---
@@ -60,7 +59,6 @@ The prompt goes here. Use {{prerun_output}} to inject prerun results.
 | `provider`              | yes      | `claude`, `codex`, or `agy`                                                                |
 | `model`                 | yes      | Model name (e.g. `sonnet`; Codex: `sol`, `terra`, or `luna`; Agy: `gemini-3.6-flash-high`) |
 | `workspace`             | yes      | Named entry from top-level `workspaces`; its path is the provider cwd                      |
-| `access`                | yes      | Named entry from top-level `access`; it must allow the selected provider                   |
 | `enabled`               | yes      | `true` or `false` — disabled jobs are skipped                                              |
 | `prerun`                | no       | Script filename in the job directory                                                       |
 | `prerun_timeout`        | no       | Max seconds for the prerun (default 120)                                                   |
@@ -71,7 +69,7 @@ The prompt goes here. Use {{prerun_output}} to inject prerun results.
 
 `provider` and `model` are validated against the configured providers and their model lists — a job naming an unknown provider or model is rejected at creation and fails with a clear error instead of running. The cron schedule is validated at creation too; if a hand-edited schedule later becomes invalid, the scheduler skips that job (with a log warning) rather than run it.
 
-`workspace` and `access` use exactly the same named objects as Slack routes. Both are mandatory; Enso never falls back to the global `working_dir` or an unrestricted launch. The access profile selects native Claude/Codex policy plumbing. Enso does not reinterpret what those provider policies mean.
+`workspace` uses the same named object as a Slack route. It is mandatory and selects exactly one top-level policy; Enso never accepts a job-level policy override or falls back to an unrestricted launch. The workspace policy selects native Claude/Codex policy plumbing. Enso does not reinterpret what those provider policies mean.
 
 By default a job that misses its scheduled time by more than `misfire_grace_seconds` (e.g. the machine was asleep) is skipped rather than run late; set `catch_up: true` when a late run is better than no run.
 
@@ -140,7 +138,7 @@ fi
 echo "$RESULT"
 ```
 
-Enso invokes the file through `bash` from the job directory, so it does not require an executable bit. The prerun is trusted host-side automation and is not sandboxed by the access profile; only the provider CLI launch receives the selected native policy. Treat every prerun and everything it emits into `{{prerun_output}}` accordingly.
+Enso invokes the file through `bash` from the job directory, so it does not require an executable bit. The prerun is trusted host-side automation and is not sandboxed by the policy; only the provider CLI launch receives the selected native policy. Treat every prerun and everything it emits into `{{prerun_output}}` accordingly.
 
 ## Examples
 
@@ -153,7 +151,6 @@ schedule: "30 6 * * *"
 provider: claude
 model: sonnet
 workspace: company
-access: automation
 enabled: true
 ---
 
@@ -170,7 +167,6 @@ schedule: "*/15 * * * *"
 provider: claude
 model: haiku
 workspace: company
-access: automation
 enabled: true
 prerun: prerun.sh
 ---
@@ -204,7 +200,6 @@ schedule: "0 7 * * 1-5"
 provider: claude
 model: sonnet
 workspace: company
-access: automation
 enabled: true
 prerun: prerun.sh
 ---

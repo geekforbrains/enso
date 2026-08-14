@@ -55,10 +55,6 @@
         <dd class="break-anywhere mt-1 font-medium">{{ job.workspace }}</dd>
       </div>
       <div>
-        <dt class="text-xs font-medium uppercase tracking-wide text-faint">Access</dt>
-        <dd class="break-anywhere mt-1 font-medium">{{ job.access }}</dd>
-      </div>
-      <div>
         <dt class="text-xs font-medium uppercase tracking-wide text-faint">Timeout</dt>
         <dd class="mt-1">
           {% if job.timeout and job.timeout % 60 == 0 %}

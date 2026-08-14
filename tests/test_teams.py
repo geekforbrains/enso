@@ -10,7 +10,7 @@ from enso.teams import load_catalog, load_teams, resolve
 
 
 def make_config(tmp_path, **overrides) -> dict:
-    """A valid config with a shared project workspace and two access profiles."""
+    """A valid config with two workspaces and reusable policies."""
     company = tmp_path / "workspaces" / "company"
     acme = tmp_path / "workspaces" / "clients" / "acme"
     client_policy = tmp_path / "policies" / "client-readonly"
@@ -20,10 +20,14 @@ def make_config(tmp_path, **overrides) -> dict:
         "working_dir": str(tmp_path / "legacy"),
         "transports": {"slack": {"bot_token": "x", "app_token": "x"}},
         "workspaces": {
-            "company": {"path": str(company)},
-            "client-a": {"path": str(acme), "concurrency": 2},
+            "company": {"path": str(company), "policy": "admin"},
+            "client-a": {
+                "path": str(acme),
+                "policy": "client-readonly",
+                "concurrency": 2,
+            },
         },
-        "access": {
+        "policies": {
             "admin": {
                 "unrestricted": True,
                 "providers": ["claude", "codex", "agy"],
@@ -41,12 +45,11 @@ def make_config(tmp_path, **overrides) -> dict:
             "slack": {
                 "account_id": "T0ENSO",
                 "dms": {
-                    "U01ADMIN": {"workspace": "company", "access": "admin"},
+                    "U01ADMIN": {"workspace": "company"},
                 },
                 "channels": {
                     "C0ACME": {
                         "workspace": "client-a",
-                        "access": "client-readonly",
                         "audit": True,
                     },
                 },
@@ -57,7 +60,71 @@ def make_config(tmp_path, **overrides) -> dict:
     return config
 
 
+def make_workspace_policy_config(tmp_path) -> dict:
+    """Return the v2 ownership model: workspace -> policy, route -> workspace."""
+    return make_config(tmp_path)
+
+
 # -- transport-independent execution catalog --
+
+
+def test_workspace_selects_one_reusable_policy(tmp_path):
+    config = make_workspace_policy_config(tmp_path)
+    second = tmp_path / "workspaces" / "client-b"
+    second.mkdir(parents=True)
+    config["workspaces"]["client-b"] = {
+        "path": str(second),
+        "policy": "client-readonly",
+    }
+
+    catalog = load_catalog(config)
+
+    assert catalog.errors == ()
+    assert catalog.workspaces["client-a"].policy == "client-readonly"
+    assert catalog.workspaces["client-b"].policy == "client-readonly"
+    assert catalog.policies["client-readonly"].policy_dir is not None
+    assert catalog.usable("client-a")
+    assert catalog.usable("client-b")
+
+
+def test_workspace_requires_a_known_policy(tmp_path):
+    config = make_workspace_policy_config(tmp_path)
+    del config["workspaces"]["company"]["policy"]
+    config["workspaces"]["client-a"]["policy"] = "missing"
+
+    catalog = load_catalog(config)
+
+    assert not catalog.usable("company")
+    assert not catalog.usable("client-a")
+    assert "policy is required and must be a string" in catalog.workspace_errors["company"]
+    assert "unknown policy 'missing'" in catalog.workspace_errors["client-a"]
+
+
+@pytest.mark.parametrize(
+    ("catalog_name", "item_label"),
+    [("workspaces", "workspace"), ("policies", "policy")],
+)
+def test_catalog_names_are_portable_identifiers(tmp_path, catalog_name, item_label):
+    config = make_workspace_policy_config(tmp_path)
+    config[catalog_name]["nested/name"] = {}
+
+    catalog = load_catalog(config)
+
+    assert any(f"{item_label} names must match" in error for error in catalog.errors)
+    target = catalog.workspaces if catalog_name == "workspaces" else catalog.policies
+    assert "nested/name" not in target
+
+
+def test_route_cannot_override_workspace_policy(tmp_path):
+    config = make_workspace_policy_config(tmp_path)
+    config["routes"]["slack"]["channels"]["C0ACME"]["policy"] = "admin"
+
+    parsed = load_teams(config)
+
+    route = parsed.channel_routes["C0ACME"]
+    assert parsed.catalog.policy_for(route.workspace).name == "client-readonly"
+    assert route.route_id in parsed.route_errors
+    assert any("unknown keys ['policy']" in error for error in parsed.route_errors[route.route_id])
 
 
 def test_catalog_loads_without_slack_routes(tmp_path):
@@ -68,18 +135,17 @@ def test_catalog_loads_without_slack_routes(tmp_path):
 
     assert catalog.errors == ()
     assert catalog.workspaces["company"].path.endswith("workspaces/company")
-    assert catalog.access_profiles["admin"].unrestricted
-    assert catalog.usable("company", "admin")
+    assert catalog.policies["admin"].unrestricted
+    assert catalog.usable("company")
 
 
 def test_catalog_rejects_unknown_or_invalid_bindings(tmp_path):
     config = make_config(tmp_path)
-    config["access"]["client-readonly"]["providers"] = []
+    config["policies"]["client-readonly"]["providers"] = []
     catalog = load_catalog(config)
 
-    assert not catalog.usable("client-a", "client-readonly")
-    assert not catalog.usable("missing", "admin")
-    assert not catalog.usable("company", "missing")
+    assert not catalog.usable("client-a")
+    assert not catalog.usable("missing")
 
 
 def test_catalog_retains_topology_validation_without_slack_routes(tmp_path):
@@ -90,7 +156,7 @@ def test_catalog_retains_topology_validation_without_slack_routes(tmp_path):
     catalog = load_catalog(config)
 
     assert catalog.errors
-    assert not catalog.usable("company", "admin")
+    assert not catalog.usable("company")
 
 
 # -- valid schema --
@@ -104,10 +170,12 @@ def test_load_valid_config(tmp_path):
     assert parsed.account_id == "T0ENSO"
     assert parsed.workspaces["company"].concurrency == 1
     assert parsed.workspaces["client-a"].concurrency == 2
-    assert parsed.access_profiles["admin"].unrestricted
-    assert not parsed.access_profiles["client-readonly"].unrestricted
+    assert parsed.policies["admin"].unrestricted
+    assert not parsed.policies["client-readonly"].unrestricted
     assert parsed.dm_routes["U01ADMIN"].route_id == "slack.dm.U01ADMIN"
-    assert parsed.channel_routes["C0ACME"].access == "client-readonly"
+    assert parsed.catalog.policy_for(parsed.channel_routes["C0ACME"].workspace).name == (
+        "client-readonly"
+    )
 
 
 def test_missing_slack_routes_is_actionable_invalid_config(tmp_path):
@@ -123,36 +191,38 @@ def test_paths_are_canonical_absolute(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     config = make_config(tmp_path)
     config["workspaces"]["company"]["path"] = "workspaces/../workspaces/company"
-    config["access"]["client-readonly"]["policy_dir"] = "policies/../policies/client-readonly"
+    config["policies"]["client-readonly"]["policy_dir"] = (
+        "policies/../policies/client-readonly"
+    )
     parsed = load_teams(config)
     assert parsed.workspaces["company"].path == os.path.realpath(
         tmp_path / "workspaces" / "company"
     )
-    assert parsed.access_profiles["client-readonly"].policy_dir == os.path.realpath(
+    assert parsed.policies["client-readonly"].policy_dir == os.path.realpath(
         tmp_path / "policies" / "client-readonly"
     )
 
 
-def test_policy_dir_defaults_from_access_profile_name(tmp_path, monkeypatch):
+def test_policy_dir_defaults_from_policy_name(tmp_path, monkeypatch):
     monkeypatch.setattr("enso.config.CONFIG_DIR", str(tmp_path))
     config = make_config(tmp_path)
-    del config["access"]["client-readonly"]["policy_dir"]
+    del config["policies"]["client-readonly"]["policy_dir"]
     parsed = load_teams(config)
-    assert parsed.access_profiles["client-readonly"].policy_dir == str(
+    assert parsed.policies["client-readonly"].policy_dir == str(
         tmp_path / "policies" / "client-readonly"
     )
 
 
-def test_routes_may_share_workspace_with_different_access(tmp_path):
+def test_routes_share_the_workspace_policy(tmp_path):
     config = make_config(tmp_path)
     config["routes"]["slack"]["channels"]["C0ACME_INTERNAL"] = {
         "workspace": "client-a",
-        "access": "admin",
     }
     parsed = load_teams(config)
     assert parsed.dispatchable
     assert parsed.route_usable(parsed.channel_routes["C0ACME"])
     assert parsed.route_usable(parsed.channel_routes["C0ACME_INTERNAL"])
+    assert parsed.catalog.policy_for("client-a").name == "client-readonly"
 
 
 def test_audit_defaults(tmp_path):
@@ -206,9 +276,9 @@ def test_malformed_workspaces_disables_dispatch(tmp_path, bad):
 
 
 @pytest.mark.parametrize("bad", [None, "x", 5, ["x"]])
-def test_malformed_access_disables_dispatch(tmp_path, bad):
+def test_malformed_policies_disables_dispatch(tmp_path, bad):
     config = make_config(tmp_path)
-    config["access"] = bad
+    config["policies"] = bad
     assert not load_teams(config).dispatchable
 
 
@@ -267,17 +337,24 @@ def test_policy_dir_may_not_overlap_any_workspace(tmp_path, direction):
     config = make_config(tmp_path)
     workspace = tmp_path / "workspaces" / "clients" / "acme"
     policy = workspace / "policy" if direction == "inside" else tmp_path / "workspaces" / "clients"
-    config["access"]["client-readonly"]["policy_dir"] = str(policy)
+    config["policies"]["client-readonly"]["policy_dir"] = str(policy)
     assert not load_teams(config).dispatchable
 
 
 @pytest.mark.parametrize("direction", ["inside", "contains"])
-def test_policy_dir_may_not_overlap_legacy_working_dir(tmp_path, direction):
+def test_policy_dir_may_not_overlap_legacy_global_working_dir(tmp_path, direction):
     config = make_config(tmp_path)
     legacy = tmp_path / "legacy"
     policy = legacy / "policy" if direction == "inside" else tmp_path
-    config["access"]["client-readonly"]["policy_dir"] = str(policy)
-    assert not load_teams(config).dispatchable
+    config["policies"]["client-readonly"]["policy_dir"] = str(policy)
+
+    parsed = load_teams(config)
+
+    assert not parsed.dispatchable
+    assert any(
+        "policy_dir of policy client-readonly overlaps global working_dir" in error
+        for error in parsed.errors
+    )
 
 
 # -- item-scoped fail-closed errors --
@@ -312,20 +389,20 @@ def test_invalid_or_unknown_workspace_values_disable_its_routes(tmp_path, key, v
         ("skills", ["project"]),
     ],
 )
-def test_invalid_or_unknown_access_values_disable_its_routes(tmp_path, key, value):
+def test_invalid_or_unknown_policy_values_disable_its_routes(tmp_path, key, value):
     config = make_config(tmp_path)
-    config["access"]["client-readonly"][key] = value
+    config["policies"]["client-readonly"][key] = value
     parsed = load_teams(config)
     assert parsed.dispatchable
-    assert "client-readonly" in parsed.access_errors
+    assert "client-readonly" in parsed.policy_errors
     assert not parsed.route_usable(parsed.channel_routes["C0ACME"])
 
 
-def test_unrestricted_and_policy_dir_is_access_error(tmp_path):
+def test_unrestricted_and_policy_dir_is_policy_error(tmp_path):
     config = make_config(tmp_path)
-    config["access"]["admin"]["policy_dir"] = str(tmp_path / "policies" / "admin")
+    config["policies"]["admin"]["policy_dir"] = str(tmp_path / "policies" / "admin")
     parsed = load_teams(config)
-    assert "admin" in parsed.access_errors
+    assert "admin" in parsed.policy_errors
 
 
 # -- env_passthrough --
@@ -333,13 +410,13 @@ def test_unrestricted_and_policy_dir_is_access_error(tmp_path):
 
 def test_env_passthrough_valid_list_is_stored_as_tuple(tmp_path):
     config = make_config(tmp_path)
-    config["access"]["client-readonly"]["env_passthrough"] = [
+    config["policies"]["client-readonly"]["env_passthrough"] = [
         "METRICS_API_TOKEN",
         "TICKETS_API_TOKEN",
     ]
     parsed = load_teams(config)
-    assert "client-readonly" not in parsed.access_errors
-    assert parsed.access_profiles["client-readonly"].env_passthrough == (
+    assert "client-readonly" not in parsed.policy_errors
+    assert parsed.policies["client-readonly"].env_passthrough == (
         "METRICS_API_TOKEN",
         "TICKETS_API_TOKEN",
     )
@@ -347,58 +424,58 @@ def test_env_passthrough_valid_list_is_stored_as_tuple(tmp_path):
 
 def test_env_passthrough_defaults_to_empty(tmp_path):
     parsed = load_teams(make_config(tmp_path))
-    assert parsed.access_profiles["client-readonly"].env_passthrough == ()
+    assert parsed.policies["client-readonly"].env_passthrough == ()
 
 
 @pytest.mark.parametrize("bad", ["METRICS_API_TOKEN", 5, [1], ["OK_NAME", None], {"A": "B"}])
 def test_env_passthrough_must_be_a_string_list(tmp_path, bad):
     config = make_config(tmp_path)
-    config["access"]["client-readonly"]["env_passthrough"] = bad
+    config["policies"]["client-readonly"]["env_passthrough"] = bad
     parsed = load_teams(config)
-    problems = parsed.access_errors["client-readonly"]
+    problems = parsed.policy_errors["client-readonly"]
     assert any("env_passthrough must be a list of strings" in p for p in problems)
-    assert parsed.access_profiles["client-readonly"].env_passthrough == ()
+    assert parsed.policies["client-readonly"].env_passthrough == ()
 
 
 def test_env_passthrough_rejects_duplicates(tmp_path):
     config = make_config(tmp_path)
-    config["access"]["client-readonly"]["env_passthrough"] = ["A_TOKEN", "A_TOKEN"]
+    config["policies"]["client-readonly"]["env_passthrough"] = ["A_TOKEN", "A_TOKEN"]
     parsed = load_teams(config)
-    problems = parsed.access_errors["client-readonly"]
+    problems = parsed.policy_errors["client-readonly"]
     assert any("duplicate" in p for p in problems)
 
 
 @pytest.mark.parametrize("name", ["metrics_token", "FOO=BAR", "1FOO", ""])
 def test_env_passthrough_rejects_malformed_names(tmp_path, name):
     config = make_config(tmp_path)
-    config["access"]["client-readonly"]["env_passthrough"] = [name]
+    config["policies"]["client-readonly"]["env_passthrough"] = [name]
     parsed = load_teams(config)
-    problems = parsed.access_errors["client-readonly"]
+    problems = parsed.policy_errors["client-readonly"]
     assert any("must match" in p for p in problems)
 
 
 @pytest.mark.parametrize("name", ["HOME", "PATH", "CODEX_HOME", "ENSO_ANYTHING"])
 def test_env_passthrough_rejects_reserved_names(tmp_path, name):
     config = make_config(tmp_path)
-    config["access"]["client-readonly"]["env_passthrough"] = [name]
+    config["policies"]["client-readonly"]["env_passthrough"] = [name]
     parsed = load_teams(config)
-    problems = parsed.access_errors["client-readonly"]
+    problems = parsed.policy_errors["client-readonly"]
     assert any("reserved" in p for p in problems)
 
 
-def test_env_passthrough_is_rejected_on_unrestricted_profile(tmp_path):
+def test_env_passthrough_is_rejected_on_unrestricted_policy(tmp_path):
     config = make_config(tmp_path)
-    config["access"]["admin"]["env_passthrough"] = ["METRICS_API_TOKEN"]
+    config["policies"]["admin"]["env_passthrough"] = ["METRICS_API_TOKEN"]
     parsed = load_teams(config)
-    problems = parsed.access_errors["admin"]
+    problems = parsed.policy_errors["admin"]
     assert any("unrestricted: true is invalid alongside env_passthrough" in p for p in problems)
 
 
 def test_env_passthrough_key_typo_is_unknown_key_error(tmp_path):
     config = make_config(tmp_path)
-    config["access"]["client-readonly"]["env_passthru"] = ["METRICS_API_TOKEN"]
+    config["policies"]["client-readonly"]["env_passthru"] = ["METRICS_API_TOKEN"]
     parsed = load_teams(config)
-    problems = parsed.access_errors["client-readonly"]
+    problems = parsed.policy_errors["client-readonly"]
     assert any("unknown keys" in p and "env_passthru" in p for p in problems)
 
 
@@ -435,7 +512,7 @@ def test_unknown_workspace_disables_route(tmp_path):
     assert "slack.channel.C0ACME" in parsed.route_errors
 
 
-def test_unknown_access_profile_disables_route(tmp_path):
+def test_legacy_route_access_override_disables_route(tmp_path):
     config = make_config(tmp_path)
     config["routes"]["slack"]["channels"]["C0ACME"]["access"] = "missing"
     parsed = load_teams(config)
@@ -472,7 +549,7 @@ def test_dm_route_key_is_exact_slack_user_id(tmp_path):
 
 def test_route_scoped_error_is_reported_to_that_route(tmp_path):
     config = make_config(tmp_path)
-    config["routes"]["slack"]["channels"]["C0ACME"]["access"] = "missing"
+    config["routes"]["slack"]["channels"]["C0ACME"]["audit"] = "yes"
     parsed = load_teams(config)
     decision = resolve(parsed, user_id="UANY", channel_id="C0ACME")
     assert decision.status == "error"

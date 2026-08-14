@@ -1,12 +1,12 @@
-"""Static workspace/access catalog and exact Slack route configuration.
+"""Static workspace/policy catalog and exact Slack route configuration.
 
 Slack routing deliberately has no user/group policy composition. An exact channel
 route authorizes every poster in that channel. An exact DM route is keyed by
-the Slack user ID it authorizes. Each route selects one filesystem workspace
-and one complete native-CLI access profile.
+the Slack user ID it authorizes. Each route selects one filesystem workspace,
+which owns exactly one reusable native-CLI policy.
 
 Invalid security configuration fails closed. Structural errors disable routed
-dispatch, while invalid workspaces, access profiles, and routes make every
+dispatch, while invalid workspaces, policies, and routes make every
 route that references them unusable.
 """
 
@@ -22,7 +22,7 @@ from .providers import PROVIDER_NAMES
 AUDIT_ON_FAILURE_VALUES = ("block", "warn")
 DEFAULT_AUDIT_MAX_AGE_DAYS = 365
 
-# Canonical native-policy sources, relative to an access profile's policy_dir.
+# Canonical native-policy sources, relative to a policy's policy_dir.
 POLICY_FILES = {
     "claude": os.path.join("claude", "settings.json"),
     "codex": os.path.join("codex", "config.toml"),
@@ -36,12 +36,14 @@ _ENV_PASSTHROUGH_RESERVED = frozenset(
     {"HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "USER", "SHELL", "PATH", "CODEX_HOME"}
 )
 _ENV_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*")
+_CATALOG_NAME_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}"
+_CATALOG_NAME_RE = re.compile(_CATALOG_NAME_PATTERN)
 
 
-def _default_policy_dir(access_name: str) -> str:
+def _default_policy_dir(policy_name: str) -> str:
     from . import config as config_mod
 
-    return os.path.join(config_mod.CONFIG_DIR, "policies", access_name)
+    return os.path.join(config_mod.CONFIG_DIR, "policies", policy_name)
 
 
 def _is_str_list(value: object) -> TypeGuard[list[str]]:
@@ -69,12 +71,13 @@ class Workspace:
 
     name: str
     path: str
+    policy: str
     concurrency: int
 
 
 @dataclass(frozen=True)
-class AccessProfile:
-    """One complete native-CLI policy and Enso capability selection."""
+class Policy:
+    """One reusable native-CLI policy and Enso capability selection."""
 
     name: str
     policy_dir: str | None
@@ -105,7 +108,6 @@ class Route:
     kind: str  # "dm" | "channel"
     key: str  # exact Slack user ID for DMs; exact channel ID otherwise
     workspace: str
-    access: str
     audit: bool
     mention_required: bool = True
     thread_mention_required: bool = True
@@ -122,28 +124,37 @@ class Decision:
 
 @dataclass(frozen=True)
 class ExecutionCatalog:
-    """Transport-independent workspace and access-profile configuration."""
+    """Transport-independent workspace and policy configuration."""
 
     workspaces: dict[str, Workspace]
-    access_profiles: dict[str, AccessProfile]
+    policies: dict[str, Policy]
     errors: tuple[str, ...] = ()
     workspace_errors: dict[str, tuple[str, ...]] = field(default_factory=dict)
-    access_errors: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    policy_errors: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     @property
     def valid(self) -> bool:
         """Whether catalog-wide structure and path topology are valid."""
         return not self.errors
 
-    def usable(self, workspace: str, access: str) -> bool:
-        """Whether two named entries form a valid execution binding."""
+    def usable(self, workspace: str) -> bool:
+        """Whether a workspace and its configured policy form a valid binding."""
+        item = self.workspaces.get(workspace)
         return (
             self.valid
-            and workspace in self.workspaces
-            and access in self.access_profiles
+            and item is not None
             and workspace not in self.workspace_errors
-            and access not in self.access_errors
+            and item.policy in self.policies
+            and item.policy not in self.policy_errors
         )
+
+    def policy_for(self, workspace: str | Workspace) -> Policy:
+        """Return the policy owned by a known workspace.
+
+        Callers that process untrusted configuration must check ``usable`` first.
+        """
+        item = workspace if isinstance(workspace, Workspace) else self.workspaces[workspace]
+        return self.policies[item.policy]
 
 
 @dataclass(frozen=True)
@@ -164,16 +175,16 @@ class TeamsConfig:
         return self.catalog.workspaces
 
     @property
-    def access_profiles(self) -> dict[str, AccessProfile]:
-        return self.catalog.access_profiles
+    def policies(self) -> dict[str, Policy]:
+        return self.catalog.policies
 
     @property
     def workspace_errors(self) -> dict[str, tuple[str, ...]]:
         return self.catalog.workspace_errors
 
     @property
-    def access_errors(self) -> dict[str, tuple[str, ...]]:
-        return self.catalog.access_errors
+    def policy_errors(self) -> dict[str, tuple[str, ...]]:
+        return self.catalog.policy_errors
 
     @property
     def dispatchable(self) -> bool:
@@ -181,24 +192,35 @@ class TeamsConfig:
         return not self.errors
 
     def route_usable(self, route: Route) -> bool:
-        """Whether a configured route has usable workspace and access bindings."""
+        """Whether a configured route has a usable workspace-policy binding."""
         if route.route_id in self.route_errors:
             return False
-        return self.catalog.usable(route.workspace, route.access)
+        return self.catalog.usable(route.workspace)
 
 
 def load_catalog(config: dict) -> ExecutionCatalog:
-    """Parse reusable workspace/access configuration without a transport."""
+    """Parse reusable workspace/policy configuration without a transport."""
     errors: list[str] = []
     workspaces, workspace_errors = _load_workspaces(config.get("workspaces", {}), errors)
-    access_profiles, access_errors = _load_access(config.get("access", {}), errors)
-    _check_topology(workspaces, access_profiles, config.get("working_dir"), errors)
+    policies, policy_errors = _load_policies(config.get("policies", {}), errors)
+    if "access" in config:
+        errors.append(
+            "access is no longer supported; rename it to policies and assign one policy "
+            "to every workspace"
+        )
+    for name, workspace in workspaces.items():
+        if workspace.policy and workspace.policy not in policies:
+            workspace_errors[name] = (
+                *workspace_errors.get(name, ()),
+                f"unknown policy {workspace.policy!r}",
+            )
+    _check_topology(workspaces, policies, config.get("working_dir"), errors)
     return ExecutionCatalog(
         workspaces=workspaces,
-        access_profiles=access_profiles,
+        policies=policies,
         errors=tuple(errors),
         workspace_errors=workspace_errors,
-        access_errors=access_errors,
+        policy_errors=policy_errors,
     )
 
 
@@ -259,7 +281,7 @@ def load_teams(config: dict) -> TeamsConfig:
     for route in (*dm_routes.values(), *channel_routes.values()):
         schema_errors = dm_schema_errors if route.kind == "dm" else channel_schema_errors
         problems = [*schema_errors.get(route.route_id, ())]
-        problems.extend(_route_problems(route, catalog.workspaces, catalog.access_profiles))
+        problems.extend(_route_problems(route, catalog))
         if problems:
             route_errors[route.route_id] = tuple(problems)
 
@@ -303,14 +325,21 @@ def _load_workspaces(
             errors.append("workspace names must be non-empty strings")
             continue
         name = raw_name
+        if not _CATALOG_NAME_RE.fullmatch(name):
+            errors.append(f"workspace names must match {_CATALOG_NAME_PATTERN}")
+            continue
         if not isinstance(cfg, dict):
             errors.append(f"workspaces.{name} must be an object")
             continue
-        problems = _unknown_keys(cfg, {"path", "concurrency"}, f"workspaces.{name}")
+        problems = _unknown_keys(cfg, {"path", "policy", "concurrency"}, f"workspaces.{name}")
         path = cfg.get("path")
         if not isinstance(path, str) or not path:
             problems.append("path is required and must be a string")
             path = ""
+        policy = cfg.get("policy")
+        if not isinstance(policy, str) or not policy:
+            problems.append("policy is required and must be a string")
+            policy = ""
         concurrency = cfg.get("concurrency", 1)
         if isinstance(concurrency, bool) or not isinstance(concurrency, int) or concurrency < 1:
             problems.append("concurrency must be a positive integer")
@@ -318,6 +347,7 @@ def _load_workspaces(
         workspaces[name] = Workspace(
             name=name,
             path=_canonical(path) if path else "",
+            policy=policy,
             concurrency=concurrency,
         )
         if problems:
@@ -326,14 +356,14 @@ def _load_workspaces(
     return workspaces, workspace_errors
 
 
-def _load_access(
+def _load_policies(
     block: object, errors: list[str]
-) -> tuple[dict[str, AccessProfile], dict[str, tuple[str, ...]]]:
-    profiles: dict[str, AccessProfile] = {}
-    profile_errors: dict[str, tuple[str, ...]] = {}
+) -> tuple[dict[str, Policy], dict[str, tuple[str, ...]]]:
+    policies: dict[str, Policy] = {}
+    policy_errors: dict[str, tuple[str, ...]] = {}
     if not isinstance(block, dict):
-        errors.append("access must be an object")
-        return profiles, profile_errors
+        errors.append("policies must be an object")
+        return policies, policy_errors
 
     allowed = {
         "policy_dir",
@@ -345,13 +375,16 @@ def _load_access(
     }
     for raw_name, cfg in block.items():
         if not isinstance(raw_name, str) or not raw_name:
-            errors.append("access profile names must be non-empty strings")
+            errors.append("policy names must be non-empty strings")
             continue
         name = raw_name
-        if not isinstance(cfg, dict):
-            errors.append(f"access.{name} must be an object")
+        if not _CATALOG_NAME_RE.fullmatch(name):
+            errors.append(f"policy names must match {_CATALOG_NAME_PATTERN}")
             continue
-        problems = _unknown_keys(cfg, allowed, f"access.{name}")
+        if not isinstance(cfg, dict):
+            errors.append(f"policies.{name} must be an object")
+            continue
+        problems = _unknown_keys(cfg, allowed, f"policies.{name}")
 
         unrestricted_raw = cfg.get("unrestricted", False)
         if not isinstance(unrestricted_raw, bool):
@@ -389,7 +422,7 @@ def _load_access(
 
         commands = _load_capability(cfg.get("chat_commands"), "chat_commands", problems)
         passthrough = _load_env_passthrough(cfg.get("env_passthrough"), unrestricted, problems)
-        profiles[name] = AccessProfile(
+        policies[name] = Policy(
             name=name,
             policy_dir=policy_dir,
             unrestricted=unrestricted,
@@ -399,9 +432,9 @@ def _load_access(
             env_passthrough=passthrough,
         )
         if problems:
-            profile_errors[name] = tuple(problems)
+            policy_errors[name] = tuple(problems)
 
-    return profiles, profile_errors
+    return policies, policy_errors
 
 
 def _load_capability(value: object, key: str, problems: list[str]) -> tuple[str, ...] | str:
@@ -428,7 +461,7 @@ def _load_env_passthrough(
         problems.append("env_passthrough must be a list of strings")
         return ()
     if unrestricted:
-        # An unrestricted profile inherits the full environment; accepting the
+        # An unrestricted policy inherits the full environment; accepting the
         # key would let the operator believe they scoped something.
         problems.append("unrestricted: true is invalid alongside env_passthrough")
     if len(value) != len(set(value)):
@@ -449,7 +482,7 @@ def _load_env_passthrough(
 
 def _check_topology(
     workspaces: dict[str, Workspace],
-    profiles: dict[str, AccessProfile],
+    policies: dict[str, Policy],
     working_dir: object,
     errors: list[str],
 ) -> None:
@@ -464,12 +497,12 @@ def _check_topology(
     protected_roots = dict(paths)
     if isinstance(working_dir, str) and working_dir:
         protected_roots["global working_dir"] = _canonical(working_dir)
-    for profile_name, profile in profiles.items():
-        if profile.policy_dir is None:
+    for policy_name, policy in policies.items():
+        if policy.policy_dir is None:
             continue
-        for root_name, root in protected_roots.items():
-            if _within(profile.policy_dir, root) or _within(root, profile.policy_dir):
-                errors.append(f"policy_dir of access profile {profile_name} overlaps {root_name}")
+        for workspace_name, root in protected_roots.items():
+            if _within(policy.policy_dir, root) or _within(root, policy.policy_dir):
+                errors.append(f"policy_dir of policy {policy_name} overlaps {workspace_name}")
 
 
 # Channel response triggers: config key -> built-in default.
@@ -530,10 +563,6 @@ def _build_route(
     if not isinstance(workspace, str) or not workspace:
         problems.append("workspace is required and must be a string")
         workspace = ""
-    access = cfg.get("access")
-    if not isinstance(access, str) or not access:
-        problems.append("access is required and must be a string")
-        access = ""
     audit_raw = cfg.get("audit", False)
     if not isinstance(audit_raw, bool):
         problems.append("audit must be a boolean")
@@ -554,7 +583,6 @@ def _build_route(
         kind=kind,
         key=key,
         workspace=workspace,
-        access=access,
         audit=audit_value,
         mention_required=triggers["mention_required"],
         thread_mention_required=triggers["thread_mention_required"],
@@ -572,7 +600,7 @@ def _load_routes(
     routes: dict[str, Route] = {}
     route_errors: dict[str, tuple[str, ...]] = {}
     label = "dms" if kind == "dm" else "channels"
-    allowed = {"workspace", "access", "audit"}
+    allowed = {"workspace", "audit"}
     if kind == "channel":
         allowed |= set(_MENTION_SETTING_DEFAULTS)
     defaults = channel_defaults or dict(_MENTION_SETTING_DEFAULTS)
@@ -604,14 +632,13 @@ def _load_routes(
 
 def _route_problems(
     route: Route,
-    workspaces: dict[str, Workspace],
-    profiles: dict[str, AccessProfile],
+    catalog: ExecutionCatalog,
 ) -> list[str]:
     problems: list[str] = []
-    if route.workspace and route.workspace not in workspaces:
+    if route.workspace and route.workspace not in catalog.workspaces:
         problems.append(f"unknown workspace {route.workspace!r}")
-    if route.access and route.access not in profiles:
-        problems.append(f"unknown access profile {route.access!r}")
+    elif route.workspace:
+        problems.extend(catalog.workspace_errors.get(route.workspace, ()))
     return problems
 
 

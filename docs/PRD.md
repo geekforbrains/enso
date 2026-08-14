@@ -59,7 +59,7 @@ overview, organisation, and managing the scheduled work Enso already runs.
 
 ## Vocabulary
 
-- **Job** — a *scheduled* background unit of work defined by a `JOB.md` file, bound to one named workspace and access profile, and run on a cron by the scheduler. Recurring. This work records its runs and makes it editable from the web UI.
+- **Job** — a *scheduled* background unit of work defined by a `JOB.md` file, bound to one named workspace and run under that workspace's configured policy on a cron by the scheduler. Recurring. This work records its runs and makes it editable from the web UI.
 - **Run** — one execution of a job: when it started/ended, its exit status,
   and its captured output. Recorded in SQLite. See [data-model.md](specs/data-model.md).
 - **Table** — a registered, user-owned SQLite table containing structured facts an agent
@@ -113,7 +113,7 @@ authorized chat senders, not additional owners or dashboard personas.
 
 ### F3 — Web UI: jobs (partially implemented)
 
-- `/jobs` — list with schedule, provider/model, workspace/access, enabled state.
+- `/jobs` — list with schedule, provider/model, workspace, enabled state.
 - `/jobs/<name>` — configuration, prompt, prerun state, recent runs, **Run now**,
   enable/disable, and confirmed directory deletion.
 - Editing the prompt has a focused endpoint that rewrites only the `JOB.md` body,
@@ -123,7 +123,7 @@ authorized chat senders, not additional owners or dashboard personas.
 - Deleting a job removes its whole directory, including companion and prerun files;
   recorded run history remains available.
 - **Planned:** create and fully edit jobs from the UI: name, schedule, provider, model,
-  workspace, access profile, enabled, timeout, notify, prompt body, and optional prerun script.
+  workspace, enabled, timeout, notify, prompt body, and optional prerun script.
 
 ### F4 — Web UI: skills & AGENTS.md
 
@@ -165,7 +165,7 @@ authorized chat senders, not additional owners or dashboard personas.
   bounded web view without exposing internal or unrelated SQLite tables.
 - The web UI runs via `enso web`, reachable at `http://localhost:<port>` and, when
   deliberately bound there, over the tailnet.
-- Slack authorization uses exact routes; every job requires a named workspace and access profile; Telegram remains private with exact numeric allowed-user IDs.
+- Slack authorization uses exact routes; every job requires a named workspace and inherits that workspace's policy; Telegram remains private with exact numeric allowed-user IDs.
 
 ## Future ideas (explicitly out of v1)
 

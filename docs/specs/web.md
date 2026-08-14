@@ -39,7 +39,7 @@ fails app creation if it is malformed, unavailable, or empty. A configured liter
 | ----------------------- | --------- | ----------- | -------------------------------------------------------------------- |
 | `/`                     | GET       | Implemented | Dashboard — recent runs plus job, skill, doc, and table counts       |
 | `/health`               | GET       | Implemented | Unauthenticated process-health probe                                 |
-| `/jobs`                 | GET       | Implemented | Job list — schedule, provider/model, workspace/access, enabled state |
+| `/jobs`                 | GET       | Implemented | Job list — schedule, provider/model, workspace, enabled state        |
 | `/jobs/new`             | GET, POST | **Planned** | Create-job form and `JOB.md` scaffold                                |
 | `/jobs/{name}`          | GET       | Implemented | Job configuration, prompt, prerun state, and recent runs             |
 | `/jobs/{name}/edit`     | POST      | **Planned** | Edit job metadata and prerun configuration                           |
@@ -89,7 +89,7 @@ The dashboard shows:
 
 ### Jobs (`/jobs`, `/jobs/{name}`)
 
-- Read: schedule, provider/model, required workspace/access names, timeout, notify destination, prompt body, and whether
+- Read: schedule, provider/model, required workspace name, timeout, notify destination, prompt body, and whether
   the configured prerun script exists.
 - A dedicated **enable/disable** toggle flips `enabled:` for one-click pause, and
   **Run now** executes the job immediately.
@@ -105,7 +105,7 @@ The dashboard shows:
   Existing run history remains available.
 - Recent runs for this job, linking to `/runs/{id}`. If run history is busy or unavailable,
   the configuration and editors remain usable and the failure is shown only in the Runs card.
-- **Planned:** browser forms for create and full metadata editing, including choosing the workspace, access profile, and prerun path. Until then use `enso job create` or edit the job files directly.
+- **Planned:** browser forms for create and full metadata editing, including choosing the workspace and prerun path. The workspace's configured policy governs execution. Until then use `enso job create` or edit the job files directly.
 
 ### Run detail (`/runs/{id}`)
 
@@ -208,7 +208,7 @@ for its bounded timeout therefore cannot delay health checks or unrelated web re
 "Run now" executes through the dashboard process's `Runtime`:
 
 - It uses the same prerun/provider pipeline as `enso job run`. When that pipeline creates a run row, it records `trigger='manual'`; intentional prerun no-work creates no row.
-- The provider runs in the job's named workspace under its selected access profile. Invalid bindings fail closed before prerun or provider execution.
+- The provider runs in the job's named workspace under that workspace's configured policy. Invalid bindings fail closed before prerun or provider execution.
 - Manual runs suppress Enso's automatic job failure/recovery notifications. A provider explicitly invoking `enso message send` remains an ordinary provider action and is not suppressed.
 - The POST waits for the run to finish, then uses a `303` redirect to its run detail page when a run row exists. Intentional no-work redirects back to the job page with a status message. Live progress polling and output streaming are future work.
 

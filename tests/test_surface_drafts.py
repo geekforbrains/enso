@@ -23,7 +23,7 @@ def _origin() -> SurfaceDraftOrigin:
         route_id="slack.channel.C-origin",
         route_kind="channel",
         workspace_id="reports",
-        access_profile="publisher",
+        policy="publisher",
         route_audit=True,
         user_id="U-requester",
         channel_id="C-origin",

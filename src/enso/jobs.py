@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _DEFAULT_PROMPT = "Your prompt here."
-_REQUIRED_FIELDS = ("name", "schedule", "provider", "model", "workspace", "access")
+_REQUIRED_FIELDS = ("name", "schedule", "provider", "model", "workspace")
 
 
 @dataclass
@@ -34,7 +34,6 @@ class Job:
     provider: str
     model: str
     workspace: str
-    access: str
     enabled: bool = True
     prerun: str | None = None
     notify: str | None = None
@@ -64,7 +63,7 @@ def load_jobs_with_errors(
 
     Parse errors include jobs that ``load_jobs`` must skip. When ``config`` is
     supplied, parsed jobs are also checked against their schedule, configured
-    provider/model, and named workspace/access binding.
+    provider/model, and named workspace-policy binding.
     """
     if not os.path.isdir(JOBS_DIR):
         return [], {}
@@ -116,6 +115,11 @@ def _parse_job(dir_name: str, path: str) -> tuple[Job | None, tuple[str, ...]]:
 
     raw_meta, prompt = parts
     fields = _parse_frontmatter(raw_meta)
+    for forbidden in ("access", "policy"):
+        if forbidden in fields:
+            return None, (
+                f"Field '{forbidden}' is not supported; jobs derive policy from workspace",
+            )
     missing = tuple(field for field in _REQUIRED_FIELDS if field not in fields)
     if missing:
         return None, (f"Missing required fields: {', '.join(missing)}",)
@@ -128,7 +132,6 @@ def _parse_job(dir_name: str, path: str) -> tuple[Job | None, tuple[str, ...]]:
             provider=fields["provider"],
             model=fields["model"],
             workspace=fields["workspace"],
-            access=fields["access"],
             enabled=_parse_bool(fields.get("enabled"), True),
             prerun=fields.get("prerun"),
             notify=fields.get("notify"),
@@ -164,15 +167,12 @@ def job_config_error(
 
 def job_binding_error(
     workspace: str,
-    access: str,
     provider: str,
     catalog: ExecutionCatalog,
 ) -> str | None:
-    """Explain why a named job execution binding is unusable."""
+    """Explain why a job's workspace-policy binding is unusable."""
     if not workspace:
         return "workspace is required"
-    if not access:
-        return "access is required"
     if catalog.errors:
         return "Invalid execution catalog: " + "; ".join(catalog.errors)
 
@@ -183,18 +183,13 @@ def job_binding_error(
     if workspace_problems:
         return f"Invalid workspace '{workspace}': " + "; ".join(workspace_problems)
 
-    profile = catalog.access_profiles.get(access)
-    if profile is None:
-        valid = ", ".join(catalog.access_profiles) or "none configured"
-        return f"Unknown access profile '{access}' (valid: {valid})"
-    access_problems = catalog.access_errors.get(access)
-    if access_problems:
-        return f"Invalid access profile '{access}': " + "; ".join(access_problems)
-    if not profile.allows_provider(provider):
-        allowed = ", ".join(profile.providers) or "none"
-        return (
-            f"Access profile '{access}' does not allow provider '{provider}' (allowed: {allowed})"
-        )
+    policy = catalog.policy_for(workspace)
+    policy_problems = catalog.policy_errors.get(policy.name)
+    if policy_problems:
+        return f"Invalid policy '{policy.name}': " + "; ".join(policy_problems)
+    if not policy.allows_provider(provider):
+        allowed = ", ".join(policy.providers) or "none"
+        return f"Policy '{policy.name}' does not allow provider '{provider}' (allowed: {allowed})"
     return None
 
 
@@ -216,7 +211,6 @@ def job_validation_errors(job: Job, config: dict) -> tuple[str, ...]:
         problems.append(error)
     if error := job_binding_error(
         job.workspace,
-        job.access,
         job.provider,
         load_catalog(config),
     ):
@@ -232,7 +226,6 @@ def create_job(
     schedule: str,
     *,
     workspace: str,
-    access: str,
 ) -> Job:
     """Create a new job directory with a scaffolded JOB.md file.
 
@@ -250,7 +243,6 @@ def create_job(
 
     error = job_binding_error(
         workspace,
-        access,
         provider,
         load_catalog(config),
     )
@@ -273,7 +265,6 @@ def create_job(
                 "provider": provider,
                 "model": model,
                 "workspace": workspace,
-                "access": access,
                 "enabled": False,
             },
             _DEFAULT_PROMPT,
@@ -290,7 +281,6 @@ def create_job(
         provider=provider,
         model=model,
         workspace=workspace,
-        access=access,
         enabled=False,
         prompt=_DEFAULT_PROMPT,
         path=job_file,

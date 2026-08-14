@@ -112,7 +112,7 @@ def test_telegram_send_target_does_not_broadcast_to_allowed_users(monkeypatch):
         _resolve_send_targets(config, "")
 
 
-def test_default_execution_config_uses_shared_access_vocabulary(tmp_enso):
+def test_default_execution_config_assigns_admin_policy(tmp_enso):
     working_dir = str(Path(tmp_enso) / "workspace")
     config = {
         "working_dir": working_dir,
@@ -122,19 +122,40 @@ def test_default_execution_config_uses_shared_access_vocabulary(tmp_enso):
         },
     }
 
-    workspace, access = _ensure_default_execution_config(config)
+    workspace = _ensure_default_execution_config(config)
 
-    assert (workspace, access) == ("default", "admin")
+    assert workspace == "default"
     assert config["workspaces"]["default"] == {
         "path": working_dir,
+        "policy": "admin",
         "concurrency": 1,
     }
-    assert config["access"]["admin"] == {
+    assert config["policies"]["admin"] == {
         "unrestricted": True,
         "providers": ["claude", "codex"],
         "default_provider": "claude",
         "chat_commands": "*",
     }
+
+
+def test_default_execution_config_reuses_existing_working_dir_workspace(tmp_enso):
+    working_dir = str(Path(tmp_enso) / "workspace")
+    config = {
+        "working_dir": working_dir,
+        "providers": {"claude": {"path": "claude", "models": ["sonnet"]}},
+        "workspaces": {
+            "company": {
+                "path": working_dir,
+                "concurrency": 1,
+            }
+        },
+    }
+
+    workspace = _ensure_default_execution_config(config)
+
+    assert workspace == "company"
+    assert "default" not in config["workspaces"]
+    assert config["workspaces"]["company"]["policy"] == "admin"
 
 
 def test_slack_send_target_resolves_1password_reference(monkeypatch):
@@ -205,7 +226,7 @@ def test_slack_setup_validates_resolved_existing_token(monkeypatch):
         "routes": {
             "slack": {
                 "account_id": "T123",
-                "dms": {"U123": {"workspace": "default", "access": "admin"}},
+                "dms": {"U123": {"workspace": "default"}},
                 "channels": {},
             }
         },
@@ -311,9 +332,9 @@ def test_slack_setup_reconfiguration_updates_references_without_plaintext(
             },
         },
         "workspaces": {
-            "company": {"path": "/tmp/company", "concurrency": 1},
+            "company": {"path": "/tmp/company", "policy": "admin", "concurrency": 1},
         },
-        "access": {
+        "policies": {
             "admin": {
                 "unrestricted": True,
                 "providers": ["claude"],
@@ -324,8 +345,8 @@ def test_slack_setup_reconfiguration_updates_references_without_plaintext(
         "routes": {
             "slack": {
                 "account_id": "T1",
-                "dms": {"UOLD": {"workspace": "company", "access": "admin"}},
-                "channels": {"CSTAFF": {"workspace": "company", "access": "admin"}},
+                "dms": {"UOLD": {"workspace": "company"}},
+                "channels": {"CSTAFF": {"workspace": "company"}},
             },
         },
     }
@@ -374,8 +395,8 @@ def test_slack_setup_reconfiguration_updates_references_without_plaintext(
     assert slack["persistent_surfaces"] is False
     assert config["routes"]["slack"] == {
         "account_id": "T1",
-        "dms": {"UOLD": {"workspace": "company", "access": "admin"}},
-        "channels": {"CSTAFF": {"workspace": "company", "access": "admin"}},
+        "dms": {"UOLD": {"workspace": "company"}},
+        "channels": {"CSTAFF": {"workspace": "company"}},
     }
     assert updates == [
         ("bot_token", "new-bot-token"),
@@ -585,7 +606,7 @@ def test_slack_setup_reprompts_until_app_token_provided(monkeypatch, capsys):
     assert "allowed_users" not in slack
     assert config["routes"]["slack"] == {
         "account_id": "T1",
-        "dms": {"UOWNER": {"workspace": "default", "access": "admin"}},
+        "dms": {"UOWNER": {"workspace": "default"}},
         "channels": {},
     }
     assert "Token is required" in capsys.readouterr().out

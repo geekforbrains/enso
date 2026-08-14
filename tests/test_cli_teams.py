@@ -31,10 +31,10 @@ def _teams_config(tmp_enso: str) -> dict:
         "transport": "slack",
         "transports": {"slack": {"bot_token": "x", "app_token": "x"}},
         "workspaces": {
-            "ops": {"path": str(ops)},
-            "acme": {"path": str(acme)},
+            "ops": {"path": str(ops), "policy": "admin"},
+            "acme": {"path": str(acme), "policy": "client"},
         },
-        "access": {
+        "policies": {
             "admin": {
                 "unrestricted": True,
                 "providers": ["claude"],
@@ -52,12 +52,11 @@ def _teams_config(tmp_enso: str) -> dict:
             "slack": {
                 "account_id": "T1",
                 "dms": {
-                    "U01ADMIN": {"workspace": "ops", "access": "admin"},
+                    "U01ADMIN": {"workspace": "ops"},
                 },
                 "channels": {
                     "C1": {
                         "workspace": "acme",
-                        "access": "client",
                         "audit": True,
                     },
                 },
@@ -93,7 +92,7 @@ def test_config_check_prints_resolvable_passthrough_names(tmp_enso, monkeypatch)
     _isolate_secrets(tmp_enso, monkeypatch)
     monkeypatch.setenv("CLIENT_METRICS_TOKEN", "tok")
     config = _teams_config(tmp_enso)
-    config["access"]["client"]["env_passthrough"] = ["CLIENT_METRICS_TOKEN"]
+    config["policies"]["client"]["env_passthrough"] = ["CLIENT_METRICS_TOKEN"]
     save_config(config)
 
     result = runner.invoke(app, ["config", "check"])
@@ -109,7 +108,7 @@ def test_config_check_marks_unset_passthrough_name_without_failing(tmp_enso, mon
     _isolate_secrets(tmp_enso, monkeypatch)
     monkeypatch.delenv("CLIENT_METRICS_TOKEN", raising=False)
     config = _teams_config(tmp_enso)
-    config["access"]["client"]["env_passthrough"] = ["CLIENT_METRICS_TOKEN"]
+    config["policies"]["client"]["env_passthrough"] = ["CLIENT_METRICS_TOKEN"]
     save_config(config)
 
     result = runner.invoke(app, ["config", "check"])
@@ -125,7 +124,7 @@ def test_config_check_resolves_passthrough_from_secrets_files(tmp_enso, monkeypa
     (secrets / "tokens.env").write_text("CLIENT_METRICS_TOKEN=tok\n")
     monkeypatch.delenv("CLIENT_METRICS_TOKEN", raising=False)
     config = _teams_config(tmp_enso)
-    config["access"]["client"]["env_passthrough"] = ["CLIENT_METRICS_TOKEN"]
+    config["policies"]["client"]["env_passthrough"] = ["CLIENT_METRICS_TOKEN"]
     save_config(config)
 
     result = runner.invoke(app, ["config", "check"])
@@ -320,7 +319,6 @@ def test_config_check_reports_jobs_missing_execution_binding(tmp_enso):
     assert result.exit_code == 1
     assert "jobs.old-job" in result.output
     assert "workspace" in result.output
-    assert "access" in result.output
 
 
 def test_removed_policy_check_is_not_advertised(tmp_enso):

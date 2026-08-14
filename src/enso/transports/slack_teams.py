@@ -1,4 +1,4 @@
-"""Static Slack routing for shared workspaces and native access profiles."""
+"""Static Slack routing for workspaces with reusable native policies."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 from .. import audit, ledger, policy
 from ..core import ExecutionContext
 from ..surface_drafts import SurfaceDraftOrigin
-from ..teams import AccessProfile, Decision, Route, TeamsConfig, Workspace, load_teams, resolve
+from ..teams import Decision, Policy, Route, TeamsConfig, Workspace, load_teams, resolve
 
 if TYPE_CHECKING:
     from ..core import Runtime
@@ -119,7 +119,7 @@ class TurnContext:
 
 
 class TeamsRouter:
-    """Resolve exact Slack routes and bind their workspace plus access profile."""
+    """Resolve exact Slack routes and bind each workspace's policy."""
 
     def __init__(self, runtime: Runtime):
         self.runtime = runtime
@@ -150,27 +150,26 @@ class TeamsRouter:
         for name, problems in self.teams.workspace_errors.items():
             for problem in problems:
                 log.error("Workspace %s: %s", name, problem)
-        for name, problems in self.teams.access_errors.items():
+        for name, problems in self.teams.policy_errors.items():
             for problem in problems:
-                log.error("Access profile %s: %s", name, problem)
+                log.error("Policy %s: %s", name, problem)
         for route_id, problems in self.teams.route_errors.items():
             for problem in problems:
                 log.error("Route %s (disabled): %s", route_id, problem)
-        checked: set[tuple[str, str]] = set()
+        checked: set[str] = set()
         routes = (*self.teams.dm_routes.values(), *self.teams.channel_routes.values())
         for route in routes:
-            pair = (route.workspace, route.access)
-            if pair in checked or not self.teams.route_usable(route):
+            if route.workspace in checked or not self.teams.route_usable(route):
                 continue
-            checked.add(pair)
+            checked.add(route.workspace)
             workspace = self.teams.workspaces[route.workspace]
-            access = self.teams.access_profiles[route.access]
-            for provider in access.providers:
-                check = policy.check_provider(workspace, access, provider)
+            execution_policy = self.teams.catalog.policy_for(workspace)
+            for provider in execution_policy.providers:
+                check = policy.check_provider(workspace, execution_policy, provider)
                 for problem in check.problems:
                     log.error(
-                        "Access profile %s on workspace %s cannot launch %s: %s",
-                        access.name,
+                        "Policy %s on workspace %s cannot launch %s: %s",
+                        execution_policy.name,
                         workspace.name,
                         provider,
                         problem,
@@ -201,7 +200,7 @@ class TeamsRouter:
             and route.route_id == origin.route_id
             and route.kind == origin.route_kind
             and route.workspace == origin.workspace_id
-            and route.access == origin.access_profile
+            and self.teams.workspaces[route.workspace].policy == origin.policy
             and route.audit == origin.route_audit
         )
 
@@ -349,7 +348,7 @@ class TeamsRouter:
             channel,
             thread_ts,
             route.workspace,
-            route.access,
+            self.teams.workspaces[route.workspace].policy,
         )
         return chat_key in self.runtime.active_provider_by_chat
 
@@ -366,7 +365,7 @@ class TeamsRouter:
 
         Covers every terminal refusal: an unrouted location (no route, so no
         audit record), an authorized location whose binding is unusable, and a
-        command the access profile does not allow. An audited route records the
+        command the workspace policy does not allow. An audited route records the
         refusal before it is sent and records whether it landed.
 
         ``notify=False`` (unaddressed traffic admitted by relaxed response
@@ -419,19 +418,19 @@ class TeamsRouter:
         assert route is not None
         transport = turn.transport
         workspace = self.teams.workspaces[route.workspace]
-        access = self.teams.access_profiles[route.access]
+        execution_policy = self.teams.catalog.policy_for(workspace)
         chat_key = _key_digest(
             "conversation",
             turn.account,
             turn.channel,
             turn.thread_key,
             workspace.name,
-            access.name,
+            execution_policy.name,
         )
 
         provider = self.runtime.active_provider_by_chat.get(chat_key)
-        if provider not in access.providers:
-            provider = access.default_provider
+        if provider not in execution_policy.providers:
+            provider = execution_policy.default_provider
         if provider is None:
             await self._finish_fixed_reply(turn, CONFIG_ERROR_REPLY, notify=turn.addressed)
             return
@@ -455,7 +454,7 @@ class TeamsRouter:
             },
         )
 
-        if command_name is not None and not access.allows_command(command_name):
+        if command_name is not None and not execution_policy.allows_command(command_name):
             await self._finish_fixed_reply(
                 turn,
                 f"!{command_name} is not available in this conversation.",
@@ -464,7 +463,9 @@ class TeamsRouter:
             )
             return
 
-        if command_name is None and not policy.check_provider(workspace, access, provider).ok:
+        if command_name is None and not policy.check_provider(
+            workspace, execution_policy, provider
+        ).ok:
             await self._finish_fixed_reply(turn, CONFIG_ERROR_REPLY, notify=turn.addressed)
             return
 
@@ -512,7 +513,7 @@ class TeamsRouter:
                 route_id=route.route_id,
                 route_kind=route.kind,
                 workspace_id=workspace.name,
-                access_profile=access.name,
+                policy=execution_policy.name,
                 route_audit=route.audit,
                 user_id=turn.user,
                 channel_id=turn.channel,
@@ -528,7 +529,7 @@ class TeamsRouter:
             workspace_id=workspace.name,
             concurrency=workspace.concurrency,
             workspace=workspace,
-            access=access,
+            policy=execution_policy,
             model=model,
             effort=effort,
             on_launch=self._make_launch_recorder(
@@ -540,7 +541,9 @@ class TeamsRouter:
         )
 
         if command_name is not None:
-            await self._run_command(turn, ctx, workspace, access, execution, turn_id)
+            await self._run_command(
+                turn, ctx, workspace, execution_policy, execution, turn_id
+            )
             return
 
         try:
@@ -550,10 +553,10 @@ class TeamsRouter:
                 # Nothing else carries Enso's own thread messages until the
                 # provider session does — including a root it posted itself.
                 first_turn=not self.runtime.has_session_memory(chat_key, provider),
-                # Only an unrestricted profile can shell out to the CLI; a
+                # Only an unrestricted policy can shell out to the CLI; a
                 # policy launch may be sandboxed away from the network, so it
                 # keeps receiving the history it cannot fetch for itself.
-                can_pull=access.unrestricted,
+                can_pull=execution_policy.unrestricted,
             )
         except Exception:
             log.exception("Could not build Slack prompt for %s", route.route_id)
@@ -575,10 +578,10 @@ class TeamsRouter:
             return
 
         log.info(
-            "Teams dispatch: route=%s workspace=%s access=%s provider=%s len=%d",
+            "Teams dispatch: route=%s workspace=%s policy=%s provider=%s len=%d",
             route.route_id,
             workspace.name,
-            access.name,
+            execution_policy.name,
             provider,
             len(prompt),
         )
@@ -596,7 +599,7 @@ class TeamsRouter:
         turn: TurnContext,
         ctx: SlackContext,
         workspace: Workspace,
-        access: AccessProfile,
+        execution_policy: Policy,
         command_context: ExecutionContext,
         turn_id: str | None,
     ) -> None:
@@ -608,8 +611,8 @@ class TeamsRouter:
                 command_context.chat_key,
                 ctx=ctx,
                 workspace=workspace,
-                access=access,
-                allowed_providers=self._usable_providers(workspace, access),
+                policy=execution_policy,
+                allowed_providers=self._usable_providers(workspace, execution_policy),
                 context=command_context,
             )
             if response:
@@ -627,10 +630,12 @@ class TeamsRouter:
             await self._complete_ledger(turn.account, turn.delivery, turn_id)
 
     @staticmethod
-    def _usable_providers(workspace: Workspace, access: AccessProfile) -> list[str]:
-        """Return providers both allowed by the profile and launchable now."""
+    def _usable_providers(workspace: Workspace, execution_policy: Policy) -> list[str]:
+        """Return providers both allowed by the policy and launchable now."""
         return [
-            name for name in access.providers if policy.check_provider(workspace, access, name).ok
+            name
+            for name in execution_policy.providers
+            if policy.check_provider(workspace, execution_policy, name).ok
         ]
 
     async def _build_prompt(
@@ -645,7 +650,7 @@ class TeamsRouter:
 
         ``first_turn`` means the conversation has no provider session yet, so
         nothing but this prompt carries prior context. ``can_pull`` means the
-        profile may run the ``enso slack`` CLI, in which case channel history
+        policy may run the ``enso slack`` CLI, in which case channel history
         is advertised rather than injected — see :func:`_pull_pointer`.
         """
         from ..slack_text import _attachments_prompt

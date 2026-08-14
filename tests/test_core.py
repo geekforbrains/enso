@@ -844,7 +844,7 @@ def test_should_run_job_first_time(sample_config):
     rt = Runtime(sample_config)
     job = Job(
         dir_name="test", name="Test", schedule="* * * * *",
-        provider="claude", model="sonnet", workspace="unused", access="unused",
+        provider="claude", model="sonnet", workspace="unused",
     )
     assert rt.jobs._should_run_job(job, datetime.now()) is False
     assert "test" in rt.jobs.last_run
@@ -855,7 +855,7 @@ def test_should_run_job_due(sample_config):
     rt = Runtime(sample_config)
     job = Job(
         dir_name="test", name="Test", schedule="* * * * *",
-        provider="claude", model="sonnet", workspace="unused", access="unused",
+        provider="claude", model="sonnet", workspace="unused",
     )
     rt.jobs.last_run["test"] = datetime.now() - timedelta(minutes=2)
     assert rt.jobs._should_run_job(job, datetime.now()) is True
@@ -871,7 +871,6 @@ def test_should_run_job_skips_stale_misfire(sample_config):
         provider="claude",
         model="opus",
         workspace="unused",
-        access="unused",
     )
     now = datetime(2026, 5, 14, 21, 0)
     rt.jobs.last_run["today"] = datetime(2026, 5, 13, 6, 30)
@@ -890,7 +889,6 @@ def test_should_run_job_allows_explicit_catch_up(sample_config):
         provider="claude",
         model="opus",
         workspace="unused",
-        access="unused",
         catch_up=True,
     )
     now = datetime(2026, 5, 14, 21, 0)
@@ -904,7 +902,7 @@ def test_should_run_job_not_due(sample_config):
     rt = Runtime(sample_config)
     job = Job(
         dir_name="test", name="Test", schedule="0 9 * * *",
-        provider="claude", model="sonnet", workspace="unused", access="unused",
+        provider="claude", model="sonnet", workspace="unused",
     )
     rt.jobs.last_run["test"] = datetime.now()
     assert rt.jobs._should_run_job(job, datetime.now()) is False
@@ -2382,7 +2380,7 @@ def test_should_run_job_invalid_schedule_is_skipped(sample_config):
     rt = Runtime(sample_config)
     job = Job(
         dir_name="bad", name="Bad", schedule="0 9 * *",
-        provider="claude", model="sonnet", workspace="unused", access="unused",
+        provider="claude", model="sonnet", workspace="unused",
     )
     rt.jobs.last_run["bad"] = datetime.now() - timedelta(days=1)
     assert rt.jobs._should_run_job(job, datetime.now()) is False

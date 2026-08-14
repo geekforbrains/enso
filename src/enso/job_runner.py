@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import fcntl
 import hashlib
+import json
 import logging
 import os
 import re
@@ -45,6 +46,15 @@ _SECRET_ASSIGNMENT_RE = re.compile(
 )
 _URL_CREDENTIAL_RE = re.compile(r"(?i)(https?://)([^/@\s]+)@")
 _SENSITIVE_KEY_RE = re.compile(r"(?i)(api[_-]?key|token|secret|password|authorization)")
+
+
+def _job_chat_key(job: Job, workspace: str, policy: str) -> str:
+    """Build a delimiter-safe session key that rotates with policy ownership."""
+    payload = json.dumps(
+        {"v": 1, "job": job.dir_name, "workspace": workspace, "policy": policy},
+        sort_keys=True,
+    )
+    return f"job:{hashlib.sha256(payload.encode()).hexdigest()[:32]}"
 
 
 @dataclass(frozen=True)
@@ -482,16 +492,13 @@ class JobRunner:
         self,
         job: Job,
     ) -> tuple[ExecutionContext | None, str | None]:
-        """Resolve a job's named workspace/access pair without any fallback."""
+        """Resolve a job's workspace-owned policy without any fallback."""
         if not job.workspace:
             return None, "workspace is required"
-        if not job.access:
-            return None, "access is required"
 
         catalog = load_catalog(self.runtime.config)
         error = job_binding_error(
             job.workspace,
-            job.access,
             job.provider,
             catalog,
         )
@@ -499,19 +506,19 @@ class JobRunner:
             return None, error
 
         workspace = catalog.workspaces[job.workspace]
-        access = catalog.access_profiles[job.access]
+        execution_policy = catalog.policy_for(workspace)
         if not os.path.isdir(workspace.path):
             return None, (
                 "workspace path does not exist or is not a directory: "
                 f"{workspace.path}"
             )
         return ExecutionContext(
-            chat_key=f"job:{job.dir_name}",
+            chat_key=_job_chat_key(job, workspace.name, execution_policy.name),
             path=workspace.path,
             workspace_id=workspace.name,
             concurrency=workspace.concurrency,
             workspace=workspace,
-            access=access,
+            policy=execution_policy,
         ), None
 
     async def _validated_job_execution(
@@ -529,7 +536,7 @@ class JobRunner:
         from .policy import prepare_launch
 
         assert execution.workspace is not None
-        assert execution.access is not None
+        assert execution.policy is not None
         try:
             # Prove the complete native launch can be constructed before
             # running the trusted host-side prerun. The resulting launch is
@@ -538,7 +545,7 @@ class JobRunner:
             await asyncio.to_thread(
                 prepare_launch,
                 execution.workspace,
-                execution.access,
+                execution.policy,
                 job.provider,
             )
         except Exception as exc:

@@ -40,7 +40,7 @@ from .teams import load_catalog
 if TYPE_CHECKING:
     from .job_runner import JobRunner
     from .policy import Launch
-    from .teams import AccessProfile, Workspace
+    from .teams import Policy, Workspace
     from .transports import BaseTransport, TransportContext
 
 log = logging.getLogger(__name__)
@@ -264,7 +264,7 @@ class ExecutionContext:
 
     Telegram conversations bind the global ``working_dir`` with the unrestricted
     invocation and use the conversation ID as their state key. Slack routes and
-    jobs bind a named workspace and access profile. The native launch is prepared
+    jobs bind a named workspace and its policy. The native launch is prepared
     only after the workspace slot is acquired, immediately before the provider
     process starts.
     """
@@ -275,7 +275,7 @@ class ExecutionContext:
     launch: Launch | None = None  # None → unrestricted global invocation
     concurrency: int = 1  # max concurrent provider runs sharing the workspace
     workspace: Workspace | None = field(default=None, compare=False, repr=False)
-    access: AccessProfile | None = field(default=None, compare=False, repr=False)
+    policy: Policy | None = field(default=None, compare=False, repr=False)
     model: str | None = None
     effort: str | None = None
     on_launch: Callable[[Launch], None] | None = field(default=None, compare=False, repr=False)
@@ -930,15 +930,15 @@ class Runtime:
     async def _prepare_execution_context(
         self, provider: str, context: ExecutionContext
     ) -> ExecutionContext:
-        """Resolve a teams profile into a native launch at the spawn boundary."""
-        if context.launch is not None or context.access is None:
+        """Resolve a workspace policy into a native launch at the spawn boundary."""
+        if context.launch is not None or context.policy is None:
             return context
         if context.workspace is None:
-            raise RuntimeError("access profile is missing its workspace binding")
+            raise RuntimeError("policy is missing its workspace binding")
         from .policy import prepare_launch
 
         launch = await asyncio.to_thread(
-            prepare_launch, context.workspace, context.access, provider
+            prepare_launch, context.workspace, context.policy, provider
         )
         if context.on_launch is not None:
             await asyncio.to_thread(context.on_launch, launch)

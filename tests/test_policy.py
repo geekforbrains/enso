@@ -13,7 +13,7 @@ import pytest
 from enso import policy
 from enso.providers.claude import ClaudeProvider
 from enso.providers.codex import CodexProvider
-from enso.teams import AccessProfile, Workspace
+from enso.teams import Policy, Workspace
 
 CLAUDE_SETTINGS = {
     "permissions": {"deny": ["Bash(enso *)"]},
@@ -40,15 +40,16 @@ def make_workspace(tmp_path):
     return Workspace(
         name="acme",
         path=str(ws_dir),
+        policy="standard",
         concurrency=1,
     )
 
 
-def make_access(
+def make_policy(
     tmp_path, *, unrestricted=False, providers=("claude", "codex"), env_passthrough=()
 ):
     policy_dir = tmp_path / "policies"
-    return AccessProfile(
+    return Policy(
         name="standard",
         policy_dir=None if unrestricted else str(policy_dir),
         unrestricted=unrestricted,
@@ -89,7 +90,7 @@ def write_claude_mcp(tmp_path, content=None) -> str:
 
 def test_unrestricted_workspace_passes_all_providers(tmp_path):
     workspace = make_workspace(tmp_path)
-    access = make_access(tmp_path, unrestricted=True, providers=("claude", "codex", "agy"))
+    access = make_policy(tmp_path, unrestricted=True, providers=("claude", "codex", "agy"))
     for provider in access.providers:
         check = policy.check_provider(workspace, access, provider)
         assert check.ok, check.problems
@@ -97,7 +98,7 @@ def test_unrestricted_workspace_passes_all_providers(tmp_path):
 
 
 def test_missing_policy_file_fails(tmp_path):
-    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert not check.ok
     assert any("settings.json" in p for p in check.problems)
 
@@ -105,7 +106,7 @@ def test_missing_policy_file_fails(tmp_path):
 def test_agy_requires_unrestricted(tmp_path):
     check = policy.check_provider(
         make_workspace(tmp_path),
-        make_access(tmp_path, providers=("claude", "agy")),
+        make_policy(tmp_path, providers=("claude", "agy")),
         "agy",
     )
     assert not check.ok
@@ -114,7 +115,7 @@ def test_agy_requires_unrestricted(tmp_path):
 
 def test_valid_claude_policy_passes(tmp_path):
     write_claude_policy(tmp_path)
-    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert check.ok, check.problems
     assert check.policy_revision
     assert len(check.policy_revision) == 64
@@ -125,14 +126,14 @@ def test_invalid_claude_json_fails(tmp_path):
     path.parent.mkdir(parents=True)
     path.write_text("{not json")
     path.chmod(0o600)
-    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert not check.ok
 
 
 def test_group_readable_policy_fails(tmp_path):
     path = write_claude_policy(tmp_path)
     os.chmod(path, 0o644)
-    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert not check.ok
     assert any("owner-only" in p for p in check.problems)
 
@@ -143,7 +144,7 @@ def test_symlinked_policy_fails(tmp_path):
     path = tmp_path / "policies" / "claude" / "settings.json"
     path.parent.mkdir(parents=True)
     path.symlink_to(real)
-    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert not check.ok
 
 
@@ -151,7 +152,7 @@ def test_hard_linked_policy_fails(tmp_path):
     workspace = make_workspace(tmp_path)
     path = write_claude_policy(tmp_path)
     os.link(path, tmp_path / "ws" / "writable-policy-link.json")
-    check = policy.check_provider(workspace, make_access(tmp_path), "claude")
+    check = policy.check_provider(workspace, make_policy(tmp_path), "claude")
     assert not check.ok
     assert any("hard links" in problem for problem in check.problems)
 
@@ -163,26 +164,26 @@ def test_policy_resolving_into_workspace_fails(tmp_path):
     path = tmp_path / "policies" / "claude" / "settings.json"
     path.parent.mkdir(parents=True)
     path.symlink_to(inside)
-    check = policy.check_provider(workspace, make_access(tmp_path), "claude")
+    check = policy.check_provider(workspace, make_policy(tmp_path), "claude")
     assert not check.ok
 
 
 def test_claude_without_sandbox_warns(tmp_path):
     write_claude_policy(tmp_path, {"permissions": {"deny": []}, "disableAllHooks": True})
-    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert check.ok
     assert any("sandbox" in w for w in check.warnings)
 
 
 def test_valid_codex_policy_passes(tmp_path):
     write_codex_policy(tmp_path)
-    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "codex")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "codex")
     assert check.ok, check.problems
 
 
 def test_codex_mixed_sandbox_and_permissions_fails(tmp_path):
     write_codex_policy(tmp_path, 'sandbox_mode = "workspace-write"\n' + CODEX_CONFIG)
-    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "codex")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "codex")
     assert not check.ok
     assert any("legacy sandbox" in p for p in check.problems)
 
@@ -190,18 +191,18 @@ def test_codex_mixed_sandbox_and_permissions_fails(tmp_path):
 def test_codex_pure_legacy_sandbox_is_allowed(tmp_path):
     """The operator's file is authoritative; a pure-legacy sandbox config is theirs."""
     write_codex_policy(tmp_path, 'sandbox_mode = "workspace-write"\n')
-    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "codex")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "codex")
     assert check.ok, check.problems
 
 
 def test_codex_invalid_toml_fails(tmp_path):
     write_codex_policy(tmp_path, "= not toml")
-    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "codex")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "codex")
     assert not check.ok
 
 
 def test_unknown_provider_fails(tmp_path):
-    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "mystery")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "mystery")
     assert not check.ok
 
 
@@ -210,7 +211,7 @@ def test_unknown_provider_fails(tmp_path):
 
 def test_absent_mcp_file_means_no_servers(tmp_path):
     write_claude_policy(tmp_path)
-    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert check.ok, check.problems
     assert check.mcp_servers == ()
 
@@ -221,7 +222,7 @@ def test_valid_mcp_file_resolves_sorted_server_names(tmp_path):
         tmp_path,
         {"mcpServers": {"tickets": {"type": "http"}, "metrics": {"type": "http"}}},
     )
-    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert check.ok, check.problems
     assert check.mcp_servers == ("metrics", "tickets")
 
@@ -232,7 +233,7 @@ def test_symlinked_mcp_file_fails(tmp_path):
     real.write_text(json.dumps(CLAUDE_MCP))
     path = tmp_path / "policies" / "claude" / "mcp.json"
     path.symlink_to(real)
-    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert not check.ok
     assert any("mcp.json must be a regular file, not a symlink" in p for p in check.problems)
 
@@ -241,7 +242,7 @@ def test_group_readable_mcp_file_fails(tmp_path):
     write_claude_policy(tmp_path)
     path = write_claude_mcp(tmp_path)
     os.chmod(path, 0o644)
-    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert not check.ok
     assert any("mcp.json must be owner-only" in p for p in check.problems)
 
@@ -249,7 +250,7 @@ def test_group_readable_mcp_file_fails(tmp_path):
 def test_unparseable_mcp_file_fails(tmp_path):
     write_claude_policy(tmp_path)
     write_claude_mcp(tmp_path, "{not json")
-    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert not check.ok
     assert any("mcp.json does not parse" in p for p in check.problems)
 
@@ -257,7 +258,7 @@ def test_unparseable_mcp_file_fails(tmp_path):
 def test_non_object_mcp_file_fails(tmp_path):
     write_claude_policy(tmp_path)
     write_claude_mcp(tmp_path, ["mcpServers"])
-    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert not check.ok
     assert any("mcp.json must be a JSON object" in p for p in check.problems)
 
@@ -265,7 +266,7 @@ def test_non_object_mcp_file_fails(tmp_path):
 def test_mcp_file_without_mcp_servers_fails(tmp_path):
     write_claude_policy(tmp_path)
     write_claude_mcp(tmp_path, {})
-    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert not check.ok
     assert any('must define "mcpServers" as an object' in p for p in check.problems)
 
@@ -273,7 +274,7 @@ def test_mcp_file_without_mcp_servers_fails(tmp_path):
 def test_empty_mcp_servers_fails_with_delete_guidance(tmp_path):
     write_claude_policy(tmp_path)
     write_claude_mcp(tmp_path, {"mcpServers": {}})
-    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert not check.ok
     assert any("delete the file to disable MCP" in p for p in check.problems)
 
@@ -285,7 +286,7 @@ def test_mcp_rule_without_mcp_file_warns_inert_rule(tmp_path):
     write_claude_policy(
         tmp_path, {**CLAUDE_SETTINGS, "permissions": {"allow": ["mcp__ghost__tool"]}}
     )
-    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert check.ok, check.problems
     assert any(
         'permission rule "mcp__ghost__tool" matches no MCP server' in w for w in check.warnings
@@ -297,7 +298,7 @@ def test_mcp_rule_matching_a_defined_server_does_not_warn(tmp_path):
         tmp_path, {**CLAUDE_SETTINGS, "permissions": {"allow": ["mcp__metrics__query"]}}
     )
     write_claude_mcp(tmp_path, {"mcpServers": {"metrics": {"type": "http"}}})
-    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert check.ok, check.problems
     assert check.warnings == ()
 
@@ -309,7 +310,7 @@ def test_mcp_rule_matches_server_names_containing_underscores(tmp_path):
         tmp_path, {**CLAUDE_SETTINGS, "permissions": {"allow": ["mcp__my__server__tool"]}}
     )
     write_claude_mcp(tmp_path, {"mcpServers": {"my__server": {"type": "http"}}})
-    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert check.ok, check.problems
     assert check.warnings == ()
 
@@ -317,7 +318,7 @@ def test_mcp_rule_matches_server_names_containing_underscores(tmp_path):
 def test_unreferenced_mcp_server_warns(tmp_path):
     write_claude_policy(tmp_path)
     write_claude_mcp(tmp_path, {"mcpServers": {"metrics": {"type": "http"}}})
-    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert check.ok, check.problems
     assert any(
         'no allow rule references MCP server "metrics"' in w for w in check.warnings
@@ -331,7 +332,7 @@ def test_deny_only_mcp_server_reference_still_warns(tmp_path):
         tmp_path, {**CLAUDE_SETTINGS, "permissions": {"deny": ["mcp__metrics"]}}
     )
     write_claude_mcp(tmp_path, {"mcpServers": {"metrics": {"type": "http"}}})
-    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert check.ok, check.problems
     assert any(
         'no allow rule references MCP server "metrics"' in w for w in check.warnings
@@ -356,7 +357,7 @@ def test_secret_shaped_literal_in_mcp_headers_warns(tmp_path):
             }
         },
     )
-    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert check.ok, check.problems
     assert check.warnings == (
         'mcp.json server "tickets" has a secret-shaped literal in '
@@ -369,7 +370,7 @@ def test_env_reference_in_mcp_headers_does_not_warn(tmp_path):
         tmp_path, {**CLAUDE_SETTINGS, "permissions": {"allow": ["mcp__metrics__query"]}}
     )
     write_claude_mcp(tmp_path)
-    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert check.ok, check.problems
     assert check.warnings == ()
 
@@ -390,7 +391,7 @@ def test_secret_shaped_literal_in_mcp_env_warns(tmp_path):
             }
         },
     )
-    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert check.ok, check.problems
     assert any("env.API_KEY" in w and "${VAR}" in w for w in check.warnings)
 
@@ -401,7 +402,7 @@ def test_secret_shaped_literal_in_mcp_env_warns(tmp_path):
 def test_revision_changes_with_policy_bytes(tmp_path):
     write_claude_policy(tmp_path)
     workspace = make_workspace(tmp_path)
-    access = make_access(tmp_path)
+    access = make_policy(tmp_path)
     first = policy.check_provider(workspace, access, "claude").policy_revision
     write_claude_policy(tmp_path, {"permissions": {"deny": ["WebFetch"]}, "disableAllHooks": True})
     second = policy.check_provider(workspace, access, "claude").policy_revision
@@ -411,7 +412,7 @@ def test_revision_changes_with_policy_bytes(tmp_path):
 def test_codex_revision_covers_rules_files(tmp_path):
     write_codex_policy(tmp_path)
     workspace = make_workspace(tmp_path)
-    access = make_access(tmp_path)
+    access = make_policy(tmp_path)
     first = policy.check_provider(workspace, access, "codex").policy_revision
     rules = tmp_path / "policies" / "codex" / "rules"
     rules.mkdir()
@@ -429,7 +430,7 @@ def test_codex_revision_covers_relative_profile_files(tmp_path):
     agent_config.write_text('model = "gpt-5.6-terra"\n')
     agent_config.chmod(0o600)
     workspace = make_workspace(tmp_path)
-    access = make_access(tmp_path)
+    access = make_policy(tmp_path)
     first = policy.check_provider(workspace, access, "codex").policy_revision
     agent_config.write_text('model = "gpt-5.6-sol"\n')
     second = policy.check_provider(workspace, access, "codex").policy_revision
@@ -439,7 +440,7 @@ def test_codex_revision_covers_relative_profile_files(tmp_path):
 def test_revision_rotates_on_mcp_file_add_edit_and_remove(tmp_path):
     write_claude_policy(tmp_path)
     workspace = make_workspace(tmp_path)
-    access = make_access(tmp_path)
+    access = make_policy(tmp_path)
     base = policy.check_provider(workspace, access, "claude").policy_revision
 
     mcp_path = write_claude_mcp(tmp_path, {"mcpServers": {"metrics": {"type": "http"}}})
@@ -470,7 +471,7 @@ def test_hard_linked_codex_rule_fails(tmp_path):
     rules_file.write_text('prefix_rule(pattern=["enso"], decision="forbidden")\n')
     rules_file.chmod(0o600)
     os.link(rules_file, tmp_path / "ws" / "writable-rule-link.rules")
-    check = policy.check_provider(workspace, make_access(tmp_path), "codex")
+    check = policy.check_provider(workspace, make_policy(tmp_path), "codex")
     assert not check.ok
     assert any("hard links" in problem for problem in check.problems)
 
@@ -481,7 +482,7 @@ def test_hard_linked_codex_rule_fails(tmp_path):
 def test_prepare_launch_unrestricted(tmp_path):
     launch = policy.prepare_launch(
         make_workspace(tmp_path),
-        make_access(tmp_path, unrestricted=True, providers=("claude",)),
+        make_policy(tmp_path, unrestricted=True, providers=("claude",)),
         "claude",
     )
     assert launch.mode == "unrestricted"
@@ -490,7 +491,7 @@ def test_prepare_launch_unrestricted(tmp_path):
 
 def test_prepare_launch_fails_closed(tmp_path):
     with pytest.raises(policy.PolicyError):
-        policy.prepare_launch(make_workspace(tmp_path), make_access(tmp_path), "claude")
+        policy.prepare_launch(make_workspace(tmp_path), make_policy(tmp_path), "claude")
 
 
 def test_claude_launch_has_policy_and_minimal_env(tmp_path, monkeypatch):
@@ -498,7 +499,7 @@ def test_claude_launch_has_policy_and_minimal_env(tmp_path, monkeypatch):
     monkeypatch.setenv("SLACK_BOT_TOKEN", "sekret2")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "anthro")
     path = write_claude_policy(tmp_path)
-    launch = policy.prepare_launch(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    launch = policy.prepare_launch(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert launch.mode == "policy"
     assert launch.policy_path == path
     assert launch.env is not None
@@ -515,7 +516,7 @@ def test_enso_bin_dir_is_stripped_from_path(tmp_path, monkeypatch):
     (bin_dir / "enso").chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
     write_claude_policy(tmp_path)
-    launch = policy.prepare_launch(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    launch = policy.prepare_launch(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert str(bin_dir) not in launch.env["PATH"].split(":")
     assert "/usr/bin" in launch.env["PATH"].split(":")
 
@@ -523,7 +524,7 @@ def test_enso_bin_dir_is_stripped_from_path(tmp_path, monkeypatch):
 def test_env_passthrough_name_is_copied_into_launch_env(tmp_path, monkeypatch):
     monkeypatch.setenv("METRICS_API_TOKEN", "tok-value")
     write_claude_policy(tmp_path)
-    access = make_access(tmp_path, env_passthrough=("METRICS_API_TOKEN",))
+    access = make_policy(tmp_path, env_passthrough=("METRICS_API_TOKEN",))
     launch = policy.prepare_launch(make_workspace(tmp_path), access, "claude")
     assert launch.env["METRICS_API_TOKEN"] == "tok-value"
 
@@ -531,7 +532,7 @@ def test_env_passthrough_name_is_copied_into_launch_env(tmp_path, monkeypatch):
 def test_absent_env_passthrough_name_is_skipped_and_warned(tmp_path, monkeypatch, caplog):
     monkeypatch.delenv("ABSENT_METRICS_TOKEN", raising=False)
     write_claude_policy(tmp_path)
-    access = make_access(tmp_path, env_passthrough=("ABSENT_METRICS_TOKEN",))
+    access = make_policy(tmp_path, env_passthrough=("ABSENT_METRICS_TOKEN",))
     with caplog.at_level(logging.WARNING, logger="enso.policy"):
         launch = policy.prepare_launch(make_workspace(tmp_path), access, "claude")
     assert "ABSENT_METRICS_TOKEN" not in launch.env
@@ -549,7 +550,7 @@ def test_passthrough_naming_path_cannot_displace_the_filtered_path(tmp_path, mon
     (bin_dir / "enso").chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
     write_claude_policy(tmp_path)
-    access = make_access(tmp_path, env_passthrough=("PATH",))
+    access = make_policy(tmp_path, env_passthrough=("PATH",))
     launch = policy.prepare_launch(make_workspace(tmp_path), access, "claude")
     assert launch.env["PATH"] != os.environ["PATH"]
     assert str(bin_dir) not in launch.env["PATH"].split(":")
@@ -557,7 +558,7 @@ def test_passthrough_naming_path_cannot_displace_the_filtered_path(tmp_path, mon
 
 def test_claude_launch_without_mcp_file_has_no_mcp_config(tmp_path):
     write_claude_policy(tmp_path)
-    launch = policy.prepare_launch(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    launch = policy.prepare_launch(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert launch.mcp_config is None
     cmd = ClaudeProvider("claude").build_command("hi", "opus", launch=launch)
     assert "--mcp-config" not in cmd
@@ -567,7 +568,7 @@ def test_claude_launch_without_mcp_file_has_no_mcp_config(tmp_path):
 def test_claude_launch_with_mcp_file_passes_it_as_mcp_config(tmp_path):
     write_claude_policy(tmp_path)
     mcp_path = write_claude_mcp(tmp_path)
-    launch = policy.prepare_launch(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    launch = policy.prepare_launch(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert launch.mcp_config == mcp_path
     cmd = ClaudeProvider("claude").build_command("hi", "opus", launch=launch)
     assert "--strict-mcp-config" in cmd
@@ -579,7 +580,7 @@ def test_prepare_launch_logs_capability_set_without_values(tmp_path, monkeypatch
     monkeypatch.delenv("ABSENT_METRICS_TOKEN", raising=False)
     write_claude_policy(tmp_path)
     write_claude_mcp(tmp_path)
-    access = make_access(
+    access = make_policy(
         tmp_path, env_passthrough=("METRICS_API_TOKEN", "ABSENT_METRICS_TOKEN")
     )
     with caplog.at_level(logging.INFO, logger="enso.policy"):
@@ -597,7 +598,7 @@ def test_codex_launch_stages_isolated_home(tmp_path, monkeypatch):
     fake_codex_home.mkdir()
     (fake_codex_home / "auth.json").write_text('{"tokens": "x"}')
     monkeypatch.setattr(policy, "_user_codex_home", lambda: str(fake_codex_home))
-    launch = policy.prepare_launch(make_workspace(tmp_path), make_access(tmp_path), "codex")
+    launch = policy.prepare_launch(make_workspace(tmp_path), make_policy(tmp_path), "codex")
     assert launch.home is not None
     staged = os.path.join(launch.home, "config.toml")
     with open(staged) as f_staged, open(src) as f_src:
@@ -615,7 +616,7 @@ def test_codex_launch_stages_rules(tmp_path, monkeypatch):
     rules_file.write_text("x = 1\n")
     rules_file.chmod(0o600)
     monkeypatch.setattr(policy, "_user_codex_home", lambda: str(tmp_path / "nope"))
-    launch = policy.prepare_launch(make_workspace(tmp_path), make_access(tmp_path), "codex")
+    launch = policy.prepare_launch(make_workspace(tmp_path), make_policy(tmp_path), "codex")
     assert launch.ignore_rules is False
     assert os.path.exists(os.path.join(launch.home, "rules", "enso.rules"))
 
@@ -631,7 +632,7 @@ def test_codex_launch_copies_relative_profile_files(tmp_path, monkeypatch):
     agent_config.chmod(0o600)
     monkeypatch.setattr(policy, "_user_codex_home", lambda: str(tmp_path / "nope"))
 
-    launch = policy.prepare_launch(make_workspace(tmp_path), make_access(tmp_path), "codex")
+    launch = policy.prepare_launch(make_workspace(tmp_path), make_policy(tmp_path), "codex")
 
     assert launch.home is not None
     staged_agent = os.path.join(launch.home, "agents", "reviewer.toml")
@@ -643,7 +644,7 @@ def test_codex_policy_snapshots_are_revision_keyed_and_immutable(tmp_path, monke
     monkeypatch.setattr(policy, "_user_codex_home", lambda: str(tmp_path / "nope"))
     source = write_codex_policy(tmp_path)
     workspace = make_workspace(tmp_path)
-    access = make_access(tmp_path)
+    access = make_policy(tmp_path)
     first = policy.prepare_launch(workspace, access, "codex")
     with open(os.path.join(first.home, "config.toml")) as file:
         first_bytes = file.read()
@@ -667,7 +668,7 @@ def test_codex_rejects_a_mutated_published_snapshot(tmp_path, monkeypatch):
     write_codex_policy(tmp_path)
     monkeypatch.setattr(policy, "_user_codex_home", lambda: str(tmp_path / "nope"))
     workspace = make_workspace(tmp_path)
-    access = make_access(tmp_path)
+    access = make_policy(tmp_path)
     launch = policy.prepare_launch(workspace, access, "codex")
     staged_config = os.path.join(launch.home, "config.toml")
     os.chmod(staged_config, 0o600)
@@ -686,7 +687,7 @@ def test_codex_auth_refresh_is_atomic_within_revision_home(tmp_path, monkeypatch
     auth.write_text('{"token":"first"}')
     monkeypatch.setattr(policy, "_user_codex_home", lambda: str(user_home))
     workspace = make_workspace(tmp_path)
-    access = make_access(tmp_path)
+    access = make_policy(tmp_path)
     first = policy.prepare_launch(workspace, access, "codex")
 
     auth.write_text('{"token":"second"}')
@@ -710,7 +711,7 @@ def test_concurrent_codex_snapshot_publish_has_one_complete_winner(tmp_path, mon
 
     monkeypatch.setattr(policy, "_copy_codex_tree", synchronized_copy)
     workspace = make_workspace(tmp_path)
-    access = make_access(tmp_path)
+    access = make_policy(tmp_path)
     with ThreadPoolExecutor(max_workers=2) as executor:
         launches = list(
             executor.map(
@@ -804,27 +805,27 @@ def test_codex_policy_command_loads_staged_rules():
 def test_claude_policy_requires_disable_all_hooks(tmp_path):
     """Without it, an agent can write workspace hooks that run outside the sandbox."""
     write_claude_policy(tmp_path, {"sandbox": {"enabled": True}})
-    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert not check.ok
     assert any("disableAllHooks" in p for p in check.problems)
 
 
 def test_claude_policy_rejects_disable_all_hooks_false(tmp_path):
     write_claude_policy(tmp_path, {"sandbox": {"enabled": True}, "disableAllHooks": False})
-    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert not check.ok
 
 
 def test_claude_policy_with_disable_all_hooks_passes(tmp_path):
     write_claude_policy(tmp_path, {"sandbox": {"enabled": True}, "disableAllHooks": True})
-    check = policy.check_provider(make_workspace(tmp_path), make_access(tmp_path), "claude")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert check.ok, check.problems
 
 
 def test_unrestricted_workspace_skips_hook_requirement(tmp_path):
     assert policy.check_provider(
         make_workspace(tmp_path),
-        make_access(tmp_path, unrestricted=True, providers=("claude",)),
+        make_policy(tmp_path, unrestricted=True, providers=("claude",)),
         "claude",
     ).ok
 
@@ -832,7 +833,7 @@ def test_unrestricted_workspace_skips_hook_requirement(tmp_path):
 def test_agy_refusal_cites_missing_contract_not_missing_model(tmp_path):
     """agy does have a permission model; the honest reason is no verified contract."""
     check = policy.check_provider(
-        make_workspace(tmp_path), make_access(tmp_path, providers=("agy",)), "agy"
+        make_workspace(tmp_path), make_policy(tmp_path, providers=("agy",)), "agy"
     )
     assert not check.ok
     joined = " ".join(check.problems)
@@ -850,7 +851,7 @@ def test_codex_staging_failure_raises_policy_error(tmp_path, monkeypatch):
     """A read-only policy dir must refuse the turn, not escape as PermissionError."""
     write_codex_policy(tmp_path)
     workspace = make_workspace(tmp_path)
-    access = make_access(tmp_path, providers=("codex",))
+    access = make_policy(tmp_path, providers=("codex",))
 
     def boom(*args, **kwargs):
         raise PermissionError(13, "Permission denied")

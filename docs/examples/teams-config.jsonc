@@ -1,7 +1,7 @@
 // Example ~/.enso/config.json for exact Slack routes.
 //
 // Slack requires routes.slack: exact DM users and channel IDs select one workspace
-// and one access profile. There is no Slack allowlist, wildcard, or default route.
+// and one policy. There is no Slack allowlist, wildcard, or default route.
 // Routed channels dispatch on @-mention by default; per-route mention_required
 // and thread_mention_required relax that, with routes.slack.channel_defaults
 // supplying defaults those per-route keys override. channel_defaults is
@@ -37,22 +37,39 @@
     }
   },
 
-  // A workspace is a provider cwd and shared content root, not a security
-  // boundary. Both Acme channels below deliberately share one workspace.
+  // A workspace is a provider cwd and shared content root. It selects exactly
+  // one policy; the same policy may be reused by several workspaces.
   "workspaces": {
+    "default": {
+      "path": "~/.enso/workspaces/default",
+      "policy": "admin",
+      "concurrency": 1
+    },
     "company": {
       "path": "~/.enso/workspaces/company",
+      "policy": "staff",
       "concurrency": 1
     },
     "acme": {
       "path": "~/.enso/workspaces/clients/acme",
+      "policy": "client-readonly",
+      "concurrency": 1
+    },
+    "acme-internal": {
+      "path": "~/.enso/workspaces/clients/acme-internal",
+      "policy": "staff",
+      "concurrency": 1
+    },
+    "automation": {
+      "path": "~/.enso/workspaces/automation",
+      "policy": "automation",
       "concurrency": 1
     }
   },
 
-  // An access profile carries capabilities. Policy-controlled profiles point
+  // A policy carries capabilities. Restricted policies point
   // at protected native CLI policy files outside all writable workspaces.
-  "access": {
+  "policies": {
     "admin": {
       "unrestricted": true,
       "providers": ["claude", "codex", "agy"],
@@ -60,7 +77,7 @@
       "chat_commands": "*"
     },
     // Service-wide commands (update, logs) stay on the unrestricted admin
-    // profile; staff gets everything else explicitly rather than "*".
+    // policy; staff gets everything else explicitly rather than "*".
     "staff": {
       "policy_dir": "~/.enso/policies/staff",
       "providers": ["claude", "codex"],
@@ -69,7 +86,7 @@
 
       // Names, never values: each variable is copied from the service
       // environment (e.g. loaded from ~/.enso/secrets/*.env at startup)
-      // into the child environment. Invalid on an unrestricted profile.
+      // into the child environment. Invalid on an unrestricted policy.
       // See docs/specs/permissions.md for the MCP pairing and cautions.
       "env_passthrough": ["METRICS_API_TOKEN"]
     },
@@ -103,8 +120,7 @@
       // DMs are keyed by exact Slack user ID. This authorizes only the owner.
       "dms": {
         "U01OWNER": {
-          "workspace": "company",
-          "access": "admin",
+          "workspace": "default",
           "audit": false
         }
       },
@@ -115,12 +131,10 @@
       "channels": {
         "C0ACME": {
           "workspace": "acme",
-          "access": "client-readonly",
           "audit": true
         },
         "C0ACMEINTERNAL": {
-          "workspace": "acme",
-          "access": "staff",
+          "workspace": "acme-internal",
           "audit": false
         },
         // Fully responsive override: false/false dispatches every top-level
@@ -129,7 +143,6 @@
         // in-between modes.
         "C0COMPANY": {
           "workspace": "company",
-          "access": "staff",
           "audit": false,
           "mention_required": false,
           "thread_mention_required": false
@@ -144,10 +157,9 @@
   }
 }
 
-// Every ~/.enso/jobs/<name>/JOB.md separately declares both names, for example:
+// Every ~/.enso/jobs/<name>/JOB.md declares its workspace, for example:
 //
-//   workspace: company
-//   access: automation
+//   workspace: automation
 //
-// The job's provider runs in that workspace under that access profile's native
+// The job's provider runs under the workspace policy's native
 // policy. Missing or invalid bindings never fall back to unrestricted execution.

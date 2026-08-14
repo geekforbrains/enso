@@ -15,7 +15,7 @@ Design docs live in [`docs/`](docs/) and are the source of truth for planned and
 | [`docs/specs/data-model.md`](docs/specs/data-model.md)     | SQLite schemas, config, and the `~/.enso/` layout                                   |
 | [`docs/specs/docs.md`](docs/specs/docs.md)                 | Operator-authored reference docs and their dashboard/CLI workflow                   |
 | [`docs/specs/slack-output.md`](docs/specs/slack-output.md) | Rich Slack replies, typed blocks, confirmed App Home, and Canvas publication        |
-| [`docs/specs/teams.md`](docs/specs/teams.md)               | Exact Slack routes, shared workspaces, access profiles, and optional audit metadata |
+| [`docs/specs/teams.md`](docs/specs/teams.md)               | Exact Slack routes, shared workspaces, reusable policies, and optional audit metadata |
 | [`docs/specs/permissions.md`](docs/specs/permissions.md)   | Native Claude/Codex policy selection and invocation                                 |
 | [`docs/specs/tables.md`](docs/specs/tables.md)             | Registered SQLite data tables, discovery, and bounded read-only views               |
 | [`docs/specs/web.md`](docs/specs/web.md)                   | The web UI: routes, pages, read/write flows                                         |
@@ -43,7 +43,7 @@ pip install -e ".[telegram]"    # or ".[slack]", or ".[telegram,slack]"
 enso setup
 ```
 
-The setup wizard detects your agent CLIs, connects your chosen transport, and optionally installs a background service (launchd on macOS, systemd on Linux) so Enso starts on boot. Telegram captures one exact numeric user ID and remains private one-to-one. Slack creates one exact owner DM route backed by a default workspace and administrative access profile; add channel routes deliberately in `config.json`.
+The setup wizard detects your agent CLIs, connects your chosen transport, and optionally installs a background service (launchd on macOS, systemd on Linux) so Enso starts on boot. Telegram captures one exact numeric user ID and remains private one-to-one. Slack creates one exact owner DM route backed by a default workspace and administrative policy; add channel routes deliberately in `config.json`.
 
 Once setup is done, start chatting:
 
@@ -107,7 +107,7 @@ You can also send files — they're downloaded and passed to the active agent. R
 
 Effort is stored separately for each conversation, provider, and model. Claude supports its existing model-dependent range through `max`. Codex Sol and Terra support `low` through `ultra`; Luna supports `low` through `max`. Antigravity's concrete model names already encode effort (for example, `gemini-3.6-flash-low`), so choose the desired variant with `/model`. Enso clamps an unsupported higher Claude/Codex choice to the active model's maximum and reports the effective level.
 
-**Slack specifics.** Every authorized Slack location is an exact route. Configured DMs dispatch every ordinary message. In channels, the default is mention-gated: Enso responds only when mentioned (`@bot help me`), and thread replies need a mention too. Two per-channel booleans relax this — `mention_required: false` dispatches every top-level message, and `thread_mention_required: false` follows every reply in a thread Enso already participates in — one a prior dispatch joined, or one rooted by a message Enso posted itself, such as a job notification or `enso message send` (first contact in a thread someone else started still needs a mention). A `routes.slack.channel_defaults` block supplies defaults that individual channel routes override. Either way, replies to channel messages always land in that message's thread, and posts from other bots and apps never dispatch in any mode — only human members engage a route. For configured routes, the bot fetches the last few messages of a thread it is replying in as context so it knows what's going on. Channel history is not injected: an unrestricted profile is instead told, once per conversation, how to read the channel with `enso slack history` and `enso slack thread`, and pulls it only when the request calls for it — so a new top-level ask no longer arrives carrying unrelated earlier threads. A restricted profile, whose sandbox may have no route to Slack, keeps receiving the channel context it cannot fetch for itself. Explicit contact at an unconfigured location gets a fixed local response as described below. Rich output and persistent surfaces are enabled by default. A natural-language request for an App Home or Canvas produces an exact preview with requester-bound **Publish** and **Cancel** buttons; Slack is not mutated before confirmation. App Home requests are accepted only in a configured one-to-one DM. A channel Canvas request creates a tab when none exists or clearly proposes a full replacement of the one unambiguous existing Canvas. See [`docs/specs/slack-output.md`](docs/specs/slack-output.md) for limits, fallbacks, security, and opt-outs.
+**Slack specifics.** Every authorized Slack location is an exact route. Configured DMs dispatch every ordinary message. In channels, the default is mention-gated: Enso responds only when mentioned (`@bot help me`), and thread replies need a mention too. Two per-channel booleans relax this — `mention_required: false` dispatches every top-level message, and `thread_mention_required: false` follows every reply in a thread Enso already participates in — one a prior dispatch joined, or one rooted by a message Enso posted itself, such as a job notification or `enso message send` (first contact in a thread someone else started still needs a mention). A `routes.slack.channel_defaults` block supplies defaults that individual channel routes override. Either way, replies to channel messages always land in that message's thread, and posts from other bots and apps never dispatch in any mode — only human members engage a route. For configured routes, the bot fetches the last few messages of a thread it is replying in as context so it knows what's going on. Channel history is not injected: an agent using an unrestricted policy is instead told, once per conversation, how to read the channel with `enso slack history` and `enso slack thread`, and pulls it only when the request calls for it — so a new top-level ask no longer arrives carrying unrelated earlier threads. An agent using a restricted policy, whose sandbox may have no route to Slack, keeps receiving the channel context it cannot fetch for itself. Explicit contact at an unconfigured location gets a fixed local response as described below. Rich output and persistent surfaces are enabled by default. A natural-language request for an App Home or Canvas produces an exact preview with requester-bound **Publish** and **Cancel** buttons; Slack is not mutated before confirmation. App Home requests are accepted only in a configured one-to-one DM. A channel Canvas request creates a tab when none exists or clearly proposes a full replacement of the one unambiguous existing Canvas. See [`docs/specs/slack-output.md`](docs/specs/slack-output.md) for limits, fallbacks, security, and opt-outs.
 
 ## Slack directory (`enso slack`)
 
@@ -177,11 +177,11 @@ Neither transport auto-broadcasts. Always pass `--to`, call from an interactive 
 
 Telegram accepts private chats only and authorizes exact numeric strings in `transports.telegram.allowed_users`. The `"*"` wildcard and old `allowed_user_ids` spelling are not supported.
 
-## Slack routes, workspaces, and access
+## Slack routes, workspaces, and policies
 
-Slack binds each exact DM user or channel route to two named objects: a workspace containing shared project knowledge and an access profile containing providers, Enso chat commands, and either unrestricted execution or protected native CLI policies. Channel routes may also carry the optional response-trigger settings `mention_required` and `thread_mention_required`, with fallback defaults in `routes.slack.channel_defaults`. Slack has no default route, wildcard, or `allowed_users` mode: `channel_defaults` is settings inheritance for channels that are already routed, not authorization — unrouted channels stay unrouted.
+Slack binds each exact DM user or channel route to one named workspace containing focused project knowledge. Every workspace names exactly one reusable policy that controls providers, Enso chat commands, and either unrestricted execution or protected native CLI settings. Channel routes may also carry the optional response-trigger settings `mention_required` and `thread_mention_required`, with fallback defaults in `routes.slack.channel_defaults`. Slack has no default route, wildcard, or `allowed_users` mode: `channel_defaults` is settings inheritance for channels that are already routed, not authorization — unrouted channels stay unrouted.
 
-Channel membership is the authorization boundary. Everyone in a configured channel uses its route's same access profile, including administrators. A client channel and an internal staff channel can point at the same project workspace while using read-only and broader profiles respectively. Exact DMs are keyed by Slack user ID, so an owner DM can use an unrestricted administrative profile without granting that authority in shared channels.
+Channel membership is the authorization boundary. Everyone in a configured channel uses its workspace's policy, including administrators. Channels that need different context or authority use different workspaces; multiple workspaces may reuse the same policy. Exact DMs are keyed by Slack user ID, so an owner DM can use a workspace with an unrestricted administrative policy without granting that authority in shared channels.
 
 An unlisted DM receives a fixed access message, and an explicit mention in an unlisted channel receives a fixed thread reply; neither response invokes an LLM, resolves a workspace, fetches context, or creates a route audit record. Ordinary messages in unlisted channels remain ignored — only a configured channel route can dispatch an un-mentioned message, and only when its effective `mention_required` is `false`. A broken configured route or native policy reports a configuration error and never falls back to another workspace or unrestricted execution.
 
@@ -198,14 +198,14 @@ The examples in [`docs/examples/`](docs/examples/) are starting points, not poli
 Enso can run agents on a schedule. Jobs live in `~/.enso/jobs/` and run inside `enso serve` on a 60-second tick.
 
 ```bash
-enso job create --name "Daily Review" --provider claude --model sonnet --schedule "0 9 * * *" --workspace company --access automation
-enso job create --name "Fast Triage" --provider codex --model luna --schedule "*/30 * * * *" --workspace company --access automation
-enso job create --name "Agy Review" --provider agy --model gemini-3.6-flash-high --schedule "0 10 * * *" --workspace company --access admin
+enso job create --name "Daily Review" --provider claude --model sonnet --schedule "0 9 * * *" --workspace company
+enso job create --name "Fast Triage" --provider codex --model luna --schedule "*/30 * * * *" --workspace company
+enso job create --name "Agy Review" --provider agy --model gemini-3.6-flash-high --schedule "0 10 * * *" --workspace company
 enso job list
 enso job run daily-review    # test it manually
 ```
 
-Each job has a `JOB.md` with a cron schedule, provider, model, named `workspace`, named `access`, and prompt. The workspace is the provider CLI's cwd; the access profile must allow the job's provider and supplies its native policy. Every job requires both names. `enso config check` reports a missing required field and the loader skips that file; a parsed job with an invalid binding creates an error run before prerun or provider execution. Neither case falls back to the global working directory or unrestricted execution. Workspace/access configuration is top-level and works independently of Slack routes.
+Each job has a `JOB.md` with a cron schedule, provider, model, named `workspace`, and prompt. The workspace is the provider CLI's cwd, and its policy must allow the job's provider and supply that provider's native settings. `enso config check` reports a missing required field and the loader skips that file; a parsed job with an invalid workspace-policy binding creates an error run before prerun or provider execution. Neither case falls back to the global working directory or unrestricted execution. Workspace and policy configuration is top-level and works independently of Slack routes.
 
 Schedules are validated at creation; if a hand-edited schedule later becomes invalid, the scheduler skips that job (with a log warning) instead of running it. By default a job that misses its scheduled time by more than `misfire_grace_seconds` (300) — say the machine was asleep — is skipped rather than run late; set `catch_up: true` in the frontmatter to run missed schedules on the next tick. A persistent per-job `.run.lock` file coordinates the scheduler, CLI, and dashboard so the same job does not run concurrently. Jobs sharing a workspace also use that workspace's process-local concurrency limit, but separate Enso processes do not share that workspace semaphore.
 
@@ -289,7 +289,7 @@ development is in progress.
 
 ## Config
 
-Everything lives under `~/.enso/`. Config is at `~/.enso/config.json` — the setup wizard writes it for you, but you can edit it directly to add models, define workspaces/access profiles/routes, change Telegram's global working directory, or set the interactive timeout through `agent.timeout` (whole seconds). Upgrades backfill newly supported providers without replacing existing paths or custom model lists. Set `notify_channel` to give `enso message send`, job alerts, and autocompact hooks a default destination when no interactive origin or explicit destination exists. No transport broadcasts implicitly.
+Everything lives under `~/.enso/`. Config is at `~/.enso/config.json` — the setup wizard writes it for you, but you can edit it directly to add models, define workspaces/policies/routes, change Telegram's global working directory, or set the interactive timeout through `agent.timeout` (whole seconds). Upgrades backfill newly supported providers without replacing existing paths or custom model lists. Set `notify_channel` to give `enso message send`, job alerts, and autocompact hooks a default destination when no interactive origin or explicit destination exists. No transport broadcasts implicitly.
 
 Slack's `rich_messages` and `persistent_surfaces` settings both default to `true`. Set `persistent_surfaces` to the JSON boolean `false` to keep standard Markdown and structured message blocks while disabling App Home and Canvas drafts; set `rich_messages` to `false` to restore legacy text delivery and implicitly disable surfaces too. Non-boolean values fail closed as disabled. Restart Enso after changing either setting.
 
@@ -360,7 +360,7 @@ reference also requires the helper's `op_set_secret` function.
 }
 ```
 
-That fragment demonstrates credential storage and makes the default Slack output settings explicit. A valid Slack configuration also needs the top-level `workspaces`, `access`, and exact `routes.slack` blocks shown in [`docs/examples/teams-config.jsonc`](docs/examples/teams-config.jsonc).
+That fragment demonstrates credential storage and makes the default Slack output settings explicit. A valid Slack configuration also needs the top-level `workspaces`, `policies`, and exact `routes.slack` blocks shown in [`docs/examples/teams-config.jsonc`](docs/examples/teams-config.jsonc).
 
 The service-account credential needed by the helper may still use the bootstrap
 `~/.enso/secrets/1password.env` file. Existing literal `bot_token` and `app_token`

@@ -89,9 +89,9 @@ def _make_runtime(**overrides: object) -> MagicMock:
             "claude": {"path": "claude", "models": ["opus", "sonnet"]},
         },
         "workspaces": {
-            "main": {"path": "/tmp/enso-test"},
+            "main": {"path": "/tmp/enso-test", "policy": "admin"},
         },
-        "access": {
+        "policies": {
             "admin": {
                 "unrestricted": True,
                 "providers": ["claude"],
@@ -102,8 +102,8 @@ def _make_runtime(**overrides: object) -> MagicMock:
         "routes": {
             "slack": {
                 "account_id": "TTEST",
-                "dms": {"U123": {"workspace": "main", "access": "admin"}},
-                "channels": {"C123": {"workspace": "main", "access": "admin"}},
+                "dms": {"U123": {"workspace": "main"}},
+                "channels": {"C123": {"workspace": "main"}},
             },
         },
     }
@@ -150,7 +150,7 @@ def _surface_origin(
         ),
         route_kind=route_kind,
         workspace_id="main",
-        access_profile="admin",
+        policy="admin",
         route_audit=audit,
         user_id=user,
         channel_id=channel,

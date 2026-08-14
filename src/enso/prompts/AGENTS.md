@@ -25,9 +25,9 @@ enso message clear                   # clear the queue
 # Jobs — scheduled, recurring background tasks
 enso job list                        # show all jobs with status
 enso job run <name>                  # manual test run
-enso job create --name "Name" --provider claude --model sonnet --schedule "0 9 * * *" --workspace default --access admin
-enso job create --name "Name" --provider codex --model terra --schedule "0 9 * * *" --workspace default --access admin
-enso job create --name "Name" --provider agy --model gemini-3.6-flash-high --schedule "0 9 * * *" --workspace default --access admin
+enso job create --name "Name" --provider claude --model sonnet --schedule "0 9 * * *" --workspace default
+enso job create --name "Name" --provider codex --model terra --schedule "0 9 * * *" --workspace default
+enso job create --name "Name" --provider agy --model gemini-3.6-flash-high --schedule "0 9 * * *" --workspace default
 
 # Docs — operator reference notes the agent consults on demand
 enso doc list                        # path, name, description for every doc
@@ -70,11 +70,11 @@ Each interactive turn exports these env vars describing the message that trigger
 
 ## Background Jobs
 
-When creating or editing jobs, **always** use the `jobs` skill — it has the full format reference, workspace/access binding rules, prerun script guide, and examples.
+When creating or editing jobs, **always** use the `jobs` skill — it has the full format reference, workspace-policy binding rules, prerun script guide, and examples.
 
 Schedules use the system's local timezone. Do not convert to UTC.
 
-Every job must name a configured `workspace` and `access` profile. The provider runs in that workspace under the profile's native policy. A prerun script is trusted host-side code run from the job directory, outside that native policy.
+Every job must name a configured `workspace`. The provider runs there under the workspace's policy; jobs cannot override it. A prerun script is trusted host-side code run from the job directory, outside that native policy.
 
 ## Deferred updates — use `enso message send`
 

@@ -77,7 +77,7 @@ class ClaudeProvider(BaseProvider):
         the operator's user settings (so their personal rules cannot widen a
         workspace) while leaving the CLI's own instruction and skill discovery
         working, denies anything a prompt would have asked about (headless has
-        nobody to ask), and loads exactly the profile's declared MCP servers —
+        nobody to ask), and loads exactly the policy's declared MCP servers —
         the conventional mcp.json when present, none otherwise — never the
         operator's ambient ones. Otherwise: today's bypass invocation.
         """

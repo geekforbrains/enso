@@ -47,12 +47,11 @@ Both settings are valid on channel routes and in a `routes.slack.channel_default
 
     "channels": {
       // Fully responsive via channel_defaults.
-      "C0COMPANY": { "workspace": "company", "access": "staff", "audit": false },
+      "C0COMPANY": { "workspace": "company", "audit": false },
 
       // Client channel opts back into mention-only.
       "C0ACME": {
         "workspace": "acme",
-        "access": "client-readonly",
         "audit": true,
         "mention_required": true,
         "thread_mention_required": true
@@ -74,10 +73,10 @@ Validation is fail-closed like the rest of `routes.slack`:
 For a channel message the decision order is:
 
 1. Ignored subtypes, messages without a user, and machine-authored posts are dropped: Enso's own messages, other Slack apps' posts (`bot_id`/`bot_profile` — modern app posts carry no subtype), and Slackbot. Channel routes authorize human members, so a feed bot whose content embeds a mention token never becomes an authorized request, and two auto-responsive bots cannot reply to each other in a loop.
-1. The channel is resolved against exact routes. A non-mention message in an unrouted channel is dropped silently — no reply, no ledger row. Explicit contact (a mention, or any DM) at an unrouted location keeps its fixed local response, unchanged.
-1. A top-level message without a mention is dropped unless the route's effective `mention_required` is `false`.
-1. A thread reply without a mention is dropped unless the route's effective `thread_mention_required` is `false` **and** Enso participates in that thread — a prior dispatch's session, or a thread root Enso posted itself.
-1. Everything that survives claims the delivery ledger and dispatches through the normal route pipeline: same session keys, same audit rules, same policy checks.
+2. The channel is resolved against exact routes. A non-mention message in an unrouted channel is dropped silently — no reply, no ledger row. Explicit contact (a mention, or any DM) at an unrouted location keeps its fixed local response, unchanged.
+3. A top-level message without a mention is dropped unless the route's effective `mention_required` is `false`.
+4. A thread reply without a mention is dropped unless the route's effective `thread_mention_required` is `false` **and** Enso participates in that thread — a prior dispatch's session, or a thread root Enso posted itself.
+5. Everything that survives claims the delivery ledger and dispatches through the normal route pipeline: same session keys, same audit rules, same policy checks.
 
 A route whose binding fails at dispatch time (unusable native policy, no launchable provider, blocked audit) reports its fixed error reply only to explicit contact. Unaddressed traffic admitted by relaxed triggers fails silently — audited routes still record the blocked turn — so a broken responsive channel is not spammed on every message.
 

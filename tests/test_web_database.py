@@ -41,7 +41,6 @@ def _database_web_app(tmp_path: Path, monkeypatch):
         "provider: codex\n"
         "model: gpt-test\n"
         "workspace: default\n"
-        "access: admin\n"
         "enabled: false\n"
         "---\n\n"
         "Original prompt.\n",

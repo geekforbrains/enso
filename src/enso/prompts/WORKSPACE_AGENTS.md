@@ -1,6 +1,6 @@
 # Enso workspace
 
-This directory is a shared knowledge and working area for Slack conversations and scheduled jobs routed here. It is a content root and provider working directory, not a security boundary; different routes and jobs may use this same workspace with different access profiles.
+This directory is a shared knowledge and working area for Slack conversations and scheduled jobs routed here. It is a content root and provider working directory, while the workspace's configured policy defines provider and command authority.
 
 ## Workspace conventions
 

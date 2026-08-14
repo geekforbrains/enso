@@ -1,7 +1,7 @@
 """Native policy selection and launch construction for policy-controlled work.
 
 Enso does not compile or grade provider policy. The operator authors each
-CLI's native files under an access profile's ``policy_dir``; this module
+CLI's native files under a policy's ``policy_dir``; this module
 verifies the plumbing against the selected workspace, computes the
 ``policy_revision`` digest, and builds the launch inputs (arguments live in
 each provider class; the minimal child environment and staged runtime home
@@ -25,7 +25,7 @@ import tempfile
 from dataclasses import dataclass
 
 from .fsutil import regular_file_sha256
-from .teams import POLICY_FILES, AccessProfile, Workspace
+from .teams import POLICY_FILES, Policy, Workspace
 
 try:
     import tomllib
@@ -41,7 +41,7 @@ UNRESTRICTED_REVISION = f"unrestricted:v{LAUNCH_CONTRACT_VERSION}"
 
 # Environment kept for policy-controlled provider subprocesses. Everything
 # else — 1Password service tokens, transport credentials, secrets/*.env
-# projections — is withheld unless the profile's env_passthrough names it;
+# projections — is withheld unless the policy's env_passthrough names it;
 # allowlisting means a newly added secret can never leak by omission.
 _KEEP_ENV = ("HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "USER", "SHELL")
 _SNAPSHOT_MANIFEST = ".enso-policy-manifest.json"
@@ -62,7 +62,7 @@ class PolicyError(Exception):
 
 @dataclass(frozen=True)
 class PolicyCheck:
-    """Result of checking one workspace/access-profile/provider binding."""
+    """Result of checking one workspace/policy/provider binding."""
 
     provider: str
     ok: bool
@@ -100,35 +100,35 @@ UNRESTRICTED_LAUNCH_BY_PROVIDER = {
 }
 
 
-def policy_path(access: AccessProfile, provider: str) -> str | None:
+def policy_path(policy: Policy, provider: str) -> str | None:
     """Canonical native-policy path for a provider, or None if it has none."""
     rel = POLICY_FILES.get(provider)
-    if access.policy_dir is None or rel is None:
+    if policy.policy_dir is None or rel is None:
         return None
-    return os.path.join(access.policy_dir, rel)
+    return os.path.join(policy.policy_dir, rel)
 
 
-def _claude_mcp_path(access: AccessProfile) -> str:
-    """Conventional Claude MCP server file; its presence turns MCP on for the profile."""
-    assert access.policy_dir is not None
-    return os.path.join(access.policy_dir, "claude", "mcp.json")
+def _claude_mcp_path(policy: Policy) -> str:
+    """Conventional Claude MCP server file; its presence turns MCP on for the policy."""
+    assert policy.policy_dir is not None
+    return os.path.join(policy.policy_dir, "claude", "mcp.json")
 
 
-def _codex_source_root(access: AccessProfile) -> str:
-    assert access.policy_dir is not None
-    return os.path.join(access.policy_dir, "codex")
+def _codex_source_root(policy: Policy) -> str:
+    assert policy.policy_dir is not None
+    return os.path.join(policy.policy_dir, "codex")
 
 
-def check_provider(workspace: Workspace, access: AccessProfile, provider: str) -> PolicyCheck:
-    """Statically validate one workspace/access-profile/provider binding.
+def check_provider(workspace: Workspace, policy: Policy, provider: str) -> PolicyCheck:
+    """Statically validate one workspace/policy/provider binding.
 
     Verifies selection and integrity, not semantics: a file that parses and
     deliberately grants broad access is still the operator's policy.
     """
-    if access.unrestricted:
+    if policy.unrestricted:
         return PolicyCheck(provider=provider, ok=True, policy_revision=UNRESTRICTED_REVISION)
 
-    path = policy_path(access, provider)
+    path = policy_path(policy, provider)
     if path is None:
         reason = (
             "agy has no verified Enso launch contract and requires an unrestricted workspace"
@@ -146,7 +146,7 @@ def check_provider(workspace: Workspace, access: AccessProfile, provider: str) -
     mcp_digest: str | None = None
     if provider == "claude":
         problems, warnings, settings = _check_claude_settings(path)
-        mcp_problems, servers, mcp_digest = _check_claude_mcp(access, workspace)
+        mcp_problems, servers, mcp_digest = _check_claude_mcp(policy, workspace)
         problems.extend(mcp_problems)
         mcp_servers = tuple(sorted(servers))
         if not problems and settings is not None:
@@ -154,12 +154,12 @@ def check_provider(workspace: Workspace, access: AccessProfile, provider: str) -
             warnings.extend(_claude_mcp_secret_warnings(servers))
     elif provider == "codex":
         problems = _check_codex_config(path)
-        problems.extend(_codex_tree_problems(access, workspace, skip=path))
+        problems.extend(_codex_tree_problems(policy, workspace, skip=path))
 
     if problems:
         return PolicyCheck(provider=provider, ok=False, problems=tuple(problems), policy_path=path)
     try:
-        revision = _policy_revision(access, provider, path, claude_mcp_digest=mcp_digest)
+        revision = _policy_revision(policy, provider, path, claude_mcp_digest=mcp_digest)
     except OSError as exc:
         return PolicyCheck(
             provider=provider,
@@ -214,9 +214,9 @@ def _codex_tree_files(root: str) -> list[tuple[str, str]]:
     return files
 
 
-def _codex_tree_problems(access: AccessProfile, workspace: Workspace, *, skip: str) -> list[str]:
+def _codex_tree_problems(policy: Policy, workspace: Workspace, *, skip: str) -> list[str]:
     """Validate every file copied into the immutable Codex policy snapshot."""
-    root = _codex_source_root(access)
+    root = _codex_source_root(policy)
     problems: list[str] = []
     if os.path.islink(root):
         problems.append("codex policy directory must not be a symlink")
@@ -267,7 +267,7 @@ def _check_claude_settings(path: str) -> tuple[list[str], list[str], dict | None
 
 
 def _check_claude_mcp(
-    access: AccessProfile, workspace: Workspace
+    policy: Policy, workspace: Workspace
 ) -> tuple[list[str], dict, str | None]:
     """Validate the conventional claude/mcp.json when present.
 
@@ -278,7 +278,7 @@ def _check_claude_mcp(
     Presence is tested with lexists, so a symlink at the conventional path is
     an integrity error, never absence.
     """
-    path = _claude_mcp_path(access)
+    path = _claude_mcp_path(policy)
     if not os.path.lexists(path):
         return [], {}, None
     problems = _file_problems(path, workspace)
@@ -301,7 +301,7 @@ def _check_claude_mcp(
 
 
 def _claude_mcp_rule_warnings(settings: dict, known: tuple[str, ...]) -> list[str]:
-    """Cross-check mcp__ permission rules against the profile's resolved servers.
+    """Cross-check mcp__ permission rules against the policy's resolved servers.
 
     Both directions are silent no-ops rather than access widenings, so they
     warn: a rule naming an undefined server can never match (with no mcp.json
@@ -404,7 +404,7 @@ def _codex_manifest(root: str) -> dict[str, str]:
 
 
 def _policy_revision(
-    access: AccessProfile, provider: str, path: str, *, claude_mcp_digest: str | None = None
+    policy: Policy, provider: str, path: str, *, claude_mcp_digest: str | None = None
 ) -> str:
     """Digest of the complete policy source tree plus the launch contract.
 
@@ -420,16 +420,16 @@ def _policy_revision(
         if claude_mcp_digest is not None:
             manifest["mcp.json"] = claude_mcp_digest
     elif provider == "codex":
-        manifest = _codex_manifest(_codex_source_root(access))
+        manifest = _codex_manifest(_codex_source_root(policy))
     return _manifest_revision(provider, manifest)
 
 
-def prepare_launch(workspace: Workspace, access: AccessProfile, provider: str) -> Launch:
+def prepare_launch(workspace: Workspace, policy: Policy, provider: str) -> Launch:
     """Build the launch for one provider, failing closed on any problem."""
-    check = check_provider(workspace, access, provider)
+    check = check_provider(workspace, policy, provider)
     if not check.ok:
         raise PolicyError(provider, check.problems)
-    if access.unrestricted:
+    if policy.unrestricted:
         return UNRESTRICTED_LAUNCH_BY_PROVIDER.get(
             provider,
             Launch(
@@ -443,15 +443,15 @@ def prepare_launch(workspace: Workspace, access: AccessProfile, provider: str) -
         )
 
     assert check.policy_path is not None and check.policy_revision is not None
-    env = _minimal_env(provider, access.env_passthrough)
+    env = _minimal_env(provider, policy.env_passthrough)
     home: str | None = None
     ignore_rules = True
     mcp_config: str | None = None
     if provider == "claude" and check.mcp_servers:
-        mcp_config = _claude_mcp_path(access)
+        mcp_config = _claude_mcp_path(policy)
     if provider == "codex":
         try:
-            home, ignore_rules = _stage_codex_home(access, check.policy_revision)
+            home, ignore_rules = _stage_codex_home(policy, check.policy_revision)
         except PolicyError:
             raise
         except OSError as exc:
@@ -465,7 +465,7 @@ def prepare_launch(workspace: Workspace, access: AccessProfile, provider: str) -
         "Policy launch for %s: MCP servers [%s], passthrough [%s]",
         provider,
         ", ".join(check.mcp_servers),
-        ", ".join(name for name in access.env_passthrough if name in env),
+        ", ".join(name for name in policy.env_passthrough if name in env),
     )
     return Launch(
         mode="policy",
@@ -665,11 +665,11 @@ def _stage_codex_auth(home: str) -> None:
             os.remove(temporary)
 
 
-def _stage_codex_home(access: AccessProfile, revision: str) -> tuple[str, bool]:
+def _stage_codex_home(policy: Policy, revision: str) -> tuple[str, bool]:
     """Select an immutable, revision-keyed Codex policy snapshot and safe auth."""
-    assert access.policy_dir is not None
-    source = _codex_source_root(access)
-    snapshots = os.path.join(access.policy_dir, ".runtime", "codex-home")
+    assert policy.policy_dir is not None
+    source = _codex_source_root(policy)
+    snapshots = os.path.join(policy.policy_dir, ".runtime", "codex-home")
     os.makedirs(snapshots, mode=0o700, exist_ok=True)
     os.chmod(snapshots, 0o700)
     home = os.path.join(snapshots, revision)

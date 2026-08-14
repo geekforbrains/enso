@@ -84,7 +84,7 @@ from .slack_teams import TeamsRouter
 
 if TYPE_CHECKING:
     from ..core import ExecutionContext, Runtime
-    from ..teams import AccessProfile, Workspace
+    from ..teams import Policy, Workspace
 
 log = logging.getLogger(__name__)
 
@@ -2446,7 +2446,7 @@ class SlackTransport(BaseTransport):
         ctx: SlackContext | None = None,
         *,
         workspace: Workspace | None = None,
-        access: AccessProfile | None = None,
+        policy: Policy | None = None,
         allowed_providers: list[str] | None = None,
         sel_key: str | None = None,
         context: ExecutionContext | None = None,
@@ -2456,7 +2456,7 @@ class SlackTransport(BaseTransport):
         ``ctx`` is optional but commands that need to post a progress message
         before doing slow work (e.g. ``!compact``) will use it when given.
 
-        Teams routes pass their workspace, access profile, policy-usable
+        Teams routes pass their workspace, policy, policy-usable
         provider list, and execution context for commands that spawn a
         provider.
         """
@@ -2466,7 +2466,7 @@ class SlackTransport(BaseTransport):
 
         rt = self.runtime
 
-        if access is not None and not access.allows_command(cmd_name):
+        if policy is not None and not policy.allows_command(cmd_name):
             return f"!{cmd_name} is not available in this conversation."
 
         if cmd_name == "stop":
@@ -2523,8 +2523,8 @@ class SlackTransport(BaseTransport):
         if cmd_name == "help":
             available = (
                 SLACK_COMMANDS
-                if access is None
-                else [c for c in SLACK_COMMANDS if access.allows_command(c[0])]
+                if policy is None
+                else [c for c in SLACK_COMMANDS if policy.allows_command(c[0])]
             )
             return cmd_help(available, prefix="!")
 
