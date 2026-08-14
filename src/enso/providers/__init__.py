@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, Literal
 
 if TYPE_CHECKING:
+    from ..instructions import InstructionBundle
     from ..policy import Launch
 
 # Status text is shown in a chat bubble alongside a header, so it has to
@@ -95,6 +96,7 @@ class BaseProvider(ABC):
         *,
         effort: str | None = None,
         launch: Launch | None = None,
+        instructions: InstructionBundle | None = None,
     ) -> list[str]:
         """Build the CLI command for interactive streaming.
 
@@ -113,6 +115,7 @@ class BaseProvider(ABC):
         *,
         effort: str | None = None,
         launch: Launch | None = None,
+        instructions: InstructionBundle | None = None,
     ) -> list[str]:
         """Build the CLI command for batch execution (text output, no streaming).
 

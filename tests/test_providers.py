@@ -6,8 +6,14 @@ import asyncio
 import json
 import sqlite3
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10
+    import tomli as tomllib  # type: ignore[no-redef]
+
 import pytest
 
+from enso.instructions import MAX_SHARED_INSTRUCTION_BYTES, InstructionBundle
 from enso.providers import (
     PROVIDER_CLASSES,
     PROVIDER_NAMES,
@@ -20,6 +26,19 @@ from enso.providers.claude import ClaudeProvider
 from enso.providers.codex import CODEX_MODEL_ALIASES, CodexProvider
 
 CLAUDE_SESSION_ID = "11111111-1111-4111-8111-111111111111"
+
+
+def _instruction_bundle(tmp_path, content="Shared operator guidance."):
+    source = tmp_path / "AGENTS.md"
+    snapshot = tmp_path / "shared-instructions.md"
+    source.write_text(content)
+    snapshot.write_text(content)
+    return InstructionBundle(
+        source_path=str(source),
+        content=content,
+        revision="a" * 64,
+        snapshot_path=str(snapshot),
+    )
 
 # -- Registry --
 
@@ -88,6 +107,42 @@ def test_claude_build_batch_command():
     assert "--continue" not in cmd
 
 
+@pytest.mark.parametrize("session_id", [None, CLAUDE_SESSION_ID])
+def test_claude_interactive_injects_shared_instructions(
+    tmp_path, session_id,
+):
+    bundle = _instruction_bundle(tmp_path)
+
+    cmd = ClaudeProvider("claude").build_command(
+        "hello", "sonnet", session_id=session_id, instructions=bundle,
+    )
+
+    flag = cmd.index("--append-system-prompt-file")
+    assert cmd[flag + 1] == str(bundle.snapshot_path)
+    assert flag < cmd.index("--")
+    assert cmd[-1] == "hello"
+
+
+def test_claude_batch_injects_shared_instructions(tmp_path):
+    bundle = _instruction_bundle(tmp_path)
+
+    cmd = ClaudeProvider("claude").build_batch_command(
+        "hello", "opus", instructions=bundle,
+    )
+
+    flag = cmd.index("--append-system-prompt-file")
+    assert cmd[flag + 1] == str(bundle.snapshot_path)
+    assert flag < cmd.index("--")
+
+
+def test_claude_omits_instruction_flag_without_bundle():
+    command = ClaudeProvider("claude").build_command("hello", "sonnet")
+    batch = ClaudeProvider("claude").build_batch_command("hello", "sonnet")
+
+    assert "--append-system-prompt-file" not in command
+    assert "--append-system-prompt-file" not in batch
+
+
 def test_codex_build_command():
     p = CodexProvider("codex")
     cmd = p.build_command("hello", "gpt-5.3-codex")
@@ -107,6 +162,76 @@ def test_codex_build_batch_command():
     p = CodexProvider("codex")
     cmd = p.build_batch_command("hello", "gpt-5.3-codex")
     assert "--json" not in cmd
+
+
+def _codex_developer_instructions(cmd):
+    overrides = [
+        cmd[index + 1]
+        for index, item in enumerate(cmd[:-1])
+        if item == "-c" and cmd[index + 1].startswith("developer_instructions=")
+    ]
+    assert len(overrides) == 1
+    return tomllib.loads(overrides[0])["developer_instructions"]
+
+
+@pytest.mark.parametrize("mode", ["fresh", "resume", "batch"])
+def test_codex_injects_toml_safe_shared_instructions(tmp_path, mode):
+    content = 'First line\nA "quoted" path: C:\\\\tools\\enso\nFinal line\t✓'
+    bundle = _instruction_bundle(tmp_path, content)
+    provider = CodexProvider("codex")
+
+    if mode == "fresh":
+        cmd = provider.build_command("hello", "sol", instructions=bundle)
+    elif mode == "resume":
+        cmd = provider.build_command(
+            "hello", "sol", session_id="thread_123", instructions=bundle,
+        )
+    else:
+        cmd = provider.build_batch_command("hello", "sol", instructions=bundle)
+
+    assert _codex_developer_instructions(cmd) == content
+    assert cmd.index("-c") < cmd.index("--")
+    assert cmd[-1] == "hello"
+
+
+def test_codex_omits_developer_instructions_without_bundle():
+    provider = CodexProvider("codex")
+
+    for cmd in (
+        provider.build_command("hello", "sol"),
+        provider.build_batch_command("hello", "sol"),
+    ):
+        assert not any(
+            item.startswith("developer_instructions=") for item in cmd
+        )
+
+
+def test_codex_rejects_non_scalar_instruction_text(tmp_path):
+    bundle = InstructionBundle(
+        source_path=str(tmp_path / "AGENTS.md"),
+        content="unsafe surrogate: \ud800",
+        revision="a" * 64,
+        snapshot_path=str(tmp_path / "shared-instructions.md"),
+    )
+
+    with pytest.raises(ValueError, match="Unicode scalar"):
+        CodexProvider("codex").build_command(
+            "hello", "sol", instructions=bundle,
+        )
+
+
+def test_codex_maximum_shared_instructions_fit_linux_single_argument_limit(tmp_path):
+    content = "\x01" * MAX_SHARED_INSTRUCTION_BYTES
+    bundle = _instruction_bundle(tmp_path, content)
+
+    cmd = CodexProvider("codex").build_command(
+        "hello", "sol", instructions=bundle,
+    )
+    override = next(
+        item for item in cmd if item.startswith("developer_instructions=")
+    )
+
+    assert len(override.encode("utf-8")) + 1 < 128 * 1024
 
 
 def test_codex_model_aliases_apply_to_all_command_modes():
@@ -169,6 +294,53 @@ def test_agy_batch_command_is_plain_yolo_output():
         "--new-project",
         "--prompt", "hello",
     ]
+
+
+@pytest.mark.parametrize("mode", ["fresh", "resume", "batch"])
+def test_agy_wraps_shared_instructions_and_preserves_prompt_verbatim(
+    tmp_path, mode,
+):
+    bundle = _instruction_bundle(tmp_path, "Shared line one.\nShared line two.")
+    prompt = "Original prompt.\n\n```py\nprint('unchanged')\n```\n"
+    provider = AgyProvider("agy")
+    try:
+        if mode == "fresh":
+            cmd = provider.build_command(
+                prompt, AGY_MODELS[0], instructions=bundle,
+            )
+        elif mode == "resume":
+            cmd = provider.build_command(
+                prompt,
+                AGY_MODELS[0],
+                session_id="33333333-3333-4333-8333-333333333333",
+                instructions=bundle,
+            )
+        else:
+            cmd = provider.build_batch_command(
+                prompt, AGY_MODELS[0], instructions=bundle,
+            )
+    finally:
+        provider.finalize_events()
+
+    wrapped = cmd[cmd.index("--prompt") + 1]
+    assert wrapped == (
+        "<enso-shared-instructions>\n"
+        "Shared line one.\nShared line two.\n"
+        "</enso-shared-instructions>\n\n"
+        "<enso-user-prompt>\n"
+        + prompt
+    )
+    assert wrapped.endswith(prompt)
+
+
+def test_agy_preserves_plain_prompt_without_instruction_bundle():
+    provider = AgyProvider("agy")
+    try:
+        cmd = provider.build_command("hello", AGY_MODELS[0])
+    finally:
+        provider.finalize_events()
+
+    assert cmd[cmd.index("--prompt") + 1] == "hello"
 
 
 def test_agy_print_timeout_stays_behind_enso_deadline():

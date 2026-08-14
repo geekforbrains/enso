@@ -201,6 +201,21 @@ def test_codex_invalid_toml_fails(tmp_path):
     assert not check.ok
 
 
+def test_codex_policy_cannot_override_shared_developer_instructions(tmp_path):
+    write_codex_policy(
+        tmp_path,
+        'developer_instructions = "policy-local override"\n' + CODEX_CONFIG,
+    )
+
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "codex")
+
+    assert not check.ok
+    assert any(
+        "developer_instructions" in problem and "reserved" in problem
+        for problem in check.problems
+    )
+
+
 def test_unknown_provider_fails(tmp_path):
     check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "mystery")
     assert not check.ok
@@ -457,9 +472,9 @@ def test_revision_rotates_on_mcp_file_add_edit_and_remove(tmp_path):
     assert removed == base
 
 
-def test_launch_contract_is_version_three():
-    assert policy.LAUNCH_CONTRACT_VERSION == "3"
-    assert policy.UNRESTRICTED_REVISION == "unrestricted:v3"
+def test_launch_contract_is_version_four():
+    assert policy.LAUNCH_CONTRACT_VERSION == "4"
+    assert policy.UNRESTRICTED_REVISION == "unrestricted:v4"
 
 
 def test_hard_linked_codex_rule_fails(tmp_path):
