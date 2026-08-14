@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 import pytest
 
 from enso import audit as audit_store
-from enso import surface_drafts
+from enso import slack_cache, surface_drafts
 from enso.core import ExecutionContext
 from enso.formatting import md_to_mrkdwn
 from enso.outbound import (
@@ -4274,6 +4274,59 @@ class TestAttachmentsPrompt:
 class TestTransportInit:
     """Tests for SlackTransport initialization."""
 
+    @pytest.mark.asyncio
+    async def test_start_routing_binds_directory_cache_to_authenticated_account(self):
+        transport = _make_transport(_make_runtime())
+        client = _make_client()
+        client.auth_test.return_value = {"team_id": "TTEST", "user_id": "UBOT"}
+        bound_cache = {"team_id": "TTEST"}
+
+        with (
+            patch(
+                "enso.transports.slack.slack_cache.bind_account",
+                return_value=bound_cache,
+            ) as bind_account,
+            patch.object(transport, "_warm_directory_cache") as warm_cache,
+            patch.object(transport.teams_router, "startup_reconcile"),
+        ):
+            await transport._start_routing(client)
+
+        bind_account.assert_called_once_with("TTEST")
+        warm_cache.assert_called_once_with(bound_cache)
+        assert transport._cache_account_id == "TTEST"
+
+    @pytest.mark.asyncio
+    async def test_cache_binding_failure_disables_all_directory_cache_reads(self):
+        transport = _make_transport(_make_runtime())
+        client = _make_client()
+        client.auth_test.return_value = {"team_id": "TTEST", "user_id": "UBOT"}
+
+        with (
+            patch(
+                "enso.transports.slack.slack_cache.bind_account",
+                side_effect=OSError("cache unavailable"),
+            ),
+            patch.object(transport, "_warm_directory_cache") as warm_cache,
+            patch.object(transport.teams_router, "startup_reconcile"),
+        ):
+            await transport._start_routing(client)
+
+        assert transport.teams_router.account_ok is True
+        assert transport._cache_account_id == ""
+        warm_cache.assert_not_called()
+
+    def test_hot_path_cache_reads_recheck_authenticated_account(self, tmp_enso):
+        transport = _make_transport(_make_runtime())
+        transport._cache_account_id = "TTEST"
+        cache = slack_cache._empty_cache()
+        cache["team_id"] = "FOREIGN"
+        cache["users"]["items"]["U1"] = {"display_name": "Wrong person"}
+        cache["channels"]["items"]["C1"] = {"name": "wrong-channel"}
+        slack_cache.save(cache)
+
+        assert transport.lookup_user_name("U1") == ""
+        assert transport.lookup_channel_name("C1") == ""
+
     def test_config_loading(self):
         rt = _make_runtime()
         transport = _make_transport(rt)
@@ -4471,6 +4524,7 @@ class TestOriginEnv:
         from enso import slack_cache
 
         cache = slack_cache._empty_cache()
+        cache["team_id"] = "TTEST"
         cache["channels"]["items"]["C012345"] = {
             "id": "C012345",
             "name": "burger-bash",
@@ -4487,10 +4541,33 @@ class TestOriginEnv:
         with open(slack_cache.CACHE_FILE, "w") as f:
             json.dump(cache, f)
 
-        ctx = SlackContext(_make_client(), "C012345", user_id="U987")
+        ctx = SlackContext(
+            _make_client(),
+            "C012345",
+            user_id="U987",
+            cache_account_id="TTEST",
+        )
         env = ctx.get_origin_env()
         assert env["ENSO_ORIGIN_CHANNEL_NAME"] == "#burger-bash"
         assert env["ENSO_ORIGIN_USER_NAME"] == "Shawn"
+
+    def test_origin_env_rejects_cache_from_another_account(self, tmp_enso):
+        cache = slack_cache._empty_cache()
+        cache["team_id"] = "FOREIGN"
+        cache["users"]["items"]["U987"] = {"display_name": "Wrong person"}
+        cache["channels"]["items"]["C012345"] = {"name": "wrong-channel"}
+        slack_cache.save(cache)
+
+        ctx = SlackContext(
+            _make_client(),
+            "C012345",
+            user_id="U987",
+            cache_account_id="TTEST",
+        )
+
+        env = ctx.get_origin_env()
+        assert env["ENSO_ORIGIN_CHANNEL_NAME"] == ""
+        assert env["ENSO_ORIGIN_USER_NAME"] == ""
 
     def test_missing_cache_falls_back_to_blank_name(self, tmp_enso):
         ctx = SlackContext(_make_client(), "C777", user_id="U777")

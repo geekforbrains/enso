@@ -103,6 +103,7 @@ def _make_transport(tmp_enso, _monkeypatch, config=None):
     transport = SlackTransport(runtime)
     assert transport.teams_router is not None
     transport.teams_router.set_authenticated_account(ACCOUNT)
+    transport._cache_account_id = ACCOUNT
     return transport, runtime
 
 

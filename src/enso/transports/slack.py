@@ -713,6 +713,7 @@ class SlackContext(TransportContext):
         persistent_surfaces: bool = False,
         surface_origin: SurfaceDraftOrigin | None = None,
         conversation_type: str = "",
+        cache_account_id: str = "",
     ):
         self._client = client
         self._channel = channel
@@ -730,6 +731,7 @@ class SlackContext(TransportContext):
             raise ValueError("surface draft origin does not match Slack context")
         self._surface_origin = surface_origin
         self._conversation_type = conversation_type
+        self._cache_account_id = cache_account_id
 
     async def _record_response(self, text: str) -> None:
         if self._audit_turn_id is not None:
@@ -1415,7 +1417,7 @@ class SlackContext(TransportContext):
         # API here, since this runs on the hot path. Cache misses just leave
         # the name blank and the agent can fall back to the ID.
         try:
-            cache = slack_cache.load()
+            cache = slack_cache.load_for_account(self._cache_account_id)
             user = cache.get("users", {}).get("items", {}).get(self._user_id, {})
             name = user.get("display_name") or user.get("real_name") or user.get("name") or ""
             env["ENSO_ORIGIN_USER_NAME"] = name
@@ -1465,6 +1467,7 @@ class SlackTransport(BaseTransport):
         self._client: AsyncWebClient | None = None
         self._surface_reconciled = False
         self._surface_terminal_retries: dict[str, TerminalStatus] = {}
+        self._cache_account_id = ""
 
         # Slack authorization is always resolved through exact DM/channel
         # routes. Invalid or missing route configuration remains represented
@@ -1474,7 +1477,6 @@ class SlackTransport(BaseTransport):
     def start(self) -> None:
         """Start listening for Slack events via Socket Mode (blocking)."""
         log.info("Starting Slack transport with exact routes")
-        self._warm_directory_cache()
         app = AsyncApp(token=self.bot_token)
         self._client = app.client
         self._register_listeners(app)
@@ -1503,7 +1505,16 @@ class SlackTransport(BaseTransport):
             return
         if not self.bot_user_id and auth.get("user_id"):
             self.bot_user_id = str(auth["user_id"])
-        self.teams_router.set_authenticated_account(str(auth.get("team_id", "")))
+        team_id = str(auth.get("team_id", ""))
+        self.teams_router.set_authenticated_account(team_id)
+        if self.teams_router.account_ok:
+            try:
+                directory = await asyncio.to_thread(slack_cache.bind_account, team_id)
+                await asyncio.to_thread(self._warm_directory_cache, directory)
+            except Exception:
+                log.warning("Slack directory cache account binding failed", exc_info=True)
+            else:
+                self._cache_account_id = team_id
         try:
             await asyncio.to_thread(self.teams_router.startup_reconcile)
         except Exception:
@@ -1560,7 +1571,7 @@ class SlackTransport(BaseTransport):
         await self._client.chat_postMessage(**payload)  # type: ignore[arg-type]
         return True
 
-    def _warm_directory_cache(self) -> None:
+    def _warm_directory_cache(self, cache: dict[str, Any] | None = None) -> None:
         """Populate the user+channel cache on startup so origin-env lookups
         resolve names without a per-message API hit.
 
@@ -1570,7 +1581,7 @@ class SlackTransport(BaseTransport):
         """
         if not self.bot_token:
             return
-        cache = slack_cache.load()
+        cache = cache if cache is not None else slack_cache.load()
         try:
             if not slack_cache._recently_refreshed(cache["users"]):
                 cache = slack_cache.refresh_users(self.bot_token, cache)
@@ -1730,6 +1741,7 @@ class SlackTransport(BaseTransport):
             persistent_surfaces=self.persistent_surfaces,
             surface_origin=surface_origin,
             conversation_type=conversation_type,
+            cache_account_id=self._cache_account_id,
         )
 
     async def _surface_action_notice(
@@ -2134,6 +2146,7 @@ class SlackTransport(BaseTransport):
             persistent_surfaces=self.persistent_surfaces,
             surface_origin=claimed.origin,
             conversation_type=claimed.origin.conversation_type,
+            cache_account_id=self._cache_account_id,
         )
         try:
             result = await context.publish_confirmed_surface(
@@ -2197,7 +2210,7 @@ class SlackTransport(BaseTransport):
     def lookup_user_name(self, user_id: str) -> str:
         """Best-effort display name from the on-disk cache; never hits the API."""
         try:
-            cache = slack_cache.load()
+            cache = slack_cache.load_for_account(self._cache_account_id)
             user = cache.get("users", {}).get("items", {}).get(user_id, {})
             return user.get("display_name") or user.get("real_name") or user.get("name") or ""
         except Exception:
@@ -2206,7 +2219,10 @@ class SlackTransport(BaseTransport):
     def lookup_channel_name(self, channel_id: str) -> str:
         """Best-effort ``#name`` from the on-disk cache; never hits the API."""
         try:
-            return _cached_channel_label(slack_cache.load(), channel_id)
+            return _cached_channel_label(
+                slack_cache.load_for_account(self._cache_account_id),
+                channel_id,
+            )
         except Exception:
             return ""
 
