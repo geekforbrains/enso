@@ -18,7 +18,22 @@ def make_config(tmp_path, **overrides) -> dict:
         directory.mkdir(parents=True, exist_ok=True)
     config = {
         "working_dir": str(tmp_path / "legacy"),
-        "transports": {"slack": {"bot_token": "x", "app_token": "x"}},
+        "transports": {
+            "slack": {
+                "bot_token": "x",
+                "app_token": "x",
+                "account_id": "T0ENSO",
+                "dms": {
+                    "U01ADMIN": {"workspace": "company"},
+                },
+                "channels": {
+                    "C0ACME": {
+                        "workspace": "client-a",
+                        "audit": True,
+                    },
+                },
+            }
+        },
         "workspaces": {
             "company": {"path": str(company), "policy": "admin"},
             "client-a": {
@@ -40,20 +55,6 @@ def make_config(tmp_path, **overrides) -> dict:
                 "default_provider": "claude",
                 "chat_commands": ["status", "clear", "stop", "help"],
             },
-        },
-        "routes": {
-            "slack": {
-                "account_id": "T0ENSO",
-                "dms": {
-                    "U01ADMIN": {"workspace": "company"},
-                },
-                "channels": {
-                    "C0ACME": {
-                        "workspace": "client-a",
-                        "audit": True,
-                    },
-                },
-            }
         },
     }
     config.update(overrides)
@@ -117,7 +118,7 @@ def test_catalog_names_are_portable_identifiers(tmp_path, catalog_name, item_lab
 
 def test_route_cannot_override_workspace_policy(tmp_path):
     config = make_workspace_policy_config(tmp_path)
-    config["routes"]["slack"]["channels"]["C0ACME"]["policy"] = "admin"
+    config["transports"]["slack"]["channels"]["C0ACME"]["policy"] = "admin"
 
     parsed = load_teams(config)
 
@@ -127,9 +128,48 @@ def test_route_cannot_override_workspace_policy(tmp_path):
     assert any("unknown keys ['policy']" in error for error in parsed.route_errors[route.route_id])
 
 
+def test_slack_routes_coexist_with_transport_settings(tmp_path):
+    config = make_workspace_policy_config(tmp_path)
+    slack = config["transports"]["slack"]
+    slack.pop("bot_token")
+    slack.pop("app_token")
+    slack.update(
+        {
+            "bot_token_1password": {"item": "Slack", "field": "BOT_TOKEN"},
+            "app_token_1password": {"item": "Slack", "field": "APP_TOKEN"},
+            "bot_user_id": "UBOT",
+            "notify_channel": "C0ACME",
+            "channel_context_messages": 12,
+            "rich_messages": False,
+            "persistent_surfaces": False,
+        }
+    )
+
+    parsed = load_teams(config)
+
+    assert parsed.dispatchable
+    assert parsed.account_id == "T0ENSO"
+    assert resolve(parsed, user_id="U01ADMIN", channel_id=None).status == "authorized"
+    assert resolve(parsed, user_id="UANY", channel_id="C0ACME").status == "authorized"
+
+
+def test_legacy_top_level_routes_are_rejected(tmp_path):
+    config = make_workspace_policy_config(tmp_path)
+    config["routes"] = {"slack": {"account_id": "T0LEGACY"}}
+
+    parsed = load_teams(config)
+
+    assert not parsed.dispatchable
+    assert any(
+        "routes is no longer supported" in error
+        and "transports.slack" in error
+        for error in parsed.errors
+    )
+
+
 def test_catalog_loads_without_slack_routes(tmp_path):
     config = make_config(tmp_path)
-    del config["routes"]
+    del config["transports"]["slack"]
 
     catalog = load_catalog(config)
 
@@ -150,7 +190,7 @@ def test_catalog_rejects_unknown_or_invalid_bindings(tmp_path):
 
 def test_catalog_retains_topology_validation_without_slack_routes(tmp_path):
     config = make_config(tmp_path)
-    del config["routes"]
+    del config["transports"]["slack"]
     config["workspaces"]["client-a"]["path"] = config["workspaces"]["company"]["path"]
 
     catalog = load_catalog(config)
@@ -178,13 +218,15 @@ def test_load_valid_config(tmp_path):
     )
 
 
-def test_missing_slack_routes_is_actionable_invalid_config(tmp_path):
+def test_missing_slack_account_id_is_actionable_invalid_config(tmp_path):
     config = make_config(tmp_path)
-    del config["routes"]
+    del config["transports"]["slack"]["account_id"]
     parsed = load_teams(config)
 
     assert not parsed.dispatchable
-    assert any("routes.slack is required" in problem for problem in parsed.errors)
+    assert any(
+        "transports.slack.account_id is required" in problem for problem in parsed.errors
+    )
 
 
 def test_paths_are_canonical_absolute(tmp_path, monkeypatch):
@@ -215,7 +257,7 @@ def test_policy_dir_defaults_from_policy_name(tmp_path, monkeypatch):
 
 def test_routes_share_the_workspace_policy(tmp_path):
     config = make_config(tmp_path)
-    config["routes"]["slack"]["channels"]["C0ACME_INTERNAL"] = {
+    config["transports"]["slack"]["channels"]["C0ACME_INTERNAL"] = {
         "workspace": "client-a",
     }
     parsed = load_teams(config)
@@ -244,19 +286,20 @@ def test_removed_slack_allowlist_has_actionable_migration_error(tmp_path):
     assert not parsed.dispatchable
     assert any(
         "transports.slack.allowed_users is no longer supported" in problem
-        and "routes.slack.dms" in problem
+        and "transports.slack.dms" in problem
         for problem in parsed.errors
     )
 
 
 def test_removed_slack_allowlist_cannot_enable_slack_without_routes(tmp_path):
     config = make_config(tmp_path)
-    del config["routes"]
+    for key in ("account_id", "dms", "channels"):
+        config["transports"]["slack"].pop(key)
     config["transports"]["slack"]["allowed_users"] = ["U1"]
     parsed = load_teams(config)
 
     assert not parsed.dispatchable
-    assert any("routes.slack is required" in problem for problem in parsed.errors)
+    assert any("transports.slack.account_id is required" in problem for problem in parsed.errors)
     assert any("allowed_users is no longer supported" in problem for problem in parsed.errors)
 
 
@@ -285,20 +328,31 @@ def test_malformed_policies_disables_dispatch(tmp_path, bad):
 @pytest.mark.parametrize("bad", [None, "x", 5, ["x"]])
 def test_malformed_routes_block_disables_dispatch(tmp_path, bad):
     config = make_config(tmp_path)
-    config["routes"]["slack"]["channels"] = bad
+    config["transports"]["slack"]["channels"] = bad
     assert not load_teams(config).dispatchable
+
+
+@pytest.mark.parametrize("bad", [None, "x", 5, ["x"]])
+def test_malformed_slack_transport_disables_dispatch(tmp_path, bad):
+    config = make_config(tmp_path)
+    config["transports"]["slack"] = bad
+
+    parsed = load_teams(config)
+
+    assert not parsed.dispatchable
+    assert "transports.slack must be an object" in parsed.errors
 
 
 def test_missing_account_id_disables_dispatch(tmp_path):
     config = make_config(tmp_path)
-    del config["routes"]["slack"]["account_id"]
+    del config["transports"]["slack"]["account_id"]
     assert not load_teams(config).dispatchable
 
 
 @pytest.mark.parametrize(
     ("location", "unknown_key"),
     [
-        (("routes", "slack"), "fallback"),
+        (("transports", "slack"), "fallback"),
         (("audit",), "retention"),
     ],
 )
@@ -307,7 +361,7 @@ def test_unknown_structural_keys_disable_dispatch(tmp_path, location, unknown_ke
     if location == ("audit",):
         config["audit"] = {unknown_key: True}
     else:
-        config["routes"]["slack"][unknown_key] = True
+        config["transports"]["slack"][unknown_key] = True
     assert not load_teams(config).dispatchable
 
 
@@ -499,7 +553,7 @@ def test_reserved_names_cover_every_launch_controlled_variable():
 )
 def test_invalid_unknown_and_legacy_route_values_disable_route(tmp_path, key, value):
     config = make_config(tmp_path)
-    config["routes"]["slack"]["channels"]["C0ACME"][key] = value
+    config["transports"]["slack"]["channels"]["C0ACME"][key] = value
     parsed = load_teams(config)
     assert parsed.dispatchable
     assert "slack.channel.C0ACME" in parsed.route_errors
@@ -507,14 +561,14 @@ def test_invalid_unknown_and_legacy_route_values_disable_route(tmp_path, key, va
 
 def test_unknown_workspace_disables_route(tmp_path):
     config = make_config(tmp_path)
-    config["routes"]["slack"]["channels"]["C0ACME"]["workspace"] = "missing"
+    config["transports"]["slack"]["channels"]["C0ACME"]["workspace"] = "missing"
     parsed = load_teams(config)
     assert "slack.channel.C0ACME" in parsed.route_errors
 
 
 def test_legacy_route_access_override_disables_route(tmp_path):
     config = make_config(tmp_path)
-    config["routes"]["slack"]["channels"]["C0ACME"]["access"] = "missing"
+    config["transports"]["slack"]["channels"]["C0ACME"]["access"] = "missing"
     parsed = load_teams(config)
     assert "slack.channel.C0ACME" in parsed.route_errors
 
@@ -549,7 +603,7 @@ def test_dm_route_key_is_exact_slack_user_id(tmp_path):
 
 def test_route_scoped_error_is_reported_to_that_route(tmp_path):
     config = make_config(tmp_path)
-    config["routes"]["slack"]["channels"]["C0ACME"]["audit"] = "yes"
+    config["transports"]["slack"]["channels"]["C0ACME"]["audit"] = "yes"
     parsed = load_teams(config)
     decision = resolve(parsed, user_id="UANY", channel_id="C0ACME")
     assert decision.status == "error"
@@ -589,7 +643,7 @@ def test_mention_settings_default_to_required(tmp_path):
 
 def test_route_level_mention_settings_are_stored(tmp_path):
     config = make_config(tmp_path)
-    config["routes"]["slack"]["channels"]["C0ACME"].update(
+    config["transports"]["slack"]["channels"]["C0ACME"].update(
         mention_required=False,
         thread_mention_required=False,
     )
@@ -603,7 +657,7 @@ def test_route_level_mention_settings_are_stored(tmp_path):
 
 def test_channel_defaults_apply_to_routes_without_overrides(tmp_path):
     config = make_config(tmp_path)
-    config["routes"]["slack"]["channel_defaults"] = {
+    config["transports"]["slack"]["channel_defaults"] = {
         "mention_required": False,
         "thread_mention_required": False,
     }
@@ -616,11 +670,11 @@ def test_channel_defaults_apply_to_routes_without_overrides(tmp_path):
 
 def test_route_setting_overrides_channel_defaults(tmp_path):
     config = make_config(tmp_path)
-    config["routes"]["slack"]["channel_defaults"] = {
+    config["transports"]["slack"]["channel_defaults"] = {
         "mention_required": False,
         "thread_mention_required": False,
     }
-    config["routes"]["slack"]["channels"]["C0ACME"]["mention_required"] = True
+    config["transports"]["slack"]["channels"]["C0ACME"]["mention_required"] = True
     parsed = load_teams(config)
     route = parsed.channel_routes["C0ACME"]
     assert route.mention_required is True
@@ -629,7 +683,7 @@ def test_route_setting_overrides_channel_defaults(tmp_path):
 
 def test_channel_defaults_do_not_affect_dm_routes(tmp_path):
     config = make_config(tmp_path)
-    config["routes"]["slack"]["channel_defaults"] = {"mention_required": False}
+    config["transports"]["slack"]["channel_defaults"] = {"mention_required": False}
     parsed = load_teams(config)
     assert parsed.dispatchable
     assert "slack.dm.U01ADMIN" not in parsed.route_errors
@@ -638,7 +692,7 @@ def test_channel_defaults_do_not_affect_dm_routes(tmp_path):
 @pytest.mark.parametrize("bad", ["yes", 1, None, []])
 def test_channel_defaults_values_must_be_boolean(tmp_path, bad):
     config = make_config(tmp_path)
-    config["routes"]["slack"]["channel_defaults"] = {"mention_required": bad}
+    config["transports"]["slack"]["channel_defaults"] = {"mention_required": bad}
     parsed = load_teams(config)
     assert not parsed.dispatchable
 
@@ -646,14 +700,14 @@ def test_channel_defaults_values_must_be_boolean(tmp_path, bad):
 @pytest.mark.parametrize("bad", ["mention", ["mention_required"], 5])
 def test_channel_defaults_must_be_an_object(tmp_path, bad):
     config = make_config(tmp_path)
-    config["routes"]["slack"]["channel_defaults"] = bad
+    config["transports"]["slack"]["channel_defaults"] = bad
     parsed = load_teams(config)
     assert not parsed.dispatchable
 
 
 def test_channel_defaults_unknown_keys_disable_dispatch(tmp_path):
     config = make_config(tmp_path)
-    config["routes"]["slack"]["channel_defaults"] = {"mentions_required": True}
+    config["transports"]["slack"]["channel_defaults"] = {"mentions_required": True}
     parsed = load_teams(config)
     assert not parsed.dispatchable
 
@@ -662,7 +716,7 @@ def test_channel_defaults_unknown_keys_disable_dispatch(tmp_path):
 @pytest.mark.parametrize("bad", ["true", 0, None])
 def test_route_mention_settings_must_be_boolean(tmp_path, key, bad):
     config = make_config(tmp_path)
-    config["routes"]["slack"]["channels"]["C0ACME"][key] = bad
+    config["transports"]["slack"]["channels"]["C0ACME"][key] = bad
     parsed = load_teams(config)
     assert parsed.dispatchable
     assert "slack.channel.C0ACME" in parsed.route_errors
@@ -672,7 +726,7 @@ def test_route_mention_settings_must_be_boolean(tmp_path, key, bad):
 def test_mention_settings_are_rejected_on_dm_routes(tmp_path, key):
     """DM behavior is fixed; accepting the key would misrepresent the config."""
     config = make_config(tmp_path)
-    config["routes"]["slack"]["dms"]["U01ADMIN"][key] = False
+    config["transports"]["slack"]["dms"]["U01ADMIN"][key] = False
     parsed = load_teams(config)
     assert parsed.dispatchable
     assert "slack.dm.U01ADMIN" in parsed.route_errors

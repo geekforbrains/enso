@@ -134,7 +134,7 @@ class TeamsRouter:
             log.info("Slack routes active for account %s", team_id)
         else:
             log.error(
-                "routes.slack.account_id=%r does not match the authenticated "
+                "transports.slack.account_id=%r does not match the authenticated "
                 "Slack team %r — routed dispatch is disabled",
                 self.teams.account_id,
                 team_id,

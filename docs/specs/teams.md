@@ -22,7 +22,7 @@ A user does not carry a permission level into every room:
 - Everyone using a channel gets the same workspace and therefore the same policy, including administrators.
 - Threads inherit their parent channel route — including its response-trigger settings ([slack-triggers.md](slack-triggers.md)) — but keep their own conversation session.
 - An unlisted DM or explicit mention in an unlisted channel receives a fixed local access message. Ordinary messages in unlisted channels are ignored; `mention_required` and `channel_defaults` configure routed channels only and never make an unrouted channel responsive.
-- There is no default route, wildcard route, group overlay, sender ranking, or Slack `allowed_users` mode. `routes.slack.channel_defaults` supplies default response-trigger settings to channel routes ([slack-triggers.md](slack-triggers.md)); it is settings inheritance, not authorization, and routes nothing by itself.
+- There is no default route, wildcard route, group overlay, sender ranking, or Slack `allowed_users` mode. `transports.slack.channel_defaults` supplies default response-trigger settings to channel routes ([slack-triggers.md](slack-triggers.md)); it is settings inheritance, not authorization, and routes nothing by itself.
 
 The workspace is not itself a security boundary. It is shared content and cwd. Authority comes from the workspace's policy and the selected CLI's native policy, plus any outer operating-system isolation the operator chooses to add.
 
@@ -81,6 +81,40 @@ The complete schema is in [data-model.md](data-model.md#execution-catalog-and-sl
 
 ```jsonc
 {
+  "transports": {
+    "slack": {
+      "bot_token": "xoxb-...",
+      "app_token": "xapp-...",
+      "account_id": "T0YOURTEAM",
+      "channel_defaults": {
+        "mention_required": false,
+        "thread_mention_required": false
+      },
+      "dms": {
+        "U01OWNER": {
+          "workspace": "default",
+          "audit": false
+        }
+      },
+      "channels": {
+        "C0ACME": {
+          "workspace": "acme",
+          "audit": true,
+          "mention_required": true,
+          "thread_mention_required": true
+        },
+        "C0ACMEINTERNAL": {
+          "workspace": "acme-internal",
+          "audit": false
+        },
+        "C0COMPANY": {
+          "workspace": "company",
+          "audit": false
+        }
+      }
+    }
+  },
+
   "workspaces": {
     "default": {
       "path": "~/.enso/workspaces/default",
@@ -129,43 +163,11 @@ The complete schema is in [data-model.md](data-model.md#execution-catalog-and-sl
       "default_provider": "claude",
       "chat_commands": []
     }
-  },
-
-  "routes": {
-    "slack": {
-      "account_id": "T0YOURTEAM",
-      "channel_defaults": {
-        "mention_required": false,
-        "thread_mention_required": false
-      },
-      "dms": {
-        "U01OWNER": {
-          "workspace": "default",
-          "audit": false
-        }
-      },
-      "channels": {
-        "C0ACME": {
-          "workspace": "acme",
-          "audit": true,
-          "mention_required": true,
-          "thread_mention_required": true
-        },
-        "C0ACMEINTERNAL": {
-          "workspace": "acme-internal",
-          "audit": false
-        },
-        "C0COMPANY": {
-          "workspace": "company",
-          "audit": false
-        }
-      }
-    }
   }
 }
 ```
 
-Slack requires `routes.slack`. The same top-level workspace and policy catalogs also serve jobs and are parsed independently of Slack, so a Telegram-only installation can still run policy-bound jobs.
+Slack credentials, transport-wide options, and exact routes coexist in `transports.slack`. Slack requires `account_id` there; any DM and channel routes are declared in its `dms` and `channels` maps. The same top-level workspace and policy catalogs also serve jobs and are parsed independently of Slack, so a Telegram-only installation can still run policy-bound jobs.
 
 Here `channel_defaults` makes routed channels fully responsive, and `C0ACME` opts back into mention-only; both settings, their defaults, and their validation rules are specified in [slack-triggers.md](slack-triggers.md). Neither key is valid on a DM route.
 
@@ -243,7 +245,7 @@ Provider policy must keep restricted agents away from Enso's config, secrets, po
 
 ## Migration
 
-This release intentionally removes the old Slack allowlist path. A Slack transport without `routes.slack`, or with `transports.slack.allowed_users`, is invalid. Migrate each authorized DM user and channel to an exact route selecting a known workspace; that workspace selects its policy. Enso never synthesizes routes because doing so grants access.
+Slack configuration now has one home. Move `account_id`, `channel_defaults`, `dms`, and `channels` from the legacy top-level `routes.slack` object into the existing `transports.slack` object beside the credentials and transport options, then remove the empty top-level `routes` key. Top-level `routes` and `transports.slack.allowed_users` are rejected. Each authorized DM user and channel must select a known workspace; that workspace selects its policy. Enso never synthesizes routes because doing so grants access.
 
 Telegram still uses `transports.telegram.allowed_users`, but entries must be exact numeric user IDs. The old `allowed_user_ids` spelling and `"*"` wildcard are not supported. Telegram accepts only private chats.
 

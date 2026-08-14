@@ -221,16 +221,14 @@ def test_slack_setup_validates_resolved_existing_token(monkeypatch):
                     "item": "Slack",
                     "field": "BOT_TOKEN",
                 },
-            },
-        },
-        "routes": {
-            "slack": {
                 "account_id": "T123",
                 "dms": {"U123": {"workspace": "default"}},
                 "channels": {},
-            }
+                "channel_defaults": {"mention_required": False},
+            },
         },
     }
+    original = copy.deepcopy(config)
     monkeypatch.setattr(
         "enso.cli.resolve_config_secret",
         lambda cfg, key: "resolved-slack-token",
@@ -247,7 +245,39 @@ def test_slack_setup_validates_resolved_existing_token(monkeypatch):
 
     assert _setup_slack(config) is None
     assert "bot_token" not in config["transports"]["slack"]
+    assert config == original
     write_manifest.assert_called_once_with()
+
+
+def test_slack_setup_rejects_legacy_routes_before_writing(monkeypatch, capsys):
+    config = {
+        "transports": {
+            "slack": {
+                "bot_token": "old-bot",
+                "app_token": "old-app",
+            },
+        },
+        "routes": {
+            "slack": {
+                "account_id": "T1",
+                "dms": {"UOLD": {"workspace": "default"}},
+                "channels": {},
+            },
+        },
+    }
+    original = copy.deepcopy(config)
+    monkeypatch.setattr(
+        "enso.cli._write_slack_manifest_copy",
+        lambda: pytest.fail("setup must not write before legacy config is migrated"),
+    )
+
+    with pytest.raises(typer.Exit) as exc_info:
+        _setup_slack(config)
+
+    assert exc_info.value.exit_code == 1
+    assert config == original
+    output = " ".join(capsys.readouterr().out.split())
+    assert "move routes.slack fields into transports.slack" in output
 
 
 def test_telegram_setup_reconfiguration_updates_reference_without_plaintext(
@@ -327,8 +357,13 @@ def test_slack_setup_reconfiguration_updates_references_without_plaintext(
                 "bot_token": "stale-bot-literal",
                 "app_token": "stale-app-literal",
                 "notify_channel": "COLD",
+                "channel_context_messages": 12,
                 "rich_messages": False,
                 "persistent_surfaces": False,
+                "account_id": "T1",
+                "channel_defaults": {"mention_required": False},
+                "dms": {"UOLD": {"workspace": "company"}},
+                "channels": {"CSTAFF": {"workspace": "company"}},
             },
         },
         "workspaces": {
@@ -340,13 +375,6 @@ def test_slack_setup_reconfiguration_updates_references_without_plaintext(
                 "providers": ["claude"],
                 "default_provider": "claude",
                 "chat_commands": "*",
-            },
-        },
-        "routes": {
-            "slack": {
-                "account_id": "T1",
-                "dms": {"UOLD": {"workspace": "company"}},
-                "channels": {"CSTAFF": {"workspace": "company"}},
             },
         },
     }
@@ -391,17 +419,164 @@ def test_slack_setup_reconfiguration_updates_references_without_plaintext(
     assert slack["bot_user_id"] == "UNEWBOT"
     assert "allowed_users" not in slack
     assert slack["notify_channel"] == "CNEW"
+    assert slack["channel_context_messages"] == 12
     assert slack["rich_messages"] is False
     assert slack["persistent_surfaces"] is False
-    assert config["routes"]["slack"] == {
-        "account_id": "T1",
-        "dms": {"UOLD": {"workspace": "company"}},
-        "channels": {"CSTAFF": {"workspace": "company"}},
-    }
+    assert slack["account_id"] == "T1"
+    assert slack["channel_defaults"] == {"mention_required": False}
+    assert slack["dms"] == {"UOLD": {"workspace": "company"}}
+    assert slack["channels"] == {"CSTAFF": {"workspace": "company"}}
+    assert "routes" not in config
     assert updates == [
         ("bot_token", "new-bot-token"),
         ("app_token", "new-app-token"),
     ]
+
+
+@pytest.mark.parametrize(
+    ("route_key", "route_value"),
+    [
+        ("dms", {"UOLD": {"workspace": "company"}}),
+        ("channels", {"CSTAFF": {"workspace": "company"}}),
+    ],
+)
+def test_slack_setup_preserves_routes_when_other_map_is_omitted(
+    monkeypatch,
+    route_key,
+    route_value,
+):
+    config = {
+        "transports": {
+            "slack": {
+                "bot_token": "old-bot",
+                "app_token": "old-app",
+                "account_id": "T1",
+                route_key: route_value,
+            },
+        },
+    }
+
+    def validate(token):
+        return {"user": "enso", "user_id": "UBOT", "team_id": "T1"}
+
+    def prompt(label, **kwargs):
+        if "Bot Token" in label:
+            return "new-bot"
+        if "App Token" in label:
+            return "new-app"
+        if "Notify channel" in label:
+            return ""
+        raise AssertionError(f"Unexpected prompt: {label}")
+
+    monkeypatch.setattr("enso.cli._slack_validate_token", validate)
+    monkeypatch.setattr("enso.cli.Confirm.ask", lambda *args, **kwargs: True)
+    monkeypatch.setattr("enso.cli.Prompt.ask", prompt)
+    monkeypatch.setattr(
+        "enso.cli._write_slack_manifest_copy",
+        lambda: "/tmp/slack-manifest.yaml",
+    )
+
+    _setup_slack(config)
+
+    slack = config["transports"]["slack"]
+    assert slack[route_key] == route_value
+    assert slack["dms"] == (route_value if route_key == "dms" else {})
+    assert slack["channels"] == (route_value if route_key == "channels" else {})
+
+
+def test_slack_setup_replaces_only_routing_for_a_different_account(monkeypatch):
+    config = {
+        "working_dir": "/tmp/enso-workspace",
+        "transports": {
+            "slack": {
+                "bot_token": "old-bot",
+                "app_token": "old-app",
+                "channel_context_messages": 7,
+                "rich_messages": False,
+                "account_id": "T1",
+                "channel_defaults": {"mention_required": False},
+                "dms": {"UOLD": {"workspace": "default"}},
+                "channels": {"COLD": {"workspace": "default"}},
+            }
+        },
+    }
+    confirmations = iter([True, True])
+
+    def validate(token):
+        team = "T1" if token == "old-bot" else "T2"
+        return {"user": "enso", "user_id": "UBOT2", "team_id": team}
+
+    def prompt(label, **kwargs):
+        if "Bot Token" in label:
+            return "new-bot"
+        if "App Token" in label:
+            return "new-app"
+        if "Owner Slack user ID" in label:
+            return "UNEW"
+        if "Notify channel" in label:
+            return "CNEW"
+        raise AssertionError(f"Unexpected prompt: {label}")
+
+    monkeypatch.setattr("enso.cli._slack_validate_token", validate)
+    monkeypatch.setattr("enso.cli.Confirm.ask", lambda *args, **kwargs: next(confirmations))
+    monkeypatch.setattr("enso.cli.Prompt.ask", prompt)
+    monkeypatch.setattr(
+        "enso.cli._write_slack_manifest_copy",
+        lambda: "/tmp/slack-manifest.yaml",
+    )
+
+    _setup_slack(config)
+
+    slack = config["transports"]["slack"]
+    assert slack["account_id"] == "T2"
+    assert slack["dms"] == {"UNEW": {"workspace": "default"}}
+    assert slack["channels"] == {}
+    assert "channel_defaults" not in slack
+    assert slack["channel_context_messages"] == 7
+    assert slack["rich_messages"] is False
+
+
+def test_slack_setup_account_change_cancel_preserves_config(monkeypatch):
+    config = {
+        "transports": {
+            "slack": {
+                "bot_token": "old-bot",
+                "app_token": "old-app",
+                "account_id": "T1",
+                "dms": {"UOLD": {"workspace": "default"}},
+                "channels": {},
+            }
+        }
+    }
+    original = copy.deepcopy(config)
+    confirmations = iter([True, False])
+
+    def validate(token):
+        team = "T1" if token == "old-bot" else "T2"
+        return {"user": "enso", "user_id": "UBOT2", "team_id": team}
+
+    def prompt(label, **kwargs):
+        if "Bot Token" in label:
+            return "new-bot"
+        if "App Token" in label:
+            return "new-app"
+        raise AssertionError(f"Unexpected prompt: {label}")
+
+    monkeypatch.setattr("enso.cli._slack_validate_token", validate)
+    monkeypatch.setattr("enso.cli.Confirm.ask", lambda *args, **kwargs: next(confirmations))
+    monkeypatch.setattr("enso.cli.Prompt.ask", prompt)
+    monkeypatch.setattr(
+        "enso.cli._write_slack_manifest_copy",
+        lambda: "/tmp/slack-manifest.yaml",
+    )
+    monkeypatch.setattr(
+        "enso.cli._update_referenced_secrets_with_rollback_or_exit",
+        lambda *args, **kwargs: pytest.fail("credential writes must not run after cancel"),
+    )
+
+    _setup_slack(config)
+
+    assert config == original
 
 
 def test_reconfiguration_write_failure_keeps_config_and_exits_clearly(
@@ -604,11 +779,10 @@ def test_slack_setup_reprompts_until_app_token_provided(monkeypatch, capsys):
     assert app_prompts == 2
     assert slack["app_token"] == "xapp-new"
     assert "allowed_users" not in slack
-    assert config["routes"]["slack"] == {
-        "account_id": "T1",
-        "dms": {"UOWNER": {"workspace": "default"}},
-        "channels": {},
-    }
+    assert slack["account_id"] == "T1"
+    assert slack["dms"] == {"UOWNER": {"workspace": "default"}}
+    assert slack["channels"] == {}
+    assert "routes" not in config
     assert "Token is required" in capsys.readouterr().out
 
 

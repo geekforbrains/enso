@@ -30,11 +30,13 @@ Regardless of settings, a reply to a **channel** message is always delivered in 
 
 ## Configuration
 
-Both settings are valid on channel routes and in a `routes.slack.channel_defaults` block. A key on a channel route overrides `channel_defaults`; an absent key falls back to `channel_defaults`, then to the built-in `true`.
+Both settings are valid on channel routes and in a `transports.slack.channel_defaults` block. A key on a channel route overrides `channel_defaults`; an absent key falls back to `channel_defaults`, then to the built-in `true`.
 
 ```jsonc
-"routes": {
+"transports": {
   "slack": {
+    "bot_token": "xoxb-...",
+    "app_token": "xapp-...",
     "account_id": "T0YOURTEAM",
 
     // Applies to every channel route that does not set its own value.
@@ -61,7 +63,7 @@ Both settings are valid on channel routes and in a `routes.slack.channel_default
 }
 ```
 
-Validation is fail-closed like the rest of `routes.slack`:
+Validation is fail-closed like the rest of `transports.slack`:
 
 - `channel_defaults` must be an object; unknown keys inside it are configuration errors.
 - Both settings must be booleans wherever they appear.

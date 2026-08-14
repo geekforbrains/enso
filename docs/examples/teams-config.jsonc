@@ -1,9 +1,10 @@
 // Example ~/.enso/config.json for exact Slack routes.
 //
-// Slack requires routes.slack: exact DM users and channel IDs select one workspace
-// and one policy. There is no Slack allowlist, wildcard, or default route.
+// Slack keeps credentials, options, and exact routes together under
+// transports.slack. Exact DM users and channel IDs select one workspace and
+// derive that workspace's policy. There is no allowlist, wildcard, or default route.
 // Routed channels dispatch on @-mention by default; per-route mention_required
-// and thread_mention_required relax that, with routes.slack.channel_defaults
+// and thread_mention_required relax that, with transports.slack.channel_defaults
 // supplying defaults those per-route keys override. channel_defaults is
 // settings inheritance, not a route: it authorizes no channel by itself. An
 // unrouted DM or explicit channel mention gets a fixed local access response
@@ -33,7 +34,50 @@
       // Set persistent_surfaces false to keep rich replies without App Home or
       // Canvas drafts. Setting rich_messages false disables both rich paths.
       "rich_messages": true,
-      "persistent_surfaces": true
+      "persistent_surfaces": true,
+
+      "account_id": "T0YOURTEAM",
+
+      // Response-trigger defaults for channel routes; per-route keys override
+      // them, and an absent key falls back to the built-in true (mention-only).
+      // Settings inheritance, not a route: this authorizes no channel. Here a
+      // mention starts a thread and Enso then follows its replies.
+      "channel_defaults": {
+        "mention_required": true,
+        "thread_mention_required": false
+      },
+
+      // DMs are keyed by exact Slack user ID. This authorizes only the owner.
+      "dms": {
+        "U01OWNER": {
+          "workspace": "default",
+          "audit": false
+        }
+      },
+
+      // Channels are keyed by exact channel ID. Every human member uses the
+      // same route, even an administrator. Use a separate internal channel
+      // for broader authority over the same project files.
+      "channels": {
+        "C0ACME": {
+          "workspace": "acme",
+          "audit": true
+        },
+        "C0ACMEINTERNAL": {
+          "workspace": "acme-internal",
+          "audit": false
+        },
+        // Fully responsive override: false/false dispatches every top-level
+        // message (replies always land in its thread) and follows joined
+        // threads. true/true is mention-only; mixed values give the two
+        // in-between modes.
+        "C0COMPANY": {
+          "workspace": "company",
+          "audit": false,
+          "mention_required": false,
+          "thread_mention_required": false
+        }
+      }
     }
   },
 
@@ -101,53 +145,6 @@
       "providers": ["claude", "codex"],
       "default_provider": "claude",
       "chat_commands": []
-    }
-  },
-
-  "routes": {
-    "slack": {
-      "account_id": "T0YOURTEAM",
-
-      // Response-trigger defaults for channel routes; per-route keys override
-      // them, and an absent key falls back to the built-in true (mention-only).
-      // Settings inheritance, not a route: this authorizes no channel. Here a
-      // mention starts a thread and Enso then follows its replies.
-      "channel_defaults": {
-        "mention_required": true,
-        "thread_mention_required": false
-      },
-
-      // DMs are keyed by exact Slack user ID. This authorizes only the owner.
-      "dms": {
-        "U01OWNER": {
-          "workspace": "default",
-          "audit": false
-        }
-      },
-
-      // Channels are keyed by exact channel ID. Every human member uses the
-      // same route, even an administrator. Use a separate internal channel
-      // for broader authority over the same project files.
-      "channels": {
-        "C0ACME": {
-          "workspace": "acme",
-          "audit": true
-        },
-        "C0ACMEINTERNAL": {
-          "workspace": "acme-internal",
-          "audit": false
-        },
-        // Fully responsive override: false/false dispatches every top-level
-        // message (replies always land in its thread) and follows joined
-        // threads. true/true is mention-only; mixed values give the two
-        // in-between modes.
-        "C0COMPANY": {
-          "workspace": "company",
-          "audit": false,
-          "mention_required": false,
-          "thread_mention_required": false
-        }
-      }
     }
   },
 

@@ -306,7 +306,7 @@ Notes:
 
 ## Execution catalog and Slack routes
 
-The top-level `workspaces` and `policies` blocks form a transport-independent execution catalog. Every workspace selects exactly one reusable policy. Every job selects a workspace, and Slack additionally requires `routes.slack`, where every exact DM user or channel also selects a workspace. Jobs and routes derive the workspace's policy; neither can override it. Channel routes may carry the optional `mention_required` / `thread_mention_required` response triggers, which shape when a routed channel dispatches but select nothing. Telegram interaction remains private and uses its global `working_dir`; scheduled jobs use the catalog independently of the active transport.
+The top-level `workspaces` and `policies` blocks form a transport-independent execution catalog. Every workspace selects exactly one reusable policy. Every job selects a workspace, and `transports.slack` keeps Slack credentials, options, and exact DM/channel routes together. Jobs and routes derive the workspace's policy; neither can override it. Channel routes may carry the optional `mention_required` / `thread_mention_required` response triggers, which shape when a routed channel dispatches but select nothing. Telegram interaction remains private and uses its global `working_dir`; scheduled jobs use the catalog independently of the active transport.
 
 See [teams.md](teams.md) for route behavior, [slack-triggers.md](slack-triggers.md) for channel response triggers, and [permissions.md](permissions.md) for provider launches.
 
@@ -344,14 +344,37 @@ An attachment-bearing Slack turn gets a unique `uploads/<random-id>/` directory 
 
 ### Configuration
 
-The catalogs are parsed independently of Slack. `routes.slack` is additionally required when Slack is the active transport.
+The catalogs are parsed independently of Slack. Slack requires `account_id` inside `transports.slack`; any exact routes are declared in that object's `dms` and `channels` maps.
 
 ```jsonc
 {
   "transports": {
     "slack": {
       "rich_messages": true,
-      "persistent_surfaces": true
+      "persistent_surfaces": true,
+      "account_id": "T0ENSO",
+      "channel_defaults": {
+        "mention_required": false,
+        "thread_mention_required": false
+      },
+      "dms": {
+        "U01OWNER": {
+          "workspace": "company",
+          "audit": false
+        }
+      },
+      "channels": {
+        "C0ACME": {
+          "workspace": "acme",
+          "audit": true,
+          "mention_required": true,
+          "thread_mention_required": true
+        },
+        "C0ACMEINTERNAL": {
+          "workspace": "acme-internal",
+          "audit": false
+        }
+      }
     }
   },
 
@@ -405,34 +428,6 @@ The catalogs are parsed independently of Slack. `routes.slack` is additionally r
     }
   },
 
-  "routes": {
-    "slack": {
-      "account_id": "T0ENSO",
-      "channel_defaults": {
-        "mention_required": false,
-        "thread_mention_required": false
-      },
-      "dms": {
-        "U01OWNER": {
-          "workspace": "company",
-          "audit": false
-        }
-      },
-      "channels": {
-        "C0ACME": {
-          "workspace": "acme",
-          "audit": true,
-          "mention_required": true,
-          "thread_mention_required": true
-        },
-        "C0ACMEINTERNAL": {
-          "workspace": "acme-internal",
-          "audit": false
-        }
-      }
-    }
-  },
-
   "audit": {
     "on_failure": "block",
     "max_age_days": 365
@@ -447,10 +442,11 @@ Schema rules:
 - `policies.<name>` requires a non-empty `providers` list and a `default_provider` from that list. `chat_commands` is either a unique list or the explicit string `"*"`; omission means none. It governs Enso chat commands only, not provider-native tools, slash commands, skills, plugins, hooks, or MCP servers.
 - A restricted policy may add `env_passthrough`, a list of environment-variable names (names, never values) copied from the service environment into the child environment. Names must match `[A-Z][A-Z0-9_]*`, be unique, and not name launch-controlled or `ENSO_`-prefixed variables; the key is invalid alongside `unrestricted: true`. See [permissions.md](permissions.md#granting-credentials-and-mcp-servers-to-a-restricted-policy).
 - A policy uses exactly one mode: explicit `unrestricted: true`, or native policy files under `policy_dir`. For a restricted policy the directory defaults to `~/.enso/policies/<policy-name>`. Unrestricted mode does not imply providers or commands.
-- `routes.slack.account_id` must match the Slack account returned by the configured credentials.
+- `transports.slack` is the single Slack configuration object: credentials, transport-wide rendering and notification options, `account_id`, and exact route maps coexist there. The legacy top-level `routes` key is rejected.
+- `transports.slack.account_id` must match the Slack account returned by the configured credentials.
 - `transports.slack.rich_messages` and `transports.slack.persistent_surfaces` default to `true`. An explicit JSON `false` disables that feature; a non-boolean value fails closed as disabled. Persistent surfaces are effective only while rich messages are enabled. These are transport-wide rendering controls, not route permissions, and changes require a restart.
-- `routes.slack.dms` is keyed by exact Slack user ID. `routes.slack.channels` is keyed by exact channel ID. There are no named DM rules, groups, allowlists, default routes, or wildcards: `routes.slack.channel_defaults` supplies settings defaults for routed channels, never synthesizes a route, and unrouted channels stay unrouted. An unrouted explicit contact receives only the fixed transport-level access response; it does not create an implicit route.
-- Channel routes and `routes.slack.channel_defaults` accept the optional booleans `mention_required` and `thread_mention_required` (see [slack-triggers.md](slack-triggers.md)). Effective values resolve route key, then `channel_defaults`, then the built-in `true`, which reproduces the original mention-gated behavior. `channel_defaults` must be an object with no unknown keys, both settings must be booleans wherever they appear, and neither key is valid on a DM route.
+- `transports.slack.dms` is keyed by exact Slack user ID. `transports.slack.channels` is keyed by exact channel ID. There are no named DM rules, groups, allowlists, default routes, or wildcards: `transports.slack.channel_defaults` supplies settings defaults for routed channels, never synthesizes a route, and unrouted channels stay unrouted. An unrouted explicit contact receives only the fixed transport-level access response; it does not create an implicit route.
+- Channel routes and `transports.slack.channel_defaults` accept the optional booleans `mention_required` and `thread_mention_required` (see [slack-triggers.md](slack-triggers.md)). Effective values resolve route key, then `channel_defaults`, then the built-in `true`, which reproduces the original mention-gated behavior. `channel_defaults` must be an object with no unknown keys, both settings must be booleans wherever they appear, and neither key is valid on a DM route.
 - Every route requires a known `workspace`; it derives that workspace's policy and cannot override it. `audit` is optional and defaults to `false`.
 - A missing workspace, policy, provider, or native policy is an error. Nothing falls back to `working_dir`, another policy, or unrestricted execution.
 - `config.json` is loaded at service startup. Slack loads and validates its route catalog then; jobs are loaded from disk on scheduler ticks and manual runs and revalidated before execution. `config.json` changes take effect only after restart, and invalid bindings never receive permissive defaults.
@@ -475,13 +471,13 @@ Scheduled successes are silent unless the prompt explicitly calls `enso message 
 
 ### Transport authorization and migration
 
-Slack always requires `routes.slack`; `transports.slack.allowed_users` is invalid. Routes are never synthesized because creating one grants access. Each authorized DM user and channel must be migrated to an exact route selecting a known workspace; the workspace selects its policy.
+Slack always requires `transports.slack.account_id`; `transports.slack.allowed_users` is invalid. Routes are never synthesized because creating one grants access. Each authorized DM user and channel must be migrated to an exact entry in `transports.slack.dms` or `transports.slack.channels` selecting a known workspace; the workspace selects its policy.
 
 Slack outbound delivery resolves an explicit destination, then an interactive origin, then `transports.slack.notify_channel`. It is not inferred from an inbound route and never broadcasts.
 
 Telegram always uses exact numeric strings under `transports.telegram.allowed_users` and accepts private chats only. `allowed_user_ids` and the `"*"` wildcard are invalid. Telegram outbound delivery resolves an explicit destination, then an interactive origin, then `transports.telegram.notify_channel`; it never broadcasts to the allowlist.
 
-Legacy configurations are rejected when they contain top-level `access`, route-level `access` or `policy`, job-level `access` or `policy`, `groups`, route `allow`, or route `context_from`. Operators migrate them by creating explicit top-level `policies`, assigning one `policy` to every workspace, keeping only `workspace` on each route and job, keying each DM by a Slack user ID, and removing groups and route allowlists.
+Legacy configurations are rejected when they contain top-level `routes` or `access`, route-level `access` or `policy`, job-level `access` or `policy`, `groups`, route `allow`, or route `context_from`. Operators migrate Slack by moving `account_id`, `channel_defaults`, `dms`, and `channels` from `routes.slack` into the existing `transports.slack` object and removing the empty top-level `routes` key. They migrate policy bindings by creating explicit top-level `policies`, assigning one `policy` to every workspace, keeping only `workspace` on each route and job, keying each DM by a Slack user ID, and removing groups and route allowlists.
 
 ### Slack delivery ledger
 

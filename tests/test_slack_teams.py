@@ -43,7 +43,25 @@ def _teams_config(tmp_enso: str) -> dict:
         "working_dir": str(base / "workspace"),
         "transport": "slack",
         "transports": {
-            "slack": {"bot_token": "xoxb-x", "app_token": "xapp-x", "bot_user_id": "UBOT"},
+            "slack": {
+                "bot_token": "xoxb-x",
+                "app_token": "xapp-x",
+                "bot_user_id": "UBOT",
+                "account_id": ACCOUNT,
+                "dms": {
+                    ADMIN: {"workspace": "ops", "audit": False},
+                },
+                "channels": {
+                    "C0ACME": {
+                        "workspace": "acme",
+                        "audit": True,
+                    },
+                    "C0OPS": {
+                        "workspace": "ops",
+                        "audit": False,
+                    },
+                },
+            },
         },
         "providers": {
             "claude": {"path": "claude", "models": ["opus", "sonnet"]},
@@ -67,24 +85,6 @@ def _teams_config(tmp_enso: str) -> dict:
                 "default_provider": "claude",
                 "chat_commands": ["status", "clear", "stop", "help", "use", "compact"],
             },
-        },
-        "routes": {
-            "slack": {
-                "account_id": ACCOUNT,
-                "dms": {
-                    ADMIN: {"workspace": "ops", "audit": False},
-                },
-                "channels": {
-                    "C0ACME": {
-                        "workspace": "acme",
-                        "audit": True,
-                    },
-                    "C0OPS": {
-                        "workspace": "ops",
-                        "audit": False,
-                    },
-                },
-            }
         },
     }
 
@@ -419,7 +419,7 @@ async def test_missing_policy_gets_config_error(tmp_enso, monkeypatch):
 
 async def test_unusable_route_gets_config_error(tmp_enso, monkeypatch):
     config = _teams_config(tmp_enso)
-    config["routes"]["slack"]["channels"]["C0ACME"]["workspace"] = "ghost"
+    config["transports"]["slack"]["channels"]["C0ACME"]["workspace"] = "ghost"
     transport, rt = _make_transport(tmp_enso, monkeypatch, config)
     client = _make_client()
     await transport._handle_app_mention(_mention(), client)
@@ -543,8 +543,8 @@ async def test_channel_context_includes_all_authors_as_untrusted(tmp_enso, monke
 async def test_routes_are_a_startup_snapshot(tmp_enso, monkeypatch):
     config = _teams_config(tmp_enso)
     transport, rt = _make_transport(tmp_enso, monkeypatch, config)
-    config["routes"]["slack"]["channels"]["C0ACME"]["workspace"] = "ghost"
-    config["routes"]["slack"]["account_id"] = "TDIFFERENT"
+    config["transports"]["slack"]["channels"]["C0ACME"]["workspace"] = "ghost"
+    config["transports"]["slack"]["account_id"] = "TDIFFERENT"
 
     await transport._handle_app_mention(_mention(), _make_client())
 
@@ -610,7 +610,7 @@ def _ledger_rows(tmp_enso):
 
 def _triggers_config(tmp_enso, **settings):
     config = _teams_config(tmp_enso)
-    config["routes"]["slack"]["channels"]["C0ACME"].update(settings)
+    config["transports"]["slack"]["channels"]["C0ACME"].update(settings)
     return config
 
 
@@ -887,7 +887,7 @@ async def test_enso_rooted_dispatch_joins_the_thread(tmp_enso, monkeypatch):
 async def test_unrouted_channel_ignores_enso_rooted_thread_replies(tmp_enso, monkeypatch):
     """Enso posting into an unrouted channel never authorizes that channel."""
     config = _teams_config(tmp_enso)
-    config["routes"]["slack"]["channel_defaults"] = {
+    config["transports"]["slack"]["channel_defaults"] = {
         "mention_required": False,
         "thread_mention_required": False,
     }
@@ -914,7 +914,7 @@ async def test_unrouted_channels_ignore_unmentioned_messages_despite_defaults(
 ):
     """channel_defaults is settings inheritance, never authorization."""
     config = _teams_config(tmp_enso)
-    config["routes"]["slack"]["channel_defaults"] = {
+    config["transports"]["slack"]["channel_defaults"] = {
         "mention_required": False,
         "thread_mention_required": False,
     }
@@ -981,7 +981,7 @@ async def test_restricted_channel_still_gets_pushed_context_it_cannot_pull(
 def _ops_triggers_config(tmp_enso, **settings):
     """C0OPS routes to the unrestricted admin policy, so it can pull."""
     config = _teams_config(tmp_enso)
-    config["routes"]["slack"]["channels"]["C0OPS"].update(settings)
+    config["transports"]["slack"]["channels"]["C0OPS"].update(settings)
     return config
 
 
@@ -1152,7 +1152,7 @@ async def test_channel_defaults_relax_channels_at_the_transport_level(
     tmp_enso, monkeypatch
 ):
     config = _teams_config(tmp_enso)
-    config["routes"]["slack"]["channel_defaults"] = {"mention_required": False}
+    config["transports"]["slack"]["channel_defaults"] = {"mention_required": False}
     transport, rt = _make_transport(tmp_enso, monkeypatch, config)
     client = _make_client()
 
@@ -1235,7 +1235,8 @@ async def test_removed_allowlist_invalidates_exact_route_config(tmp_enso, monkey
 
 async def test_allowlist_without_routes_cannot_enable_slack(tmp_enso, monkeypatch):
     config = _teams_config(tmp_enso)
-    del config["routes"]
+    for key in ("account_id", "dms", "channels"):
+        config["transports"]["slack"].pop(key)
     config["transports"]["slack"]["allowed_users"] = [DEV]
     runtime = Runtime(config)
     runtime.dispatch = AsyncMock()
@@ -1243,7 +1244,8 @@ async def test_allowlist_without_routes_cannot_enable_slack(tmp_enso, monkeypatc
     assert transport.teams_router is not None
     assert not transport.teams_router.teams.dispatchable
     assert any(
-        "routes.slack is required" in problem for problem in transport.teams_router.teams.errors
+        "transports.slack.account_id is required" in problem
+        for problem in transport.teams_router.teams.errors
     )
     client = _make_client()
     await transport._handle_app_mention(_mention(), client)

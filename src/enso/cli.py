@@ -1052,12 +1052,21 @@ def _write_slack_manifest_copy() -> str:
 # so splitting it would only scatter the script the user is walked through.
 def _setup_slack(config: dict) -> None:  # noqa: C901
     """Configure Slack credentials and one exact routed owner DM."""
+    if "routes" in config:
+        console.print(
+            "[red]  Legacy top-level routes are no longer supported; move"
+            " routes.slack fields into transports.slack, remove routes, and"
+            " rerun setup.[/]"
+        )
+        raise typer.Exit(1)
     slack_cfg = config.get("transports", {}).get("slack", {})
     manifest_path = _write_slack_manifest_copy()
-    routes_block = config.get("routes")
     existing_routes = (
-        routes_block.get("slack")
-        if isinstance(routes_block, dict) and isinstance(routes_block.get("slack"), dict)
+        slack_cfg
+        if isinstance(slack_cfg.get("account_id"), str)
+        and slack_cfg.get("account_id")
+        and ("dms" not in slack_cfg or isinstance(slack_cfg["dms"], dict))
+        and ("channels" not in slack_cfg or isinstance(slack_cfg["channels"], dict))
         else None
     )
     needs_allowlist_migration = "allowed_users" in slack_cfg
@@ -1191,6 +1200,8 @@ def _setup_slack(config: dict) -> None:  # noqa: C901
     app_is_reference = reference_updates["app_token"]
     next_cfg = dict(slack_cfg)
     next_cfg.pop("allowed_users", None)
+    next_cfg.setdefault("dms", {})
+    next_cfg.setdefault("channels", {})
     if bot_is_reference:
         next_cfg.pop("bot_token", None)
     else:
@@ -1205,18 +1216,21 @@ def _setup_slack(config: dict) -> None:  # noqa: C901
             "notify_channel": notify,
         }
     )
-    config.setdefault("transports", {})["slack"] = next_cfg
     if reset_routes:
         workspace = _ensure_default_execution_config(config)
-        config.setdefault("routes", {})["slack"] = {
-            "account_id": team_id,
-            "dms": {
-                owner_id: {
-                    "workspace": workspace,
+        next_cfg.pop("channel_defaults", None)
+        next_cfg.update(
+            {
+                "account_id": team_id,
+                "dms": {
+                    owner_id: {
+                        "workspace": workspace,
+                    },
                 },
+                "channels": {},
             },
-            "channels": {},
-        }
+        )
+    config.setdefault("transports", {})["slack"] = next_cfg
 
 
 # ---------------------------------------------------------------------------
@@ -2359,11 +2373,9 @@ def config_check() -> None:  # noqa: C901
             )
 
     bindings: dict[str, set[str]] = {}
-    routes_cfg = config.get("routes")
-    has_slack_routes = isinstance(routes_cfg, dict) and "slack" in routes_cfg
     transports_cfg = config.get("transports", {})
     has_slack_config = isinstance(transports_cfg, dict) and "slack" in transports_cfg
-    if config.get("transport") == "slack" or has_slack_routes or has_slack_config:
+    if config.get("transport") == "slack" or has_slack_config:
         teams = load_teams(config)
         for error in teams.errors:
             if error not in catalog.errors:

@@ -38,6 +38,24 @@ _ENV_PASSTHROUGH_RESERVED = frozenset(
 _ENV_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*")
 _CATALOG_NAME_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}"
 _CATALOG_NAME_RE = re.compile(_CATALOG_NAME_PATTERN)
+_SLACK_TRANSPORT_KEYS = {
+    "account_id",
+    "app_token",
+    "app_token_1password",
+    "bot_token",
+    "bot_token_1password",
+    "bot_user_id",
+    "channel_context_messages",
+    "channel_defaults",
+    "channels",
+    "dms",
+    "notify_channel",
+    "persistent_surfaces",
+    "rich_messages",
+    # Kept only so its dedicated migration error is not duplicated as an
+    # unknown-key error.
+    "allowed_users",
+}
 
 
 def _default_policy_dir(policy_name: str) -> str:
@@ -100,7 +118,7 @@ class Route:
 
     ``mention_required`` and ``thread_mention_required`` are channel response
     triggers resolved at load time (route override, then
-    ``routes.slack.channel_defaults``, then the built-in ``True``). DM routes
+    ``transports.slack.channel_defaults``, then the built-in ``True``). DM routes
     always carry the defaults; DM behavior is not configurable.
     """
 
@@ -208,6 +226,10 @@ def load_catalog(config: dict) -> ExecutionCatalog:
             "access is no longer supported; rename it to policies and assign one policy "
             "to every workspace"
         )
+    if "routes" in config:
+        errors.append(
+            "routes is no longer supported; move routes.slack fields into transports.slack"
+        )
     for name, workspace in workspaces.items():
         if workspace.policy and workspace.policy not in policies:
             workspace_errors[name] = (
@@ -230,48 +252,37 @@ def load_teams(config: dict) -> TeamsConfig:
     errors = list(catalog.errors)
 
     transports = config.get("transports", {})
-    slack_cfg = transports.get("slack", {}) if isinstance(transports, dict) else {}
-    if isinstance(slack_cfg, dict) and "allowed_users" in slack_cfg:
+    if not isinstance(transports, dict):
+        errors.append("transports must be an object")
+        slack_cfg: dict = {}
+    else:
+        raw_slack = transports.get("slack", {})
+        if not isinstance(raw_slack, dict):
+            errors.append("transports.slack must be an object")
+            slack_cfg = {}
+        else:
+            slack_cfg = raw_slack
+    if "allowed_users" in slack_cfg:
         errors.append(
             "transports.slack.allowed_users is no longer supported; migrate authorized "
-            "DM users to routes.slack.dms and channels to routes.slack.channels"
+            "DM users to transports.slack.dms and channels to transports.slack.channels"
         )
-
-    routes_block = config.get("routes")
-    if not isinstance(routes_block, dict) or "slack" not in routes_block:
-        errors.append(
-            "routes.slack is required; Slack authorization uses exact DM and channel routes"
-        )
-        slack_routes: object = {}
-    else:
-        slack_routes = routes_block["slack"]
-
+    errors.extend(_unknown_keys(slack_cfg, _SLACK_TRANSPORT_KEYS, "transports.slack"))
     if "groups" in config:
         errors.append(
             "groups is no longer supported; channel membership and "
             "exact DM user routes define authorization"
         )
 
-    if not isinstance(slack_routes, dict):
-        errors.append("routes.slack must be an object")
-        slack_routes = {}
-    errors.extend(
-        _unknown_keys(
-            slack_routes,
-            {"account_id", "dms", "channels", "channel_defaults"},
-            "routes.slack",
-        )
-    )
-
-    account_id = slack_routes.get("account_id")
+    account_id = slack_cfg.get("account_id")
     if not isinstance(account_id, str) or not account_id:
-        errors.append("routes.slack.account_id is required and must be a string")
+        errors.append("transports.slack.account_id is required and must be a string")
         account_id = ""
 
-    channel_defaults = _load_channel_defaults(slack_routes.get("channel_defaults"), errors)
-    dm_routes, dm_schema_errors = _load_routes(slack_routes.get("dms", {}), "dm", errors)
+    channel_defaults = _load_channel_defaults(slack_cfg.get("channel_defaults"), errors)
+    dm_routes, dm_schema_errors = _load_routes(slack_cfg.get("dms", {}), "dm", errors)
     channel_routes, channel_schema_errors = _load_routes(
-        slack_routes.get("channels", {}),
+        slack_cfg.get("channels", {}),
         "channel",
         errors,
         channel_defaults=channel_defaults,
@@ -513,15 +524,15 @@ _MENTION_SETTING_DEFAULTS = {
 
 
 def _load_channel_defaults(value: object, errors: list[str]) -> dict[str, bool]:
-    """Parse ``routes.slack.channel_defaults`` into effective trigger defaults."""
+    """Parse ``transports.slack.channel_defaults`` into effective trigger defaults."""
     defaults = dict(_MENTION_SETTING_DEFAULTS)
     if value is None:
         return defaults
     if not isinstance(value, dict):
-        errors.append("routes.slack.channel_defaults must be an object")
+        errors.append("transports.slack.channel_defaults must be an object")
         return defaults
     errors.extend(
-        _unknown_keys(value, set(_MENTION_SETTING_DEFAULTS), "routes.slack.channel_defaults")
+        _unknown_keys(value, set(_MENTION_SETTING_DEFAULTS), "transports.slack.channel_defaults")
     )
     for key in _MENTION_SETTING_DEFAULTS:
         if key not in value:
@@ -529,7 +540,7 @@ def _load_channel_defaults(value: object, errors: list[str]) -> dict[str, bool]:
         if isinstance(value[key], bool):
             defaults[key] = value[key]
         else:
-            errors.append(f"routes.slack.channel_defaults.{key} must be a boolean")
+            errors.append(f"transports.slack.channel_defaults.{key} must be a boolean")
     return defaults
 
 
@@ -605,11 +616,11 @@ def _load_routes(
         allowed |= set(_MENTION_SETTING_DEFAULTS)
     defaults = channel_defaults or dict(_MENTION_SETTING_DEFAULTS)
     if not isinstance(block, dict):
-        errors.append(f"routes.slack.{label} must be an object")
+        errors.append(f"transports.slack.{label} must be an object")
         return routes, route_errors
     for raw_key, cfg in block.items():
         if not isinstance(raw_key, str) or not raw_key:
-            errors.append(f"routes.slack.{label} keys must be non-empty Slack IDs")
+            errors.append(f"transports.slack.{label} keys must be non-empty Slack IDs")
             continue
         key = raw_key
         route_id = f"slack.{kind}.{key}"

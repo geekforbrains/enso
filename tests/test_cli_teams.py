@@ -29,7 +29,22 @@ def _teams_config(tmp_enso: str) -> dict:
     return {
         "working_dir": str(base / "workspace"),
         "transport": "slack",
-        "transports": {"slack": {"bot_token": "x", "app_token": "x"}},
+        "transports": {
+            "slack": {
+                "bot_token": "x",
+                "app_token": "x",
+                "account_id": "T1",
+                "dms": {
+                    "U01ADMIN": {"workspace": "ops"},
+                },
+                "channels": {
+                    "C1": {
+                        "workspace": "acme",
+                        "audit": True,
+                    },
+                },
+            }
+        },
         "workspaces": {
             "ops": {"path": str(ops), "policy": "admin"},
             "acme": {"path": str(acme), "policy": "client"},
@@ -47,20 +62,6 @@ def _teams_config(tmp_enso: str) -> dict:
                 "default_provider": "claude",
                 "chat_commands": ["status"],
             },
-        },
-        "routes": {
-            "slack": {
-                "account_id": "T1",
-                "dms": {
-                    "U01ADMIN": {"workspace": "ops"},
-                },
-                "channels": {
-                    "C1": {
-                        "workspace": "acme",
-                        "audit": True,
-                    },
-                },
-            }
         },
     }
 
@@ -192,7 +193,6 @@ def test_config_check_surfaces_mcp_cross_check_warnings(tmp_enso):
 
 def test_config_check_validates_catalog_without_slack_routes(tmp_enso):
     config = _teams_config(tmp_enso)
-    del config["routes"]
     config["transport"] = "telegram"
     config["transports"] = {
         "telegram": {
@@ -221,7 +221,6 @@ def test_config_check_rejects_malformed_telegram_allowlist(
     allowed_users,
 ):
     config = _teams_config(tmp_enso)
-    del config["routes"]
     config["transport"] = "telegram"
     config["transports"] = {
         "telegram": {
@@ -240,7 +239,6 @@ def test_config_check_rejects_malformed_telegram_allowlist(
 
 def test_config_check_rejects_telegram_alias_with_valid_allowlist(tmp_enso):
     config = _teams_config(tmp_enso)
-    del config["routes"]
     config["transport"] = "telegram"
     config["transports"] = {
         "telegram": {
@@ -276,7 +274,6 @@ def test_config_check_validates_inactive_configured_telegram(tmp_enso):
 
 def test_config_check_validates_inactive_configured_slack(tmp_enso):
     config = _teams_config(tmp_enso)
-    del config["routes"]
     config["transport"] = "telegram"
     config["transports"] = {
         "telegram": {
@@ -296,7 +293,27 @@ def test_config_check_validates_inactive_configured_slack(tmp_enso):
 
     assert result.exit_code == 1
     assert "transports.slack.allowed_users is no longer supported" in result.output
-    assert "routes.slack is required" in result.output
+    assert "transports.slack.account_id is required" in result.output
+
+
+def test_config_check_rejects_legacy_top_level_routes_when_slack_is_inactive(tmp_enso):
+    config = _teams_config(tmp_enso)
+    config["transport"] = "telegram"
+    config["transports"] = {
+        "telegram": {
+            "bot_token": "x",
+            "allowed_users": ["123"],
+            "notify_channel": "123",
+        }
+    }
+    config["routes"] = {"slack": {"account_id": "T1"}}
+    save_config(config)
+
+    result = runner.invoke(app, ["config", "check"])
+
+    assert result.exit_code == 1
+    assert "routes is no longer supported" in result.output
+    assert "transports.slack" in result.output
 
 
 def test_config_check_reports_jobs_missing_execution_binding(tmp_enso):
@@ -352,7 +369,7 @@ def test_route_explain_dm_requires_exact_user_id(tmp_enso):
 
 def test_route_explain_shows_effective_response_triggers(tmp_enso):
     config = _teams_config(tmp_enso)
-    config["routes"]["slack"]["channels"]["C1"]["mention_required"] = False
+    config["transports"]["slack"]["channels"]["C1"]["mention_required"] = False
     save_config(config)
     result = runner.invoke(app, ["route", "explain", "slack", "U02DEV", "C1"])
     assert result.exit_code == 0, result.output

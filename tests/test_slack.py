@@ -83,6 +83,9 @@ def _make_runtime(**overrides: object) -> MagicMock:
                 "app_token": "xapp-fake",
                 "bot_user_id": "UBOT",
                 "notify_channel": "C999",
+                "account_id": "TTEST",
+                "dms": {"U123": {"workspace": "main"}},
+                "channels": {"C123": {"workspace": "main"}},
             },
         },
         "providers": {
@@ -97,13 +100,6 @@ def _make_runtime(**overrides: object) -> MagicMock:
                 "providers": ["claude"],
                 "default_provider": "claude",
                 "chat_commands": "*",
-            },
-        },
-        "routes": {
-            "slack": {
-                "account_id": "TTEST",
-                "dms": {"U123": {"workspace": "main"}},
-                "channels": {"C123": {"workspace": "main"}},
             },
         },
     }
@@ -1578,7 +1574,7 @@ class TestSlackContext:
         rt.config["transports"]["slack"].update(
             {"rich_messages": True, "persistent_surfaces": True}
         )
-        rt.config["routes"]["slack"]["dms"]["U123"]["audit"] = True
+        rt.config["transports"]["slack"]["dms"]["U123"]["audit"] = True
         transport = _make_transport(rt)
         client = _make_client()
         publication = AppHomePublication(
@@ -1633,7 +1629,7 @@ class TestSlackContext:
         rt.config["transports"]["slack"].update(
             {"rich_messages": True, "persistent_surfaces": True}
         )
-        rt.config["routes"]["slack"]["dms"]["U123"]["audit"] = True
+        rt.config["transports"]["slack"]["dms"]["U123"]["audit"] = True
         transport = _make_transport(rt)
         client = _make_client()
         publication = AppHomePublication(
@@ -1675,7 +1671,7 @@ class TestSlackContext:
         rt.config["transports"]["slack"].update(
             {"rich_messages": True, "persistent_surfaces": True}
         )
-        rt.config["routes"]["slack"]["dms"]["U123"]["audit"] = True
+        rt.config["transports"]["slack"]["dms"]["U123"]["audit"] = True
         transport = _make_transport(rt)
         client = _make_client()
         publication = AppHomePublication(
@@ -1714,7 +1710,7 @@ class TestSlackContext:
         rt.config["transports"]["slack"].update(
             {"rich_messages": True, "persistent_surfaces": True}
         )
-        rt.config["routes"]["slack"]["dms"]["U123"]["audit"] = True
+        rt.config["transports"]["slack"]["dms"]["U123"]["audit"] = True
         transport = _make_transport(rt)
         client = _make_client()
         draft = surface_drafts.create(

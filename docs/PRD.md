@@ -165,7 +165,7 @@ authorized chat senders, not additional owners or dashboard personas.
   bounded web view without exposing internal or unrelated SQLite tables.
 - The web UI runs via `enso web`, reachable at `http://localhost:<port>` and, when
   deliberately bound there, over the tailnet.
-- Slack authorization uses exact routes; every job requires a named workspace and inherits that workspace's policy; Telegram remains private with exact numeric allowed-user IDs.
+- Slack authorization uses exact routes configured alongside credentials and transport options in `transports.slack`; every job requires a named workspace and inherits that workspace's policy; Telegram remains private with exact numeric allowed-user IDs.
 
 ## Future ideas (explicitly out of v1)
 
