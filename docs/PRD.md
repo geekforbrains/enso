@@ -22,7 +22,11 @@ The web UI is a read/write dashboard for:
 - **Reference docs** — browse, create, edit, and delete operator knowledge.
 - **Data tables** — discover registered SQLite tables and inspect their schema
   and a bounded row preview. Agents manage their schemas and rows outside the web UI.
-- **Shared AGENTS.md** — read and edit the canonical `~/.enso/AGENTS.md` injected into every workspace launch.
+- **Execution configuration** — inspect workspaces, each workspace's one reusable policy,
+  exact Slack routes, Telegram/job bindings, and safe native-policy validation status.
+- **Instructions** — read and edit the canonical shared `~/.enso/AGENTS.md`, edit managed
+  workspace-root instructions, and inspect nested or external workspace instructions
+  read-only.
 
 There is **no chat in the web UI** — chat lives in Telegram/Slack. The web UI is for
 overview, organisation, and managing the scheduled work Enso already runs.
@@ -56,6 +60,9 @@ overview, organisation, and managing the scheduled work Enso already runs.
 - **No rich text editor / WYSIWYG.** Prompts are Markdown in a textarea.
 - **No database editor.** The Tables UI is a read-only preview: no arbitrary SQL, schema
   builder, spreadsheet editing, or destructive actions.
+- **No configuration or native-policy editor.** Workspace, policy, and Slack views explain
+  the active process configuration without changing `config.json` or protected provider
+  policy files.
 
 ## Vocabulary
 
@@ -77,7 +84,7 @@ overview, organisation, and managing the scheduled work Enso already runs.
 | Frontmatter                    | PyYAML `BaseLoader` for valid job metadata, with a legacy line-parser fallback for malformed older files; raw web edits preserve formatting                                      |
 | Web server                     | **Starlette + Uvicorn + Jinja2**, run separately with `enso web` and sharing the file/SQLite model with `enso serve`                                                             |
 | Web access                     | Bind **localhost** by default; Tailscale for remote; Host allowlist and optional shared token. No login                                                                          |
-| Web capability                 | **Read/write, scoped to owned files** — edit job prompts, toggle/run jobs, edit Enso-owned skills and shared `~/.enso/AGENTS.md`; full job/skill CRUD is planned. External skills are read-only |
+| Web capability                 | **Read/write, scoped to owned files** — edit job prompts, toggle/run jobs, edit Enso-owned skills, shared instructions, and managed workspace-root instructions. Configuration, policies, nested/external instructions, and external skills are read-only |
 | Tables web capability          | **Read-only, bounded inspection** — list metadata, show schema, and page through capped previews; no SQL or row/schema mutations                                                 |
 | Notifications                  | Reuse `transport.notify` / `enso message send`; exact Slack routing does not alter job delivery. No transport implicitly broadcasts                                              |
 
@@ -106,8 +113,8 @@ authorized chat senders, not additional owners or dashboard personas.
 
 ### F2 — Web UI: dashboard & runs
 
-- `/` — overview: recent runs plus enabled-job, visible-skill, doc, and registered-table
-  counts at a glance.
+- `/` — overview: active workspace/policy/Slack-route status, recent runs, and enabled-job,
+  visible-skill, doc, and registered-table counts at a glance.
 - `/runs/<id>` — a run's output preview, on-disk log path, status, timing, and trigger.
 - Read-only views; the data comes from SQLite (runs) and file scans (jobs and skills).
 
@@ -125,7 +132,7 @@ authorized chat senders, not additional owners or dashboard personas.
 - **Planned:** create and fully edit jobs from the UI: name, schedule, provider, model,
   workspace, enabled, timeout, notify, prompt body, and optional prerun script.
 
-### F4 — Web UI: skills & AGENTS.md
+### F4 — Web UI: skills, execution configuration & AGENTS.md
 
 - `/skills` lists two tiers: **Enso skills** — everything under `~/.enso/skills/`, whether
   user-created or seeded from Enso's starter set at install — **editable**; and
@@ -137,7 +144,17 @@ authorized chat senders, not additional owners or dashboard personas.
 - Enso-owned skill directories can be edited or deleted after confirmation. **Planned:**
   create skills and edit their tool scripts. The skills UI never writes outside
   `~/.enso/`.
-- `/agents` — renders the canonical shared `~/.enso/AGENTS.md`; editable, writing back to the target while leaving `~/.enso/CLAUDE.md -> AGENTS.md` intact. Workspace-local instruction files remain project-specific and are not edited from this global surface.
+- `/workspaces` and `/workspaces/<name>` show each active execution root, its one policy,
+  concurrency, Slack/Telegram/job consumers, problems, and a bounded nested `AGENTS.md`
+  inventory. Managed root instructions are revision-checked and editable; child and
+  external workspace files are read-only.
+- `/policies` and `/policies/<name>` show reusable policy configuration, consuming
+  workspaces, and safe provider-validation results. Native policy contents and secret
+  values are never rendered or edited.
+- `/slack` shows exact DM/channel IDs, cache-only friendly labels, workspace-to-policy
+  bindings, audit/trigger state, and route problems without making Slack API requests.
+- `/agents` renders the canonical shared `~/.enso/AGENTS.md`; its revision-checked editor
+  writes only the regular target while leaving `~/.enso/CLAUDE.md -> AGENTS.md` intact.
 
 ### F5 — Registered data tables
 
@@ -162,6 +179,12 @@ authorized chat senders, not additional owners or dashboard personas.
 - Every job provider execution or classified configuration/prerun failure leaves a run row with retrievable output, visible in the web UI; intentional no-work and skipped triggers remain absent by design.
 - A registered data table can be discovered consistently by an agent and inspected in a
   bounded web view without exposing internal or unrelated SQLite tables.
+- Every configured workspace, reusable policy, and exact Slack route can be traced in the
+  web UI without exposing a transport secret or native policy source file; an invalid
+  binding has a visible, actionable status.
+- A stale shared or managed-workspace instruction form cannot overwrite a newer agent or
+  operator edit; unsafe links, path traversal, and files outside `~/.enso/` remain outside
+  the browser write boundary.
 - The web UI runs via `enso web`, reachable at `http://localhost:<port>` and, when
   deliberately bound there, over the tailnet.
 - Slack authorization uses exact routes configured alongside credentials and transport options in `transports.slack`; Telegram remains private with exact numeric allowed-user IDs; every Telegram configuration, Slack route, and job requires a named workspace and inherits that workspace's single policy.

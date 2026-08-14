@@ -64,6 +64,13 @@ pip install -e ".[web]"
 enso web
 ```
 
+The dashboard's **Configuration** section makes the execution model traceable: every
+workspace and its one policy, exact Slack DM/channel routes, Telegram and job bindings,
+shared instructions, and workspace-local `AGENTS.md` files. Policy and Slack pages are
+read-only and never render secret values or native policy contents. Shared instructions
+and managed workspace-root instructions have revision-checked editors; nested and external
+workspace instruction files remain read-only.
+
 For remote or Tailscale access, bind the dashboard to the required interface. A
 concrete `web.host` is allowed automatically. If you bind `0.0.0.0` or `::`, list each
 hostname or IP that clients will use in `web.allowed_hosts`; a wildcard listen address

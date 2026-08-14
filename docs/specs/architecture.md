@@ -36,6 +36,22 @@ as the CLI, but on the dashboard's Runtime instance. Its in-memory scheduler sta
 not shared with the bot process. File writes are atomic and SQLite uses WAL mode to
 handle this cross-process boundary.
 
+Configuration pages deliberately render `runtime.config`, the snapshot with which the
+dashboard process started. A pure view-model layer joins that catalog to parsed jobs,
+Telegram, exact Slack routes, and the existing Slack directory cache without resolving
+transport credentials or making network requests. Native policy checks run only on policy
+detail and return normalized status, paths, digests, warnings, and MCP names; raw policy
+contents never enter template context. List and overview pages therefore say configured for
+structurally valid bindings and reserve ready for successful policy-detail checks. Config
+edits are not a web capability and neither the web process nor the bot hot-reloads them.
+
+Instruction-file reads and writes use a separate hardened filesystem boundary. It opens
+absolute roots and descendants through pinned directory descriptors with no symlink
+following, enforces current-user ownership, regular-file/single-link/protected-mode rules,
+caps discovery and UTF-8 content, and carries a content revision from read to atomic save.
+Only the shared file and managed workspace roots are writable; nested and configured
+external workspace instruction files are inspection-only.
+
 ## Stack
 
 Enso's runtime deps are deliberately tiny (`typer`, `rich`, `croniter`), with transport
