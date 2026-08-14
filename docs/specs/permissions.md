@@ -1,6 +1,6 @@
 # Enso policies and native provider policies
 
-An Enso policy defines what a workspace may offer. It names providers, a default provider, permitted Enso chat commands, and either unrestricted execution or a directory of native provider policies. Every workspace selects exactly one policy; Slack routes and scheduled jobs select only a workspace and derive its policy.
+An Enso policy defines what a workspace may offer. It names providers, a default provider, permitted Enso chat commands, and either unrestricted execution or a directory of native provider policies. Every workspace selects exactly one policy; Telegram, Slack routes, and scheduled jobs select only a workspace and derive its policy.
 
 Enso does not define a cross-provider permission language and does not merge user, channel, workspace, or job permissions. It resolves the workspace's one complete policy, starts the installed CLI in that workspace, and supplies the CLI's native policy through its supported configuration mechanism.
 
@@ -43,16 +43,17 @@ Enso does not define a cross-provider permission language and does not merge use
 
 The policy directory belongs to the policy, not the workspace. This lets several client workspaces reuse one `client-readonly` policy while each CLI starts in the project directory selected by its route or job.
 
-Policy directories must be absolute after expansion, outside every writable workspace and Telegram's global `working_dir`, and protected from all restricted agents. Policy files must be regular owner-only files rather than symlinks. Enso rejects aliases, hard links, and overlapping directory layouts that let a writable workspace modify protected policy bytes.
+Policy directories must be absolute after expansion, outside every writable workspace, and protected from all restricted agents. Policy files must be regular owner-only files rather than symlinks. Enso rejects aliases, hard links, and overlapping directory layouts that let a writable workspace modify protected policy bytes.
 
 ## What Enso verifies
 
 `enso config check` verifies Enso's own configuration and launch plumbing:
 
 - Referenced workspaces and policies exist and have valid structure.
+- The canonical shared instruction source exists, is an owner-owned regular non-symlink file with one hard link and no group/other write bits, passes encoding and size checks, and can be snapshotted for launch.
 - Provider files exist at the expected path, are protected regular files, and parse as JSON or TOML.
 - The selected provider is enabled by the workspace's policy.
-- Enso can resolve the native file and policy revision it expects to use for each routed or job-bound workspace and its policy.
+- Enso can resolve the native file and policy revision it expects to use for every transport-, route-, or job-bound workspace and its policy.
 - Required Enso launch safeguards, such as disabling Claude hooks, are present.
 
 This is not semantic policy validation. A syntactically valid native rule can still grant too much, match the wrong path, rely on a feature unsupported by the installed CLI version, or expose authority through MCP and other tool surfaces. Enso must describe this command as a static plumbing check, never as proof that a workspace is sandboxed or safe.
@@ -84,12 +85,13 @@ For a restricted policy Enso invokes Claude with its native settings file and no
 claude -p --settings <policy-dir>/claude/settings.json \
   --permission-mode dontAsk --setting-sources project \
   --strict-mcp-config [--mcp-config <policy-dir>/claude/mcp.json] \
+  --append-system-prompt-file ~/.enso/runtime/instructions/<sha256>.md \
   --model <model> -- <prompt>
 ```
 
-with `--mcp-config` appended exactly when the conventional file exists. The exact output and session flags vary by interactive operation, but the policy selection does not. Enso removes its unrestricted `--dangerously-skip-permissions` flag.
+with `--mcp-config` appended exactly when the conventional file exists. The exact output and session flags vary by interactive operation, but the policy selection does not. Enso removes its unrestricted `--dangerously-skip-permissions` flag. The shared-instruction flag is also present on unrestricted Claude launches; it is independent of policy mode.
 
-`dontAsk` is necessary because nobody can answer an interactive approval prompt inside a Slack turn. `--strict-mcp-config` is what makes the conventional file an exact allowlist: the launch loads only servers named by `--mcp-config` and ignores every other MCP configuration source, so ambient servers the operator configured for themselves stay out, and the policy's own `mcp.json` — when present — is passed explicitly beside it. With no `mcp.json`, that resolves to zero MCP servers. `--setting-sources project` preserves the CLI's project-native instruction and skill discovery; Enso does not recreate that discovery.
+`dontAsk` is necessary because nobody can answer an interactive approval prompt in a headless transport turn or job. `--strict-mcp-config` is what makes the conventional file an exact allowlist: the launch loads only servers named by `--mcp-config` and ignores every other MCP configuration source, so ambient servers the operator configured for themselves stay out, and the policy's own `mcp.json` — when present — is passed explicitly beside it. With no `mcp.json`, that resolves to zero MCP servers. `--append-system-prompt-file` injects an immutable snapshot of Enso's canonical shared instructions independently of cwd, while `--setting-sources project` preserves the CLI's workspace-local instruction and skill discovery.
 
 A restricted Claude policy must set:
 
@@ -109,7 +111,7 @@ Under `--permission-mode dontAsk`, unmatched tool calls default to deny for Bash
 
 Because `--setting-sources project` also loads the workspace's own `.claude/settings.json`, treat that file as attacker-influenced. A `permissions` deny there cannot widen the launch (deny always wins), but a scalar such as `sandbox.enabled: false` can turn the sandbox off on the next launch. Any policy that grants writes must therefore deny writes to the control files that policy trusts — `.claude/**`, `.codex/**`, `AGENTS.md`, `CLAUDE.md`, and skill directories. A Claude `deny` on those paths blocks the Write and Edit tools and Bash redirection to them; a read-only policy that grants no write tool cannot plant them at all.
 
-A policy does not create instructions or copy skills. When Enso bootstraps a missing workspace, it writes a small `AGENTS.md` and a sibling `CLAUDE.md` symlink; after that, workspace instructions and native skill directories remain the operator's responsibility.
+A policy does not create instructions or copy skills. Enso maintains canonical shared instructions at `~/.enso/AGENTS.md` and injects them on every launch. When Enso bootstraps a missing workspace, it writes a small focused local `AGENTS.md` and sibling `CLAUDE.md` symlink; after that, customized workspace instructions and native skill directories remain the operator's responsibility.
 
 ### Granting credentials and MCP servers to a restricted policy
 
@@ -182,39 +184,43 @@ For a restricted policy Enso stages the policy's Codex tree into a dedicated run
 
 ```text
 CODEX_HOME=<staged-home> codex exec --strict-config \
-  --skip-git-repo-check [--ignore-rules] -m <model> -- <prompt>
+  --skip-git-repo-check [--ignore-rules] \
+  -c developer_instructions=<TOML-encoded-shared-instructions> \
+  -m <model> -- <prompt>
 ```
 
-The staged policy bytes and protected `.rules` files must match their protected source. Authentication material required by Codex is copied into the staged home; ambient user config is not selected. Enso removes its unrestricted `--dangerously-bypass-approvals-and-sandbox` flag.
+The staged policy bytes and protected `.rules` files must match their protected source. Authentication material required by Codex is copied into the staged home; ambient user config is not selected. Enso safely TOML-encodes the validated shared text in the command-line override. It removes its unrestricted `--dangerously-bypass-approvals-and-sandbox` flag. The `developer_instructions` injection applies to restricted and unrestricted Codex launches alike.
 
 `--skip-git-repo-check` bypasses a CLI usability check; it grants no filesystem authority. The native config must select a permission profile and set a non-interactive approval policy. Do not mix permission profiles with legacy `sandbox_mode` configuration: the installed Codex CLI decides which system is active, and mixing them can select a different boundary than intended.
 
-Codex resolves some referenced configuration relative to the declaring config file. Use protected absolute paths for references that Enso does not stage, or keep the complete required source tree inside the policy's Codex directory. If the protected policy contains no `.rules`, Enso uses `--ignore-rules`; if it contains rules, project-discovered rules may still compose according to the installed CLI's native behavior. Verify the staged launch with the installed version; parsing TOML alone cannot establish that every referenced file or nested setting was accepted.
+Codex resolves some referenced configuration relative to the declaring config file. Use protected absolute paths for references that Enso does not stage, or keep the complete required source tree inside the policy's Codex directory. The top-level `developer_instructions` key is reserved for Enso's shared injection and is rejected in a restricted policy's `config.toml`; put policy-specific project guidance in the workspace-local `AGENTS.md`. If the protected policy contains no `.rules`, Enso uses `--ignore-rules`; if it contains rules, project-discovered rules may still compose according to the installed CLI's native behavior. Verify the staged launch with the installed version; parsing TOML alone cannot establish that every referenced file or nested setting was accepted.
 
-Codex discovers `AGENTS.md` from its starting project. Enso does not run `git init` in `~/.enso` to extend that search and does not turn the whole Enso state directory into a repository. A company workspace that needs client material should explicitly tell the agent where it lives and require the relevant protected instructions to be read.
+Enso supplies the validated in-memory contents of `~/.enso/AGENTS.md` as Codex `developer_instructions` on every launch. Codex separately discovers the focused local `AGENTS.md` from its starting workspace. Enso does not run `git init` in `~/.enso` to extend native project search and does not turn the whole Enso state directory into a repository. A company workspace that needs client material should explicitly tell the agent where it lives and require the relevant protected instructions to be read.
 
 Use the [Codex example](../examples/acme-codex-config.toml) only as a starting point. Provider schemas change; the installed CLI's help, diagnostics, and documentation are authoritative.
 
 ## Antigravity
 
-Antigravity (`agy`) is currently available only in an explicitly unrestricted policy. Enso does not yet have a tested native restricted-launch contract for it. This is a limitation of Enso's adapter, not a claim that the CLI has no permission features.
+Antigravity (`agy`) is currently available only in an explicitly unrestricted policy. Enso does not yet have a tested native restricted-launch contract for it. For an allowed launch, Enso places the canonical shared instructions in a clearly delimited prompt envelope before the request; workspace-local context remains available through Agy's project binding. This is a limitation of Enso's adapter, not a claim that the CLI has no permission features.
 
 ## Workspace instructions and skills
 
-Project instructions and skills belong to the workspace. Codex uses `AGENTS.md` and `.agents/skills/`; Claude Code uses `CLAUDE.md` and `.claude/skills/`. Each CLI discovers those project files from the route or job's starting directory according to its own rules, while potentially also loading native user, managed, plugin, system, or bundled skill scopes. Enso does not suppress those scopes, expose a `skills` allowlist, or treat file discovery as a permission boundary. A restricted policy must remain safe even when the CLI knows that broader skills exist.
+Instructions have two layers. Canonical shared Enso workflow lives at `~/.enso/AGENTS.md`, with a sibling `CLAUDE.md` symlink, and is injected explicitly on every provider launch. Focused project instructions and skills belong to the workspace: Codex uses local `AGENTS.md` and `.agents/skills/`; Claude Code uses local `CLAUDE.md` and `.claude/skills/`. Each CLI discovers those local files from the selected workspace according to its own rules, while potentially also loading native user, managed, plugin, system, or bundled skill scopes. Enso does not suppress those scopes, expose a `skills` allowlist, or treat file discovery as a permission boundary. A restricted policy must remain safe even when the CLI knows that broader skills exist.
+
+The shared instructions declare the active policy authoritative and classify quoted, forwarded, fetched, attached, and other untrusted transport content as data rather than higher-priority instructions. Neither shared nor local instructions can widen the native policy. The canonical source must be a stable, owner-owned regular non-symlink file with no additional hard links or group/other write bits, valid UTF-8 no larger than 20 KiB, and free of NUL bytes. At launch Enso validates it, hashes it, and publishes or verifies the exact owner-only snapshot Claude consumes; Codex and Agy receive the same validated content in memory. Protect `~/.enso/AGENTS.md` as operator-owned control material, and keep local instructions focused so changing a workspace does not silently change Enso-wide behavior.
 
 A restricted policy should not let one workspace edit instructions or skills in another workspace that is later trusted under a more permissive policy. Protect those control files with the native policy or an outer filesystem boundary. If both workspaces need to create content, put writable user data in a separate directory from control material.
 
-For Slack routes, Enso stores downloaded chat attachments in persistent `uploads/<random-id>/` directories under the selected workspace. These are ordinary retained workspace files, not temporary policy state. Native policy governs whether the provider can read or modify them, and the operator owns retention. Telegram does not use policies and stores downloads directly in `uploads/` under its global `working_dir`.
+For Telegram and Slack turns, Enso stores downloaded chat attachments in persistent `uploads/<random-id>/` directories under the selected workspace. These are ordinary retained workspace files, not temporary policy state. The workspace's native policy governs whether the provider can read or modify them, and the operator owns retention.
 
 ## Enso commands versus provider capabilities
 
-A policy's `chat_commands` field controls only Enso transport commands such as `!status`, `!clear`, `!stop`, and `!compact`. It does not control provider-native tools, slash commands, skills, plugins, hooks, MCP servers, or settings scopes. Most local Enso commands do not launch a provider; `!compact` does and therefore runs under the workspace's policy.
+A policy's `chat_commands` field controls only Enso transport commands such as Slack `!status` or Telegram `/status`, `/clear`, `/stop`, and `/compact`. Telegram registers and authorizes only allowed commands; Slack resolves the same list from the route's workspace. It does not control provider-native tools, slash commands, skills, plugins, hooks, MCP servers, or settings scopes. Most local Enso commands do not launch a provider; compaction does and therefore runs under the workspace's policy.
 
 When a company workspace has native access to sibling client directories, its own `AGENTS.md` should explicitly require reading the selected client's protected instructions before acting. Merely changing directories during a run does not make every provider rebuild its startup instruction chain.
 
 ## Failure behavior
 
-A missing, unreadable, malformed, or structurally unsafe native policy disables that provider for the affected policy. If it is selected by a Slack turn, the turn receives a configuration error and no provider process starts. If selected by a job, the job fails before prerun or provider execution and records/notifies that failure through the normal job path. Enso never falls back to an unrestricted launch, another policy, another workspace, or the global `working_dir`.
+A missing, unreadable, malformed, or structurally unsafe native policy disables that provider for the affected policy. A missing or unsafe canonical shared instruction source likewise fails `enso config check` and every provider launch closed. If either is selected by a Telegram or Slack turn, the turn receives a configuration error and no provider process starts. If selected by a job, the job fails before prerun or provider execution and records/notifies that failure through the normal job path. Enso never falls back to an unrestricted launch, another policy, another workspace, an implicit cwd, or an unvalidated prompt.
 
 Route, workspace, and policy changes live in `config.json` and require restarting Enso. `JOB.md` files are reloaded by the scheduler and by manual runs. Native policy files are checked again at the provider launch boundary, so a queued request uses the policy bytes available when it actually starts. Stop the service before coordinated or urgent permission changes so a running CLI process cannot outlive the change.

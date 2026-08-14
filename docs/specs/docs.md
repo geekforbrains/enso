@@ -125,9 +125,7 @@ path: validate the relative path, create missing parents, refuse an existing fil
 write a scaffold whose `name` is derived from the filename unless `--name` is given. A
 missing `.md` suffix is appended.
 
-No `show` or `delete` subcommands. The agent has full filesystem access, so `cat` and `rm`
-already cover them — the same reason `enso job` has no `show`. `list` earns its place
-because it surfaces descriptions without opening every file.
+No `show` or `delete` subcommands. When the active workspace policy permits filesystem operations, ordinary reads and deletes already cover them — the same reason `enso job` has no `show`; the Enso CLI does not bypass a restrictive policy. `list` earns its place because it surfaces descriptions without opening every file.
 
 ## Discovery: the `docs` skill
 
@@ -154,11 +152,11 @@ either: `pyproject.toml` already globs `skills/**/*.md`.
 
 ### AGENTS.md and existing installs
 
-`AGENTS.md` carries a short `enso doc` block in its CLI section, matching how `enso job`
+The canonical shared `~/.enso/AGENTS.md` carries a short `enso doc` block in its CLI section, matching how `enso job`
 appears, plus one line pointing at the skill.
 
 That block would have reached **new** installs only. `install_system_prompts` writes
-`AGENTS.md` when the file is absent or its hash matches a known-pristine copy; every other
+`~/.enso/AGENTS.md` when the file is absent or its hash matches a known-pristine copy; every other
 copy is treated as customized and preserved. Against a single legacy constant, existing
 users would have kept an `AGENTS.md` that never mentions docs.
 
@@ -229,9 +227,9 @@ The doc count joins the existing job and skill counts, linking to `/docs`.
 | `config.py` | Adds `DOCS_DIR` beside `JOBS_DIR` |
 | `docs.py` *(new)* | Path validation, bounded recursive listing, scaffold and delete |
 | `cli.py` | Adds a `doc` Typer group with `list` and `create` |
-| `core.py` | Creates `~/.enso/docs/` at install; generalizes the pristine `AGENTS.md` hash to a set |
+| `core.py` | Creates `~/.enso/docs/` at install; maintains the canonical shared prompt and generalizes its pristine hash to a set |
 | `skills/docs/SKILL.md` *(new)* | Bundled skill teaching discovery and authoring |
-| `prompts/AGENTS.md` | Adds the `enso doc` CLI block and a pointer to the skill |
+| `prompts/AGENTS.md` | Adds the `enso doc` CLI block and a pointer to the skill in the shared launch instructions |
 | `web/app.py` | Adds doc routes, path-safe resolution, and the dashboard count |
 | `web/templates/` | Adds `docs.html`, `doc_detail.html`, and `doc_new.html` |
 

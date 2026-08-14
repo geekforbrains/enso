@@ -5,6 +5,10 @@
 # Adapt and test it with the installed Codex version. Enso verifies that TOML
 # parses and that its launch plumbing is intact; it does not prove that the
 # native policy has the intended effect.
+#
+# Do not set top-level developer_instructions here. Enso reserves that key for
+# the validated shared ~/.enso/AGENTS.md injection; put project guidance in
+# the workspace-local AGENTS.md instead.
 
 default_permissions = "enso"
 approval_policy = "never"

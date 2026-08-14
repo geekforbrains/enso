@@ -5,7 +5,9 @@ Two additions to **restricted policies**:
 1. **`env_passthrough`** — a new policy key naming environment variables (names, never values) to admit into the otherwise fixed child environment.
 2. **A per-policy MCP server allowlist**, resolved by convention from the policy directory — `<policy_dir>/claude/mcp.json` for Claude — and passed to the provider as an exact server set. No new config key.
 
-Together they let a restricted workspace bound to a route reach a declared credential and a declared set of MCP servers without flipping its policy to `unrestricted: true`, which today is the only way to grant either and which discards the entire privilege boundary for that workspace. Total new configuration surface: one key and one conventional file.
+Together they let a restricted workspace-bound execution reach a declared credential and a declared set of MCP servers without flipping its policy to `unrestricted: true`, which today is the only way to grant either and which discards the entire privilege boundary for that workspace. Total new configuration surface: one key and one conventional file.
+
+This capability now sits behind Enso's unified binding: every Telegram conversation, Slack route, and scheduled job selects a workspace, and every workspace owns exactly one reusable policy. The transport or job cannot override that policy. Shared Enso instructions are injected separately from `~/.enso/AGENTS.md`; neither shared nor workspace-local instructions widen the launch described here.
 
 ______________________________________________________________________
 
@@ -15,7 +17,7 @@ A restricted launch builds a deliberately fixed child environment. In `src/enso/
 
 Separately, `ClaudeProvider._permission_args()` hardcodes the restricted launch as `--settings <policy> --permission-mode dontAsk --setting-sources project --strict-mcp-config`. `--strict-mcp-config` means *use only servers named by `--mcp-config`, ignore every other MCP configuration source* — and with no `--mcp-config`, that resolves to **zero MCP servers**.
 
-So a workspace serving a shared-channel route that needs a single API token, or a single internal read-only MCP server, has no supported path to it. The operator's only escape is `unrestricted: true` — the worst possible answer in exactly the shared-channel setting policies exist for.
+So a restricted workspace serving a transport conversation or job that needs a single API token, or a single internal read-only MCP server, has no supported path to it. The operator's only escape is `unrestricted: true` — the worst possible answer in exactly the shared-channel setting policies exist for.
 
 ### The symptom: the inert allowlist
 
@@ -99,14 +101,15 @@ The restricted Claude invocation becomes:
 claude -p --settings <policy_dir>/claude/settings.json \
   --permission-mode dontAsk --setting-sources project \
   --strict-mcp-config [--mcp-config <policy_dir>/claude/mcp.json] \
+  --append-system-prompt-file ~/.enso/runtime/instructions/<sha256>.md \
   --model <model> -- <prompt>
 ```
 
-with `--mcp-config` appended exactly when the conventional file exists. The Codex invocation is unchanged.
+with `--mcp-config` appended exactly when the conventional file exists. The immutable shared-instruction snapshot is orthogonal to the MCP feature and is now present on every Claude launch. The Codex permission invocation is unchanged by these two grants; the current launch separately injects the same validated shared content through `developer_instructions`.
 
 **Environment construction order** in `_minimal_env()`: the `_KEEP_ENV` allowlist, then `env_passthrough`, then the launch-controlled assignments — filtered `PATH`, provider auth keys, and (for Codex) `CODEX_HOME` — so a launch-controlled variable always wins. Validation independently rejects those names (§6); the ordering is defence in depth, so a bypassed or future-refactored validator still cannot produce a launch where config displaces a launch-controlled value. Note the honest scope of this rule today: because passthrough copies values from the same `os.environ` the allowlist reads, `PATH` is the only name whose launch value actually differs from its parent value (filtered vs. raw). The ordering rule earns its keep the moment any value-indirection shape lands (§10), at which point every reserved name becomes redirectable without it.
 
-**`LAUNCH_CONTRACT_VERSION` bumps to `"3"`.** Flags and environment construction both change. The bump feeds `_manifest_revision()`, rotating every `policy_revision` (including the unrestricted sentinel) — the intended effect of changing what a launch *is*. This is the only visible change for installs that adopt neither addition.
+**This feature bumped `LAUNCH_CONTRACT_VERSION` to `"3"`.** Its flags and environment construction both changed, rotating every `policy_revision` (including the unrestricted sentinel). The later unified workspace/instruction launch bumps the current contract to `"4"` because shared instruction injection changes every provider invocation. That revision behavior remains intentional: a launch-contract change must produce fresh execution identity even when a policy adopts neither MCP addition.
 
 ______________________________________________________________________
 
@@ -172,7 +175,7 @@ ______________________________________________________________________
 | File | Change |
 | --- | --- |
 | `src/enso/teams.py` | `Policy` gains `env_passthrough: tuple[str, ...]` (default `()`); loader + §6 validation; local reserved-name set with circular-import comment |
-| `src/enso/policy.py` | `Launch` gains `mcp_config`; `PolicyCheck` gains resolved server names; `_minimal_env()` applies passthrough per §3 ordering; conventional `mcp.json` resolution, integrity, parse checks, and manifest inclusion; spawn logging; `LAUNCH_CONTRACT_VERSION = "3"` |
+| `src/enso/policy.py` | `Launch` gains `mcp_config`; `PolicyCheck` gains resolved server names; `_minimal_env()` applies passthrough per §3 ordering; conventional `mcp.json` resolution, integrity, parse checks, and manifest inclusion; spawn logging; this feature introduced launch contract v3 (the current unified instruction contract is v4) |
 | `src/enso/providers/claude.py` | `_permission_args()` appends `--mcp-config <path>` when `launch.mcp_config` is set, keeping `--strict-mcp-config` unconditionally |
 | `src/enso/providers/codex.py` | no change |
 | `src/enso/cli.py` | `config check` display per §7 |
@@ -185,7 +188,7 @@ ______________________________________________________________________
 | `docs/examples/acme-claude-mcp.json` | secret-free example MCP file |
 | `CHANGELOG.md` | contract bump; both additions default to off |
 
-Both additions defaulting to off keeps every existing policy unaffected; the only visible change for an untouched install is the rotated `policy_revision` from the contract bump.
+At this feature's original landing, both additions defaulted to off, so the only visible change for a policy adopting neither grant was its rotated `policy_revision`. The later unified workspace/instruction migration is a separate breaking configuration change documented in [the migration guide](docs/migrations/unified-workspace-policies.md).
 
 ______________________________________________________________________
 

@@ -188,11 +188,11 @@ Staging a surface stores a validated exact payload and posts an inert preview wi
 
 ## Request resolution
 
-Slack routing is described in [teams.md](teams.md), native CLI invocation in [permissions.md](permissions.md), and storage in [data-model.md](data-model.md). Slack always uses exact routes. Telegram retains its exact numeric user-ID allowlist and global `working_dir` and rejects non-private chat types.
+Workspace and Slack routing are described in [teams.md](teams.md), native CLI invocation in [permissions.md](permissions.md), and storage in [data-model.md](data-model.md). Slack always uses exact routes. Telegram retains its exact numeric user-ID allowlist, rejects non-private chat types, and requires one configured workspace. Both transports derive the workspace's single policy.
 
-Conversation work carries an immutable `ExecutionContext` instead of reading a singleton cwd. Telegram's context contains the global `working_dir` and unrestricted launch. Slack's context contains the routed workspace path, policy, stable session key, captured model selection, audit callbacks, and workspace concurrency. The native provider launch is prepared only after the workspace slot is acquired. The same context is threaded through dispatch, uploads, commands, compaction, and provider execution.
+Every conversation and job carries an immutable `ExecutionContext`; there is no singleton or service-level cwd. The context contains the resolved workspace path and identity, that workspace's policy, a stable state key, captured model selection where applicable, workspace concurrency, and transport-specific audit/message choices. The native provider launch is prepared only after the workspace slot is acquired. The same context is threaded through dispatch, uploads, commands, compaction, session clearing, and provider execution.
 
-The top-level workspace/policy catalog is parsed independently of Slack so jobs can use it on any transport. Slack credentials, transport options, and exact routes share the `transports.slack` block; its routes are loaded and validated when `enso serve` starts. They are not hot-reloaded; changing authorization requires a restart. For each Slack event the transport performs this fixed sequence before fetching surrounding context or downloading attachments:
+The top-level workspace/policy catalog is parsed independently of either transport so Telegram, Slack, and jobs use the same bindings. Telegram requires `transports.telegram.workspace` and applies that workspace's provider and command controls after exact-user authorization. Slack credentials, transport options, and exact routes share the `transports.slack` block; its routes are loaded and validated when `enso serve` starts. Bindings are not hot-reloaded; changing authorization requires a restart. For each Slack event the transport performs this fixed sequence before fetching surrounding context or downloading attachments:
 
 1. Verify the event belongs to the configured Slack account.
 1. Accept an ordinary `im` message. Whether a channel message dispatches depends on the resolved route's effective `mention_required`/`thread_mention_required` response triggers; the full decision order lives in [slack-triggers.md](slack-triggers.md). A mention is detected from the message text, not from which Slack event type delivered it, and non-mention drops happen before the delivery-ledger claim.
@@ -203,7 +203,7 @@ The top-level workspace/policy catalog is parsed independently of Slack so jobs 
 1. Validate the selected provider's launch plumbing and start optional audit recording for the route.
 1. Process the command or provider request using the resolved execution context; prepare the native launch after acquiring the workspace slot.
 
-There are no groups, sender rankings, wildcard routes, Slack allowlists, or composed policies. `transports.slack.channel_defaults` supplies response-trigger settings to channels that are already routed — it never authorizes a location, so an unrouted channel stays unrouted and the no-wildcard invariant stands. A configured channel authorizes every human member who can post there; an administrator posting in a client channel gets the routed workspace's policy. An invalid configured route never falls back to another workspace, policy, global `working_dir`, or unrestricted launch. A configured route that cannot launch reports a configuration error. The legacy top-level `routes` key is rejected; operators migrate by moving its `slack` members into the existing `transports.slack` object and then removing `routes`.
+There are no groups, sender rankings, wildcard routes, Slack allowlists, or composed policies. `transports.slack.channel_defaults` supplies response-trigger settings to channels that are already routed — it never authorizes a location, so an unrouted channel stays unrouted and the no-wildcard invariant stands. A configured channel authorizes every human member who can post there; an administrator posting in a client channel gets the routed workspace's policy. An invalid configured route never falls back to another workspace, policy, implicit cwd, or unrestricted launch. A configured route that cannot launch reports a configuration error. The legacy top-level `routes` key is rejected; operators migrate by moving its `slack` members into the existing `transports.slack` object and then removing `routes`.
 
 The two no-route replies are fixed transport strings. They do not invoke an LLM, select a workspace or policy, construct an `ExecutionContext`, fetch message context or attachments, or start an audit turn. A globally invalid Slack configuration or wrong-account event remains silent and is logged.
 
@@ -211,12 +211,15 @@ The two no-route replies are fixed transport strings. They do not invoke an LLM,
 
 Cwd alone does not isolate sessions. Provider, model, effort, session, compaction, lock, queue, process, and activity state use a route-scoped `chat_key`. A Slack thread is distinct from its parent channel, and two channels sharing one workspace keep separate sessions. The per-thread session also doubles as one of the two thread-participation markers that `thread_mention_required: false` follows; the other is a thread root Enso posted itself, read from the event's `parent_user_id` ([slack-triggers.md](slack-triggers.md)). Provider selection is scoped to that conversation; `!use` never changes another route's selection.
 
+Telegram uses the same principle: its state key binds the private chat ID, workspace name, and policy name. Changing Telegram's workspace or changing the policy owned by that workspace starts a distinct state scope instead of resuming sessions or queued work created under the old authority. Telegram explicitly consumes globally queued background messages; Slack route contexts and jobs do not.
+
 The key is serialized as structured data rather than by splitting a delimiter-bearing string. This matters because provider and route identifiers can already contain punctuation. It includes the Slack location, thread, workspace name, and policy name; it deliberately remains stable across `!use`, model, and policy-content changes so stop, queues, and per-provider sessions remain reachable. Changing the policy assigned to a workspace changes the key.
 
 ### Workspace content and concurrency
 
-- The resolved workspace supplies the subprocess cwd, persistent uploads, native project instructions, native workspace skills, and session scope. It is a shared content root, not a security boundary.
+- The resolved workspace supplies the subprocess cwd, persistent uploads, focused local project instructions, native workspace skills, and session scope. It is a shared content root, not a security boundary.
 - A policy supplies provider availability, default provider, allowed Enso chat commands, and native policy selection. It supplies no content and does not govern provider-native slash commands or skills. Each workspace names exactly one policy, while one policy may be reused by many workspaces.
+- Canonical shared instructions live at `~/.enso/AGENTS.md` with `CLAUDE.md -> AGENTS.md` and are injected into every launch independently of cwd. Enso validates a stable owner-owned, non-hard-linked, non-symlink UTF-8 source with no group/other write bits, hashes it, and publishes or verifies an immutable owner-only snapshot under `~/.enso/runtime/instructions/`. Claude receives that snapshot through `--append-system-prompt-file`; Codex receives the validated in-memory content through `developer_instructions`; unrestricted Agy receives it through Enso's prompt envelope. Local workspace `AGENTS.md`/`CLAUDE.md` files remain focused and provider-discovered.
 - Several routes may share one workspace and therefore its files, policy, and concurrency limit while retaining separate sessions.
 - A client route that shares files with a staff route must not be able to rewrite instructions, skill definitions, or provider control files trusted by the staff route.
 - Each workspace has a process-local semaphore shared by chats and compaction. The default is one active turn; operators may raise it when concurrent writes are safe.
@@ -224,7 +227,8 @@ The key is serialized as structured data rather than by splitting a delimiter-be
 - Scheduled jobs are not Slack routes, but every job selects a named workspace. Its provider runs in that workspace under the workspace's policy and shares the process-local workspace semaphore.
 - A job prerun is trusted host-side Bash executed from the job directory before the provider launch. It is not constrained by the native policy.
 - A persistent per-job `.run.lock` coordinates the scheduler, CLI, and dashboard across processes. Workspace semaphores remain process-local, so two separate Enso processes are not serialized merely because their jobs share a workspace.
-- Invalid job bindings or a provider disallowed by the workspace's policy fail before prerun and provider execution. There is no global or unrestricted job fallback.
+- Invalid job bindings or a provider disallowed by the workspace's policy fail before prerun and provider execution. There is no implicit cwd, alternate workspace, or unrestricted job fallback.
+- The launchd and systemd service definitions intentionally set no process working directory. Only a resolved provider execution gets a cwd, so daemon startup location cannot become an accidental transport fallback.
 - Scheduled successes are silent unless the provider explicitly sends a message. Host-side failure and recovery notifications use the job's destination independently of Slack routing; manual runs suppress those automatic notifications but cannot suppress a provider-originated send.
 
 ## Concurrency & consistency
@@ -233,7 +237,7 @@ The bot, dashboard, CLI, agent subprocesses, and operator can all touch the file
 At personal scale the model is deliberately simple:
 
 - **Dashboard writes are atomic** — a temp file in the same directory plus `os.replace`.
-  A reader never sees a half-written `JOB.md`, `SKILL.md`, or `AGENTS.md` from a web edit.
+  A reader never sees a half-written `JOB.md`, `SKILL.md`, or shared `~/.enso/AGENTS.md` from a web edit.
 - **Last write wins.** Optimistic locking and conflict resolution are out of scope for
   this single-operator tool.
 - **SQLite in WAL mode** allows the bot, dashboard, CLI, and agent subprocesses to share
@@ -272,11 +276,12 @@ internet and the PRD makes that a non-goal.
   tokens fail before the handler runs.
 - **Browser hardening:** responses deny framing, disable MIME sniffing, use a
   no-referrer policy, and mark HTML as `no-store`.
-- The web app can trigger real work (run-now, edit a job's prompt, edit AGENTS.md). That
+- The web app can trigger real work (run-now, edit a job's prompt, edit shared `~/.enso/AGENTS.md`). That
   is acceptable precisely because access is already restricted to the operator; it is
   *not* a capability to expose broadly.
-- **Write boundary:** job prompts and Enso-owned skills are edited under `~/.enso/`;
-  `AGENTS.md` is edited at its fixed path in the configured working directory.
+- **Write boundary:** job prompts, Enso-owned skills, and the canonical shared
+  `AGENTS.md` are edited under `~/.enso/`; the shared file's fixed path is
+  `~/.enso/AGENTS.md`.
   External/"parent" skills discovered from other CLI roots are read-only. User-selected
   job and skill paths are resolved and checked against their owning root before writes.
   The Tables web surface is read-only; agents may write only validated, non-reserved user
@@ -309,5 +314,5 @@ Missing bundled skill files are seeded. Existing copies update only when their h
 matches a known pristine prior version; customized files and symlinks remain untouched.
 
 The task-system removal migrates only artifacts that exactly match the former bundled
-files: the pristine `tasks` skill is removed and the pristine task-era `AGENTS.md` is
+files: the pristine `tasks` skill is removed and the pristine task-era shared `AGENTS.md` is
 replaced. Customized copies are preserved and logged with a manual-cleanup warning.

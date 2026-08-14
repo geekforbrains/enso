@@ -16,7 +16,7 @@ back to owned files (atomic replace) and the run store; user-table pages are rea
 There is no separate web database or cache (see [data-model.md](data-model.md)).
 
 **Write boundary.** Every write the UI makes lands inside `~/.enso/` (jobs,
-Enso-owned skills) or the working-dir `AGENTS.md`. It never writes outside that tree —
+Enso-owned skills, and the canonical shared `AGENTS.md`). It never writes outside that tree —
 external "parent" skills discovered from the CLIs' own roots (e.g. `~/.claude/skills/`)
 are strictly read-only. This is both the safety boundary and the ownership model: Enso
 manages what lives in its own dir and only observes the rest.
@@ -62,7 +62,7 @@ fails app creation if it is malformed, unavailable, or empty. A configured liter
 | `/docs/delete`          | POST      | Implemented | Delete a doc after confirmation                                      |
 | `/tables`               | GET       | Implemented | Registered data-table list with discovery metadata                   |
 | `/tables/{name}`        | GET       | Implemented | Schema summary and bounded, read-only row preview                    |
-| `/agents`               | GET       | Implemented | View the working-directory `AGENTS.md`                               |
+| `/agents`               | GET       | Implemented | View the canonical shared `~/.enso/AGENTS.md`                        |
 | `/agents/edit`          | POST      | Implemented | Save `AGENTS.md` atomically                                          |
 | `/static/*`             | GET       | Implemented | Vendored CSS and image assets                                        |
 
@@ -197,11 +197,11 @@ for its bounded timeout therefore cannot delay health checks or unrelated web re
 
 ### AGENTS.md (`/agents`)
 
-- Renders the system prompt (`AGENTS.md` from the working dir).
+- Renders the canonical shared instructions at `~/.enso/AGENTS.md`, which Enso injects into every workspace launch.
 - **Editable**: a textarea + save, POST to `/agents/edit`, atomic write back to
-  `AGENTS.md`. The `CLAUDE.md` symlink to it is left intact (we write the target, not the
-  link). This is the one system-prompt surface the operator can tweak without opening an
-  editor.
+  `AGENTS.md`. The sibling `CLAUDE.md -> AGENTS.md` symlink is left intact (we write the
+  target, not the link). Workspace-local instruction files are separate focused project
+  controls and are not edited from this shared surface.
 
 ## Run-now
 
@@ -243,6 +243,6 @@ for its bounded timeout therefore cannot delay health checks or unrelated web re
 
 ## Non-goals (recap)
 
-No chat, no login/accounts, no writes outside Enso-owned paths (`~/.enso/` plus the
-working-directory `AGENTS.md`), no table-row/schema editor, no arbitrary SQL, no live
+No chat, no login/accounts, no writes outside Enso-owned paths under `~/.enso/`, no
+table-row/schema editor, no arbitrary SQL, no live
 output streaming, and no public exposure. See [PRD.md](../PRD.md) § Non-goals.
