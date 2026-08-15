@@ -9,3 +9,12 @@ uploads/
 .ruff_cache/
 .codex-tmp/
 TASKS.md
+
+# Local agent configuration
+/.agents/
+/.claude/
+/AGENTS.md
+/CLAUDE.md
+
+# Local dependency resolution
+/uv.lock
