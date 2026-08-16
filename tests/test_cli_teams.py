@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -27,14 +29,28 @@ def _teams_config(tmp_enso: str) -> dict:
     settings.write_text(json.dumps({"sandbox": {"enabled": True}, "disableAllHooks": True}))
     settings.chmod(0o600)
     return {
-        "working_dir": str(base / "workspace"),
         "transport": "slack",
-        "transports": {"slack": {"bot_token": "x", "app_token": "x"}},
-        "workspaces": {
-            "ops": {"path": str(ops)},
-            "acme": {"path": str(acme)},
+        "transports": {
+            "slack": {
+                "bot_token": "x",
+                "app_token": "x",
+                "account_id": "T1",
+                "dms": {
+                    "U01ADMIN": {"workspace": "ops"},
+                },
+                "channels": {
+                    "C1": {
+                        "workspace": "acme",
+                        "audit": True,
+                    },
+                },
+            }
         },
-        "access": {
+        "workspaces": {
+            "ops": {"path": str(ops), "policy": "admin"},
+            "acme": {"path": str(acme), "policy": "client"},
+        },
+        "policies": {
             "admin": {
                 "unrestricted": True,
                 "providers": ["claude"],
@@ -48,21 +64,6 @@ def _teams_config(tmp_enso: str) -> dict:
                 "chat_commands": ["status"],
             },
         },
-        "routes": {
-            "slack": {
-                "account_id": "T1",
-                "dms": {
-                    "U01ADMIN": {"workspace": "ops", "access": "admin"},
-                },
-                "channels": {
-                    "C1": {
-                        "workspace": "acme",
-                        "access": "client",
-                        "audit": True,
-                    },
-                },
-            }
-        },
     }
 
 
@@ -71,6 +72,18 @@ def test_config_check_passes_valid_config(tmp_enso):
     result = runner.invoke(app, ["config", "check"])
     assert result.exit_code == 0, result.output
     assert "All checks passed" in result.output
+    assert "Shared instructions" in result.output
+    assert not Path(tmp_enso, "runtime").exists()
+
+
+def test_config_check_fails_when_shared_instructions_are_missing(tmp_enso):
+    Path(tmp_enso, "AGENTS.md").unlink()
+    save_config(_teams_config(tmp_enso))
+
+    result = runner.invoke(app, ["config", "check"])
+
+    assert result.exit_code == 1
+    assert "shared instruction file is missing" in result.output
 
 
 def test_config_check_fails_on_missing_policy(tmp_enso):
@@ -80,6 +93,144 @@ def test_config_check_fails_on_missing_policy(tmp_enso):
     result = runner.invoke(app, ["config", "check"])
     assert result.exit_code == 1
     assert "claude" in result.output
+
+
+# -- grok rule-load verification --
+#
+# A wrong-shaped grok permission config loads zero rules with no error, so
+# `enso config check` stages the policy home and asserts the rule count the
+# CLI actually loaded via `grok inspect --json`.
+
+
+def _grok_teams_config(tmp_enso: str) -> dict:
+    """Extend the scaffold with a grok-bound workspace and native policy."""
+    base = Path(tmp_enso)
+    config = _teams_config(tmp_enso)
+    grok_ws = base / "workspaces" / "grok-client"
+    grok_policy = base / "policies" / "grok-client" / "grok"
+    for d in (grok_ws, grok_policy):
+        d.mkdir(parents=True, exist_ok=True)
+    grok_config = grok_policy / "config.toml"
+    grok_config.write_text(
+        "[permission]\n"
+        'allow = ["run_terminal_command(echo *)"]\n'
+        'deny = ["run_terminal_command(enso *)"]\n'
+    )
+    grok_config.chmod(0o600)
+    config["transports"]["slack"]["channels"]["C2"] = {"workspace": "grok-client"}
+    config["workspaces"]["grok-client"] = {"path": str(grok_ws), "policy": "grok-client"}
+    config["policies"]["grok-client"] = {
+        "policy_dir": str(base / "policies" / "grok-client"),
+        "providers": ["grok"],
+        "default_provider": "grok",
+        "chat_commands": ["status"],
+    }
+    return config
+
+
+def _stub_grok_inspect(monkeypatch, tmp_enso, loaded: int) -> list:
+    """Stub the `grok inspect --json` subprocess and isolate the user home."""
+    monkeypatch.setattr(
+        "enso.policy._user_grok_home", lambda: str(Path(tmp_enso) / "grok-user-home")
+    )
+    calls: list = []
+
+    def fake_run(cmd, *args, **kwargs):
+        calls.append((list(cmd), kwargs))
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout=json.dumps({"permissions": {"loaded": loaded, "sources": []}}),
+            stderr="",
+        )
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    return calls
+
+
+def test_config_check_verifies_grok_policy_rules_load(tmp_enso, monkeypatch):
+    calls = _stub_grok_inspect(monkeypatch, tmp_enso, loaded=2)
+    save_config(_grok_teams_config(tmp_enso))
+
+    result = runner.invoke(app, ["config", "check"])
+
+    assert result.exit_code == 0, result.output
+    assert "All checks passed" in result.output
+    (cmd, kwargs) = calls[0]
+    assert cmd[-2:] == ["inspect", "--json"]
+    # The inspection must see exactly what a launch would: the workspace as
+    # cwd and the staged revision home as GROK_HOME.
+    assert os.path.realpath(kwargs["cwd"]) == os.path.realpath(
+        str(Path(tmp_enso) / "workspaces" / "grok-client")
+    )
+    assert "grok-home" in kwargs["env"]["GROK_HOME"]
+    # A scratch HOME keeps the operator's always-trusted home-scope compat
+    # rules out of permissions.loaded, so equality stays exact.
+    assert kwargs["env"]["HOME"] != os.environ.get("HOME")
+    assert "enso-grok-inspect-" in kwargs["env"]["HOME"]
+
+
+def test_config_check_fails_when_grok_loads_zero_rules(tmp_enso, monkeypatch):
+    _stub_grok_inspect(monkeypatch, tmp_enso, loaded=0)
+    save_config(_grok_teams_config(tmp_enso))
+
+    result = runner.invoke(app, ["config", "check"])
+
+    assert result.exit_code == 1
+    plain = " ".join(result.output.split())
+    assert "loaded 0" in plain
+    assert "grok-client" in plain
+
+
+def test_config_check_fails_when_grok_loads_rules_the_policy_never_declared(
+    tmp_enso, monkeypatch
+):
+    """More rules loaded than declared means something outside the policy
+    reached the launch — a trusted workspace contributing its own config is
+    the case that matters, since that is a policy widening itself."""
+    monkeypatch.setattr(
+        "enso.policy._user_grok_home", lambda: str(Path(tmp_enso) / "grok-user-home")
+    )
+    planted = str(Path(tmp_enso) / "workspaces" / "grok-client" / ".grok" / "config.toml")
+
+    def fake_run(cmd, *args, **kwargs):
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout=json.dumps(
+                {"permissions": {"loaded": 5, "sources": ["staged config.toml", planted]}}
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    save_config(_grok_teams_config(tmp_enso))
+
+    result = runner.invoke(app, ["config", "check"])
+
+    assert result.exit_code == 1
+    plain = " ".join(result.output.split())
+    assert "loaded 5" in plain
+    assert "outside the policy" in plain
+    assert ".grok" in plain
+
+
+def test_config_check_fails_when_grok_binary_is_missing(tmp_enso, monkeypatch):
+    monkeypatch.setattr(
+        "enso.policy._user_grok_home", lambda: str(Path(tmp_enso) / "grok-user-home")
+    )
+
+    def missing_binary(cmd, *args, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory", cmd[0])
+
+    monkeypatch.setattr("subprocess.run", missing_binary)
+    save_config(_grok_teams_config(tmp_enso))
+
+    result = runner.invoke(app, ["config", "check"])
+
+    assert result.exit_code == 1
+    plain = " ".join(result.output.split())
+    assert "grok inspect" in plain
 
 
 def _isolate_secrets(tmp_enso, monkeypatch) -> Path:
@@ -93,7 +244,7 @@ def test_config_check_prints_resolvable_passthrough_names(tmp_enso, monkeypatch)
     _isolate_secrets(tmp_enso, monkeypatch)
     monkeypatch.setenv("CLIENT_METRICS_TOKEN", "tok")
     config = _teams_config(tmp_enso)
-    config["access"]["client"]["env_passthrough"] = ["CLIENT_METRICS_TOKEN"]
+    config["policies"]["client"]["env_passthrough"] = ["CLIENT_METRICS_TOKEN"]
     save_config(config)
 
     result = runner.invoke(app, ["config", "check"])
@@ -109,7 +260,7 @@ def test_config_check_marks_unset_passthrough_name_without_failing(tmp_enso, mon
     _isolate_secrets(tmp_enso, monkeypatch)
     monkeypatch.delenv("CLIENT_METRICS_TOKEN", raising=False)
     config = _teams_config(tmp_enso)
-    config["access"]["client"]["env_passthrough"] = ["CLIENT_METRICS_TOKEN"]
+    config["policies"]["client"]["env_passthrough"] = ["CLIENT_METRICS_TOKEN"]
     save_config(config)
 
     result = runner.invoke(app, ["config", "check"])
@@ -125,7 +276,7 @@ def test_config_check_resolves_passthrough_from_secrets_files(tmp_enso, monkeypa
     (secrets / "tokens.env").write_text("CLIENT_METRICS_TOKEN=tok\n")
     monkeypatch.delenv("CLIENT_METRICS_TOKEN", raising=False)
     config = _teams_config(tmp_enso)
-    config["access"]["client"]["env_passthrough"] = ["CLIENT_METRICS_TOKEN"]
+    config["policies"]["client"]["env_passthrough"] = ["CLIENT_METRICS_TOKEN"]
     save_config(config)
 
     result = runner.invoke(app, ["config", "check"])
@@ -193,19 +344,39 @@ def test_config_check_surfaces_mcp_cross_check_warnings(tmp_enso):
 
 def test_config_check_validates_catalog_without_slack_routes(tmp_enso):
     config = _teams_config(tmp_enso)
-    del config["routes"]
     config["transport"] = "telegram"
     config["transports"] = {
         "telegram": {
             "bot_token": "x",
             "allowed_users": ["123"],
             "notify_channel": "123",
+            "workspace": "ops",
         }
     }
     save_config(config)
     result = runner.invoke(app, ["config", "check"])
     assert result.exit_code == 0
     assert "All checks passed" in result.output
+    assert "ops → admin" in result.output
+
+
+@pytest.mark.parametrize("workspace", [None, "missing"])
+def test_config_check_rejects_invalid_telegram_workspace(tmp_enso, workspace):
+    config = _teams_config(tmp_enso)
+    config["transport"] = "telegram"
+    telegram = {
+        "bot_token": "x",
+        "allowed_users": ["123"],
+    }
+    if workspace is not None:
+        telegram["workspace"] = workspace
+    config["transports"] = {"telegram": telegram}
+    save_config(config)
+
+    result = runner.invoke(app, ["config", "check"])
+
+    assert result.exit_code == 1
+    assert "transports.telegram.workspace" in result.output
 
 
 @pytest.mark.parametrize(
@@ -222,13 +393,13 @@ def test_config_check_rejects_malformed_telegram_allowlist(
     allowed_users,
 ):
     config = _teams_config(tmp_enso)
-    del config["routes"]
     config["transport"] = "telegram"
     config["transports"] = {
         "telegram": {
             "bot_token": "x",
             "allowed_users": allowed_users,
             "notify_channel": "123",
+            "workspace": "ops",
         },
     }
     save_config(config)
@@ -241,7 +412,6 @@ def test_config_check_rejects_malformed_telegram_allowlist(
 
 def test_config_check_rejects_telegram_alias_with_valid_allowlist(tmp_enso):
     config = _teams_config(tmp_enso)
-    del config["routes"]
     config["transport"] = "telegram"
     config["transports"] = {
         "telegram": {
@@ -249,6 +419,7 @@ def test_config_check_rejects_telegram_alias_with_valid_allowlist(tmp_enso):
             "allowed_users": ["123"],
             "allowed_user_ids": [123],
             "notify_channel": "123",
+            "workspace": "ops",
         },
     }
     save_config(config)
@@ -265,6 +436,7 @@ def test_config_check_validates_inactive_configured_telegram(tmp_enso):
         "bot_token": "x",
         "allowed_users": ["123", "0"],
         "allowed_user_ids": [123],
+        "workspace": "ops",
     }
     save_config(config)
 
@@ -277,13 +449,13 @@ def test_config_check_validates_inactive_configured_telegram(tmp_enso):
 
 def test_config_check_validates_inactive_configured_slack(tmp_enso):
     config = _teams_config(tmp_enso)
-    del config["routes"]
     config["transport"] = "telegram"
     config["transports"] = {
         "telegram": {
             "bot_token": "x",
             "allowed_users": ["123"],
             "notify_channel": "123",
+            "workspace": "ops",
         },
         "slack": {
             "bot_token": "x",
@@ -297,7 +469,28 @@ def test_config_check_validates_inactive_configured_slack(tmp_enso):
 
     assert result.exit_code == 1
     assert "transports.slack.allowed_users is no longer supported" in result.output
-    assert "routes.slack is required" in result.output
+    assert "transports.slack.account_id is required" in result.output
+
+
+def test_config_check_rejects_legacy_top_level_routes_when_slack_is_inactive(tmp_enso):
+    config = _teams_config(tmp_enso)
+    config["transport"] = "telegram"
+    config["transports"] = {
+        "telegram": {
+            "bot_token": "x",
+            "allowed_users": ["123"],
+            "notify_channel": "123",
+            "workspace": "ops",
+        }
+    }
+    config["routes"] = {"slack": {"account_id": "T1"}}
+    save_config(config)
+
+    result = runner.invoke(app, ["config", "check"])
+
+    assert result.exit_code == 1
+    assert "routes is no longer supported" in result.output
+    assert "transports.slack" in result.output
 
 
 def test_config_check_reports_jobs_missing_execution_binding(tmp_enso):
@@ -320,7 +513,6 @@ def test_config_check_reports_jobs_missing_execution_binding(tmp_enso):
     assert result.exit_code == 1
     assert "jobs.old-job" in result.output
     assert "workspace" in result.output
-    assert "access" in result.output
 
 
 def test_removed_policy_check_is_not_advertised(tmp_enso):
@@ -354,7 +546,7 @@ def test_route_explain_dm_requires_exact_user_id(tmp_enso):
 
 def test_route_explain_shows_effective_response_triggers(tmp_enso):
     config = _teams_config(tmp_enso)
-    config["routes"]["slack"]["channels"]["C1"]["mention_required"] = False
+    config["transports"]["slack"]["channels"]["C1"]["mention_required"] = False
     save_config(config)
     result = runner.invoke(app, ["route", "explain", "slack", "U02DEV", "C1"])
     assert result.exit_code == 0, result.output
@@ -413,3 +605,17 @@ def test_install_workspaces_keeps_instructions_local(tmp_enso):
         assert (root / "CLAUDE.md").is_symlink()
         for cli_dir in (".claude", ".agents"):
             assert not (root / cli_dir / "skills").exists()
+
+
+def test_install_workspaces_writes_nothing_when_catalog_topology_is_invalid(tmp_enso):
+    config = _teams_config(tmp_enso)
+    policy_root = Path(config["policies"]["client"]["policy_dir"])
+    config["workspaces"]["acme"]["path"] = str(policy_root)
+    ops_root = Path(config["workspaces"]["ops"]["path"])
+
+    Runtime(config).install_workspaces()
+
+    assert not (policy_root / "AGENTS.md").exists()
+    assert not (policy_root / "CLAUDE.md").exists()
+    assert not (policy_root / "uploads").exists()
+    assert not (ops_root / "AGENTS.md").exists()

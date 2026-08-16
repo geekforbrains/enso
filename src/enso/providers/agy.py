@@ -12,10 +12,13 @@ import sqlite3
 import tempfile
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 from urllib.parse import unquote, urlparse
 
 from . import BaseProvider, StreamEvent, truncate_status
+
+if TYPE_CHECKING:
+    from ..instructions import InstructionBundle
 
 AGY_MODELS = [
     "gemini-3.6-flash-high",
@@ -60,6 +63,22 @@ _PROGRESS_POLL_SECS = 0.5
 # A conversation ID reaches the log a beat after launch; keep watching for it
 # well past that, since a slow cold start delays the whole trajectory.
 _CONVERSATION_WAIT_SECS = 60.0
+
+
+def _with_shared_instructions(
+    prompt: str,
+    instructions: InstructionBundle | None,
+) -> str:
+    """Prepend Enso's explicit shared-instruction envelope to an Agy prompt."""
+    if instructions is None:
+        return prompt
+    return (
+        "<enso-shared-instructions>\n"
+        f"{instructions.content}\n"
+        "</enso-shared-instructions>\n\n"
+        "<enso-user-prompt>\n"
+        f"{prompt}"
+    )
 
 
 def _resource_uris(data: dict) -> list[str]:
@@ -164,6 +183,7 @@ class AgyProvider(BaseProvider):
         *,
         effort: str | None = None,
         launch=None,
+        instructions: InstructionBundle | None = None,
     ) -> list[str]:
         # ``launch`` is accepted for signature parity and ignored: agy has no
         # permission model, so policy-controlled dispatch refuses it upstream.
@@ -179,11 +199,17 @@ class AgyProvider(BaseProvider):
             cmd.extend(["--conversation", session_id])
         else:
             cmd.extend(self._project_args())
-        cmd.extend(["--prompt", prompt])
+        cmd.extend(["--prompt", _with_shared_instructions(prompt, instructions)])
         return cmd
 
     def build_batch_command(
-        self, prompt: str, model: str, *, effort: str | None = None, launch=None,
+        self,
+        prompt: str,
+        model: str,
+        *,
+        effort: str | None = None,
+        launch=None,
+        instructions: InstructionBundle | None = None,
     ) -> list[str]:
         cmd = [
             self.path,
@@ -192,7 +218,7 @@ class AgyProvider(BaseProvider):
         ]
         cmd.extend(self._print_timeout_args())
         cmd.extend(self._project_args())
-        cmd.extend(["--prompt", prompt])
+        cmd.extend(["--prompt", _with_shared_instructions(prompt, instructions)])
         return cmd
 
     def finalize_events(self) -> list[StreamEvent]:

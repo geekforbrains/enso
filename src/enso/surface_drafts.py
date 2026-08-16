@@ -82,7 +82,7 @@ class SurfaceDraftOrigin:
     route_id: str
     route_kind: str
     workspace_id: str
-    access_profile: str
+    policy: str
     route_audit: bool
     user_id: str
     channel_id: str
@@ -95,7 +95,7 @@ class SurfaceDraftOrigin:
             self.account_id,
             self.route_id,
             self.workspace_id,
-            self.access_profile,
+            self.policy,
             self.user_id,
             self.channel_id,
         )
@@ -210,7 +210,9 @@ def _origin_from_row(row: sqlite3.Row) -> SurfaceDraftOrigin:
         route_id=row["route_id"],
         route_kind=row["route_kind"],
         workspace_id=row["workspace_id"],
-        access_profile=row["access_profile"],
+        # Keep reading the legacy physical column so existing pending drafts
+        # remain safely reauthorizable after the terminology change.
+        policy=row["access_profile"],
         route_audit=bool(row["route_audit"]),
         user_id=row["user_id"],
         channel_id=row["channel_id"],
@@ -386,7 +388,7 @@ def create(
                 origin.route_id,
                 origin.route_kind,
                 origin.workspace_id,
-                origin.access_profile,
+                origin.policy,
                 int(origin.route_audit),
                 origin.user_id,
                 origin.channel_id,

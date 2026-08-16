@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from . import BaseProvider, StreamEvent, truncate_status
+
+if TYPE_CHECKING:
+    from ..instructions import InstructionBundle
 
 
 def _tool_status(tool_name: str, tool_input: dict) -> str:
@@ -69,6 +72,20 @@ class ClaudeProvider(BaseProvider):
     }
     _default_max_effort = "high"
 
+    # Tool-status hook: subclasses that speak the same wire format but
+    # expose their own tool vocabulary (grok) override this mapping.
+    _tool_status = staticmethod(_tool_status)
+
+    @staticmethod
+    def _terminal_reason(event: dict) -> str | None:
+        """Why an errored result frame ended the turn, when the frame says.
+
+        A hook, because subclasses on this wire format report the reason in
+        their own fields; returning None falls back to a generic message.
+        """
+        reason = event.get("terminal_reason")
+        return reason if isinstance(reason, str) and reason else None
+
     @staticmethod
     def _permission_args(launch) -> list[str]:
         """Permission flags per the launch contract in permissions.md.
@@ -77,7 +94,7 @@ class ClaudeProvider(BaseProvider):
         the operator's user settings (so their personal rules cannot widen a
         workspace) while leaving the CLI's own instruction and skill discovery
         working, denies anything a prompt would have asked about (headless has
-        nobody to ask), and loads exactly the profile's declared MCP servers —
+        nobody to ask), and loads exactly the policy's declared MCP servers —
         the conventional mcp.json when present, none otherwise — never the
         operator's ambient ones. Otherwise: today's bypass invocation.
         """
@@ -101,6 +118,7 @@ class ClaudeProvider(BaseProvider):
         *,
         effort: str | None = None,
         launch=None,
+        instructions: InstructionBundle | None = None,
     ) -> list[str]:
         """Build the Claude CLI command.
 
@@ -116,6 +134,11 @@ class ClaudeProvider(BaseProvider):
         ]
         if effort:
             cmd.extend(["--effort", effort])
+        if instructions is not None:
+            cmd.extend([
+                "--append-system-prompt-file",
+                str(instructions.snapshot_path),
+            ])
         if session_id and session_id.startswith("new:"):
             cmd.extend(["--session-id", session_id.removeprefix("new:")])
         elif session_id:
@@ -124,7 +147,13 @@ class ClaudeProvider(BaseProvider):
         return cmd
 
     def build_batch_command(
-        self, prompt: str, model: str, *, effort: str | None = None, launch=None,
+        self,
+        prompt: str,
+        model: str,
+        *,
+        effort: str | None = None,
+        launch=None,
+        instructions: InstructionBundle | None = None,
     ) -> list[str]:
         """Build command for batch execution (jobs). No session continuity."""
         cmd = [
@@ -135,6 +164,11 @@ class ClaudeProvider(BaseProvider):
         ]
         if effort:
             cmd.extend(["--effort", effort])
+        if instructions is not None:
+            cmd.extend([
+                "--append-system-prompt-file",
+                str(instructions.snapshot_path),
+            ])
         cmd.extend(["--", prompt])
         return cmd
 
@@ -161,7 +195,7 @@ class ClaudeProvider(BaseProvider):
                 elif block_type == "tool_use":
                     events.append(StreamEvent(
                         kind="status",
-                        text=_tool_status(block.get("name", ""), block.get("input", {})),
+                        text=self._tool_status(block.get("name", ""), block.get("input", {})),
                 ))
                 elif block_type == "text" and block.get("text"):
                     events.append(StreamEvent(
@@ -177,9 +211,10 @@ class ClaudeProvider(BaseProvider):
                     text=result_text,
                 ))
             elif event.get("is_error"):
-                reason = event.get("terminal_reason")
-                text = reason if isinstance(reason, str) and reason else "unknown error"
-                events.append(StreamEvent(kind="error", text=text))
+                events.append(StreamEvent(
+                    kind="error",
+                    text=self._terminal_reason(event) or "unknown error",
+                ))
 
             session_id = event.get("session_id")
             if isinstance(session_id, str) and session_id:
@@ -187,7 +222,13 @@ class ClaudeProvider(BaseProvider):
 
         return events
 
-    def clear_session(self, session_id: str | None, working_dir: str) -> str:
+    def clear_session(
+        self,
+        session_id: str | None,
+        working_dir: str,
+        *,
+        policy_dir: str | None = None,
+    ) -> str:
         if not session_id:
             return "no session"
         clean_id = session_id.removeprefix("new:")

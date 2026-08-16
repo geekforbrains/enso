@@ -1,15 +1,17 @@
 // Example ~/.enso/config.json for exact Slack routes.
 //
-// Slack requires routes.slack: exact DM users and channel IDs select one workspace
-// and one access profile. There is no Slack allowlist, wildcard, or default route.
+// Slack keeps credentials, options, and exact routes together under
+// transports.slack. Exact DM users and channel IDs select one workspace and
+// derive that workspace's policy. There is no allowlist, wildcard, or default route.
 // Routed channels dispatch on @-mention by default; per-route mention_required
-// and thread_mention_required relax that, with routes.slack.channel_defaults
+// and thread_mention_required relax that, with transports.slack.channel_defaults
 // supplying defaults those per-route keys override. channel_defaults is
 // settings inheritance, not a route: it authorizes no channel by itself. An
 // unrouted DM or explicit channel mention gets a fixed local access response
 // without an LLM launch; ordinary unrouted channel messages are ignored.
-// Telegram, when used instead, remains private and uses exact numeric IDs under
-// transports.telegram.allowed_users plus the global working_dir.
+// Telegram, when used instead, remains private, uses exact numeric IDs under
+// transports.telegram.allowed_users, and requires a workspace such as default;
+// it derives that workspace's policy just like routes and jobs do.
 // Rich messages and persistent surfaces require the current bundled Slack app
 // manifest, including App Home, interactivity, canvases:write, and files:read.
 //
@@ -23,6 +25,14 @@
 {
   "transport": "slack",
   "transports": {
+    // Optional when Slack is active. If Telegram is configured, its workspace
+    // is required and derives the same policy catalog used below.
+    "telegram": {
+      "bot_token": "...",
+      "allowed_users": ["123456789"],
+      "notify_channel": "123456789",
+      "workspace": "default"
+    },
     "slack": {
       "bot_token": "xoxb-...",
       "app_token": "xapp-...",
@@ -33,43 +43,103 @@
       // Set persistent_surfaces false to keep rich replies without App Home or
       // Canvas drafts. Setting rich_messages false disables both rich paths.
       "rich_messages": true,
-      "persistent_surfaces": true
+      "persistent_surfaces": true,
+
+      "account_id": "T0YOURTEAM",
+
+      // Response-trigger defaults for channel routes; per-route keys override
+      // them, and an absent key falls back to the built-in true (mention-only).
+      // Settings inheritance, not a route: this authorizes no channel. Here a
+      // mention starts a thread and Enso then follows its replies.
+      "channel_defaults": {
+        "mention_required": true,
+        "thread_mention_required": false
+      },
+
+      // DMs are keyed by exact Slack user ID. This authorizes only the owner.
+      "dms": {
+        "U01OWNER": {
+          "workspace": "default",
+          "audit": false
+        }
+      },
+
+      // Channels are keyed by exact channel ID. Every human member uses the
+      // same route, even an administrator. Use a separate internal channel
+      // for broader authority over the same project files.
+      "channels": {
+        "C0ACME": {
+          "workspace": "acme",
+          "audit": true
+        },
+        "C0ACMEINTERNAL": {
+          "workspace": "acme-internal",
+          "audit": false
+        },
+        // Fully responsive override: false/false dispatches every top-level
+        // message (replies always land in its thread) and follows joined
+        // threads. true/true is mention-only; mixed values give the two
+        // in-between modes.
+        "C0COMPANY": {
+          "workspace": "company",
+          "audit": false,
+          "mention_required": false,
+          "thread_mention_required": false
+        }
+      }
     }
   },
 
-  // A workspace is a provider cwd and shared content root, not a security
-  // boundary. Both Acme channels below deliberately share one workspace.
+  // A workspace is a provider cwd and shared content root. It selects exactly
+  // one policy; the same policy may be reused by several workspaces.
   "workspaces": {
+    "default": {
+      "path": "~/.enso/workspaces/default",
+      "policy": "admin",
+      "concurrency": 1
+    },
     "company": {
       "path": "~/.enso/workspaces/company",
+      "policy": "staff",
       "concurrency": 1
     },
     "acme": {
       "path": "~/.enso/workspaces/clients/acme",
+      "policy": "client-readonly",
+      "concurrency": 1
+    },
+    "acme-internal": {
+      "path": "~/.enso/workspaces/clients/acme-internal",
+      "policy": "staff",
+      "concurrency": 1
+    },
+    "automation": {
+      "path": "~/.enso/workspaces/automation",
+      "policy": "automation",
       "concurrency": 1
     }
   },
 
-  // An access profile carries capabilities. Policy-controlled profiles point
+  // A policy carries capabilities. Restricted policies point
   // at protected native CLI policy files outside all writable workspaces.
-  "access": {
+  "policies": {
     "admin": {
       "unrestricted": true,
-      "providers": ["claude", "codex", "agy"],
+      "providers": ["claude", "codex", "grok", "agy"],
       "default_provider": "claude",
       "chat_commands": "*"
     },
     // Service-wide commands (update, logs) stay on the unrestricted admin
-    // profile; staff gets everything else explicitly rather than "*".
+    // policy; staff gets everything else explicitly rather than "*".
     "staff": {
       "policy_dir": "~/.enso/policies/staff",
-      "providers": ["claude", "codex"],
+      "providers": ["claude", "codex", "grok"],
       "default_provider": "claude",
       "chat_commands": ["status", "clear", "stop", "help", "use", "model", "effort", "compact"],
 
       // Names, never values: each variable is copied from the service
       // environment (e.g. loaded from ~/.enso/secrets/*.env at startup)
-      // into the child environment. Invalid on an unrestricted profile.
+      // into the child environment. Invalid on an unrestricted policy.
       // See docs/specs/permissions.md for the MCP pairing and cautions.
       "env_passthrough": ["METRICS_API_TOKEN"]
     },
@@ -87,67 +157,15 @@
     }
   },
 
-  "routes": {
-    "slack": {
-      "account_id": "T0YOURTEAM",
-
-      // Response-trigger defaults for channel routes; per-route keys override
-      // them, and an absent key falls back to the built-in true (mention-only).
-      // Settings inheritance, not a route: this authorizes no channel. Here a
-      // mention starts a thread and Enso then follows its replies.
-      "channel_defaults": {
-        "mention_required": true,
-        "thread_mention_required": false
-      },
-
-      // DMs are keyed by exact Slack user ID. This authorizes only the owner.
-      "dms": {
-        "U01OWNER": {
-          "workspace": "company",
-          "access": "admin",
-          "audit": false
-        }
-      },
-
-      // Channels are keyed by exact channel ID. Every human member uses the
-      // same route, even an administrator. Use a separate internal channel
-      // for broader authority over the same project files.
-      "channels": {
-        "C0ACME": {
-          "workspace": "acme",
-          "access": "client-readonly",
-          "audit": true
-        },
-        "C0ACMEINTERNAL": {
-          "workspace": "acme",
-          "access": "staff",
-          "audit": false
-        },
-        // Fully responsive override: false/false dispatches every top-level
-        // message (replies always land in its thread) and follows joined
-        // threads. true/true is mention-only; mixed values give the two
-        // in-between modes.
-        "C0COMPANY": {
-          "workspace": "company",
-          "access": "staff",
-          "audit": false,
-          "mention_required": false,
-          "thread_mention_required": false
-        }
-      }
-    }
-  },
-
   "audit": {
     "on_failure": "block",
     "max_age_days": 365
   }
 }
 
-// Every ~/.enso/jobs/<name>/JOB.md separately declares both names, for example:
+// Every ~/.enso/jobs/<name>/JOB.md declares its workspace, for example:
 //
-//   workspace: company
-//   access: automation
+//   workspace: automation
 //
-// The job's provider runs in that workspace under that access profile's native
+// The job's provider runs under the workspace policy's native
 // policy. Missing or invalid bindings never fall back to unrestricted execution.

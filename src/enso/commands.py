@@ -169,7 +169,7 @@ def cmd_effort(
 
 
 async def cmd_compact_async(
-    runtime: Runtime, conv_id: str, *, context: ExecutionContext | None = None,
+    runtime: Runtime, conv_id: str, *, context: ExecutionContext,
 ) -> str:
     """Compact the active provider's session: summarise → clear → stash seed.
 
@@ -196,7 +196,7 @@ async def cmd_compact_async(
         return "Compaction failed — no summary produced. Session left untouched."
 
     # Clear only the active provider; cmd_clear without clear_all does that.
-    cmd_clear(runtime, conv_id, working_dir=context.path if context else None)
+    cmd_clear(runtime, conv_id, context=context)
     runtime.compact_seed_by_chat[conv_id] = summary
     runtime.save_state()
     log.info(
@@ -247,21 +247,19 @@ def cmd_clear(
     runtime: Runtime,
     conv_id: str,
     *,
+    context: ExecutionContext,
     clear_all: bool = False,
-    working_dir: str | None = None,
 ) -> list[str]:
-    """Clear sessions and return summary lines per provider.
-
-    ``working_dir`` locates provider session files; Slack routes pass their
-    named workspace path, while Telegram defaults to the global working_dir.
-    """
+    """Clear policy-allowed sessions and return one summary per provider."""
     parts = []
-    session_dir = working_dir or runtime.working_dir
-    for prov_name in PROVIDER_NAMES:
+    allowed = [name for name in context.policy.providers if name in PROVIDER_NAMES]
+    for prov_name in allowed:
         if clear_all or runtime.get_active_provider(conv_id) == prov_name:
             sid = runtime.session_by_chat_provider.pop((conv_id, prov_name), None)
-            provider = runtime.make_provider(prov_name)
-            summary = provider.clear_session(sid, session_dir)
+            provider = runtime.make_provider(prov_name, context=context)
+            summary = provider.clear_session(
+                sid, context.path, policy_dir=context.policy.policy_dir
+            )
             parts.append(f"{prov_name.capitalize()}: {summary}")
     runtime.save_state()
     return parts

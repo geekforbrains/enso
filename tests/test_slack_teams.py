@@ -12,6 +12,7 @@ import pytest
 pytest.importorskip("slack_bolt")
 
 from enso.core import Runtime
+from enso.surface_drafts import SurfaceDraftOrigin
 from enso.transports.slack import SlackTransport
 from enso.transports.slack_teams import _key_digest
 
@@ -39,10 +40,27 @@ def _teams_config(tmp_enso: str) -> dict:
     )
     codex.chmod(0o600)
     return {
-        "working_dir": str(base / "workspace"),
         "transport": "slack",
         "transports": {
-            "slack": {"bot_token": "xoxb-x", "app_token": "xapp-x", "bot_user_id": "UBOT"},
+            "slack": {
+                "bot_token": "xoxb-x",
+                "app_token": "xapp-x",
+                "bot_user_id": "UBOT",
+                "account_id": ACCOUNT,
+                "dms": {
+                    ADMIN: {"workspace": "ops", "audit": False},
+                },
+                "channels": {
+                    "C0ACME": {
+                        "workspace": "acme",
+                        "audit": True,
+                    },
+                    "C0OPS": {
+                        "workspace": "ops",
+                        "audit": False,
+                    },
+                },
+            },
         },
         "providers": {
             "claude": {"path": "claude", "models": ["opus", "sonnet"]},
@@ -50,10 +68,10 @@ def _teams_config(tmp_enso: str) -> dict:
             "agy": {"path": "agy", "models": ["g"]},
         },
         "workspaces": {
-            "ops": {"path": str(ops)},
-            "acme": {"path": str(acme)},
+            "ops": {"path": str(ops), "policy": "admin"},
+            "acme": {"path": str(acme), "policy": "client"},
         },
-        "access": {
+        "policies": {
             "admin": {
                 "unrestricted": True,
                 "providers": ["claude", "codex", "agy"],
@@ -66,26 +84,6 @@ def _teams_config(tmp_enso: str) -> dict:
                 "default_provider": "claude",
                 "chat_commands": ["status", "clear", "stop", "help", "use", "compact"],
             },
-        },
-        "routes": {
-            "slack": {
-                "account_id": ACCOUNT,
-                "dms": {
-                    ADMIN: {"workspace": "ops", "access": "admin", "audit": False},
-                },
-                "channels": {
-                    "C0ACME": {
-                        "workspace": "acme",
-                        "access": "client",
-                        "audit": True,
-                    },
-                    "C0OPS": {
-                        "workspace": "ops",
-                        "access": "admin",
-                        "audit": False,
-                    },
-                },
-            }
         },
     }
 
@@ -105,6 +103,7 @@ def _make_transport(tmp_enso, _monkeypatch, config=None):
     transport = SlackTransport(runtime)
     assert transport.teams_router is not None
     transport.teams_router.set_authenticated_account(ACCOUNT)
+    transport._cache_account_id = ACCOUNT
     return transport, runtime
 
 
@@ -148,6 +147,31 @@ def _audit_rows(tmp_enso):
 # -- authorization outcomes --
 
 
+def test_surface_origin_reauthorizes_derived_workspace_policy(tmp_enso, monkeypatch):
+    config = _teams_config(tmp_enso)
+    transport, _rt = _make_transport(tmp_enso, monkeypatch, config)
+    router = transport.teams_router
+    assert router is not None
+    origin = SurfaceDraftOrigin(
+        account_id=ACCOUNT,
+        route_id="slack.channel.C0ACME",
+        route_kind="channel",
+        workspace_id="acme",
+        policy="client",
+        route_audit=True,
+        user_id=DEV,
+        channel_id="C0ACME",
+    )
+
+    assert router.surface_origin_authorized(origin)
+
+    config["workspaces"]["acme"]["policy"] = "admin"
+    changed, _rt = _make_transport(tmp_enso, monkeypatch, config)
+    changed_router = changed.teams_router
+    assert changed_router is not None
+    assert not changed_router.surface_origin_authorized(origin)
+
+
 async def test_authorized_mention_dispatches_with_policy_context(tmp_enso, monkeypatch):
     transport, rt = _make_transport(tmp_enso, monkeypatch)
     client = _make_client()
@@ -162,8 +186,8 @@ async def test_authorized_mention_dispatches_with_policy_context(tmp_enso, monke
     assert context.path.endswith("workspaces/acme")
     assert context.launch is None
     assert context.workspace.name == "acme"
-    assert context.access.name == "client"
-    assert not context.access.unrestricted
+    assert context.policy.name == "client"
+    assert not context.policy.unrestricted
     assert context.chat_key.startswith("teams:")
     # Audited route: an accepted provider turn exists before the spawn.
     (row,) = _audit_rows(tmp_enso)
@@ -317,8 +341,8 @@ async def test_authorized_dm_uses_dm_route_workspace(tmp_enso, monkeypatch):
     context = rt.dispatch.call_args.kwargs["context"]
     assert context.workspace_id == "ops"
     assert context.launch is None
-    assert context.access.name == "admin"
-    assert context.access.unrestricted
+    assert context.policy.name == "admin"
+    assert context.policy.unrestricted
 
 
 async def test_dm_without_route_gets_fixed_inline_reply(tmp_enso, monkeypatch):
@@ -395,7 +419,7 @@ async def test_missing_policy_gets_config_error(tmp_enso, monkeypatch):
 
 async def test_unusable_route_gets_config_error(tmp_enso, monkeypatch):
     config = _teams_config(tmp_enso)
-    config["routes"]["slack"]["channels"]["C0ACME"]["workspace"] = "ghost"
+    config["transports"]["slack"]["channels"]["C0ACME"]["workspace"] = "ghost"
     transport, rt = _make_transport(tmp_enso, monkeypatch, config)
     client = _make_client()
     await transport._handle_app_mention(_mention(), client)
@@ -465,7 +489,7 @@ async def test_allowed_command_runs_and_is_recorded(tmp_enso, monkeypatch):
     assert "claude" in row["response_text"]
 
 
-async def test_use_lists_only_access_profile_providers(tmp_enso, monkeypatch):
+async def test_use_lists_only_policy_providers(tmp_enso, monkeypatch):
     transport, _rt = _make_transport(tmp_enso, monkeypatch)
     client = _make_client()
     await transport._handle_app_mention(_mention(text="<@UBOT> !use"), client)
@@ -475,7 +499,7 @@ async def test_use_lists_only_access_profile_providers(tmp_enso, monkeypatch):
     assert "agy" not in reply
 
 
-async def test_use_refuses_provider_outside_access_profile(tmp_enso, monkeypatch):
+async def test_use_refuses_provider_outside_policy(tmp_enso, monkeypatch):
     transport, _rt = _make_transport(tmp_enso, monkeypatch)
     client = _make_client()
     await transport._handle_app_mention(_mention(text="<@UBOT> !use agy"), client)
@@ -519,8 +543,8 @@ async def test_channel_context_includes_all_authors_as_untrusted(tmp_enso, monke
 async def test_routes_are_a_startup_snapshot(tmp_enso, monkeypatch):
     config = _teams_config(tmp_enso)
     transport, rt = _make_transport(tmp_enso, monkeypatch, config)
-    config["routes"]["slack"]["channels"]["C0ACME"]["workspace"] = "ghost"
-    config["routes"]["slack"]["account_id"] = "TDIFFERENT"
+    config["transports"]["slack"]["channels"]["C0ACME"]["workspace"] = "ghost"
+    config["transports"]["slack"]["account_id"] = "TDIFFERENT"
 
     await transport._handle_app_mention(_mention(), _make_client())
 
@@ -586,7 +610,7 @@ def _ledger_rows(tmp_enso):
 
 def _triggers_config(tmp_enso, **settings):
     config = _teams_config(tmp_enso)
-    config["routes"]["slack"]["channels"]["C0ACME"].update(settings)
+    config["transports"]["slack"]["channels"]["C0ACME"].update(settings)
     return config
 
 
@@ -863,7 +887,7 @@ async def test_enso_rooted_dispatch_joins_the_thread(tmp_enso, monkeypatch):
 async def test_unrouted_channel_ignores_enso_rooted_thread_replies(tmp_enso, monkeypatch):
     """Enso posting into an unrouted channel never authorizes that channel."""
     config = _teams_config(tmp_enso)
-    config["routes"]["slack"]["channel_defaults"] = {
+    config["transports"]["slack"]["channel_defaults"] = {
         "mention_required": False,
         "thread_mention_required": False,
     }
@@ -890,7 +914,7 @@ async def test_unrouted_channels_ignore_unmentioned_messages_despite_defaults(
 ):
     """channel_defaults is settings inheritance, never authorization."""
     config = _teams_config(tmp_enso)
-    config["routes"]["slack"]["channel_defaults"] = {
+    config["transports"]["slack"]["channel_defaults"] = {
         "mention_required": False,
         "thread_mention_required": False,
     }
@@ -938,7 +962,7 @@ async def test_injected_context_unescapes_slack_entities(tmp_enso, monkeypatch):
 async def test_restricted_channel_still_gets_pushed_context_it_cannot_pull(
     tmp_enso, monkeypatch
 ):
-    """A policy profile keeps the push: its sandbox cannot run the CLI to pull."""
+    """A restricted policy keeps the push: its sandbox cannot run the CLI to pull."""
     config = _triggers_config(tmp_enso, mention_required=False)
     transport, rt = _make_transport(tmp_enso, monkeypatch, config)
     client = _make_client()
@@ -955,9 +979,9 @@ async def test_restricted_channel_still_gets_pushed_context_it_cannot_pull(
 
 
 def _ops_triggers_config(tmp_enso, **settings):
-    """C0OPS routes to the unrestricted admin profile, so it can pull."""
+    """C0OPS routes to the unrestricted admin policy, so it can pull."""
     config = _teams_config(tmp_enso)
-    config["routes"]["slack"]["channels"]["C0OPS"].update(settings)
+    config["transports"]["slack"]["channels"]["C0OPS"].update(settings)
     return config
 
 
@@ -1128,7 +1152,7 @@ async def test_channel_defaults_relax_channels_at_the_transport_level(
     tmp_enso, monkeypatch
 ):
     config = _teams_config(tmp_enso)
-    config["routes"]["slack"]["channel_defaults"] = {"mention_required": False}
+    config["transports"]["slack"]["channel_defaults"] = {"mention_required": False}
     transport, rt = _make_transport(tmp_enso, monkeypatch, config)
     client = _make_client()
 
@@ -1211,7 +1235,8 @@ async def test_removed_allowlist_invalidates_exact_route_config(tmp_enso, monkey
 
 async def test_allowlist_without_routes_cannot_enable_slack(tmp_enso, monkeypatch):
     config = _teams_config(tmp_enso)
-    del config["routes"]
+    for key in ("account_id", "dms", "channels"):
+        config["transports"]["slack"].pop(key)
     config["transports"]["slack"]["allowed_users"] = [DEV]
     runtime = Runtime(config)
     runtime.dispatch = AsyncMock()
@@ -1219,7 +1244,8 @@ async def test_allowlist_without_routes_cannot_enable_slack(tmp_enso, monkeypatc
     assert transport.teams_router is not None
     assert not transport.teams_router.teams.dispatchable
     assert any(
-        "routes.slack is required" in problem for problem in transport.teams_router.teams.errors
+        "transports.slack.account_id is required" in problem
+        for problem in transport.teams_router.teams.errors
     )
     client = _make_client()
     await transport._handle_app_mention(_mention(), client)

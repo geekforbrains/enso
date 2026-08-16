@@ -17,12 +17,11 @@ runner = CliRunner()
 
 def configure_job_catalog(tmp_enso: str) -> None:
     config = load_config()
-    workspace = str(Path(tmp_enso) / "workspace")
-    config["working_dir"] = workspace
+    workspace = str(Path(tmp_enso) / "workspaces" / "default")
     config["workspaces"] = {
-        "default": {"path": workspace, "concurrency": 1},
+        "default": {"path": workspace, "policy": "admin", "concurrency": 1},
     }
-    config["access"] = {
+    config["policies"] = {
         "admin": {
             "unrestricted": True,
             "providers": ["claude"],
@@ -102,8 +101,6 @@ def test_job_create_uses_safe_slug_and_refuses_duplicate(tmp_enso):
         "0 9 * * *",
         "--workspace",
         "default",
-        "--access",
-        "admin",
     ]
 
     first = runner.invoke(cli_mod.app, args)
@@ -137,8 +134,6 @@ def test_job_create_rejects_name_without_slug_characters(tmp_enso):
             "0 9 * * *",
             "--workspace",
             "default",
-            "--access",
-            "admin",
         ],
     )
 
@@ -147,7 +142,7 @@ def test_job_create_rejects_name_without_slug_characters(tmp_enso):
     assert not (Path(tmp_enso) / "jobs").exists()
 
 
-def test_job_create_requires_workspace_and_access(tmp_enso):
+def test_job_create_requires_workspace(tmp_enso):
     configure_job_catalog(tmp_enso)
     result = runner.invoke(
         cli_mod.app,
@@ -168,7 +163,7 @@ def test_job_create_requires_workspace_and_access(tmp_enso):
     assert result.exit_code != 0
     assert "workspace" in result.output
 
-    result = runner.invoke(
+    configured = runner.invoke(
         cli_mod.app,
         [
             "job",
@@ -185,5 +180,4 @@ def test_job_create_requires_workspace_and_access(tmp_enso):
             "default",
         ],
     )
-    assert result.exit_code != 0
-    assert "access" in result.output
+    assert configured.exit_code == 0

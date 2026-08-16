@@ -97,6 +97,50 @@ class TestLoadSave:
         data = slack_cache.load()
         assert data["users"]["items"] == {}
 
+    def test_bind_account_preserves_matching_cache_and_resets_unbound_or_foreign_data(
+        self, tmp_enso
+    ):
+        matching = slack_cache._empty_cache()
+        matching["team_id"] = "T1"
+        matching["users"]["items"] = {"U1": {"id": "U1"}}
+        assert slack_cache.bind_account("T1", matching)["users"]["items"] == {
+            "U1": {"id": "U1"}
+        }
+
+        for previous_team in ("", "T2"):
+            stale = slack_cache._empty_cache()
+            stale["team_id"] = previous_team
+            stale["users"]["items"] = {"U1": {"id": "U1"}}
+            stale["channels"]["items"] = {"C1": {"id": "C1"}}
+            stale["dm_cache"] = {"U1": "D1"}
+
+            rebound = slack_cache.bind_account("T1", stale)
+
+            assert rebound == {
+                "team_id": "T1",
+                "users": {"fetched_at": 0.0, "items": {}},
+                "channels": {"fetched_at": 0.0, "items": {}},
+                "dm_cache": {},
+            }
+            assert slack_cache.load() == rebound
+
+    def test_load_for_account_rejects_unbound_and_foreign_cache(self, tmp_enso):
+        cache = slack_cache._empty_cache()
+        cache["users"]["items"] = {"U1": {"id": "U1"}}
+        slack_cache.save(cache)
+
+        assert slack_cache.load_for_account("T1")["users"]["items"] == {}
+
+        cache["team_id"] = "T2"
+        slack_cache.save(cache)
+        assert slack_cache.load_for_account("T1")["users"]["items"] == {}
+
+        cache["team_id"] = "T1"
+        slack_cache.save(cache)
+        assert slack_cache.load_for_account("T1")["users"]["items"] == {
+            "U1": {"id": "U1"}
+        }
+
 
 # ---------------------------------------------------------------------------
 # Normalisation

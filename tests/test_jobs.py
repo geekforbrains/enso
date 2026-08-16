@@ -11,6 +11,7 @@ from enso import frontmatter
 from enso.config import load_config, save_config
 from enso.jobs import (
     Job,
+    _parse_job,
     create_job,
     job_config_error,
     load_jobs,
@@ -27,8 +28,10 @@ def configured_job_catalog(tmp_enso):
     config = load_config()
     config.update(
         {
-            "workspaces": {"company": {"path": str(workspace)}},
-            "access": {
+            "workspaces": {
+                "company": {"path": str(workspace), "policy": "automation"}
+            },
+            "policies": {
                 "automation": {
                     "unrestricted": True,
                     "providers": ["claude", "codex"],
@@ -45,7 +48,6 @@ def _create_job(*args, **kwargs):
     return create_job(
         *args,
         workspace="company",
-        access="automation",
         **kwargs,
     )
 
@@ -62,7 +64,6 @@ model: sonnet
 enabled: true
 prerun: check.sh
 workspace: company
-access: automation
 ---
 
 Do the thing. {{prerun_output}}
@@ -76,20 +77,18 @@ Do the thing. {{prerun_output}}
     assert job.enabled is True
     assert job.prerun == "check.sh"
     assert job.workspace == "company"
-    assert job.access == "automation"
     assert "{{prerun_output}}" in job.prompt
 
 
-@pytest.mark.parametrize("missing", ["workspace", "access"])
+@pytest.mark.parametrize("missing", ["workspace"])
 def test_parse_job_requires_execution_binding(tmp_path, missing):
-    """Every job declares both halves of its named execution binding."""
+    """Every job declares its named workspace binding."""
     fields = {
         "name": "Bound job",
         "schedule": "0 9 * * *",
         "provider": "claude",
         "model": "sonnet",
         "workspace": "company",
-        "access": "automation",
     }
     fields.pop(missing)
     job_file = tmp_path / "JOB.md"
@@ -108,7 +107,6 @@ schedule: "0 0 * * *"
 provider: codex
 model: luna
 workspace: company
-access: automation
 enabled: false
 ---
 
@@ -129,7 +127,6 @@ schedule: "0 0 * * *"
 provider: claude
 model: sonnet
 workspace: company
-access: automation
 enabled : false  # temporarily paused
 catch_up: true  # run a missed invocation
 ---
@@ -172,7 +169,6 @@ def test_create_job(tmp_enso):
     assert job.name == "My Job"
     assert job.schedule == "30 6 * * *"
     assert job.workspace == "company"
-    assert job.access == "automation"
     assert job.enabled is False
     assert job.prompt == "Your prompt here."
 
@@ -182,7 +178,6 @@ def test_create_job(tmp_enso):
     assert parsed.name == "My Job"
     assert parsed.provider == "claude"
     assert parsed.workspace == "company"
-    assert parsed.access == "automation"
     assert parsed.enabled is False
     assert parsed.prompt == job.prompt
 
@@ -212,7 +207,6 @@ def test_create_job_quotes_yaml_sensitive_values(tmp_enso):
         "provider": "claude",
         "model": "null",
         "workspace": "company",
-        "access": "automation",
         "enabled": False,
     }
     assert body == "Your prompt here.\n"
@@ -256,7 +250,6 @@ schedule: "0 9 * * *"
 provider: claude
 model: sonnet
 workspace: company
-access: automation
 enabled: true  # legacy comment
 ---
 
@@ -268,6 +261,30 @@ Prompt.
     assert parsed is not None
     assert parsed.name == "Daily: Review"
     assert parsed.enabled is True
+
+
+@pytest.mark.parametrize("field", ["access", "policy"])
+def test_parse_job_rejects_policy_override(tmp_path, field):
+    job_file = tmp_path / "JOB.md"
+    job_file.write_text(f"""\
+---
+name: Legacy binding
+schedule: "0 9 * * *"
+provider: claude
+model: sonnet
+workspace: company
+{field}: automation
+---
+
+Prompt.
+""")
+
+    job, errors = _parse_job("legacy", str(job_file))
+
+    assert job is None
+    assert errors == (
+        f"Field '{field}' is not supported; jobs derive policy from workspace",
+    )
 
 
 @pytest.mark.parametrize(
@@ -312,35 +329,31 @@ def test_create_job_rejects_unknown_model(tmp_enso):
     assert not os.path.isdir(os.path.join(tmp_enso, "jobs", "bad"))
 
 
-@pytest.mark.parametrize(
-    ("workspace", "access", "expected"),
-    [
-        ("missing", "automation", "Unknown workspace 'missing'"),
-        ("company", "missing", "Unknown access profile 'missing'"),
-    ],
-)
-def test_create_job_rejects_unknown_execution_binding(
-    tmp_enso,
-    workspace,
-    access,
-    expected,
-):
-    with pytest.raises(ValueError, match=expected):
+def test_create_job_rejects_unknown_workspace(tmp_enso):
+    with pytest.raises(ValueError, match="Unknown workspace 'missing'"):
         create_job(
             "bad",
             "Bad",
             "claude",
             "sonnet",
             "0 0 * * *",
-            workspace=workspace,
-            access=access,
+            workspace="missing",
         )
     assert not os.path.isdir(os.path.join(tmp_enso, "jobs", "bad"))
 
 
-def test_create_job_rejects_provider_disallowed_by_access(tmp_enso):
+def test_create_job_rejects_unknown_workspace_policy(tmp_enso):
     config = load_config()
-    config["access"]["automation"]["providers"] = ["claude"]
+    config["workspaces"]["company"]["policy"] = "missing"
+    save_config(config)
+
+    with pytest.raises(ValueError, match="unknown policy 'missing'"):
+        _create_job("bad", "Bad", "claude", "sonnet", "0 0 * * *")
+
+
+def test_create_job_rejects_provider_disallowed_by_policy(tmp_enso):
+    config = load_config()
+    config["policies"]["automation"]["providers"] = ["claude"]
     save_config(config)
 
     with pytest.raises(ValueError, match="does not allow provider 'codex'"):
@@ -351,7 +364,6 @@ def test_create_job_rejects_provider_disallowed_by_access(tmp_enso):
             "luna",
             "0 0 * * *",
             workspace="company",
-            access="automation",
         )
     assert not os.path.isdir(os.path.join(tmp_enso, "jobs", "bad"))
 
@@ -435,7 +447,6 @@ def test_load_jobs_with_errors_reports_dropped_job_fields(tmp_enso):
             "schedule": "0 9 * * *",
             "provider": "claude",
             "model": "sonnet",
-            "workspace": "company",
         },
         "Prompt.",
     )
@@ -443,7 +454,7 @@ def test_load_jobs_with_errors_reports_dropped_job_fields(tmp_enso):
     jobs, errors = load_jobs_with_errors()
 
     assert jobs == []
-    assert errors == {"broken": ("Missing required fields: access",)}
+    assert errors == {"broken": ("Missing required fields: workspace",)}
     assert load_jobs() == []
 
 
@@ -458,7 +469,6 @@ def test_load_jobs_with_errors_validates_parsed_jobs_against_config(tmp_enso):
             "provider": "claude",
             "model": "bogus",
             "workspace": "missing",
-            "access": "automation",
         },
         "Prompt.",
     )
@@ -492,7 +502,6 @@ schedule: "0 9 * * *"
 provider: claude
 model: sonnet
 workspace: company
-access: automation
 notify: alerts
 ---
 
@@ -513,7 +522,6 @@ schedule: "*/15 * * * *"
 provider: codex
 model: gpt-5.5
 workspace: company
-access: automation
 timeout: 1800
 prerun_timeout: 45
 catch_up: true
@@ -540,7 +548,6 @@ schedule: "0 9 * * *"
 provider: claude
 model: sonnet
 workspace: company
-access: automation
 ---
 
 Do stuff.
@@ -559,7 +566,6 @@ def test_job_dir_property():
         provider="claude",
         model="sonnet",
         workspace="company",
-        access="automation",
     )
     assert job.job_dir.endswith("/foo")
 

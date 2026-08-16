@@ -29,13 +29,18 @@ from . import __version__, slack_cache, tables
 from .auth import parse_telegram_allowed_users
 from .config import (
     CONFIG_FILE,
+    DEFAULT_POLICY_NAME,
+    DEFAULT_WORKSPACE_NAME,
     detect_providers,
     load_config,
+    managed_workspace_path,
     provider_models,
     resolve_providers,
     save_config,
+    unrestricted_policy_config,
 )
 from .docs import MAX_DOCS, create_doc, load_docs
+from .fsutil import is_within
 from .jobs import create_job, load_jobs, load_jobs_with_errors
 from .logging_config import configure_logging
 from .messages import clear as msg_clear
@@ -63,7 +68,7 @@ table_app = typer.Typer(help="Manage registered SQLite data tables")
 message_app = typer.Typer(help="Send messages and files via the configured transport")
 service_app = typer.Typer(help="Manage the background service")
 slack_app = typer.Typer(help="Slack directory lookups and message search")
-config_app = typer.Typer(help="Validate routes, workspaces, access, jobs, and policies")
+config_app = typer.Typer(help="Validate routes, workspaces, policies, and jobs")
 route_app = typer.Typer(help="Explain Slack routing decisions")
 audit_app = typer.Typer(help="Inspect the Slack audit trail")
 app.add_typer(job_app, name="job")
@@ -365,7 +370,7 @@ def _service_is_running() -> bool:
     )
 
 
-def _service_install(config: dict) -> bool:
+def _service_install() -> bool:
     """Write and load the platform service definition. Returns True on success."""
     enso_bin = _find_enso_bin()
     if not enso_bin:
@@ -374,18 +379,17 @@ def _service_install(config: dict) -> bool:
 
     platform = _service_platform()
     if platform == "launchd":
-        return _install_launchd(config, enso_bin)
+        return _install_launchd(enso_bin)
     if platform == "systemd":
-        return _install_systemd(config, enso_bin)
+        return _install_systemd(enso_bin)
 
     console.print(f"[yellow]Service install not supported on {sys.platform}.[/]")
     return False
 
 
-def _install_launchd(config: dict, enso_bin: str) -> bool:
+def _install_launchd(enso_bin: str) -> bool:
     """Write and load a macOS launchd plist."""
     path_str = _build_path_str(enso_bin)
-    working_dir = config.get("working_dir", os.getcwd())
     log_path = os.path.expanduser("~/.enso/enso.log")
 
     # Snapshot API keys and essential env vars so provider CLIs work
@@ -410,8 +414,6 @@ def _install_launchd(config: dict, enso_bin: str) -> bool:
         <string>{enso_bin}</string>
         <string>serve</string>
     </array>
-    <key>WorkingDirectory</key>
-    <string>{working_dir}</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
@@ -454,10 +456,9 @@ def _install_launchd(config: dict, enso_bin: str) -> bool:
         return False
 
 
-def _install_systemd(config: dict, enso_bin: str) -> bool:
+def _install_systemd(enso_bin: str) -> bool:
     """Write and enable a systemd user service."""
     path_str = _build_path_str(enso_bin)
-    working_dir = config.get("working_dir", os.getcwd())
 
     extra_env = ""
     for key in _ENSO_TUNING_ENV_KEYS:
@@ -472,7 +473,6 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory={working_dir}
 ExecStart={enso_bin} serve
 Restart=always
 RestartSec=5
@@ -593,48 +593,92 @@ def _setup_providers(config: dict) -> None:
         console.print(f"Install at least one of: {', '.join(PROVIDER_NAMES)}")
 
 
-def _ensure_default_execution_config(config: dict) -> tuple[str, str]:
-    """Seed the default workspace and unrestricted admin access profile.
+def _setup_workspace_path(
+    candidate: object,
+    name: object,
+    *,
+    default: str | None = None,
+) -> str | None:
+    """Resolve one setup workspace path without depending on process cwd."""
+    if not isinstance(candidate, dict):
+        return None
+    configured = candidate.get("path", default)
+    if configured is None:
+        return None
+    if not isinstance(configured, str) or not configured:
+        raise ValueError(f"workspace {name!r} path must be a non-empty string")
+    expanded = os.path.expanduser(configured)
+    if not os.path.isabs(expanded):
+        raise ValueError(f"workspace {name!r} path must be absolute or start with ~/")
+    return os.path.realpath(expanded)
 
-    Setup uses these names for the first exact Slack DM route and new jobs.
-    Existing definitions are preserved verbatim.
-    """
-    workspace_name = "default"
-    access_name = "admin"
-    working_dir = os.path.abspath(
-        os.path.expanduser(
-            str(config.get("working_dir") or os.path.join("~", ".enso", "workspace"))
-        )
+
+def _select_setup_workspace(workspaces: dict) -> tuple[str, dict]:
+    """Choose the default path owner and reject ambiguous filesystem topology."""
+    managed_path = os.path.realpath(managed_workspace_path())
+    selected_name = DEFAULT_WORKSPACE_NAME
+    if DEFAULT_WORKSPACE_NAME not in workspaces:
+        for name, candidate in workspaces.items():
+            if _setup_workspace_path(candidate, name) != managed_path:
+                continue
+            if selected_name != DEFAULT_WORKSPACE_NAME:
+                raise ValueError(
+                    f"managed default workspace path {managed_path} is already used "
+                    f"by both {selected_name!r} and {name!r}"
+                )
+            selected_name = name
+
+    configured = workspaces.get(selected_name)
+    workspace = configured if isinstance(configured, dict) else {}
+    selected_path = _setup_workspace_path(
+        workspace,
+        selected_name,
+        default=managed_workspace_path(),
     )
+    assert selected_path is not None
+    for name, candidate in workspaces.items():
+        if name == selected_name:
+            continue
+        existing_path = _setup_workspace_path(candidate, name)
+        if existing_path is not None and (
+            is_within(existing_path, selected_path)
+            or is_within(selected_path, existing_path)
+        ):
+            raise ValueError(
+                f"default workspace path {selected_path} would overlap configured "
+                f"workspace {name!r} at {existing_path}"
+            )
+    return selected_name, workspace
 
+
+def _ensure_default_execution_config(config: dict) -> str:
+    """Seed the default workspace and its reusable unrestricted admin policy.
+
+    Setup uses the workspace for the first exact Slack DM route and new jobs.
+    Existing definitions are retained; a missing workspace policy is filled in.
+    """
     workspaces = config.get("workspaces")
     if not isinstance(workspaces, dict):
         workspaces = {}
         config["workspaces"] = workspaces
-    workspaces.setdefault(
-        workspace_name,
-        {"path": working_dir, "concurrency": 1},
-    )
+    workspace_name, workspace = _select_setup_workspace(workspaces)
+    if not isinstance(workspaces.get(workspace_name), dict):
+        workspaces[workspace_name] = workspace
+    workspace.setdefault("path", managed_workspace_path())
+    workspace.setdefault("policy", DEFAULT_POLICY_NAME)
+    workspace.setdefault("concurrency", 1)
 
-    access = config.get("access")
-    if not isinstance(access, dict):
-        access = {}
-        config["access"] = access
+    policies = config.get("policies")
+    if not isinstance(policies, dict):
+        policies = {}
+        config["policies"] = policies
     configured = provider_models(config)
-    providers = [name for name in PROVIDER_NAMES if name in configured]
-    if not providers:
-        providers = list(PROVIDER_NAMES)
-    default_provider = "claude" if "claude" in providers else providers[0]
-    access.setdefault(
-        access_name,
-        {
-            "unrestricted": True,
-            "providers": providers,
-            "default_provider": default_provider,
-            "chat_commands": "*",
-        },
-    )
-    return workspace_name, access_name
+    if workspace["policy"] == DEFAULT_POLICY_NAME:
+        policies.setdefault(
+            DEFAULT_POLICY_NAME,
+            unrestricted_policy_config(list(configured)),
+        )
+    return workspace_name
 
 
 def _setup_transport(config: dict) -> int | None:
@@ -658,6 +702,9 @@ def _setup_transport(config: dict) -> int | None:
 def _setup_telegram(config: dict) -> int | None:
     """Configure Telegram bot and capture user. Returns chat_id or None."""
     tg_cfg = config.get("transports", {}).get("telegram", {})
+    workspace = tg_cfg.get("workspace")
+    if not isinstance(workspace, str) or not workspace:
+        workspace = None
     try:
         current_token = resolve_config_secret(tg_cfg, "bot_token")
     except SecretResolutionError as exc:
@@ -673,6 +720,8 @@ def _setup_telegram(config: dict) -> int | None:
             if current_users:
                 console.print(f"  Allowed users: {current_users}")
             if not Confirm.ask("\n  Reconfigure Telegram?", default=False):
+                default_workspace = _ensure_default_execution_config(config)
+                tg_cfg.setdefault("workspace", workspace or default_workspace)
                 return None
             current_users = []
         else:
@@ -699,16 +748,20 @@ def _setup_telegram(config: dict) -> int | None:
                 token,
                 "Telegram bot token",
             )
+            default_workspace = _ensure_default_execution_config(config)
+            workspace = workspace or default_workspace
             if is_reference:
                 next_cfg = dict(tg_cfg)
                 next_cfg.pop("bot_token", None)
                 next_cfg.pop("allowed_user_ids", None)
                 next_cfg["allowed_users"] = current_users
+                next_cfg["workspace"] = workspace
             else:
                 next_cfg = {
                     "bot_token": token,
                     "allowed_users": current_users,
                     "notify_channel": tg_cfg.get("notify_channel", ""),
+                    "workspace": workspace,
                 }
             config.setdefault("transports", {})["telegram"] = next_cfg
             current_token = token
@@ -1036,12 +1089,21 @@ def _write_slack_manifest_copy() -> str:
 # so splitting it would only scatter the script the user is walked through.
 def _setup_slack(config: dict) -> None:  # noqa: C901
     """Configure Slack credentials and one exact routed owner DM."""
+    if "routes" in config:
+        console.print(
+            "[red]  Legacy top-level routes are no longer supported; move"
+            " routes.slack fields into transports.slack, remove routes, and"
+            " rerun setup.[/]"
+        )
+        raise typer.Exit(1)
     slack_cfg = config.get("transports", {}).get("slack", {})
     manifest_path = _write_slack_manifest_copy()
-    routes_block = config.get("routes")
     existing_routes = (
-        routes_block.get("slack")
-        if isinstance(routes_block, dict) and isinstance(routes_block.get("slack"), dict)
+        slack_cfg
+        if isinstance(slack_cfg.get("account_id"), str)
+        and slack_cfg.get("account_id")
+        and ("dms" not in slack_cfg or isinstance(slack_cfg["dms"], dict))
+        and ("channels" not in slack_cfg or isinstance(slack_cfg["channels"], dict))
         else None
     )
     needs_allowlist_migration = "allowed_users" in slack_cfg
@@ -1175,6 +1237,8 @@ def _setup_slack(config: dict) -> None:  # noqa: C901
     app_is_reference = reference_updates["app_token"]
     next_cfg = dict(slack_cfg)
     next_cfg.pop("allowed_users", None)
+    next_cfg.setdefault("dms", {})
+    next_cfg.setdefault("channels", {})
     if bot_is_reference:
         next_cfg.pop("bot_token", None)
     else:
@@ -1189,19 +1253,21 @@ def _setup_slack(config: dict) -> None:  # noqa: C901
             "notify_channel": notify,
         }
     )
-    config.setdefault("transports", {})["slack"] = next_cfg
     if reset_routes:
-        workspace, access = _ensure_default_execution_config(config)
-        config.setdefault("routes", {})["slack"] = {
-            "account_id": team_id,
-            "dms": {
-                owner_id: {
-                    "workspace": workspace,
-                    "access": access,
+        workspace = _ensure_default_execution_config(config)
+        next_cfg.pop("channel_defaults", None)
+        next_cfg.update(
+            {
+                "account_id": team_id,
+                "dms": {
+                    owner_id: {
+                        "workspace": workspace,
+                    },
                 },
+                "channels": {},
             },
-            "channels": {},
-        }
+        )
+    config.setdefault("transports", {})["slack"] = next_cfg
 
 
 # ---------------------------------------------------------------------------
@@ -1209,22 +1275,43 @@ def _setup_slack(config: dict) -> None:  # noqa: C901
 # ---------------------------------------------------------------------------
 
 
+def _reject_legacy_setup_config(config: dict) -> None:
+    """Stop setup before it partially rewrites a manual workspace migration."""
+    if "working_dir" not in config:
+        return
+    console.print(
+        "[red]working_dir is no longer supported. Move that directory into a"
+        " named workspaces entry (normally default), bind Telegram to the"
+        " workspace if configured, remove working_dir, and rerun setup.[/]"
+    )
+    raise typer.Exit(1)
+
+
+def _setup_default_workspace(config: dict) -> str:
+    """Resolve or create setup's managed workspace without creating overlaps."""
+    console.rule("[bold]Step 2 \u00b7 Workspace")
+    try:
+        name = _ensure_default_execution_config(config)
+    except ValueError as exc:
+        console.print(f"[red]Could not create default workspace:[/] {exc}")
+        raise typer.Exit(1) from None
+    workspace = config["workspaces"][name]
+    os.makedirs(os.path.expanduser(workspace["path"]), exist_ok=True)
+    console.print(f"  Default workspace: [bold]{workspace['path']}[/]\n")
+    return name
+
+
 @app.command()
 def setup() -> None:
     """Interactive setup wizard."""
     console.print(Panel("Enso Setup", subtitle=f"v{__version__}", expand=False))
     config = load_config()
+    _reject_legacy_setup_config(config)
 
     _setup_providers(config)
 
-    # Step 2: Working directory and shared execution catalog
-    console.rule("[bold]Step 2 \u00b7 Working Directory")
-    console.print("  Where agents run commands and create files.\n")
-    default_dir = os.path.join(os.path.expanduser("~/.enso"), "workspace")
-    current_dir = config.get("working_dir", default_dir)
-    config["working_dir"] = os.path.abspath(Prompt.ask("  Working directory", default=current_dir))
-    os.makedirs(config["working_dir"], exist_ok=True)
-    _ensure_default_execution_config(config)
+    # Step 2: managed default workspace and shared execution catalog
+    _setup_default_workspace(config)
 
     captured_chat_id = _setup_transport(config)
 
@@ -1291,12 +1378,12 @@ def setup() -> None:
         if _service_is_installed():
             console.print("  Service already installed.")
             if Confirm.ask("  Reinstall?", default=False):
-                _service_install(config)
+                _service_install()
                 installed = True
             else:
                 installed = True
         elif Confirm.ask("  Install background service?", default=True):
-            _service_install(config)
+            _service_install()
             installed = True
     else:
         console.print(f"[yellow]  Auto service not supported on {sys.platform}.[/]")
@@ -1393,9 +1480,6 @@ def _load_secret_env() -> list[str]:
 
 @app.command()
 def serve(
-    working_dir: Annotated[
-        str | None, typer.Option("--working-dir", help="Override working directory")
-    ] = None,
     transport: Annotated[
         str | None, typer.Option("--transport", help="Override transport (telegram, slack)")
     ] = None,
@@ -1409,14 +1493,6 @@ def serve(
     secret_keys = _load_secret_env()
     if secret_keys:
         log.info("Loaded secret env keys: %s", ", ".join(secret_keys))
-    if working_dir:
-        config["working_dir"] = working_dir
-
-    wd = config.get("working_dir", os.getcwd())
-    if not os.path.isdir(wd):
-        console.print(f"[red]Error: Working directory does not exist: {wd}[/]")
-        raise typer.Exit(1)
-    os.chdir(wd)
 
     transport_name = transport or config.get("transport", "")
     if not transport_name:
@@ -1429,7 +1505,7 @@ def serve(
     runtime.load_state()
 
     log.info("Starting Enso v%s", __version__)
-    log.info("  working_dir=%s transport=%s", wd, transport_name)
+    log.info("  transport=%s", transport_name)
 
     try:
         tp = _load_transport(transport_name, runtime)
@@ -1504,7 +1580,6 @@ def job_list() -> None:
     table.add_column("Provider")
     table.add_column("Model")
     table.add_column("Workspace")
-    table.add_column("Access")
     table.add_column("Enabled")
     for job in jobs:
         enabled = "[green]\u2713[/]" if job.enabled else "[red]\u2717[/]"
@@ -1514,7 +1589,6 @@ def job_list() -> None:
             job.provider,
             job.model,
             job.workspace,
-            job.access,
             enabled,
         )
     console.print(table)
@@ -1531,9 +1605,6 @@ def job_create(
     workspace: Annotated[
         str, typer.Option("--workspace", help="Named workspace where the provider runs")
     ],
-    access: Annotated[
-        str, typer.Option("--access", help="Named access profile for the provider launch")
-    ],
 ) -> None:
     """Create a new background job. Edit the JOB.md to add the prompt and optional prerun."""
     dir_name = re.sub(r"[^\w]+", "-", name.casefold()).strip("-_")
@@ -1548,7 +1619,6 @@ def job_create(
             model,
             schedule,
             workspace=workspace,
-            access=access,
         )
     except (FileExistsError, ValueError) as exc:
         console.print(f"[red]Could not create job:[/] {exc}")
@@ -1887,8 +1957,7 @@ def service_status() -> None:
 @service_app.command("install")
 def service_install_cmd() -> None:
     """Install the background service (launchd on macOS, systemd on Linux)."""
-    config = load_config()
-    if _service_install(config):
+    if _service_install():
         return
     raise typer.Exit(1)
 
@@ -2309,8 +2378,9 @@ def slack_thread(
 @config_app.command("check")
 def config_check() -> None:  # noqa: C901
     """Validate execution bindings and native-policy launch plumbing."""
-    from .policy import check_provider
-    from .teams import load_catalog, load_teams
+    from .instructions import InstructionError, validate_shared_instructions
+    from .policy import check_provider, verify_grok_rules
+    from .teams import load_catalog, load_teams, load_telegram
 
     config = load_config()
     catalog = load_catalog(config)
@@ -2319,6 +2389,18 @@ def config_check() -> None:  # noqa: C901
     for error in catalog.errors:
         failed = True
         console.print(f"[red]✗[/] {error}")
+
+    try:
+        shared_instructions = validate_shared_instructions()
+    except InstructionError as exc:
+        failed = True
+        console.print(f"[red]✗[/] {escape(str(exc))}")
+    else:
+        console.print(
+            "[green]✓[/] Shared instructions — "
+            f"{escape(shared_instructions.source_path)} "
+            f"({shared_instructions.revision[:12]})"
+        )
 
     for name, workspace in sorted(catalog.workspaces.items()):
         console.print(f"\n[bold]Workspace {name}[/] — {workspace.path}")
@@ -2331,15 +2413,15 @@ def config_check() -> None:  # noqa: C901
             console.print("  [red]✗[/] workspace path does not exist")
 
     secret_env = _read_secret_env()
-    for name, access in sorted(catalog.access_profiles.items()):
-        mode = "unrestricted" if access.unrestricted else "policy-controlled"
-        console.print(f"\n[bold]Access {name}[/] ({mode})")
-        for problem in catalog.access_errors.get(name, ()):
+    for name, execution_policy in sorted(catalog.policies.items()):
+        mode = "unrestricted" if execution_policy.unrestricted else "policy-controlled"
+        console.print(f"\n[bold]Policy {name}[/] ({mode})")
+        for problem in catalog.policy_errors.get(name, ()):
             failed = True
             console.print(f"  [red]✗[/] {escape(problem)}")
-        if not access.unrestricted and access.env_passthrough:
+        if not execution_policy.unrestricted and execution_policy.env_passthrough:
             console.print("  env_passthrough:")
-            for env_name in access.env_passthrough:
+            for env_name in execution_policy.env_passthrough:
                 if env_name in os.environ or env_name in secret_env:
                     console.print(f"    [green]✓[/] {escape(env_name)}")
                 else:
@@ -2349,12 +2431,10 @@ def config_check() -> None:  # noqa: C901
                 "the service environment may differ[/]"
             )
 
-    pairs: dict[tuple[str, str], set[str]] = {}
-    routes_cfg = config.get("routes")
-    has_slack_routes = isinstance(routes_cfg, dict) and "slack" in routes_cfg
+    bindings: dict[str, set[str]] = {}
     transports_cfg = config.get("transports", {})
     has_slack_config = isinstance(transports_cfg, dict) and "slack" in transports_cfg
-    if config.get("transport") == "slack" or has_slack_routes or has_slack_config:
+    if config.get("transport") == "slack" or has_slack_config:
         teams = load_teams(config)
         for error in teams.errors:
             if error not in catalog.errors:
@@ -2365,8 +2445,8 @@ def config_check() -> None:  # noqa: C901
         routes = (*teams.dm_routes.values(), *teams.channel_routes.values())
         for route in sorted(routes, key=lambda item: item.route_id):
             if teams.route_usable(route):
-                key = (route.workspace, route.access)
-                pairs.setdefault(key, set()).update(teams.access_profiles[route.access].providers)
+                execution_policy = teams.catalog.policy_for(route.workspace)
+                bindings.setdefault(route.workspace, set()).update(execution_policy.providers)
         for route_id, problems in sorted(teams.route_errors.items()):
             failed = True
             for problem in problems:
@@ -2374,24 +2454,17 @@ def config_check() -> None:  # noqa: C901
 
     has_telegram_config = isinstance(transports_cfg, dict) and "telegram" in transports_cfg
     if config.get("transport") == "telegram" or has_telegram_config:
-        tg_cfg = transports_cfg.get("telegram", {}) if isinstance(transports_cfg, dict) else {}
-        raw_users = tg_cfg.get("allowed_users") if isinstance(tg_cfg, dict) else None
-        if not isinstance(tg_cfg, dict) or "allowed_user_ids" in tg_cfg:
-            failed = True
-            console.print(
-                "[red]✗[/] transports.telegram.allowed_user_ids is no longer supported;"
-                " use allowed_users with exact numeric string IDs"
-            )
-        invalid_users = (
-            not isinstance(raw_users, list)
-            or not raw_users
-            or _tg_allowed_users(tg_cfg) != raw_users
-        )
-        if invalid_users:
-            failed = True
-            console.print(
-                "[red]✗[/] transports.telegram.allowed_users must be a non-empty"
-                " list of unique exact numeric string IDs"
+        telegram = load_telegram(config)
+        for error in telegram.errors:
+            if error not in catalog.errors:
+                failed = True
+                console.print(f"[red]✗[/] {error}")
+        if telegram.errors:
+            console.print("[red]Telegram dispatch is disabled until this is fixed.[/]")
+        if telegram.usable:
+            assert telegram.workspace is not None and telegram.policy is not None
+            bindings.setdefault(telegram.workspace.name, set()).update(
+                telegram.policy.providers
             )
 
     jobs, job_errors = load_jobs_with_errors(config)
@@ -2402,17 +2475,25 @@ def config_check() -> None:  # noqa: C901
     for job in jobs:
         if job.dir_name in job_errors:
             continue
-        key = (job.workspace, job.access)
-        if catalog.usable(*key):
-            pairs.setdefault(key, set()).add(job.provider)
+        if catalog.usable(job.workspace):
+            bindings.setdefault(job.workspace, set()).add(job.provider)
 
-    for (workspace_name, access_name), providers in sorted(pairs.items()):
+    for workspace_name, providers in sorted(bindings.items()):
         workspace = catalog.workspaces[workspace_name]
-        access = catalog.access_profiles[access_name]
-        console.print(f"\n[bold]{workspace_name} + {access_name}[/] native launch")
+        execution_policy = catalog.policy_for(workspace)
+        console.print(
+            f"\n[bold]{workspace_name} → {execution_policy.name}[/] native launch"
+        )
         for provider in sorted(providers):
-            check = check_provider(workspace, access, provider)
-            if check.ok:
+            check = check_provider(workspace, execution_policy, provider)
+            provider_problems = list(check.problems)
+            if check.ok and provider == "grok":
+                # A wrong-shaped grok permission config loads zero rules with
+                # no error, so back the static checks with the rule count the
+                # CLI actually loads from the staged home.
+                grok_path = config.get("providers", {}).get("grok", {}).get("path", "grok")
+                provider_problems = verify_grok_rules(workspace, execution_policy, grok_path)
+            if check.ok and not provider_problems:
                 revision = (check.policy_revision or "")[:12]
                 servers = f" mcp: {', '.join(check.mcp_servers)}" if check.mcp_servers else ""
                 console.print(f"  [green]✓[/] {provider} ({revision}){escape(servers)}")
@@ -2420,7 +2501,7 @@ def config_check() -> None:  # noqa: C901
                     console.print(f"    [yellow]![/] {escape(warning)}")
             else:
                 failed = True
-                for problem in check.problems:
+                for problem in provider_problems:
                     console.print(f"  [red]✗[/] {provider}: {escape(problem)}")
 
     if failed:
@@ -2428,7 +2509,7 @@ def config_check() -> None:  # noqa: C901
     console.print("\n[green]All checks passed.[/]")
     console.print(
         "[dim]Plumbing only: this confirms Enso can select each native policy, not that "
-        "the policy is safe. Before trusting a restricted profile, test it with the "
+        "the policy is safe. Before trusting a restricted policy, test it with the "
         "installed CLI — a forbidden read, a forbidden write, and command execution.[/]"
     )
 
@@ -2454,7 +2535,8 @@ def route_explain(
         route = decision.route
         console.print(f"Route: {route.route_id}")
         console.print(f"Workspace: {route.workspace}")
-        console.print(f"Access: {route.access}")
+        workspace = teams.workspaces.get(route.workspace)
+        console.print(f"Policy: {workspace.policy if workspace is not None else 'unresolved'}")
         console.print(f"Audit: {'on' if route.audit else 'off'}")
         if route.kind == "channel":
             console.print(f"Mention required: {'yes' if route.mention_required else 'no'}")

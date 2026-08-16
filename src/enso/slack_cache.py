@@ -80,6 +80,37 @@ def save(data: dict[str, Any]) -> None:
     os.replace(tmp, CACHE_FILE)
 
 
+def bind_account(
+    team_id: str,
+    cache: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Bind cached directory data to one authenticated Slack account.
+
+    An unbound or foreign cache is discarded before it can supply friendly
+    labels for configured route IDs. Matching cache data is preserved.
+    """
+    if not isinstance(team_id, str) or not team_id:
+        raise ValueError("team_id must be a non-empty string")
+    cache = cache if cache is not None else load()
+    if cache.get("team_id") != team_id:
+        cache = _empty_cache()
+    cache["team_id"] = team_id
+    save(cache)
+    return cache
+
+
+def load_for_account(team_id: str) -> dict[str, Any]:
+    """Load directory data only when it belongs to ``team_id``.
+
+    Cache identity is checked on every consumer read so a concurrent CLI write
+    cannot reintroduce unbound or foreign labels after transport startup.
+    """
+    if not isinstance(team_id, str) or not team_id:
+        return _empty_cache()
+    cache = load()
+    return cache if cache.get("team_id") == team_id else _empty_cache()
+
+
 # ---------------------------------------------------------------------------
 # Slack API helpers (stdlib only)
 # ---------------------------------------------------------------------------

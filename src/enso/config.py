@@ -47,6 +47,27 @@ DEFAULT_WEB = {
 
 DEFAULT_AGENT = {"timeout": 30 * 60}
 DEFAULT_RUNS = {"keep": 500, "max_age_days": 30}
+DEFAULT_WORKSPACE_NAME = "default"
+DEFAULT_POLICY_NAME = "admin"
+
+
+def managed_workspace_path(name: str = DEFAULT_WORKSPACE_NAME) -> str:
+    """Return the canonical managed location for a named workspace."""
+    return os.path.join(CONFIG_DIR, "workspaces", name)
+
+
+def unrestricted_policy_config(provider_names: list[str]) -> dict:
+    """Build the standard unrestricted policy used by fresh installations."""
+    providers = [name for name in PROVIDER_CLASSES if name in provider_names]
+    if not providers:
+        providers = list(PROVIDER_CLASSES)
+    default_provider = "claude" if "claude" in providers else providers[0]
+    return {
+        "unrestricted": True,
+        "providers": providers,
+        "default_provider": default_provider,
+        "chat_commands": "*",
+    }
 
 
 def provider_models(config: dict) -> dict[str, list[str]]:
@@ -128,12 +149,22 @@ def save_config(config: dict) -> None:
 
 def _build_default_config() -> dict:
     """Build default config with empty transport and all providers."""
+    providers = resolve_providers()
     return {
-        "working_dir": os.path.join(CONFIG_DIR, "workspace"),
         "transport": "",
         "transports": {},
         "logging": default_logging_config(),
-        "providers": resolve_providers(),
+        "providers": providers,
+        "workspaces": {
+            DEFAULT_WORKSPACE_NAME: {
+                "path": managed_workspace_path(),
+                "policy": DEFAULT_POLICY_NAME,
+                "concurrency": 1,
+            },
+        },
+        "policies": {
+            DEFAULT_POLICY_NAME: unrestricted_policy_config(list(providers)),
+        },
         "agent": dict(DEFAULT_AGENT),
         "web": dict(DEFAULT_WEB),
         "runs": dict(DEFAULT_RUNS),

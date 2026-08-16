@@ -15,7 +15,20 @@ from enso.providers import PROVIDER_NAMES, provider_class
 def test_load_creates_default(tmp_enso):
     """Loading with no config file creates a default."""
     config = load_config()
-    assert "working_dir" in config
+    assert "working_dir" not in config
+    assert config["workspaces"] == {
+        "default": {
+            "path": os.path.join(tmp_enso, "workspaces", "default"),
+            "policy": "admin",
+            "concurrency": 1,
+        },
+    }
+    assert config["policies"]["admin"] == {
+        "unrestricted": True,
+        "providers": list(PROVIDER_NAMES),
+        "default_provider": "claude",
+        "chat_commands": "*",
+    }
     assert "transport" in config
     assert config["transport"] == ""
     assert "transports" in config
@@ -33,7 +46,6 @@ def test_load_creates_default(tmp_enso):
 def test_save_and_load_roundtrip(tmp_enso):
     """Config survives a save/load roundtrip."""
     config = {
-        "working_dir": "/tmp/test",
         "transport": "telegram",
         "transports": {"telegram": {"bot_token": "test-token"}},
         "providers": {"claude": {"path": "claude", "models": ["opus"]}},
@@ -74,7 +86,6 @@ def test_agent_timeout_replaces_invalid_values(tmp_enso, timeout):
 def test_load_merges_missing_logging_defaults(tmp_enso):
     """Existing configs get logging defaults without losing user choices."""
     config = {
-        "working_dir": "/tmp/test",
         "transport": "telegram",
         "transports": {},
         "logging": {"level": "ERROR"},
@@ -193,7 +204,6 @@ def test_load_preserves_unknown_provider_keys(tmp_enso):
 
 def test_load_backfills_codex_aliases_and_preserves_custom_models(tmp_enso):
     config = {
-        "working_dir": "/tmp/test",
         "transport": "telegram",
         "transports": {},
         "providers": {
@@ -230,7 +240,6 @@ def test_load_removes_unsupported_provider_config(tmp_enso):
 def test_load_replaces_invalid_logging_with_defaults(tmp_enso):
     """Invalid logging config is normalized to defaults."""
     config = {
-        "working_dir": "/tmp/test",
         "transport": "telegram",
         "transports": {},
         "logging": None,
@@ -306,7 +315,7 @@ def test_save_removes_obsolete_tasks_block(tmp_enso):
 
 def test_save_failure_preserves_existing_config(tmp_enso, monkeypatch):
     config_file = Path(tmp_enso, "config.json")
-    original = b'{"working_dir": "/keep/me"}\n'
+    original = b'{"transport": "slack"}\n'
     config_file.write_bytes(original)
 
     def fail_replace(_source, _target):
@@ -315,7 +324,7 @@ def test_save_failure_preserves_existing_config(tmp_enso, monkeypatch):
     monkeypatch.setattr("enso.config.os.replace", fail_replace)
 
     with pytest.raises(OSError, match="replace failed"):
-        save_config({"working_dir": "/new/value"})
+        save_config({"transport": "telegram"})
 
     assert config_file.read_bytes() == original
     assert list(Path(tmp_enso).glob("*.tmp")) == []
@@ -341,7 +350,6 @@ def test_load_uses_migrated_config_when_persistence_fails(tmp_enso, monkeypatch)
 def test_codex_alias_removal_is_respected(tmp_enso):
     """A config that already knows the aliases keeps its list verbatim."""
     config = {
-        "working_dir": "/tmp/test",
         "transport": "telegram",
         "transports": {},
         "providers": {

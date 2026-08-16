@@ -5,12 +5,14 @@ from __future__ import annotations
 import sqlite3
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
 from enso import audit as audit_store
-from enso import surface_drafts
+from enso import slack_cache, surface_drafts
+from enso.core import ExecutionContext
 from enso.formatting import md_to_mrkdwn
 from enso.outbound import (
     AppHomePublication,
@@ -37,6 +39,7 @@ from enso.outbound import (
 )
 from enso.slack_text import _attachments_prompt, _flatten_mention_text
 from enso.surface_drafts import ChannelCanvasTarget, SurfaceDraftOrigin
+from enso.teams import load_catalog
 from enso.transports import safe_filename
 from enso.transports.slack import (
     SLACK_MARKDOWN_BLOCK_LIMIT,
@@ -76,22 +79,24 @@ def _make_runtime(**overrides: object) -> MagicMock:
     """Return a MagicMock that behaves like Runtime."""
     rt = MagicMock()
     rt.config = {
-        "working_dir": "/tmp/enso-test",
         "transports": {
             "slack": {
                 "bot_token": "xoxb-fake",
                 "app_token": "xapp-fake",
                 "bot_user_id": "UBOT",
                 "notify_channel": "C999",
+                "account_id": "TTEST",
+                "dms": {"U123": {"workspace": "main"}},
+                "channels": {"C123": {"workspace": "main"}},
             },
         },
         "providers": {
             "claude": {"path": "claude", "models": ["opus", "sonnet"]},
         },
         "workspaces": {
-            "main": {"path": "/tmp/enso-test"},
+            "main": {"path": "/tmp/enso-test", "policy": "admin"},
         },
-        "access": {
+        "policies": {
             "admin": {
                 "unrestricted": True,
                 "providers": ["claude"],
@@ -99,15 +104,7 @@ def _make_runtime(**overrides: object) -> MagicMock:
                 "chat_commands": "*",
             },
         },
-        "routes": {
-            "slack": {
-                "account_id": "TTEST",
-                "dms": {"U123": {"workspace": "main", "access": "admin"}},
-                "channels": {"C123": {"workspace": "main", "access": "admin"}},
-            },
-        },
     }
-    rt.working_dir = "/tmp/enso-test"
     rt.session_by_chat_provider = {}
     rt.active_provider_by_chat = {}
     rt.active_model_by_chat_provider = {}
@@ -120,9 +117,8 @@ def _make_runtime(**overrides: object) -> MagicMock:
     rt.save_state = MagicMock()
     for k, v in overrides.items():
         setattr(rt, k, v)
-    if "working_dir" in overrides:
-        rt.config["working_dir"] = str(overrides["working_dir"])
-        rt.config["workspaces"]["main"]["path"] = str(overrides["working_dir"])
+    if "workspace_dir" in overrides:
+        rt.config["workspaces"]["main"]["path"] = str(overrides["workspace_dir"])
     return rt
 
 
@@ -131,6 +127,34 @@ def _make_transport(rt: MagicMock) -> SlackTransport:
     transport.teams_router.set_authenticated_account("TTEST")
     transport._surface_reconciled = True
     return transport
+
+
+async def _handle_command(
+    transport: SlackTransport,
+    text: str,
+    conv_id: str,
+    ctx: SlackContext | None = None,
+) -> str | None:
+    """Invoke the transport command surface with its required routed binding."""
+    catalog = load_catalog(transport.runtime.config)
+    workspace = catalog.workspaces["main"]
+    policy = catalog.policy_for(workspace)
+    context = ExecutionContext(
+        chat_key=conv_id,
+        path=workspace.path,
+        workspace_id=workspace.name,
+        workspace=workspace,
+        policy=policy,
+        include_global_messages=False,
+        concurrency=workspace.concurrency,
+    )
+    return await transport.handle_command(
+        text,
+        conv_id,
+        ctx=ctx,
+        allowed_providers=list(policy.providers),
+        context=context,
+    )
 
 
 def _surface_origin(
@@ -150,7 +174,7 @@ def _surface_origin(
         ),
         route_kind=route_kind,
         workspace_id="main",
-        access_profile="admin",
+        policy="admin",
         route_audit=audit,
         user_id=user,
         channel_id=channel,
@@ -318,6 +342,7 @@ class _FakeResponse:
 
     def __init__(self, payload: bytes):
         self._payload = payload
+        self._offset = 0
 
     def __enter__(self):
         return self
@@ -325,8 +350,14 @@ class _FakeResponse:
     def __exit__(self, *exc):
         return False
 
-    def read(self) -> bytes:
-        return self._payload
+    def read(self, size: int = -1) -> bytes:
+        if self._offset >= len(self._payload):
+            return b""
+        if size < 0:
+            size = len(self._payload) - self._offset
+        chunk = self._payload[self._offset : self._offset + size]
+        self._offset += len(chunk)
+        return chunk
 
 
 class _SlackApiError(Exception):
@@ -1578,7 +1609,7 @@ class TestSlackContext:
         rt.config["transports"]["slack"].update(
             {"rich_messages": True, "persistent_surfaces": True}
         )
-        rt.config["routes"]["slack"]["dms"]["U123"]["audit"] = True
+        rt.config["transports"]["slack"]["dms"]["U123"]["audit"] = True
         transport = _make_transport(rt)
         client = _make_client()
         publication = AppHomePublication(
@@ -1633,7 +1664,7 @@ class TestSlackContext:
         rt.config["transports"]["slack"].update(
             {"rich_messages": True, "persistent_surfaces": True}
         )
-        rt.config["routes"]["slack"]["dms"]["U123"]["audit"] = True
+        rt.config["transports"]["slack"]["dms"]["U123"]["audit"] = True
         transport = _make_transport(rt)
         client = _make_client()
         publication = AppHomePublication(
@@ -1675,7 +1706,7 @@ class TestSlackContext:
         rt.config["transports"]["slack"].update(
             {"rich_messages": True, "persistent_surfaces": True}
         )
-        rt.config["routes"]["slack"]["dms"]["U123"]["audit"] = True
+        rt.config["transports"]["slack"]["dms"]["U123"]["audit"] = True
         transport = _make_transport(rt)
         client = _make_client()
         publication = AppHomePublication(
@@ -1714,7 +1745,7 @@ class TestSlackContext:
         rt.config["transports"]["slack"].update(
             {"rich_messages": True, "persistent_surfaces": True}
         )
-        rt.config["routes"]["slack"]["dms"]["U123"]["audit"] = True
+        rt.config["transports"]["slack"]["dms"]["U123"]["audit"] = True
         transport = _make_transport(rt)
         client = _make_client()
         draft = surface_drafts.create(
@@ -2964,7 +2995,7 @@ class TestCommandHandling:
         rt.stop_chat.return_value = (True, None)
         transport = _make_transport(rt)
 
-        result = await transport.handle_command("!stop", "C123:1234")
+        result = await _handle_command(transport, "!stop", "C123:1234")
         assert "Stopped" in result
 
     @pytest.mark.asyncio
@@ -2974,7 +3005,7 @@ class TestCommandHandling:
         rt.clear_queue.return_value = 0
         transport = _make_transport(rt)
 
-        result = await transport.handle_command("!stop", "C123:1234")
+        result = await _handle_command(transport, "!stop", "C123:1234")
         assert result == "Nothing running."
 
     @pytest.mark.asyncio
@@ -2984,7 +3015,7 @@ class TestCommandHandling:
         rt.clear_queue.return_value = 3
         transport = _make_transport(rt)
 
-        result = await transport.handle_command("!stop", "C123:1234")
+        result = await _handle_command(transport, "!stop", "C123:1234")
         assert "3 queued" in result
 
     @pytest.mark.asyncio
@@ -2992,7 +3023,7 @@ class TestCommandHandling:
         rt = _make_runtime()
         transport = _make_transport(rt)
 
-        result = await transport.handle_command("!status", "C123:1234")
+        result = await _handle_command(transport, "!status", "C123:1234")
         assert "Provider" in result
         assert "Model" in result
 
@@ -3002,7 +3033,7 @@ class TestCommandHandling:
         transport = _make_transport(rt)
 
         with patch("enso.transports.slack.cmd_use", return_value=("Provider set to codex.", [])):
-            result = await transport.handle_command("!use codex", "C123:1234")
+            result = await _handle_command(transport, "!use codex", "C123:1234")
         assert "codex" in result
 
     @pytest.mark.asyncio
@@ -3014,7 +3045,7 @@ class TestCommandHandling:
             "enso.transports.slack.cmd_use",
             return_value=(None, [("claude", True), ("codex", False)]),
         ):
-            result = await transport.handle_command("!use", "C123:1234")
+            result = await _handle_command(transport, "!use", "C123:1234")
         assert "claude" in result
         assert "codex" in result
 
@@ -3027,7 +3058,7 @@ class TestCommandHandling:
             "enso.transports.slack.cmd_model",
             return_value=("claude model \u2192 sonnet", []),
         ):
-            result = await transport.handle_command("!model sonnet", "C123:1234")
+            result = await _handle_command(transport, "!model sonnet", "C123:1234")
         assert "sonnet" in result
 
     @pytest.mark.asyncio
@@ -3039,7 +3070,7 @@ class TestCommandHandling:
             "enso.transports.slack.cmd_clear",
             return_value=["Claude: Cleared."],
         ):
-            result = await transport.handle_command("!clear", "C123:1234")
+            result = await _handle_command(transport, "!clear", "C123:1234")
         assert "Cleared" in result
 
     @pytest.mark.asyncio
@@ -3051,8 +3082,11 @@ class TestCommandHandling:
             "enso.transports.slack.cmd_clear",
             return_value=["Claude: Cleared.", "Codex: Cleared."],
         ) as mock_clear:
-            result = await transport.handle_command("!clear all", "C123:1234")
-        mock_clear.assert_called_once_with(rt, "C123:1234", clear_all=True, working_dir=None)
+            result = await _handle_command(transport, "!clear all", "C123:1234")
+        mock_clear.assert_called_once()
+        assert mock_clear.call_args.args == (rt, "C123:1234")
+        assert mock_clear.call_args.kwargs["clear_all"] is True
+        assert mock_clear.call_args.kwargs["context"].workspace_id == "main"
         assert "Cleared" in result
 
     @pytest.mark.asyncio
@@ -3061,7 +3095,7 @@ class TestCommandHandling:
         transport = _make_transport(rt)
 
         with patch("enso.transports.slack.cmd_logs", return_value="line1\nline2"):
-            result = await transport.handle_command("!logs", "C123:1234")
+            result = await _handle_command(transport, "!logs", "C123:1234")
         assert "line1" in result
 
     @pytest.mark.asyncio
@@ -3075,7 +3109,7 @@ class TestCommandHandling:
             "enso.transports.slack.cmd_update_async",
             new=AsyncMock(return_value=UpdateResult("current", "Already up to date.")),
         ):
-            result = await transport.handle_command("!update", "D123")
+            result = await _handle_command(transport, "!update", "D123")
 
         assert result == "Already up to date."
 
@@ -3096,7 +3130,7 @@ class TestCommandHandling:
             patch("enso.updater.queue_update_confirmation") as queue,
             patch("enso.updater.schedule_service_restart") as restart,
         ):
-            result = await transport.handle_command("!update", "C123:1234.5", ctx=ctx)
+            result = await _handle_command(transport, "!update", "C123:1234.5", ctx=ctx)
 
         assert result == "Restarting."
         queue.assert_called_once_with(
@@ -3112,7 +3146,7 @@ class TestCommandHandling:
         rt = _make_runtime()
         transport = _make_transport(rt)
 
-        result = await transport.handle_command("!help", "C123:1234")
+        result = await _handle_command(transport, "!help", "C123:1234")
         assert "!stop" in result
         assert "!help" in result
 
@@ -3121,7 +3155,7 @@ class TestCommandHandling:
         rt = _make_runtime()
         transport = _make_transport(rt)
 
-        result = await transport.handle_command("!foobar", "C123:1234")
+        result = await _handle_command(transport, "!foobar", "C123:1234")
         assert "Unknown command" in result
         assert "foobar" in result
 
@@ -3220,7 +3254,7 @@ class TestMessageRouting:
     @pytest.mark.asyncio
     async def test_file_share_with_caption_dispatches(self, tmp_path, monkeypatch):
         """An image+caption upload (subtype=file_share) must reach _handle_files."""
-        rt = _make_runtime(working_dir=str(tmp_path))
+        rt = _make_runtime(workspace_dir=str(tmp_path))
         transport = _make_transport(rt)
         client = _make_client()
 
@@ -3259,7 +3293,7 @@ class TestMessageRouting:
         monkeypatch,
     ):
         """Slack Connect placeholders need files.info before they have URLs."""
-        rt = _make_runtime(working_dir=str(tmp_path))
+        rt = _make_runtime(workspace_dir=str(tmp_path))
         transport = _make_transport(rt)
         client = _make_client()
         client.files_info.return_value = {
@@ -3300,7 +3334,7 @@ class TestMessageRouting:
 
     @pytest.mark.asyncio
     async def test_same_named_files_use_distinct_paths(self, tmp_path, monkeypatch):
-        rt = _make_runtime(working_dir=str(tmp_path))
+        rt = _make_runtime(workspace_dir=str(tmp_path))
         transport = _make_transport(rt)
         client = _make_client()
 
@@ -3339,7 +3373,7 @@ class TestMessageRouting:
 
     @pytest.mark.asyncio
     async def test_caption_survives_failed_file_download(self, tmp_path, monkeypatch):
-        rt = _make_runtime(working_dir=str(tmp_path))
+        rt = _make_runtime(workspace_dir=str(tmp_path))
         transport = _make_transport(rt)
         client = _make_client()
 
@@ -3370,6 +3404,339 @@ class TestMessageRouting:
         assert "could not be downloaded" in prompt
         assert "image.png" in prompt
         assert "still answer the caption" in prompt
+
+    @pytest.mark.asyncio
+    async def test_partial_file_is_removed_and_other_downloads_continue(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        class FailingResponse(_FakeResponse):
+            def read(self, size: int = -1) -> bytes:
+                if self._offset:
+                    raise OSError("stream interrupted")
+                return super().read(3)
+
+        responses = iter((FailingResponse(b"partial"), _FakeResponse(b"complete")))
+        monkeypatch.setattr(
+            "enso.transports.slack.urlopen",
+            lambda *_args, **_kwargs: next(responses),
+        )
+        rt = _make_runtime(workspace_dir=str(tmp_path))
+        transport = _make_transport(rt)
+        client = _make_client()
+        event = {
+            "user": "U123",
+            "subtype": "file_share",
+            "channel": "D999",
+            "channel_type": "im",
+            "ts": "1234.5678",
+            "text": "compare these",
+            "files": [
+                {
+                    "id": "F111",
+                    "name": "first.png",
+                    "url_private_download": "https://files.slack.com/first.png",
+                },
+                {
+                    "id": "F222",
+                    "name": "second.png",
+                    "url_private_download": "https://files.slack.com/second.png",
+                },
+            ],
+        }
+
+        await transport._handle_message(event, client)
+
+        files = sorted(path.name for path in (tmp_path / "uploads").rglob("*") if path.is_file())
+        assert files == ["F222-second.png"]
+        prompt = rt.dispatch.call_args.args[1]
+        assert "F222-second.png" in prompt
+        assert "F111-first.png" not in prompt
+
+    @pytest.mark.asyncio
+    async def test_advertised_oversized_file_is_skipped_and_others_continue(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        monkeypatch.setattr("enso.transports.slack.SLACK_FILE_DOWNLOAD_LIMIT", 4)
+        open_url = MagicMock(return_value=_FakeResponse(b"1234"))
+        monkeypatch.setattr("enso.transports.slack.urlopen", open_url)
+        rt = _make_runtime(workspace_dir=str(tmp_path))
+        transport = _make_transport(rt)
+        client = _make_client()
+        event = {
+            "user": "U123",
+            "subtype": "file_share",
+            "channel": "D999",
+            "channel_type": "im",
+            "ts": "1234.5678",
+            "text": "compare these",
+            "files": [
+                {
+                    "id": "F111",
+                    "name": "too-large.png",
+                    "size": 5,
+                    "url_private_download": "https://files.slack.com/large.png",
+                },
+                {
+                    "id": "F222",
+                    "name": "allowed.png",
+                    "size": "4",
+                    "url_private_download": "https://files.slack.com/allowed.png",
+                },
+            ],
+        }
+
+        await transport._handle_message(event, client)
+
+        open_url.assert_called_once()
+        files = sorted(path.name for path in (tmp_path / "uploads").rglob("*") if path.is_file())
+        assert files == ["F222-allowed.png"]
+        prompt = rt.dispatch.call_args.args[1]
+        assert "F222-allowed.png" in prompt
+        assert "F111-too-large.png" not in prompt
+
+    @pytest.mark.asyncio
+    async def test_streamed_size_cap_cleans_partial_file_and_continues(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        monkeypatch.setattr("enso.transports.slack.SLACK_FILE_DOWNLOAD_LIMIT", 4)
+        monkeypatch.setattr("enso.transports.slack.SLACK_FILE_DOWNLOAD_CHUNK", 3)
+        responses = iter((_FakeResponse(b"12345"), _FakeResponse(b"1234")))
+        monkeypatch.setattr(
+            "enso.transports.slack.urlopen",
+            lambda *_args, **_kwargs: next(responses),
+        )
+        rt = _make_runtime(workspace_dir=str(tmp_path))
+        transport = _make_transport(rt)
+        client = _make_client()
+        event = {
+            "user": "U123",
+            "subtype": "file_share",
+            "channel": "D999",
+            "channel_type": "im",
+            "ts": "1234.5678",
+            "text": "compare these",
+            "files": [
+                {
+                    "id": "F111",
+                    "name": "lying-size.png",
+                    "size": 1,
+                    "url_private_download": "https://files.slack.com/large.png",
+                },
+                {
+                    "id": "F222",
+                    "name": "allowed.png",
+                    "size": 4,
+                    "url_private_download": "https://files.slack.com/allowed.png",
+                },
+            ],
+        }
+
+        await transport._handle_message(event, client)
+
+        files = sorted(path.name for path in (tmp_path / "uploads").rglob("*") if path.is_file())
+        assert files == ["F222-allowed.png"]
+        prompt = rt.dispatch.call_args.args[1]
+        assert "F222-allowed.png" in prompt
+        assert "F111-lying-size.png" not in prompt
+
+    @pytest.mark.asyncio
+    async def test_uploads_parent_symlink_is_rejected(self, tmp_path, monkeypatch):
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (tmp_path / "uploads").symlink_to(outside, target_is_directory=True)
+        rt = _make_runtime(workspace_dir=str(tmp_path))
+        transport = _make_transport(rt)
+        client = _make_client()
+        open_url = MagicMock(return_value=_FakeResponse(b"secret"))
+        monkeypatch.setattr("enso.transports.slack.urlopen", open_url)
+
+        event = {
+            "user": "U123",
+            "subtype": "file_share",
+            "channel": "D999",
+            "channel_type": "im",
+            "ts": "1234.5678",
+            "text": "still handle this caption",
+            "files": [
+                {
+                    "id": "F111",
+                    "name": "image.png",
+                    "url_private_download": "https://files.slack.com/image.png",
+                },
+            ],
+        }
+
+        await transport._handle_message(event, client)
+
+        open_url.assert_not_called()
+        assert list(outside.iterdir()) == []
+        rt.dispatch.assert_called_once()
+        prompt = rt.dispatch.call_args.args[1]
+        assert "could not be downloaded" in prompt
+        assert str(outside) not in prompt
+
+    @pytest.mark.asyncio
+    async def test_upload_filename_symlink_is_not_followed(self, tmp_path, monkeypatch):
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        outside_file = outside / "target.png"
+        outside_file.write_bytes(b"original")
+        rt = _make_runtime(workspace_dir=str(tmp_path))
+        transport = _make_transport(rt)
+        client = _make_client()
+        monkeypatch.setattr(
+            "enso.transports.slack_teams.uuid.uuid4",
+            lambda: SimpleNamespace(hex="fixed123"),
+        )
+
+        def poison_destination(*_args, **_kwargs):
+            destination = tmp_path / "uploads" / "fixed123" / "F111-image.png"
+            destination.symlink_to(outside_file)
+            return _FakeResponse(b"replacement")
+
+        monkeypatch.setattr("enso.transports.slack.urlopen", poison_destination)
+        event = {
+            "user": "U123",
+            "subtype": "file_share",
+            "channel": "D999",
+            "channel_type": "im",
+            "ts": "1234.5678",
+            "text": "inspect this",
+            "files": [
+                {
+                    "id": "F111",
+                    "name": "image.png",
+                    "url_private_download": "https://files.slack.com/image.png",
+                },
+            ],
+        }
+
+        await transport._handle_message(event, client)
+
+        assert outside_file.read_bytes() == b"original"
+        rt.dispatch.assert_called_once()
+        prompt = rt.dispatch.call_args.args[1]
+        assert "could not be downloaded" in prompt
+        assert str(outside) not in prompt
+
+    @pytest.mark.asyncio
+    async def test_replaced_completed_file_is_not_dispatched(self, tmp_path, monkeypatch):
+        rt = _make_runtime(workspace_dir=str(tmp_path))
+        transport = _make_transport(rt)
+        client = _make_client()
+        monkeypatch.setattr(
+            "enso.transports.slack_teams.uuid.uuid4",
+            lambda: SimpleNamespace(hex="fixed123"),
+        )
+        request_count = 0
+
+        def replace_first_file(*_args, **_kwargs):
+            nonlocal request_count
+            request_count += 1
+            if request_count == 1:
+                return _FakeResponse(b"original")
+            turn = tmp_path / "uploads" / "fixed123"
+            first = turn / "F111-first.png"
+            first.rename(turn / "original-first.png")
+            first.write_bytes(b"attacker replacement")
+            return _FakeResponse(b"second")
+
+        monkeypatch.setattr("enso.transports.slack.urlopen", replace_first_file)
+        event = {
+            "user": "U123",
+            "subtype": "file_share",
+            "channel": "D999",
+            "channel_type": "im",
+            "ts": "1234.5678",
+            "text": "inspect these",
+            "files": [
+                {
+                    "id": "F111",
+                    "name": "first.png",
+                    "url_private_download": "https://files.slack.com/first.png",
+                },
+                {
+                    "id": "F222",
+                    "name": "second.png",
+                    "url_private_download": "https://files.slack.com/second.png",
+                },
+            ],
+        }
+
+        await transport._handle_message(event, client)
+
+        prompt = rt.dispatch.call_args.args[1]
+        assert "F222-second.png" in prompt
+        assert "F111-first.png" not in prompt
+        assert (tmp_path / "uploads" / "fixed123" / "F111-first.png").read_bytes() == (
+            b"attacker replacement"
+        )
+
+    @pytest.mark.asyncio
+    async def test_swapped_upload_turn_directory_is_not_trusted(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        rt = _make_runtime(workspace_dir=str(tmp_path))
+        transport = _make_transport(rt)
+        client = _make_client()
+        monkeypatch.setattr(
+            "enso.transports.slack_teams.uuid.uuid4",
+            lambda: SimpleNamespace(hex="fixed123"),
+        )
+        request_count = 0
+
+        def swap_turn_directory(*_args, **_kwargs):
+            nonlocal request_count
+            request_count += 1
+            if request_count == 1:
+                return _FakeResponse(b"first")
+            turn = tmp_path / "uploads" / "fixed123"
+            moved = tmp_path / "uploads" / "moved-turn"
+            turn.rename(moved)
+            turn.symlink_to(outside, target_is_directory=True)
+            return _FakeResponse(b"secret")
+
+        monkeypatch.setattr("enso.transports.slack.urlopen", swap_turn_directory)
+        event = {
+            "user": "U123",
+            "subtype": "file_share",
+            "channel": "D999",
+            "channel_type": "im",
+            "ts": "1234.5678",
+            "text": "inspect this",
+            "files": [
+                {
+                    "id": "F000",
+                    "name": "first.png",
+                    "url_private_download": "https://files.slack.com/first.png",
+                },
+                {
+                    "id": "F111",
+                    "name": "image.png",
+                    "url_private_download": "https://files.slack.com/image.png",
+                },
+            ],
+        }
+
+        await transport._handle_message(event, client)
+
+        assert list(outside.iterdir()) == []
+        assert not (tmp_path / "uploads" / "moved-turn" / "F111-image.png").exists()
+        rt.dispatch.assert_called_once()
+        prompt = rt.dispatch.call_args.args[1]
+        assert "could not be downloaded" in prompt
+        assert str(tmp_path / "uploads" / "fixed123") not in prompt
+        assert str(outside) not in prompt
 
     @pytest.mark.asyncio
     async def test_no_user_ignored(self):
@@ -3556,7 +3923,7 @@ class TestAppMention:
         monkeypatch,
     ):
         """Channel @-mentions with attached files must download + dispatch."""
-        rt = _make_runtime(working_dir=str(tmp_path))
+        rt = _make_runtime(workspace_dir=str(tmp_path))
         transport = _make_transport(rt)
         client = _make_client()
         client.conversations_history.return_value = {"messages": []}
@@ -3668,7 +4035,7 @@ class TestForwardedMessages:
         tmp_path,
         monkeypatch,
     ):
-        rt = _make_runtime(working_dir=str(tmp_path))
+        rt = _make_runtime(workspace_dir=str(tmp_path))
         transport = _make_transport(rt)
         client = _make_client()
         client.conversations_history.return_value = {"messages": []}
@@ -3744,7 +4111,7 @@ class TestForwardedMessages:
         tmp_path,
         monkeypatch,
     ):
-        rt = _make_runtime(working_dir=str(tmp_path))
+        rt = _make_runtime(workspace_dir=str(tmp_path))
         transport = _make_transport(rt)
         client = _make_client()
 
@@ -3906,6 +4273,59 @@ class TestAttachmentsPrompt:
 
 class TestTransportInit:
     """Tests for SlackTransport initialization."""
+
+    @pytest.mark.asyncio
+    async def test_start_routing_binds_directory_cache_to_authenticated_account(self):
+        transport = _make_transport(_make_runtime())
+        client = _make_client()
+        client.auth_test.return_value = {"team_id": "TTEST", "user_id": "UBOT"}
+        bound_cache = {"team_id": "TTEST"}
+
+        with (
+            patch(
+                "enso.transports.slack.slack_cache.bind_account",
+                return_value=bound_cache,
+            ) as bind_account,
+            patch.object(transport, "_warm_directory_cache") as warm_cache,
+            patch.object(transport.teams_router, "startup_reconcile"),
+        ):
+            await transport._start_routing(client)
+
+        bind_account.assert_called_once_with("TTEST")
+        warm_cache.assert_called_once_with(bound_cache)
+        assert transport._cache_account_id == "TTEST"
+
+    @pytest.mark.asyncio
+    async def test_cache_binding_failure_disables_all_directory_cache_reads(self):
+        transport = _make_transport(_make_runtime())
+        client = _make_client()
+        client.auth_test.return_value = {"team_id": "TTEST", "user_id": "UBOT"}
+
+        with (
+            patch(
+                "enso.transports.slack.slack_cache.bind_account",
+                side_effect=OSError("cache unavailable"),
+            ),
+            patch.object(transport, "_warm_directory_cache") as warm_cache,
+            patch.object(transport.teams_router, "startup_reconcile"),
+        ):
+            await transport._start_routing(client)
+
+        assert transport.teams_router.account_ok is True
+        assert transport._cache_account_id == ""
+        warm_cache.assert_not_called()
+
+    def test_hot_path_cache_reads_recheck_authenticated_account(self, tmp_enso):
+        transport = _make_transport(_make_runtime())
+        transport._cache_account_id = "TTEST"
+        cache = slack_cache._empty_cache()
+        cache["team_id"] = "FOREIGN"
+        cache["users"]["items"]["U1"] = {"display_name": "Wrong person"}
+        cache["channels"]["items"]["C1"] = {"name": "wrong-channel"}
+        slack_cache.save(cache)
+
+        assert transport.lookup_user_name("U1") == ""
+        assert transport.lookup_channel_name("C1") == ""
 
     def test_config_loading(self):
         rt = _make_runtime()
@@ -4104,6 +4524,7 @@ class TestOriginEnv:
         from enso import slack_cache
 
         cache = slack_cache._empty_cache()
+        cache["team_id"] = "TTEST"
         cache["channels"]["items"]["C012345"] = {
             "id": "C012345",
             "name": "burger-bash",
@@ -4120,10 +4541,33 @@ class TestOriginEnv:
         with open(slack_cache.CACHE_FILE, "w") as f:
             json.dump(cache, f)
 
-        ctx = SlackContext(_make_client(), "C012345", user_id="U987")
+        ctx = SlackContext(
+            _make_client(),
+            "C012345",
+            user_id="U987",
+            cache_account_id="TTEST",
+        )
         env = ctx.get_origin_env()
         assert env["ENSO_ORIGIN_CHANNEL_NAME"] == "#burger-bash"
         assert env["ENSO_ORIGIN_USER_NAME"] == "Shawn"
+
+    def test_origin_env_rejects_cache_from_another_account(self, tmp_enso):
+        cache = slack_cache._empty_cache()
+        cache["team_id"] = "FOREIGN"
+        cache["users"]["items"]["U987"] = {"display_name": "Wrong person"}
+        cache["channels"]["items"]["C012345"] = {"name": "wrong-channel"}
+        slack_cache.save(cache)
+
+        ctx = SlackContext(
+            _make_client(),
+            "C012345",
+            user_id="U987",
+            cache_account_id="TTEST",
+        )
+
+        env = ctx.get_origin_env()
+        assert env["ENSO_ORIGIN_CHANNEL_NAME"] == ""
+        assert env["ENSO_ORIGIN_USER_NAME"] == ""
 
     def test_missing_cache_falls_back_to_blank_name(self, tmp_enso):
         ctx = SlackContext(_make_client(), "C777", user_id="U777")

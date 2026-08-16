@@ -79,18 +79,21 @@ from ..surface_drafts import (
     SurfaceDraftOrigin,
     TerminalStatus,
 )
-from . import BaseTransport, TransportContext, safe_filename
+from . import BaseTransport, SecureUploadDirectory, TransportContext, safe_filename
 from .slack_teams import TeamsRouter
 
 if TYPE_CHECKING:
     from ..core import ExecutionContext, Runtime
-    from ..teams import AccessProfile, Workspace
 
 log = logging.getLogger(__name__)
 
 SLACK_MARKDOWN_BLOCK_LIMIT = 12000
 SLACK_TEXT_LIMIT = 40000
 SLACK_APP_HOME_VIEW_LIMIT = 250_000
+# Enso retains Slack uploads locally, so cap each file at 100 MiB to bound disk use
+# independently of Slack's plan-dependent upload limits.
+SLACK_FILE_DOWNLOAD_LIMIT = 100 * 1024 * 1024
+SLACK_FILE_DOWNLOAD_CHUNK = 1024 * 1024
 SURFACE_MAINTENANCE_SECONDS = 5 * 60
 SURFACE_PUBLISH_ACTION_ID = "enso.surface.publish.v1"
 SURFACE_CANCEL_ACTION_ID = "enso.surface.cancel.v1"
@@ -120,6 +123,10 @@ class _SurfaceAction:
 class _SurfacePublishResult:
     status: TerminalStatus
     text: str
+
+
+class _SlackFileTooLargeError(Exception):
+    """A Slack download exceeded Enso's retained-file safety limit."""
 
 
 def _slack_error_code(exc: Exception) -> str:
@@ -630,6 +637,29 @@ def _download_filename(file_info: dict) -> str:
     return f"{prefix}-{name}"
 
 
+def _advertised_file_size(file_info: dict) -> int | None:
+    """Return Slack's non-negative byte count when its metadata is usable."""
+    raw_size = file_info.get("size")
+    if isinstance(raw_size, bool) or not isinstance(raw_size, (int, str)):
+        return None
+    try:
+        size = int(raw_size)
+    except ValueError:
+        return None
+    return size if size >= 0 else None
+
+
+def _stream_file_with_limit(response: Any, destination: Any, limit: int) -> int:
+    """Stream a response while enforcing a hard byte limit."""
+    written = 0
+    while chunk := response.read(SLACK_FILE_DOWNLOAD_CHUNK):
+        written += len(chunk)
+        if written > limit:
+            raise _SlackFileTooLargeError
+        destination.write(chunk)
+    return written
+
+
 def _file_label(file_info: dict) -> str:
     raw_name = file_info.get("name") or file_info.get("title") or file_info.get("id")
     return safe_filename(str(raw_name)) if raw_name else "file"
@@ -683,6 +713,7 @@ class SlackContext(TransportContext):
         persistent_surfaces: bool = False,
         surface_origin: SurfaceDraftOrigin | None = None,
         conversation_type: str = "",
+        cache_account_id: str = "",
     ):
         self._client = client
         self._channel = channel
@@ -700,6 +731,7 @@ class SlackContext(TransportContext):
             raise ValueError("surface draft origin does not match Slack context")
         self._surface_origin = surface_origin
         self._conversation_type = conversation_type
+        self._cache_account_id = cache_account_id
 
     async def _record_response(self, text: str) -> None:
         if self._audit_turn_id is not None:
@@ -1385,7 +1417,7 @@ class SlackContext(TransportContext):
         # API here, since this runs on the hot path. Cache misses just leave
         # the name blank and the agent can fall back to the ID.
         try:
-            cache = slack_cache.load()
+            cache = slack_cache.load_for_account(self._cache_account_id)
             user = cache.get("users", {}).get("items", {}).get(self._user_id, {})
             name = user.get("display_name") or user.get("real_name") or user.get("name") or ""
             env["ENSO_ORIGIN_USER_NAME"] = name
@@ -1435,6 +1467,7 @@ class SlackTransport(BaseTransport):
         self._client: AsyncWebClient | None = None
         self._surface_reconciled = False
         self._surface_terminal_retries: dict[str, TerminalStatus] = {}
+        self._cache_account_id = ""
 
         # Slack authorization is always resolved through exact DM/channel
         # routes. Invalid or missing route configuration remains represented
@@ -1444,7 +1477,6 @@ class SlackTransport(BaseTransport):
     def start(self) -> None:
         """Start listening for Slack events via Socket Mode (blocking)."""
         log.info("Starting Slack transport with exact routes")
-        self._warm_directory_cache()
         app = AsyncApp(token=self.bot_token)
         self._client = app.client
         self._register_listeners(app)
@@ -1473,7 +1505,16 @@ class SlackTransport(BaseTransport):
             return
         if not self.bot_user_id and auth.get("user_id"):
             self.bot_user_id = str(auth["user_id"])
-        self.teams_router.set_authenticated_account(str(auth.get("team_id", "")))
+        team_id = str(auth.get("team_id", ""))
+        self.teams_router.set_authenticated_account(team_id)
+        if self.teams_router.account_ok:
+            try:
+                directory = await asyncio.to_thread(slack_cache.bind_account, team_id)
+                await asyncio.to_thread(self._warm_directory_cache, directory)
+            except Exception:
+                log.warning("Slack directory cache account binding failed", exc_info=True)
+            else:
+                self._cache_account_id = team_id
         try:
             await asyncio.to_thread(self.teams_router.startup_reconcile)
         except Exception:
@@ -1530,7 +1571,7 @@ class SlackTransport(BaseTransport):
         await self._client.chat_postMessage(**payload)  # type: ignore[arg-type]
         return True
 
-    def _warm_directory_cache(self) -> None:
+    def _warm_directory_cache(self, cache: dict[str, Any] | None = None) -> None:
         """Populate the user+channel cache on startup so origin-env lookups
         resolve names without a per-message API hit.
 
@@ -1540,7 +1581,7 @@ class SlackTransport(BaseTransport):
         """
         if not self.bot_token:
             return
-        cache = slack_cache.load()
+        cache = cache if cache is not None else slack_cache.load()
         try:
             if not slack_cache._recently_refreshed(cache["users"]):
                 cache = slack_cache.refresh_users(self.bot_token, cache)
@@ -1700,6 +1741,7 @@ class SlackTransport(BaseTransport):
             persistent_surfaces=self.persistent_surfaces,
             surface_origin=surface_origin,
             conversation_type=conversation_type,
+            cache_account_id=self._cache_account_id,
         )
 
     async def _surface_action_notice(
@@ -2104,6 +2146,7 @@ class SlackTransport(BaseTransport):
             persistent_surfaces=self.persistent_surfaces,
             surface_origin=claimed.origin,
             conversation_type=claimed.origin.conversation_type,
+            cache_account_id=self._cache_account_id,
         )
         try:
             result = await context.publish_confirmed_surface(
@@ -2167,7 +2210,7 @@ class SlackTransport(BaseTransport):
     def lookup_user_name(self, user_id: str) -> str:
         """Best-effort display name from the on-disk cache; never hits the API."""
         try:
-            cache = slack_cache.load()
+            cache = slack_cache.load_for_account(self._cache_account_id)
             user = cache.get("users", {}).get("items", {}).get(user_id, {})
             return user.get("display_name") or user.get("real_name") or user.get("name") or ""
         except Exception:
@@ -2176,7 +2219,10 @@ class SlackTransport(BaseTransport):
     def lookup_channel_name(self, channel_id: str) -> str:
         """Best-effort ``#name`` from the on-disk cache; never hits the API."""
         try:
-            return _cached_channel_label(slack_cache.load(), channel_id)
+            return _cached_channel_label(
+                slack_cache.load_for_account(self._cache_account_id),
+                channel_id,
+            )
         except Exception:
             return ""
 
@@ -2445,20 +2491,16 @@ class SlackTransport(BaseTransport):
         conv_id: str,
         ctx: SlackContext | None = None,
         *,
-        workspace: Workspace | None = None,
-        access: AccessProfile | None = None,
-        allowed_providers: list[str] | None = None,
-        sel_key: str | None = None,
-        context: ExecutionContext | None = None,
+        allowed_providers: list[str],
+        context: ExecutionContext,
     ) -> str | None:
         """Parse and execute a !command. Returns response text or None.
 
         ``ctx`` is optional but commands that need to post a progress message
         before doing slow work (e.g. ``!compact``) will use it when given.
 
-        Teams routes pass their workspace, access profile, policy-usable
-        provider list, and execution context for commands that spawn a
-        provider.
+        Teams routes pass the policy-usable provider list and complete
+        workspace-policy execution context.
         """
         parts = text[1:].split(None, 1)
         cmd_name = parts[0].lower() if parts else ""
@@ -2466,7 +2508,7 @@ class SlackTransport(BaseTransport):
 
         rt = self.runtime
 
-        if access is not None and not access.allows_command(cmd_name):
+        if not context.policy.allows_command(cmd_name):
             return f"!{cmd_name} is not available in this conversation."
 
         if cmd_name == "stop":
@@ -2475,7 +2517,7 @@ class SlackTransport(BaseTransport):
         if cmd_name == "use":
             response, options = cmd_use(
                 rt,
-                sel_key or conv_id,
+                conv_id,
                 cmd_args,
                 providers=allowed_providers,
             )
@@ -2502,8 +2544,8 @@ class SlackTransport(BaseTransport):
             parts_list = cmd_clear(
                 rt,
                 conv_id,
+                context=context,
                 clear_all=bool(clear_all),
-                working_dir=workspace.path if workspace is not None else None,
             )
             return "\n".join(parts_list)
 
@@ -2521,11 +2563,9 @@ class SlackTransport(BaseTransport):
             return cmd_logs()[-40000:]
 
         if cmd_name == "help":
-            available = (
-                SLACK_COMMANDS
-                if access is None
-                else [c for c in SLACK_COMMANDS if access.allows_command(c[0])]
-            )
+            available = [
+                c for c in SLACK_COMMANDS if context.policy.allows_command(c[0])
+            ]
             return cmd_help(available, prefix="!")
 
         return f"Unknown command: !{cmd_name}. Use !help for available commands."
@@ -2561,7 +2601,7 @@ class SlackTransport(BaseTransport):
         files: list[dict],
         client: AsyncWebClient,
         *,
-        uploads_dir: str | None = None,
+        uploads_dir: str,
     ) -> list[str]:
         hydrated = await asyncio.gather(
             *(self._hydrate_file_info(file_info, client) for file_info in files)
@@ -2571,34 +2611,72 @@ class SlackTransport(BaseTransport):
     def _download_files_sync(
         self,
         files: list[dict],
-        uploads_dir: str | None = None,
+        uploads_dir: str,
     ) -> list[str]:
         """Download Slack file uploads into the workspace's uploads dir.
 
         Returns the local paths of files that downloaded successfully; failed
         downloads are logged and skipped so a single broken attachment doesn't
-        drop the whole message.
+        drop the whole message. Each file is limited to 100 MiB, checked first
+        from Slack metadata and again against the streamed byte count.
         """
-        if uploads_dir is None:
-            uploads_dir = os.path.join(self.runtime.working_dir, "uploads")
-        os.makedirs(uploads_dir, exist_ok=True)
+        try:
+            upload_directory = SecureUploadDirectory.create_for_path(uploads_dir)
+        except (OSError, ValueError):
+            log.exception("Failed to create secure Slack upload directory at %s", uploads_dir)
+            return []
 
-        downloaded: list[str] = []
-        for file_info in files:
-            url = _file_download_url(file_info)
-            if not url:
-                continue
-            name = _download_filename(file_info)
-            dest_path = os.path.join(uploads_dir, name)
-            try:
-                req = Request(url, headers={"Authorization": f"Bearer {self.bot_token}"})
-                with urlopen(req) as resp, open(dest_path, "wb") as f:
-                    f.write(resp.read())
-                downloaded.append(dest_path)
-                log.info("Downloaded file to %s", dest_path)
-            except Exception:
-                log.exception("Failed to download file %s", name)
-        return downloaded
+        downloaded: list[tuple[str, str]] = []
+        verified_downloads: list[str] = []
+        with upload_directory:
+            for file_info in files:
+                url = _file_download_url(file_info)
+                if not url:
+                    continue
+                name = _download_filename(file_info)
+                advertised_size = _advertised_file_size(file_info)
+                if (
+                    advertised_size is not None
+                    and advertised_size > SLACK_FILE_DOWNLOAD_LIMIT
+                ):
+                    log.warning(
+                        "Skipped oversized Slack file %s (%d bytes; limit %d)",
+                        name,
+                        advertised_size,
+                        SLACK_FILE_DOWNLOAD_LIMIT,
+                    )
+                    continue
+                try:
+                    req = Request(
+                        url,
+                        headers={"Authorization": f"Bearer {self.bot_token}"},
+                    )
+                    with (
+                        urlopen(req) as response,
+                        upload_directory.open_file(name) as destination,
+                    ):
+                        _stream_file_with_limit(
+                            response,
+                            destination,
+                            SLACK_FILE_DOWNLOAD_LIMIT,
+                        )
+                    dest_path = upload_directory.file_path(name)
+                    downloaded.append((name, dest_path))
+                    log.info("Downloaded file to %s", dest_path)
+                except _SlackFileTooLargeError:
+                    log.warning(
+                        "Stopped oversized Slack file %s after exceeding %d bytes",
+                        name,
+                        SLACK_FILE_DOWNLOAD_LIMIT,
+                    )
+                except Exception:
+                    log.exception("Failed to download file %s", name)
+            for name, dest_path in downloaded:
+                if upload_directory.verified_file_path(name) == dest_path:
+                    verified_downloads.append(dest_path)
+                else:
+                    log.error("Discarding Slack upload path changed during download: %s", name)
+        return verified_downloads
 
     async def notify(self, text: str, *, destination: str | None = None) -> None:
         """Send a one-way notification. Requires an explicit destination.

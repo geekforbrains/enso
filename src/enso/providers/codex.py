@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from . import BaseProvider, StreamEvent, truncate_status
+
+if TYPE_CHECKING:
+    from ..instructions import InstructionBundle
 
 CODEX_MODEL_ALIASES = {
     "sol": "gpt-5.6-sol",
@@ -70,6 +73,27 @@ def _reasoning_override(effort: str) -> str:
     return f'model_reasoning_effort="{effort}"'
 
 
+def _toml_string(value: str) -> str:
+    """Encode one Python string as a TOML basic string for ``-c``.
+
+    JSON's ASCII string encoding is a compatible subset of TOML's basic
+    string syntax. Validate UTF-8 first so lone surrogates cannot become an
+    invalid TOML Unicode escape that fails later inside the CLI.
+    """
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError(
+            "Codex developer instructions must contain Unicode scalar values"
+        ) from exc
+    return json.dumps(value, ensure_ascii=True)
+
+
+def _developer_instructions_override(content: str) -> str:
+    """Return a safely encoded Codex developer-instructions override."""
+    return f"developer_instructions={_toml_string(content)}"
+
+
 class CodexProvider(BaseProvider):
     name = "codex"
 
@@ -117,6 +141,7 @@ class CodexProvider(BaseProvider):
         *,
         effort: str | None = None,
         launch=None,
+        instructions: InstructionBundle | None = None,
     ) -> list[str]:
         cli_model = resolve_codex_model(model)
         cmd = [self.path, "exec"]
@@ -125,6 +150,10 @@ class CodexProvider(BaseProvider):
         cmd.extend([*self._permission_args(launch), "--json", "-m", cli_model])
         if effort:
             cmd.extend(["-c", _reasoning_override(effort)])
+        if instructions is not None:
+            cmd.extend([
+                "-c", _developer_instructions_override(instructions.content),
+            ])
         cmd.append("--")
         if session_id:
             cmd.append(session_id)
@@ -132,7 +161,13 @@ class CodexProvider(BaseProvider):
         return cmd
 
     def build_batch_command(
-        self, prompt: str, model: str, *, effort: str | None = None, launch=None,
+        self,
+        prompt: str,
+        model: str,
+        *,
+        effort: str | None = None,
+        launch=None,
+        instructions: InstructionBundle | None = None,
     ) -> list[str]:
         cli_model = resolve_codex_model(model)
         cmd = [
@@ -142,6 +177,10 @@ class CodexProvider(BaseProvider):
         ]
         if effort:
             cmd.extend(["-c", _reasoning_override(effort)])
+        if instructions is not None:
+            cmd.extend([
+                "-c", _developer_instructions_override(instructions.content),
+            ])
         cmd.extend(["--", prompt])
         return cmd
 

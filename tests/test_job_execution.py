@@ -27,10 +27,14 @@ class FakeProvider:
     def __init__(self):
         self.prompts: list[tuple[str, str]] = []
         self.launches = []
+        self.instructions = []
 
-    def build_batch_command(self, prompt: str, model: str, *, launch=None) -> list[str]:
+    def build_batch_command(
+        self, prompt: str, model: str, *, launch=None, instructions=None
+    ) -> list[str]:
         self.prompts.append((prompt, model))
         self.launches.append(launch)
+        self.instructions.append(instructions)
         return ["fake-provider"]
 
     @staticmethod
@@ -66,24 +70,62 @@ def make_job(tmp_enso: str, *, prerun: str | None = "prerun.sh", notify: str = "
         provider="claude",
         model="sonnet",
         workspace="company",
-        access="automation",
         prerun=prerun,
         notify=notify,
         prompt="Use this: {{prerun_output}}",
     )
 
 
+def test_job_session_key_is_stable_and_rotates_with_workspace_policy(
+    tmp_enso,
+    sample_config,
+):
+    runtime = Runtime(sample_config)
+    job = make_job(tmp_enso)
+
+    first, first_error = runtime.jobs._job_execution_context(job)
+    repeated, repeated_error = runtime.jobs._job_execution_context(job)
+    assert first_error is None and repeated_error is None
+    assert first is not None and repeated is not None
+    assert first.chat_key == repeated.chat_key
+
+    other_root = Path(tmp_enso, "workspaces", "other")
+    other_root.mkdir(parents=True)
+    sample_config["workspaces"]["other"] = {
+        "path": str(other_root),
+        "policy": "automation",
+        "concurrency": 1,
+    }
+    other, other_error = runtime.jobs._job_execution_context(
+        replace(job, workspace="other")
+    )
+    assert other_error is None and other is not None
+    assert other.chat_key != first.chat_key
+
+    sample_config["policies"]["alternate"] = dict(
+        sample_config["policies"]["automation"]
+    )
+    sample_config["workspaces"]["company"]["policy"] = "alternate"
+    changed, changed_error = runtime.jobs._job_execution_context(job)
+    assert changed_error is None and changed is not None
+    assert changed.chat_key not in {first.chat_key, other.chat_key}
+
+
 @pytest.fixture(autouse=True)
 def configured_job_catalog(sample_config, tmp_enso):
-    """Give execution tests one valid named workspace/access pair."""
+    """Give execution tests one valid workspace-owned policy."""
     workspace = Path(tmp_enso, "workspaces", "company")
     workspace.mkdir(parents=True, exist_ok=True)
     sample_config.update(
         {
             "workspaces": {
-                "company": {"path": str(workspace), "concurrency": 1},
+                "company": {
+                    "path": str(workspace),
+                    "policy": "automation",
+                    "concurrency": 1,
+                },
             },
-            "access": {
+            "policies": {
                 "automation": {
                     "unrestricted": True,
                     "providers": ["claude", "codex", "agy"],
@@ -421,6 +463,7 @@ async def test_scheduled_open_prerun_injects_output_and_runs_provider(
 
     assert result.status == "ok"
     assert provider.prompts == [("Use this: captured context", "sonnet")]
+    assert provider.instructions[0].content == "# Test shared instructions\n"
     runtime.make_provider.assert_called_once()
     assert runtime.make_provider.call_args.args == ("claude",)
     assert runtime.make_provider.call_args.kwargs["timeout"] == job.timeout
@@ -723,7 +766,7 @@ async def test_running_here_reports_only_live_job_tasks(sample_config):
         live.cancel()
 
 
-# -- Named workspace/access execution bindings --
+# -- Named workspace-policy execution bindings --
 
 
 async def test_job_runs_in_named_workspace_with_native_launch(
@@ -731,7 +774,7 @@ async def test_job_runs_in_named_workspace_with_native_launch(
     sample_config,
     configured_job_catalog,
 ):
-    """Jobs reuse the same workspace/access execution plumbing as routes."""
+    """Jobs reuse the same workspace-policy execution plumbing as routes."""
     runtime = Runtime(sample_config)
     job = make_job(tmp_enso, prerun=None)
     provider = stub_provider(runtime)
@@ -743,7 +786,7 @@ async def test_job_runs_in_named_workspace_with_native_launch(
     assert context.path == str(configured_job_catalog)
     assert context.workspace_id == "company"
     assert context.workspace.name == "company"
-    assert context.access.name == "automation"
+    assert context.policy.name == "automation"
     spawn_kwargs = runtime._spawn_process.await_args.kwargs
     assert spawn_kwargs["cwd"] == str(configured_job_catalog)
     assert provider.launches[0].mode == "unrestricted"
@@ -754,12 +797,12 @@ async def test_job_passes_policy_launch_and_minimal_environment(
     sample_config,
     monkeypatch,
 ):
-    """The selected access profile controls batch command and child env."""
+    """The workspace policy controls the batch command and child environment."""
     launch = MagicMock(mode="policy", env={"SAFE_ONLY": "1"})
     prepared = []
 
-    def fake_prepare(workspace, access, provider):
-        prepared.append((workspace.name, access.name, provider))
+    def fake_prepare(workspace, execution_policy, provider):
+        prepared.append((workspace.name, execution_policy.name, provider))
         return launch
 
     monkeypatch.setattr("enso.policy.prepare_launch", fake_prepare)
@@ -800,6 +843,26 @@ async def test_job_policy_preparation_failure_never_falls_back(
     runtime.jobs._run_job_prerun.assert_not_awaited()
     runtime.make_provider.assert_not_called()
     runtime._spawn_process.assert_not_awaited()
+
+
+async def test_job_missing_shared_instructions_fails_before_prerun(
+    tmp_enso,
+    sample_config,
+):
+    Path(tmp_enso, "AGENTS.md").unlink()
+    runtime = Runtime(sample_config)
+    job = make_job(tmp_enso)
+    runtime.jobs._run_job_prerun = AsyncMock()
+    runtime.make_provider = MagicMock()
+
+    result = await runtime.jobs._execute_job(
+        job, trigger="manual", notify_failures=False
+    )
+
+    assert result.status == "error"
+    assert "shared instruction file is missing" in result.output
+    runtime.jobs._run_job_prerun.assert_not_awaited()
+    runtime.make_provider.assert_not_called()
 
 
 async def test_job_policy_preflight_failure_happens_before_prerun(
@@ -897,11 +960,11 @@ async def test_job_binding_does_not_move_trusted_prerun(tmp_enso, sample_config)
     assert runtime._spawn_process.await_args.kwargs["cwd"] == job.job_dir
 
 
-async def test_job_access_must_allow_its_provider_before_prerun(
+async def test_job_policy_must_allow_its_provider_before_prerun(
     tmp_enso,
     sample_config,
 ):
-    sample_config["access"]["automation"]["providers"] = ["claude"]
+    sample_config["policies"]["automation"]["providers"] = ["claude"]
     runtime = Runtime(sample_config)
     job = make_job(tmp_enso)
     job.provider = "codex"
@@ -921,9 +984,7 @@ async def test_job_access_must_allow_its_provider_before_prerun(
     ("field", "value", "expected"),
     [
         ("workspace", "missing", "Unknown workspace 'missing'"),
-        ("access", "missing", "Unknown access profile 'missing'"),
         ("workspace", "", "workspace is required"),
-        ("access", "", "access is required"),
     ],
 )
 async def test_invalid_job_binding_fails_without_global_fallback(
@@ -951,7 +1012,7 @@ async def test_invalid_job_binding_fails_without_global_fallback(
     ("section", "field", "value", "expected"),
     [
         ("workspaces", "path", "", "Invalid workspace 'company'"),
-        ("access", "unrestricted", "yes", "Invalid access profile 'automation'"),
+        ("policies", "unrestricted", "yes", "Invalid policy 'automation'"),
     ],
 )
 async def test_invalid_selected_catalog_entry_fails_before_prerun(
@@ -976,11 +1037,11 @@ async def test_invalid_selected_catalog_entry_fails_before_prerun(
     runtime.make_provider.assert_not_called()
 
 
-async def test_job_provider_and_model_override_access_default(
+async def test_job_provider_and_model_override_policy_default(
     tmp_enso,
     sample_config,
 ):
-    """Access authorizes providers; the JOB.md still chooses provider/model."""
+    """Policy authorizes providers; the JOB.md still chooses provider/model."""
     runtime = Runtime(sample_config)
     job = make_job(tmp_enso, prerun=None)
     job.provider = "codex"
@@ -993,6 +1054,35 @@ async def test_job_provider_and_model_override_access_default(
     runtime.make_provider.assert_called_once()
     assert runtime.make_provider.call_args.args == ("codex",)
     assert provider.prompts == [("Use this: ", "gpt-5.3-codex")]
+
+
+async def test_batch_path_never_retries_a_retryable_provider_error(
+    tmp_enso,
+    sample_config,
+):
+    """Retry-once for transient errors is interactive-only; a failing job run
+    spawns the provider exactly once even when the provider would call the
+    error retryable (grok's lapsed-OAuth signature)."""
+
+    class RetryableProvider(FakeProvider):
+        def retryable_error(self, text: str) -> bool:
+            return "Not signed in" in text
+
+    sample_config["policies"]["automation"]["providers"].append("grok")
+    runtime = Runtime(sample_config)
+    job = make_job(tmp_enso, prerun=None)
+    job.provider = "grok"
+    job.model = "grok-4.6"
+    provider = RetryableProvider()
+    runtime.make_provider = MagicMock(return_value=provider)
+    runtime._spawn_process = AsyncMock(return_value=FakeProcess(1))
+    runtime._communicate_with_timeout = AsyncMock(return_value=(b"Not signed in", b"", False))
+
+    result = await runtime.jobs._execute_job(job, trigger="manual", notify_failures=False)
+
+    assert result.status == "error"
+    assert "Not signed in" in result.output
+    runtime._spawn_process.assert_awaited_once()
 
 
 async def test_bound_job_failure_does_not_enqueue_chat_context(

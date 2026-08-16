@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import copy
+import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -11,12 +13,16 @@ import typer
 
 from enso.cli import (
     _ensure_default_execution_config,
+    _install_launchd,
+    _install_systemd,
     _resolve_send_targets,
     _resolve_slack_target,
+    _setup_default_workspace,
     _setup_slack,
     _setup_telegram,
     _update_referenced_secrets_with_rollback_or_exit,
     serve,
+    setup,
 )
 from enso.secret_refs import SecretResolutionError
 
@@ -112,29 +118,226 @@ def test_telegram_send_target_does_not_broadcast_to_allowed_users(monkeypatch):
         _resolve_send_targets(config, "")
 
 
-def test_default_execution_config_uses_shared_access_vocabulary(tmp_enso):
-    working_dir = str(Path(tmp_enso) / "workspace")
+def test_default_execution_config_assigns_admin_policy(tmp_enso):
     config = {
-        "working_dir": working_dir,
         "providers": {
             "claude": {"path": "claude", "models": ["sonnet"]},
             "codex": {"path": "codex", "models": ["terra"]},
         },
     }
 
-    workspace, access = _ensure_default_execution_config(config)
+    workspace = _ensure_default_execution_config(config)
 
-    assert (workspace, access) == ("default", "admin")
+    assert workspace == "default"
     assert config["workspaces"]["default"] == {
-        "path": working_dir,
+        "path": str(Path(tmp_enso) / "workspaces" / "default"),
+        "policy": "admin",
         "concurrency": 1,
     }
-    assert config["access"]["admin"] == {
+    assert config["policies"]["admin"] == {
         "unrestricted": True,
         "providers": ["claude", "codex"],
         "default_provider": "claude",
         "chat_commands": "*",
     }
+
+
+def test_default_execution_config_preserves_existing_default_workspace(tmp_enso):
+    custom_path = str(Path(tmp_enso) / "custom-default")
+    config = {
+        "providers": {"claude": {"path": "claude", "models": ["sonnet"]}},
+        "workspaces": {
+            "default": {
+                "path": custom_path,
+                "concurrency": 1,
+            }
+        },
+    }
+
+    workspace = _ensure_default_execution_config(config)
+
+    assert workspace == "default"
+    assert config["workspaces"]["default"] == {
+        "path": custom_path,
+        "policy": "admin",
+        "concurrency": 1,
+    }
+
+
+def test_default_execution_config_reuses_existing_managed_path_owner(tmp_enso):
+    managed = str(Path(tmp_enso) / "workspaces" / "default")
+    config = {
+        "providers": {"claude": {"path": "claude", "models": ["sonnet"]}},
+        "workspaces": {
+            "company": {
+                "path": managed,
+                "policy": "staff",
+                "concurrency": 2,
+            }
+        },
+        "policies": {
+            "staff": {
+                "unrestricted": True,
+                "providers": ["claude"],
+                "default_provider": "claude",
+                "chat_commands": "*",
+            }
+        },
+    }
+
+    workspace = _ensure_default_execution_config(config)
+
+    assert workspace == "company"
+    assert "default" not in config["workspaces"]
+    assert config["workspaces"]["company"]["policy"] == "staff"
+    assert "admin" not in config["policies"]
+
+
+def test_default_execution_config_completes_reused_managed_workspace(tmp_enso):
+    managed = str(Path(tmp_enso) / "workspaces" / "default")
+    config = {
+        "providers": {"claude": {"path": "claude", "models": ["sonnet"]}},
+        "workspaces": {"company": {"path": managed}},
+    }
+
+    workspace = _ensure_default_execution_config(config)
+
+    assert workspace == "company"
+    assert config["workspaces"]["company"] == {
+        "path": managed,
+        "policy": "admin",
+        "concurrency": 1,
+    }
+    assert config["policies"]["admin"]["unrestricted"] is True
+
+
+def test_default_execution_config_rejects_overlap_with_managed_path(tmp_enso):
+    config = {
+        "providers": {"claude": {"path": "claude", "models": ["sonnet"]}},
+        "workspaces": {
+            "managed-parent": {
+                "path": str(Path(tmp_enso) / "workspaces"),
+                "policy": "admin",
+                "concurrency": 1,
+            }
+        },
+        "policies": {
+            "admin": {
+                "unrestricted": True,
+                "providers": ["claude"],
+                "default_provider": "claude",
+                "chat_commands": "*",
+            }
+        },
+    }
+    original = copy.deepcopy(config)
+
+    with pytest.raises(ValueError, match="overlap"):
+        _ensure_default_execution_config(config)
+
+    assert config == original
+
+
+def test_setup_default_workspace_reports_overlap_before_creating_directory(
+    monkeypatch, tmp_enso, capsys
+):
+    config = {
+        "workspaces": {
+            "managed-parent": {
+                "path": str(Path(tmp_enso) / "workspaces"),
+                "policy": "admin",
+            }
+        }
+    }
+    monkeypatch.setattr(
+        "enso.cli.os.makedirs",
+        lambda *_args, **_kwargs: pytest.fail("must not create an overlapping path"),
+    )
+
+    with pytest.raises(typer.Exit) as exc_info:
+        _setup_default_workspace(config)
+
+    assert exc_info.value.exit_code == 1
+    assert "would overlap" in capsys.readouterr().out
+
+
+def test_setup_default_workspace_rejects_relative_existing_path_without_writing(
+    monkeypatch, capsys
+):
+    config = {
+        "workspaces": {
+            "default": {
+                "path": "relative-workspace",
+                "policy": "admin",
+            }
+        }
+    }
+    original = copy.deepcopy(config)
+    monkeypatch.setattr(
+        "enso.cli.os.makedirs",
+        lambda *_args, **_kwargs: pytest.fail("must not create a relative path"),
+    )
+
+    with pytest.raises(typer.Exit) as exc_info:
+        _setup_default_workspace(config)
+
+    assert exc_info.value.exit_code == 1
+    assert config == original
+    assert "must be absolute" in capsys.readouterr().out
+
+
+def test_setup_rejects_legacy_working_dir_before_changes(monkeypatch, capsys):
+    config = {"working_dir": "/legacy/workspace"}
+    monkeypatch.setattr("enso.cli.load_config", lambda: config)
+    monkeypatch.setattr(
+        "enso.cli._setup_providers",
+        lambda *_: pytest.fail("setup must stop before mutating legacy config"),
+    )
+
+    with pytest.raises(typer.Exit) as exc_info:
+        setup()
+
+    assert exc_info.value.exit_code == 1
+    assert config == {"working_dir": "/legacy/workspace"}
+    output = " ".join(capsys.readouterr().out.split())
+    assert "working_dir is no longer supported" in output
+    assert "workspaces" in output
+
+
+def test_launchd_service_has_no_process_working_directory(monkeypatch, tmp_path):
+    plist = tmp_path / "enso.plist"
+    monkeypatch.setattr("enso.cli._LAUNCHD_PLIST", str(plist))
+    monkeypatch.setattr(
+        "enso.cli.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0),
+    )
+
+    assert _install_launchd("/venv/bin/enso")
+
+    content = plist.read_text()
+    assert "WorkingDirectory" not in content
+    assert "<string>/venv/bin/enso</string>" in content
+
+
+def test_systemd_service_has_no_process_working_directory(monkeypatch, tmp_path):
+    service_dir = tmp_path / "systemd"
+    original_expanduser = os.path.expanduser
+    monkeypatch.setattr(
+        "enso.cli.os.path.expanduser",
+        lambda path: str(service_dir)
+        if path == "~/.config/systemd/user"
+        else original_expanduser(path),
+    )
+    monkeypatch.setattr(
+        "enso.cli.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0),
+    )
+
+    assert _install_systemd("/venv/bin/enso")
+
+    content = (service_dir / "enso.service").read_text()
+    assert "WorkingDirectory=" not in content
+    assert "ExecStart=/venv/bin/enso serve" in content
 
 
 def test_slack_send_target_resolves_1password_reference(monkeypatch):
@@ -166,7 +369,9 @@ def test_slack_send_target_resolves_1password_reference(monkeypatch):
     )
 
 
-def test_telegram_setup_validates_resolved_existing_token(monkeypatch):
+def test_telegram_setup_validates_existing_token_and_binds_default_workspace(
+    monkeypatch, tmp_enso
+):
     config = {
         "transports": {
             "telegram": {
@@ -189,7 +394,50 @@ def test_telegram_setup_validates_resolved_existing_token(monkeypatch):
     monkeypatch.setattr("enso.cli.Confirm.ask", lambda *args, **kwargs: False)
 
     assert _setup_telegram(config) is None
-    assert "bot_token" not in config["transports"]["telegram"]
+    telegram = config["transports"]["telegram"]
+    assert "bot_token" not in telegram
+    assert telegram["workspace"] == "default"
+    assert config["workspaces"]["default"]["path"] == str(
+        Path(tmp_enso) / "workspaces" / "default"
+    )
+    assert config["workspaces"]["default"]["policy"] == "admin"
+
+
+def test_telegram_setup_reuses_existing_managed_workspace_name(monkeypatch, tmp_enso):
+    managed = str(Path(tmp_enso) / "workspaces" / "default")
+    config = {
+        "transports": {
+            "telegram": {
+                "bot_token": "token",
+                "allowed_users": ["123"],
+            },
+        },
+        "workspaces": {
+            "company": {
+                "path": managed,
+                "policy": "staff",
+                "concurrency": 1,
+            },
+        },
+        "policies": {
+            "staff": {
+                "unrestricted": True,
+                "providers": ["claude"],
+                "default_provider": "claude",
+                "chat_commands": "*",
+            },
+        },
+    }
+    monkeypatch.setattr("enso.cli.resolve_config_secret", lambda cfg, key: "token")
+    monkeypatch.setattr(
+        "enso.cli._tg_validate_token", lambda token: {"username": "enso_test"}
+    )
+    monkeypatch.setattr("enso.cli.Confirm.ask", lambda *args, **kwargs: False)
+
+    assert _setup_telegram(config) is None
+
+    assert config["transports"]["telegram"]["workspace"] == "company"
+    assert "default" not in config["workspaces"]
 
 
 def test_slack_setup_validates_resolved_existing_token(monkeypatch):
@@ -200,16 +448,14 @@ def test_slack_setup_validates_resolved_existing_token(monkeypatch):
                     "item": "Slack",
                     "field": "BOT_TOKEN",
                 },
+                "account_id": "T123",
+                "dms": {"U123": {"workspace": "default"}},
+                "channels": {},
+                "channel_defaults": {"mention_required": False},
             },
         },
-        "routes": {
-            "slack": {
-                "account_id": "T123",
-                "dms": {"U123": {"workspace": "default", "access": "admin"}},
-                "channels": {},
-            }
-        },
     }
+    original = copy.deepcopy(config)
     monkeypatch.setattr(
         "enso.cli.resolve_config_secret",
         lambda cfg, key: "resolved-slack-token",
@@ -226,7 +472,39 @@ def test_slack_setup_validates_resolved_existing_token(monkeypatch):
 
     assert _setup_slack(config) is None
     assert "bot_token" not in config["transports"]["slack"]
+    assert config == original
     write_manifest.assert_called_once_with()
+
+
+def test_slack_setup_rejects_legacy_routes_before_writing(monkeypatch, capsys):
+    config = {
+        "transports": {
+            "slack": {
+                "bot_token": "old-bot",
+                "app_token": "old-app",
+            },
+        },
+        "routes": {
+            "slack": {
+                "account_id": "T1",
+                "dms": {"UOLD": {"workspace": "default"}},
+                "channels": {},
+            },
+        },
+    }
+    original = copy.deepcopy(config)
+    monkeypatch.setattr(
+        "enso.cli._write_slack_manifest_copy",
+        lambda: pytest.fail("setup must not write before legacy config is migrated"),
+    )
+
+    with pytest.raises(typer.Exit) as exc_info:
+        _setup_slack(config)
+
+    assert exc_info.value.exit_code == 1
+    assert config == original
+    output = " ".join(capsys.readouterr().out.split())
+    assert "move routes.slack fields into transports.slack" in output
 
 
 def test_telegram_setup_reconfiguration_updates_reference_without_plaintext(
@@ -279,6 +557,7 @@ def test_telegram_setup_reconfiguration_updates_reference_without_plaintext(
     assert "allowed_user_ids" not in telegram
     assert telegram["allowed_users"] == ["456"]
     assert telegram["notify_channel"] == "456"
+    assert telegram["workspace"] == "default"
     assert updates == [
         (
             {
@@ -306,26 +585,24 @@ def test_slack_setup_reconfiguration_updates_references_without_plaintext(
                 "bot_token": "stale-bot-literal",
                 "app_token": "stale-app-literal",
                 "notify_channel": "COLD",
+                "channel_context_messages": 12,
                 "rich_messages": False,
                 "persistent_surfaces": False,
+                "account_id": "T1",
+                "channel_defaults": {"mention_required": False},
+                "dms": {"UOLD": {"workspace": "company"}},
+                "channels": {"CSTAFF": {"workspace": "company"}},
             },
         },
         "workspaces": {
-            "company": {"path": "/tmp/company", "concurrency": 1},
+            "company": {"path": "/tmp/company", "policy": "admin", "concurrency": 1},
         },
-        "access": {
+        "policies": {
             "admin": {
                 "unrestricted": True,
                 "providers": ["claude"],
                 "default_provider": "claude",
                 "chat_commands": "*",
-            },
-        },
-        "routes": {
-            "slack": {
-                "account_id": "T1",
-                "dms": {"UOLD": {"workspace": "company", "access": "admin"}},
-                "channels": {"CSTAFF": {"workspace": "company", "access": "admin"}},
             },
         },
     }
@@ -370,17 +647,163 @@ def test_slack_setup_reconfiguration_updates_references_without_plaintext(
     assert slack["bot_user_id"] == "UNEWBOT"
     assert "allowed_users" not in slack
     assert slack["notify_channel"] == "CNEW"
+    assert slack["channel_context_messages"] == 12
     assert slack["rich_messages"] is False
     assert slack["persistent_surfaces"] is False
-    assert config["routes"]["slack"] == {
-        "account_id": "T1",
-        "dms": {"UOLD": {"workspace": "company", "access": "admin"}},
-        "channels": {"CSTAFF": {"workspace": "company", "access": "admin"}},
-    }
+    assert slack["account_id"] == "T1"
+    assert slack["channel_defaults"] == {"mention_required": False}
+    assert slack["dms"] == {"UOLD": {"workspace": "company"}}
+    assert slack["channels"] == {"CSTAFF": {"workspace": "company"}}
+    assert "routes" not in config
     assert updates == [
         ("bot_token", "new-bot-token"),
         ("app_token", "new-app-token"),
     ]
+
+
+@pytest.mark.parametrize(
+    ("route_key", "route_value"),
+    [
+        ("dms", {"UOLD": {"workspace": "company"}}),
+        ("channels", {"CSTAFF": {"workspace": "company"}}),
+    ],
+)
+def test_slack_setup_preserves_routes_when_other_map_is_omitted(
+    monkeypatch,
+    route_key,
+    route_value,
+):
+    config = {
+        "transports": {
+            "slack": {
+                "bot_token": "old-bot",
+                "app_token": "old-app",
+                "account_id": "T1",
+                route_key: route_value,
+            },
+        },
+    }
+
+    def validate(token):
+        return {"user": "enso", "user_id": "UBOT", "team_id": "T1"}
+
+    def prompt(label, **kwargs):
+        if "Bot Token" in label:
+            return "new-bot"
+        if "App Token" in label:
+            return "new-app"
+        if "Notify channel" in label:
+            return ""
+        raise AssertionError(f"Unexpected prompt: {label}")
+
+    monkeypatch.setattr("enso.cli._slack_validate_token", validate)
+    monkeypatch.setattr("enso.cli.Confirm.ask", lambda *args, **kwargs: True)
+    monkeypatch.setattr("enso.cli.Prompt.ask", prompt)
+    monkeypatch.setattr(
+        "enso.cli._write_slack_manifest_copy",
+        lambda: "/tmp/slack-manifest.yaml",
+    )
+
+    _setup_slack(config)
+
+    slack = config["transports"]["slack"]
+    assert slack[route_key] == route_value
+    assert slack["dms"] == (route_value if route_key == "dms" else {})
+    assert slack["channels"] == (route_value if route_key == "channels" else {})
+
+
+def test_slack_setup_replaces_only_routing_for_a_different_account(monkeypatch):
+    config = {
+        "transports": {
+            "slack": {
+                "bot_token": "old-bot",
+                "app_token": "old-app",
+                "channel_context_messages": 7,
+                "rich_messages": False,
+                "account_id": "T1",
+                "channel_defaults": {"mention_required": False},
+                "dms": {"UOLD": {"workspace": "default"}},
+                "channels": {"COLD": {"workspace": "default"}},
+            }
+        },
+    }
+    confirmations = iter([True, True])
+
+    def validate(token):
+        team = "T1" if token == "old-bot" else "T2"
+        return {"user": "enso", "user_id": "UBOT2", "team_id": team}
+
+    def prompt(label, **kwargs):
+        if "Bot Token" in label:
+            return "new-bot"
+        if "App Token" in label:
+            return "new-app"
+        if "Owner Slack user ID" in label:
+            return "UNEW"
+        if "Notify channel" in label:
+            return "CNEW"
+        raise AssertionError(f"Unexpected prompt: {label}")
+
+    monkeypatch.setattr("enso.cli._slack_validate_token", validate)
+    monkeypatch.setattr("enso.cli.Confirm.ask", lambda *args, **kwargs: next(confirmations))
+    monkeypatch.setattr("enso.cli.Prompt.ask", prompt)
+    monkeypatch.setattr(
+        "enso.cli._write_slack_manifest_copy",
+        lambda: "/tmp/slack-manifest.yaml",
+    )
+
+    _setup_slack(config)
+
+    slack = config["transports"]["slack"]
+    assert slack["account_id"] == "T2"
+    assert slack["dms"] == {"UNEW": {"workspace": "default"}}
+    assert slack["channels"] == {}
+    assert "channel_defaults" not in slack
+    assert slack["channel_context_messages"] == 7
+    assert slack["rich_messages"] is False
+
+
+def test_slack_setup_account_change_cancel_preserves_config(monkeypatch):
+    config = {
+        "transports": {
+            "slack": {
+                "bot_token": "old-bot",
+                "app_token": "old-app",
+                "account_id": "T1",
+                "dms": {"UOLD": {"workspace": "default"}},
+                "channels": {},
+            }
+        }
+    }
+    original = copy.deepcopy(config)
+    confirmations = iter([True, False])
+
+    def validate(token):
+        team = "T1" if token == "old-bot" else "T2"
+        return {"user": "enso", "user_id": "UBOT2", "team_id": team}
+
+    def prompt(label, **kwargs):
+        if "Bot Token" in label:
+            return "new-bot"
+        if "App Token" in label:
+            return "new-app"
+        raise AssertionError(f"Unexpected prompt: {label}")
+
+    monkeypatch.setattr("enso.cli._slack_validate_token", validate)
+    monkeypatch.setattr("enso.cli.Confirm.ask", lambda *args, **kwargs: next(confirmations))
+    monkeypatch.setattr("enso.cli.Prompt.ask", prompt)
+    monkeypatch.setattr(
+        "enso.cli._write_slack_manifest_copy",
+        lambda: "/tmp/slack-manifest.yaml",
+    )
+    monkeypatch.setattr(
+        "enso.cli._update_referenced_secrets_with_rollback_or_exit",
+        lambda *args, **kwargs: pytest.fail("credential writes must not run after cancel"),
+    )
+
+    _setup_slack(config)
+
+    assert config == original
 
 
 def test_reconfiguration_write_failure_keeps_config_and_exits_clearly(
@@ -583,11 +1006,10 @@ def test_slack_setup_reprompts_until_app_token_provided(monkeypatch, capsys):
     assert app_prompts == 2
     assert slack["app_token"] == "xapp-new"
     assert "allowed_users" not in slack
-    assert config["routes"]["slack"] == {
-        "account_id": "T1",
-        "dms": {"UOWNER": {"workspace": "default", "access": "admin"}},
-        "channels": {},
-    }
+    assert slack["account_id"] == "T1"
+    assert slack["dms"] == {"UOWNER": {"workspace": "default"}}
+    assert slack["channels"] == {}
+    assert "routes" not in config
     assert "Token is required" in capsys.readouterr().out
 
 
@@ -599,7 +1021,7 @@ def test_serve_reports_secret_resolution_failure_cleanly(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
         "enso.cli.load_config",
-        lambda: {"transport": "slack", "working_dir": str(tmp_path)},
+        lambda: {"transport": "slack"},
     )
     monkeypatch.setattr("enso.cli.configure_logging", lambda *a, **k: {})
     monkeypatch.setattr("enso.cli._load_secret_env", lambda: [])
@@ -627,7 +1049,7 @@ def test_serve_reports_secret_resolution_failure_cleanly(
     monkeypatch.setattr("enso.cli._load_transport", fail)
 
     with pytest.raises(typer.Exit) as excinfo:
-        serve(working_dir=None, transport=None)
+        serve(transport=None)
 
     assert excinfo.value.exit_code == 1
     out = capsys.readouterr().out

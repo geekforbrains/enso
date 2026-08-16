@@ -1,7 +1,7 @@
 {
-  "$comment": "Starting point for the optional <policy_dir>/claude/mcp.json — the profile's exact Claude MCP server allowlist, passed as --mcp-config with --strict-mcp-config retained. Its presence turns MCP on for the profile and is hashed into policy_revision; delete the file to disable MCP. chmod 600 and keep it beside settings.json, outside every workspace.",
-  "$comment_secrets": "Keep this file secret-free: ${VAR} references resolve from the launch environment. Name each variable in the profile's env_passthrough and deliver its value through ~/.enso/secrets/*.env. enso config check warns about credential-shaped literal values.",
-  "$comment_permissions": "Under --permission-mode dontAsk, a server no permission rule references has every tool denied — pair each server with mcp__<server> or mcp__<server>__<tool> rules in settings.json. MCP servers are dialled by the provider process and bypass the sandbox's network allowlist, so list only servers whose entire tool surface is acceptable for the profile.",
+  "$comment": "Starting point for the optional <policy_dir>/claude/mcp.json — the policy's exact Claude MCP server allowlist, passed as --mcp-config with --strict-mcp-config retained. Its presence turns MCP on for the policy and is hashed into policy_revision; delete the file to disable MCP. chmod 600 and keep it beside settings.json, outside every workspace.",
+  "$comment_secrets": "Keep this file secret-free: ${VAR} references resolve from the launch environment. Name each variable in the policy's env_passthrough and deliver its value through ~/.enso/secrets/*.env. enso config check warns about credential-shaped literal values.",
+  "$comment_permissions": "Under --permission-mode dontAsk, a server no permission rule references has every tool denied — pair each server with mcp__<server> or mcp__<server>__<tool> rules in settings.json. MCP servers are dialled by the provider process and bypass the sandbox's network allowlist, so list only servers whose entire tool surface is acceptable for the policy.",
   "mcpServers": {
     "metrics": {
       "type": "http",

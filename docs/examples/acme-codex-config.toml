@@ -1,10 +1,14 @@
 # Starting point for <policy_dir>/codex/config.toml. chmod 600 and keep it
-# outside every workspace. This profile uses the invocation workspace root,
-# so one access profile can be reused for several project workspaces.
+# outside every workspace. This policy uses the invocation workspace root,
+# so one policy can be reused for several project workspaces.
 #
 # Adapt and test it with the installed Codex version. Enso verifies that TOML
 # parses and that its launch plumbing is intact; it does not prove that the
 # native policy has the intended effect.
+#
+# Do not set top-level developer_instructions here. Enso reserves that key for
+# the validated shared ~/.enso/AGENTS.md injection; put project guidance in
+# the workspace-local AGENTS.md instead.
 
 default_permissions = "enso"
 approval_policy = "never"
@@ -15,10 +19,9 @@ approval_policy = "never"
 # Grants no write access. Note that a read-only Codex sandbox still permits
 # broad reads (system paths and TMPDIR); it is not confined to the workspace,
 # so keep secrets out of readable locations. Use "write" only for a staff
-# profile, or grant a narrower writable project-data path using the installed
-# CLI's current native syntax. A profile that grants writes must keep
-# AGENTS.md, CLAUDE.md, .agents, .claude, and skill definitions protected when
-# a broader route trusts them.
+# policy, or grant a narrower writable project-data path using the installed
+# CLI's current native syntax. A policy that grants writes must keep
+# AGENTS.md, CLAUDE.md, .agents, .claude, and skill definitions protected.
 [permissions.enso.filesystem.":workspace_roots"]
 "." = "read"
 

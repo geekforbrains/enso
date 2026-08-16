@@ -36,13 +36,33 @@ def _docs_web_app(tmp_path, monkeypatch):
 
     config_dir = tmp_path / "enso"
     docs_dir = config_dir / "docs"
-    working_dir = tmp_path / "workspace"
-    working_dir.mkdir()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
     monkeypatch.setattr(web_app, "CONFIG_DIR", str(config_dir))
     monkeypatch.setattr(docs_mod, "DOCS_DIR", str(docs_dir))
     monkeypatch.setattr(web_app, "load_jobs", lambda: [])
+    monkeypatch.setattr(web_app, "load_jobs_with_errors", lambda _config: ([], {}))
     monkeypatch.setattr(web_app.runs, "list_runs", lambda **_kwargs: [])
-    runtime = SimpleNamespace(working_dir=str(working_dir), config={"web": {}})
+    runtime = SimpleNamespace(
+        config={
+            "web": {},
+            "workspaces": {
+                "default": {
+                    "path": str(workspace),
+                    "policy": "admin",
+                    "concurrency": 1,
+                }
+            },
+            "policies": {
+                "admin": {
+                    "unrestricted": True,
+                    "providers": ["claude"],
+                    "default_provider": "claude",
+                    "chat_commands": "*",
+                }
+            },
+        }
+    )
     return docs_dir, TestClient(
         web_app.create_app(runtime), base_url="http://127.0.0.1"
     )
