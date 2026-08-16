@@ -10,7 +10,7 @@ import os
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -39,7 +39,6 @@ from enso.outbound import (
     SeriesChart,
 )
 from enso.providers import BaseProvider, StreamEvent
-from enso.providers.agy import AgyProvider
 from enso.providers.claude import ClaudeProvider
 from enso.teams import Policy, Workspace
 from enso.transports import TransportContext
@@ -58,14 +57,31 @@ def _execution_context(
     path = sample_config["workspaces"]["default"]["path"]
     workspace = Workspace("test", path, "test", concurrency)
     policy = Policy("test", None, True, providers, providers[0], "*")
+    provider = kwargs.pop("provider", providers[0])
+    models = sample_config["providers"][provider]["models"]
+    model = kwargs.pop("model", models[0] if models else "default")
+    effort = kwargs.pop("effort", None)
     return ExecutionContext(
         chat_key=chat_key,
+        settings_key=kwargs.pop("settings_key", chat_key),
         path=path,
         workspace_id=workspace.name,
         workspace=workspace,
         policy=policy,
         include_global_messages=include_global_messages,
+        provider=provider,
         concurrency=concurrency,
+        model=model,
+        effort=effort,
+        provider_source=kwargs.pop(
+            "provider_source",
+            "policy_default" if provider == policy.default_provider else "route",
+        ),
+        model_source=kwargs.pop("model_source", "provider_default"),
+        effort_source=kwargs.pop(
+            "effort_source",
+            "route" if effort is not None else "cli_default",
+        ),
         **kwargs,
     )
 
@@ -77,9 +93,16 @@ async def _process_request(
     prompt: str,
     chat_id: str,
     ctx: TransportContext,
+    **kwargs,
 ):
     """Exercise request handling with a complete personal workspace binding."""
-    context = await _prepared_context(runtime, sample_config, provider_name, chat_id)
+    context = await _prepared_context(
+        runtime,
+        sample_config,
+        provider_name,
+        chat_id,
+        **kwargs,
+    )
     return await runtime.process_request(
         provider_name,
         prompt,
@@ -96,7 +119,12 @@ async def _prepared_context(
     chat_key: str = "1",
     **kwargs,
 ) -> ExecutionContext:
-    context = _execution_context(sample_config, chat_key, **kwargs)
+    context = _execution_context(
+        sample_config,
+        chat_key,
+        provider=provider_name,
+        **kwargs,
+    )
     return await runtime._prepare_execution_context(provider_name, context)
 
 # -- split_text --
@@ -494,8 +522,15 @@ def test_retire_legacy_tasks_skill_preserves_directory_symlink(tmp_path, caplog)
 
 def test_runtime_defaults(sample_config):
     rt = Runtime(sample_config)
-    assert rt.get_active_provider("1") == "claude"
-    assert rt.get_active_model("1", "claude") == "opus"
+    resolved = rt.resolve_route_settings(
+        "route-1",
+        _execution_context(sample_config).policy,
+    )
+    assert (resolved.provider, resolved.model, resolved.effort) == (
+        "claude",
+        "opus",
+        None,
+    )
     assert rt.agent_timeout == 30 * 60
     assert rt.debug_prompts is False
     assert rt.debug_events is False
@@ -514,16 +549,179 @@ def test_runtime_reads_debug_logging_flags(sample_config):
     assert rt.debug_events is True
 
 
-def test_runtime_provider_switch(sample_config):
+def test_route_preferences_use_one_durable_namespace(tmp_enso, sample_config):
+    """Provider, model, and effort choices persist together by route."""
     rt = Runtime(sample_config)
-    rt.active_provider_by_chat["1"] = "codex"
-    assert rt.get_active_provider("1") == "codex"
+    route_key = "slack:account-1:channel-C1"
+    model = sample_config["providers"]["codex"]["models"][0]
+
+    rt.set_route_provider(route_key, "codex")
+    rt.set_route_model(route_key, "codex", model)
+    rt.set_route_effort(route_key, "codex", model, "high")
+    rt.save_state()
+
+    persisted = json.loads(Path(tmp_enso, "state.json").read_text())
+    assert persisted["version"] == 3
+    assert persisted["route_preferences"] == {
+        route_key: {
+            "provider": "codex",
+            "models": {"codex": model},
+            "efforts": {"codex": {model: "high"}},
+        }
+    }
+    assert "active_provider_by_chat" not in persisted
+    assert "active_model_by_chat_provider" not in persisted
+    assert "effort_by_chat_provider_model" not in persisted
+
+    loaded = Runtime(sample_config)
+    loaded.load_state()
+    resolved = loaded.resolve_route_settings(
+        route_key,
+        _execution_context(sample_config).policy,
+    )
+    assert (resolved.provider, resolved.model, resolved.effort) == (
+        "codex",
+        model,
+        "high",
+    )
 
 
-def test_runtime_model_switch(sample_config):
+def test_resolve_route_settings_reports_default_provenance(sample_config):
     rt = Runtime(sample_config)
-    rt.active_model_by_chat_provider[("1", "claude")] = "sonnet"
-    assert rt.get_active_model("1", "claude") == "sonnet"
+
+    resolved = rt.resolve_route_settings(
+        "slack:account-1:channel-C1",
+        _execution_context(sample_config).policy,
+    )
+
+    assert (resolved.provider, resolved.provider_source) == (
+        "claude",
+        "policy_default",
+    )
+    assert (resolved.model, resolved.model_source) == (
+        "opus",
+        "provider_default",
+    )
+    assert (resolved.effort, resolved.effort_source) == (None, "cli_default")
+
+
+def test_resolve_route_settings_reports_selected_provenance(sample_config):
+    rt = Runtime(sample_config)
+    route_key = "slack:account-1:channel-C1"
+    model = sample_config["providers"]["codex"]["models"][0]
+    rt.set_route_provider(route_key, "codex")
+    rt.set_route_model(route_key, "codex", model)
+    rt.set_route_effort(route_key, "codex", model, "high")
+
+    resolved = rt.resolve_route_settings(
+        route_key,
+        _execution_context(sample_config).policy,
+    )
+
+    assert (resolved.provider, resolved.provider_source) == ("codex", "route")
+    assert (resolved.model, resolved.model_source) == (model, "route")
+    assert (resolved.effort, resolved.effort_source) == ("high", "route")
+
+
+def test_resolve_route_settings_falls_back_without_erasing_disallowed_choice(
+    sample_config,
+):
+    rt = Runtime(sample_config)
+    route_key = "slack:account-1:channel-C1"
+    rt.set_route_provider(route_key, "codex")
+    restricted = _execution_context(
+        sample_config,
+        providers=("claude",),
+    ).policy
+
+    resolved = rt.resolve_route_settings(route_key, restricted)
+
+    assert (resolved.provider, resolved.provider_source) == (
+        "claude",
+        "policy_default",
+    )
+    assert rt.route_preferences[route_key].provider == "codex"
+
+
+@pytest.mark.parametrize(
+    ("version", "model_state", "effort_state", "session_state"),
+    [
+        (
+            1,
+            {"conversation-1:claude": "sonnet"},
+            {"conversation-1:claude:sonnet": "high"},
+            {"conversation-1:claude": "session-1"},
+        ),
+        (
+            2,
+            [
+                {
+                    "chat": "conversation-1",
+                    "provider": "claude",
+                    "model": "sonnet",
+                }
+            ],
+            [
+                {
+                    "chat": "conversation-1",
+                    "provider": "claude",
+                    "model": "sonnet",
+                    "effort": "high",
+                }
+            ],
+            [
+                {
+                    "chat": "conversation-1",
+                    "provider": "claude",
+                    "session": "session-1",
+                }
+            ],
+        ),
+    ],
+)
+def test_load_legacy_state_drops_selections_but_preserves_conversation_and_job_state(
+    tmp_enso,
+    sample_config,
+    version,
+    model_state,
+    effort_state,
+    session_state,
+):
+    """The v3 boundary discards ambiguous conversation-scoped preferences only."""
+    timestamp = datetime.now().isoformat()
+    state_file = Path(tmp_enso, "state.json")
+    state_file.write_text(
+        json.dumps(
+            {
+                "version": version,
+                "active_provider_by_chat": {"conversation-1": "claude"},
+                "active_model_by_chat_provider": model_state,
+                "effort_by_chat_provider_model": effort_state,
+                "session_by_chat_provider": session_state,
+                "compact_seed_by_chat": {"conversation-1": "summary"},
+                "last_active": {"conversation-1": timestamp},
+                "job_last_run": {"daily": timestamp},
+                "job_failure_alerts": {"daily": {"failure_count": 2}},
+            }
+        )
+    )
+
+    rt = Runtime(sample_config)
+    rt.load_state()
+
+    assert rt.route_preferences == {}
+    assert rt.session_by_chat_provider[("conversation-1", "claude")] == "session-1"
+    assert rt.compact_seed_by_chat["conversation-1"] == "summary"
+    assert rt._last_active["conversation-1"] == datetime.fromisoformat(timestamp)
+    assert rt.conversation_is_active("conversation-1")
+    assert rt.jobs.last_run["daily"] == datetime.fromisoformat(timestamp)
+    assert rt.jobs.failure_alerts["daily"] == {"failure_count": 2}
+
+    migrated = json.loads(state_file.read_text())
+    assert migrated["version"] == 3
+    assert "active_provider_by_chat" not in migrated
+    assert "active_model_by_chat_provider" not in migrated
+    assert "effort_by_chat_provider_model" not in migrated
 
 
 def test_make_provider_uses_configured_path(sample_config):
@@ -550,17 +748,14 @@ def test_make_provider_unknown_provider_raises(sample_config):
         rt.make_provider("retired", context=_execution_context(sample_config))
 
 
-def test_runtime_state_persistence(tmp_enso, sample_config):
-    """State survives save/load roundtrip."""
-
+def test_session_state_persistence(tmp_enso, sample_config):
+    """Conversation sessions survive a save/load roundtrip."""
     rt = Runtime(sample_config)
-    rt.active_provider_by_chat["42"] = "codex"
     rt.session_by_chat_provider[("42", "codex")] = "sess_123"
     rt.save_state()
 
     rt2 = Runtime(sample_config)
     rt2.load_state()
-    assert rt2.active_provider_by_chat["42"] == "codex"
     assert rt2.session_by_chat_provider[("42", "codex")] == "sess_123"
 
 
@@ -568,92 +763,25 @@ def test_runtime_state_roundtrip_preserves_opaque_team_keys(tmp_enso, sample_con
     key = "teams:0123456789abcdef"
     rt = Runtime(sample_config)
     model = rt.models["codex"][0]
-    rt.active_provider_by_chat[key] = "codex"
-    rt.active_model_by_chat_provider[(key, "codex")] = model
-    rt.effort_by_chat_provider_model[(key, "codex", model)] = "high"
+    rt.set_route_provider(key, "codex")
+    rt.set_route_model(key, "codex", model)
+    rt.set_route_effort(key, "codex", model, "high")
     rt.session_by_chat_provider[(key, "codex")] = "session-1"
     rt.save_state()
 
     loaded = Runtime(sample_config)
     loaded.load_state()
 
-    assert loaded.active_provider_by_chat[key] == "codex"
-    assert loaded.active_model_by_chat_provider[(key, "codex")] == model
-    assert loaded.effort_by_chat_provider_model[(key, "codex", model)] == "high"
+    resolved = loaded.resolve_route_settings(
+        key,
+        _execution_context(sample_config).policy,
+    )
+    assert (resolved.provider, resolved.model, resolved.effort) == (
+        "codex",
+        model,
+        "high",
+    )
     assert loaded.session_by_chat_provider[(key, "codex")] == "session-1"
-
-
-def test_load_state_removes_unsupported_provider_entries(tmp_enso, sample_config):
-    state_file = Path(tmp_enso) / "state.json"
-    state_file.write_text(json.dumps({
-        "active_provider_by_chat": {"42": "retired"},
-        "active_model_by_chat_provider": {"42:retired": "old-model"},
-        "effort_by_chat_provider_model": {"42:retired:old-model": "high"},
-        "session_by_chat_provider": {"42:retired": "old-session"},
-    }))
-
-    rt = Runtime(sample_config)
-    rt.load_state()
-
-    assert rt.get_active_provider("42") == "claude"
-    assert rt.active_provider_by_chat == {}
-    assert rt.active_model_by_chat_provider == {}
-    assert rt.effort_by_chat_provider_model == {}
-    assert rt.session_by_chat_provider == {}
-    persisted = json.loads(state_file.read_text())
-    assert persisted["active_provider_by_chat"] == {}
-    assert persisted["active_model_by_chat_provider"] == []
-    assert persisted["effort_by_chat_provider_model"] == []
-    assert persisted["session_by_chat_provider"] == []
-
-
-def test_load_state_removes_entries_for_unconfigured_models(tmp_enso, sample_config):
-    """Model and effort state for models no longer in config is pruned;
-    entries for configured models survive."""
-    state_file = Path(tmp_enso) / "state.json"
-    state_file.write_text(json.dumps({
-        "active_model_by_chat_provider": {
-            "42:claude": "removed-model",
-            "7:claude": "sonnet",
-        },
-        "effort_by_chat_provider_model": {
-            "42:claude:removed-model": "high",
-            "7:claude:sonnet": "low",
-        },
-    }))
-
-    rt = Runtime(sample_config)  # claude models: opus, sonnet
-    rt.load_state()
-
-    assert rt.active_model_by_chat_provider == {("7", "claude"): "sonnet"}
-    assert rt.effort_by_chat_provider_model == {("7", "claude", "sonnet"): "low"}
-    persisted = json.loads(state_file.read_text())
-    assert persisted["active_model_by_chat_provider"] == [
-        {"chat": "7", "provider": "claude", "model": "sonnet"}
-    ]
-    assert persisted["effort_by_chat_provider_model"] == [
-        {"chat": "7", "provider": "claude", "model": "sonnet", "effort": "low"}
-    ]
-
-
-def test_load_state_removes_effort_for_provider_without_effort_control(
-    tmp_enso, sample_config,
-):
-    sample_config["providers"]["agy"]["models"] = list(AgyProvider.default_models)
-    state_file = Path(tmp_enso) / "state.json"
-    model = AgyProvider.default_models[0]
-    state_file.write_text(json.dumps({
-        "active_provider_by_chat": {"7": "agy"},
-        "effort_by_chat_provider_model": {f"7:agy:{model}": "low"},
-    }))
-
-    rt = Runtime(sample_config)
-    rt.load_state()
-
-    assert rt.effort_by_chat_provider_model == {}
-    assert rt.get_active_effort("7", "agy", model) is None
-    persisted = json.loads(state_file.read_text())
-    assert persisted["effort_by_chat_provider_model"] == []
 
 
 def test_save_state_failure_preserves_existing_file_and_removes_temp(
@@ -733,7 +861,6 @@ async def test_run_compaction_honors_context_effort_without_model_override(
     sample_config,
 ):
     rt = Runtime(sample_config)
-    rt.effort_by_chat_provider_model[("42", "claude", "opus")] = "low"
     context = _execution_context(sample_config, "42", effort="high")
     captured: dict[str, str | None] = {}
 
@@ -769,42 +896,57 @@ def test_prune_clears_compact_seed(tmp_enso, sample_config):
     assert "42" not in rt2.compact_seed_by_chat
 
 
-# -- Effort --
-
-
-def test_get_active_effort_none_by_default(sample_config):
+def test_session_ttl_pruning_leaves_route_preferences(
+    tmp_enso,
+    sample_config,
+):
     rt = Runtime(sample_config)
-    assert rt.get_active_effort("1", "claude", "opus") is None
+    route_key = "slack:account-1:channel-C1"
+    conversation_key = "slack:account-1:channel-C1:thread-T1"
+    model = sample_config["providers"]["codex"]["models"][0]
+    rt.set_route_provider(route_key, "codex")
+    rt.set_route_model(route_key, "codex", model)
+    rt.set_route_effort(route_key, "codex", model, "high")
+    rt.session_by_chat_provider[(conversation_key, "codex")] = "old-session"
+    rt.compact_seed_by_chat[conversation_key] = "old summary"
+    rt._last_active[conversation_key] = datetime.now() - timedelta(days=999)
+    rt.save_state()
+
+    loaded = Runtime(sample_config)
+    loaded.load_state()
+
+    assert route_key in loaded.route_preferences
+    assert (conversation_key, "codex") not in loaded.session_by_chat_provider
+    assert conversation_key not in loaded.compact_seed_by_chat
+    assert conversation_key not in loaded._last_active
 
 
-def test_get_active_effort_claude(sample_config):
-    rt = Runtime(sample_config)
-    rt.effort_by_chat_provider_model[("1", "claude", "opus")] = "xhigh"
-    assert rt.get_active_effort("1", "claude", "opus") == "xhigh"
+# -- Effort resolution --
 
 
-def test_get_active_effort_clamps_to_model_cap(sample_config):
+def test_resolve_route_effort_clamps_to_model_cap(sample_config):
     """Requesting max on a model that caps at high returns high."""
     sample_config["providers"]["claude"]["models"].append("haiku")
     rt = Runtime(sample_config)
-    rt.effort_by_chat_provider_model[("1", "claude", "haiku")] = "max"
-    assert rt.get_active_effort("1", "claude", "haiku") == "high"
+    policy = _execution_context(sample_config).policy
+    rt.set_route_model("route-1", "claude", "haiku")
+    rt.set_route_effort("route-1", "claude", "haiku", "max")
+
+    resolved = rt.resolve_route_settings("route-1", policy)
+
+    assert (resolved.effort, resolved.effort_source) == ("high", "route")
 
 
-def test_get_active_effort_codex_clamps_to_model_cap(sample_config):
+def test_resolve_route_effort_codex_clamps_to_model_cap(sample_config):
+    sample_config["providers"]["codex"]["models"] = ["luna"]
     rt = Runtime(sample_config)
-    rt.effort_by_chat_provider_model[("1", "codex", "luna")] = "ultra"
-    assert rt.get_active_effort("1", "codex", "luna") == "max"
+    policy = _execution_context(sample_config).policy
+    rt.set_route_provider("route-1", "codex")
+    rt.set_route_effort("route-1", "codex", "luna", "ultra")
 
+    resolved = rt.resolve_route_settings("route-1", policy)
 
-def test_effort_state_persistence(tmp_enso, sample_config):
-    rt = Runtime(sample_config)
-    rt.effort_by_chat_provider_model[("42", "claude", "opus")] = "xhigh"
-    rt.save_state()
-
-    rt2 = Runtime(sample_config)
-    rt2.load_state()
-    assert rt2.effort_by_chat_provider_model[("42", "claude", "opus")] == "xhigh"
+    assert (resolved.effort, resolved.effort_source) == ("max", "route")
 
 
 class _EmptyAsyncStream:
@@ -1010,19 +1152,6 @@ async def test_run_provider_cleans_agy_log_when_spawn_fails(
     assert provider._log_path is None
 
 
-def test_prune_clears_effort(tmp_enso, sample_config):
-    """Stale conversations drop their effort settings too."""
-    rt = Runtime(sample_config)
-    rt.active_provider_by_chat["old_chat"] = "claude"
-    rt.effort_by_chat_provider_model[("old_chat", "claude", "opus")] = "xhigh"
-    rt._last_active["old_chat"] = datetime.now() - timedelta(days=60)
-    rt.save_state()
-
-    rt2 = Runtime(sample_config)
-    rt2.load_state()
-    assert ("old_chat", "claude", "opus") not in rt2.effort_by_chat_provider_model
-
-
 # -- Job scheduling --
 
 
@@ -1168,11 +1297,9 @@ def test_prune_stale_sessions(tmp_enso, sample_config):
     rt = Runtime(sample_config)
 
     # Create an old conversation and a fresh one
-    rt.active_provider_by_chat["old_chat"] = "claude"
     rt.session_by_chat_provider[("old_chat", "claude")] = "old_session"
     rt._last_active["old_chat"] = datetime.now() - timedelta(days=60)
 
-    rt.active_provider_by_chat["fresh_chat"] = "codex"
     rt.session_by_chat_provider[("fresh_chat", "codex")] = "fresh_session"
     rt._last_active["fresh_chat"] = datetime.now()
 
@@ -1182,11 +1309,9 @@ def test_prune_stale_sessions(tmp_enso, sample_config):
     rt2 = Runtime(sample_config)
     rt2.load_state()
 
-    assert "old_chat" not in rt2.active_provider_by_chat
     assert ("old_chat", "claude") not in rt2.session_by_chat_provider
     assert "old_chat" not in rt2._last_active
     # Fresh one survives
-    assert rt2.active_provider_by_chat["fresh_chat"] == "codex"
     assert rt2.session_by_chat_provider[("fresh_chat", "codex")] == "fresh_session"
 
 
@@ -1257,6 +1382,38 @@ class _OutcomeCtx(TransportContext):
     async def delete_status(self, handle): pass
     async def send_typing(self): pass
     def get_origin_env(self): return {}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_uses_selection_snapshotted_in_execution_context(sample_config):
+    """A queued/intaken message cannot change provider when preferences change."""
+    rt = Runtime(sample_config)
+    model = sample_config["providers"]["codex"]["models"][0]
+    context = _execution_context(
+        sample_config,
+        "conversation-1",
+        settings_key="route-1",
+        provider="codex",
+        model=model,
+        effort="high",
+        provider_source="route",
+        model_source="route",
+        effort_source="route",
+    )
+    rt.resolve_route_settings = Mock(
+        side_effect=AssertionError("dispatch reread mutable route preferences")
+    )
+    rt._run_request = AsyncMock()
+    transport = _OutcomeCtx()
+
+    await rt.dispatch("C1:thread", "hello", transport, context=context)
+
+    rt._run_request.assert_awaited_once_with(
+        "codex",
+        "hello",
+        transport,
+        context,
+    )
 
 
 @pytest.mark.asyncio
@@ -1389,7 +1546,6 @@ async def test_early_returns_finalize_teams_turn(sample_config):
 @pytest.mark.asyncio
 async def test_process_request_uses_normalized_status_and_plain_final_response(sample_config):
     rt = Runtime(sample_config)
-    rt.effort_by_chat_provider_model[("1", "claude", "opus")] = "high"
 
     class FakeCtx(TransportContext):
         def __init__(self):
@@ -1411,7 +1567,15 @@ async def test_process_request_uses_normalized_status_and_plain_final_response(s
 
     ctx = FakeCtx()
     rt.run_provider = fake_run
-    await _process_request(rt, sample_config, "claude", "hello", "1", ctx)
+    await _process_request(
+        rt,
+        sample_config,
+        "claude",
+        "hello",
+        "1",
+        ctx,
+        effort="high",
+    )
 
     assert ctx.statuses == ["claude · opus · high · 0s\n↳ Processing"]
     assert ctx.deleted == ["handle"]

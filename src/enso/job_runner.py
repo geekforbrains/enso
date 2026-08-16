@@ -517,9 +517,11 @@ class JobRunner:
             path=workspace.path,
             workspace_id=workspace.name,
             include_global_messages=False,
+            provider=job.provider,
             concurrency=workspace.concurrency,
             workspace=workspace,
             policy=execution_policy,
+            model=job.model,
         ), None
 
     async def _validated_job_execution(
