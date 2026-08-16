@@ -16,7 +16,7 @@ whose value comes from filtering, joining, and aggregation.
 ├── config.json          # settings, including `web` and `runs` blocks
 ├── AGENTS.md            # canonical shared Enso instructions, injected into every launch
 ├── CLAUDE.md -> AGENTS.md
-├── state.json           # session/job-last-run state
+├── state.json           # durable route settings plus retained session/job state
 ├── messages.json        # background message queue (plus a .lock twin for cross-process writes)
 ├── update.json          # updater-owned metadata (installed revision, pending confirmation)
 ├── slack-app-manifest.yaml  # copy of the bundled Slack app manifest (written by `enso setup`)
@@ -478,7 +478,48 @@ Schema rules:
 - A missing workspace, policy, provider, or native policy is an error. Nothing falls back to an implicit cwd, another workspace or policy, or unrestricted execution.
 - `config.json` is loaded at service startup. Slack loads and validates its route catalog then; jobs are loaded from disk on scheduler ticks and manual runs and revalidated before execution. `config.json` changes take effect only after restart, and invalid bindings never receive permissive defaults.
 
-Several routes may select the same workspace and therefore share its policy, files, and workspace concurrency. Their sessions, provider choices, and queues remain scoped to each Slack conversation. To give two channels different policies or separate files, configure separate workspaces; several workspaces may reuse the same policy.
+Several routes may select the same workspace and therefore share its policy, files, and
+workspace concurrency. Provider/model/effort choices remain independent per exact Slack
+route, while provider sessions and the process-memory incoming-message queue remain
+independent per Slack root/thread conversation. To give two channels different policies
+or separate files, configure separate workspaces; several workspaces may reuse the same
+policy.
+
+### Runtime settings and session state
+
+`state.json` schema v3 separates durable route preferences from retained conversation
+state. `route_preferences` is keyed by an opaque settings key and stores an optional
+provider, one model per provider, and one effort per provider/model. Slack derives the key
+from the authenticated account and exact DM/channel route, so every root and thread shares
+the setting but a route on another account does not; Telegram derives it from the private
+chat ID alone. Explicit `default` choices remove entries instead of pinning the value that
+happens to be the default today.
+
+The effective provider resolves from a policy-allowed route choice, then
+`policy.default_provider`; the model resolves from a configured route choice, then the
+first configured model for that provider; effort resolves from a route choice, then the
+provider CLI default. Merely resolving these values never creates a preference. A route
+provider that the current policy does not allow remains stored but inactive, so the policy
+default applies without a migration or cleanup and the choice can become active again if a
+later policy permits it. A provider that is still policy-allowed remains effective even
+when its native launch is unusable: provider work reports the configuration error instead
+of silently falling back, while non-launch commands remain available for inspection and
+repair.
+
+Conversation state keeps a separate opaque key. Slack binds it to account, channel,
+thread/root, workspace, and policy; Telegram binds it to private chat, workspace, and
+policy. Provider sessions, compact seeds, and last-active participation state persist
+under that key. The incoming-message queue, running process/task, and locks use it only in
+memory: queues are never written to `state.json` and disappear on restart. Only Telegram
+exposes queue inspection through `/queue`; Slack's `!stop` can clear the current
+conversation's queue.
+
+On load, `ENSO_SESSION_TTL_DAYS` removes stale provider sessions, compact seeds, and
+conversation activity but never route preferences. Loading a v1 or v2 file drops the old
+conversation-scoped provider/model/effort selections because no reliable route can be
+reconstructed from them, preserves sessions, compact seeds, last-active timestamps,
+job-last-run data, and job-failure alerts, and rewrites the file as v3. Unknown or invalid
+v3 preference values are omitted during the same validated rewrite.
 
 ### Job bindings
 
