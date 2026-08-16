@@ -603,6 +603,7 @@ def test_resolve_route_settings_reports_default_provenance(sample_config):
         "provider_default",
     )
     assert (resolved.effort, resolved.effort_source) == (None, "cli_default")
+    assert rt.route_preferences == {}
 
 
 def test_resolve_route_settings_reports_selected_provenance(sample_config):
@@ -1386,7 +1387,7 @@ class _OutcomeCtx(TransportContext):
 
 @pytest.mark.asyncio
 async def test_dispatch_uses_selection_snapshotted_in_execution_context(sample_config):
-    """A queued/intaken message cannot change provider when preferences change."""
+    """An intaken message cannot change provider when preferences change."""
     rt = Runtime(sample_config)
     model = sample_config["providers"]["codex"]["models"][0]
     context = _execution_context(
@@ -1411,6 +1412,41 @@ async def test_dispatch_uses_selection_snapshotted_in_execution_context(sample_c
     rt._run_request.assert_awaited_once_with(
         "codex",
         "hello",
+        transport,
+        context,
+    )
+
+
+@pytest.mark.asyncio
+async def test_queued_dispatch_keeps_selection_snapshotted_at_intake(sample_config):
+    rt = Runtime(sample_config)
+    model = sample_config["providers"]["codex"]["models"][0]
+    context = _execution_context(
+        sample_config,
+        "conversation-1",
+        settings_key="route-1",
+        provider="codex",
+        model=model,
+        effort="high",
+        provider_source="route",
+        model_source="route",
+        effort_source="route",
+    )
+    transport = _OutcomeCtx()
+    lock = rt.get_chat_lock(context.chat_key)
+    await lock.acquire()
+    try:
+        await rt.dispatch("C1:thread", "queued", transport, context=context)
+    finally:
+        lock.release()
+
+    rt.set_route_provider("route-1", "claude")
+    rt._run_request = AsyncMock()
+    await rt._drain_queue(context.chat_key)
+
+    rt._run_request.assert_awaited_once_with(
+        "codex",
+        "queued",
         transport,
         context,
     )

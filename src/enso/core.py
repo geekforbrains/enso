@@ -273,14 +273,14 @@ class ExecutionContext:
     explicit transport choice: Telegram opts in, while Slack and jobs do not.
     """
 
-    chat_key: str  # key for all per-chat state: sessions, queues, locks
+    chat_key: str  # conversation state: sessions, queues, locks, activity
     path: str  # subprocess cwd — the workspace root
     workspace_id: str
     workspace: Workspace = field(compare=False, repr=False)
     policy: Policy = field(compare=False, repr=False)
     include_global_messages: bool
     provider: str
-    settings_key: str | None = None
+    settings_key: str | None = None  # durable route preferences; jobs have none
     launch: Launch | None = None
     instructions: InstructionBundle | None = field(
         default=None, compare=False, repr=False
@@ -721,7 +721,7 @@ class Runtime:
     # -- State persistence --
 
     def save_state(self) -> None:
-        """Atomically persist session and job state to disk."""
+        """Atomically persist route, conversation, and job state to disk."""
         data: dict[str, Any] = {
             "version": 3,
             "route_preferences": {
@@ -969,6 +969,7 @@ class Runtime:
         """Resolve one route's explicit preferences through its current policy."""
         preferences = self.route_preferences.get(settings_key)
         selected_provider = preferences.provider if preferences is not None else None
+        provider: str | None
         if selected_provider in policy.providers:
             provider = selected_provider
             provider_source = "route"
