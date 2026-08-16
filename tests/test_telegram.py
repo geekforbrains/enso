@@ -15,6 +15,7 @@ from enso.transports.telegram import (
     TelegramTransport,
     _conversation_key,
     _resolve_file,
+    _settings_key,
 )
 
 
@@ -77,27 +78,27 @@ def _config(
 
 
 def _runtime(config: dict) -> SimpleNamespace:
-    active: dict[str, str] = {}
+    resolved = SimpleNamespace(
+        provider="claude",
+        model="sonnet",
+        effort=None,
+        provider_source="policy_default",
+        model_source="provider_default",
+        effort_source="cli_default",
+    )
     runtime = SimpleNamespace(
         config=config,
-        active_provider_by_chat=active,
-        active_model_by_chat_provider={},
-        effort_by_chat_provider_model={},
+        route_preferences={},
+        session_by_chat_provider={},
         models={"claude": ["sonnet"], "codex": ["gpt-5"]},
         dispatch=AsyncMock(),
-        touch_session=Mock(),
+        touch_conversation=Mock(),
+        resolve_route_settings=Mock(return_value=resolved),
         save_state=Mock(),
         clear_queue=AsyncMock(return_value=0),
         remove_from_queue=AsyncMock(return_value=True),
         get_queue=Mock(return_value=[]),
     )
-    runtime.get_active_provider = Mock(
-        side_effect=lambda chat_key: active.get(chat_key, "claude")
-    )
-    runtime.get_active_model = Mock(
-        side_effect=lambda _chat_key, provider: runtime.models[provider][0]
-    )
-    runtime.get_active_effort = Mock(return_value=None)
     return runtime
 
 
@@ -430,8 +431,16 @@ def test_unknown_user_is_rejected_in_private_chat():
 # -- Workspace and policy binding --
 
 
-def test_execution_context_is_complete_and_uses_an_opaque_bound_key(tmp_path):
+def test_execution_context_freezes_resolved_route_settings(tmp_path):
     transport = _bound_transport(tmp_path)
+    transport.runtime.resolve_route_settings.return_value = SimpleNamespace(
+        provider="codex",
+        model="gpt-5",
+        effort="high",
+        provider_source="route",
+        model_source="route",
+        effort_source="route",
+    )
 
     context = transport._execution_context(999)
 
@@ -443,11 +452,23 @@ def test_execution_context_is_complete_and_uses_an_opaque_bound_key(tmp_path):
     assert context.concurrency == 2
     assert context.include_global_messages is True
     assert context.chat_key.startswith("telegram:")
+    assert context.settings_key.startswith("telegram:")
+    assert context.settings_key != context.chat_key
     assert "999" not in context.chat_key
     assert "phone" not in context.chat_key
     assert "mobile" not in context.chat_key
-    assert transport.runtime.active_provider_by_chat == {context.chat_key: "claude"}
-    transport.runtime.touch_session.assert_called_once_with(context.chat_key)
+    assert (context.provider, context.model, context.effort) == ("codex", "gpt-5", "high")
+    assert (
+        context.provider_source,
+        context.model_source,
+        context.effort_source,
+    ) == ("route", "route", "route")
+    transport.runtime.resolve_route_settings.assert_called_once_with(
+        context.settings_key,
+        context.policy,
+    )
+    assert transport.runtime.route_preferences == {}
+    transport.runtime.touch_conversation.assert_called_once_with(context.chat_key)
 
 
 def test_conversation_key_separates_chat_workspace_and_policy(tmp_path):
@@ -467,6 +488,52 @@ def test_conversation_key_separates_chat_workspace_and_policy(tmp_path):
     assert len(keys) == 4
 
 
+def test_settings_key_is_chat_only(tmp_path):
+    transport = _bound_transport(tmp_path)
+    workspace = transport.telegram.workspace
+    execution_policy = transport.telegram.policy
+    assert workspace is not None
+    assert execution_policy is not None
+
+    assert _settings_key(999) == _settings_key("999")
+    assert _settings_key(999) != _settings_key(1000)
+    assert _settings_key(999) != _conversation_key(999, workspace, execution_policy)
+
+
+def test_route_settings_survive_workspace_policy_rebinding_but_sessions_do_not(tmp_path):
+    runtime = _runtime(
+        _config(
+            str(tmp_path / "first"),
+            workspace_name="first",
+            policy_name="first-policy",
+        )
+    )
+    runtime.resolve_route_settings.return_value = SimpleNamespace(
+        provider="codex",
+        model="gpt-5",
+        effort="high",
+        provider_source="route",
+        model_source="route",
+        effort_source="route",
+    )
+    first = TelegramTransport(runtime)._execution_context(999)
+    assert first is not None
+    runtime.session_by_chat_provider[(first.chat_key, first.provider)] = "old-session"
+
+    runtime.config = _config(
+        str(tmp_path / "second"),
+        workspace_name="second",
+        policy_name="second-policy",
+    )
+    second = TelegramTransport(runtime)._execution_context(999)
+
+    assert second is not None
+    assert second.settings_key == first.settings_key
+    assert second.chat_key != first.chat_key
+    assert (second.provider, second.model, second.effort) == ("codex", "gpt-5", "high")
+    assert (second.chat_key, second.provider) not in runtime.session_by_chat_provider
+
+
 async def test_message_dispatch_uses_workspace_policy_context(tmp_path):
     transport = _bound_transport(tmp_path)
     message = _msg(text="ship it")
@@ -481,6 +548,13 @@ async def test_message_dispatch_uses_workspace_policy_context(tmp_path):
     assert context.workspace is transport.telegram.workspace
     assert context.policy is transport.telegram.policy
     assert context.include_global_messages is True
+    assert context.settings_key == _settings_key(999)
+    assert (context.provider, context.model, context.effort) == ("claude", "sonnet", None)
+    assert (
+        context.provider_source,
+        context.model_source,
+        context.effort_source,
+    ) == ("policy_default", "provider_default", "cli_default")
 
 
 async def test_message_with_invalid_workspace_binding_fails_closed(tmp_path):
@@ -516,7 +590,8 @@ def test_unusable_default_provider_keeps_config_binding_for_repair_commands(
     context = transport._execution_context(999)
 
     assert context is not None
-    assert transport.runtime.active_provider_by_chat == {context.chat_key: "claude"}
+    assert context.provider == "claude"
+    assert transport.runtime.route_preferences == {}
     assert transport._provider_usable(context) is False
 
 
@@ -537,23 +612,26 @@ async def test_message_refuses_native_unusable_provider(tmp_path, monkeypatch):
     transport.runtime.dispatch.assert_not_awaited()
 
 
-def test_stored_provider_must_be_policy_allowed_and_usable(tmp_path):
+def test_execution_context_uses_policy_resolved_provider_without_pinning_it(tmp_path):
     transport = _bound_transport(
         tmp_path,
         providers=["codex"],
         default_provider="codex",
     )
-    workspace = transport.telegram.workspace
-    execution_policy = transport.telegram.policy
-    assert workspace is not None
-    assert execution_policy is not None
-    key = _conversation_key(999, workspace, execution_policy)
-    transport.runtime.active_provider_by_chat[key] = "claude"
+    transport.runtime.resolve_route_settings.return_value = SimpleNamespace(
+        provider="codex",
+        model="gpt-5",
+        effort=None,
+        provider_source="policy_default",
+        model_source="provider_default",
+        effort_source="cli_default",
+    )
 
     context = transport._execution_context(999)
 
     assert context is not None
-    assert transport.runtime.active_provider_by_chat[key] == "codex"
+    assert context.provider == "codex"
+    assert transport.runtime.route_preferences == {}
 
 
 # -- Policy-controlled commands and callbacks --
@@ -611,6 +689,13 @@ async def test_use_filters_policy_disallowed_or_native_unusable_providers(
         "enso.transports.telegram.native_policy.check_provider",
         check_provider,
     )
+    use = Mock(
+        side_effect=[
+            (None, [("claude", True)]),
+            ("Provider codex is not available here.", []),
+        ]
+    )
+    monkeypatch.setattr("enso.transports.telegram.cmd_use", use)
     transport = _bound_transport(
         tmp_path,
         commands=["use"],
@@ -629,6 +714,120 @@ async def test_use_filters_policy_disallowed_or_native_unusable_providers(
     callback_update.callback_query.edit_message_text.assert_awaited_once_with(
         "Provider codex is not available here."
     )
+    assert [call.kwargs["providers"] for call in use.call_args_list] == [
+        ["claude"],
+        ["claude"],
+    ]
+    assert all(
+        call.kwargs["policy"] is transport.telegram.policy
+        for call in use.call_args_list
+    )
+
+
+@pytest.mark.parametrize(
+    ("command", "text", "handler_name"),
+    [
+        ("use", "/use default", "cmd_use"),
+        ("model", "/model default", "cmd_model"),
+    ],
+)
+async def test_default_settings_commands_target_the_chat_settings_key(
+    tmp_path,
+    monkeypatch,
+    command,
+    text,
+    handler_name,
+):
+    handler = Mock(return_value=("Override cleared.", []))
+    monkeypatch.setattr(f"enso.transports.telegram.{handler_name}", handler)
+    transport = _bound_transport(tmp_path)
+    message = _msg(text=text)
+
+    await getattr(transport, f"_cmd_{command}")(_update(message=message), None)
+
+    assert handler.call_args.args[:3] == (
+        transport.runtime,
+        _settings_key(999),
+        "default",
+    )
+    assert handler.call_args.kwargs["policy"] is transport.telegram.policy
+    message.reply_text.assert_awaited_once_with("Override cleared.")
+
+
+async def test_status_uses_the_chat_settings_key(tmp_path, monkeypatch):
+    status = Mock(return_value="Provider: claude (policy default)")
+    monkeypatch.setattr("enso.transports.telegram.cmd_status", status)
+    transport = _bound_transport(tmp_path)
+    message = _msg(text="/status")
+
+    await transport._cmd_status(_update(message=message), None)
+
+    status.assert_called_once_with(
+        transport.runtime,
+        _settings_key(999),
+        policy=transport.telegram.policy,
+    )
+    message.reply_text.assert_awaited_once_with("Provider: claude (policy default)")
+
+
+@pytest.mark.parametrize(
+    ("command", "choice", "handler_name"),
+    [
+        ("use", "codex", "cmd_use"),
+        ("model", "gpt-5", "cmd_model"),
+        ("effort", "high", "cmd_effort"),
+    ],
+)
+async def test_settings_callbacks_target_the_chat_settings_key(
+    tmp_path,
+    monkeypatch,
+    command,
+    choice,
+    handler_name,
+):
+    handler = Mock(return_value=("Updated.", []))
+    monkeypatch.setattr(f"enso.transports.telegram.{handler_name}", handler)
+    transport = _bound_transport(tmp_path)
+    update = _update(callback_data=f"{command}:{choice}")
+
+    await transport._handle_callback(update, None)
+
+    assert handler.call_args.args[:3] == (
+        transport.runtime,
+        _settings_key(999),
+        choice,
+    )
+    assert handler.call_args.kwargs["policy"] is transport.telegram.policy
+    update.callback_query.edit_message_text.assert_awaited_once_with("Updated.")
+
+
+async def test_use_can_repair_an_unusable_selected_provider(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "enso.transports.telegram.native_policy.check_provider",
+        lambda _workspace, _policy, provider: SimpleNamespace(
+            ok=provider == "codex",
+            problems=(),
+        ),
+    )
+    use = Mock(return_value=("Provider set to codex.", []))
+    monkeypatch.setattr("enso.transports.telegram.cmd_use", use)
+    transport = _bound_transport(
+        tmp_path,
+        providers=["claude", "codex"],
+        default_provider="claude",
+    )
+    message = _msg(text="/use codex")
+
+    await transport._cmd_use(_update(message=message), None)
+
+    use.assert_called_once_with(
+        transport.runtime,
+        _settings_key(999),
+        "codex",
+        policy=transport.telegram.policy,
+        providers=["codex"],
+    )
+    message.reply_text.assert_awaited_once_with("Provider set to codex.")
 
 
 async def test_menu_and_help_only_show_policy_allowed_commands(tmp_path):
@@ -711,6 +910,21 @@ async def test_clear_callback_passes_complete_context(tmp_path, monkeypatch):
     assert clear.call_args.args == (transport.runtime, context.chat_key)
     assert context.workspace_id == "phone"
     assert context.include_global_messages is True
+
+
+async def test_queue_callback_keeps_the_bound_conversation_key(tmp_path):
+    transport = _bound_transport(tmp_path)
+    update = _update(callback_data="queue:clear")
+
+    await transport._handle_callback(update, None)
+
+    workspace = transport.telegram.workspace
+    execution_policy = transport.telegram.policy
+    assert workspace is not None
+    assert execution_policy is not None
+    chat_key = _conversation_key(999, workspace, execution_policy)
+    transport.runtime.clear_queue.assert_awaited_once_with(chat_key)
+    assert chat_key != _settings_key(999)
 
 
 async def test_compact_passes_complete_context(tmp_path, monkeypatch):

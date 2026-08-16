@@ -11,6 +11,7 @@ from .providers import PROVIDER_NAMES, provider_class
 
 if TYPE_CHECKING:
     from .core import ExecutionContext, Runtime
+    from .teams import Policy
     from .updater import UpdateResult
 
 log = logging.getLogger(__name__)
@@ -32,22 +33,34 @@ async def cmd_stop_async(runtime: Runtime, conv_id: str) -> str:
     return " ".join(parts)
 
 
-def cmd_status(runtime: Runtime, conv_id: str) -> str:
-    """Return provider, model, and effort info for a conversation."""
-    provider = runtime.get_active_provider(conv_id)
-    model = runtime.get_active_model(conv_id, provider)
-    lines = [f"Provider: {provider}", f"Model: {model}"]
-    effort = runtime.get_active_effort(conv_id, provider, model)
-    if effort:
-        lines.append(f"Effort: {effort}")
+def cmd_status(runtime: Runtime, settings_key: str, *, policy: Policy) -> str:
+    """Return the effective route settings and where each value came from."""
+    resolved = runtime.resolve_route_settings(settings_key, policy)
+    labels = {
+        "route": "route selection",
+        "policy_default": "policy default",
+        "provider_default": "provider default",
+        "cli_default": "CLI default",
+    }
+    lines = [
+        f"Provider: {resolved.provider} ({labels[resolved.provider_source]})",
+        f"Model: {resolved.model} ({labels[resolved.model_source]})",
+    ]
+    if resolved.effort is None:
+        lines.append(f"Effort: {labels[resolved.effort_source]}")
+    else:
+        lines.append(
+            f"Effort: {resolved.effort} ({labels[resolved.effort_source]})"
+        )
     return "\n".join(lines)
 
 
 def cmd_use(
     runtime: Runtime,
-    conv_id: str,
+    settings_key: str,
     choice: str | None,
     *,
+    policy: Policy,
     providers: list[str] | None = None,
 ) -> tuple[str | None, list[tuple[str, bool]]]:
     """Switch provider or list available providers.
@@ -58,22 +71,37 @@ def cmd_use(
     accepted choices — routed workspaces pass their usable allowlist, so a
     disallowed provider is refused rather than selected-and-failed later.
     """
-    available = PROVIDER_NAMES if providers is None else providers
+    candidates = policy.providers if providers is None else providers
+    available = [
+        name
+        for name in candidates
+        if name in PROVIDER_NAMES and name in policy.providers
+    ]
     if choice:
-        if choice in available:
-            runtime.active_provider_by_chat[conv_id] = choice
+        normalized = choice.strip().lower()
+        if normalized == "default":
+            runtime.set_route_provider(settings_key, None)
             runtime.save_state()
-            return f"Provider set to {choice}.", []
-        if choice in PROVIDER_NAMES:
-            return f"Provider {choice} is not available here.", []
+            provider = runtime.resolve_route_settings(settings_key, policy).provider
+            return f"Provider reset to policy default ({provider}).", []
+        if normalized in available:
+            runtime.set_route_provider(settings_key, normalized)
+            runtime.save_state()
+            return f"Provider set to {normalized}.", []
+        if normalized in PROVIDER_NAMES:
+            return f"Provider {normalized} is not available here.", []
 
-    active = runtime.get_active_provider(conv_id)
+    active = runtime.resolve_route_settings(settings_key, policy).provider
     options = [(p, p == active) for p in available]
     return None, options
 
 
 def cmd_model(
-    runtime: Runtime, conv_id: str, choice: str | None,
+    runtime: Runtime,
+    settings_key: str,
+    choice: str | None,
+    *,
+    policy: Policy,
 ) -> tuple[str | None, list[tuple[str, bool]]]:
     """Switch model or list available models.
 
@@ -81,34 +109,45 @@ def cmd_model(
     If no choice, returns (None, [(name, is_active), ...]) for the transport
     to render in its native UI.
     """
-    provider = runtime.get_active_provider(conv_id)
+    resolved = runtime.resolve_route_settings(settings_key, policy)
+    provider = resolved.provider
     models = runtime.models.get(provider, [])
 
     if choice:
+        normalized = choice.strip()
+        if normalized.lower() == "default":
+            runtime.set_route_model(settings_key, provider, None)
+            runtime.save_state()
+            model = runtime.resolve_route_settings(settings_key, policy).model
+            return f"{provider} model reset to provider default ({model}).", []
         # Support numeric index
-        if choice.isdigit():
-            idx = int(choice) - 1
+        if normalized.isdigit():
+            idx = int(normalized) - 1
             if not (0 <= idx < len(models)):
                 return f"Invalid index. Use 1-{len(models)}.", []
             selected = models[idx]
-        elif choice in models:
-            selected = choice
+        elif normalized in models:
+            selected = normalized
         else:
             return f"Unknown model '{choice}'.", []
-        runtime.active_model_by_chat_provider[(conv_id, provider)] = selected
+        runtime.set_route_model(settings_key, provider, selected)
         runtime.save_state()
         return f"{provider} model \u2192 {selected}", []
 
     if not models:
         return f"No models configured for {provider}.", []
 
-    active = runtime.get_active_model(conv_id, provider)
+    active = resolved.model
     options = [(m, m == active) for m in models]
     return None, options
 
 
 def cmd_effort(
-    runtime: Runtime, conv_id: str, choice: str | None,
+    runtime: Runtime,
+    settings_key: str,
+    choice: str | None,
+    *,
+    policy: Policy,
 ) -> tuple[str | None, list[tuple[str, bool]]]:
     """Switch reasoning effort or list levels supported by the active model.
 
@@ -118,11 +157,11 @@ def cmd_effort(
     in its native picker UI — only levels the current model supports are
     included.
     """
-    provider = runtime.get_active_provider(conv_id)
+    resolved = runtime.resolve_route_settings(settings_key, policy)
+    provider = resolved.provider
     provider_cls = provider_class(provider)
     levels = provider_cls.effort_levels
-    model = runtime.get_active_model(conv_id, provider)
-    key = (conv_id, provider, model)
+    model = resolved.model
 
     if not levels:
         if provider == "agy":
@@ -136,7 +175,7 @@ def cmd_effort(
     if choice:
         normalized = choice.strip().lower()
         if normalized == "default":
-            runtime.effort_by_chat_provider_model.pop(key, None)
+            runtime.set_route_effort(settings_key, provider, model, None)
             runtime.save_state()
             return f"Effort cleared (using {provider} CLI config/default).", []
 
@@ -152,7 +191,7 @@ def cmd_effort(
             opts = ", ".join(levels)
             return f"Unknown effort '{choice}'. Choose: {opts}, or 'default'.", []
 
-        runtime.effort_by_chat_provider_model[key] = selected
+        runtime.set_route_effort(settings_key, provider, model, selected)
         runtime.save_state()
         effective = provider_cls.clamp_effort(selected, model)
         if effective != selected:
@@ -163,7 +202,7 @@ def cmd_effort(
             )
         return f"Effort \u2192 {selected}", []
 
-    active = runtime.effort_by_chat_provider_model.get(key)
+    active = resolved.effort
     options = [(level, level == active) for level in provider_cls.supported_efforts(model)]
     return None, options
 
@@ -187,7 +226,7 @@ async def cmd_compact_async(
             "to finish, then try again."
         )
 
-    provider = runtime.get_active_provider(conv_id)
+    provider = context.provider
     if not runtime.session_by_chat_provider.get((conv_id, provider)):
         return f"Nothing to compact — no active {provider} session for this chat."
 
@@ -254,7 +293,7 @@ def cmd_clear(
     parts = []
     allowed = [name for name in context.policy.providers if name in PROVIDER_NAMES]
     for prov_name in allowed:
-        if clear_all or runtime.get_active_provider(conv_id) == prov_name:
+        if clear_all or context.provider == prov_name:
             sid = runtime.session_by_chat_provider.pop((conv_id, prov_name), None)
             provider = runtime.make_provider(prov_name, context=context)
             summary = provider.clear_session(

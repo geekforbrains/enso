@@ -82,6 +82,27 @@ def _conversation_key(chat_id: object, workspace: Workspace, policy: Policy) -> 
     return f"telegram:{hashlib.sha256(payload.encode()).hexdigest()[:32]}"
 
 
+def _settings_key(chat_id: object) -> str:
+    """Build a durable settings key for one Telegram chat."""
+    payload = json.dumps(
+        {
+            "v": 1,
+            "kind": "telegram-settings",
+            "parts": [str(chat_id)],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return f"telegram:settings:{hashlib.sha256(payload.encode()).hexdigest()[:32]}"
+
+
+def _context_settings_key(context: ExecutionContext) -> str:
+    """Return the route key guaranteed on interactive Telegram contexts."""
+    if context.settings_key is None:
+        raise ValueError("Telegram command context has no settings key")
+    return context.settings_key
+
+
 # Commands registered with Telegram's menu UI.
 COMMANDS = [
     BotCommand("stop", "Stop process & clear queue"),
@@ -237,34 +258,29 @@ class TelegramTransport(BaseTransport):
             return None
 
         chat_key = _conversation_key(chat_id, workspace, execution_policy)
-        provider = self.runtime.active_provider_by_chat.get(chat_key)
-        if provider not in execution_policy.providers:
-            provider = execution_policy.default_provider
-        if provider is None or provider not in execution_policy.providers:
-            log.error(
-                "Telegram workspace %s has no allowed default provider %r",
-                workspace.name,
-                execution_policy.default_provider,
-            )
-            return None
-
-        self.runtime.active_provider_by_chat[chat_key] = provider
-        self.runtime.touch_session(chat_key)
+        settings_key = _settings_key(chat_id)
+        resolved = self.runtime.resolve_route_settings(settings_key, execution_policy)
+        self.runtime.touch_conversation(chat_key)
         return ExecutionContext(
             chat_key=chat_key,
+            settings_key=settings_key,
             path=workspace.path,
             workspace_id=workspace.name,
             workspace=workspace,
             policy=execution_policy,
             concurrency=workspace.concurrency,
             include_global_messages=True,
+            provider=resolved.provider,
+            model=resolved.model,
+            effort=resolved.effort,
+            provider_source=resolved.provider_source,
+            model_source=resolved.model_source,
+            effort_source=resolved.effort_source,
         )
 
     def _provider_usable(self, context: ExecutionContext) -> bool:
         """Revalidate the selected provider before work that can launch it."""
-        provider = self.runtime.active_provider_by_chat.get(context.chat_key)
-        if provider not in context.policy.providers:
-            return False
+        provider = context.provider
         check = native_policy.check_provider(context.workspace, context.policy, provider)
         if not check.ok:
             for problem in check.problems:
@@ -589,14 +605,14 @@ class TelegramTransport(BaseTransport):
         execution = await self._command_context(update, "use")
         if execution is None:
             return
-        conv_id = execution.chat_key
         args = (update.message.text or "").split()[1:]
         choice = args[0] if args else None
 
         response, options = cmd_use(
             self.runtime,
-            conv_id,
+            _context_settings_key(execution),
             choice,
+            policy=execution.policy,
             providers=self._usable_providers(),
         )
         if response:
@@ -619,22 +635,31 @@ class TelegramTransport(BaseTransport):
         execution = await self._command_context(update, "status")
         if execution is None:
             return
-        await update.message.reply_text(cmd_status(self.runtime, execution.chat_key))
+        await update.message.reply_text(
+            cmd_status(
+                self.runtime,
+                _context_settings_key(execution),
+                policy=execution.policy,
+            )
+        )
 
     async def _cmd_model(self, update: Update, _ctx: Any) -> None:
         execution = await self._command_context(update, "model")
         if execution is None:
             return
-        conv_id = execution.chat_key
         args = (update.message.text or "").split()[1:]
         choice = args[0] if args else None
 
-        response, options = cmd_model(self.runtime, conv_id, choice)
+        response, options = cmd_model(
+            self.runtime,
+            _context_settings_key(execution),
+            choice,
+            policy=execution.policy,
+        )
         if response:
             await update.message.reply_text(response)
             return
 
-        provider = self.runtime.get_active_provider(conv_id)
         buttons = [
             InlineKeyboardButton(
                 f"{'● ' if active else ''}{name}",
@@ -644,7 +669,7 @@ class TelegramTransport(BaseTransport):
         ]
         keyboard = [[b] for b in buttons]
         await update.message.reply_text(
-            f"Switch model ({provider}):",
+            f"Switch model ({execution.provider}):",
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
 
@@ -652,19 +677,19 @@ class TelegramTransport(BaseTransport):
         execution = await self._command_context(update, "effort")
         if execution is None:
             return
-        conv_id = execution.chat_key
         args = (update.message.text or "").split()[1:]
         choice = args[0] if args else None
 
-        response, options = cmd_effort(self.runtime, conv_id, choice)
+        response, options = cmd_effort(
+            self.runtime,
+            _context_settings_key(execution),
+            choice,
+            policy=execution.policy,
+        )
         if response:
             await update.message.reply_text(response)
             return
 
-        model = self.runtime.get_active_model(
-            conv_id,
-            self.runtime.get_active_provider(conv_id),
-        )
         buttons = [
             InlineKeyboardButton(
                 f"{'● ' if active else ''}{name}",
@@ -679,7 +704,7 @@ class TelegramTransport(BaseTransport):
             ]
         )
         await update.message.reply_text(
-            f"Set effort ({model}):",
+            f"Set effort ({execution.model}):",
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
 
@@ -697,11 +722,13 @@ class TelegramTransport(BaseTransport):
             return
 
         # No args → show options
-        active = self.runtime.get_active_provider(conv_id)
         keyboard = InlineKeyboardMarkup(
             [
                 [
-                    InlineKeyboardButton(f"Clear {active}", callback_data="clear:current"),
+                    InlineKeyboardButton(
+                        f"Clear {execution.provider}",
+                        callback_data="clear:current",
+                    ),
                     InlineKeyboardButton("Clear all", callback_data="clear:all"),
                 ],
             ]
@@ -775,26 +802,36 @@ class TelegramTransport(BaseTransport):
         execution = await self._command_context(update, command)
         if execution is None:
             return
-        conv_id = execution.chat_key
         rt = self.runtime
 
         if command == "use":
             response, _ = cmd_use(
                 rt,
-                conv_id,
+                _context_settings_key(execution),
                 choice,
+                policy=execution.policy,
                 providers=self._usable_providers(),
             )
             if response:
                 await query.edit_message_text(response)
 
         elif command == "model":
-            response, _ = cmd_model(rt, conv_id, choice)
+            response, _ = cmd_model(
+                rt,
+                _context_settings_key(execution),
+                choice,
+                policy=execution.policy,
+            )
             if response:
                 await query.edit_message_text(response)
 
         elif command == "effort":
-            response, _ = cmd_effort(rt, conv_id, choice)
+            response, _ = cmd_effort(
+                rt,
+                _context_settings_key(execution),
+                choice,
+                policy=execution.policy,
+            )
             if response:
                 await query.edit_message_text(response)
 
@@ -802,20 +839,25 @@ class TelegramTransport(BaseTransport):
             if choice not in {"current", "all"}:
                 return
             is_all = choice == "all"
-            parts = cmd_clear(rt, conv_id, context=execution, clear_all=is_all)
+            parts = cmd_clear(
+                rt,
+                execution.chat_key,
+                context=execution,
+                clear_all=is_all,
+            )
             label = "all providers" if is_all else "current provider"
             await query.edit_message_text(f"Cleared {label}.\n" + "\n".join(parts))
 
         elif command == "queue":
             if choice == "clear":
-                count = await rt.clear_queue(conv_id)
+                count = await rt.clear_queue(execution.chat_key)
                 await query.edit_message_text(
                     f"Cleared {count} queued message(s)." if count else "Queue already empty."
                 )
             elif choice.startswith("rm:") and choice[3:].isdigit():
                 idx = int(choice[3:])
-                await rt.remove_from_queue(conv_id, idx)
-                await self._show_queue(query, conv_id)
+                await rt.remove_from_queue(execution.chat_key, idx)
+                await self._show_queue(query, execution.chat_key)
 
 
 def _build_reply_context(msg: Any) -> str | None:

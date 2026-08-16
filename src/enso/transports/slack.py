@@ -617,6 +617,20 @@ def _render_options(header: str, options: list[tuple[str, bool]]) -> str:
     return "\n".join(lines)
 
 
+def _with_settings_scope(
+    response: str,
+    conv_id: str,
+    ctx: SlackContext | None,
+) -> str:
+    """Make Slack's route-wide settings scope explicit to the user."""
+    is_dm = conv_id.startswith("D") or bool(
+        ctx is not None
+        and (ctx._conversation_type == "im" or ctx._channel.startswith("D"))
+    )
+    route = "DM" if is_dm else "channel"
+    return f"{response}\nSettings apply to this entire {route}."
+
+
 def _cached_channel_label(cache: dict, channel_id: str) -> str:
     """Render a cached channel entry as ``#name``, or "" on a cache miss."""
     channel = cache.get("channels", {}).get("items", {}).get(channel_id, {})
@@ -2507,6 +2521,9 @@ class SlackTransport(BaseTransport):
         cmd_args = parts[1] if len(parts) > 1 else None
 
         rt = self.runtime
+        settings_key = context.settings_key
+        if settings_key is None:
+            raise ValueError("Slack command context has no settings key")
 
         if not context.policy.allows_command(cmd_name):
             return f"!{cmd_name} is not available in this conversation."
@@ -2517,27 +2534,45 @@ class SlackTransport(BaseTransport):
         if cmd_name == "use":
             response, options = cmd_use(
                 rt,
-                conv_id,
+                settings_key,
                 cmd_args,
                 providers=allowed_providers,
+                policy=context.policy,
             )
-            return response or _render_options("Switch provider:", options)
+            rendered = response or _render_options("Switch provider:", options)
+            return _with_settings_scope(rendered, conv_id, ctx)
 
         if cmd_name == "model":
-            response, options = cmd_model(rt, conv_id, cmd_args)
-            provider = rt.get_active_provider(conv_id)
-            return response or _render_options(f"Switch model ({provider}):", options)
+            response, options = cmd_model(
+                rt,
+                settings_key,
+                cmd_args,
+                policy=context.policy,
+            )
+            rendered = response or _render_options(
+                f"Switch model ({context.provider}):", options
+            )
+            return _with_settings_scope(rendered, conv_id, ctx)
 
         if cmd_name == "effort":
-            response, options = cmd_effort(rt, conv_id, cmd_args)
-            if response:
-                return response
-            model = rt.get_active_model(conv_id, rt.get_active_provider(conv_id))
-            header = f"Set effort ({model}) — '!effort default' to clear:"
-            return _render_options(header, options)
+            response, options = cmd_effort(
+                rt,
+                settings_key,
+                cmd_args,
+                policy=context.policy,
+            )
+            rendered = response or _render_options(
+                f"Set effort ({context.model}) — '!effort default' to clear:",
+                options,
+            )
+            return _with_settings_scope(rendered, conv_id, ctx)
 
         if cmd_name == "status":
-            return cmd_status(rt, conv_id)
+            return cmd_status(
+                rt,
+                settings_key,
+                policy=context.policy,
+            )
 
         if cmd_name == "clear":
             clear_all = cmd_args and cmd_args.strip().lower() == "all"

@@ -518,6 +518,143 @@ async def test_bare_bang_is_not_a_command_and_does_not_crash(tmp_enso, monkeypat
     assert rt.dispatch.call_args.args[1] == "!"
 
 
+async def test_route_settings_follow_new_roots_and_threads_but_sessions_do_not(
+    tmp_enso, monkeypatch
+):
+    config = _route_settings_config(tmp_enso)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    # Settings commands are valid in a thread and make their route-wide scope clear.
+    for ts, command in (
+        ("500.2", "!use codex"),
+        ("500.3", "!model sol"),
+        ("500.4", "!effort high"),
+    ):
+        await transport._handle_app_mention(
+            _mention(ts=ts, thread_ts="500.1", text=f"<@UBOT> {command}"),
+            client,
+        )
+        assert "channel" in client.chat_postMessage.call_args.kwargs["text"].lower()
+
+    await transport._handle_app_mention(_mention(ts="510.1", text="<@UBOT> first"), client)
+    first = rt.dispatch.call_args.kwargs["context"]
+    rt.session_by_chat_provider[(first.chat_key, "codex")] = "session-for-first-root"
+
+    await transport._handle_app_mention(_mention(ts="520.1", text="<@UBOT> second"), client)
+    second = rt.dispatch.call_args.kwargs["context"]
+    await transport._handle_app_mention(
+        _mention(ts="520.2", thread_ts="520.1", text="<@UBOT> in thread"),
+        client,
+    )
+    threaded = rt.dispatch.call_args.kwargs["context"]
+
+    assert {
+        (context.provider, context.model, context.effort)
+        for context in (first, second, threaded)
+    } == {("codex", "sol", "high")}
+    assert first.settings_key == second.settings_key == threaded.settings_key
+    assert (
+        first.provider_source,
+        first.model_source,
+        first.effort_source,
+    ) == ("route", "route", "route")
+    assert first.chat_key != second.chat_key
+    assert second.chat_key == threaded.chat_key
+    assert (second.chat_key, "codex") not in rt.session_by_chat_provider
+
+
+async def test_routes_sharing_a_workspace_keep_independent_settings(
+    tmp_enso, monkeypatch
+):
+    config = _route_settings_config(tmp_enso)
+    config["transports"]["slack"]["channels"]["C0TWIN"] = {
+        "workspace": "acme",
+        "audit": False,
+    }
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    for ts, command in (
+        ("600.2", "!use codex"),
+        ("600.3", "!model sol"),
+        ("600.4", "!effort high"),
+    ):
+        await transport._handle_app_mention(
+            _mention(ts=ts, thread_ts="600.1", text=f"<@UBOT> {command}"),
+            client,
+        )
+
+    await transport._handle_app_mention(
+        _mention(channel="C0ACME", ts="610.1", text="<@UBOT> configured route"),
+        client,
+    )
+    configured = rt.dispatch.call_args.kwargs["context"]
+    await transport._handle_app_mention(
+        _mention(channel="C0TWIN", ts="620.1", text="<@UBOT> untouched route"),
+        client,
+    )
+    untouched = rt.dispatch.call_args.kwargs["context"]
+
+    assert configured.workspace_id == untouched.workspace_id == "acme"
+    assert configured.settings_key != untouched.settings_key
+    assert (configured.provider, configured.model, configured.effort) == (
+        "codex",
+        "sol",
+        "high",
+    )
+    assert (untouched.provider, untouched.model, untouched.effort) == (
+        "claude",
+        "opus",
+        None,
+    )
+    assert (
+        untouched.provider_source,
+        untouched.model_source,
+        untouched.effort_source,
+    ) == ("policy_default", "provider_default", "cli_default")
+
+
+async def test_slack_settings_key_includes_account_identity(tmp_enso, monkeypatch):
+    first_transport, first_runtime = _make_transport(tmp_enso, monkeypatch)
+    await first_transport._handle_app_mention(
+        _mention(ts="700.1", text="<@UBOT> first account"),
+        _make_client(),
+    )
+    first = first_runtime.dispatch.call_args.kwargs["context"]
+
+    other_account = "T0OTHER"
+    config = _teams_config(tmp_enso)
+    config["transports"]["slack"]["account_id"] = other_account
+    second_runtime = Runtime(config)
+    second_runtime.dispatch = AsyncMock()
+    second_transport = SlackTransport(second_runtime)
+    assert second_transport.teams_router is not None
+    second_transport.teams_router.set_authenticated_account(other_account)
+    second_transport._cache_account_id = other_account
+    await second_transport._handle_app_mention(
+        _mention(ts="700.2", text="<@UBOT> second account"),
+        _make_client(),
+    )
+    second = second_runtime.dispatch.call_args.kwargs["context"]
+
+    # The human-visible route id is identical; account identity still isolates state.
+    assert first.workspace_id == second.workspace_id == "acme"
+    assert first.settings_key != second.settings_key
+
+
+async def test_settings_command_in_dm_thread_names_dm_scope(tmp_enso, monkeypatch):
+    transport, rt = _make_transport(tmp_enso, monkeypatch)
+    client = _make_client()
+    event = _dm(ts="800.2", text="!use codex")
+    event["thread_ts"] = "800.1"
+
+    await transport._handle_message(event, client)
+
+    rt.dispatch.assert_not_awaited()
+    assert "dm" in client.chat_postMessage.call_args.kwargs["text"].lower()
+
+
 # -- context injection --
 
 
@@ -611,6 +748,14 @@ def _ledger_rows(tmp_enso):
 def _triggers_config(tmp_enso, **settings):
     config = _teams_config(tmp_enso)
     config["transports"]["slack"]["channels"]["C0ACME"].update(settings)
+    return config
+
+
+def _route_settings_config(tmp_enso, **settings):
+    """Client route with every durable settings command enabled."""
+    config = _triggers_config(tmp_enso, **settings)
+    commands = config["policies"]["client"]["chat_commands"]
+    commands.extend(["model", "effort"])
     return config
 
 
@@ -711,7 +856,7 @@ async def test_thread_following_lapses_without_a_session(tmp_enso, monkeypatch):
     await transport._handle_app_mention(_mention(), client)
     rt.dispatch.assert_awaited_once()
 
-    rt.active_provider_by_chat.clear()  # simulate session retention pruning
+    rt._last_active.clear()  # simulate session retention pruning
     await transport._handle_message(
         _channel_message(ts="100.2", thread_ts="100.1", text="still there?"), client
     )
@@ -1056,7 +1201,7 @@ async def test_pull_pointer_is_not_repeated_once_the_session_remembers_it(
     config = _ops_triggers_config(tmp_enso, thread_mention_required=False)
     transport, rt = _make_transport(tmp_enso, monkeypatch, config)
     chat_key = _key_digest("conversation", ACCOUNT, "C0OPS", "100.1", "ops", "admin")
-    rt.active_provider_by_chat[chat_key] = "claude"
+    rt.touch_conversation(chat_key)
     rt.session_by_chat_provider[(chat_key, "claude")] = "an-established-session"
 
     await transport._handle_message(
@@ -1076,16 +1221,90 @@ async def test_dm_never_advertises_channel_history(tmp_enso, monkeypatch):
     assert "enso slack history" not in prompt
 
 
-async def test_unaddressed_command_text_is_ordinary_prompt(tmp_enso, monkeypatch):
-    """Commands always require addressing; bare !text dispatches as prompt."""
+async def test_unmentioned_command_runs_when_top_level_mentions_are_optional(
+    tmp_enso, monkeypatch
+):
     config = _triggers_config(tmp_enso, mention_required=False)
     transport, rt = _make_transport(tmp_enso, monkeypatch, config)
     client = _make_client()
 
     await transport._handle_message(_channel_message(text="!status"), client)
 
+    rt.dispatch.assert_not_awaited()
+    assert "Provider:" in client.chat_postMessage.call_args.kwargs["text"]
+
+
+async def test_unknown_unmentioned_command_is_not_dispatched_as_a_prompt(
+    tmp_enso, monkeypatch
+):
+    config = _ops_triggers_config(tmp_enso, mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    await transport._handle_message(
+        _channel_message(channel="C0OPS", text="!not-a-command"), client
+    )
+
+    rt.dispatch.assert_not_awaited()
+    assert "Unknown command" in client.chat_postMessage.call_args.kwargs["text"]
+
+
+async def test_bare_bang_remains_a_prompt_when_top_level_mentions_are_optional(
+    tmp_enso, monkeypatch
+):
+    config = _triggers_config(tmp_enso, mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+
+    await transport._handle_message(_channel_message(text="!"), _make_client())
+
     rt.dispatch.assert_awaited_once()
-    assert rt.dispatch.call_args.args[1].endswith("!status")
+    assert rt.dispatch.call_args.args[1].endswith("!")
+
+
+async def test_unmentioned_command_is_ignored_when_top_level_mention_is_required(
+    tmp_enso, monkeypatch
+):
+    transport, rt = _make_transport(tmp_enso, monkeypatch)
+    client = _make_client()
+
+    await transport._handle_message(_channel_message(text="!status"), client)
+
+    rt.dispatch.assert_not_awaited()
+    client.chat_postMessage.assert_not_awaited()
+
+
+async def test_unmentioned_command_runs_in_a_joined_optional_thread(
+    tmp_enso, monkeypatch
+):
+    config = _triggers_config(tmp_enso, thread_mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    await transport._handle_app_mention(_mention(ts="400.1"), client)
+    await transport._handle_message(
+        _channel_message(ts="400.2", thread_ts="400.1", text="!status"),
+        client,
+    )
+
+    # The first turn joined the thread; the second was handled as a command.
+    rt.dispatch.assert_awaited_once()
+    assert "Provider:" in client.chat_postMessage.call_args.kwargs["text"]
+
+
+async def test_unmentioned_command_stays_gated_in_an_unjoined_optional_thread(
+    tmp_enso, monkeypatch
+):
+    config = _triggers_config(tmp_enso, thread_mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    await transport._handle_message(
+        _channel_message(ts="400.2", thread_ts="400.1", text="!status"),
+        client,
+    )
+
+    rt.dispatch.assert_not_awaited()
+    client.chat_postMessage.assert_not_awaited()
 
 
 async def test_mentioned_command_still_runs_in_optional_channel(tmp_enso, monkeypatch):
@@ -1265,6 +1484,45 @@ async def test_commands_work_when_current_provider_policy_is_broken(tmp_enso, mo
     rt.dispatch.assert_not_awaited()
 
 
+@pytest.mark.parametrize("command", ["!status", "!help", "!stop", "!clear"])
+async def test_non_launch_commands_work_when_current_provider_policy_is_broken(
+    tmp_enso, monkeypatch, command
+):
+    config = _teams_config(tmp_enso)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+    Path(tmp_enso, "policies", "client", "claude", "settings.json").unlink()
+
+    await transport._handle_app_mention(
+        _mention(text=f"<@UBOT> {command}"),
+        client,
+    )
+
+    rt.dispatch.assert_not_awaited()
+    reply = client.chat_postMessage.call_args.kwargs["text"]
+    assert reply
+    assert "enso config check" not in reply.lower()
+
+
+async def test_compact_refuses_when_current_provider_policy_is_broken(
+    tmp_enso, monkeypatch
+):
+    config = _teams_config(tmp_enso)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+    Path(tmp_enso, "policies", "client", "claude", "settings.json").unlink()
+
+    await transport._handle_app_mention(
+        _mention(text="<@UBOT> !compact"),
+        client,
+    )
+
+    rt.dispatch.assert_not_awaited()
+    reply = client.chat_postMessage.call_args.kwargs["text"]
+    assert "enso config check" in reply.lower()
+    assert "Compacting context" not in reply
+
+
 async def test_chat_key_stays_stable_across_provider_switch_and_stop(tmp_enso, monkeypatch):
     transport, rt = _make_transport(tmp_enso, monkeypatch)
     client = _make_client()
@@ -1281,7 +1539,7 @@ async def test_chat_key_stays_stable_across_provider_switch_and_stop(tmp_enso, m
     )
     second_key = rt.dispatch.call_args.kwargs["context"].chat_key
     assert second_key == first_key
-    assert rt.active_provider_by_chat[first_key] == "codex"
+    assert rt.dispatch.call_args.kwargs["context"].provider == "codex"
 
     rt.clear_queue = AsyncMock(return_value=0)
     rt.stop_chat = AsyncMock(return_value=(True, None))

@@ -106,13 +106,21 @@ def _make_runtime(**overrides: object) -> MagicMock:
         },
     }
     rt.session_by_chat_provider = {}
-    rt.active_provider_by_chat = {}
-    rt.active_model_by_chat_provider = {}
+    rt.route_preferences = {}
     rt.dispatch = AsyncMock()
     rt.stop_chat = AsyncMock(return_value=(False, None))
     rt.clear_queue = AsyncMock(return_value=0)
-    rt.get_active_provider = MagicMock(return_value="claude")
-    rt.get_active_model = MagicMock(return_value="opus")
+    rt.resolve_route_settings = MagicMock(
+        return_value=SimpleNamespace(
+            provider="claude",
+            model="opus",
+            effort=None,
+            provider_source="policy_default",
+            model_source="provider_default",
+            effort_source="cli_default",
+        )
+    )
+    rt.conversation_is_active = MagicMock(return_value=False)
     rt.models = {"claude": ["opus", "sonnet"]}
     rt.save_state = MagicMock()
     for k, v in overrides.items():
@@ -141,12 +149,19 @@ async def _handle_command(
     policy = catalog.policy_for(workspace)
     context = ExecutionContext(
         chat_key=conv_id,
+        settings_key=f"settings:{conv_id}",
         path=workspace.path,
         workspace_id=workspace.name,
         workspace=workspace,
         policy=policy,
         include_global_messages=False,
         concurrency=workspace.concurrency,
+        provider="claude",
+        model="opus",
+        effort=None,
+        provider_source="policy_default",
+        model_source="provider_default",
+        effort_source="cli_default",
     )
     return await transport.handle_command(
         text,
@@ -3026,15 +3041,25 @@ class TestCommandHandling:
         result = await _handle_command(transport, "!status", "C123:1234")
         assert "Provider" in result
         assert "Model" in result
+        args, kwargs = rt.resolve_route_settings.call_args
+        assert args[0] == "settings:C123:1234"
+        assert args[1].name == "admin"
+        assert kwargs == {}
 
     @pytest.mark.asyncio
     async def test_use_command_with_choice(self):
         rt = _make_runtime()
         transport = _make_transport(rt)
 
-        with patch("enso.transports.slack.cmd_use", return_value=("Provider set to codex.", [])):
+        with patch(
+            "enso.transports.slack.cmd_use",
+            return_value=("Provider set to codex.", []),
+        ) as command:
             result = await _handle_command(transport, "!use codex", "C123:1234")
         assert "codex" in result
+        assert "channel" in result
+        assert command.call_args.args == (rt, "settings:C123:1234", "codex")
+        assert command.call_args.kwargs["policy"].name == "admin"
 
     @pytest.mark.asyncio
     async def test_use_command_no_choice(self):
@@ -3057,9 +3082,28 @@ class TestCommandHandling:
         with patch(
             "enso.transports.slack.cmd_model",
             return_value=("claude model \u2192 sonnet", []),
-        ):
+        ) as command:
             result = await _handle_command(transport, "!model sonnet", "C123:1234")
         assert "sonnet" in result
+        assert "channel" in result
+        assert command.call_args.args == (rt, "settings:C123:1234", "sonnet")
+        assert command.call_args.kwargs["policy"].name == "admin"
+
+    @pytest.mark.asyncio
+    async def test_effort_command_uses_route_settings_key(self):
+        rt = _make_runtime()
+        transport = _make_transport(rt)
+
+        with patch(
+            "enso.transports.slack.cmd_effort",
+            return_value=("Effort \u2192 high", []),
+        ) as command:
+            result = await _handle_command(transport, "!effort high", "C123:1234")
+
+        assert "high" in result
+        assert "channel" in result
+        assert command.call_args.args == (rt, "settings:C123:1234", "high")
+        assert command.call_args.kwargs["policy"].name == "admin"
 
     @pytest.mark.asyncio
     async def test_clear_command(self):

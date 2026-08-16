@@ -242,32 +242,25 @@ def _migrate_v1_pairs(raw: dict, value_key: str) -> list[dict]:
     ]
 
 
-def _migrate_v1_efforts(raw: dict) -> list[dict]:
-    """Expand v1 ``<chat>:<provider>:<model>`` effort keys into row dicts."""
-    rows = []
-    for key, value in raw.items():
-        parts = key.rsplit(":", 2)
-        if len(parts) == 3:
-            rows.append(
-                {
-                    "chat": parts[0],
-                    "provider": parts[1],
-                    "model": parts[2],
-                    "effort": value,
-                }
-            )
-    return rows
-
-
 @dataclass
-class _QueuedItem:
-    """A message waiting to be dispatched while another request is running."""
+class RoutePreferences:
+    """Explicit provider choices for one transport route."""
 
-    prompt: str
-    ctx: TransportContext
-    preview: str
+    provider: str | None = None
+    models: dict[str, str] = field(default_factory=dict)
+    efforts: dict[str, dict[str, str]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ResolvedSettings:
+    """Effective settings and where each value came from."""
+
     provider: str
-    context: ExecutionContext
+    model: str
+    effort: str | None
+    provider_source: str
+    model_source: str
+    effort_source: str
 
 
 @dataclass(frozen=True)
@@ -280,12 +273,14 @@ class ExecutionContext:
     explicit transport choice: Telegram opts in, while Slack and jobs do not.
     """
 
-    chat_key: str  # key for all per-chat state: sessions, queues, locks
+    chat_key: str  # conversation state: sessions, queues, locks, activity
     path: str  # subprocess cwd — the workspace root
     workspace_id: str
     workspace: Workspace = field(compare=False, repr=False)
     policy: Policy = field(compare=False, repr=False)
     include_global_messages: bool
+    provider: str
+    settings_key: str | None = None  # durable route preferences; jobs have none
     launch: Launch | None = None
     instructions: InstructionBundle | None = field(
         default=None, compare=False, repr=False
@@ -293,6 +288,9 @@ class ExecutionContext:
     concurrency: int = 1  # max concurrent provider runs sharing the workspace
     model: str | None = None
     effort: str | None = None
+    provider_source: str | None = None
+    model_source: str | None = None
+    effort_source: str | None = None
     on_launch: Callable[[Launch], None] | None = field(default=None, compare=False, repr=False)
     # Invoked (in a worker thread) with the turn's terminal outcome once it
     # reaches a terminal state — a real dispatch, a revalidation refusal, or
@@ -302,6 +300,16 @@ class ExecutionContext:
     on_complete: Callable[[str, str | None], None] | None = field(
         default=None, compare=False, repr=False
     )
+
+
+@dataclass
+class _QueuedItem:
+    """A message waiting to be dispatched while another request is running."""
+
+    prompt: str
+    ctx: TransportContext
+    preview: str
+    context: ExecutionContext
 
 
 class Runtime:
@@ -328,10 +336,11 @@ class Runtime:
         self.agent_timeout: int | float = timeout
         self.transport: BaseTransport | None = None
 
-        # Per-chat state (keyed by conversation ID — str for all transports)
-        self.active_provider_by_chat: dict[str, str] = {}
-        self.active_model_by_chat_provider: dict[tuple[str, str], str] = {}
-        self.effort_by_chat_provider_model: dict[tuple[str, str, str], str] = {}
+        # Durable user preferences are keyed by transport route, independently
+        # from the conversation/session state below.
+        self.route_preferences: dict[str, RoutePreferences] = {}
+
+        # Per-conversation state (opaque string keys for all transports)
         self.session_by_chat_provider: dict[tuple[str, str], str] = {}
         self.running_process_by_chat: dict[str, Process] = {}
         self.running_task_by_chat: dict[str, asyncio.Task] = {}
@@ -712,20 +721,22 @@ class Runtime:
     # -- State persistence --
 
     def save_state(self) -> None:
-        """Atomically persist session and job state to disk."""
+        """Atomically persist route, conversation, and job state to disk."""
         data: dict[str, Any] = {
-            "version": 2,
-            "active_provider_by_chat": {str(k): v for k, v in self.active_provider_by_chat.items()},
+            "version": 3,
+            "route_preferences": {
+                route: {
+                    "provider": preferences.provider,
+                    "models": dict(preferences.models),
+                    "efforts": {
+                        provider: dict(efforts)
+                        for provider, efforts in preferences.efforts.items()
+                    },
+                }
+                for route, preferences in self.route_preferences.items()
+            },
             # Conversation keys are opaque and may contain colons. Store
             # compound keys as records instead of inventing a delimiter.
-            "active_model_by_chat_provider": [
-                {"chat": cid, "provider": prov, "model": model}
-                for (cid, prov), model in self.active_model_by_chat_provider.items()
-            ],
-            "effort_by_chat_provider_model": [
-                {"chat": cid, "provider": prov, "model": model, "effort": eff}
-                for (cid, prov, model), eff in self.effort_by_chat_provider_model.items()
-            ],
             "session_by_chat_provider": [
                 {"chat": cid, "provider": prov, "session": sid}
                 for (cid, prov), sid in self.session_by_chat_provider.items()
@@ -753,14 +764,12 @@ class Runtime:
         try:
             with open(STATE_FILE) as f:
                 data = json.load(f)
-            state_changed = False
-            for k, v in data.get("active_provider_by_chat", {}).items():
-                if v in PROVIDER_NAMES:
-                    self.active_provider_by_chat[k] = v
-                else:
-                    state_changed = True
-            state_changed |= self._load_model_rows(data.get("active_model_by_chat_provider", []))
-            state_changed |= self._load_effort_rows(data.get("effort_by_chat_provider_model", []))
+            version = data.get("version")
+            state_changed = version != 3
+            if version == 3:
+                state_changed |= self._load_route_preferences(
+                    data.get("route_preferences", {})
+                )
             state_changed |= self._load_session_rows(data.get("session_by_chat_provider", []))
             for k, v in data.get("compact_seed_by_chat", {}).items():
                 self.compact_seed_by_chat[k] = v
@@ -777,8 +786,8 @@ class Runtime:
             for cid, ts in data.get("last_active", {}).items():
                 self._last_active[cid] = datetime.fromisoformat(ts)
             log.info(
-                "Loaded state: %d providers, %d sessions",
-                len(self.active_provider_by_chat),
+                "Loaded state: %d route preference(s), %d sessions",
+                len(self.route_preferences),
                 len(self.session_by_chat_provider),
             )
             self._prune_stale_sessions(persist=persist)
@@ -787,50 +796,64 @@ class Runtime:
         except Exception:
             log.exception("Failed to load state, starting fresh")
 
-    def _load_model_rows(self, raw: object) -> bool:
-        """Restore per-chat model selections. True when state needs rewriting."""
-        rows, changed = _state_rows(raw, lambda data: _migrate_v1_pairs(data, "model"))
-        for row in rows:
-            if not isinstance(row, dict):
+    def _load_route_preferences(self, raw: object) -> bool:
+        """Restore validated v3 route preferences."""
+        if not isinstance(raw, dict):
+            return True
+        changed = False
+        for route, value in raw.items():
+            if not isinstance(route, str) or not isinstance(value, dict):
                 changed = True
                 continue
-            cid = row.get("chat")
-            provider = row.get("provider")
-            model = row.get("model")
-            # Entries for retired providers or models removed from config
-            # are inert (selection falls back anyway) — prune them.
-            if (
-                isinstance(cid, str)
-                and isinstance(provider, str)
-                and model in self.models.get(provider, [])
-            ):
-                self.active_model_by_chat_provider[(cid, provider)] = model
+            preferences = RoutePreferences()
+            provider = value.get("provider")
+            if provider is None:
+                pass
+            elif isinstance(provider, str) and provider in PROVIDER_NAMES:
+                preferences.provider = provider
             else:
                 changed = True
-        return changed
 
-    def _load_effort_rows(self, raw: object) -> bool:
-        """Restore per-chat effort levels. True when state needs rewriting."""
-        rows, changed = _state_rows(raw, _migrate_v1_efforts)
-        for row in rows:
-            if not isinstance(row, dict):
-                changed = True
-                continue
-            cid = row.get("chat")
-            provider = row.get("provider")
-            model = row.get("model")
-            effort = row.get("effort")
-            if (
-                isinstance(cid, str)
-                and isinstance(provider, str)
-                and isinstance(model, str)
-                and isinstance(effort, str)
-                and model in self.models.get(provider, [])
-                and provider_class(provider).effort_levels
-            ):
-                self.effort_by_chat_provider_model[(cid, provider, model)] = effort
+            models = value.get("models", {})
+            if isinstance(models, dict):
+                for provider_name, model in models.items():
+                    if (
+                        isinstance(provider_name, str)
+                        and isinstance(model, str)
+                        and model in self.models.get(provider_name, [])
+                    ):
+                        preferences.models[provider_name] = model
+                    else:
+                        changed = True
             else:
                 changed = True
+
+            efforts = value.get("efforts", {})
+            if isinstance(efforts, dict):
+                for provider_name, by_model in efforts.items():
+                    if not isinstance(provider_name, str) or not isinstance(by_model, dict):
+                        changed = True
+                        continue
+                    provider_levels = (
+                        provider_class(provider_name).effort_levels
+                        if provider_name in PROVIDER_NAMES
+                        else ()
+                    )
+                    for model, effort in by_model.items():
+                        if (
+                            isinstance(model, str)
+                            and isinstance(effort, str)
+                            and model in self.models.get(provider_name, [])
+                            and effort in provider_levels
+                        ):
+                            preferences.efforts.setdefault(provider_name, {})[model] = effort
+                        else:
+                            changed = True
+            else:
+                changed = True
+
+            if preferences.provider or preferences.models or preferences.efforts:
+                self.route_preferences[route] = preferences
         return changed
 
     def _load_session_rows(self, raw: object) -> bool:
@@ -854,13 +877,13 @@ class Runtime:
                 changed = True
         return changed
 
-    def touch_session(self, chat_key: str) -> None:
-        """Mark a state key active so stale-session pruning can reach it.
-
-        The teams router writes a durable provider-selection key that is not a
-        dispatch chat_key; without a last-active stamp it would never prune.
-        """
+    def touch_conversation(self, chat_key: str) -> None:
+        """Mark a conversation active for retention and participation."""
         self._last_active[chat_key] = datetime.now()
+
+    def conversation_is_active(self, chat_key: str) -> bool:
+        """Whether a conversation has retained activity state."""
+        return chat_key in self._last_active
 
     def _prune_stale_sessions(self, *, persist: bool = True) -> None:
         """Remove state entries for conversations inactive beyond SESSION_TTL_DAYS."""
@@ -869,20 +892,121 @@ class Runtime:
         if not stale:
             return
         for cid in stale:
-            self.active_provider_by_chat.pop(cid, None)
             for session_key in [k for k in self.session_by_chat_provider if k[0] == cid]:
                 self.session_by_chat_provider.pop(session_key)
-            for model_key in [k for k in self.active_model_by_chat_provider if k[0] == cid]:
-                self.active_model_by_chat_provider.pop(model_key)
-            for effort_key in [k for k in self.effort_by_chat_provider_model if k[0] == cid]:
-                self.effort_by_chat_provider_model.pop(effort_key)
             self.compact_seed_by_chat.pop(cid, None)
             self._last_active.pop(cid)
         log.info("Pruned %d stale conversation(s) (>%dd)", len(stale), SESSION_TTL_DAYS)
         if persist:
             self.save_state()
 
-    # -- Accessors --
+    # -- Route preferences and session accessors --
+
+    def _route_preferences_for_write(self, settings_key: str) -> RoutePreferences:
+        preferences = self.route_preferences.get(settings_key)
+        if preferences is None:
+            preferences = RoutePreferences()
+            self.route_preferences[settings_key] = preferences
+        return preferences
+
+    def _discard_empty_route_preferences(self, settings_key: str) -> None:
+        preferences = self.route_preferences.get(settings_key)
+        if preferences is not None and not (
+            preferences.provider or preferences.models or preferences.efforts
+        ):
+            self.route_preferences.pop(settings_key, None)
+
+    def set_route_provider(self, settings_key: str, provider: str | None) -> None:
+        """Set or clear a route's explicit provider preference."""
+        if provider is None:
+            preferences = self.route_preferences.get(settings_key)
+            if preferences is None:
+                return
+            preferences.provider = None
+            self._discard_empty_route_preferences(settings_key)
+            return
+        self._route_preferences_for_write(settings_key).provider = provider
+
+    def set_route_model(
+        self,
+        settings_key: str,
+        provider: str,
+        model: str | None,
+    ) -> None:
+        """Set or clear a route's explicit model preference for a provider."""
+        if model is None:
+            preferences = self.route_preferences.get(settings_key)
+            if preferences is None:
+                return
+            preferences.models.pop(provider, None)
+            self._discard_empty_route_preferences(settings_key)
+            return
+        self._route_preferences_for_write(settings_key).models[provider] = model
+
+    def set_route_effort(
+        self,
+        settings_key: str,
+        provider: str,
+        model: str,
+        effort: str | None,
+    ) -> None:
+        """Set or clear a route's explicit effort preference for a model."""
+        if effort is None:
+            preferences = self.route_preferences.get(settings_key)
+            if preferences is None:
+                return
+            by_model = preferences.efforts.get(provider)
+            if by_model is not None:
+                by_model.pop(model, None)
+                if not by_model:
+                    preferences.efforts.pop(provider, None)
+            self._discard_empty_route_preferences(settings_key)
+            return
+        preferences = self._route_preferences_for_write(settings_key)
+        preferences.efforts.setdefault(provider, {})[model] = effort
+
+    def resolve_route_settings(self, settings_key: str, policy: Policy) -> ResolvedSettings:
+        """Resolve one route's explicit preferences through its current policy."""
+        preferences = self.route_preferences.get(settings_key)
+        selected_provider = preferences.provider if preferences is not None else None
+        provider: str | None
+        if selected_provider in policy.providers:
+            provider = selected_provider
+            provider_source = "route"
+        else:
+            provider = policy.default_provider
+            provider_source = "policy_default"
+        if provider is None:
+            raise ValueError(f"policy {policy.name!r} has no default provider")
+
+        models = self.models.get(provider, [])
+        selected_model = preferences.models.get(provider) if preferences is not None else None
+        if selected_model in models:
+            model = selected_model
+            model_source = "route"
+        else:
+            model = models[0] if models else "default"
+            model_source = "provider_default"
+
+        selected_effort = None
+        if preferences is not None:
+            selected_effort = preferences.efforts.get(provider, {}).get(model)
+        provider_cls = provider_class(provider)
+        if selected_effort in provider_cls.effort_levels:
+            effort = provider_cls.clamp_effort(selected_effort, model)
+            effort_source = "route"
+        else:
+            effort = None
+            effort_source = "cli_default"
+
+        return ResolvedSettings(
+            provider=provider,
+            model=model,
+            effort=effort,
+            provider_source=provider_source,
+            model_source=model_source,
+            effort_source=effort_source,
+        )
 
     def has_session_memory(self, chat_id: str, provider: str) -> bool:
         """Whether a provider session for this conversation already holds history.
@@ -896,37 +1020,6 @@ class Runtime:
         if not session_id:
             return False
         return not session_id.startswith("new:")
-
-    def get_active_provider(self, chat_id: str) -> str:
-        """Return active provider for chat, defaulting to claude."""
-        provider = self.active_provider_by_chat.get(chat_id)
-        return provider if provider in PROVIDER_NAMES else "claude"
-
-    def get_active_model(self, chat_id: str, provider: str) -> str:
-        """Return active model for chat+provider, defaulting to first in list."""
-        stored = self.active_model_by_chat_provider.get((chat_id, provider))
-        if stored and stored in self.models.get(provider, []):
-            return stored
-        models = self.models.get(provider, [])
-        return models[0] if models else "default"
-
-    def get_active_effort(
-        self,
-        chat_id: str,
-        provider: str,
-        model: str,
-    ) -> str | None:
-        """Return the effective effort level for chat+provider+model.
-
-        Returns ``None`` when the user hasn't picked a level. A stored level
-        is clamped to whatever the model actually accepts so callers always
-        see the real value in use.
-        """
-        stored = self.effort_by_chat_provider_model.get((chat_id, provider, model))
-        provider_cls = provider_class(provider)
-        if stored is None or not provider_cls.effort_levels:
-            return None
-        return provider_cls.clamp_effort(stored, model)
 
     def get_chat_lock(self, chat_id: str) -> asyncio.Lock:
         """Get or create a per-chat lock to serialize requests."""
@@ -1044,7 +1137,7 @@ class Runtime:
         chat_key = context.chat_key
         self._last_active[chat_key] = datetime.now()
         lock = self.get_chat_lock(chat_key)
-        provider = self.get_active_provider(chat_key)
+        provider = context.provider
 
         if lock.locked():
             queue = self._queue_by_conversation.setdefault(chat_key, deque())
@@ -1057,7 +1150,6 @@ class Runtime:
                     prompt=prompt,
                     ctx=ctx,
                     preview=preview,
-                    provider=provider,
                     context=context,
                 )
             )
@@ -1158,7 +1250,12 @@ class Runtime:
                 len(queue),
                 item.preview if item.context.include_global_messages else "<redacted>",
             )
-            await self._run_request(item.provider, item.prompt, item.ctx, item.context)
+            await self._run_request(
+                item.context.provider,
+                item.prompt,
+                item.ctx,
+                item.context,
+            )
 
     def kick_queue(self, conv_id: str) -> None:
         """Schedule a queue drain outside dispatch (e.g. after /compact).
@@ -1291,16 +1388,9 @@ class Runtime:
                     chat_id,
                 )
                 return ""
-            model = (
-                context.model
-                if context.model is not None
-                else self.get_active_model(chat_id, provider_name)
-            )
-            effort = (
-                context.effort
-                if context.effort is not None
-                else self.get_active_effort(chat_id, provider_name, model)
-            )
+            models = self.models.get(provider_name, [])
+            model = context.model or (models[0] if models else "default")
+            effort = context.effort
             provider = self.make_provider(
                 provider_name, timeout=self.agent_timeout, context=context
             )
@@ -1873,16 +1963,9 @@ class Runtime:
         context: ExecutionContext,
     ) -> tuple[BaseProvider, str, str | None, dict[str, str]]:
         """Resolve what to run this request with, and log that decision."""
-        model = (
-            context.model
-            if context.model is not None
-            else self.get_active_model(chat_id, provider_name)
-        )
-        effort = (
-            context.effort
-            if context.model is not None
-            else self.get_active_effort(chat_id, provider_name, model)
-        )
+        models = self.models.get(provider_name, [])
+        model = context.model or (models[0] if models else "default")
+        effort = context.effort
         provider = self.make_provider(provider_name, timeout=self.agent_timeout, context=context)
 
         try:
