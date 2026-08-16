@@ -17,13 +17,13 @@ Enso does not define a cross-provider permission language and does not merge use
   "policies": {
     "admin": {
       "unrestricted": true,
-      "providers": ["claude", "codex", "agy"],
+      "providers": ["claude", "codex", "grok", "agy"],
       "default_provider": "claude",
       "chat_commands": "*"
     },
     "client-readonly": {
       "policy_dir": "~/.enso/policies/client-readonly",
-      "providers": ["claude", "codex"],
+      "providers": ["claude", "codex", "grok"],
       "default_provider": "claude",
       "chat_commands": ["status", "clear", "stop", "help"]
     }
@@ -36,9 +36,10 @@ Enso does not define a cross-provider permission language and does not merge use
 ```text
 ~/.enso/policies/client-readonly/
 ├── claude/settings.json
-└── codex/
-    ├── config.toml
-    └── rules/*.rules
+├── codex/
+│   ├── config.toml
+│   └── rules/*.rules
+└── grok/config.toml
 ```
 
 The policy directory belongs to the policy, not the workspace. This lets several client workspaces reuse one `client-readonly` policy while each CLI starts in the project directory selected by its route or job.
@@ -167,7 +168,7 @@ And permission rules in the same policy's `settings.json`, because under `dontAs
 
 Validation and failure semantics:
 
-- `env_passthrough` names must match `[A-Z][A-Z0-9_]*`, contain no duplicates, and must not name launch-controlled or Enso-owned variables (`HOME`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TERM`, `TMPDIR`, `USER`, `SHELL`, `PATH`, `CODEX_HOME`, or anything `ENSO_`-prefixed). Neither grant is meaningful on an unrestricted policy: `env_passthrough` there is a config error — the policy already inherits the full environment, and silently accepting the key would let the operator believe they scoped something — and an unrestricted policy has no policy directory to hold the conventional file.
+- `env_passthrough` names must match `[A-Z][A-Z0-9_]*`, contain no duplicates, and must not name launch-controlled or Enso-owned variables (`HOME`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TERM`, `TMPDIR`, `USER`, `SHELL`, `PATH`, `CODEX_HOME`, `GROK_HOME`, `GROK_SANDBOX`, `GROK_FOLDER_TRUST`, or anything `ENSO_`-prefixed). Neither grant is meaningful on an unrestricted policy: `env_passthrough` there is a config error — the policy already inherits the full environment, and silently accepting the key would let the operator believe they scoped something — and an unrestricted policy has no policy directory to hold the conventional file.
 - `mcp.json` fails closed. Present but unusable — an integrity failure, unparseable JSON, not a JSON object, a missing or non-object `mcpServers`, or an empty `mcpServers` (delete the file to disable MCP) — refuses the turn as a policy error rather than silently launching with fewer servers. A symlink at the conventional path is an integrity error, never "absent". The file is hashed into `policy_revision`, so adding, editing, or removing it rotates the revision and audit rows describe the server set each turn actually had.
 - A configured passthrough name absent from the service environment warns at spawn (names only, never values) and the turn proceeds: environment presence varies by deployment, and the downstream failure — the MCP server rejects authentication — is contained and attributable. Note the shape of that failure: the current Claude CLI passes an unresolvable `${VAR}` reference to the server as the literal text `${VAR}`, not as an empty string, so a server-side "invalid credential" with that literal is the signature of a missing passthrough variable.
 
@@ -199,6 +200,34 @@ Enso supplies the validated in-memory contents of `~/.enso/AGENTS.md` as Codex `
 
 Use the [Codex example](../examples/acme-codex-config.toml) only as a starting point. Provider schemas change; the installed CLI's help, diagnostics, and documentation are authoritative.
 
+## Grok
+
+For a restricted policy Enso stages the policy's Grok tree into a dedicated runtime `GROK_HOME` and invokes:
+
+```text
+GROK_HOME=<staged-home> grok --output-format ... \
+  --permission-mode dontAsk --rules=<shared-instructions> \
+  --model <model> --single=<prompt>
+```
+
+The exact output and session flags vary by interactive operation, but the policy selection does not. `--single=<prompt>` and `--rules=<shared-instructions>` each ride as one attached argument, so content beginning with `-` — a hyphen-leading prompt, a markdown bullet or frontmatter opening the instructions — cannot be parsed as a flag. Enso removes its unrestricted `--always-approve` flag. The `--rules` flag is reserved for Enso's validated shared instructions — Grok receives the validated content itself, not a snapshot path — and the injection applies to restricted and unrestricted Grok launches alike.
+
+The staged home is revision-keyed under the policy's `.runtime/grok-home` and holds owner-read-only (`0400`) copies of the policy's `config.toml` and of the operator's Grok `auth.json`, which is refreshed from the real Grok home on every launch. Enso pre-seeds the CLI's marketplace stanza — `[marketplace]` plus the official `[[marketplace.sources]]` entry — into the staged `config.toml` before hashing it, because the CLI rewrites its `config.toml` after a run to append exactly that stanza and `0400` does not stop it: the CLI replaces the file by rename, so the mode survives but the bytes would not. Seeding the stanza at staging time keeps the staged bytes identical across runs, so the manifest's byte verification passes on every subsequent launch. A policy `config.toml` that declares its own `[marketplace]` is staged as written and flagged by `enso config check`, because the CLI's write-back would then change the staged bytes and the next launch would fail closed on verification.
+
+`dontAsk` is necessary because nobody can answer an interactive approval prompt in a headless transport turn or job. All permission rules come from the staged `config.toml`; the launch passes no rule flags.
+
+**Grok fails open on a malformed permission config.** A wrong-shaped `[permission]` table — a `[permissions]` typo, an `allowed` key, a rule entry in an unrecognized form (lowercase `toolname(glob)` entries are dropped; the loadable families are bare tool names and the documented capitalized `ToolPrefix(glob)` forms), or empty rule arrays — loads zero rules with no error, no non-zero exit, and an empty `skipped` list, and the launch then runs on the permission mode's defaults alone. Enso rejects a policy that declares no rules statically, and `grok inspect --json`, which reports `permissions.loaded` and the contributing `sources`, is the visibility mechanism for the rest: `enso config check` gates every grok policy binding dynamically by staging the home exactly as a launch would, running `grok inspect --json` from the workspace with the staged `GROK_HOME` and a scratch `HOME` — the operator's own always-trusted `~/.claude` rules would otherwise count into the total, false-failing the equality or masking a dropped rule — and requiring the reported `permissions.loaded` count to equal the number of rules the policy file declares. A mismatch, a grok policy that declares no rules, or a missing grok binary fails the check for that binding.
+
+Folder trust in Grok is a kill-switch that only loosens. A fresh staged home leaves the workspace project untrusted, so a workspace-planted `.grok/config.toml` or vendor-compat settings file contributes no rules, hooks, or MCP servers. Disabling folder trust — `GROK_FOLDER_TRUST=0` in the environment or `[folder_trust] enabled = false` in config — inverts that gate and admits project-level hooks, MCP, and config. Enso never sets `GROK_FOLDER_TRUST` and reserves it from `env_passthrough` together with `GROK_HOME` and `GROK_SANDBOX`, the launch-owned variables that select the staged home and a kernel sandbox profile.
+
+**Known limitation — a Grok policy launch is not hermetic against the operator's own home configuration.** Grok discovers home-scope vendor-compat sources (`~/.claude/*`, `~/.cursor/*`) relative to `$HOME`, not `GROK_HOME`; it treats home-scope sources as always trusted, with no folder-trust gate; and `HOME` passes through Enso's minimal launch environment for Grok exactly as it does for Claude and Codex policy launches. A restricted Grok agent can therefore see instructions, skills, permission rules, and MCP servers from the operator's own `~/.claude` or `~/.cursor` configuration — home-scope MCP servers are dialled by the provider process itself — and `[compat.claude]` overrides in the policy config did not close that path in the tested CLI. A policy that must not reach ambient MCP tools should carry a bare `MCPTool` deny rule, as the example does; keep the operator's home vendor configuration as clean as the policy assumes, and retest after CLI upgrades.
+
+Grok also has kernel-enforced sandbox profiles (`--sandbox workspace|devbox|read-only|strict`, Seatbelt on macOS and Landlock on Linux) whose filesystem rules hold even under permission bypass. They are not part of Enso's launch contract today: Enso passes no `--sandbox` flag, and a policy that wants one configures it natively in its `config.toml` and tests it with the installed CLI. Note that `/tmp`, `/var/tmp`, and the grok home remain writable in every profile, so a workspace under `/tmp` gains no read-only protection from the sandbox.
+
+Grok sessions are stored under the launch's `GROK_HOME` and also sync to a remote xAI session registry. Clearing a session removes the local session state; a remote copy may survive in xAI's registry, and resuming an unknown session ID triggers a remote restore attempt. Treat conversation content in a Grok turn as data that leaves the machine.
+
+Use the [Grok example](../examples/acme-grok-config.toml) only as a starting point. Provider schemas change; the installed CLI's help, diagnostics, and documentation are authoritative.
+
 ## Antigravity
 
 Antigravity (`agy`) is currently available only in an explicitly unrestricted policy. Enso does not yet have a tested native restricted-launch contract for it. For an allowed launch, Enso places the canonical shared instructions in a clearly delimited prompt envelope before the request; workspace-local context remains available through Agy's project binding. This is a limitation of Enso's adapter, not a claim that the CLI has no permission features.
@@ -207,7 +236,7 @@ Antigravity (`agy`) is currently available only in an explicitly unrestricted po
 
 Instructions have two layers. Canonical shared Enso workflow lives at `~/.enso/AGENTS.md`, with a sibling `CLAUDE.md` symlink, and is injected explicitly on every provider launch. Focused project instructions and skills belong to the workspace: Codex uses local `AGENTS.md` and `.agents/skills/`; Claude Code uses local `CLAUDE.md` and `.claude/skills/`. Each CLI discovers those local files from the selected workspace according to its own rules, while potentially also loading native user, managed, plugin, system, or bundled skill scopes. Enso does not suppress those scopes, expose a `skills` allowlist, or treat file discovery as a permission boundary. A restricted policy must remain safe even when the CLI knows that broader skills exist.
 
-The shared instructions declare the active policy authoritative and classify quoted, forwarded, fetched, attached, and other untrusted transport content as data rather than higher-priority instructions. Neither shared nor local instructions can widen the native policy. The canonical source must be a stable, owner-owned regular non-symlink file with no additional hard links or group/other write bits, valid UTF-8 no larger than 20 KiB, and free of NUL bytes. At launch Enso validates it, hashes it, and publishes or verifies the exact owner-only snapshot Claude consumes; Codex and Agy receive the same validated content in memory. Protect `~/.enso/AGENTS.md` as operator-owned control material, and keep local instructions focused so changing a workspace does not silently change Enso-wide behavior.
+The shared instructions declare the active policy authoritative and classify quoted, forwarded, fetched, attached, and other untrusted transport content as data rather than higher-priority instructions. Neither shared nor local instructions can widen the native policy. The canonical source must be a stable, owner-owned regular non-symlink file with no additional hard links or group/other write bits, valid UTF-8 no larger than 20 KiB, and free of NUL bytes. At launch Enso validates it, hashes it, and publishes or verifies the exact owner-only snapshot Claude consumes; Codex, Grok, and Agy receive the same validated content in memory. Protect `~/.enso/AGENTS.md` as operator-owned control material, and keep local instructions focused so changing a workspace does not silently change Enso-wide behavior.
 
 A restricted policy should not let one workspace edit instructions or skills in another workspace that is later trusted under a more permissive policy. Protect those control files with the native policy or an outer filesystem boundary. If both workspaces need to create content, put writable user data in a separate directory from control material.
 

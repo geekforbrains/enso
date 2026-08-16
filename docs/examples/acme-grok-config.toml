@@ -1,0 +1,71 @@
+# Starting point for <policy_dir>/grok/config.toml. chmod 600 and keep it
+# outside every workspace. This policy uses the invocation workspace root,
+# so one policy can be reused for several project workspaces.
+#
+# Adapt and test it with the installed Grok Build version. Enso verifies that
+# TOML parses, that [permission] has a recognized shape, and that its launch
+# plumbing is intact; it does not prove that the native policy has the
+# intended effect. Grok loads zero rules from a wrong-shaped permission
+# config without any error, so never assume a rule applies: `enso config
+# check` stages this file and compares the CLI-reported permissions.loaded
+# count against the rules declared here, and `grok inspect --json` shows the
+# same count by hand.
+#
+# Do not add a [marketplace] table. Enso pre-seeds the CLI's marketplace
+# stanza into the staged copy so the CLI's own config write-back stays
+# byte-stable; declaring your own makes the staged bytes drift after the
+# first run, and the next launch fails closed on verification.
+#
+# Do not rely on GROK_FOLDER_TRUST or [folder_trust] to tighten anything.
+# Disabling folder trust ungates project-level hooks, MCP, and config — it
+# loosens the launch. Enso never sets GROK_FOLDER_TRUST and reserves it,
+# with GROK_HOME and GROK_SANDBOX, from env_passthrough.
+#
+# Enso launches with --permission-mode dontAsk; the mode is launch-owned, so
+# this file declares only rules.
+
+[permission]
+# Conservative read-only surface: reads, listing, and search only. Grant
+# Bash(...) or Write(...) rules deliberately and as narrowly as the installed
+# CLI's rule syntax allows. Two rule families load reliably: bare tool names
+# ("read_file", "grep") and the documented ToolPrefix(glob) forms with
+# capitalized prefixes — Bash(...), Read(...), Write(...), Edit(...),
+# Grep(...), WebFetch(...), MCPTool(...). Lowercase toolname(glob) entries
+# are silently dropped by the CLI.
+allow = [
+  "read_file",
+  "list_dir",
+  "grep",
+]
+
+# Deny wins over every permission mode (verified against bypassPermissions),
+# so keep Enso control files and workspace control files here even in a
+# policy that grants writes. Workspace-relative entries keep the policy
+# reusable across workspaces. A rule the CLI does not recognize is silently
+# dropped, so confirm each one counts toward permissions.loaded (`enso
+# config check` enforces the total).
+#
+# The bare "MCPTool" entry blocks all MCP tool calls: grok discovers the
+# operator's home-scope MCP servers even inside a staged launch (HOME passes
+# through), so a restricted policy should deny the whole surface unless it
+# deliberately grants named servers.
+deny = [
+  "MCPTool",
+  "Read(~/.enso/secrets/**)",
+  "Write(~/.enso/config.json)",
+  "Write(~/.enso/enso.db)",
+  "Write(~/.enso/secrets/**)",
+  "Write(~/.enso/policies/**)",
+  "Write(~/.enso/jobs/**)",
+  "Edit(~/.enso/**)",
+  "Write(AGENTS.md)",
+  "Write(CLAUDE.md)",
+  "Write(.agents/**)",
+  "Write(.claude/**)",
+  "Write(.grok/**)",
+  "Edit(AGENTS.md)",
+  "Edit(CLAUDE.md)",
+  "Edit(.agents/**)",
+  "Edit(.claude/**)",
+  "Edit(.grok/**)",
+]

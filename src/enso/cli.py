@@ -2379,7 +2379,7 @@ def slack_thread(
 def config_check() -> None:  # noqa: C901
     """Validate execution bindings and native-policy launch plumbing."""
     from .instructions import InstructionError, validate_shared_instructions
-    from .policy import check_provider
+    from .policy import check_provider, verify_grok_rules
     from .teams import load_catalog, load_teams, load_telegram
 
     config = load_config()
@@ -2486,7 +2486,14 @@ def config_check() -> None:  # noqa: C901
         )
         for provider in sorted(providers):
             check = check_provider(workspace, execution_policy, provider)
-            if check.ok:
+            provider_problems = list(check.problems)
+            if check.ok and provider == "grok":
+                # A wrong-shaped grok permission config loads zero rules with
+                # no error, so back the static checks with the rule count the
+                # CLI actually loads from the staged home.
+                grok_path = config.get("providers", {}).get("grok", {}).get("path", "grok")
+                provider_problems = verify_grok_rules(workspace, execution_policy, grok_path)
+            if check.ok and not provider_problems:
                 revision = (check.policy_revision or "")[:12]
                 servers = f" mcp: {', '.join(check.mcp_servers)}" if check.mcp_servers else ""
                 console.print(f"  [green]✓[/] {provider} ({revision}){escape(servers)}")
@@ -2494,7 +2501,7 @@ def config_check() -> None:  # noqa: C901
                     console.print(f"    [yellow]![/] {escape(warning)}")
             else:
                 failed = True
-                for problem in check.problems:
+                for problem in provider_problems:
                     console.print(f"  [red]✗[/] {provider}: {escape(problem)}")
 
     if failed:

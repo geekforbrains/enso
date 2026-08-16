@@ -13,7 +13,7 @@ Telegram remains private, one-to-one, and authorized by exact numeric IDs in `tr
 | Route         | An exact Slack DM user ID or channel ID mapped to one workspace                                         |
 | Workspace     | A shared content root and provider cwd, with one policy and a process-local concurrency limit            |
 | Policy        | Available providers, default provider, allowed Enso chat commands, and native provider policy selection |
-| Native policy | Provider-specific settings interpreted and enforced by the installed Claude Code or Codex CLI           |
+| Native policy | Provider-specific settings interpreted and enforced by the installed Claude Code, Codex, or Grok CLI    |
 
 A user does not carry a permission level into every room:
 
@@ -147,13 +147,13 @@ The complete schema is in [data-model.md](data-model.md#execution-catalog-and-tr
   "policies": {
     "admin": {
       "unrestricted": true,
-      "providers": ["claude", "codex", "agy"],
+      "providers": ["claude", "codex", "grok", "agy"],
       "default_provider": "claude",
       "chat_commands": "*"
     },
     "staff": {
       "policy_dir": "~/.enso/policies/staff",
-      "providers": ["claude", "codex"],
+      "providers": ["claude", "codex", "grok"],
       "default_provider": "claude",
       "chat_commands": ["status", "clear", "stop", "help", "use", "model", "effort", "compact"]
     },
@@ -219,7 +219,7 @@ Messages, compaction, session clearing, and unique `uploads/<random-id>/` attach
 
 A policy declares available providers, a default provider, and allowed Enso chat commands. Slack's `!help` and `!use`, and Telegram's menu, `/help`, and `/use`, show only capabilities offered by the workspace policy. Service-wide Enso commands such as update, restart, and logs normally belong only to an administrative policy.
 
-A restricted policy can additionally grant named environment variables through `env_passthrough` (names, never values) and, for Claude, an exact MCP server allowlist through the conventional `<policy_dir>/claude/mcp.json`. Both default to off, and both are real grants: MCP servers are dialled by the provider process itself and bypass the sandbox's network rules, so grant only servers whose entire tool surface is acceptable, and a passthrough variable's value is readable by any policy that can run Bash — passthrough delivers a credential, it does not scope one. Neither applies to an unrestricted policy, which already inherits everything (`env_passthrough` there is a config error). See [permissions.md](permissions.md#granting-credentials-and-mcp-servers-to-a-restricted-policy) for how and when to use them.
+A restricted policy can additionally grant named environment variables through `env_passthrough` (names, never values) and, for Claude, an exact MCP server allowlist through the conventional `<policy_dir>/claude/mcp.json`. Grok has no policy-declared MCP channel wired today: the untrusted workspace contributes no MCP servers, but Grok's home-scope vendor-compat discovery still reaches the operator's own MCP configuration through `$HOME` ([permissions.md's known limitation](permissions.md#grok)), so a restricted Grok policy that must not reach ambient MCP tools carries a bare `MCPTool` deny rule. Both grants default to off, and both are real grants: MCP servers are dialled by the provider process itself and bypass the sandbox's network rules, so grant only servers whose entire tool surface is acceptable, and a passthrough variable's value is readable by any policy that can run Bash — passthrough delivers a credential, it does not scope one. Neither applies to an unrestricted policy, which already inherits everything (`env_passthrough` there is a config error). See [permissions.md](permissions.md#granting-credentials-and-mcp-servers-to-a-restricted-policy) for how and when to use them.
 
 `chat_commands` controls Enso's `!` command surface. It does not hide or authorize the provider CLI's own tools, slash commands, skills, plugins, hooks, or MCP servers. A `!` command is recognized only when explicitly addressed — a bot mention in a channel, whatever the route's response triggers, or any DM message; an unaddressed `!`-prefixed message in a responsive channel is ordinary prompt text, never a command. This is a fixed rule, not a setting ([slack-triggers.md](slack-triggers.md)), so making a channel responsive never widens its command surface. Commands such as `!status`, `!clear`, and `!stop` are handled by Enso; `!compact` launches the active provider and therefore also remains subject to the selected native policy.
 
@@ -227,7 +227,7 @@ Enso never combines user-level permissions with a channel's policy and never tra
 
 ## Skills and instructions
 
-Enso has two instruction layers. Canonical shared operational instructions live at `~/.enso/AGENTS.md`, with `~/.enso/CLAUDE.md -> AGENTS.md`, and are injected into every launch independently of the workspace. Enso validates and snapshots the shared source; Claude receives the immutable content-addressed snapshot through `--append-system-prompt-file`, Codex receives the validated content through `developer_instructions`, and unrestricted Agy receives it through an Enso prompt envelope. The workspace carries focused project instructions and skills: `AGENTS.md` and `.agents/skills/` for Codex, plus `CLAUDE.md` and `.claude/skills/` for Claude Code. The CLIs may also expose native user, managed, plugin, system, or bundled skill scopes; Enso does not suppress those scopes or maintain a skill allowlist. A project skill adds relevant behavior but is not proof that other skills are absent. Treat instruction and skill discovery as functionality rather than isolation, and rely on the selected native policy for actual authority.
+Enso has two instruction layers. Canonical shared operational instructions live at `~/.enso/AGENTS.md`, with `~/.enso/CLAUDE.md -> AGENTS.md`, and are injected into every launch independently of the workspace. Enso validates and snapshots the shared source; Claude receives the immutable content-addressed snapshot through `--append-system-prompt-file`, Codex receives the validated content through `developer_instructions`, Grok receives it through its `--rules` flag, and unrestricted Agy receives it through an Enso prompt envelope. The workspace carries focused project instructions and skills: `AGENTS.md` and `.agents/skills/` for Codex, plus `CLAUDE.md` and `.claude/skills/` for Claude Code. The CLIs may also expose native user, managed, plugin, system, or bundled skill scopes; Enso does not suppress those scopes or maintain a skill allowlist. A project skill adds relevant behavior but is not proof that other skills are absent. Treat instruction and skill discovery as functionality rather than isolation, and rely on the selected native policy for actual authority.
 
 The shared template states that the active policy is authoritative and that quoted, forwarded, fetched, attached, or otherwise untrusted transport content is data rather than higher-priority instructions. Workspace files supplement that shared layer; they cannot widen the policy.
 

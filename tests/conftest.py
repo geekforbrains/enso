@@ -71,6 +71,7 @@ def sample_config(tmp_enso):
             "claude": {"path": "claude", "models": ["opus", "sonnet"]},
             "codex": {"path": "codex", "models": ["gpt-5.3-codex"]},
             "agy": {"path": "agy", "models": ["gemini-3.6-flash-high"]},
+            "grok": {"path": "grok", "models": ["grok-4.6", "grok-4.5"]},
         },
         "workspaces": {
             "default": {
@@ -82,7 +83,7 @@ def sample_config(tmp_enso):
         "policies": {
             "admin": {
                 "unrestricted": True,
-                "providers": ["claude", "codex", "agy"],
+                "providers": ["claude", "codex", "agy", "grok"],
                 "default_provider": "claude",
                 "chat_commands": "*",
             },

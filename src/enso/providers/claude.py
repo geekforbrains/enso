@@ -72,6 +72,10 @@ class ClaudeProvider(BaseProvider):
     }
     _default_max_effort = "high"
 
+    # Tool-status hook: subclasses that speak the same wire format but
+    # expose their own tool vocabulary (grok) override this mapping.
+    _tool_status = staticmethod(_tool_status)
+
     @staticmethod
     def _permission_args(launch) -> list[str]:
         """Permission flags per the launch contract in permissions.md.
@@ -181,7 +185,7 @@ class ClaudeProvider(BaseProvider):
                 elif block_type == "tool_use":
                     events.append(StreamEvent(
                         kind="status",
-                        text=_tool_status(block.get("name", ""), block.get("input", {})),
+                        text=self._tool_status(block.get("name", ""), block.get("input", {})),
                 ))
                 elif block_type == "text" and block.get("text"):
                     events.append(StreamEvent(
@@ -207,7 +211,13 @@ class ClaudeProvider(BaseProvider):
 
         return events
 
-    def clear_session(self, session_id: str | None, working_dir: str) -> str:
+    def clear_session(
+        self,
+        session_id: str | None,
+        working_dir: str,
+        *,
+        policy_dir: str | None = None,
+    ) -> str:
         if not session_id:
             return "no session"
         clean_id = session_id.removeprefix("new:")

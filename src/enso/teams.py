@@ -27,14 +27,31 @@ DEFAULT_AUDIT_MAX_AGE_DAYS = 365
 POLICY_FILES = {
     "claude": os.path.join("claude", "settings.json"),
     "codex": os.path.join("codex", "config.toml"),
+    "grok": os.path.join("grok", "config.toml"),
 }
 
 # Names env_passthrough may never carry: the launch owns these (policy.py's
-# _KEEP_ENV allowlist plus PATH and CODEX_HOME), and ENSO_* is Enso's own
-# namespace. Defined literally because policy.py imports teams.py, so
-# importing _KEEP_ENV back would be circular.
+# _KEEP_ENV allowlist plus PATH and the launch-set CODEX_HOME and GROK_HOME;
+# GROK_SANDBOX and GROK_FOLDER_TRUST are never set by a launch but change
+# kernel sandboxing and folder trust, so they may not ride through either),
+# and ENSO_* is Enso's own namespace. Defined literally because policy.py
+# imports teams.py, so importing _KEEP_ENV back would be circular.
 _ENV_PASSTHROUGH_RESERVED = frozenset(
-    {"HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "USER", "SHELL", "PATH", "CODEX_HOME"}
+    {
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "TERM",
+        "TMPDIR",
+        "USER",
+        "SHELL",
+        "PATH",
+        "CODEX_HOME",
+        "GROK_HOME",
+        "GROK_SANDBOX",
+        "GROK_FOLDER_TRUST",
+    }
 )
 _ENV_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*")
 _CATALOG_NAME_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}"

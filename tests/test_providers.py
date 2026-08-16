@@ -11,9 +11,12 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - Python 3.10
     import tomli as tomllib  # type: ignore[no-redef]
 
+from urllib.parse import quote
+
 import pytest
 
 from enso.instructions import MAX_SHARED_INSTRUCTION_BYTES, InstructionBundle
+from enso.policy import Launch
 from enso.providers import (
     PROVIDER_CLASSES,
     PROVIDER_NAMES,
@@ -24,8 +27,10 @@ from enso.providers import agy as agy_module
 from enso.providers.agy import AGY_MODELS, AgyProvider
 from enso.providers.claude import ClaudeProvider
 from enso.providers.codex import CODEX_MODEL_ALIASES, CodexProvider
+from enso.providers.grok import GrokProvider
 
 CLAUDE_SESSION_ID = "11111111-1111-4111-8111-111111111111"
+GROK_SESSION_ID = "77777777-7777-4777-8777-777777777777"
 
 
 def _instruction_bundle(tmp_path, content="Shared operator guidance."):
@@ -44,7 +49,7 @@ def _instruction_bundle(tmp_path, content="Shared operator guidance."):
 
 
 def test_supported_provider_names():
-    assert PROVIDER_NAMES == ["claude", "codex", "agy"]
+    assert PROVIDER_NAMES == ["claude", "codex", "agy", "grok"]
     # PROVIDER_NAMES is derived from the registry — the single source of truth.
     assert list(PROVIDER_CLASSES) == PROVIDER_NAMES
 
@@ -53,6 +58,7 @@ def test_provider_class_lookup():
     assert provider_class("claude") is ClaudeProvider
     assert provider_class("codex") is CodexProvider
     assert provider_class("agy") is AgyProvider
+    assert provider_class("grok") is GrokProvider
 
 
 def test_provider_class_unknown():
@@ -998,3 +1004,324 @@ def test_codex_clamp_effort():
     assert CodexProvider.clamp_effort("ultra", "luna") == "max"
     assert CodexProvider.clamp_effort("max", "gpt-5.5") == "xhigh"
     assert CodexProvider.clamp_effort("high", "luna") == "high"
+
+
+# -- Grok: command building --
+
+
+def _grok_policy_launch():
+    return Launch(
+        mode="policy",
+        provider="grok",
+        policy_path="/protected/grok/config.toml",
+        home="/staged",
+        policy_revision="r" * 64,
+        env={"PATH": "/usr/bin", "GROK_HOME": "/staged"},
+    )
+
+
+def test_grok_build_command_no_session():
+    """Without session_id, no --resume or --session-id flags."""
+    p = GrokProvider("grok")
+    cmd = p.build_command("hello", "grok-4.6")
+    assert cmd[0] == "grok"
+    assert cmd[cmd.index("--output-format") + 1] == "streaming-messages-json"
+    assert cmd[cmd.index("--model") + 1] == "grok-4.6"
+    assert "--resume" not in cmd
+    assert "--session-id" not in cmd
+    assert "--continue" not in cmd
+
+
+def test_grok_build_command_new_session():
+    """New session (new: prefix) uses --session-id, like Claude."""
+    p = GrokProvider("grok")
+    cmd = p.build_command("hello", "grok-4.6", session_id=f"new:{GROK_SESSION_ID}")
+    assert cmd[cmd.index("--session-id") + 1] == GROK_SESSION_ID
+    assert "--resume" not in cmd
+    assert "new:" not in " ".join(cmd)
+
+
+def test_grok_build_command_resume():
+    """Existing session uses --resume; --session-id would refuse to reuse it."""
+    p = GrokProvider("grok")
+    cmd = p.build_command("hello", "grok-4.6", session_id=GROK_SESSION_ID)
+    assert cmd[cmd.index("--resume") + 1] == GROK_SESSION_ID
+    assert "--session-id" not in cmd
+
+
+def test_grok_build_command_with_effort():
+    p = GrokProvider("grok")
+    cmd = p.build_command("hi", "grok-4.6", effort="xhigh")
+    assert cmd[cmd.index("--effort") + 1] == "xhigh"
+
+
+def test_grok_build_command_without_effort():
+    p = GrokProvider("grok")
+    assert "--effort" not in p.build_command("hi", "grok-4.6")
+
+
+@pytest.mark.parametrize("mode", ["fresh", "resume", "batch"])
+def test_grok_injects_shared_instruction_content_via_rules(tmp_path, mode):
+    """--rules takes the instruction text itself, not a snapshot path."""
+    content = "Shared line one.\nShared line two."
+    bundle = _instruction_bundle(tmp_path, content)
+    provider = GrokProvider("grok")
+
+    if mode == "fresh":
+        cmd = provider.build_command("hello", "grok-4.6", instructions=bundle)
+    elif mode == "resume":
+        cmd = provider.build_command(
+            "hello", "grok-4.6", session_id=GROK_SESSION_ID, instructions=bundle,
+        )
+    else:
+        cmd = provider.build_batch_command("hello", "grok-4.6", instructions=bundle)
+
+    assert f"--rules={content}" in cmd
+    assert str(bundle.snapshot_path) not in cmd
+    assert cmd[-1] == "--single=hello"
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["- Always reply in English.\n- Be brief.", "---\ntitle: x\n---\nBody."],
+)
+def test_grok_rules_survive_hyphen_leading_instructions(tmp_path, content):
+    """The attached --rules= form: the CLI's parser rejects a detached value
+    that starts with '-', which real instruction markdown often does."""
+    bundle = _instruction_bundle(tmp_path, content)
+    provider = GrokProvider("grok")
+    for cmd in (
+        provider.build_command("hello", "grok-4.6", instructions=bundle),
+        provider.build_batch_command("hello", "grok-4.6", instructions=bundle),
+    ):
+        assert f"--rules={content}" in cmd
+        assert "--rules" not in cmd  # never the detached two-element form
+
+
+def test_grok_omits_rules_flag_without_bundle():
+    provider = GrokProvider("grok")
+    for cmd in (
+        provider.build_command("hello", "grok-4.6"),
+        provider.build_batch_command("hello", "grok-4.6"),
+    ):
+        assert not [part for part in cmd if part.startswith("--rules")]
+
+
+def test_grok_policy_command_drops_bypass():
+    """A policy launch runs dontAsk; rules come from the staged GROK_HOME."""
+    provider = GrokProvider("grok")
+    launch = _grok_policy_launch()
+    for cmd in (
+        provider.build_command("hi", "grok-4.6", launch=launch),
+        provider.build_batch_command("hi", "grok-4.6", launch=launch),
+    ):
+        assert cmd[cmd.index("--permission-mode") + 1] == "dontAsk"
+        assert "--always-approve" not in cmd
+        assert "bypassPermissions" not in cmd
+
+
+def test_grok_unrestricted_command_uses_always_approve():
+    provider = GrokProvider("grok")
+    for cmd in (
+        provider.build_command("hi", "grok-4.6"),
+        provider.build_batch_command("hi", "grok-4.6"),
+    ):
+        assert "--always-approve" in cmd
+        assert "--permission-mode" not in cmd
+
+
+def test_grok_prompt_is_one_attached_argument():
+    """grok -p rejects hyphen-leading prompts; --single=<prompt> accepts them."""
+    prompt = "--weird leading prompt"
+    provider = GrokProvider("grok")
+    for cmd in (
+        provider.build_command(prompt, "grok-4.6"),
+        provider.build_batch_command(prompt, "grok-4.6"),
+    ):
+        assert cmd[-1] == f"--single={prompt}"
+        assert prompt not in cmd
+        assert "-p" not in cmd
+
+
+def test_grok_build_batch_command_is_plain_output():
+    """Jobs read plain final output; batch runs carry no session flags."""
+    p = GrokProvider("grok")
+    cmd = p.build_batch_command("hello", "grok-4.5")
+    assert cmd[cmd.index("--output-format") + 1] == "plain"
+    assert "streaming-messages-json" not in cmd
+    assert cmd[cmd.index("--model") + 1] == "grok-4.5"
+    assert "--resume" not in cmd
+    assert "--session-id" not in cmd
+
+
+# -- Grok: event parsing --
+#
+# grok --output-format streaming-messages-json emits the Anthropic Messages
+# wire format, so these events are grok-shaped captures parsed by the
+# inherited Claude parser — only the tool names differ.
+
+
+def test_grok_parse_result_reports_response_and_session():
+    p = GrokProvider("grok")
+    events = p.parse_event({
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "result": "All done.",
+        "session_id": GROK_SESSION_ID,
+        "total_cost_usd": 0.0421,
+        "usage": {"input_tokens": 12213, "output_tokens": 58},
+    })
+    assert [(e.kind, e.text, e.session_id) for e in events] == [
+        ("response", "All done.", None),
+        ("session", "", GROK_SESSION_ID),
+    ]
+
+
+def test_grok_parse_assistant_thinking_and_text():
+    p = GrokProvider("grok")
+    events = p.parse_event({
+        "type": "assistant",
+        "message": {
+            "content": [
+                {"type": "thinking", "thinking": "Weighing the options"},
+                {"type": "text", "text": "Here is the answer."},
+            ],
+        },
+    })
+    assert [(e.kind, e.text) for e in events] == [
+        ("status", "Weighing the options"),
+        ("response", "Here is the answer."),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("name", "tool_input", "status"),
+    [
+        ("list_dir", {"target_directory": "/repo/src"}, "Listing src"),
+        ("read_file", {"target_file": "/repo/notes.txt"}, "Reading notes.txt"),
+        ("grep", {"pattern": "PolicyError"}, "Searching for PolicyError"),
+        ("write", {"file_path": "/repo/report.md", "content": "x"}, "Writing report.md"),
+        (
+            "search_replace",
+            {"file_path": "/repo/core.py", "old_string": "a", "new_string": "b"},
+            "Editing core.py",
+        ),
+    ],
+)
+def test_grok_tool_status_describes_grok_tool_calls(name, tool_input, status):
+    events = GrokProvider("grok").parse_event({
+        "type": "assistant",
+        "message": {"content": [{"type": "tool_use", "name": name, "input": tool_input}]},
+    })
+    assert [(e.kind, e.text) for e in events] == [("status", status)]
+
+
+def test_grok_terminal_command_status_prefers_the_models_own_description():
+    events = GrokProvider("grok").parse_event({
+        "type": "assistant",
+        "message": {
+            "content": [{
+                "type": "tool_use",
+                "name": "run_terminal_command",
+                "input": {
+                    "command": "ls -la | rg foo",
+                    "description": "List files in current directory",
+                },
+            }],
+        },
+    })
+    assert [(e.kind, e.text) for e in events] == [
+        ("status", "List files in current directory")
+    ]
+
+
+def test_grok_terminal_command_status_falls_back_to_the_command():
+    events = GrokProvider("grok").parse_event({
+        "type": "assistant",
+        "message": {
+            "content": [{
+                "type": "tool_use",
+                "name": "run_terminal_command",
+                "input": {"command": "rg -n TODO src"},
+            }],
+        },
+    })
+    assert [(e.kind, e.text) for e in events] == [("status", "Running rg -n TODO src")]
+
+
+def test_grok_unknown_tool_status_falls_back_to_the_tool_name():
+    events = GrokProvider("grok").parse_event({
+        "type": "assistant",
+        "message": {
+            "content": [{"type": "tool_use", "name": "mystery_tool", "input": {"x": 1}}],
+        },
+    })
+    assert [(e.kind, e.text) for e in events] == [("status", "Using mystery_tool")]
+
+
+# -- Grok: registry defaults, effort, sessions --
+
+
+def test_grok_registry_defaults():
+    assert GrokProvider.default_models == ["grok-4.6", "grok-4.5"]
+    assert GrokProvider.env_keys == ("XAI_API_KEY",)
+
+
+def test_grok_effort_levels_have_no_max():
+    assert GrokProvider.effort_levels == ["low", "medium", "high", "xhigh"]
+    assert GrokProvider.max_effort_for_model("grok-4.6") == "xhigh"
+    assert GrokProvider.max_effort_for_model("grok-4.5") == "xhigh"
+
+
+def test_grok_clear_session_removes_the_session_directory(tmp_path, monkeypatch):
+    """Sessions live in a directory keyed by the percent-encoded working dir."""
+    grok_home = tmp_path / "grok-home"
+    workspace = tmp_path / "work space"
+    workspace.mkdir()
+    encoded = quote(str(workspace.resolve()), safe="")
+    session_dir = grok_home / "sessions" / encoded / GROK_SESSION_ID
+    session_dir.mkdir(parents=True)
+    (session_dir / "chat_history.jsonl").write_text("{}\n")
+    (session_dir / "events.jsonl").write_text("{}\n")
+    sibling = session_dir.parent / "prompt_history.jsonl"
+    sibling.write_text("{}\n")
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+
+    provider = GrokProvider("grok", working_dir=str(workspace))
+    result = provider.clear_session(f"new:{GROK_SESSION_ID}", str(workspace))
+
+    assert result == f"deleted session {GROK_SESSION_ID[:8]}"
+    assert not session_dir.exists()
+    assert sibling.exists()
+
+
+def test_grok_clear_session_reaches_policy_staged_homes(tmp_path, monkeypatch):
+    """Policy launches write sessions into the revision-keyed staged homes
+    under the policy dir, not the user home; /clear must find those too."""
+    monkeypatch.setenv("GROK_HOME", str(tmp_path / "user-home"))
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    encoded = quote(str(workspace.resolve()), safe="")
+    policy_dir = tmp_path / "policy"
+    staged = policy_dir / ".runtime" / "grok-home" / ("a" * 64)
+    session_dir = staged / "sessions" / encoded / GROK_SESSION_ID
+    session_dir.mkdir(parents=True)
+    (session_dir / "chat_history.jsonl").write_text("{}\n")
+
+    provider = GrokProvider("grok", working_dir=str(workspace))
+    result = provider.clear_session(
+        GROK_SESSION_ID, str(workspace), policy_dir=str(policy_dir)
+    )
+
+    assert result == f"deleted session {GROK_SESSION_ID[:8]}"
+    assert not session_dir.exists()
+
+
+def test_grok_clear_session_without_stored_session(tmp_path, monkeypatch):
+    monkeypatch.setenv("GROK_HOME", str(tmp_path / "empty-grok-home"))
+    provider = GrokProvider("grok", working_dir=str(tmp_path))
+
+    assert provider.clear_session(None, str(tmp_path)) == "no session"
+    missing = provider.clear_session(GROK_SESSION_ID, str(tmp_path))
+    assert missing.startswith(f"session {GROK_SESSION_ID[:8]}")

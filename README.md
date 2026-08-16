@@ -2,7 +2,7 @@
 
 Text your AI agents from Telegram or Slack. They run on your machine.
 
-Enso connects [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), and Google's Antigravity CLI (`agy`) to a Telegram bot or Slack workspace so you can chat with them from your phone. You get live status updates as they work, can switch between agents mid-conversation, and schedule background jobs on a cron.
+Enso connects [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), xAI's Grok Build CLI (`grok`), and Google's Antigravity CLI (`agy`) to a Telegram bot or Slack workspace so you can chat with them from your phone. You get live status updates as they work, can switch between agents mid-conversation, and schedule background jobs on a cron.
 
 ## Documentation
 
@@ -16,7 +16,7 @@ Design docs live in [`docs/`](docs/) and are the source of truth for planned and
 | [`docs/specs/docs.md`](docs/specs/docs.md)                 | Operator-authored reference docs and their dashboard/CLI workflow                   |
 | [`docs/specs/slack-output.md`](docs/specs/slack-output.md) | Rich Slack replies, typed blocks, confirmed App Home, and Canvas publication        |
 | [`docs/specs/teams.md`](docs/specs/teams.md)               | Transport workspace bindings, exact Slack routes, reusable policies, and audit metadata |
-| [`docs/specs/permissions.md`](docs/specs/permissions.md)   | Native Claude/Codex policy selection and invocation                                 |
+| [`docs/specs/permissions.md`](docs/specs/permissions.md)   | Native Claude/Codex/Grok policy selection and invocation                            |
 | [`docs/specs/tables.md`](docs/specs/tables.md)             | Registered SQLite data tables, discovery, and bounded read-only views               |
 | [`docs/specs/web.md`](docs/specs/web.md)                   | The web UI: routes, pages, read/write flows                                         |
 | [`docs/migrations/unified-workspace-policies.md`](docs/migrations/unified-workspace-policies.md) | Manual breaking migration from `working_dir`, `access`, and legacy Slack routes |
@@ -28,8 +28,9 @@ Design docs live in [`docs/`](docs/) and are the source of truth for planned and
 ## Requirements
 
 - Python 3.10+
-- At least one of `claude`, `codex`, or `agy` installed and on your PATH
+- At least one of `claude`, `codex`, `grok`, or `agy` installed and on your PATH
   - Codex CLI 0.144.0 or newer is required for the Sol, Terra, and Luna models
+  - Grok Build CLI 1.0.4 or newer is required for the `grok` provider's headless launches
   - Agy CLI 1.1.5 or newer is required for stable model slugs and project-aware sessions
 - One of:
   - A Telegram bot token ([create one with @BotFather](https://t.me/BotFather)), or
@@ -100,7 +101,7 @@ Telegram autocompletes these when you type `/`. On Slack, use `!` instead (e.g. 
 
 | Command    | What it does                                                                          |
 | ---------- | ------------------------------------------------------------------------------------- |
-| `/use`     | Switch agent (shows buttons, or `/use claude` / `/use agy`)                           |
+| `/use`     | Switch agent (shows buttons, or `/use claude` / `/use grok` / `/use agy`)             |
 | `/model`   | Switch model (shows buttons, or `/model sonnet` / `/model gemini-3.6-flash-high`)     |
 | `/effort`  | Set the active provider's reasoning effort (or `default` to clear)                    |
 | `/status`  | Active agent, model, and effort                                                       |
@@ -117,7 +118,7 @@ The bound workspace policy decides which providers and commands are available. T
 
 You can also send files — they're downloaded and passed to the active agent. Responses render with per-transport formatting: Telegram uses HTML, while successful interactive Slack answers use standard Markdown by default, including headings, links, fenced code, task lists, and Markdown tables. Slack agents can also choose validated native tables, compact fields, and line, bar, area, or pie charts when those layouts are useful. While a request runs, Enso keeps one transient status message showing which provider, model, and effort are handling it, how long it has been running, and what the agent is doing right now (`Reading core.py`, `Running pytest`, `Writing report.md`) — including for Antigravity, whose headless mode prints only a final answer. The elapsed counter updates every second through 30 seconds, then every five seconds to stay within transport limits; each edit includes the latest activity. The final response contains only the agent's answer. Interactive turns stop after `agent.timeout` seconds (1,800 by default; set it to `0` to disable). A timeout leaves a conversation-scoped background notice for the next turn so the active provider knows partial work may remain.
 
-Effort is stored separately for each conversation, provider, and model. Claude supports its existing model-dependent range through `max`. Codex Sol and Terra support `low` through `ultra`; Luna supports `low` through `max`. Antigravity's concrete model names already encode effort (for example, `gemini-3.6-flash-low`), so choose the desired variant with `/model`. Enso clamps an unsupported higher Claude/Codex choice to the active model's maximum and reports the effective level.
+Effort is stored separately for each conversation, provider, and model. Claude supports its existing model-dependent range through `max`. Codex Sol and Terra support `low` through `ultra`; Luna supports `low` through `max`. Grok supports `low` through `xhigh`. Antigravity's concrete model names already encode effort (for example, `gemini-3.6-flash-low`), so choose the desired variant with `/model`. Enso clamps an unsupported higher Claude/Codex/Grok choice to the active model's maximum and reports the effective level.
 
 **Slack specifics.** Every authorized Slack location is an exact route. Slack credentials, options, and routes live together in `transports.slack`. Configured DMs dispatch every ordinary message. In channels, the default is mention-gated: Enso responds only when mentioned (`@bot help me`), and thread replies need a mention too. Two per-channel booleans relax this — `mention_required: false` dispatches every top-level message, and `thread_mention_required: false` follows every reply in a thread Enso already participates in — one a prior dispatch joined, or one rooted by a message Enso posted itself, such as a job notification or `enso message send` (first contact in a thread someone else started still needs a mention). A `transports.slack.channel_defaults` block supplies defaults that individual channel routes override. Either way, replies to channel messages always land in that message's thread, and posts from other bots and apps never dispatch in any mode — only human members engage a route. For configured routes, the bot fetches the last few messages of a thread it is replying in as context so it knows what's going on. Channel history is not injected: an agent using an unrestricted policy is instead told, once per conversation, how to read the channel with `enso slack history` and `enso slack thread`, and pulls it only when the request calls for it — so a new top-level ask no longer arrives carrying unrelated earlier threads. An agent using a restricted policy, whose sandbox may have no route to Slack, keeps receiving the channel context it cannot fetch for itself. Explicit contact at an unconfigured location gets a fixed local response as described below. Rich output and persistent surfaces are enabled by default. A natural-language request for an App Home or Canvas produces an exact preview with requester-bound **Publish** and **Cancel** buttons; Slack is not mutated before confirmation. App Home requests are accepted only in a configured one-to-one DM. A channel Canvas request creates a tab when none exists or clearly proposes a full replacement of the one unambiguous existing Canvas. See [`docs/specs/slack-output.md`](docs/specs/slack-output.md) for limits, fallbacks, security, and opt-outs.
 
@@ -214,6 +215,7 @@ Enso can run agents on a schedule. Jobs live in `~/.enso/jobs/` and run inside `
 ```bash
 enso job create --name "Daily Review" --provider claude --model sonnet --schedule "0 9 * * *" --workspace company
 enso job create --name "Fast Triage" --provider codex --model luna --schedule "*/30 * * * *" --workspace company
+enso job create --name "Grok Review" --provider grok --model grok-4.6 --schedule "0 11 * * *" --workspace company
 enso job create --name "Agy Review" --provider agy --model gemini-3.6-flash-high --schedule "0 10 * * *" --workspace company
 enso job list
 enso job run daily-review    # test it manually

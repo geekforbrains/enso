@@ -257,7 +257,9 @@ def cmd_clear(
         if clear_all or runtime.get_active_provider(conv_id) == prov_name:
             sid = runtime.session_by_chat_provider.pop((conv_id, prov_name), None)
             provider = runtime.make_provider(prov_name, context=context)
-            summary = provider.clear_session(sid, context.path)
+            summary = provider.clear_session(
+                sid, context.path, policy_dir=context.policy.policy_dir
+            )
             parts.append(f"{prov_name.capitalize()}: {summary}")
     runtime.save_state()
     return parts

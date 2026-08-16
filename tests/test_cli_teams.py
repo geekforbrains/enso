@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -91,6 +93,111 @@ def test_config_check_fails_on_missing_policy(tmp_enso):
     result = runner.invoke(app, ["config", "check"])
     assert result.exit_code == 1
     assert "claude" in result.output
+
+
+# -- grok rule-load verification --
+#
+# A wrong-shaped grok permission config loads zero rules with no error, so
+# `enso config check` stages the policy home and asserts the rule count the
+# CLI actually loaded via `grok inspect --json`.
+
+
+def _grok_teams_config(tmp_enso: str) -> dict:
+    """Extend the scaffold with a grok-bound workspace and native policy."""
+    base = Path(tmp_enso)
+    config = _teams_config(tmp_enso)
+    grok_ws = base / "workspaces" / "grok-client"
+    grok_policy = base / "policies" / "grok-client" / "grok"
+    for d in (grok_ws, grok_policy):
+        d.mkdir(parents=True, exist_ok=True)
+    grok_config = grok_policy / "config.toml"
+    grok_config.write_text(
+        "[permission]\n"
+        'allow = ["run_terminal_command(echo *)"]\n'
+        'deny = ["run_terminal_command(enso *)"]\n'
+    )
+    grok_config.chmod(0o600)
+    config["transports"]["slack"]["channels"]["C2"] = {"workspace": "grok-client"}
+    config["workspaces"]["grok-client"] = {"path": str(grok_ws), "policy": "grok-client"}
+    config["policies"]["grok-client"] = {
+        "policy_dir": str(base / "policies" / "grok-client"),
+        "providers": ["grok"],
+        "default_provider": "grok",
+        "chat_commands": ["status"],
+    }
+    return config
+
+
+def _stub_grok_inspect(monkeypatch, tmp_enso, loaded: int) -> list:
+    """Stub the `grok inspect --json` subprocess and isolate the user home."""
+    monkeypatch.setattr(
+        "enso.policy._user_grok_home", lambda: str(Path(tmp_enso) / "grok-user-home")
+    )
+    calls: list = []
+
+    def fake_run(cmd, *args, **kwargs):
+        calls.append((list(cmd), kwargs))
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout=json.dumps({"permissions": {"loaded": loaded, "sources": []}}),
+            stderr="",
+        )
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    return calls
+
+
+def test_config_check_verifies_grok_policy_rules_load(tmp_enso, monkeypatch):
+    calls = _stub_grok_inspect(monkeypatch, tmp_enso, loaded=2)
+    save_config(_grok_teams_config(tmp_enso))
+
+    result = runner.invoke(app, ["config", "check"])
+
+    assert result.exit_code == 0, result.output
+    assert "All checks passed" in result.output
+    (cmd, kwargs) = calls[0]
+    assert cmd[-2:] == ["inspect", "--json"]
+    # The inspection must see exactly what a launch would: the workspace as
+    # cwd and the staged revision home as GROK_HOME.
+    assert os.path.realpath(kwargs["cwd"]) == os.path.realpath(
+        str(Path(tmp_enso) / "workspaces" / "grok-client")
+    )
+    assert "grok-home" in kwargs["env"]["GROK_HOME"]
+    # A scratch HOME keeps the operator's always-trusted home-scope compat
+    # rules out of permissions.loaded, so equality stays exact.
+    assert kwargs["env"]["HOME"] != os.environ.get("HOME")
+    assert "enso-grok-inspect-" in kwargs["env"]["HOME"]
+
+
+def test_config_check_fails_when_grok_loads_zero_rules(tmp_enso, monkeypatch):
+    _stub_grok_inspect(monkeypatch, tmp_enso, loaded=0)
+    save_config(_grok_teams_config(tmp_enso))
+
+    result = runner.invoke(app, ["config", "check"])
+
+    assert result.exit_code == 1
+    plain = " ".join(result.output.split())
+    assert "loaded 0" in plain
+    assert "grok-client" in plain
+
+
+def test_config_check_fails_when_grok_binary_is_missing(tmp_enso, monkeypatch):
+    monkeypatch.setattr(
+        "enso.policy._user_grok_home", lambda: str(Path(tmp_enso) / "grok-user-home")
+    )
+
+    def missing_binary(cmd, *args, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory", cmd[0])
+
+    monkeypatch.setattr("subprocess.run", missing_binary)
+    save_config(_grok_teams_config(tmp_enso))
+
+    result = runner.invoke(app, ["config", "check"])
+
+    assert result.exit_code == 1
+    plain = " ".join(result.output.split())
+    assert "grok inspect" in plain
 
 
 def _isolate_secrets(tmp_enso, monkeypatch) -> Path:

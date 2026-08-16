@@ -181,9 +181,23 @@ class BaseProvider(ABC):
         return
         yield  # pragma: no cover - makes this an async generator
 
-    def clear_session(self, session_id: str | None, working_dir: str) -> str:
-        """Clear session data. Returns human-readable summary."""
+    def clear_session(
+        self,
+        session_id: str | None,
+        working_dir: str,
+        *,
+        policy_dir: str | None = None,
+    ) -> str:
+        """Clear session data. Returns human-readable summary.
+
+        ``policy_dir`` names the bound policy's directory when the workspace
+        runs restricted, for providers whose sessions live in staged homes.
+        """
         return "session cleared" if session_id else "no session"
+
+    def retryable_error(self, text: str) -> bool:
+        """True when ``text`` is a transient failure worth one retry."""
+        return False
 
 
 # Provider registry — the single source of truth for supported providers.
@@ -191,11 +205,13 @@ class BaseProvider(ABC):
 from .agy import AgyProvider  # noqa: E402
 from .claude import ClaudeProvider  # noqa: E402
 from .codex import CodexProvider  # noqa: E402
+from .grok import GrokProvider  # noqa: E402
 
 PROVIDER_CLASSES: dict[str, type[BaseProvider]] = {
     ClaudeProvider.name: ClaudeProvider,
     CodexProvider.name: CodexProvider,
     AgyProvider.name: AgyProvider,
+    GrokProvider.name: GrokProvider,
 }
 PROVIDER_NAMES = list(PROVIDER_CLASSES)
 

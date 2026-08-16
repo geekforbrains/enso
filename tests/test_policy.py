@@ -8,12 +8,17 @@ import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10
+    import tomli as tomllib  # type: ignore[no-redef]
+
 import pytest
 
 from enso import policy
 from enso.providers.claude import ClaudeProvider
 from enso.providers.codex import CodexProvider
-from enso.teams import Policy, Workspace
+from enso.teams import Policy, Workspace, load_catalog
 
 CLAUDE_SETTINGS = {
     "permissions": {"deny": ["Bash(enso *)"]},
@@ -22,6 +27,24 @@ CLAUDE_SETTINGS = {
 }
 
 CODEX_CONFIG = 'default_permissions = "enso"\n\n[permissions.enso.network]\nenabled = false\n'
+
+GROK_CONFIG = (
+    "[permission]\n"
+    'allow = ["run_terminal_command(echo *)"]\n'
+    'deny = ["run_terminal_command(enso *)"]\n'
+)
+
+# The stanza the Grok CLI appends to config.toml after a run; staging
+# pre-seeds it so the published snapshot bytes stay stable across runs.
+GROK_MARKETPLACE = (
+    "[marketplace]\n"
+    "default_skills_installs_purged = true\n"
+    "official_marketplace_auto_installed = true\n"
+    "\n"
+    "[[marketplace.sources]]\n"
+    'name = "xAI Official"\n'
+    'git = "https://github.com/xai-org/plugin-marketplace.git"\n'
+)
 
 CLAUDE_MCP = {
     "mcpServers": {
@@ -70,6 +93,14 @@ def write_claude_policy(tmp_path, content=None) -> str:
 
 def write_codex_policy(tmp_path, content=CODEX_CONFIG) -> str:
     path = tmp_path / "policies" / "codex" / "config.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+    path.chmod(0o600)
+    return str(path)
+
+
+def write_grok_policy(tmp_path, content=GROK_CONFIG) -> str:
+    path = tmp_path / "policies" / "grok" / "config.toml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
     path.chmod(0o600)
@@ -214,6 +245,63 @@ def test_codex_policy_cannot_override_shared_developer_instructions(tmp_path):
         "developer_instructions" in problem and "reserved" in problem
         for problem in check.problems
     )
+
+
+def test_valid_grok_policy_passes(tmp_path):
+    write_grok_policy(tmp_path)
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "grok")
+    assert check.ok, check.problems
+    assert check.policy_revision
+    assert len(check.policy_revision) == 64
+
+
+def test_grok_invalid_toml_fails(tmp_path):
+    write_grok_policy(tmp_path, "= not toml")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "grok")
+    assert not check.ok
+
+
+def test_grok_config_requires_a_permission_table(tmp_path):
+    """grok silently loads zero rules from a config without [permission]."""
+    write_grok_policy(tmp_path, 'model = "grok-4.6"\n')
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "grok")
+    assert not check.ok
+    assert any("[permission]" in p for p in check.problems)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        # Table-name typo: [permissions] loads 0 rules with no error.
+        '[permissions]\nallow = ["run_terminal_command(echo *)"]\n',
+        # Key misspell: allowed= is silently ignored.
+        '[permission]\nallowed = ["run_terminal_command(echo *)"]\n',
+        # Wrong shape: rules must be an array, not a string.
+        '[permission]\nrules = "run_terminal_command(echo *)"\n',
+        # Unknown permission-table keys are dropped without a diagnostic.
+        '[permission]\nallow = ["run_terminal_command(echo *)"]\nfrobnicate = ["x"]\n',
+        # Empty arrays are well-shaped but load zero rules: wide open under
+        # dontAsk, the exact state the gate exists to catch.
+        '[permission]\nallow = []\n',
+        '[permission]\nallow = []\ndeny = []\n',
+        '[permission]\nrules = []\n',
+    ],
+)
+def test_grok_fail_open_config_shapes_are_static_problems(tmp_path, content):
+    """Shapes the CLI accepts while loading zero rules must fail the check."""
+    write_grok_policy(tmp_path, content)
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "grok")
+    assert not check.ok
+    assert any("permission" in p for p in check.problems)
+
+
+def test_grok_config_with_own_marketplace_stanza_warns(tmp_path):
+    """The CLI's post-run write-back would mutate an operator-authored
+    [marketplace] stanza and fail the next snapshot verification."""
+    write_grok_policy(tmp_path, GROK_CONFIG + "\n" + GROK_MARKETPLACE)
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "grok")
+    assert check.ok, check.problems
+    assert any("marketplace" in w for w in check.warnings)
 
 
 def test_unknown_provider_fails(tmp_path):
@@ -472,9 +560,9 @@ def test_revision_rotates_on_mcp_file_add_edit_and_remove(tmp_path):
     assert removed == base
 
 
-def test_launch_contract_is_version_four():
-    assert policy.LAUNCH_CONTRACT_VERSION == "4"
-    assert policy.UNRESTRICTED_REVISION == "unrestricted:v4"
+def test_launch_contract_is_version_five():
+    assert policy.LAUNCH_CONTRACT_VERSION == "5"
+    assert policy.UNRESTRICTED_REVISION == "unrestricted:v5"
 
 
 def test_hard_linked_codex_rule_fails(tmp_path):
@@ -739,6 +827,186 @@ def test_concurrent_codex_snapshot_publish_has_one_complete_winner(tmp_path, mon
     assert os.path.exists(os.path.join(launches[0].home, "config.toml"))
     snapshot_parent = os.path.dirname(launches[0].home)
     assert sorted(os.listdir(snapshot_parent)) == [launches[0].policy_revision]
+
+
+# -- grok staged GROK_HOME --
+
+
+def test_grok_launch_stages_isolated_home(tmp_path, monkeypatch):
+    src = write_grok_policy(tmp_path)
+    fake_grok_home = tmp_path / "grok-user-home"
+    fake_grok_home.mkdir()
+    (fake_grok_home / "auth.json").write_text('{"session": "x"}')
+    monkeypatch.setattr(policy, "_user_grok_home", lambda: str(fake_grok_home))
+    launch = policy.prepare_launch(make_workspace(tmp_path), make_policy(tmp_path), "grok")
+    assert launch.home is not None
+    assert os.path.basename(os.path.dirname(launch.home)) == "grok-home"
+    staged = os.path.join(launch.home, "config.toml")
+    with open(staged) as f_staged, open(src) as f_src:
+        assert f_staged.read().startswith(f_src.read())
+    assert os.path.exists(os.path.join(launch.home, "auth.json"))
+    assert launch.env["GROK_HOME"] == launch.home
+    assert launch.ignore_rules is True
+
+
+def test_grok_staging_preseeds_the_marketplace_stanza(tmp_path, monkeypatch):
+    """The CLI appends [marketplace] to config.toml after a run; pre-seeding
+    it at staging time keeps the published bytes stable, and the manifest
+    hashes those effective bytes so the next launch still verifies."""
+    write_grok_policy(tmp_path)
+    monkeypatch.setattr(policy, "_user_grok_home", lambda: str(tmp_path / "nope"))
+    workspace = make_workspace(tmp_path)
+    access = make_policy(tmp_path)
+    first = policy.prepare_launch(workspace, access, "grok")
+
+    with open(os.path.join(first.home, "config.toml"), "rb") as file:
+        staged = tomllib.load(file)
+    assert staged["permission"] == {
+        "allow": ["run_terminal_command(echo *)"],
+        "deny": ["run_terminal_command(enso *)"],
+    }
+    assert staged["marketplace"]["default_skills_installs_purged"] is True
+    assert staged["marketplace"]["official_marketplace_auto_installed"] is True
+    assert staged["marketplace"]["sources"] == [
+        {"name": "xAI Official", "git": "https://github.com/xai-org/plugin-marketplace.git"}
+    ]
+    # Byte-exact: the CLI's write-back is only defeated when the staged bytes
+    # already match what it would produce, so pin them, not TOML semantics.
+    with open(os.path.join(first.home, "config.toml"), "rb") as file:
+        staged_bytes = file.read()
+    assert staged_bytes == GROK_CONFIG.encode() + b"\n" + GROK_MARKETPLACE.encode()
+
+    second = policy.prepare_launch(workspace, access, "grok")
+    assert second.home == first.home
+
+
+def test_grok_config_with_own_marketplace_stanza_stages_verbatim(tmp_path, monkeypatch):
+    """An operator-authored [marketplace] is theirs; staging must not touch it."""
+    src = write_grok_policy(tmp_path, GROK_CONFIG + "\n" + GROK_MARKETPLACE)
+    monkeypatch.setattr(policy, "_user_grok_home", lambda: str(tmp_path / "nope"))
+    launch = policy.prepare_launch(make_workspace(tmp_path), make_policy(tmp_path), "grok")
+    staged = os.path.join(launch.home, "config.toml")
+    with open(staged) as f_staged, open(src) as f_src:
+        assert f_staged.read() == f_src.read()
+
+
+def test_grok_policy_snapshots_are_revision_keyed_and_immutable(tmp_path, monkeypatch):
+    monkeypatch.setattr(policy, "_user_grok_home", lambda: str(tmp_path / "nope"))
+    source = write_grok_policy(tmp_path)
+    workspace = make_workspace(tmp_path)
+    access = make_policy(tmp_path)
+    first = policy.prepare_launch(workspace, access, "grok")
+    with open(os.path.join(first.home, "config.toml")) as file:
+        first_bytes = file.read()
+
+    write_grok_policy(tmp_path, GROK_CONFIG.replace("echo *", "date *"))
+    second = policy.prepare_launch(workspace, access, "grok")
+
+    assert first.home != second.home
+    assert os.path.basename(first.home) == first.policy_revision
+    assert os.path.basename(second.home) == second.policy_revision
+    with open(os.path.join(first.home, "config.toml")) as file:
+        assert file.read() == first_bytes
+    with open(source) as file:
+        assert file.read() != first_bytes
+
+
+def test_grok_rejects_a_mutated_published_snapshot(tmp_path, monkeypatch):
+    write_grok_policy(tmp_path)
+    monkeypatch.setattr(policy, "_user_grok_home", lambda: str(tmp_path / "nope"))
+    workspace = make_workspace(tmp_path)
+    access = make_policy(tmp_path)
+    launch = policy.prepare_launch(workspace, access, "grok")
+    staged_config = os.path.join(launch.home, "config.toml")
+    os.chmod(staged_config, 0o600)
+    # Mimic the CLI's write-back: append to the staged config in place.
+    with open(staged_config, "a") as file:
+        file.write('\n[[marketplace.sources]]\nname = "rogue"\ngit = "https://x.example/r.git"\n')
+
+    with pytest.raises(policy.PolicyError, match="digest does not match"):
+        policy.prepare_launch(workspace, access, "grok")
+
+
+def test_grok_auth_refresh_is_atomic_within_revision_home(tmp_path, monkeypatch):
+    write_grok_policy(tmp_path)
+    user_home = tmp_path / "grok-user-home"
+    user_home.mkdir()
+    auth = user_home / "auth.json"
+    auth.write_text('{"token":"first"}')
+    monkeypatch.setattr(policy, "_user_grok_home", lambda: str(user_home))
+    workspace = make_workspace(tmp_path)
+    access = make_policy(tmp_path)
+    first = policy.prepare_launch(workspace, access, "grok")
+
+    auth.write_text('{"token":"second"}')
+    second = policy.prepare_launch(workspace, access, "grok")
+
+    assert second.home == first.home
+    with open(os.path.join(second.home, "auth.json")) as file:
+        assert file.read() == '{"token":"second"}'
+    assert not [name for name in os.listdir(second.home) if name.startswith(".auth-")]
+
+
+def test_concurrent_grok_snapshot_publish_has_one_complete_winner(tmp_path, monkeypatch):
+    # Staging shares the codex copy helper; synchronizing it drives both
+    # threads into publishing the same grok revision at once.
+    write_grok_policy(tmp_path)
+    monkeypatch.setattr(policy, "_user_grok_home", lambda: str(tmp_path / "nope"))
+    original_copy = policy._copy_codex_tree
+    copies_ready = threading.Barrier(2)
+
+    def synchronized_copy(source, destination):
+        original_copy(source, destination)
+        copies_ready.wait(timeout=5)
+
+    monkeypatch.setattr(policy, "_copy_codex_tree", synchronized_copy)
+    workspace = make_workspace(tmp_path)
+    access = make_policy(tmp_path)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        launches = list(
+            executor.map(
+                lambda _index: policy.prepare_launch(workspace, access, "grok"),
+                range(2),
+            )
+        )
+
+    assert launches[0].home == launches[1].home
+    assert os.path.exists(os.path.join(launches[0].home, "config.toml"))
+    snapshot_parent = os.path.dirname(launches[0].home)
+    assert sorted(os.listdir(snapshot_parent)) == [launches[0].policy_revision]
+
+
+def test_grok_staging_failure_raises_policy_error(tmp_path, monkeypatch):
+    """A read-only policy dir must refuse the turn, not escape as PermissionError."""
+    write_grok_policy(tmp_path)
+    workspace = make_workspace(tmp_path)
+    access = make_policy(tmp_path, providers=("grok",))
+
+    def boom(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(policy.os, "makedirs", boom)
+    with pytest.raises(policy.PolicyError):
+        policy.prepare_launch(workspace, access, "grok")
+
+
+@pytest.mark.parametrize("name", ["GROK_HOME", "GROK_SANDBOX", "GROK_FOLDER_TRUST"])
+def test_env_passthrough_reserves_grok_launch_env(tmp_path, name):
+    """GROK_SANDBOX and GROK_FOLDER_TRUST change kernel sandboxing and folder
+    trust; all three are launch-owned and may never ride env_passthrough."""
+    config = {
+        "workspaces": {"acme": {"path": str(tmp_path / "ws"), "policy": "standard"}},
+        "policies": {
+            "standard": {
+                "policy_dir": str(tmp_path / "policies"),
+                "providers": ["grok"],
+                "default_provider": "grok",
+                "env_passthrough": [name],
+            },
+        },
+    }
+    catalog = load_catalog(config)
+    assert any("reserved" in p for p in catalog.policy_errors["standard"])
 
 
 # -- provider command construction --

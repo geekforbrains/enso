@@ -1056,6 +1056,35 @@ async def test_job_provider_and_model_override_policy_default(
     assert provider.prompts == [("Use this: ", "gpt-5.3-codex")]
 
 
+async def test_batch_path_never_retries_a_retryable_provider_error(
+    tmp_enso,
+    sample_config,
+):
+    """Retry-once for transient errors is interactive-only; a failing job run
+    spawns the provider exactly once even when the provider would call the
+    error retryable (grok's lapsed-OAuth signature)."""
+
+    class RetryableProvider(FakeProvider):
+        def retryable_error(self, text: str) -> bool:
+            return "Not signed in" in text
+
+    sample_config["policies"]["automation"]["providers"].append("grok")
+    runtime = Runtime(sample_config)
+    job = make_job(tmp_enso, prerun=None)
+    job.provider = "grok"
+    job.model = "grok-4.6"
+    provider = RetryableProvider()
+    runtime.make_provider = MagicMock(return_value=provider)
+    runtime._spawn_process = AsyncMock(return_value=FakeProcess(1))
+    runtime._communicate_with_timeout = AsyncMock(return_value=(b"Not signed in", b"", False))
+
+    result = await runtime.jobs._execute_job(job, trigger="manual", notify_failures=False)
+
+    assert result.status == "error"
+    assert "Not signed in" in result.output
+    runtime._spawn_process.assert_awaited_once()
+
+
 async def test_bound_job_failure_does_not_enqueue_chat_context(
     tmp_enso,
     sample_config,

@@ -125,7 +125,7 @@
   "policies": {
     "admin": {
       "unrestricted": true,
-      "providers": ["claude", "codex", "agy"],
+      "providers": ["claude", "codex", "grok", "agy"],
       "default_provider": "claude",
       "chat_commands": "*"
     },
@@ -133,7 +133,7 @@
     // policy; staff gets everything else explicitly rather than "*".
     "staff": {
       "policy_dir": "~/.enso/policies/staff",
-      "providers": ["claude", "codex"],
+      "providers": ["claude", "codex", "grok"],
       "default_provider": "claude",
       "chat_commands": ["status", "clear", "stop", "help", "use", "model", "effort", "compact"],
 

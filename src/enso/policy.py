@@ -20,6 +20,7 @@ import os
 import re
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -36,7 +37,7 @@ log = logging.getLogger(__name__)
 
 # Bump when the launch contract (flags, env construction) changes, so a new
 # contract produces a new policy_revision and therefore a fresh execution key.
-LAUNCH_CONTRACT_VERSION = "4"
+LAUNCH_CONTRACT_VERSION = "5"
 UNRESTRICTED_REVISION = f"unrestricted:v{LAUNCH_CONTRACT_VERSION}"
 
 # Environment kept for policy-controlled provider subprocesses. Everything
@@ -45,7 +46,23 @@ UNRESTRICTED_REVISION = f"unrestricted:v{LAUNCH_CONTRACT_VERSION}"
 # allowlisting means a newly added secret can never leak by omission.
 _KEEP_ENV = ("HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "USER", "SHELL")
 _SNAPSHOT_MANIFEST = ".enso-policy-manifest.json"
-_CODEX_SOURCE_RESERVED = {"auth.json", _SNAPSHOT_MANIFEST}
+# Files launch-time staging owns inside a staged-home (codex/grok) policy tree.
+_STAGED_SOURCE_RESERVED = {"auth.json", _SNAPSHOT_MANIFEST}
+# Keys the Grok CLI recognizes in [permission]; anything else is silently
+# dropped at load time, leaving the agent with zero rules (fail-open).
+_GROK_PERMISSION_KEYS = ("allow", "deny", "ask", "rules")
+# The stanza the Grok CLI appends to config.toml after a run (replace-by-
+# rename, so a read-only staged file does not stop it). Staging pre-seeds it
+# so the published bytes stay stable and the manifest verifies every launch.
+_GROK_MARKETPLACE_STANZA = (
+    "[marketplace]\n"
+    "default_skills_installs_purged = true\n"
+    "official_marketplace_auto_installed = true\n"
+    "\n"
+    "[[marketplace.sources]]\n"
+    'name = "xAI Official"\n'
+    'git = "https://github.com/xai-org/plugin-marketplace.git"\n'
+)
 # Header/env keys in mcp.json that look credential-bearing; a literal value
 # (one with no ${...} reference) under such a key draws a warning.
 _SECRET_KEY_RE = re.compile(r"(?i)(auth|token|secret|key|password|bearer)")
@@ -80,7 +97,7 @@ class Launch:
     mode: str  # "unrestricted" | "policy"
     provider: str
     policy_path: str | None
-    home: str | None  # revision-keyed CODEX_HOME for codex policy launches
+    home: str | None  # revision-keyed CODEX_HOME/GROK_HOME for codex and grok policy launches
     policy_revision: str
     env: dict[str, str] | None  # None → inherit the parent environment
     ignore_rules: bool = True  # codex: no .rules files were configured
@@ -96,7 +113,7 @@ UNRESTRICTED_LAUNCH_BY_PROVIDER = {
         policy_revision=UNRESTRICTED_REVISION,
         env=None,
     )
-    for name in ("claude", "codex", "agy")
+    for name in ("claude", "codex", "agy", "grok")
 }
 
 
@@ -114,9 +131,9 @@ def _claude_mcp_path(policy: Policy) -> str:
     return os.path.join(policy.policy_dir, "claude", "mcp.json")
 
 
-def _codex_source_root(policy: Policy) -> str:
+def _provider_source_root(policy: Policy, provider: str) -> str:
     assert policy.policy_dir is not None
-    return os.path.join(policy.policy_dir, "codex")
+    return os.path.join(policy.policy_dir, provider)
 
 
 def check_provider(workspace: Workspace, policy: Policy, provider: str) -> PolicyCheck:
@@ -154,7 +171,10 @@ def check_provider(workspace: Workspace, policy: Policy, provider: str) -> Polic
             warnings.extend(_claude_mcp_secret_warnings(servers))
     elif provider == "codex":
         problems = _check_codex_config(path)
-        problems.extend(_codex_tree_problems(policy, workspace, skip=path))
+        problems.extend(_tree_problems(policy, workspace, "codex", skip=path))
+    elif provider == "grok":
+        problems, warnings = _check_grok_config(path)
+        problems.extend(_tree_problems(policy, workspace, "grok", skip=path))
 
     if problems:
         return PolicyCheck(provider=provider, ok=False, problems=tuple(problems), policy_path=path)
@@ -201,7 +221,7 @@ def _file_problems(path: str, workspace: Workspace) -> list[str]:
     return []
 
 
-def _codex_tree_files(root: str) -> list[tuple[str, str]]:
+def _tree_files(root: str) -> list[tuple[str, str]]:
     """Return every regular source path as a stable relative-path list."""
     files: list[tuple[str, str]] = []
     for directory, dirnames, filenames in os.walk(root, followlinks=False):
@@ -214,12 +234,12 @@ def _codex_tree_files(root: str) -> list[tuple[str, str]]:
     return files
 
 
-def _codex_tree_problems(policy: Policy, workspace: Workspace, *, skip: str) -> list[str]:
-    """Validate every file copied into the immutable Codex policy snapshot."""
-    root = _codex_source_root(policy)
+def _tree_problems(policy: Policy, workspace: Workspace, provider: str, *, skip: str) -> list[str]:
+    """Validate every file copied into a provider's immutable policy snapshot."""
+    root = _provider_source_root(policy, provider)
     problems: list[str] = []
     if os.path.islink(root):
-        problems.append("codex policy directory must not be a symlink")
+        problems.append(f"{provider} policy directory must not be a symlink")
         return problems
     for directory, dirnames, filenames in os.walk(root, followlinks=False):
         for name in list(dirnames):
@@ -231,8 +251,8 @@ def _codex_tree_problems(policy: Policy, workspace: Workspace, *, skip: str) -> 
         for name in filenames:
             path = os.path.join(directory, name)
             relative = os.path.relpath(path, root).replace(os.sep, "/")
-            if relative in _CODEX_SOURCE_RESERVED:
-                problems.append(f"codex policy tree reserves {relative}")
+            if relative in _STAGED_SOURCE_RESERVED:
+                problems.append(f"{provider} policy tree reserves {relative}")
             if os.path.abspath(path) != os.path.abspath(skip):
                 problems.extend(_file_problems(path, workspace))
     return problems
@@ -388,6 +408,107 @@ def _check_codex_config(path: str) -> list[str]:
     return []
 
 
+def _check_grok_config(path: str) -> tuple[list[str], list[str]]:
+    """Statically reject config shapes the Grok CLI loads as zero rules.
+
+    The CLI reports no error and no skipped entry for a missing or misspelled
+    [permission] table, a wrong-shaped key, or an unknown one — it just loads
+    zero rules and runs wide open, so every such shape is a problem here.
+    """
+    try:
+        with open(path, "rb") as f:
+            config = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        return [f"config.toml does not parse: {exc}"], []
+    warnings: list[str] = []
+    if "marketplace" in config:
+        warnings.append(
+            "config.toml has its own [marketplace] stanza; the Grok CLI rewrites "
+            "it after a run, which would fail the next snapshot verification — "
+            "omit it so staging can pre-seed the canonical one"
+        )
+    problems: list[str] = []
+    permission = config.get("permission")
+    if not isinstance(permission, dict):
+        problems.append(
+            "config.toml must define a [permission] table with at least one of "
+            "allow/deny/ask/rules; without one the Grok CLI silently loads zero rules"
+        )
+        return problems, warnings
+    declared = 0
+    for key in sorted(permission):
+        value = permission[key]
+        if key not in _GROK_PERMISSION_KEYS:
+            problems.append(
+                f"config.toml [permission] key {key!r} is not one of "
+                "allow/deny/ask/rules; the Grok CLI would silently drop it"
+            )
+        elif key == "rules":
+            if isinstance(value, list) and all(
+                isinstance(entry, dict) and "action" in entry and "tool" in entry
+                for entry in value
+            ):
+                declared += len(value)
+                if value:
+                    warnings.append(
+                        "config.toml [permission] rules uses the array-of-tables "
+                        "form, which the Grok CLI loads inconsistently; prefer "
+                        "allow/deny/ask string arrays"
+                    )
+            else:
+                problems.append(
+                    "config.toml [permission] rules is not a well-formed rules "
+                    "array; prefer allow/deny/ask string arrays (the Grok CLI "
+                    "silently drops wrong-shaped rules)"
+                )
+        elif isinstance(value, list) and all(isinstance(rule, str) for rule in value):
+            declared += len(value)
+        else:
+            problems.append(
+                f"config.toml [permission] {key} must be an array of rule strings; "
+                "the Grok CLI silently loads zero rules from any other shape"
+            )
+    if not problems and declared == 0:
+        problems.append(
+            "config.toml [permission] declares no rules; the Grok CLI would run "
+            "wide open under a dontAsk launch"
+        )
+    return problems, warnings
+
+
+def _grok_rule_count(config: dict) -> int:
+    """Number of rules a well-shaped [permission] table declares."""
+    permission = config.get("permission")
+    if not isinstance(permission, dict):
+        return 0
+    return sum(
+        len(value)
+        for key, value in permission.items()
+        if key in _GROK_PERMISSION_KEYS and isinstance(value, list)
+    )
+
+
+def _grok_effective_config(raw: bytes) -> bytes:
+    """The config bytes as the Grok CLI leaves them after its first run.
+
+    The CLI appends a [marketplace] stanza to config.toml post-run; staging
+    publishes these effective bytes and the revision hashes them, so the
+    snapshot manifest still verifies on every later launch. An operator who
+    authors their own [marketplace] keeps it verbatim (check_provider warns
+    that the write-back will then mutate the snapshot).
+    """
+    try:
+        config = tomllib.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return raw
+    if "marketplace" in config:
+        return raw
+    stanza = _GROK_MARKETPLACE_STANZA.encode("utf-8")
+    if raw and not raw.endswith(b"\n"):
+        return raw + b"\n\n" + stanza
+    return raw + b"\n" + stanza
+
+
 def _manifest_revision(provider: str, manifest: dict[str, str]) -> str:
     payload = json.dumps(
         {"contract": LAUNCH_CONTRACT_VERSION, "provider": provider, "files": manifest},
@@ -396,15 +517,30 @@ def _manifest_revision(provider: str, manifest: dict[str, str]) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def _codex_manifest(root: str) -> dict[str, str]:
+def _tree_manifest(root: str) -> dict[str, str]:
     manifest: dict[str, str] = {}
-    for relative, path in _codex_tree_files(root):
+    for relative, path in _tree_files(root):
         if relative == _SNAPSHOT_MANIFEST:
             continue
         digest = regular_file_sha256(path)
         if digest is None:
             raise OSError(f"could not hash {path}")
         manifest[relative] = digest
+    return manifest
+
+
+def _grok_manifest(root: str) -> dict[str, str]:
+    """Tree manifest hashing the effective (pre-seeded) config.toml bytes.
+
+    The revision must cover exactly what staging publishes, so the config
+    entry digests the bytes after the marketplace pre-seed, never the raw
+    operator file.
+    """
+    manifest = _tree_manifest(root)
+    config_path = os.path.join(root, "config.toml")
+    with open(config_path, "rb") as file:
+        raw = file.read()
+    manifest["config.toml"] = hashlib.sha256(_grok_effective_config(raw)).hexdigest()
     return manifest
 
 
@@ -425,7 +561,9 @@ def _policy_revision(
         if claude_mcp_digest is not None:
             manifest["mcp.json"] = claude_mcp_digest
     elif provider == "codex":
-        manifest = _codex_manifest(_codex_source_root(policy))
+        manifest = _tree_manifest(_provider_source_root(policy, "codex"))
+    elif provider == "grok":
+        manifest = _grok_manifest(_provider_source_root(policy, "grok"))
     return _manifest_revision(provider, manifest)
 
 
@@ -454,18 +592,22 @@ def prepare_launch(workspace: Workspace, policy: Policy, provider: str) -> Launc
     mcp_config: str | None = None
     if provider == "claude" and check.mcp_servers:
         mcp_config = _claude_mcp_path(policy)
-    if provider == "codex":
+    if provider in ("codex", "grok"):
         try:
-            home, ignore_rules = _stage_codex_home(policy, check.policy_revision)
+            if provider == "codex":
+                home, ignore_rules = _stage_codex_home(policy, check.policy_revision)
+                env["CODEX_HOME"] = home
+            else:
+                home = _stage_grok_home(policy, check.policy_revision)
+                env["GROK_HOME"] = home
         except PolicyError:
             raise
         except OSError as exc:
             # A read-only or unwritable policy dir must refuse this turn, not
             # escape as an unhandled error after the delivery was claimed.
             raise PolicyError(
-                provider, (f"could not stage the Codex runtime home: {exc}",)
+                provider, (f"could not stage the {provider.capitalize()} runtime home: {exc}",)
             ) from exc
-        env["CODEX_HOME"] = home
     log.info(
         "Policy launch for %s: MCP servers [%s], passthrough [%s]",
         provider,
@@ -484,12 +626,68 @@ def prepare_launch(workspace: Workspace, policy: Policy, provider: str) -> Launc
     )
 
 
+def verify_grok_rules(workspace: Workspace, policy: Policy, grok_path: str) -> list[str]:
+    """Dynamically confirm the Grok CLI loads the staged policy's rules.
+
+    A wrong-shaped permission config loads zero rules with no error and no
+    skipped entry, so the static checks are backed by running ``grok inspect
+    --json`` exactly as a launch would — workspace cwd, staged revision home
+    in GROK_HOME — and requiring the reported ``permissions.loaded`` to equal
+    the rule count the effective config declares. The inspect run gets a
+    scratch HOME: grok counts the operator's always-trusted home-scope
+    vendor-compat rules (``~/.claude/settings.json``) into the total, which
+    would both false-fail the equality and let ambient rules mask a silently
+    dropped policy rule. Failures come back as problems; this never raises.
+    """
+    try:
+        launch = prepare_launch(workspace, policy, "grok")
+    except PolicyError as exc:
+        return list(exc.problems)
+    if launch.home is None or launch.env is None:
+        return []  # unrestricted launches have no staged policy to verify
+    try:
+        with open(os.path.join(launch.home, "config.toml"), "rb") as file:
+            declared = _grok_rule_count(tomllib.load(file))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        return [f"could not read the staged grok config: {exc}"]
+    try:
+        with tempfile.TemporaryDirectory(prefix="enso-grok-inspect-") as scratch_home:
+            completed = subprocess.run(
+                [grok_path, "inspect", "--json"],
+                cwd=workspace.path,
+                env={**launch.env, "HOME": scratch_home},
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return [f"could not run grok inspect: {exc}"]
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        return [f"grok inspect exited {completed.returncode}: {detail}"]
+    try:
+        report = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        return [f"grok inspect --json output does not parse: {exc}"]
+    permissions = report.get("permissions") if isinstance(report, dict) else None
+    loaded = permissions.get("loaded") if isinstance(permissions, dict) else None
+    if isinstance(loaded, bool) or not isinstance(loaded, int):
+        return ["grok inspect --json reported no permissions.loaded count"]
+    if loaded != declared:
+        return [
+            f"grok inspect loaded {loaded} permission rules but the policy declares "
+            f"{declared}; grok silently ignores wrong-shaped rules"
+        ]
+    return []
+
+
 def _minimal_env(provider: str, passthrough: tuple[str, ...] = ()) -> dict[str, str]:
     """Allowlisted child environment: locale, passthrough, controlled PATH, provider auth.
 
     Profile ``env_passthrough`` names are copied before the launch-controlled
-    assignments (PATH, provider auth keys, CODEX_HOME) so a launch-controlled
-    value always wins even if validation of the reserved names is bypassed.
+    assignments (PATH, provider auth keys, CODEX_HOME/GROK_HOME) so a
+    launch-controlled value always wins even if validation of the reserved
+    names is bypassed.
     """
     from .providers import PROVIDER_CLASSES
 
@@ -533,8 +731,12 @@ def _user_codex_home() -> str:
     return os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
 
 
+def _user_grok_home() -> str:
+    return os.environ.get("GROK_HOME") or os.path.expanduser("~/.grok")
+
+
 def _copy_codex_tree(source: str, destination: str) -> None:
-    """Copy a validated native Codex tree into an unpublished directory."""
+    """Copy a validated native policy tree into an unpublished directory."""
     for directory, dirnames, filenames in os.walk(source, followlinks=False):
         dirnames.sort()
         filenames.sort()
@@ -558,31 +760,34 @@ def _write_snapshot_manifest(home: str, manifest: dict[str, str]) -> None:
     os.chmod(path, 0o400)
 
 
-def _verify_codex_snapshot(home: str, revision: str) -> None:
+def _verify_staged_snapshot(home: str, revision: str, provider: str) -> None:
     """Ensure a published revision still contains its original policy bytes."""
     manifest_path = os.path.join(home, _SNAPSHOT_MANIFEST)
     if os.path.islink(manifest_path):
-        raise PolicyError("codex", ("staged policy manifest must not be a symlink",))
+        raise PolicyError(provider, ("staged policy manifest must not be a symlink",))
     try:
         with open(manifest_path, encoding="utf-8") as file:
             manifest = json.load(file)
     except (OSError, json.JSONDecodeError) as exc:
-        raise PolicyError("codex", (f"could not read staged policy manifest: {exc}",)) from exc
+        raise PolicyError(provider, (f"could not read staged policy manifest: {exc}",)) from exc
     if not isinstance(manifest, dict) or not all(
         isinstance(relative, str) and isinstance(digest, str)
         for relative, digest in manifest.items()
     ):
-        raise PolicyError("codex", ("staged policy manifest is invalid",))
-    if "config.toml" not in manifest or _manifest_revision("codex", manifest) != revision:
-        raise PolicyError("codex", ("staged policy manifest has the wrong revision",))
+        raise PolicyError(provider, ("staged policy manifest is invalid",))
+    config_name = os.path.basename(POLICY_FILES[provider])
+    if config_name not in manifest or _manifest_revision(provider, manifest) != revision:
+        raise PolicyError(provider, ("staged policy manifest has the wrong revision",))
 
     for relative, expected in manifest.items():
         if os.path.isabs(relative) or ".." in relative.split("/"):
-            raise PolicyError("codex", ("staged policy manifest contains an unsafe path",))
+            raise PolicyError(provider, ("staged policy manifest contains an unsafe path",))
         staged = os.path.join(home, *relative.split("/"))
         if regular_file_sha256(staged) != expected:
-            raise PolicyError("codex", (f"staged {relative} digest does not match its manifest",))
+            raise PolicyError(provider, (f"staged {relative} digest does not match its manifest",))
 
+    if provider != "codex":
+        return  # .rules files are a codex concept; nothing further to cross-check
     configured_rules = {
         relative
         for relative in manifest
@@ -590,24 +795,40 @@ def _verify_codex_snapshot(home: str, revision: str) -> None:
     }
     staged_rules = {
         relative
-        for relative, _path in _codex_tree_files(os.path.join(home, "rules"))
+        for relative, _path in _tree_files(os.path.join(home, "rules"))
         if relative.endswith(".rules")
     }
     staged_rules = {f"rules/{relative}" for relative in staged_rules}
     if staged_rules != configured_rules:
-        raise PolicyError("codex", ("staged rules do not match the policy manifest",))
+        raise PolicyError(provider, ("staged rules do not match the policy manifest",))
 
 
-def _publish_codex_snapshot(source: str, home: str, revision: str) -> None:
+def _preseed_grok_marketplace(home: str) -> None:
+    """Rewrite an unpublished config.toml copy with its effective bytes."""
+    path = os.path.join(home, "config.toml")
+    with open(path, "rb") as file:
+        raw = file.read()
+    effective = _grok_effective_config(raw)
+    if effective == raw:
+        return
+    os.chmod(path, 0o600)
+    with open(path, "wb") as file:
+        file.write(effective)
+    os.chmod(path, 0o400)
+
+
+def _publish_staged_snapshot(source: str, home: str, revision: str, provider: str) -> None:
     """Atomically publish one immutable revision, tolerating a concurrent winner."""
     parent = os.path.dirname(home)
     temporary = tempfile.mkdtemp(prefix=f".{revision[:12]}-", dir=parent)
     try:
         _copy_codex_tree(source, temporary)
-        manifest = _codex_manifest(temporary)
-        if _manifest_revision("codex", manifest) != revision:
+        if provider == "grok":
+            _preseed_grok_marketplace(temporary)
+        manifest = _tree_manifest(temporary)
+        if _manifest_revision(provider, manifest) != revision:
             raise PolicyError(
-                "codex", ("staged policy digest does not match the checked revision",)
+                provider, ("staged policy digest does not match the checked revision",)
             )
         _write_snapshot_manifest(temporary, manifest)
         try:
@@ -621,34 +842,35 @@ def _publish_codex_snapshot(source: str, home: str, revision: str) -> None:
             shutil.rmtree(temporary)
 
 
-def _read_codex_auth(path: str) -> bytes | None:
+def _read_provider_auth(path: str, provider: str) -> bytes | None:
+    label = provider.capitalize()
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(path, flags)
     except FileNotFoundError:
         return None
     except OSError as exc:
-        raise PolicyError("codex", (f"could not open Codex auth safely: {exc}",)) from exc
+        raise PolicyError(provider, (f"could not open {label} auth safely: {exc}",)) from exc
     try:
         before = os.fstat(descriptor)
         if not stat.S_ISREG(before.st_mode):
-            raise PolicyError("codex", ("Codex auth must be a regular file",))
+            raise PolicyError(provider, (f"{label} auth must be a regular file",))
         chunks: list[bytes] = []
         while chunk := os.read(descriptor, 65536):
             chunks.append(chunk)
         after = os.fstat(descriptor)
         if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
-            raise PolicyError("codex", ("Codex auth changed while it was being read",))
+            raise PolicyError(provider, (f"{label} auth changed while it was being read",))
         return b"".join(chunks)
     finally:
         os.close(descriptor)
 
 
-def _stage_codex_auth(home: str) -> None:
+def _stage_provider_auth(home: str, provider: str, user_home: str) -> None:
     """Atomically refresh auth without ever exposing a partial credential file."""
-    source = os.path.join(_user_codex_home(), "auth.json")
+    source = os.path.join(user_home, "auth.json")
     destination = os.path.join(home, "auth.json")
-    content = _read_codex_auth(source)
+    content = _read_provider_auth(source, provider)
     if content is None:
         with contextlib.suppress(FileNotFoundError):
             os.remove(destination)
@@ -670,25 +892,36 @@ def _stage_codex_auth(home: str) -> None:
             os.remove(temporary)
 
 
-def _stage_codex_home(policy: Policy, revision: str) -> tuple[str, bool]:
-    """Select an immutable, revision-keyed Codex policy snapshot and safe auth."""
+def _stage_provider_home(policy: Policy, revision: str, provider: str, user_home: str) -> str:
+    """Select an immutable, revision-keyed policy snapshot and safe auth."""
     assert policy.policy_dir is not None
-    source = _codex_source_root(policy)
-    snapshots = os.path.join(policy.policy_dir, ".runtime", "codex-home")
+    source = _provider_source_root(policy, provider)
+    snapshots = os.path.join(policy.policy_dir, ".runtime", f"{provider}-home")
     os.makedirs(snapshots, mode=0o700, exist_ok=True)
     os.chmod(snapshots, 0o700)
     home = os.path.join(snapshots, revision)
     if os.path.lexists(home):
         if os.path.islink(home) or not os.path.isdir(home):
-            raise PolicyError("codex", ("staged policy revision is not a directory",))
+            raise PolicyError(provider, ("staged policy revision is not a directory",))
     else:
-        _publish_codex_snapshot(source, home, revision)
-    _verify_codex_snapshot(home, revision)
-    _stage_codex_auth(home)
+        _publish_staged_snapshot(source, home, revision, provider)
+    _verify_staged_snapshot(home, revision, provider)
+    _stage_provider_auth(home, provider, user_home)
 
-    log.debug("Selected Codex home at %s (revision %s)", home, revision[:12])
+    log.debug("Selected %s home at %s (revision %s)", provider, home, revision[:12])
+    return home
+
+
+def _stage_codex_home(policy: Policy, revision: str) -> tuple[str, bool]:
+    """Codex snapshot selection plus whether any .rules files were staged."""
+    home = _stage_provider_home(policy, revision, "codex", _user_codex_home())
     staged_rules = os.path.join(home, "rules")
     has_rules = any(
-        relative.endswith(".rules") for relative, _path in _codex_tree_files(staged_rules)
+        relative.endswith(".rules") for relative, _path in _tree_files(staged_rules)
     )
     return home, not has_rules
+
+
+def _stage_grok_home(policy: Policy, revision: str) -> str:
+    """Grok snapshot selection; grok has no .rules concept to toggle."""
+    return _stage_provider_home(policy, revision, "grok", _user_grok_home())

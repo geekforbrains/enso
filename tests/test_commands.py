@@ -229,7 +229,7 @@ def test_cmd_clear_only_touches_policy_allowed_providers(sample_config, monkeypa
         def __init__(self, name: str):
             self.name = name
 
-        def clear_session(self, session_id, working_dir):
+        def clear_session(self, session_id, working_dir, *, policy_dir=None):
             cleared.append((self.name, session_id, working_dir))
             return "deleted"
 
@@ -285,7 +285,7 @@ async def test_compact_happy_path(tmp_enso, sample_config, monkeypatch):
     captured: dict = {}
 
     class _FakeProvider:
-        def clear_session(self, sid, working_dir):
+        def clear_session(self, sid, working_dir, *, policy_dir=None):
             captured["cleared"] = (sid, working_dir)
             return "deleted"
 

@@ -196,6 +196,13 @@ def _redacted_command(cmd: list[str]) -> str:
     for index, part in enumerate(redacted[:-1]):
         if part == "-c" and redacted[index + 1].startswith("developer_instructions="):
             redacted[index + 1] = "developer_instructions=<redacted>"
+    for index, part in enumerate(redacted):
+        if part.startswith("--single="):
+            prompt = part.removeprefix("--single=")
+            redacted[index] = f"--single=<prompt chars={len(prompt)}>"
+        elif part.startswith("--rules="):
+            rules = part.removeprefix("--rules=")
+            redacted[index] = f"--rules=<instructions chars={len(rules)}>"
     if "--" in redacted:
         sep = redacted.index("--")
         prompt_chars = sum(len(part) for part in cmd[sep + 1 :])
@@ -990,15 +997,15 @@ class Runtime:
     # Providers that support pre-assigned session IDs. For these,
     # Enso generates the ID upfront so it persists across restarts.
     # Codex and Agy generate their own IDs, which we capture after spawning.
-    _SELF_MANAGED_SESSIONS: ClassVar[set[str]] = {"claude"}
+    _SELF_MANAGED_SESSIONS: ClassVar[set[str]] = {"claude", "grok"}
 
     def _get_or_create_session(self, chat_id: str, provider_name: str) -> str | None:
         """Get existing session ID, or generate one for providers that support it.
 
-        For self-managed providers (Claude), generates a UUID upfront and
-        stores it. The first call uses --session-id to create the session;
-        subsequent calls use --resume. We track this by prefixing new
-        (unused) session IDs with 'new:'.
+        For self-managed providers (Claude, Grok), generates a UUID upfront
+        and stores it. The first call uses --session-id to create the
+        session; subsequent calls use --resume. We track this by prefixing
+        new (unused) session IDs with 'new:'.
         """
         key = (chat_id, provider_name)
         session_id = self.session_by_chat_provider.get(key)
@@ -1982,6 +1989,19 @@ class Runtime:
                     error_text = event.text
 
         timed_out = await self._run_until_deadline(consume_provider_events(), chat_id)
+        if not timed_out and error_text and provider.retryable_error(error_text):
+            # One retry for transient startup failures (grok's lapsed OAuth
+            # token refreshing in the background). run_provider re-reads
+            # session state, so a session reverted by the failed run is
+            # created again rather than resumed.
+            log.info(
+                "[%s] retrying once after transient error: %s",
+                provider.name,
+                error_text[:200],
+            )
+            response_parts.clear()
+            error_text = ""
+            timed_out = await self._run_until_deadline(consume_provider_events(), chat_id)
         return response_parts, error_text, timed_out
 
     async def _run_until_deadline(

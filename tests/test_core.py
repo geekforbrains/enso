@@ -166,6 +166,25 @@ def test_redacted_command_hides_codex_shared_and_user_instructions():
     assert "<prompt chars=11>" in rendered
 
 
+def test_redacted_command_hides_grok_single_prompt():
+    """Grok's prompt rides attached to its flag, not behind a separator."""
+    rendered = _redacted_command(
+        ["grok", "--output-format", "streaming-messages-json", "--single=secret prompt"]
+    )
+    assert "secret prompt" not in rendered
+    assert "--single=<prompt chars=13>" in rendered
+
+
+def test_redacted_command_hides_grok_rules_instructions():
+    """The shared-instruction bundle rides attached to --rules= and must be
+    redacted like codex's developer_instructions payload."""
+    rendered = _redacted_command(
+        ["grok", "--rules=SECRET OPERATOR GUIDANCE", "--single=hi"]
+    )
+    assert "SECRET" not in rendered
+    assert "--rules=<instructions chars=24>" in rendered
+
+
 def test_runtime_has_no_global_execution_directory_or_context(sample_config):
     runtime = Runtime(sample_config)
 
@@ -2716,6 +2735,161 @@ async def test_run_provider_reverts_session_on_eventless_failure(
 
     stored = rt.session_by_chat_provider[("1", "claude")]
     assert stored.startswith("new:")
+
+
+# -- Grok sessions and auth retry --
+
+
+def _grok_result_line(text, session_id="77777777-7777-4777-8777-777777777777"):
+    """One grok streaming-messages-json result line (Claude wire format)."""
+    return (json.dumps({
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "result": text,
+        "session_id": session_id,
+        "total_cost_usd": 0.0421,
+        "usage": {"input_tokens": 12213, "output_tokens": 58},
+    }) + "\n").encode()
+
+
+class _ScriptedStream:
+    """Async stdout yielding scripted lines; read() serves stderr bytes."""
+
+    def __init__(self, lines=(), data=b""):
+        self._lines = list(lines)
+        self._data = data
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._lines:
+            raise StopAsyncIteration
+        return self._lines.pop(0)
+
+    async def read(self):
+        return self._data
+
+
+class _ScriptedProcess:
+    """A grok-shaped CLI run: scripted stream-json stdout, stderr, and exit."""
+
+    pid = 46
+
+    def __init__(self, returncode=0, stdout_lines=(), stderr=b""):
+        self.returncode = returncode
+        self.stdout = _ScriptedStream(lines=stdout_lines)
+        self.stderr = _ScriptedStream(data=stderr)
+
+    async def wait(self):
+        return self.returncode
+
+
+@pytest.mark.asyncio
+async def test_run_provider_grok_creates_session_then_resumes(
+    tmp_enso, sample_config, monkeypatch,
+):
+    """Grok sessions are Enso-owned: --session-id first, --resume after."""
+    rt = Runtime(sample_config)
+    context = await _prepared_context(rt, sample_config, "grok")
+    commands: list[tuple] = []
+
+    async def fake_spawn(*args, **kwargs):
+        commands.append(args)
+        # The CLI reports back the session it was launched with.
+        sid = (
+            args[args.index("--session-id") + 1]
+            if "--session-id" in args
+            else args[args.index("--resume") + 1]
+        )
+        return _ScriptedProcess(stdout_lines=[_grok_result_line("ok", session_id=sid)])
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_spawn)
+
+    provider = rt.make_provider("grok", context=context)
+    async for _event in rt.run_provider(provider, "hi", "1", "grok-4.6", context=context):
+        pass
+    async for _event in rt.run_provider(provider, "again", "1", "grok-4.6", context=context):
+        pass
+
+    first, second = commands
+    session_id = first[first.index("--session-id") + 1]
+    assert "--resume" not in first
+    assert second[second.index("--resume") + 1] == session_id
+    assert "--session-id" not in second
+
+
+@pytest.mark.asyncio
+async def test_grok_retries_once_after_transient_auth_failure(
+    tmp_enso, sample_config, monkeypatch,
+):
+    """A lapsed token fails the first headless call before the background
+    refresh lands; dispatch retries exactly once on that signature."""
+    rt = Runtime(sample_config)
+    spawned: list[tuple] = []
+
+    async def fake_spawn(*args, **kwargs):
+        spawned.append(args)
+        if len(spawned) == 1:
+            return _ScriptedProcess(returncode=1, stderr=b"Error: Not signed in\n")
+        return _ScriptedProcess(stdout_lines=[_grok_result_line("Signed-in reply.")])
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_spawn)
+
+    ctx = _OutcomeCtx()
+    outcome = await _process_request(rt, sample_config, "grok", "hello", "1", ctx)
+
+    assert outcome == ("completed", None)
+    assert len(spawned) == 2
+    assert ctx.replies == ["Signed-in reply."]
+    # The failed first spawn produced no events, so the session reverted;
+    # the retry must re-read session state and create the session again.
+    assert "--session-id" in spawned[1]
+    assert "--resume" not in spawned[1]
+
+
+@pytest.mark.asyncio
+async def test_grok_does_not_retry_an_ordinary_provider_error(
+    tmp_enso, sample_config, monkeypatch,
+):
+    rt = Runtime(sample_config)
+    spawned: list[tuple] = []
+
+    async def fake_spawn(*args, **kwargs):
+        spawned.append(args)
+        return _ScriptedProcess(returncode=1, stderr=b"Error: unknown model grok-9\n")
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_spawn)
+
+    ctx = _OutcomeCtx()
+    outcome = await _process_request(rt, sample_config, "grok", "hello", "1", ctx)
+
+    assert outcome == ("error", "provider_error")
+    assert len(spawned) == 1
+    assert any("unknown model" in reply for reply in ctx.replies)
+
+
+@pytest.mark.asyncio
+async def test_grok_surfaces_a_second_consecutive_auth_failure(
+    tmp_enso, sample_config, monkeypatch,
+):
+    """One retry only: a still-failing login is a real error, not a loop."""
+    rt = Runtime(sample_config)
+    spawned: list[tuple] = []
+
+    async def fake_spawn(*args, **kwargs):
+        spawned.append(args)
+        return _ScriptedProcess(returncode=1, stderr=b"Error: Not signed in\n")
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_spawn)
+
+    ctx = _OutcomeCtx()
+    outcome = await _process_request(rt, sample_config, "grok", "hello", "1", ctx)
+
+    assert outcome == ("error", "provider_error")
+    assert len(spawned) == 2
+    assert any("Not signed in" in reply for reply in ctx.replies)
 
 
 def test_retire_legacy_skill_tools_removes_pristine_copies(

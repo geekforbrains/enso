@@ -45,7 +45,7 @@ whose value comes from filtering, joining, and aggregation.
 │   ├── company/
 │   └── clients/<name>/
 └── policies/            # protected native policy files, keyed by policy name
-    └── <policy>/{claude,codex}/
+    └── <policy>/{claude,codex,grok}/
 ```
 
 Deleting an Enso-owned skill removes its complete directory. For a bundled skill, a
@@ -284,8 +284,8 @@ The three defaulted blocks documented here are backfilled by
 
 Notes:
 
-- `agent.timeout` applies equally to Claude, Codex, and Antigravity interactive turns.
-  Timeout recovery context is durable and scoped to the originating conversation;
+- `agent.timeout` applies equally to Claude, Codex, Grok, and Antigravity interactive
+  turns. Timeout recovery context is durable and scoped to the originating conversation;
   scheduled jobs continue to use the `timeout` in each `JOB.md`.
 - The `providers` block is derived from the provider registry. Upgrades add missing
   provider entries and their default model lists while preserving existing provider
@@ -335,10 +335,12 @@ A practical installation may use:
 └── policies/
     ├── staff/
     │   ├── claude/settings.json
-    │   └── codex/{config.toml,rules/*.rules}
+    │   ├── codex/{config.toml,rules/*.rules}
+    │   └── grok/config.toml
     └── client-readonly/
         ├── claude/settings.json
-        └── codex/{config.toml,rules/*.rules}
+        ├── codex/{config.toml,rules/*.rules}
+        └── grok/config.toml
 ```
 
 Beside `claude/settings.json`, a policy's `claude/` directory may hold an optional conventional `claude/mcp.json` declaring that policy's exact Claude MCP server set. Its presence turns MCP on for the policy and is hashed into the launch's `policy_revision`; absence means zero MCP servers. Like every policy source file, it must be a protected owner-only regular file, and a present-but-unusable file fails the launch closed. See [permissions.md](permissions.md#granting-credentials-and-mcp-servers-to-a-restricted-policy).
@@ -347,7 +349,7 @@ A workspace is a shared content root and provider cwd, not a security boundary. 
 
 A policy directory belongs to a policy and stays outside every writable workspace. This separation lets one policy serve several project directories. Paths are expanded and canonicalized before topology checks or child-process use. Workspaces may live at normalized operator-chosen paths, but configured workspace roots must not overlap each other; policy paths must not overlap any workspace. Aliases and hard links must not provide a writable path back to protected policy bytes.
 
-Enso does not initialize `~/.enso` as a Git repository. Shared instructions are canonical at `~/.enso/AGENTS.md`, with `CLAUDE.md -> AGENTS.md`, and Enso injects validated content on every provider launch independently of cwd. The canonical source must be a stable, owner-owned regular non-symlink file with no additional hard links or group/other write bits, valid UTF-8 no larger than 20 KiB, and no NUL bytes. Enso hashes it and publishes or verifies an immutable owner-only snapshot at `~/.enso/runtime/instructions/<sha256>.md`; Claude receives that snapshot through `--append-system-prompt-file`, while Codex receives the validated in-memory content through `developer_instructions` and unrestricted Agy receives it in Enso's prompt envelope. Missing or unsafe shared instructions fail `enso config check` and provider launch closed. Workspace-local instructions and skills still follow each provider's native discovery from the selected workspace. A company workspace that can access sibling client directories should explicitly tell the agent to read the selected client's protected instructions rather than relying on implicit discovery after changing directories.
+Enso does not initialize `~/.enso` as a Git repository. Shared instructions are canonical at `~/.enso/AGENTS.md`, with `CLAUDE.md -> AGENTS.md`, and Enso injects validated content on every provider launch independently of cwd. The canonical source must be a stable, owner-owned regular non-symlink file with no additional hard links or group/other write bits, valid UTF-8 no larger than 20 KiB, and no NUL bytes. Enso hashes it and publishes or verifies an immutable owner-only snapshot at `~/.enso/runtime/instructions/<sha256>.md`; Claude receives that snapshot through `--append-system-prompt-file`, while Codex receives the validated in-memory content through `developer_instructions`, Grok receives it through its `--rules` flag, and unrestricted Agy receives it in Enso's prompt envelope. Missing or unsafe shared instructions fail `enso config check` and provider launch closed. Workspace-local instructions and skills still follow each provider's native discovery from the selected workspace. A company workspace that can access sibling client directories should explicitly tell the agent to read the selected client's protected instructions rather than relying on implicit discovery after changing directories.
 
 An attachment-bearing Telegram or Slack turn gets a unique `uploads/<random-id>/` directory within its resolved workspace. These files persist until the operator removes them; Enso does not treat uploads as temporary or apply automatic retention. Enso config, secrets, policies, database, jobs, and provider credentials are not linked into restricted workspaces.
 
@@ -428,13 +430,13 @@ The catalogs are parsed independently of either transport. Telegram requires `wo
   "policies": {
     "admin": {
       "unrestricted": true,
-      "providers": ["claude", "codex", "agy"],
+      "providers": ["claude", "codex", "grok", "agy"],
       "default_provider": "claude",
       "chat_commands": "*"
     },
     "staff": {
       "policy_dir": "~/.enso/policies/staff",
-      "providers": ["claude", "codex"],
+      "providers": ["claude", "codex", "grok"],
       "default_provider": "claude",
       "chat_commands": "*"
     },
@@ -464,8 +466,8 @@ Schema rules:
 - Workspace and policy names are portable identifiers matching `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`; names cannot contain path separators or traversal segments.
 - `workspaces.<name>.path` is required and must be absolute or start with `~/`; Enso rejects working-directory-relative paths because services have no current-directory contract. `workspaces.<name>.policy` is required and names exactly one configured policy. `concurrency` is a positive integer and defaults to `1`. Workspaces do not contain provider, command, skill, or permission settings; those belong to the selected policy.
 - `policies.<name>` requires a non-empty `providers` list and a `default_provider` from that list. `chat_commands` is either a unique list or the explicit string `"*"`; omission means none. It governs Enso chat commands only, not provider-native tools, slash commands, skills, plugins, hooks, or MCP servers.
-- A restricted policy may add `env_passthrough`, a list of environment-variable names (names, never values) copied from the service environment into the child environment. Names must match `[A-Z][A-Z0-9_]*`, be unique, and not name launch-controlled or `ENSO_`-prefixed variables; the key is invalid alongside `unrestricted: true`. See [permissions.md](permissions.md#granting-credentials-and-mcp-servers-to-a-restricted-policy).
-- A policy uses exactly one mode: explicit `unrestricted: true`, or native policy files under `policy_dir`. An explicit `policy_dir` must be absolute or start with `~/`; for a restricted policy it otherwise defaults to `~/.enso/policies/<policy-name>`. Unrestricted mode does not imply providers or commands. Codex `config.toml` may not define top-level `developer_instructions`, which Enso reserves for the validated shared launch instructions.
+- A restricted policy may add `env_passthrough`, a list of environment-variable names (names, never values) copied from the service environment into the child environment. Names must match `[A-Z][A-Z0-9_]*`, be unique, and not name launch-controlled (such as `CODEX_HOME`, `GROK_HOME`, `GROK_SANDBOX`, and `GROK_FOLDER_TRUST`) or `ENSO_`-prefixed variables; the key is invalid alongside `unrestricted: true`. See [permissions.md](permissions.md#granting-credentials-and-mcp-servers-to-a-restricted-policy).
+- A policy uses exactly one mode: explicit `unrestricted: true`, or native policy files under `policy_dir`. An explicit `policy_dir` must be absolute or start with `~/`; for a restricted policy it otherwise defaults to `~/.enso/policies/<policy-name>`. Unrestricted mode does not imply providers or commands. Codex `config.toml` may not define top-level `developer_instructions`, which Enso reserves for the validated shared launch instructions. Grok's `--rules` flag is reserved the same way: every Grok launch injects the validated shared instructions through it.
 - `transports.telegram.workspace` is required whenever Telegram is configured and must name a usable workspace. Telegram derives providers, default provider, Enso chat commands, native policy, cwd, uploads, and concurrency from that workspace. `allowed_users` remains a non-empty list of unique exact numeric strings, and only private chats dispatch.
 - `transports.slack` is the single Slack configuration object: credentials, transport-wide rendering and notification options, `account_id`, and exact route maps coexist there. The legacy top-level `routes` key is rejected.
 - `transports.slack.account_id` must match the Slack account returned by the configured credentials.
