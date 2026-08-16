@@ -38,7 +38,7 @@ AUDIT_FAILURE_REPLY = (
 
 
 def _key_digest(kind: str, *parts: object) -> str:
-    """Build an opaque, delimiter-safe state key for a routed conversation."""
+    """Build an opaque, delimiter-safe key for routed Slack state."""
     payload = json.dumps({"v": 2, "kind": kind, "parts": list(parts)}, sort_keys=True)
     return f"teams:{hashlib.sha256(payload.encode()).hexdigest()[:32]}"
 
@@ -336,11 +336,10 @@ class TeamsRouter:
     def _thread_participating(self, route: Route, channel: str, thread_ts: str) -> bool:
         """Whether a prior authorized dispatch joined this thread.
 
-        The per-thread conversation session doubles as the participation
-        marker: it is recorded on every dispatch, persists with session
-        state across restarts, and lapses with session retention pruning.
-        A thread Enso itself started has no such session; that case is
-        handled by ``own_thread_root`` in :meth:`_passes_response_triggers`.
+        Conversation activity is recorded on every dispatch, persists across
+        restarts, and lapses with session retention pruning. A thread Enso
+        itself started has no such activity; that case is handled by
+        ``own_thread_root`` in :meth:`_passes_response_triggers`.
         """
         chat_key = _key_digest(
             "conversation",
@@ -350,7 +349,7 @@ class TeamsRouter:
             route.workspace,
             self.teams.workspaces[route.workspace].policy,
         )
-        return chat_key in self.runtime.active_provider_by_chat
+        return self.runtime.conversation_is_active(chat_key)
 
     async def _finish_fixed_reply(
         self,
@@ -427,23 +426,18 @@ class TeamsRouter:
             workspace.name,
             execution_policy.name,
         )
+        settings_key = _key_digest("settings", turn.account, route.route_id)
+        settings = self.runtime.resolve_route_settings(settings_key, execution_policy)
+        provider = settings.provider
+        model = settings.model
+        effort = settings.effort
+        self.runtime.touch_conversation(chat_key)
 
-        provider = self.runtime.active_provider_by_chat.get(chat_key)
-        if provider not in execution_policy.providers:
-            provider = execution_policy.default_provider
-        if provider is None:
-            await self._finish_fixed_reply(turn, CONFIG_ERROR_REPLY, notify=turn.addressed)
-            return
-        self.runtime.active_provider_by_chat[chat_key] = provider
-        self.runtime.touch_session(chat_key)
-
-        # Commands require explicit addressing (a mention, or any DM); an
-        # unaddressed "!text" in a responsive channel is ordinary prompt text.
+        # Trigger admission already enforces the route's mention settings. Once
+        # admitted, any non-bare !prefix is a command whether it used a mention.
         text = turn.text
-        command_parts = text[1:].split(None, 1) if turn.addressed and text.startswith("!") else []
+        command_parts = text[1:].split(None, 1) if text.startswith("!") else []
         command_name = command_parts[0].lower() if command_parts else None
-        model = self.runtime.get_active_model(chat_key, provider)
-        effort = self.runtime.get_active_effort(chat_key, provider, model)
         turn = replace(
             turn,
             turn_fields={
@@ -463,10 +457,14 @@ class TeamsRouter:
             )
             return
 
-        if command_name is None and not policy.check_provider(
+        if command_name in {None, "compact"} and not policy.check_provider(
             workspace, execution_policy, provider
         ).ok:
-            await self._finish_fixed_reply(turn, CONFIG_ERROR_REPLY, notify=turn.addressed)
+            await self._finish_fixed_reply(
+                turn,
+                CONFIG_ERROR_REPLY,
+                notify=turn.addressed or command_name is not None,
+            )
             return
 
         turn_id = None
@@ -525,14 +523,19 @@ class TeamsRouter:
         )
         execution = ExecutionContext(
             chat_key=chat_key,
+            settings_key=settings_key,
             path=workspace.path,
             workspace_id=workspace.name,
             include_global_messages=False,
             concurrency=workspace.concurrency,
             workspace=workspace,
             policy=execution_policy,
+            provider=provider,
             model=model,
             effort=effort,
+            provider_source=settings.provider_source,
+            model_source=settings.model_source,
+            effort_source=settings.effort_source,
             on_launch=self._make_launch_recorder(
                 turn_id,
                 provider,
