@@ -35,6 +35,7 @@ enso job run <name>                  # manual test run
 enso job create --name "Name" --provider claude --model sonnet --schedule "0 9 * * *" --workspace default
 enso job create --name "Name" --provider codex --model terra --schedule "0 9 * * *" --workspace default
 enso job create --name "Name" --provider agy --model gemini-3.6-flash-high --schedule "0 9 * * *" --workspace default
+enso job create --name "Name" --provider grok --model grok-4.6 --schedule "0 9 * * *" --workspace default
 
 # Docs — operator reference notes the agent consults on demand
 enso doc list                        # path, name, description for every doc

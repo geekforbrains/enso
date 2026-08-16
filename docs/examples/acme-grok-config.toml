@@ -16,10 +16,13 @@
 # byte-stable; declaring your own makes the staged bytes drift after the
 # first run, and the next launch fails closed on verification.
 #
-# Do not rely on GROK_FOLDER_TRUST or [folder_trust] to tighten anything.
+# Do not add a [folder_trust] table; `enso config check` rejects one (an
+# explicit `enabled = true`, the default restated, is the sole exception).
 # Disabling folder trust ungates project-level hooks, MCP, and config — it
-# loosens the launch. Enso never sets GROK_FOLDER_TRUST and reserves it,
-# with GROK_HOME and GROK_SANDBOX, from env_passthrough.
+# loosens the launch, and since the workspace is agent-writable that lets the
+# policy widen itself. Enso never sets GROK_FOLDER_TRUST and reserves it,
+# with GROK_HOME and GROK_SANDBOX, from env_passthrough. A trusted_folders.toml
+# beside this file is rejected for the same reason.
 #
 # Enso launches with --permission-mode dontAsk; the mode is launch-owned, so
 # this file declares only rules.

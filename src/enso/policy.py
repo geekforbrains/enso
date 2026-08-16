@@ -48,6 +48,13 @@ _KEEP_ENV = ("HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "USER", "SH
 _SNAPSHOT_MANIFEST = ".enso-policy-manifest.json"
 # Files launch-time staging owns inside a staged-home (codex/grok) policy tree.
 _STAGED_SOURCE_RESERVED = {"auth.json", _SNAPSHOT_MANIFEST}
+# Names one provider's policy tree may not carry on top of the shared set.
+# Grok reads folder trust from trusted_folders.toml inside GROK_HOME, and an
+# untrusted workspace is what keeps a workspace-planted .grok/config.toml or
+# .claude/settings.json from contributing rules, hooks, or MCP servers to the
+# launch. A staged copy would pre-trust the workspace and open that path, so
+# the tree may not ship one — trust stays absent by construction.
+_PROVIDER_SOURCE_RESERVED = {"grok": frozenset({"trusted_folders.toml"})}
 # Keys the Grok CLI recognizes in [permission]; anything else is silently
 # dropped at load time, leaving the agent with zero rules (fail-open).
 _GROK_PERMISSION_KEYS = ("allow", "deny", "ask", "rules")
@@ -237,6 +244,7 @@ def _tree_files(root: str) -> list[tuple[str, str]]:
 def _tree_problems(policy: Policy, workspace: Workspace, provider: str, *, skip: str) -> list[str]:
     """Validate every file copied into a provider's immutable policy snapshot."""
     root = _provider_source_root(policy, provider)
+    reserved = _STAGED_SOURCE_RESERVED | _PROVIDER_SOURCE_RESERVED.get(provider, frozenset())
     problems: list[str] = []
     if os.path.islink(root):
         problems.append(f"{provider} policy directory must not be a symlink")
@@ -251,7 +259,7 @@ def _tree_problems(policy: Policy, workspace: Workspace, provider: str, *, skip:
         for name in filenames:
             path = os.path.join(directory, name)
             relative = os.path.relpath(path, root).replace(os.sep, "/")
-            if relative in _STAGED_SOURCE_RESERVED:
+            if relative in reserved:
                 problems.append(f"{provider} policy tree reserves {relative}")
             if os.path.abspath(path) != os.path.abspath(skip):
                 problems.extend(_file_problems(path, workspace))
@@ -414,6 +422,10 @@ def _check_grok_config(path: str) -> tuple[list[str], list[str]]:
     The CLI reports no error and no skipped entry for a missing or misspelled
     [permission] table, a wrong-shaped key, or an unknown one — it just loads
     zero rules and runs wide open, so every such shape is a problem here.
+
+    Folder trust is checked alongside the rules because it is the gate, not a
+    rule: disabling it admits workspace-planted config, hooks, and MCP servers
+    into the launch, which is the one way a policy file can widen itself.
     """
     try:
         with open(path, "rb") as f:
@@ -421,13 +433,14 @@ def _check_grok_config(path: str) -> tuple[list[str], list[str]]:
     except (OSError, tomllib.TOMLDecodeError) as exc:
         return [f"config.toml does not parse: {exc}"], []
     warnings: list[str] = []
+    problems: list[str] = _grok_folder_trust_problems(config)
     if "marketplace" in config:
         warnings.append(
             "config.toml has its own [marketplace] stanza; the Grok CLI rewrites "
             "it after a run, which would fail the next snapshot verification — "
             "omit it so staging can pre-seed the canonical one"
         )
-    problems: list[str] = []
+    trust_problems = len(problems)
     permission = config.get("permission")
     if not isinstance(permission, dict):
         problems.append(
@@ -468,12 +481,36 @@ def _check_grok_config(path: str) -> tuple[list[str], list[str]]:
                 f"config.toml [permission] {key} must be an array of rule strings; "
                 "the Grok CLI silently loads zero rules from any other shape"
             )
-    if not problems and declared == 0:
+    if len(problems) == trust_problems and declared == 0:
         problems.append(
             "config.toml [permission] declares no rules; the Grok CLI would run "
             "wide open under a dontAsk launch"
         )
     return problems, warnings
+
+
+def _grok_folder_trust_problems(config: dict) -> list[str]:
+    """Reject a policy that turns Grok's folder-trust gate off.
+
+    Folder trust only ever loosens: with it disabled the CLI applies a
+    workspace's own ``.grok/config.toml`` and vendor-compat settings, so an
+    agent-writable workspace could grant itself rules, hooks, and MCP servers
+    the policy never declared. A fresh staged home leaves the workspace
+    untrusted; only this key (or ``GROK_FOLDER_TRUST``, which env_passthrough
+    reserves) can undo that, so the policy file may not carry it. An explicit
+    ``enabled = true`` restates the default and is allowed.
+    """
+    if "folder_trust" not in config:
+        return []
+    trust = config["folder_trust"]
+    if isinstance(trust, dict) and set(trust) <= {"enabled"} and trust.get("enabled") is True:
+        return []
+    return [
+        "config.toml must not configure [folder_trust]; disabling folder trust "
+        "ungates workspace-planted config, hooks, and MCP servers, letting a "
+        "writable workspace widen its own policy (only 'enabled = true', the "
+        "default, is accepted)"
+    ]
 
 
 def _grok_rule_count(config: dict) -> int:
@@ -673,10 +710,24 @@ def verify_grok_rules(workspace: Workspace, policy: Policy, grok_path: str) -> l
     loaded = permissions.get("loaded") if isinstance(permissions, dict) else None
     if isinstance(loaded, bool) or not isinstance(loaded, int):
         return ["grok inspect --json reported no permissions.loaded count"]
-    if loaded != declared:
+    if loaded < declared:
         return [
             f"grok inspect loaded {loaded} permission rules but the policy declares "
             f"{declared}; grok silently ignores wrong-shaped rules"
+        ]
+    if loaded > declared:
+        # More rules than the policy wrote means something outside it reached
+        # the launch — a trusted workspace contributing its own config is the
+        # path that matters, since that is a policy widening itself.
+        sources = permissions.get("sources") if isinstance(permissions, dict) else None
+        detail = ""
+        if isinstance(sources, list) and sources:
+            named = ", ".join(str(source) for source in sources)
+            detail = f" (sources: {named})"
+        return [
+            f"grok inspect loaded {loaded} permission rules but the policy declares "
+            f"{declared}; rules are reaching the launch from outside the policy"
+            f"{detail}"
         ]
     return []
 

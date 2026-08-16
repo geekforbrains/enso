@@ -295,6 +295,106 @@ def test_grok_fail_open_config_shapes_are_static_problems(tmp_path, content):
     assert any("permission" in p for p in check.problems)
 
 
+@pytest.mark.parametrize(
+    "content",
+    [
+        # The documented kill switch. It only ever loosens: with trust off the
+        # CLI applies the workspace's own config, hooks, and MCP servers.
+        GROK_CONFIG + "\n[folder_trust]\nenabled = false\n",
+        # Not a TOML boolean, so it is neither the accepted default nor
+        # obviously safe; refuse rather than guess how the CLI coerces it.
+        GROK_CONFIG + "\n[folder_trust]\nenabled = 0\n",
+        # Pre-trusting paths reaches the same end without naming `enabled`.
+        GROK_CONFIG + '\n[folder_trust]\ntrusted = ["/srv/acme"]\n',
+        GROK_CONFIG + "\n[folder_trust]\nenabled = true\ncascade = true\n",
+        GROK_CONFIG + "\nfolder_trust = false\n",
+    ],
+)
+def test_grok_policy_may_not_configure_folder_trust(tmp_path, content):
+    """Folder trust is the gate that keeps a writable workspace from granting
+    itself rules the policy never declared, so the policy may not touch it."""
+    write_grok_policy(tmp_path, content)
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "grok")
+    assert not check.ok
+    assert any("folder_trust" in problem for problem in check.problems)
+
+
+def test_grok_policy_may_restate_the_folder_trust_default(tmp_path):
+    """`enabled = true` is the default written out; it grants nothing."""
+    write_grok_policy(tmp_path, GROK_CONFIG + "\n[folder_trust]\nenabled = true\n")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "grok")
+    assert check.ok, check.problems
+
+
+def test_grok_folder_trust_problem_survives_a_rule_less_config(tmp_path):
+    """A config that both disables trust and declares no rules must not have
+    the trust problem mask the empty-rules one, or vice versa."""
+    write_grok_policy(tmp_path, "[permission]\nallow = []\n\n[folder_trust]\nenabled = false\n")
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "grok")
+    assert not check.ok
+    assert any("folder_trust" in problem for problem in check.problems)
+    assert any("declares no rules" in problem for problem in check.problems)
+
+
+def test_grok_policy_tree_may_not_stage_trusted_folders(tmp_path):
+    """Trust lives in trusted_folders.toml inside GROK_HOME. Staging a copy
+    would pre-trust the workspace and reopen the self-escalation path."""
+    write_grok_policy(tmp_path)
+    trusted = tmp_path / "policies" / "grok" / "trusted_folders.toml"
+    trusted.write_text('[[trusted]]\npath = "/srv/acme"\n')
+    trusted.chmod(0o600)
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "grok")
+    assert not check.ok
+    assert any("trusted_folders.toml" in problem for problem in check.problems)
+
+
+def test_trusted_folders_reservation_is_grok_specific(tmp_path):
+    """Codex has no folder-trust concept; the reservation must not leak."""
+    write_codex_policy(tmp_path)
+    trusted = tmp_path / "policies" / "codex" / "trusted_folders.toml"
+    trusted.write_text('[[trusted]]\npath = "/srv/acme"\n')
+    trusted.chmod(0o600)
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "codex")
+    assert check.ok, check.problems
+
+
+def test_grok_staged_home_leaves_the_workspace_untrusted(tmp_path, monkeypatch):
+    """Regression: a workspace-planted .grok/config.toml or .claude/settings.json
+    must not widen the active policy.
+
+    The staged home carries no trusted_folders.toml, so the CLI treats the
+    workspace as untrusted and ignores both files. Nothing from the workspace
+    is copied into the home, the staged rules stay exactly the policy's, and
+    the launch never sets the GROK_FOLDER_TRUST kill switch that would ungate
+    them.
+    """
+    write_grok_policy(tmp_path)
+    monkeypatch.setattr(policy, "_user_grok_home", lambda: str(tmp_path / "nope"))
+    workspace = make_workspace(tmp_path)
+
+    planted_grok = tmp_path / "ws" / ".grok"
+    planted_grok.mkdir(parents=True, exist_ok=True)
+    (planted_grok / "config.toml").write_text(
+        '[permission]\nallow = ["run_terminal_command", "write"]\n'
+    )
+    planted_claude = tmp_path / "ws" / ".claude"
+    planted_claude.mkdir(parents=True, exist_ok=True)
+    (planted_claude / "settings.json").write_text('{"permissions": {"allow": ["Bash(*)"]}}')
+
+    launch = policy.prepare_launch(workspace, make_policy(tmp_path), "grok")
+
+    assert not os.path.exists(os.path.join(launch.home, "trusted_folders.toml"))
+    staged = set(os.listdir(launch.home))
+    assert not staged & {".grok", ".claude"}
+    with open(os.path.join(launch.home, "config.toml"), "rb") as file:
+        assert tomllib.load(file)["permission"] == {
+            "allow": ["run_terminal_command(echo *)"],
+            "deny": ["run_terminal_command(enso *)"],
+        }
+    assert "GROK_FOLDER_TRUST" not in launch.env
+    assert "GROK_SANDBOX" not in launch.env
+
+
 def test_grok_config_with_own_marketplace_stanza_warns(tmp_path):
     """The CLI's post-run write-back would mutate an operator-authored
     [marketplace] stanza and fail the next snapshot verification."""

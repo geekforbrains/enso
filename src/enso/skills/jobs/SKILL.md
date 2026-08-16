@@ -23,6 +23,7 @@ enso job run <name>              # manual run (output to stdout)
 enso job create --name "Name" --provider claude --model sonnet --schedule "0 9 * * *" --workspace company
 enso job create --name "Name" --provider codex --model terra --schedule "0 9 * * *" --workspace company
 enso job create --name "Name" --provider agy --model gemini-3.6-flash-high --schedule "0 9 * * *" --workspace company
+enso job create --name "Name" --provider grok --model grok-4.6 --schedule "0 9 * * *" --workspace company
 ```
 
 ## Directory structure
@@ -56,8 +57,8 @@ The prompt goes here. Use {{prerun_output}} to inject prerun results.
 | ----------------------- | -------- | ------------------------------------------------------------------------------------------ |
 | `name`                  | yes      | Display name (shown in notifications)                                                      |
 | `schedule`              | yes      | Cron: `minute hour dom month dow`                                                          |
-| `provider`              | yes      | `claude`, `codex`, or `agy`                                                                |
-| `model`                 | yes      | Model name (e.g. `sonnet`; Codex: `sol`, `terra`, or `luna`; Agy: `gemini-3.6-flash-high`) |
+| `provider`              | yes      | `claude`, `codex`, `agy`, or `grok`                                                        |
+| `model`                 | yes      | Model name (e.g. `sonnet`; Codex: `sol`, `terra`, or `luna`; Agy: `gemini-3.6-flash-high`; Grok: `grok-4.6` or `grok-4.5`) |
 | `workspace`             | yes      | Named entry from top-level `workspaces`; its path is the provider cwd                      |
 | `enabled`               | yes      | `true` or `false` — disabled jobs are skipped                                              |
 | `prerun`                | no       | Script filename in the job directory                                                       |

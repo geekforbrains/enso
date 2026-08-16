@@ -182,6 +182,39 @@ def test_config_check_fails_when_grok_loads_zero_rules(tmp_enso, monkeypatch):
     assert "grok-client" in plain
 
 
+def test_config_check_fails_when_grok_loads_rules_the_policy_never_declared(
+    tmp_enso, monkeypatch
+):
+    """More rules loaded than declared means something outside the policy
+    reached the launch — a trusted workspace contributing its own config is
+    the case that matters, since that is a policy widening itself."""
+    monkeypatch.setattr(
+        "enso.policy._user_grok_home", lambda: str(Path(tmp_enso) / "grok-user-home")
+    )
+    planted = str(Path(tmp_enso) / "workspaces" / "grok-client" / ".grok" / "config.toml")
+
+    def fake_run(cmd, *args, **kwargs):
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout=json.dumps(
+                {"permissions": {"loaded": 5, "sources": ["staged config.toml", planted]}}
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    save_config(_grok_teams_config(tmp_enso))
+
+    result = runner.invoke(app, ["config", "check"])
+
+    assert result.exit_code == 1
+    plain = " ".join(result.output.split())
+    assert "loaded 5" in plain
+    assert "outside the policy" in plain
+    assert ".grok" in plain
+
+
 def test_config_check_fails_when_grok_binary_is_missing(tmp_enso, monkeypatch):
     monkeypatch.setattr(
         "enso.policy._user_grok_home", lambda: str(Path(tmp_enso) / "grok-user-home")

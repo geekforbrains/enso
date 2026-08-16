@@ -77,6 +77,16 @@ class ClaudeProvider(BaseProvider):
     _tool_status = staticmethod(_tool_status)
 
     @staticmethod
+    def _terminal_reason(event: dict) -> str | None:
+        """Why an errored result frame ended the turn, when the frame says.
+
+        A hook, because subclasses on this wire format report the reason in
+        their own fields; returning None falls back to a generic message.
+        """
+        reason = event.get("terminal_reason")
+        return reason if isinstance(reason, str) and reason else None
+
+    @staticmethod
     def _permission_args(launch) -> list[str]:
         """Permission flags per the launch contract in permissions.md.
 
@@ -201,9 +211,10 @@ class ClaudeProvider(BaseProvider):
                     text=result_text,
                 ))
             elif event.get("is_error"):
-                reason = event.get("terminal_reason")
-                text = reason if isinstance(reason, str) and reason else "unknown error"
-                events.append(StreamEvent(kind="error", text=text))
+                events.append(StreamEvent(
+                    kind="error",
+                    text=self._terminal_reason(event) or "unknown error",
+                ))
 
             session_id = event.get("session_id")
             if isinstance(session_id, str) and session_id:

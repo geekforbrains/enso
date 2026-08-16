@@ -1178,6 +1178,60 @@ def test_grok_parse_result_reports_response_and_session():
     ]
 
 
+def test_grok_denied_tool_reports_the_reason_not_unknown_error():
+    """A tool call the policy denies ends the turn with no result text and no
+    Claude-style terminal_reason — grok names it in stop_reason/errors. Without
+    reading those the chat would report a bare "unknown error" for a block.
+
+    Captured verbatim from a `--permission-mode dontAsk` run whose deny rule
+    matched the command.
+    """
+    p = GrokProvider("grok")
+    events = p.parse_event({
+        "type": "result",
+        "subtype": "error_during_execution",
+        "is_error": True,
+        "stop_reason": "cancelled",
+        "errors": ["cancelled"],
+        "session_id": GROK_SESSION_ID,
+    })
+    assert [(e.kind, e.session_id) for e in events] == [
+        ("error", None),
+        ("session", GROK_SESSION_ID),
+    ]
+    assert "cancelled" in events[0].text
+    assert events[0].text != "unknown error"
+
+
+@pytest.mark.parametrize(
+    ("event", "expected"),
+    [
+        ({"terminal_reason": "hit the turn limit"}, "hit the turn limit"),
+        ({"stop_reason": "max_tokens"}, "max_tokens"),
+        ({"errors": ["upstream refused the request"]}, "upstream refused the request"),
+        ({"errors": ["first", "second"]}, "first, second"),
+        # terminal_reason wins when grok sends both.
+        ({"terminal_reason": "explicit", "stop_reason": "vague"}, "explicit"),
+        # Nothing usable: the generic fallback is still correct.
+        ({}, "unknown error"),
+        ({"stop_reason": "", "errors": []}, "unknown error"),
+    ],
+)
+def test_grok_error_result_reason_sources(event, expected):
+    p = GrokProvider("grok")
+    events = p.parse_event({"type": "result", "is_error": True, **event})
+    assert [(e.kind, e.text) for e in events] == [("error", expected)]
+
+
+def test_claude_error_result_still_falls_back_to_unknown_error():
+    """The reason lookup is a hook; Claude's own behavior is unchanged."""
+    p = ClaudeProvider("claude")
+    assert [
+        (e.kind, e.text)
+        for e in p.parse_event({"type": "result", "is_error": True, "stop_reason": "cancelled"})
+    ] == [("error", "unknown error")]
+
+
 def test_grok_parse_assistant_thinking_and_text():
     p = GrokProvider("grok")
     events = p.parse_event({

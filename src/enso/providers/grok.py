@@ -45,6 +45,13 @@ def _tool_status(tool_name: str, tool_input: dict) -> str:
             return _claude_tool_status(tool_name, tool_input)
 
 
+# Grok's terminal reasons are terse; expand the ones an operator would
+# otherwise have to guess at. Unlisted reasons pass through verbatim.
+_TERMINAL_REASONS = {
+    "cancelled": "cancelled — a denied tool call or an interrupted run",
+}
+
+
 def _session_dirs(working_dir: str, policy_dir: str | None) -> list[Path]:
     """Candidate session directories for a working dir.
 
@@ -80,6 +87,23 @@ class GrokProvider(ClaudeProvider):
     _default_max_effort = "xhigh"
 
     _tool_status = staticmethod(_tool_status)
+
+    @staticmethod
+    def _terminal_reason(event: dict) -> str | None:
+        """Grok names the reason in stop_reason/errors, not terminal_reason.
+
+        A tool call the policy denies ends the turn with no result text and
+        no ``terminal_reason``, so without this the chat would report a bare
+        "unknown error" for what is really a permission block.
+        """
+        candidates: list[object] = [event.get("terminal_reason"), event.get("stop_reason")]
+        errors = event.get("errors")
+        if isinstance(errors, list):
+            candidates.append(", ".join(item for item in errors if isinstance(item, str) and item))
+        for candidate in candidates:
+            if isinstance(candidate, str) and candidate:
+                return _TERMINAL_REASONS.get(candidate, candidate)
+        return None
 
     @staticmethod
     def _permission_args(launch) -> list[str]:
