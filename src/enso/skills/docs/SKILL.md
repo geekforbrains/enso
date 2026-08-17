@@ -1,6 +1,6 @@
 ---
 name: docs
-description: Consult and write operator reference docs under ~/.enso/docs/. Use when a task depends on how this machine, network, services, or accounts are wired, or when a durable fact about the setup should be recorded instead of just answered.
+description: Use this skill to consult or write operator reference docs under ~/.enso/docs when a task depends on how the user's machines, network, services, or accounts are configured, or when a durable setup fact should be recorded instead of answered only for the current turn.
 ---
 
 # Docs

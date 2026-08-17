@@ -378,21 +378,138 @@ def test_tables_skill_is_bundled(tmp_path):
     assert "PRAGMA foreign_keys = ON;" in content
 
 
+def test_workspace_skill_is_bundled(tmp_path):
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+
+    Runtime._install_bundled_skills(str(skills_dir))
+
+    skill = skills_dir / "workspace" / "SKILL.md"
+    assert skill.is_file()
+    content = skill.read_text(encoding="utf-8")
+    assert "enso config check" in content
+    assert "AGENTS.md" in content
+    assert ".agents/skills" in content
+
+
 def test_bundled_prompt_documents_the_doc_commands():
-    """AGENTS.md is always in context; the doc surface has to appear there."""
+    """The shared prompt routes doc work without duplicating the whole skill."""
     current, _ = _legacy_agents_prompt()
     assert "enso doc list" in current
-    assert "enso doc create" in current
     assert "`docs` skill" in current
 
 
 def test_bundled_prompt_documents_the_table_commands():
-    """AGENTS.md keeps the data-table discovery surface always available."""
+    """The shared prompt routes table work without duplicating the whole skill."""
     current, _ = _legacy_agents_prompt()
     assert "enso table list" in current
-    assert "enso table schema" in current
-    assert "enso table register" in current
     assert "`tables` skill" in current
+
+
+def test_bundled_prompt_routes_workspace_changes_to_the_skill():
+    current, _ = _legacy_agents_prompt()
+    assert "enso config check" in current
+    assert "`workspace` skill" in current
+    assert "~/.enso/.claude/skills" in current
+    assert "~/.enso/.agents/skills" in current
+
+
+def test_bundled_prompts_are_transport_neutral():
+    prompts = importlib.resources.files("enso").joinpath("prompts")
+    for filename in ("AGENTS.md", "WORKSPACE_AGENTS.md"):
+        content = prompts.joinpath(filename).read_text(encoding="utf-8").lower()
+        assert "slack" not in content
+        assert "telegram" not in content
+
+
+def test_supported_bundled_artifact_hashes_remain_known_pristine():
+    """Clean files from supported prior revisions follow the bundle forward."""
+    assert {
+        "00216052e667a7e0d6de59fb331f71e4491af33b5a9ad17439b1836361b3ff6b",
+        "c4d83056e148464c33ee6fcbb360f9f12fb8a3d3bdb32ab44fe673b2829d976a",
+    } <= core_module._PRISTINE_AGENTS_SHA256
+    assert {
+        "b083179b34f1de30cd1d669d2d3e3f4cfd2174bf956527aeb68d09935846f522",
+    } <= core_module._PRISTINE_WORKSPACE_AGENTS_SHA256
+
+    expected_skill_hashes = {
+        ("docs", "SKILL.md"): {
+            "0f657ffd78a63e4d15301eb422b845d8ae2bf2dc60eaacd84c1c4234b9f6ee8e",
+        },
+        ("jobs", "SKILL.md"): {
+            "3f14ca280b44121434a1308e57f23f6cfe36858b79a06d8e06838cade3d06937",
+            "5d9bcd9e89d027af78b3eaa5d665c7f05e855a4a3f7052ad612dc2cfff324ec2",
+            "ed6e39bddc71769546b6a8608aff848120e17a60fac122273d9428a016893679",
+        },
+        ("slack", "SKILL.md"): {
+            "5d9f76e2bcb757b27ab294a6f7322e07a59ebafbe08566f218348f8d15ac178a",
+            "646d0ab64c0713baf32eec4f0639b4d709d4b1c7a2a1a320e2eed84d55fc5582",
+            "c91732f4c9a702145e9f4beff6dd5b113b7d5616104842a3350a39a262dff072",
+            "70f2dd312d001f23a49aeadb2f556df76e259b80f8591093eb7d36a6ea56b2bd",
+            "c9c84d0a1a994a89ee56cf67ec10347c7730add329505b2959880728c58f2980",
+            "a53162090b0bbbc3d60067674b428e56e1f9c62e0fc555e807d98e03068c0fcd",
+        },
+        ("tables", "SKILL.md"): {
+            "3ece50cd4ea1d1dbcb60a976b69178e4c81b8bac861e8187dc2208ac87426aba",
+        },
+    }
+    for key, expected in expected_skill_hashes.items():
+        assert expected <= core_module._BUNDLED_SKILL_PRISTINE_HASHES[key]
+
+
+def test_workspace_prompt_updates_only_known_pristine_copy(
+    sample_config, monkeypatch,
+):
+    root = Path(sample_config["workspaces"]["default"]["path"])
+    agents_file = root / "AGENTS.md"
+    previous = "# Enso workspace\n\nFormer pristine workspace prompt.\n"
+    agents_file.write_text(previous, encoding="utf-8")
+    monkeypatch.setattr(
+        core_module,
+        "_PRISTINE_WORKSPACE_AGENTS_SHA256",
+        frozenset({hashlib.sha256(previous.encode()).hexdigest()}),
+    )
+
+    Runtime(sample_config).install_workspaces()
+
+    current = (
+        importlib.resources.files("enso")
+        .joinpath("prompts", "WORKSPACE_AGENTS.md")
+        .read_text(encoding="utf-8")
+    )
+    assert agents_file.read_text(encoding="utf-8") == current
+
+
+def test_workspace_prompt_preserves_custom_file(sample_config):
+    root = Path(sample_config["workspaces"]["default"]["path"])
+    agents_file = root / "AGENTS.md"
+    customized = "# My workspace\n\nKeep this local guidance.\n"
+    agents_file.write_text(customized, encoding="utf-8")
+
+    Runtime(sample_config).install_workspaces()
+
+    assert agents_file.read_text(encoding="utf-8") == customized
+
+
+def test_workspace_prompt_preserves_symlink_even_when_target_hash_is_known(
+    sample_config, monkeypatch,
+):
+    root = Path(sample_config["workspaces"]["default"]["path"])
+    agents_file = root / "AGENTS.md"
+    target = root / "custom-instructions.md"
+    previous = "# Enso workspace\n\nFormer pristine workspace prompt.\n"
+    target.write_text(previous, encoding="utf-8")
+    agents_file.symlink_to(target.name)
+    monkeypatch.setattr(
+        core_module,
+        "_PRISTINE_WORKSPACE_AGENTS_SHA256",
+        frozenset({hashlib.sha256(previous.encode()).hexdigest()}),
+    )
+
+    Runtime(sample_config).install_workspaces()
+
+    assert agents_file.is_symlink()
+    assert target.read_text(encoding="utf-8") == previous
 
 
 def test_bundled_skills_are_seeded_once(tmp_path):

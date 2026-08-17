@@ -212,6 +212,20 @@ enso audit tail                            # inspect recorded Slack audit turns
 
 The examples in [`docs/examples/`](docs/examples/) are starting points, not policy certification. [`docs/specs/teams.md`](docs/specs/teams.md) covers routing and client projects; [`docs/specs/permissions.md`](docs/specs/permissions.md) covers native policy invocation. Existing installations must follow the [manual breaking-change migration](docs/migrations/unified-workspace-policies.md); there is no `enso migrate` command. Config changes require restarting Enso.
 
+### Bundled skills
+
+Enso seeds five portable [Agent Skills](https://agentskills.io/specification) under `~/.enso/skills/`:
+
+| Skill       | Use it for                                                    |
+| ----------- | ------------------------------------------------------------- |
+| `docs`      | Installation-specific reference notes and durable setup facts |
+| `jobs`      | Scheduled and recurring work                                  |
+| `slack`     | Slack lookup, history, rich replies, and persistent surfaces   |
+| `tables`    | Durable structured data in Enso's SQLite database              |
+| `workspace` | Workspace layout, instructions, skills, policies, and bindings |
+
+Missing skills are installed automatically. Known pristine copies follow the bundle forward, while customized copies and explicit deletions are preserved. Enso-managed workspaces inherit provider discovery views at `~/.enso/.claude/skills` and `~/.enso/.agents/skills`; Enso deliberately does not install links into unrelated project directories. Keep shared skills global; use the `workspace` skill to place focused project guidance and workspace-only skills.
+
 ## Background Jobs
 
 Enso can run agents on a schedule. Jobs live in `~/.enso/jobs/` and run inside `enso serve` on a 60-second tick.

@@ -328,7 +328,7 @@ internet and the PRD makes that a non-goal.
 | `docs.py`                | Owns reference-doc path validation, the bounded recursive listing, scaffolding, and deletion  |
 | `runs.py`                | Owns SQLite `create`/`finish`/`list_runs`/`get`/`prune` operations                            |
 | `tables.py`              | Owns the registration catalog, identifier validation, schema inspection, and bounded previews |
-| `skills/tables/SKILL.md` | Guides safe, consistent agent table creation and data access                                  |
+| `skills/*/SKILL.md`      | Bundles portable workflows for docs, jobs, Slack, tables, and workspace management            |
 | `web/`                   | Contains the Starlette app, current routes/templates, discovery, and vendored assets          |
 | `pyproject.toml`         | Defines the `web` extra, base `pyyaml` dependency, and package data                           |
 

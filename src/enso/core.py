@@ -141,20 +141,45 @@ _LEGACY_TASKS_SKILL_SHA256 = "661ffca9a360cc40521c274a295a97c7735123a7c8a44e1d30
 _LEGACY_TASKS_AGENTS_SHA256 = "ec67ee973a15c38e23451cfc65317643debe0e6e8659589bf0c30433f60a2e4a"
 _LEGACY_TASK_RUNNER_STATE_KEY = "__task_runner__"
 
-# Pristine bundled AGENTS.md hashes from prior releases. Exact matches follow
+# Pristine bundled AGENTS.md hashes from prior revisions. Exact matches follow
 # the bundled template forward; customized copies are preserved.
 _PRISTINE_AGENTS_SHA256: frozenset[str] = frozenset(
     {
         _LEGACY_TASKS_AGENTS_SHA256,
+        "9da23ee23cccfb466f781d84beb4775872a7427166225ef2da815c0cced035aa",
+        "b06c7da0260b5775f29b008210429b881dbd25035727fe30e8e135258791a531",
+        "dd475e768635484fe13c6f4f906d0e1d88687fc4bbe25f5cefca0dc606aa79b9",
         "18e29e570f07237eea24a2b329090ccae9b572cdbc7e35f38e22916f3e5acf7f",
         "b5676b7f1b571a813554c0c580c93a6c9269d82625161f01f2c00e205888da20",
         "8f9bacc078f4b6bd826c59501f7e110de4e2caacc42fd3975ad3aeab624164f7",
+        "98aaf8d3eecd71ceb4a2a3cea92bb3acbd4167acde31737c7a084083a8521bfb",
+        "00216052e667a7e0d6de59fb331f71e4491af33b5a9ad17439b1836361b3ff6b",
+        "2e14003d6bc25ac89f68d4c883b98ad5fda0095dcfe682a258e272fac6d97c25",
+        "ff4d7c8d7f0651cf8a8e26dbd6e7289f2e6f5edd035223b9f8045af445f55e63",
+        "c4d83056e148464c33ee6fcbb360f9f12fb8a3d3bdb32ab44fe673b2829d976a",
     }
 )
 
-# Known hashes of pristine bundled skills from prior releases. Exact matches
+# Workspace prompts use the same exact-pristine upgrade rule. This keeps
+# installer-owned local guidance coherent while preserving every customized
+# workspace file and symlink.
+_PRISTINE_WORKSPACE_AGENTS_SHA256: frozenset[str] = frozenset(
+    {
+        "71de6f5699f446cc4af520c8c36a59fac3cc109b7754c2f7f70b483c48bc90e3",
+        "e6f12f08d421115292fcad44cfd03e509bfeb0c423ab74acd4c70dae0cc02567",
+        "bfd3af12bb204d8a8aaf406785ea924494297ca20d611c50c807cf03dd226093",
+        "b083179b34f1de30cd1d669d2d3e3f4cfd2174bf956527aeb68d09935846f522",
+    }
+)
+
+# Known hashes of pristine bundled skills from prior revisions. Exact matches
 # can follow the bundled copy forward without overwriting user-customized files.
 _BUNDLED_SKILL_PRISTINE_HASHES: dict[tuple[str, str], frozenset[str]] = {
+    ("docs", "SKILL.md"): frozenset(
+        {
+            "0f657ffd78a63e4d15301eb422b845d8ae2bf2dc60eaacd84c1c4234b9f6ee8e",
+        }
+    ),
     ("jobs", "SKILL.md"): frozenset(
         {
             "f52f890e467bd212534474b1d0ee913edbf6cc968e010686153044aac13bcd77",
@@ -166,13 +191,25 @@ _BUNDLED_SKILL_PRISTINE_HASHES: dict[tuple[str, str], frozenset[str]] = {
             "dabb0fa66f276cd78c8e88e17c38155ad537aa52938e50622dcc2955b70f036a",
             "ecde110e219de184ccf52594d02d9ae458022a4813dcc8ac417a975c5010f282",
             "1a97b59fb3361cac02af0d62d0cb472ad0315fe710ece162977a602211161e28",
+            "3f14ca280b44121434a1308e57f23f6cfe36858b79a06d8e06838cade3d06937",
+            "5d9bcd9e89d027af78b3eaa5d665c7f05e855a4a3f7052ad612dc2cfff324ec2",
+            "c292e6f8e8808898cff1efe0a22030da0cea863aecd77bca0fe583b741d96d08",
+            "ed6e39bddc71769546b6a8608aff848120e17a60fac122273d9428a016893679",
         }
     ),
     ("slack", "SKILL.md"): frozenset(
         {
             "5d9f76e2bcb757b27ab294a6f7322e07a59ebafbe08566f218348f8d15ac178a",
             "646d0ab64c0713baf32eec4f0639b4d709d4b1c7a2a1a320e2eed84d55fc5582",
+            "c91732f4c9a702145e9f4beff6dd5b113b7d5616104842a3350a39a262dff072",
             "70f2dd312d001f23a49aeadb2f556df76e259b80f8591093eb7d36a6ea56b2bd",
+            "c9c84d0a1a994a89ee56cf67ec10347c7730add329505b2959880728c58f2980",
+            "a53162090b0bbbc3d60067674b428e56e1f9c62e0fc555e807d98e03068c0fcd",
+        }
+    ),
+    ("tables", "SKILL.md"): frozenset(
+        {
+            "3ece50cd4ea1d1dbcb60a976b69178e4c81b8bac861e8187dc2208ac87426aba",
         }
     ),
 }
@@ -384,8 +421,8 @@ class Runtime:
         - AGENTS.md in ~/.enso/ (from bundled template on first install)
         - CLAUDE.md as a symlink to AGENTS.md (Claude reads CLAUDE.md;
           Codex reads AGENTS.md natively)
-        - .claude/skills and .agents/skills symlinked to ~/.enso/skills/
-          (so Claude and Codex auto-discover skills)
+        - Enso-local .claude/skills and .agents/skills discovery views
+          symlinked to ~/.enso/skills/
         - Auto-compact notification hooks for Claude
         """
         from .config import DOCS_DIR, JOBS_DIR
@@ -424,9 +461,9 @@ class Runtime:
 
         self._ensure_symlink(os.path.join(CONFIG_DIR, "CLAUDE.md"), "AGENTS.md")
 
-        # Symlink skills into CLI-specific discovery paths
-        # .claude/skills -> ~/.enso/skills (Claude Code)
-        # .agents/skills -> ~/.enso/skills (Codex)
+        # Enso-local provider discovery views. Managed descendant workspaces
+        # inherit them through project-scope ancestor discovery; Enso does not
+        # install these links into unrelated project directories.
         for cli_dir in (".claude", ".agents"):
             parent = os.path.join(CONFIG_DIR, cli_dir)
             os.makedirs(parent, exist_ok=True)
@@ -473,11 +510,15 @@ class Runtime:
         os.makedirs(os.path.join(workspace.path, "uploads"), exist_ok=True)
 
         canonical = os.path.join(workspace.path, "AGENTS.md")
-        if not os.path.lexists(canonical):
+        is_pristine_template = (
+            regular_file_sha256(canonical) in _PRISTINE_WORKSPACE_AGENTS_SHA256
+        )
+        if not os.path.lexists(canonical) or is_pristine_template:
             prompts = importlib.resources.files("enso").joinpath("prompts")
             source = prompts.joinpath("WORKSPACE_AGENTS.md")
             atomic_write_text(canonical, source.read_text(encoding="utf-8"))
-            log.info("Wrote AGENTS.md in workspace %s", workspace.name)
+            action = "Updated" if is_pristine_template else "Wrote"
+            log.info("%s AGENTS.md in workspace %s", action, workspace.name)
         self._ensure_symlink(os.path.join(workspace.path, "CLAUDE.md"), "AGENTS.md")
 
     @staticmethod

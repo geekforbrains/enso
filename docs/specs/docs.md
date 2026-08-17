@@ -130,7 +130,7 @@ No `show` or `delete` subcommands. When the active workspace policy permits file
 ## Discovery: the `docs` skill
 
 Docs reach the agent through a **bundled `docs` skill** at
-`src/enso/skills/docs/SKILL.md`, alongside the existing `jobs` and `slack` skills. It
+`src/enso/skills/docs/SKILL.md`, alongside the other bundled skills. It
 covers:
 
 - where docs live and that `enso doc list` enumerates them

@@ -1,6 +1,6 @@
 ---
 name: tables
-description: Create, inspect, query, and maintain durable user data tables in ~/.enso/enso.db. Use when the user wants to track structured facts, measurements, metrics, history, or any persistent data that should be filtered, joined, or aggregated later.
+description: Use this skill to create, inspect, query, or maintain durable user data tables in ~/.enso/enso.db when the user wants to track structured facts, measurements, metrics, history, or other persistent data that should later be filtered, joined, or aggregated.
 ---
 
 # Tables
