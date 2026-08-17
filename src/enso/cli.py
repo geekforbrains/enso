@@ -685,10 +685,11 @@ def _setup_transport(config: dict) -> int | None:
     """Step 3: configure transport."""
     console.rule("[bold]Step 3 \u00b7 Transport")
     choices = ["telegram", "slack"]
+    configured_transport = config.get("transport")
     transport = Prompt.ask(
         "  Transport",
         choices=choices,
-        default=config.get("transport", "telegram"),
+        default=configured_transport if configured_transport in choices else ...,
     )
     config["transport"] = transport
     if transport == "telegram":

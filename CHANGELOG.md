@@ -29,6 +29,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- Fresh `enso setup` now requires an explicit Slack or Telegram selection instead of accepting an empty transport, while a previously valid choice remains the default during reconfiguration.
 - Slack's entity escaping is now decoded before message text reaches a model, in injected thread/channel context and in the `enso slack` reading commands alike. Slack stores a typed `<`, `>`, or `&` as `&lt;`, `&gt;`, and `&amp;`, so a command example someone posted arrived as `enso slack thread C0… &lt;ts&gt;`. Decoding runs before mention flattening, so a `<@U…>` it exposes is still flattened and raw mention syntax never reaches a prompt.
 
 - `thread_mention_required: false` now follows threads Enso started itself. A top-level message Enso posts outside a dispatch — a job notification, `enso message send`, a surface confirmation — creates no conversation session, so replies under it were dropped until someone mentioned the bot once, even in a fully responsive channel. Enso's own thread roots now count as participation, read from the `parent_user_id` Slack stamps on every thread reply, so no extra API call is involved. Unchanged: `thread_mention_required: true` still gates own roots, threads rooted by anyone else still need a first mention, unrouted channels stay unrouted, and only human replies dispatch.

@@ -20,6 +20,7 @@ from enso.cli import (
     _setup_default_workspace,
     _setup_slack,
     _setup_telegram,
+    _setup_transport,
     _update_referenced_secrets_with_rollback_or_exit,
     serve,
     setup,
@@ -302,6 +303,43 @@ def test_setup_rejects_legacy_working_dir_before_changes(monkeypatch, capsys):
     output = " ".join(capsys.readouterr().out.split())
     assert "working_dir is no longer supported" in output
     assert "workspaces" in output
+
+
+@pytest.mark.parametrize("configured_transport", ["", "email", None])
+def test_setup_transport_requires_supported_choice(monkeypatch, configured_transport):
+    config = {"transport": configured_transport}
+    responses = iter(["", "matrix", "slack"])
+    entered = []
+
+    def get_input(*_args, **_kwargs):
+        response = next(responses)
+        entered.append(response)
+        return response
+
+    monkeypatch.setattr("enso.cli.Prompt.get_input", get_input)
+    monkeypatch.setattr("enso.cli._setup_slack", lambda _: None)
+    monkeypatch.setattr(
+        "enso.cli._setup_telegram",
+        lambda _: pytest.fail("Telegram setup must not run"),
+    )
+
+    _setup_transport(config)
+
+    assert entered == ["", "matrix", "slack"]
+    assert config["transport"] == "slack"
+
+
+def test_setup_transport_keeps_supported_existing_choice_as_default(monkeypatch):
+    config = {"transport": "telegram"}
+    monkeypatch.setattr("enso.cli.Prompt.get_input", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr("enso.cli._setup_telegram", lambda _: 123)
+    monkeypatch.setattr(
+        "enso.cli._setup_slack",
+        lambda _: pytest.fail("Slack setup must not run"),
+    )
+
+    assert _setup_transport(config) == 123
+    assert config["transport"] == "telegram"
 
 
 def test_launchd_service_has_no_process_working_directory(monkeypatch, tmp_path):
