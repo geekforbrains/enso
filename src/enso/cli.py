@@ -97,6 +97,28 @@ def _load_config_or_exit(*, allow_missing: bool = False) -> dict:
         console.print(f"[red]Configuration error:[/] {escape(str(exc))}")
         raise typer.Exit(1) from None
 
+
+@contextlib.contextmanager
+def _config_lock_or_exit():
+    """Acquire the config lock with a concise setup diagnostic."""
+    try:
+        with config_lock():
+            yield
+    except ConfigError as exc:
+        console.print(f"[red]Configuration error:[/] {escape(str(exc))}")
+        raise typer.Exit(1) from None
+
+
+def _ensure_repository_or_exit() -> None:
+    """Establish the local content-history boundary or stop setup safely."""
+    from .repository import EnsoRepository, RepositoryError
+
+    try:
+        EnsoRepository().ensure()
+    except RepositoryError as exc:
+        console.print(f"[red]Could not initialize Enso content history:[/] {escape(str(exc))}")
+        raise typer.Exit(1) from None
+
 # ---------------------------------------------------------------------------
 # Telegram API helpers (stdlib only — no extra deps for setup)
 # ---------------------------------------------------------------------------
@@ -1320,11 +1342,12 @@ def setup() -> None:
     console.print(Panel("Enso Setup", subtitle=f"v{__version__}", expand=False))
     # Strict preflight must happen before even the config lock is created.
     _load_config_or_exit(allow_missing=True)
-    with config_lock():
+    with _config_lock_or_exit():
         # Re-read under the lock so another Enso process cannot win a race
         # between validation and the setup read-modify-write transaction.
         config = _load_config_or_exit(allow_missing=True)
         _reject_legacy_setup_config(config)
+        _ensure_repository_or_exit()
 
         _setup_providers(config)
 

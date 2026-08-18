@@ -188,10 +188,43 @@ def _validate_config_lock(file_stat: os.stat_result) -> None:
         raise ConfigError("config lock must not have additional hard links")
 
 
+def _ensure_physical_config_dir() -> None:
+    """Create or validate the config root without following directory links."""
+    root = os.path.abspath(CONFIG_DIR)
+    if os.path.dirname(os.path.abspath(CONFIG_FILE)) != root:
+        raise ConfigError("config file must live directly in the config directory")
+
+    if os.path.lexists(root):
+        try:
+            root_stat = os.lstat(root)
+        except OSError as exc:
+            raise ConfigError(f"Could not inspect config directory safely: {exc}") from exc
+        if not stat.S_ISDIR(root_stat.st_mode) or os.path.realpath(root) != root:
+            raise ConfigError(f"{root} must be a physical directory, not a symlink")
+        return
+
+    parent = os.path.dirname(root)
+    try:
+        parent_stat = os.lstat(parent)
+    except OSError as exc:
+        raise ConfigError(
+            f"config directory parent {parent} must be a physical directory: {exc}"
+        ) from exc
+    if not stat.S_ISDIR(parent_stat.st_mode) or os.path.realpath(parent) != parent:
+        raise ConfigError(f"config directory parent {parent} must be a physical directory")
+    try:
+        os.mkdir(root, mode=0o700)
+    except FileExistsError:
+        # A concurrent setup may have created it after the existence check.
+        _ensure_physical_config_dir()
+    except OSError as exc:
+        raise ConfigError(f"Could not create config directory safely: {exc}") from exc
+
+
 @contextlib.contextmanager
 def config_lock() -> Iterator[None]:
     """Serialize config read-modify-write operations across processes."""
-    os.makedirs(CONFIG_DIR, mode=0o700, exist_ok=True)
+    _ensure_physical_config_dir()
     lock_path = f"{CONFIG_FILE}.lock"
     flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)

@@ -13,6 +13,8 @@ whose value comes from filtering, joining, and aggregation.
 
 ```
 ~/.enso/
+├── .git/                # local-only content history; no Enso-created remote
+├── .gitignore           # Enso-owned protective runtime/credential exclusions
 ├── config.json          # settings, including `web` and `runs` blocks
 ├── AGENTS.md            # canonical shared Enso instructions, injected into every launch
 ├── CLAUDE.md -> AGENTS.md
@@ -77,7 +79,11 @@ person is involved:
    1Password, described below. Nothing else depends on it: with no reference key
    configured, Enso never invokes the helper, and every other feature works unchanged.
 
-If the operator chooses to version-control `~/.enso`, a literal credential in `config.json` becomes a credential in git history. Enso does not initialize this repository. Keep sensitive state ignored, or use option 2 or 3 so tracked config contains a reference rather than a secret.
+Enso initializes `~/.enso` as a local Git repository, but `config.json` is always outside
+its content-history allowlist and covered by protective ignore rules. Enso-created
+snapshots therefore cannot capture a literal credential from this file; a repository
+that already tracks protected content is diagnosed and blocked instead of assumed safe.
+The repository has no Enso-created remote and is not a complete configuration backup.
 
 ### Content-history safety boundary
 
@@ -387,7 +393,25 @@ A workspace is a shared content root and provider cwd, not a security boundary. 
 
 A policy directory belongs to a policy and stays outside every writable workspace. This separation lets one policy serve several project directories. Paths are expanded and canonicalized before topology checks or child-process use. Workspaces may live at normalized operator-chosen paths, but configured workspace roots must not overlap each other; policy paths must not overlap any workspace. Aliases and hard links must not provide a writable path back to protected policy bytes.
 
-Enso does not initialize `~/.enso` as a Git repository. Shared instructions are canonical at `~/.enso/AGENTS.md`, with `CLAUDE.md -> AGENTS.md`, and Enso injects validated content on every provider launch independently of cwd. The canonical source must be a stable, owner-owned regular non-symlink file with no additional hard links or group/other write bits, valid UTF-8 no larger than 20 KiB, and no NUL bytes. Enso hashes it and publishes or verifies an immutable owner-only snapshot at `~/.enso/runtime/instructions/<sha256>.md`; Claude receives that snapshot through `--append-system-prompt-file`, while Codex receives the validated in-memory content through `developer_instructions`, Grok receives it through its `--rules` flag, and unrestricted Agy receives it in Enso's prompt envelope. Missing or unsafe shared instructions fail `enso config check` and provider launch closed. Workspace-local instructions and skills still follow each provider's native discovery from the selected workspace. A company workspace that can access sibling client directories should explicitly tell the agent to read the selected client's protected instructions rather than relying on implicit discovery after changing directories.
+Enso initializes a new `~/.enso` local Git worktree on `main`, after installing its
+protective ignore block. It accepts an existing repository only when Git reports that
+exact directory as the worktree root; corrupt, outer, and ambiguous repository states
+fail setup. Enso never creates, changes, or contacts a remote, and it writes repository-
+local fallback author details only when Git has no effective identity. Shared instructions
+are canonical at `~/.enso/AGENTS.md`, with `CLAUDE.md -> AGENTS.md`, and Enso currently
+injects validated content on every provider launch independently of cwd. The canonical
+source must be a stable, owner-owned regular non-symlink file with no additional hard
+links or group/other write bits, valid UTF-8 no larger than 20 KiB, and no NUL bytes. Enso
+hashes it and publishes or verifies an immutable owner-only snapshot at
+`~/.enso/runtime/instructions/<sha256>.md`; Claude receives that snapshot through
+`--append-system-prompt-file`, while Codex receives the validated in-memory content through
+`developer_instructions`, Grok receives it through its `--rules` flag, and unrestricted
+Agy receives it in Enso's prompt envelope. Missing or unsafe shared instructions fail
+`enso config check` and provider launch closed. Workspace-local instructions and skills
+still follow each provider's native discovery from the selected workspace. A company
+workspace that can access sibling client directories should explicitly tell the agent to
+read the selected client's protected instructions rather than relying on implicit
+discovery after changing directories.
 
 An attachment-bearing Telegram or Slack turn gets a unique `uploads/<random-id>/` directory within its resolved workspace. These files persist until the operator removes them; Enso does not treat uploads as temporary or apply automatic retention. Enso config, secrets, policies, database, jobs, and provider credentials are not linked into restricted workspaces.
 

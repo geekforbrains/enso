@@ -324,6 +324,49 @@ def test_setup_rejects_malformed_config_before_scaffolding(monkeypatch, tmp_enso
     assert not Path(f"{config_file}.lock").exists()
 
 
+def test_setup_rejects_symlinked_config_root_before_writing(monkeypatch, tmp_path, capsys):
+    target = tmp_path / "outside-enso"
+    target.mkdir()
+    config_root = tmp_path / "enso"
+    config_root.symlink_to(target, target_is_directory=True)
+    monkeypatch.setattr("enso.config.CONFIG_DIR", str(config_root))
+    monkeypatch.setattr("enso.config.CONFIG_FILE", str(config_root / "config.json"))
+    monkeypatch.setattr(
+        "enso.cli._setup_providers",
+        lambda *_: pytest.fail("setup must stop before provider configuration"),
+    )
+
+    with pytest.raises(typer.Exit) as exc_info:
+        setup()
+
+    assert exc_info.value.exit_code == 1
+    assert "physical directory" in capsys.readouterr().out
+    assert list(target.iterdir()) == []
+
+
+def test_setup_ensures_repository_before_provider_configuration(
+    monkeypatch, tmp_enso
+):
+    events = []
+    monkeypatch.setattr(
+        "enso.cli._ensure_repository_or_exit",
+        lambda: events.append("repository"),
+        raising=False,
+    )
+
+    def stop_after_repository(_config):
+        events.append("providers")
+        raise typer.Exit(7)
+
+    monkeypatch.setattr("enso.cli._setup_providers", stop_after_repository)
+
+    with pytest.raises(typer.Exit) as exc_info:
+        setup()
+
+    assert exc_info.value.exit_code == 7
+    assert events == ["repository", "providers"]
+
+
 @pytest.mark.parametrize("command", [serve, web])
 def test_operational_commands_require_existing_config(
     command, monkeypatch, tmp_enso, capsys

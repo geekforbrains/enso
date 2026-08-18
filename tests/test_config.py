@@ -14,6 +14,7 @@ from enso.config import (
     DEFAULT_PROVIDERS,
     ConfigError,
     SetupState,
+    config_lock,
     config_transaction,
     load_config,
     provider_models,
@@ -164,6 +165,22 @@ def test_config_transaction_rejects_symlink_lock_without_touching_target(
         pytest.fail("an unsafe lock must not be acquired")
 
     assert target.read_text() == "outside"
+
+
+def test_config_lock_rejects_symlinked_config_root_without_touching_target(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "outside-enso"
+    target.mkdir()
+    config_root = tmp_path / "enso"
+    config_root.symlink_to(target, target_is_directory=True)
+    monkeypatch.setattr("enso.config.CONFIG_DIR", str(config_root))
+    monkeypatch.setattr("enso.config.CONFIG_FILE", str(config_root / "config.json"))
+
+    with pytest.raises(ConfigError, match="physical directory"), config_lock():
+        pytest.fail("a lock must not be created through a symlinked config root")
+
+    assert list(target.iterdir()) == []
 
 
 def test_config_transactions_serialize_cross_process_updates(tmp_path):

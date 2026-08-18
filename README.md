@@ -28,6 +28,7 @@ Design docs live in [`docs/`](docs/) and are the source of truth for planned and
 ## Requirements
 
 - Python 3.10+
+- Git 2.28+ (required for the managed local content repository)
 - At least one of `claude`, `codex`, `grok`, or `agy` installed and on your PATH
   - Codex CLI 0.144.0 or newer is required for the Sol, Terra, and Luna models
   - Grok Build CLI 1.0.4 or newer is required for the `grok` provider's headless launches
@@ -354,7 +355,13 @@ environment projection through `secrets/*.env` as above, or a reference to a sec
 manager. One reference implementation ships, for 1Password — it is entirely optional, and
 with no reference key configured Enso never invokes the helper.
 
-If you choose to keep `~/.enso` in git, a literal credential in `config.json` becomes a credential in your git history. Enso does not initialize that repository for you. Keep state and secrets ignored, or use one of the other credential options so tracked config holds a reference instead of a secret.
+Enso initializes `~/.enso` as a local Git repository with protective ignore rules before
+it stages any content. `config.json`, secrets, databases, messages, logs, uploads, drafts,
+native policies, and other runtime state are never eligible for Enso snapshots. An
+already-tracked protected file blocks automatic snapshots until the operator repairs the
+repository. Enso never creates or contacts a remote: this history is a local content
+journal, not a configuration backup. Literal credentials in `config.json` remain
+untracked, but a secret-manager reference is still preferable to plaintext at rest.
 
 The 1Password integration resolves credentials at each process start or CLI invocation,
 without copying the token into `config.json` or projecting it into the environment. It
