@@ -11,6 +11,7 @@ import pytest
 pytest.importorskip("starlette")
 pytest.importorskip("jinja2")
 
+from enso import config as config_mod
 from enso.jobs import Job
 from enso.policy import PolicyCheck
 from enso.web import app as web_app
@@ -52,12 +53,10 @@ def _config(tmp_path) -> dict:
         },
         "workspaces": {
             "zeta": {
-                "path": str(tmp_path / "zeta"),
                 "policy": "shared",
                 "concurrency": 2,
             },
             "alpha": {
-                "path": str(tmp_path / "alpha"),
                 "policy": "shared",
                 "concurrency": 1,
             },
@@ -268,6 +267,9 @@ def _client(tmp_path, monkeypatch, config: dict, *, jobs: tuple[Job, ...] = ()):
     from starlette.testclient import TestClient
 
     runtime = SimpleNamespace(config=config)
+    config_dir = tmp_path / "enso"
+    monkeypatch.setattr(config_mod, "CONFIG_DIR", str(config_dir))
+    monkeypatch.setattr(web_app, "CONFIG_DIR", str(config_dir))
     monkeypatch.setattr(web_app, "load_jobs_with_errors", lambda _config: (list(jobs), {}))
     monkeypatch.setattr(
         web_app.slack_cache,
@@ -311,7 +313,6 @@ def test_workspace_policy_and_slack_lists_render_active_configuration(tmp_path, 
     changed = _config(tmp_path)
     changed["workspaces"] = {
         "replacement": {
-            "path": str(tmp_path / "replacement"),
             "policy": "shared",
             "concurrency": 1,
         }
@@ -353,25 +354,28 @@ def test_policy_checks_run_only_on_detail_and_unknown_names_404(tmp_path, monkey
     assert client.get("/policies/missing").status_code == 404
 
 
-def test_policy_detail_skips_checks_when_catalog_topology_is_invalid(tmp_path, monkeypatch):
+def test_policy_detail_skips_checks_for_legacy_workspace_path(tmp_path, monkeypatch):
     config = _config(tmp_path)
-    config["workspaces"]["zeta"]["path"] = config["workspaces"]["alpha"]["path"]
+    config["workspaces"]["zeta"]["path"] = str(tmp_path / "legacy-zeta")
     _, client = _client(tmp_path, monkeypatch, config)
     calls: list[tuple[str, str]] = []
 
     def check(workspace, _policy, provider):
         calls.append((workspace.name, provider))
-        raise AssertionError("globally unusable bindings must not be checked")
+        return PolicyCheck(
+            provider=provider,
+            ok=True,
+            policy_revision=f"revision-{workspace.name}-{provider}",
+        )
 
     monkeypatch.setattr(web_app, "check_provider", check)
 
     response = client.get("/policies/shared")
 
     assert response.status_code == 200
-    assert calls == []
-    assert "overlapping or nested paths" in response.text
+    assert calls == [("alpha", "claude"), ("alpha", "codex")]
+    assert "path is no longer supported" in response.text
     assert "Cannot launch" in response.text
-    assert "overlapping or nested paths" in response.text
     assert "unused policy" not in response.text
 
 
@@ -478,16 +482,13 @@ def _managed_catalog_client(tmp_path, monkeypatch):
     child = alpha / "service"
     child.mkdir()
     (child / "AGENTS.md").write_text("# Service\n", encoding="utf-8")
-    external = tmp_path / "external"
-    external.mkdir()
-    (external / "AGENTS.md").write_text("# External\n", encoding="utf-8")
+    zeta = config_dir / "workspaces" / "zeta"
+    zeta.mkdir()
+    (zeta / "AGENTS.md").write_text("# Zeta\n", encoding="utf-8")
 
     config = _config(tmp_path)
-    config["workspaces"]["alpha"]["path"] = str(alpha)
-    config["workspaces"]["zeta"]["path"] = str(external)
-    monkeypatch.setattr(web_app, "CONFIG_DIR", str(config_dir))
     _, client = _client(tmp_path, monkeypatch, config)
-    return alpha, external, client
+    return alpha, zeta, client
 
 
 def test_workspace_detail_edits_managed_root_and_keeps_children_read_only(
@@ -538,14 +539,14 @@ def test_workspace_detail_edits_managed_root_and_keeps_children_read_only(
     assert (alpha / "AGENTS.md").read_text(encoding="utf-8") == "# Edited\n"
 
 
-def test_workspace_list_counts_agents_and_marks_external_roots(tmp_path, monkeypatch):
+def test_workspace_list_counts_agents_in_managed_roots(tmp_path, monkeypatch):
     _, _, client = _managed_catalog_client(tmp_path, monkeypatch)
 
     response = client.get("/workspaces")
 
     assert response.status_code == 200
     assert "2 AGENTS.md files" in response.text
-    assert "External workspace" in response.text
+    assert "External workspace" not in response.text
 
 
 def test_workspace_root_integrity_failure_changes_workspace_status(tmp_path, monkeypatch):
@@ -561,9 +562,10 @@ def test_workspace_root_integrity_failure_changes_workspace_status(tmp_path, mon
     assert 'action="/workspaces/alpha/agents/edit"' not in detail.text
 
 
-def test_workspace_root_creation_is_managed_only(tmp_path, monkeypatch):
-    alpha, external, client = _managed_catalog_client(tmp_path, monkeypatch)
+def test_workspace_root_creation_supports_each_managed_workspace(tmp_path, monkeypatch):
+    alpha, zeta, client = _managed_catalog_client(tmp_path, monkeypatch)
     (alpha / "AGENTS.md").unlink()
+    (zeta / "AGENTS.md").unlink()
 
     created = client.post(
         "/workspaces/alpha/agents/edit",
@@ -574,19 +576,20 @@ def test_workspace_root_creation_is_managed_only(tmp_path, monkeypatch):
         },
         follow_redirects=False,
     )
-    external_write = client.post(
+    zeta_write = client.post(
         "/workspaces/zeta/agents/edit",
         data={
-            "content": "# Replaced\n",
+            "content": "# Created zeta\n",
             "revision": "",
             "_csrf": client.app.state.csrf_token,
         },
+        follow_redirects=False,
     )
 
     assert created.status_code == 303
     assert (alpha / "AGENTS.md").read_text(encoding="utf-8") == "# Created\n"
-    assert external_write.status_code == 403
-    assert (external / "AGENTS.md").read_text(encoding="utf-8") == "# External\n"
+    assert zeta_write.status_code == 303
+    assert (zeta / "AGENTS.md").read_text(encoding="utf-8") == "# Created zeta\n"
     assert client.get("/workspaces/missing").status_code == 404
 
 
@@ -603,7 +606,6 @@ def test_symlinked_managed_workspace_root_is_read_only(tmp_path, monkeypatch):
     config = _config(tmp_path)
     config["workspaces"] = {
         "alpha": {
-            "path": str(config_dir / "workspaces" / "alpha"),
             "policy": "shared",
             "concurrency": 1,
         }

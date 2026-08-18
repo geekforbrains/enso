@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import importlib.resources
 import json
 import os
@@ -16,7 +15,7 @@ import pytest
 
 from enso import core as core_module
 from enso import messages
-from enso.config import SKILL_TOMBSTONES_DIRNAME
+from enso.config import managed_workspace_path
 from enso.core import (
     ExecutionContext,
     Runtime,
@@ -54,8 +53,8 @@ def _execution_context(
     **kwargs,
 ) -> ExecutionContext:
     """Build a complete unrestricted workspace binding for runtime tests."""
-    path = sample_config["workspaces"]["default"]["path"]
-    workspace = Workspace("test", path, "test", concurrency)
+    path = managed_workspace_path()
+    workspace = Workspace("default", path, "test", concurrency)
     policy = Policy("test", None, True, providers, providers[0], "*")
     provider = kwargs.pop("provider", providers[0])
     models = sample_config["providers"][provider]["models"]
@@ -221,34 +220,21 @@ def test_runtime_has_no_global_execution_directory_or_context(sample_config):
 
 
 def test_execution_context_requires_workspace_policy_and_message_scope(sample_config):
-    path = sample_config["workspaces"]["default"]["path"]
+    path = managed_workspace_path()
 
     with pytest.raises(TypeError):
         ExecutionContext(chat_key="chat", path=path, workspace_id="test")  # type: ignore[call-arg]
 
 
-# -- Workspace setup --
+# -- Bundled guidance --
 
 
-def _legacy_agents_prompt() -> tuple[str, str]:
-    """Return the current and exact pre-task-removal prompt templates.
-
-    The legacy template is a checked-in fixture (the last bundled prompt
-    that still documented the tasks system) so editing the current bundled
-    prompt never breaks migration tests.
-    """
-    current = (
+def _bundled_prompt(filename: str = "AGENTS.md") -> str:
+    return (
         importlib.resources.files("enso")
-        .joinpath("prompts", "AGENTS.md")
+        .joinpath("prompts", filename)
         .read_text(encoding="utf-8")
     )
-    legacy = (
-        Path(__file__).parent / "data" / "legacy_tasks_agents.md"
-    ).read_text(encoding="utf-8")
-    assert hashlib.sha256(legacy.encode()).hexdigest() == (
-        core_module._LEGACY_TASKS_AGENTS_SHA256
-    )
-    return current, legacy
 
 
 def test_has_session_memory_reports_only_used_sessions(sample_config):
@@ -266,148 +252,22 @@ def test_has_session_memory_reports_only_used_sessions(sample_config):
     assert not runtime.has_session_memory("chat", "codex")
 
 
-def test_install_system_prompts_migrates_exact_legacy_template(sample_config):
-    current, legacy = _legacy_agents_prompt()
-    agents_file = Path(core_module.CONFIG_DIR, "AGENTS.md")
-    agents_file.write_text(legacy)
-
-    Runtime(sample_config).install_system_prompts()
-
-    assert agents_file.read_text() == current
-
-
-def test_legacy_prompt_migration_failure_preserves_original(
-    sample_config, monkeypatch
-):
-    _, legacy = _legacy_agents_prompt()
-    agents_file = Path(core_module.CONFIG_DIR, "AGENTS.md")
-    agents_file.write_text(legacy)
-
-    def fail_replace(_source, _target):
-        raise OSError("replace failed")
-
-    monkeypatch.setattr("enso.core.os.replace", fail_replace)
-
-    Runtime(sample_config).install_system_prompts()
-
-    assert agents_file.read_text() == legacy
-    assert list(agents_file.parent.glob("*.tmp")) == []
-
-
-def test_install_system_prompts_preserves_customized_template(sample_config, caplog):
-    _, legacy = _legacy_agents_prompt()
-    agents_file = Path(core_module.CONFIG_DIR, "AGENTS.md")
-    customized = legacy + "\n## Local instructions\nKeep this customization.\n"
-    agents_file.write_text(customized)
-
-    Runtime(sample_config).install_system_prompts()
-
-    assert agents_file.read_text() == customized
-    assert "contains retired task instructions" in caplog.text
-
-
-def test_install_system_prompts_updates_any_known_pristine_template(
-    sample_config, monkeypatch,
-):
-    """An untouched prompt from an earlier release follows the bundle forward."""
-    current, _ = _legacy_agents_prompt()
-    previous = "# Enso\n\nformer pristine bundled prompt\n"
-    agents_file = Path(core_module.CONFIG_DIR, "AGENTS.md")
-    agents_file.write_text(previous)
-    monkeypatch.setattr(
-        core_module,
-        "_PRISTINE_AGENTS_SHA256",
-        frozenset({hashlib.sha256(previous.encode()).hexdigest()}),
-    )
-
-    Runtime(sample_config).install_system_prompts()
-
-    assert agents_file.read_text() == current
-
-
-def test_install_system_prompts_preserves_unknown_template(sample_config, caplog):
-    """A prompt whose hash is unknown is customized — leave it entirely alone."""
-    agents_file = Path(core_module.CONFIG_DIR, "AGENTS.md")
-    customized = "# Enso\n\nMy own prompt.\n"
-    agents_file.write_text(customized)
-
-    Runtime(sample_config).install_system_prompts()
-
-    assert agents_file.read_text() == customized
-    assert "retired task instructions" not in caplog.text
-
-
-def test_install_system_prompts_creates_docs_dir(tmp_enso, sample_config):
-    Runtime(sample_config).install_system_prompts()
-
-    assert Path(tmp_enso, "docs").is_dir()
-    assert Path(tmp_enso, "jobs").is_dir()
-    assert Path(tmp_enso, "AGENTS.md").is_file()
-    assert Path(tmp_enso, "CLAUDE.md").is_symlink()
-    assert Path(tmp_enso, ".claude", "skills").is_symlink()
-    assert Path(tmp_enso, ".agents", "skills").is_symlink()
-    assert Path(tmp_enso, ".claude", "settings.json").is_file()
-    workspace_path = Path(sample_config["workspaces"]["default"]["path"])
-    assert not (workspace_path / "AGENTS.md").exists()
-    assert not (workspace_path / "CLAUDE.md").exists()
-
-
-def test_docs_skill_is_bundled(tmp_path):
-    skills_dir = tmp_path / "skills"
-    skills_dir.mkdir()
-
-    Runtime._install_bundled_skills(str(skills_dir))
-
-    assert (skills_dir / "docs" / "SKILL.md").is_file()
-
-
-def test_tables_skill_is_bundled(tmp_path):
-    skills_dir = tmp_path / "skills"
-    skills_dir.mkdir()
-
-    Runtime._install_bundled_skills(str(skills_dir))
-
-    skill = skills_dir / "tables" / "SKILL.md"
-    assert skill.is_file()
-    content = skill.read_text(encoding="utf-8")
-    assert "enso table list" in content
-    assert "sqlite3 ~/.enso/enso.db" in content
-    assert "runs" in content
-    assert "_enso_" in content
-    assert ".bail on" in content
-    assert "PRAGMA foreign_keys = ON;" in content
-
-
-def test_workspace_skill_is_bundled(tmp_path):
-    skills_dir = tmp_path / "skills"
-    skills_dir.mkdir()
-
-    Runtime._install_bundled_skills(str(skills_dir))
-
-    skill = skills_dir / "workspace" / "SKILL.md"
-    assert skill.is_file()
-    content = skill.read_text(encoding="utf-8")
-    assert "enso config check" in content
-    assert "AGENTS.md" in content
-    assert ".agents/skills" in content
-
-
 def test_bundled_prompt_documents_the_doc_commands():
     """The shared prompt routes doc work without duplicating the whole skill."""
-    current, _ = _legacy_agents_prompt()
+    current = _bundled_prompt()
     assert "enso doc list" in current
     assert "`docs` skill" in current
 
 
 def test_bundled_prompt_documents_the_table_commands():
     """The shared prompt routes table work without duplicating the whole skill."""
-    current, _ = _legacy_agents_prompt()
+    current = _bundled_prompt()
     assert "enso table list" in current
     assert "`tables` skill" in current
 
 
 def test_bundled_prompt_routes_workspace_changes_to_the_skill():
-    current, _ = _legacy_agents_prompt()
+    current = _bundled_prompt()
     assert "enso config check" in current
     assert "`workspace` skill" in current
     assert "~/.enso/.claude/skills" in current
@@ -422,216 +282,11 @@ def test_bundled_prompts_are_transport_neutral():
         assert "telegram" not in content
 
 
-def test_supported_bundled_artifact_hashes_remain_known_pristine():
-    """Clean files from supported prior revisions follow the bundle forward."""
-    assert {
-        "00216052e667a7e0d6de59fb331f71e4491af33b5a9ad17439b1836361b3ff6b",
-        "c4d83056e148464c33ee6fcbb360f9f12fb8a3d3bdb32ab44fe673b2829d976a",
-    } <= core_module._PRISTINE_AGENTS_SHA256
-    assert {
-        "b083179b34f1de30cd1d669d2d3e3f4cfd2174bf956527aeb68d09935846f522",
-    } <= core_module._PRISTINE_WORKSPACE_AGENTS_SHA256
-
-    expected_skill_hashes = {
-        ("docs", "SKILL.md"): {
-            "0f657ffd78a63e4d15301eb422b845d8ae2bf2dc60eaacd84c1c4234b9f6ee8e",
-        },
-        ("jobs", "SKILL.md"): {
-            "3f14ca280b44121434a1308e57f23f6cfe36858b79a06d8e06838cade3d06937",
-            "5d9bcd9e89d027af78b3eaa5d665c7f05e855a4a3f7052ad612dc2cfff324ec2",
-            "ed6e39bddc71769546b6a8608aff848120e17a60fac122273d9428a016893679",
-        },
-        ("slack", "SKILL.md"): {
-            "5d9f76e2bcb757b27ab294a6f7322e07a59ebafbe08566f218348f8d15ac178a",
-            "646d0ab64c0713baf32eec4f0639b4d709d4b1c7a2a1a320e2eed84d55fc5582",
-            "c91732f4c9a702145e9f4beff6dd5b113b7d5616104842a3350a39a262dff072",
-            "70f2dd312d001f23a49aeadb2f556df76e259b80f8591093eb7d36a6ea56b2bd",
-            "c9c84d0a1a994a89ee56cf67ec10347c7730add329505b2959880728c58f2980",
-            "a53162090b0bbbc3d60067674b428e56e1f9c62e0fc555e807d98e03068c0fcd",
-        },
-        ("tables", "SKILL.md"): {
-            "3ece50cd4ea1d1dbcb60a976b69178e4c81b8bac861e8187dc2208ac87426aba",
-        },
-    }
-    for key, expected in expected_skill_hashes.items():
-        assert expected <= core_module._BUNDLED_SKILL_PRISTINE_HASHES[key]
-
-
-def test_workspace_prompt_updates_only_known_pristine_copy(
-    sample_config, monkeypatch,
-):
-    root = Path(sample_config["workspaces"]["default"]["path"])
-    agents_file = root / "AGENTS.md"
-    previous = "# Enso workspace\n\nFormer pristine workspace prompt.\n"
-    agents_file.write_text(previous, encoding="utf-8")
-    monkeypatch.setattr(
-        core_module,
-        "_PRISTINE_WORKSPACE_AGENTS_SHA256",
-        frozenset({hashlib.sha256(previous.encode()).hexdigest()}),
-    )
-
-    Runtime(sample_config).install_workspaces()
-
-    current = (
-        importlib.resources.files("enso")
-        .joinpath("prompts", "WORKSPACE_AGENTS.md")
-        .read_text(encoding="utf-8")
-    )
-    assert agents_file.read_text(encoding="utf-8") == current
-
-
-def test_workspace_prompt_preserves_custom_file(sample_config):
-    root = Path(sample_config["workspaces"]["default"]["path"])
-    agents_file = root / "AGENTS.md"
-    customized = "# My workspace\n\nKeep this local guidance.\n"
-    agents_file.write_text(customized, encoding="utf-8")
-
-    Runtime(sample_config).install_workspaces()
-
-    assert agents_file.read_text(encoding="utf-8") == customized
-
-
-def test_workspace_prompt_preserves_symlink_even_when_target_hash_is_known(
-    sample_config, monkeypatch,
-):
-    root = Path(sample_config["workspaces"]["default"]["path"])
-    agents_file = root / "AGENTS.md"
-    target = root / "custom-instructions.md"
-    previous = "# Enso workspace\n\nFormer pristine workspace prompt.\n"
-    target.write_text(previous, encoding="utf-8")
-    agents_file.symlink_to(target.name)
-    monkeypatch.setattr(
-        core_module,
-        "_PRISTINE_WORKSPACE_AGENTS_SHA256",
-        frozenset({hashlib.sha256(previous.encode()).hexdigest()}),
-    )
-
-    Runtime(sample_config).install_workspaces()
-
-    assert agents_file.is_symlink()
-    assert target.read_text(encoding="utf-8") == previous
-
-
-def test_bundled_skills_are_seeded_once(tmp_path):
-    skills_dir = tmp_path / "skills"
-    skills_dir.mkdir()
-    Runtime._install_bundled_skills(str(skills_dir))
-    skill_file = skills_dir / "jobs" / "SKILL.md"
-    assert skill_file.is_file()
-
-    skill_file.write_text("locally edited through the dashboard\n")
-    Runtime._install_bundled_skills(str(skills_dir))
-
-    assert skill_file.read_text() == "locally edited through the dashboard\n"
-
-
-def test_bundled_skill_tombstone_prevents_reseeding(tmp_path):
-    skills_dir = tmp_path / "skills"
-    tombstones = skills_dir / SKILL_TOMBSTONES_DIRNAME
-    tombstones.mkdir(parents=True)
-    (tombstones / "jobs.deleted").write_text("")
-
-    Runtime._install_bundled_skills(str(skills_dir))
-
-    assert not (skills_dir / "jobs").exists()
-    assert (skills_dir / "slack" / "SKILL.md").is_file()
-
-
-def test_bundled_skills_update_only_known_pristine_files(tmp_path, monkeypatch):
-    skills_dir = tmp_path / "skills"
-    skill_dir = skills_dir / "jobs"
-    skill_dir.mkdir(parents=True)
-    skill_file = skill_dir / "SKILL.md"
-    previous = "former pristine bundled jobs skill\n"
-    skill_file.write_text(previous)
-    monkeypatch.setattr(
-        core_module,
-        "_BUNDLED_SKILL_PRISTINE_HASHES",
-        {
-            ("jobs", "SKILL.md"): frozenset({
-                hashlib.sha256(previous.encode()).hexdigest()
-            })
-        },
-    )
-
-    Runtime._install_bundled_skills(str(skills_dir))
-
-    current = (
-        importlib.resources.files("enso")
-        .joinpath("skills", "jobs", "SKILL.md")
-        .read_text(encoding="utf-8")
-    )
-    assert skill_file.read_text() == current
-
-
-def test_bundled_skills_preserve_symlink_even_when_target_hash_is_known(
-    tmp_path, monkeypatch
-):
-    skills_dir = tmp_path / "skills"
-    skill_dir = skills_dir / "jobs"
-    skill_dir.mkdir(parents=True)
-    target = tmp_path / "custom-jobs-skill.md"
-    previous = "former pristine bundled jobs skill\n"
-    target.write_text(previous)
-    skill_file = skill_dir / "SKILL.md"
-    skill_file.symlink_to(target)
-    monkeypatch.setattr(
-        core_module,
-        "_BUNDLED_SKILL_PRISTINE_HASHES",
-        {
-            ("jobs", "SKILL.md"): frozenset({
-                hashlib.sha256(previous.encode()).hexdigest()
-            })
-        },
-    )
-
-    Runtime._install_bundled_skills(str(skills_dir))
-
-    assert skill_file.is_symlink()
-    assert target.read_text() == previous
-
-
-def test_retire_legacy_tasks_skill_only_when_pristine(tmp_path, monkeypatch):
-    skills_dir = tmp_path / "skills"
-    task_dir = skills_dir / "tasks"
-    task_dir.mkdir(parents=True)
-    pristine = "former bundled task skill\n"
-    monkeypatch.setattr(
-        core_module,
-        "_LEGACY_TASKS_SKILL_SHA256",
-        hashlib.sha256(pristine.encode()).hexdigest(),
-    )
-
-    (task_dir / "SKILL.md").write_text(pristine)
-    Runtime._retire_legacy_tasks_skill(str(skills_dir))
-    assert not task_dir.exists()
-
-    task_dir.mkdir()
-    (task_dir / "SKILL.md").write_text(pristine + "customized\n")
-    Runtime._retire_legacy_tasks_skill(str(skills_dir))
-    assert task_dir.is_dir()
-
-    (task_dir / "SKILL.md").write_text(pristine)
-    (task_dir / "notes.md").write_text("user-owned companion file\n")
-    Runtime._retire_legacy_tasks_skill(str(skills_dir))
-    assert task_dir.is_dir()
-
-
-def test_retire_legacy_tasks_skill_preserves_directory_symlink(tmp_path, caplog):
-    skills_dir = tmp_path / "skills"
-    skills_dir.mkdir()
-    target = tmp_path / "custom-task-skill"
-    target.mkdir()
-    skill_file = target / "SKILL.md"
-    skill_file.write_text("custom task skill\n")
-    task_link = skills_dir / "tasks"
-    task_link.symlink_to(target, target_is_directory=True)
-
-    Runtime._retire_legacy_tasks_skill(str(skills_dir))
-
-    assert task_link.is_symlink()
-    assert skill_file.read_text() == "custom task skill\n"
-    assert "Preserving customized retired tasks skill" in caplog.text
+def test_runtime_has_no_content_installer_api():
+    assert not hasattr(Runtime, "install_system_prompts")
+    assert not hasattr(Runtime, "install_workspaces")
+    assert not hasattr(Runtime, "_install_bundled_skills")
+    assert not hasattr(Runtime, "_install_skill_tools")
 
 
 # -- Runtime state --
@@ -3207,66 +2862,3 @@ async def test_grok_surfaces_a_second_consecutive_auth_failure(
     assert outcome == ("error", "provider_error")
     assert len(spawned) == 2
     assert any("Not signed in" in reply for reply in ctx.replies)
-
-
-def test_retire_legacy_skill_tools_removes_pristine_copies(
-    sample_config, tmp_enso, monkeypatch,
-):
-    """Pristine retired tool scripts vanish from both the skill and tools dirs."""
-    skills_dir = os.path.join(tmp_enso, "skills")
-    skill_dir = os.path.join(skills_dir, "slack")
-    os.makedirs(skill_dir)
-    content = "print('legacy tool')\n"
-    pristine = hashlib.sha256(content.encode()).hexdigest()
-    Path(skill_dir, "slack_search.py").write_text(content)
-    tools_dir = os.path.join(
-        sample_config["workspaces"]["default"]["path"], "tools"
-    )
-    os.makedirs(tools_dir)
-    Path(tools_dir, "slack_search.py").write_text(content)
-    monkeypatch.setattr(
-        core_module,
-        "_RETIRED_SKILL_TOOL_HASHES",
-        {("slack", "slack_search.py"): frozenset({pristine})},
-    )
-
-    Runtime(sample_config)._retire_legacy_skill_tools(skills_dir)
-
-    assert not os.path.exists(os.path.join(skill_dir, "slack_search.py"))
-    assert not os.path.exists(os.path.join(tools_dir, "slack_search.py"))
-
-
-def test_retire_legacy_skill_tools_preserves_customized_copy(
-    sample_config, tmp_enso, monkeypatch,
-):
-    skills_dir = os.path.join(tmp_enso, "skills")
-    skill_dir = os.path.join(skills_dir, "slack")
-    os.makedirs(skill_dir)
-    Path(skill_dir, "slack_search.py").write_text("print('user changed this')\n")
-    monkeypatch.setattr(
-        core_module,
-        "_RETIRED_SKILL_TOOL_HASHES",
-        {("slack", "slack_search.py"): frozenset({"0" * 64})},
-    )
-
-    Runtime(sample_config)._retire_legacy_skill_tools(skills_dir)
-
-    assert os.path.exists(os.path.join(skill_dir, "slack_search.py"))
-
-
-def test_skill_tools_do_not_fall_back_when_default_workspace_is_absent(
-    sample_config, tmp_path,
-):
-    default = sample_config["workspaces"].pop("default")
-    sample_config["workspaces"]["personal"] = default
-    sample_config["transports"]["telegram"]["workspace"] = "personal"
-    skills_dir = tmp_path / "skills"
-    skill_dir = skills_dir / "custom"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "tool.py").write_text("print('custom')\n")
-
-    runtime = Runtime(sample_config)
-    runtime._install_skill_tools(str(skills_dir))
-
-    assert runtime._default_workspace_path() is None
-    assert not (Path(default["path"]) / "tools" / "tool.py").exists()

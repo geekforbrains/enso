@@ -38,23 +38,31 @@ whose value comes from filtering, joining, and aggregation.
 │   └── <run_id>.log
 ├── runtime/
 │   └── instructions/<sha256>.md  # immutable validated shared-prompt snapshots
-├── skills/              # Enso-owned skills (editable via UI)
-│   └── .deleted/        # deletion markers preventing bundled skills from being reseeded
-├── .agents/skills -> ../skills
-├── .claude/skills -> ../skills
-├── workspaces/          # named content roots used by transports, routes, and jobs
-│   ├── default/         # fresh-install workspace, bound to policy `admin`
-│   ├── company/
-│   └── clients/<name>/
+├── skills/              # canonical global skills; user-owned after fresh setup
+├── .agents/
+│   └── skills -> ../skills
+├── .claude/
+│   └── skills -> ../skills
+├── workspaces/          # flat, name-derived roots used by transports, routes, and jobs
+│   ├── default/         # exact path: ~/.enso/workspaces/default
+│   │   ├── AGENTS.md
+│   │   ├── CLAUDE.md -> AGENTS.md
+│   │   ├── skills/      # canonical workspace skills; initially empty
+│   │   ├── .agents/skills -> ../skills
+│   │   ├── .claude/skills -> ../skills
+│   │   ├── knowledge/
+│   │   │   └── README.md
+│   │   ├── drafts/
+│   │   └── uploads/
+│   └── client-a/        # every other workspace has the same structure
 └── policies/            # protected native policy files, keyed by policy name
     └── <policy>/{claude,codex,grok}/
 ```
 
-Deleting an Enso-owned skill removes its complete directory. For a bundled skill, a
-zero-byte marker at `skills/.deleted/<name>.deleted` records the explicit deletion so it
-is not silently recreated the next time the agent service installs its system prompts.
-Custom and external skill names do not receive markers; external skills cannot be deleted
-by the dashboard.
+Deleting an Enso-owned skill removes its complete directory. Installed bundle copies are
+ordinary user-owned content: deletion creates no marker because startup, setup repair,
+and upgrades never reseed them. Enso also does not remove guessed tool copies when a skill
+is deleted. External skills remain read-only in the dashboard.
 
 `runs/` mirrors a convention already in place: it is a flat blob store keyed by run id.
 
@@ -363,19 +371,21 @@ See [teams.md](teams.md) for route behavior, [slack-triggers.md](slack-triggers.
 
 ### Filesystem layout
 
-A practical installation may use:
+A practical installation uses one flat, name-derived workspace tree:
 
 ```text
 ~/.enso/
 ├── AGENTS.md                          # canonical shared launch instructions
 ├── CLAUDE.md -> AGENTS.md
+├── skills/                            # canonical global skills
+├── .agents/skills -> ../skills
+├── .claude/skills -> ../skills
 ├── workspaces/
 │   ├── default/                       # fresh-install workspace -> admin policy
 │   ├── company/                       # shared content root and provider cwd
 │   ├── automation/
-│   └── clients/
-│       ├── acme/                      # project content + native instructions/skills
-│       └── acme-internal/
+│   ├── acme/                          # exact root ~/.enso/workspaces/acme
+│   └── acme-internal/
 └── policies/
     ├── staff/
     │   ├── claude/settings.json
@@ -389,9 +399,34 @@ A practical installation may use:
 
 Beside `claude/settings.json`, a policy's `claude/` directory may hold an optional conventional `claude/mcp.json` declaring that policy's exact Claude MCP server set. Its presence turns MCP on for the policy and is hashed into the launch's `policy_revision`; absence means zero MCP servers. Like every policy source file, it must be a protected owner-only regular file, and a present-but-unusable file fails the launch closed. See [permissions.md](permissions.md#granting-credentials-and-mcp-servers-to-a-restricted-policy).
 
-A workspace is a shared content root and provider cwd, not a security boundary. It may contain project knowledge, a focused local `AGENTS.md`/`CLAUDE.md`, and canonical project skills under `.agents/skills/`, exposed through additional provider-native discovery paths when required. Those paths should reference the canonical definitions or use local tooling that keeps managed copies synchronized, rather than drift as independent copies. The CLIs may additionally load native user, managed, plugin, system, or bundled skill scopes; project placement is not an allowlist. When a configured workspace is missing its instruction file, Enso seeds a small local `AGENTS.md` plus a `CLAUDE.md` symlink but does not add global skill links.
+A workspace is a shared content root and provider cwd, not a security boundary. Its
+lowercase kebab-case name determines the root exactly as
+`~/.enso/workspaces/<name>`; configuration stores no `path`. The workspace container and
+each root must be physical directories, not symlinks, and a workspace root may not have a
+direct `.git` entry of any kind. A repository deeper inside ordinary workspace content is
+allowed. External roots, nested workspace names, alternate paths, and compatibility
+symlinks are invalid.
 
-A policy directory belongs to a policy and stays outside every writable workspace. This separation lets one policy serve several project directories. Paths are expanded and canonicalized before topology checks or child-process use. Workspaces may live at normalized operator-chosen paths, but configured workspace roots must not overlap each other; policy paths must not overlap any workspace. Aliases and hard links must not provide a writable path back to protected policy bytes.
+Every created workspace has focused `AGENTS.md`, `CLAUDE.md -> AGENTS.md`, canonical
+`skills/`, `.agents/skills -> ../skills`, `.claude/skills -> ../skills`, `knowledge/`,
+`drafts/`, and `uploads/`. The local skill source starts empty. A global and local skill
+directory with the same name makes the workspace invalid; Enso does not rely on a
+provider-specific discovery order. The CLIs may additionally load native user, managed,
+plugin, system, or bundled scopes, so discovery remains functionality rather than an
+allowlist.
+
+Fresh setup seeds the global prompt and bundled skills once. Atomic workspace creation
+seeds that workspace's prompt and `knowledge/README.md` once. Seeded files become
+user-owned immediately: startup, the dashboard, configuration checks, software upgrades,
+and setup repair never upgrade, overwrite, resurrect, or retire them. Explicit setup
+repair owns structural directories and known discovery links only; conflicts and missing
+user content are preserved and reported.
+
+A policy directory belongs to a policy and stays outside every writable workspace. This
+separation lets one policy serve several project directories. Policy paths are expanded
+and canonicalized before topology checks or child-process use, and must not overlap a
+workspace. Aliases and hard links must not provide a writable path back to protected
+policy bytes.
 
 Enso initializes a new `~/.enso` local Git worktree on `main`, after installing its
 protective ignore block. It accepts an existing repository only when Git reports that
@@ -463,27 +498,22 @@ The catalogs are parsed independently of either transport. Telegram requires `wo
 
   "workspaces": {
     "default": {
-      "path": "~/.enso/workspaces/default",
       "policy": "admin",
       "concurrency": 1
     },
     "company": {
-      "path": "~/.enso/workspaces/company",
       "policy": "admin",
       "concurrency": 1
     },
     "acme": {
-      "path": "~/.enso/workspaces/clients/acme",
       "policy": "client-readonly",
       "concurrency": 1
     },
     "acme-internal": {
-      "path": "~/.enso/workspaces/clients/acme-internal",
       "policy": "staff",
       "concurrency": 1
     },
     "automation": {
-      "path": "~/.enso/workspaces/automation",
       "policy": "automation",
       "concurrency": 1
     }
@@ -525,8 +555,14 @@ The catalogs are parsed independently of either transport. Telegram requires `wo
 
 Schema rules:
 
-- Workspace and policy names are portable identifiers matching `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`; names cannot contain path separators or traversal segments.
-- `workspaces.<name>.path` is required and must be absolute or start with `~/`; Enso rejects working-directory-relative paths because services have no current-directory contract. `workspaces.<name>.policy` is required and names exactly one configured policy. `concurrency` is a positive integer and defaults to `1`. Workspaces do not contain provider, command, skill, or permission settings; those belong to the selected policy.
+- Workspace names are at most 64 characters of lowercase letters and numbers separated by
+  single hyphens. Each name derives exactly `~/.enso/workspaces/<name>`; a `path` field is
+  invalid. `workspaces.<name>.policy` is required and names exactly one configured policy.
+  `concurrency` is a positive integer and defaults to `1`. Workspaces do not contain
+  provider, command, skill, or permission settings; those belong to the selected policy.
+- Policy names remain portable identifiers matching
+  `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`; they cannot contain path separators or traversal
+  segments.
 - `policies.<name>` requires a non-empty `providers` list and a `default_provider` from that list. `chat_commands` is either a unique list or the explicit string `"*"`; omission means none. It governs Enso chat commands only, not provider-native tools, slash commands, skills, plugins, hooks, or MCP servers.
 - A restricted policy may add `env_passthrough`, a list of environment-variable names (names, never values) copied from the service environment into the child environment. Names must match `[A-Z][A-Z0-9_]*`, be unique, and not name launch-controlled (such as `CODEX_HOME`, `GROK_HOME`, `GROK_SANDBOX`, and `GROK_FOLDER_TRUST`) or `ENSO_`-prefixed variables; the key is invalid alongside `unrestricted: true`. See [permissions.md](permissions.md#granting-credentials-and-mcp-servers-to-a-restricted-policy).
 - A policy uses exactly one mode: explicit `unrestricted: true`, or native policy files under `policy_dir`. An explicit `policy_dir` must be absolute or start with `~/`; for a restricted policy it otherwise defaults to `~/.enso/policies/<policy-name>`. Unrestricted mode does not imply providers or commands. Codex `config.toml` may not define top-level `developer_instructions`, which Enso reserves for the validated shared launch instructions. Grok's `--rules` flag is reserved the same way: every Grok launch injects the validated shared instructions through it.
@@ -538,7 +574,12 @@ Schema rules:
 - Channel routes and `transports.slack.channel_defaults` accept the optional booleans `mention_required` and `thread_mention_required` (see [slack-triggers.md](slack-triggers.md)). Effective values resolve route key, then `channel_defaults`, then the built-in `true`, which reproduces the original mention-gated behavior. `channel_defaults` must be an object with no unknown keys, both settings must be booleans wherever they appear, and neither key is valid on a DM route.
 - Every route requires a known `workspace`; it derives that workspace's policy and cannot override it. `audit` is optional and defaults to `false`.
 - A missing workspace, policy, provider, or native policy is an error. Nothing falls back to an implicit cwd, another workspace or policy, or unrestricted execution.
-- `config.json` is loaded at service startup. Slack loads and validates its route catalog then; jobs are loaded from disk on scheduler ticks and manual runs and revalidated before execution. `config.json` changes take effect only after restart, and invalid bindings never receive permissive defaults.
+- `config.json` is loaded at service startup. Startup and `enso config check` validate the
+  repository, physical workspace topology, exact discovery links, and root/workspace
+  skill-name uniqueness without seeding or repair. Slack loads and validates its route
+  catalog then; jobs are loaded from disk on scheduler ticks and manual runs and
+  revalidated before execution. `config.json` changes take effect only after restart,
+  and invalid bindings never receive permissive defaults.
 
 Several routes may select the same workspace and therefore share its policy, files, and
 workspace concurrency. Provider/model/effort choices remain independent per exact Slack
@@ -607,7 +648,7 @@ Slack outbound delivery resolves an explicit destination, then an interactive or
 
 Telegram always uses exact numeric strings under `transports.telegram.allowed_users`, accepts private chats only, and requires a known `transports.telegram.workspace`. It derives that workspace's policy and cannot override provider or command controls. `allowed_user_ids` and the `"*"` wildcard are invalid. Telegram outbound delivery resolves an explicit destination, then an interactive origin, then `transports.telegram.notify_channel`; it never broadcasts to the allowlist.
 
-Legacy configurations are rejected when they contain top-level `working_dir`, `routes`, or `access`, route-level `access` or `policy`, job-level `access` or `policy`, `groups`, route `allow`, or route `context_from`. The migration requires moving legacy workspace files, splitting shared and local instructions, assigning exactly one policy to every workspace, binding Telegram, moving Slack route maps, validating, and reinstalling the service definition. Follow the [manual unified-workspace migration](../migrations/unified-workspace-policies.md); there is no automatic migration command.
+Legacy configurations are rejected when they contain top-level `working_dir`, `routes`, or `access`, a workspace `path`, route-level `access` or `policy`, job-level `access` or `policy`, `groups`, route `allow`, or route `context_from`. The migration requires moving every workspace to its name-derived physical root, splitting shared and local instructions, assigning exactly one policy to every workspace, binding Telegram, moving Slack route maps, validating, and reinstalling the service definition. Follow the [manual unified-workspace migration](../migrations/unified-workspace-policies.md) and then the [v1.3 managed-workspace migration](../migrations/v1.3-managed-workspaces.md); there is no automatic migration command or legacy-path fallback.
 
 ### Slack delivery ledger
 

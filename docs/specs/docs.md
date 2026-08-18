@@ -44,8 +44,9 @@ A plain Markdown tree under `~/.enso/docs/`, nested to **any depth**:
 - **Every doc carries frontmatter.** The `name` field is what the UI displays.
 - Non-`.md` files (an image a doc references) may sit in the tree. They are left alone and
   omitted from listings.
-- Enso ships **no bundled docs**. The tree starts empty, so unlike skills there is no
-  seeding, no pristine-hash tracking, and no `.deleted/` tombstone machinery.
+- Enso ships **no bundled docs** in this phase. The tree starts empty, with no
+  pristine-hash tracking or deletion tombstones. Bundled skills are also copied only by
+  fresh setup; neither kind is installed or upgraded during startup.
 
 ## Frontmatter
 
@@ -139,34 +140,26 @@ covers:
   specific enough to match against
 - when a fact belongs in a doc rather than a reply
 
-This choice does real work beyond tidiness. `_install_bundled_skills` seeds **missing**
-skills into existing installations on every service start, so a new bundled skill reaches
-every user automatically. It is also lazy: the CLI reads the frontmatter description into
-context and loads the body only when a task looks relevant, so an operator who never
-writes a doc pays nothing.
+Fresh setup copies the bundled `docs` skill into `~/.enso/skills/docs/` along with the
+other global skills. It is lazy: the CLI reads frontmatter descriptions for discovery and
+loads the body only when a task looks relevant, so an operator who never writes a doc pays
+nothing.
 
-Deletion is already handled — `_is_bundled_skill` resolves against the packaged skills
-directory, so removing the `docs` skill from the dashboard writes a
-`skills/.deleted/docs.deleted` tombstone and it is not reseeded. Packaging needs no change
-either: `pyproject.toml` already globs `skills/**/*.md`.
+The installed copy is user-owned immediately. Deleting it in the dashboard removes its
+directory without a tombstone, and neither service startup nor an upgrade recreates it.
+Nested bundled resources are included in package data so a deliberate fresh seed can copy
+the complete skill tree.
 
 ### AGENTS.md and existing installs
 
-The canonical shared `~/.enso/AGENTS.md` carries a short `enso doc` block in its CLI section, matching how `enso job`
-appears, plus one line pointing at the skill.
+The canonical shared `~/.enso/AGENTS.md` carries a short `enso doc` block in its CLI
+section, matching how `enso job` appears, plus one line pointing at the skill. Fresh setup
+copies that prompt and the bundled skill once.
 
-That block would have reached **new** installs only. `install_system_prompts` writes
-`~/.enso/AGENTS.md` when the file is absent or its hash matches a known-pristine copy; every other
-copy is treated as customized and preserved. Against a single legacy constant, existing
-users would have kept an `AGENTS.md` that never mentions docs.
-
-So that constant was generalized into a **set of known-pristine `AGENTS.md` hashes**,
-exactly like `_BUNDLED_SKILL_PRISTINE_HASHES`. Untouched copies now follow the bundled
-template forward while customized ones stay untouched. This repairs the delivery path for
-every future system-prompt change, not just this one.
-
-The bundled skill is the backstop: operators with a genuinely customized `AGENTS.md` still
-get docs support through the skill.
+Existing installations do not receive either change automatically. Enso maintains no
+known-pristine hashes, startup content installer, or retired-content cleanup. Operators
+review the bundled source and merge only the guidance they want; setup repair preserves a
+missing or customized prompt instead of recreating it.
 
 ## Web UI
 
@@ -218,7 +211,8 @@ The doc count joins the existing job and skill counts, linking to `/docs`.
   operation the agent performs. A browser affordance can come later.
 - **No external doc roots.** Unlike skills, docs are Enso-owned only. The write boundary
   stays exactly where it is.
-- **No bundled doc content.** Enso ships the skill that explains docs, never the docs.
+- **No bundled doc content in this phase.** Enso ships the skill that explains docs, not
+  a pre-populated reference set.
 
 ## Implementation map
 
@@ -227,7 +221,7 @@ The doc count joins the existing job and skill counts, linking to `/docs`.
 | `config.py` | Adds `DOCS_DIR` beside `JOBS_DIR` |
 | `docs.py` *(new)* | Path validation, bounded recursive listing, scaffold and delete |
 | `cli.py` | Adds a `doc` Typer group with `list` and `create` |
-| `core.py` | Creates `~/.enso/docs/` at install; maintains the canonical shared prompt and generalizes its pristine hash to a set |
+| `scaffolding.py` | Creates the structural `~/.enso/docs/` directory; fresh setup separately seeds the global prompt and skills |
 | `skills/docs/SKILL.md` *(new)* | Bundled skill teaching discovery and authoring |
 | `prompts/AGENTS.md` | Adds the `enso doc` CLI block and a pointer to the skill in the shared launch instructions |
 | `web/app.py` | Adds doc routes, path-safe resolution, and the dashboard count |

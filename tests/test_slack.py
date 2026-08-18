@@ -12,6 +12,7 @@ import pytest
 
 from enso import audit as audit_store
 from enso import slack_cache, surface_drafts
+from enso.config import managed_workspace_path
 from enso.core import ExecutionContext
 from enso.formatting import md_to_mrkdwn
 from enso.outbound import (
@@ -77,6 +78,7 @@ def _make_client(**overrides: object) -> AsyncMock:
 
 def _make_runtime(**overrides: object) -> MagicMock:
     """Return a MagicMock that behaves like Runtime."""
+    _workspace_path().mkdir(parents=True, exist_ok=True)
     rt = MagicMock()
     rt.config = {
         "transports": {
@@ -94,7 +96,7 @@ def _make_runtime(**overrides: object) -> MagicMock:
             "claude": {"path": "claude", "models": ["opus", "sonnet"]},
         },
         "workspaces": {
-            "main": {"path": "/tmp/enso-test", "policy": "admin"},
+            "main": {"policy": "admin"},
         },
         "policies": {
             "admin": {
@@ -125,9 +127,11 @@ def _make_runtime(**overrides: object) -> MagicMock:
     rt.save_state = MagicMock()
     for k, v in overrides.items():
         setattr(rt, k, v)
-    if "workspace_dir" in overrides:
-        rt.config["workspaces"]["main"]["path"] = str(overrides["workspace_dir"])
     return rt
+
+
+def _workspace_path() -> Path:
+    return Path(managed_workspace_path("main"))
 
 
 def _make_transport(rt: MagicMock) -> SlackTransport:
@@ -3298,7 +3302,7 @@ class TestMessageRouting:
     @pytest.mark.asyncio
     async def test_file_share_with_caption_dispatches(self, tmp_path, monkeypatch):
         """An image+caption upload (subtype=file_share) must reach _handle_files."""
-        rt = _make_runtime(workspace_dir=str(tmp_path))
+        rt = _make_runtime()
         transport = _make_transport(rt)
         client = _make_client()
 
@@ -3337,7 +3341,7 @@ class TestMessageRouting:
         monkeypatch,
     ):
         """Slack Connect placeholders need files.info before they have URLs."""
-        rt = _make_runtime(workspace_dir=str(tmp_path))
+        rt = _make_runtime()
         transport = _make_transport(rt)
         client = _make_client()
         client.files_info.return_value = {
@@ -3378,7 +3382,7 @@ class TestMessageRouting:
 
     @pytest.mark.asyncio
     async def test_same_named_files_use_distinct_paths(self, tmp_path, monkeypatch):
-        rt = _make_runtime(workspace_dir=str(tmp_path))
+        rt = _make_runtime()
         transport = _make_transport(rt)
         client = _make_client()
 
@@ -3409,7 +3413,11 @@ class TestMessageRouting:
         }
         await transport._handle_message(event, client)
 
-        names = sorted(path.name for path in (tmp_path / "uploads").rglob("*") if path.is_file())
+        names = sorted(
+            path.name
+            for path in (_workspace_path() / "uploads").rglob("*")
+            if path.is_file()
+        )
         assert names == ["F111-image.png", "F222-image.png"]
         prompt = rt.dispatch.call_args[0][1]
         assert "F111-image.png" in prompt
@@ -3417,7 +3425,7 @@ class TestMessageRouting:
 
     @pytest.mark.asyncio
     async def test_caption_survives_failed_file_download(self, tmp_path, monkeypatch):
-        rt = _make_runtime(workspace_dir=str(tmp_path))
+        rt = _make_runtime()
         transport = _make_transport(rt)
         client = _make_client()
 
@@ -3466,7 +3474,7 @@ class TestMessageRouting:
             "enso.transports.slack.urlopen",
             lambda *_args, **_kwargs: next(responses),
         )
-        rt = _make_runtime(workspace_dir=str(tmp_path))
+        rt = _make_runtime()
         transport = _make_transport(rt)
         client = _make_client()
         event = {
@@ -3492,7 +3500,11 @@ class TestMessageRouting:
 
         await transport._handle_message(event, client)
 
-        files = sorted(path.name for path in (tmp_path / "uploads").rglob("*") if path.is_file())
+        files = sorted(
+            path.name
+            for path in (_workspace_path() / "uploads").rglob("*")
+            if path.is_file()
+        )
         assert files == ["F222-second.png"]
         prompt = rt.dispatch.call_args.args[1]
         assert "F222-second.png" in prompt
@@ -3507,7 +3519,7 @@ class TestMessageRouting:
         monkeypatch.setattr("enso.transports.slack.SLACK_FILE_DOWNLOAD_LIMIT", 4)
         open_url = MagicMock(return_value=_FakeResponse(b"1234"))
         monkeypatch.setattr("enso.transports.slack.urlopen", open_url)
-        rt = _make_runtime(workspace_dir=str(tmp_path))
+        rt = _make_runtime()
         transport = _make_transport(rt)
         client = _make_client()
         event = {
@@ -3536,7 +3548,11 @@ class TestMessageRouting:
         await transport._handle_message(event, client)
 
         open_url.assert_called_once()
-        files = sorted(path.name for path in (tmp_path / "uploads").rglob("*") if path.is_file())
+        files = sorted(
+            path.name
+            for path in (_workspace_path() / "uploads").rglob("*")
+            if path.is_file()
+        )
         assert files == ["F222-allowed.png"]
         prompt = rt.dispatch.call_args.args[1]
         assert "F222-allowed.png" in prompt
@@ -3555,7 +3571,7 @@ class TestMessageRouting:
             "enso.transports.slack.urlopen",
             lambda *_args, **_kwargs: next(responses),
         )
-        rt = _make_runtime(workspace_dir=str(tmp_path))
+        rt = _make_runtime()
         transport = _make_transport(rt)
         client = _make_client()
         event = {
@@ -3583,7 +3599,11 @@ class TestMessageRouting:
 
         await transport._handle_message(event, client)
 
-        files = sorted(path.name for path in (tmp_path / "uploads").rglob("*") if path.is_file())
+        files = sorted(
+            path.name
+            for path in (_workspace_path() / "uploads").rglob("*")
+            if path.is_file()
+        )
         assert files == ["F222-allowed.png"]
         prompt = rt.dispatch.call_args.args[1]
         assert "F222-allowed.png" in prompt
@@ -3593,8 +3613,9 @@ class TestMessageRouting:
     async def test_uploads_parent_symlink_is_rejected(self, tmp_path, monkeypatch):
         outside = tmp_path / "outside"
         outside.mkdir()
-        (tmp_path / "uploads").symlink_to(outside, target_is_directory=True)
-        rt = _make_runtime(workspace_dir=str(tmp_path))
+        _workspace_path().mkdir(parents=True, exist_ok=True)
+        (_workspace_path() / "uploads").symlink_to(outside, target_is_directory=True)
+        rt = _make_runtime()
         transport = _make_transport(rt)
         client = _make_client()
         open_url = MagicMock(return_value=_FakeResponse(b"secret"))
@@ -3631,7 +3652,7 @@ class TestMessageRouting:
         outside.mkdir()
         outside_file = outside / "target.png"
         outside_file.write_bytes(b"original")
-        rt = _make_runtime(workspace_dir=str(tmp_path))
+        rt = _make_runtime()
         transport = _make_transport(rt)
         client = _make_client()
         monkeypatch.setattr(
@@ -3640,7 +3661,7 @@ class TestMessageRouting:
         )
 
         def poison_destination(*_args, **_kwargs):
-            destination = tmp_path / "uploads" / "fixed123" / "F111-image.png"
+            destination = _workspace_path() / "uploads" / "fixed123" / "F111-image.png"
             destination.symlink_to(outside_file)
             return _FakeResponse(b"replacement")
 
@@ -3671,7 +3692,7 @@ class TestMessageRouting:
 
     @pytest.mark.asyncio
     async def test_replaced_completed_file_is_not_dispatched(self, tmp_path, monkeypatch):
-        rt = _make_runtime(workspace_dir=str(tmp_path))
+        rt = _make_runtime()
         transport = _make_transport(rt)
         client = _make_client()
         monkeypatch.setattr(
@@ -3685,7 +3706,7 @@ class TestMessageRouting:
             request_count += 1
             if request_count == 1:
                 return _FakeResponse(b"original")
-            turn = tmp_path / "uploads" / "fixed123"
+            turn = _workspace_path() / "uploads" / "fixed123"
             first = turn / "F111-first.png"
             first.rename(turn / "original-first.png")
             first.write_bytes(b"attacker replacement")
@@ -3718,7 +3739,7 @@ class TestMessageRouting:
         prompt = rt.dispatch.call_args.args[1]
         assert "F222-second.png" in prompt
         assert "F111-first.png" not in prompt
-        assert (tmp_path / "uploads" / "fixed123" / "F111-first.png").read_bytes() == (
+        assert (_workspace_path() / "uploads" / "fixed123" / "F111-first.png").read_bytes() == (
             b"attacker replacement"
         )
 
@@ -3730,7 +3751,7 @@ class TestMessageRouting:
     ):
         outside = tmp_path / "outside"
         outside.mkdir()
-        rt = _make_runtime(workspace_dir=str(tmp_path))
+        rt = _make_runtime()
         transport = _make_transport(rt)
         client = _make_client()
         monkeypatch.setattr(
@@ -3744,8 +3765,8 @@ class TestMessageRouting:
             request_count += 1
             if request_count == 1:
                 return _FakeResponse(b"first")
-            turn = tmp_path / "uploads" / "fixed123"
-            moved = tmp_path / "uploads" / "moved-turn"
+            turn = _workspace_path() / "uploads" / "fixed123"
+            moved = _workspace_path() / "uploads" / "moved-turn"
             turn.rename(moved)
             turn.symlink_to(outside, target_is_directory=True)
             return _FakeResponse(b"secret")
@@ -3775,11 +3796,11 @@ class TestMessageRouting:
         await transport._handle_message(event, client)
 
         assert list(outside.iterdir()) == []
-        assert not (tmp_path / "uploads" / "moved-turn" / "F111-image.png").exists()
+        assert not (_workspace_path() / "uploads" / "moved-turn" / "F111-image.png").exists()
         rt.dispatch.assert_called_once()
         prompt = rt.dispatch.call_args.args[1]
         assert "could not be downloaded" in prompt
-        assert str(tmp_path / "uploads" / "fixed123") not in prompt
+        assert str(_workspace_path() / "uploads" / "fixed123") not in prompt
         assert str(outside) not in prompt
 
     @pytest.mark.asyncio
@@ -3967,7 +3988,7 @@ class TestAppMention:
         monkeypatch,
     ):
         """Channel @-mentions with attached files must download + dispatch."""
-        rt = _make_runtime(workspace_dir=str(tmp_path))
+        rt = _make_runtime()
         transport = _make_transport(rt)
         client = _make_client()
         client.conversations_history.return_value = {"messages": []}
@@ -4079,7 +4100,7 @@ class TestForwardedMessages:
         tmp_path,
         monkeypatch,
     ):
-        rt = _make_runtime(workspace_dir=str(tmp_path))
+        rt = _make_runtime()
         transport = _make_transport(rt)
         client = _make_client()
         client.conversations_history.return_value = {"messages": []}
@@ -4103,7 +4124,7 @@ class TestForwardedMessages:
         assert "trending reels aren't showing" in prompt
         assert "screenshot.png" in prompt
         # The forwarded image landed in the uploads dir.
-        names = [p.name for p in (tmp_path / "uploads").rglob("*") if p.is_file()]
+        names = [p.name for p in (_workspace_path() / "uploads").rglob("*") if p.is_file()]
         assert any("screenshot.png" in n for n in names)
 
     @pytest.mark.asyncio
@@ -4155,7 +4176,7 @@ class TestForwardedMessages:
         tmp_path,
         monkeypatch,
     ):
-        rt = _make_runtime(workspace_dir=str(tmp_path))
+        rt = _make_runtime()
         transport = _make_transport(rt)
         client = _make_client()
 
@@ -4179,7 +4200,7 @@ class TestForwardedMessages:
         assert "look at this" in prompt
         assert "trending reels aren't showing" in prompt
         assert "screenshot.png" in prompt
-        names = [p.name for p in (tmp_path / "uploads").rglob("*") if p.is_file()]
+        names = [p.name for p in (_workspace_path() / "uploads").rglob("*") if p.is_file()]
         assert any("screenshot.png" in n for n in names)
 
 

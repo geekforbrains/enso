@@ -25,8 +25,7 @@ The web UI is a read/write dashboard for:
 - **Execution configuration** — inspect workspaces, each workspace's one reusable policy,
   exact Slack routes, Telegram/job bindings, and safe native-policy validation status.
 - **Instructions** — read and edit the canonical shared `~/.enso/AGENTS.md`, edit managed
-  workspace-root instructions, and inspect nested or external workspace instructions
-  read-only.
+  workspace-root instructions, and inspect nested workspace instructions read-only.
 
 There is **no chat in the web UI** — chat lives in Telegram/Slack. The web UI is for
 overview, organisation, and managing the scheduled work Enso already runs.
@@ -84,7 +83,7 @@ overview, organisation, and managing the scheduled work Enso already runs.
 | Frontmatter                    | PyYAML `BaseLoader` for valid job metadata, with a legacy line-parser fallback for malformed older files; raw web edits preserve formatting                                      |
 | Web server                     | **Starlette + Uvicorn + Jinja2**, run separately with `enso web` and sharing the file/SQLite model with `enso serve`                                                             |
 | Web access                     | Bind **localhost** by default; Tailscale for remote; Host allowlist and optional shared token. No login                                                                          |
-| Web capability                 | **Read/write, scoped to owned files** — edit job prompts, toggle/run jobs, edit Enso-owned skills, shared instructions, and managed workspace-root instructions. Configuration, policies, nested/external instructions, and external skills are read-only |
+| Web capability                 | **Read/write, scoped to owned files** — edit job prompts, toggle/run jobs, edit Enso-owned skills, shared instructions, and managed workspace-root instructions. Configuration, policies, nested instructions, and external skills are read-only |
 | Tables web capability          | **Read-only, bounded inspection** — list metadata, show schema, and page through capped previews; no SQL or row/schema mutations                                                 |
 | Notifications                  | Reuse `transport.notify` / `enso message send`; exact Slack routing does not alter job delivery. No transport implicitly broadcasts                                              |
 
@@ -138,16 +137,18 @@ authorized chat senders, not additional owners or dashboard personas.
   user-created or seeded from Enso's starter set at install — **editable**; and
   **external / "parent"** skills auto-discovered from the underlying CLIs'
   own skill roots (e.g. `~/.claude/skills/`), shown **read-only with their source path** for
-  awareness. Missing bundled files are seeded unless explicitly deleted, known pristine
-  older copies can advance during upgrades, and customized files or symlinks remain
-  untouched.
+  awareness. Fresh setup copies the starter set once; every installed skill is user-owned
+  thereafter. Startup and upgrades never seed missing bundle entries, advance older
+  copies, create deletion tombstones, or clean up files copied from a skill.
 - Enso-owned skill directories can be edited or deleted after confirmation. **Planned:**
   create skills and edit their tool scripts. The skills UI never writes outside
   `~/.enso/`.
 - `/workspaces` and `/workspaces/<name>` show each active execution root, its one policy,
   concurrency, Slack/Telegram/job consumers, problems, and a bounded nested `AGENTS.md`
-  inventory. Managed root instructions are revision-checked and editable; child and
-  external workspace files are read-only.
+  inventory. Every lowercase kebab-case workspace name derives the exact physical root
+  `~/.enso/workspaces/<name>`; external, nested, symlinked, and workspace-root Git layouts
+  are invalid. Managed root instructions are revision-checked and editable; child files
+  are read-only.
 - `/policies` and `/policies/<name>` show reusable policy configuration, consuming
   workspaces, and safe provider-validation results. Native policy contents and secret
   values are never rendered or edited.
@@ -182,6 +183,9 @@ authorized chat senders, not additional owners or dashboard personas.
 - Every configured workspace, reusable policy, and exact Slack route can be traced in the
   web UI without exposing a transport secret or native policy source file; an invalid
   binding has a visible, actionable status.
+- Read-only startup and configuration checks reject an incomplete scaffold or duplicate
+  global/workspace skill name without repairing it or applying provider-specific
+  precedence.
 - A stale shared or managed-workspace instruction form cannot overwrite a newer agent or
   operator edit; unsafe links, path traversal, and files outside `~/.enso/` remain outside
   the browser write boundary.

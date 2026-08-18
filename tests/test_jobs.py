@@ -29,7 +29,7 @@ def configured_job_catalog(tmp_enso):
     config.update(
         {
             "workspaces": {
-                "company": {"path": str(workspace), "policy": "automation"}
+                "company": {"policy": "automation"}
             },
             "policies": {
                 "automation": {

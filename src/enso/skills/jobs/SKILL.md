@@ -56,7 +56,7 @@ The prompt goes here. Use {{prerun_output}} to inject prerun results.
 | `schedule`              | yes      | Cron: `minute hour dom month dow`                                                          |
 | `provider`              | yes      | Provider configured in `~/.enso/config.json`                                               |
 | `model`                 | yes      | Model configured for that provider                                                         |
-| `workspace`             | yes      | Named entry from top-level `workspaces`; its path is the provider cwd                      |
+| `workspace`             | yes      | Lowercase kebab-case entry from `workspaces`; `~/.enso/workspaces/<name>` is the provider cwd |
 | `enabled`               | yes      | `true` or `false` — disabled jobs are skipped                                              |
 | `prerun`                | no       | Script filename in the job directory                                                       |
 | `prerun_timeout`        | no       | Max seconds for the prerun (default 120)                                                   |
@@ -67,7 +67,7 @@ The prompt goes here. Use {{prerun_output}} to inject prerun results.
 
 `provider` and `model` are validated against the configured providers and their model lists — a job naming an unknown provider or model is rejected at creation and fails with a clear error instead of running. The cron schedule is validated at creation too; if a hand-edited schedule later becomes invalid, the scheduler skips that job (with a log warning) rather than run it.
 
-`workspace` uses the same named object as interactive conversation bindings. It is mandatory and selects exactly one top-level policy; Enso never accepts a job-level policy override or falls back to an unrestricted launch. The workspace policy selects the provider's native policy plumbing. Enso does not reinterpret what that native policy means.
+`workspace` uses the same named object as interactive conversation bindings. Its name derives the only valid root, `~/.enso/workspaces/<name>`; configuration cannot supply another path. It is mandatory and selects exactly one top-level policy; Enso never accepts a job-level policy override or falls back to an unrestricted launch. The workspace policy selects the provider's native policy plumbing. Enso does not reinterpret what that native policy means.
 
 By default a job that misses its scheduled time by more than `misfire_grace_seconds` (e.g. the machine was asleep) is skipped rather than run late; set `catch_up: true` when a late run is better than no run.
 

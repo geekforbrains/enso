@@ -14,8 +14,8 @@ every 60 seconds and fires due jobs through `_execute_job`.
 
 `enso web` builds its own `Runtime` and runs Starlette/Uvicorn as a separate process.
 The dashboard and bot therefore do not share memory or an event loop. They coordinate
-through the same files under `~/.enso/`, the configured workspaces, and the shared SQLite
-database. Starting `enso serve` does not start the dashboard.
+through the same files under `~/.enso/`, the canonical managed workspace tree, and the
+shared SQLite database. Starting `enso serve` does not start the dashboard.
 
 ```
        enso serve process                 enso web process
@@ -26,7 +26,7 @@ database. Starting `enso serve` does not start the dashboard.
               └──────────────┬─────────────────┘
                              ▼
                  files under ~/.enso/ and
-                 the configured workspaces
+                 managed workspaces
                              +
                  SQLite (enso.db, WAL mode)
 ```
@@ -49,8 +49,8 @@ Instruction-file reads and writes use a separate hardened filesystem boundary. I
 absolute roots and descendants through pinned directory descriptors with no symlink
 following, enforces current-user ownership, regular-file/single-link/protected-mode rules,
 caps discovery and UTF-8 content, and carries a content revision from read to atomic save.
-Only the shared file and managed workspace roots are writable; nested and configured
-external workspace instruction files are inspection-only.
+Only the shared file and managed workspace-root instruction files are writable; nested
+workspace instruction files are inspection-only. External workspace roots are invalid.
 
 ## Stack
 
@@ -115,8 +115,8 @@ rows, columns, and rendered cell sizes. See [tables.md](tables.md) for the full 
 
 The provider registry is the single source of truth for supported CLI names, default
 models, setup detection, service environment keys, chat selectors, and job validation.
-Existing configs are backfilled when a provider is added, while configured paths and
-custom models are preserved.
+Existing configs are backfilled when a provider is added, while configured provider paths
+and custom models are preserved.
 
 Claude and Codex expose structured event streams. Antigravity's headless mode emits one
 plain-text response, so the shared runner supports both streamed events and completed
@@ -239,9 +239,23 @@ State schema v3 stores route settings separately. Loading v1 or v2 deliberately 
 
 ### Workspace content and concurrency
 
+- A lowercase kebab-case workspace name derives its only root as
+  `~/.enso/workspaces/<name>`. The workspace container and root are physical directories,
+  not symlinks; a root `.git` entry is forbidden, while repositories deeper in ordinary
+  content are allowed. Configuration cannot store an alternate, external, or nested path.
 - The resolved workspace supplies the subprocess cwd, persistent uploads, focused local project instructions, native workspace skills, and session scope. It is a shared content root, not a security boundary.
 - A policy supplies provider availability, default provider, allowed Enso chat commands, and native policy selection. It supplies no content and does not govern provider-native slash commands or skills. Each workspace names exactly one policy, while one policy may be reused by many workspaces.
 - Canonical shared instructions live at `~/.enso/AGENTS.md` with `CLAUDE.md -> AGENTS.md` and are injected into every launch independently of cwd. Enso validates a stable owner-owned, non-hard-linked, non-symlink UTF-8 source with no group/other write bits, hashes it, and publishes or verifies an immutable owner-only snapshot under `~/.enso/runtime/instructions/`. Claude receives that snapshot through `--append-system-prompt-file`; Codex receives the validated in-memory content through `developer_instructions`; unrestricted Agy receives it through Enso's prompt envelope. Local workspace `AGENTS.md`/`CLAUDE.md` files remain focused and provider-discovered.
+- Global skills are canonical under `~/.enso/skills/`, exposed through the relative links
+  `.agents/skills -> ../skills` and `.claude/skills -> ../skills`. Each workspace owns an
+  initially empty `skills/` with the same two relative discovery views. A duplicate skill
+  directory name across global and workspace scope makes that workspace invalid rather
+  than relying on provider precedence.
+- Fresh setup seeds the global prompt and bundled skills once; atomic workspace creation
+  seeds that workspace's prompt and knowledge index once. Those files are user-owned
+  immediately. Ordinary `serve`, `web`, and `config check` paths validate read-only, while
+  an explicit setup rerun conservatively repairs structural directories and known links
+  without recreating, upgrading, or deleting content.
 - Several routes may share one workspace and therefore its files, policy, and concurrency limit while retaining independent route settings and separate sessions.
 - A client route that shares files with a staff route must not be able to rewrite instructions, skill definitions, or provider control files trusted by the staff route.
 - Each workspace has a process-local semaphore shared by chats and compaction. The default is one active turn; operators may raise it when concurrent writes are safe.
@@ -323,7 +337,8 @@ internet and the PRD makes that a non-goal.
 | `slack_manifest.yaml`    | Declares Socket Mode, App Home, interactivity, events, and required bot scopes                |
 | `jobs.py`                | Loads YAML scalars with `BaseLoader`, then falls back for malformed legacy headers            |
 | `frontmatter.py`         | Provides fence-aware raw edits and YAML serialization, writing through `fsutil`               |
-| `fsutil.py`              | Owns atomic text writes, containment checks, pristine-file hashing, and SQLite file hardening |
+| `fsutil.py`              | Owns atomic text writes, containment checks, hashing, and SQLite file hardening                |
+| `scaffolding.py`         | Creates canonical root/workspace trees once and validates or conservatively repairs structure |
 | `sqlite_store.py`        | Owns operation-scoped connections, transactions, bounded timeouts, and failure classification |
 | `docs.py`                | Owns reference-doc path validation, the bounded recursive listing, scaffolding, and deletion  |
 | `runs.py`                | Owns SQLite `create`/`finish`/`list_runs`/`get`/`prune` operations                            |
@@ -332,9 +347,8 @@ internet and the PRD makes that a non-goal.
 | `web/`                   | Contains the Starlette app, current routes/templates, discovery, and vendored assets          |
 | `pyproject.toml`         | Defines the `web` extra, base `pyyaml` dependency, and package data                           |
 
-Missing bundled skill files are seeded. Existing copies update only when their hash
-matches a known pristine prior version; customized files and symlinks remain untouched.
-
-The task-system removal migrates only artifacts that exactly match the former bundled
-files: the pristine `tasks` skill is removed and the pristine task-era shared `AGENTS.md` is
-replaced. Customized copies are preserved and logged with a manual-cleanup warning.
+Bundled prompts and skills are package resources for fresh setup and new-workspace
+creation only. Once installed, their copies are user-owned: startup and upgrades do not
+run content installers, maintain pristine hashes or deletion tombstones, remove retired
+content, or clean up copied tool files. Existing installations adopt bundle changes only
+through an explicit operator-reviewed migration.

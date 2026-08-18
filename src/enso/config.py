@@ -6,6 +6,7 @@ import contextlib
 import fcntl
 import json
 import os
+import re
 import shutil
 import stat
 from collections.abc import Iterator
@@ -23,7 +24,6 @@ STATE_FILE = os.path.join(CONFIG_DIR, "state.json")
 DOCS_DIR = os.path.join(CONFIG_DIR, "docs")
 JOBS_DIR = os.path.join(CONFIG_DIR, "jobs")
 MESSAGES_FILE = os.path.join(CONFIG_DIR, "messages.json")
-SKILL_TOMBSTONES_DIRNAME = ".deleted"
 
 # Derived from the provider registry so supported names, CLI paths, and
 # default model lists have one source of truth.
@@ -52,6 +52,9 @@ DEFAULT_AGENT = {"timeout": 30 * 60}
 DEFAULT_RUNS = {"keep": 500, "max_age_days": 30}
 DEFAULT_WORKSPACE_NAME = "default"
 DEFAULT_POLICY_NAME = "admin"
+WORKSPACE_NAME_PATTERN = r"[a-z0-9]+(?:-[a-z0-9]+)*"
+WORKSPACE_NAME_MAX_LENGTH = 64
+_WORKSPACE_NAME_RE = re.compile(WORKSPACE_NAME_PATTERN)
 
 
 class ConfigError(ValueError):
@@ -89,9 +92,24 @@ def setup_state(config: dict) -> SetupState:
     return SetupState.COMPLETE
 
 
+def validate_workspace_name(name: str) -> str:
+    """Return a portable workspace name or reject it before path derivation."""
+    if (
+        not isinstance(name, str)
+        or len(name) > WORKSPACE_NAME_MAX_LENGTH
+        or not _WORKSPACE_NAME_RE.fullmatch(name)
+    ):
+        raise ConfigError(
+            "workspace names must be lowercase kebab-case using letters, numbers, "
+            f"and single hyphens ({WORKSPACE_NAME_PATTERN}), with at most "
+            f"{WORKSPACE_NAME_MAX_LENGTH} characters"
+        )
+    return name
+
+
 def managed_workspace_path(name: str = DEFAULT_WORKSPACE_NAME) -> str:
-    """Return the canonical managed location for a named workspace."""
-    return os.path.join(CONFIG_DIR, "workspaces", name)
+    """Return the name-derived managed location for a validated workspace."""
+    return os.path.join(CONFIG_DIR, "workspaces", validate_workspace_name(name))
 
 
 def unrestricted_policy_config(provider_names: list[str]) -> dict:
@@ -280,7 +298,6 @@ def _build_default_config() -> dict:
         "providers": providers,
         "workspaces": {
             DEFAULT_WORKSPACE_NAME: {
-                "path": managed_workspace_path(),
                 "policy": DEFAULT_POLICY_NAME,
                 "concurrency": 1,
             },

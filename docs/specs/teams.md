@@ -41,7 +41,7 @@ The client channel may answer questions from project knowledge but deny edits an
 
 The client native policy should prevent writes to control files such as `AGENTS.md`, `CLAUDE.md`, `.claude/`, `.agents/`, and skill definitions. If clients need to create material, grant write access only to an ordinary data directory such as `drafts/`.
 
-## Company and client directories
+## Company and client workspaces
 
 A practical convention for a small team is:
 
@@ -50,26 +50,46 @@ A practical convention for a small team is:
 ├── company/
 │   ├── AGENTS.md
 │   ├── CLAUDE.md -> AGENTS.md
+│   ├── skills/
+│   ├── .agents/skills -> ../skills
+│   ├── .claude/skills -> ../skills
 │   ├── knowledge/
 │   ├── drafts/
-│   ├── uploads/
-│   ├── .agents/skills/
-│   └── .claude/skills/
-└── clients/
-    ├── acme/
-    │   ├── AGENTS.md
-    │   ├── CLAUDE.md -> AGENTS.md
-    │   ├── knowledge/
-    │   ├── drafts/
-    │   ├── uploads/
-    │   ├── .agents/skills/
-    │   └── .claude/skills/
-    └── globex/
+│   └── uploads/
+├── acme/
+│   ├── AGENTS.md
+│   ├── CLAUDE.md -> AGENTS.md
+│   ├── skills/
+│   ├── .agents/skills -> ../skills
+│   ├── .claude/skills -> ../skills
+│   ├── knowledge/
+│   ├── drafts/
+│   └── uploads/
+└── globex/
 ```
 
-These directory names are conventions, not Enso policy syntax. `knowledge/` holds durable shared material, `drafts/` holds ordinary writable output, and Enso stores downloaded attachments in persistent `uploads/<random-id>/` directories. Inbound Telegram files are limited to 20 MiB and inbound Slack files to 100 MiB per file; Enso checks available metadata and the received bytes, and skips unsafe or oversized downloads. Enso does not automatically expire retained uploads; retention and cleanup belong to the operator.
+Workspace names are lowercase kebab-case and determine these roots exactly:
+`~/.enso/workspaces/<name>`. The tree is flat; config cannot select an external path,
+nested root, or workspace symlink. `~/.enso/workspaces` and every workspace root must be
+physical directories, and a direct `.git` entry makes a workspace invalid (repositories
+deeper inside ordinary content are allowed). `knowledge/` holds durable shared material,
+`drafts/` holds ordinary writable output, and Enso stores downloaded attachments in
+persistent `uploads/<random-id>/` directories. Inbound Telegram files are limited to 20
+MiB and inbound Slack files to 100 MiB per file; Enso checks available metadata and the
+received bytes, and skips unsafe or oversized downloads. Enso does not automatically
+expire retained uploads; retention and cleanup belong to the operator.
 
-The staff native policy may grant the company route read or write access to `~/.enso/workspaces/clients/**`. This lets an operator normalize project storage with ordinary directories instead of teaching Enso about project types or mounting several workspaces into one request.
+Fresh setup seeds the global prompt and skills plus the default workspace. Every later
+workspace creation atomically publishes the complete structure shown above, a short local
+prompt, and `knowledge/README.md`; local `skills/` starts empty. Those files become
+user-owned immediately. Startup and configuration checks validate without changing
+content, while explicit setup repair creates only missing structural directories and
+known relative discovery links. It preserves and reports missing content or conflicting
+paths instead of overwriting them.
+
+The staff native policy may grant the company route read or write access to selected
+siblings such as `~/.enso/workspaces/acme/**`. This does not mount another workspace or
+change the company route's own cwd.
 
 Starting the CLI in `company/` does not reliably make every provider discover instructions or skills in a sibling client directory. The company `AGENTS.md` should tell the agent where client workspaces live and require it to read the selected client's protected instructions and project overview before working there. Enso does not synthesize an instruction chain.
 
@@ -77,7 +97,7 @@ For work that should automatically begin with one client's project instructions 
 
 ## Configuration
 
-The complete schema is in [data-model.md](data-model.md#execution-catalog-and-transport-bindings). Workspace and policy names are portable identifiers matching `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`; they cannot contain path separators or traversal segments. This example shows the relationships:
+The complete schema is in [data-model.md](data-model.md#execution-catalog-and-transport-bindings). Workspace names are at most 64 characters of lowercase letters and numbers separated by single hyphens; policy names retain their broader portable identifier syntax. This example shows the relationships:
 
 ```jsonc
 {
@@ -123,22 +143,18 @@ The complete schema is in [data-model.md](data-model.md#execution-catalog-and-tr
 
   "workspaces": {
     "default": {
-      "path": "~/.enso/workspaces/default",
       "policy": "admin",
       "concurrency": 1
     },
     "company": {
-      "path": "~/.enso/workspaces/company",
       "policy": "staff",
       "concurrency": 1
     },
     "acme": {
-      "path": "~/.enso/workspaces/clients/acme",
       "policy": "client-readonly",
       "concurrency": 1
     },
     "acme-internal": {
-      "path": "~/.enso/workspaces/clients/acme-internal",
       "policy": "staff",
       "concurrency": 1
     }
@@ -177,11 +193,11 @@ Slack credentials, transport-wide options, and exact routes coexist in `transpor
 
 Here `channel_defaults` makes routed channels fully responsive, and `C0ACME` opts back into mention-only; both settings, their defaults, and their validation rules are specified in [slack-triggers.md](slack-triggers.md). Neither key is valid on a DM route.
 
-The same policy may be reused across many workspaces when its native policy is written in terms of the invocation workspace. For example, every external client channel can use `client-readonly`; each route still starts in its own client's directory.
+The same policy may be reused across many workspaces when its native policy is written in terms of the invocation workspace. For example, every client channel can use `client-readonly`; each route still starts in its own name-derived directory.
 
 ## Resolution and lifecycle
 
-At Slack startup Enso authenticates the account, loads the exact routes and execution catalog, and checks native policy plumbing for providers used by those routes. Jobs are checked separately by `enso config check` and revalidated before each execution. Changes to `config.json` require an Enso restart; Enso deliberately does not hot-reload route authorization while work is queued or running.
+At Slack startup Enso authenticates the account, loads the exact routes and execution catalog, and checks the repository, canonical workspace scaffold, unique global/workspace skill names, and native policy plumbing without seeding or repair. Jobs are checked separately by the read-only `enso config check` and revalidated before each execution. Changes to `config.json` require an Enso restart; Enso deliberately does not hot-reload route authorization while work is queued or running.
 
 For each Slack event Enso:
 
@@ -235,9 +251,17 @@ The shared template states that the active policy is authoritative and that quot
 
 Claude Code behavior changes independently of Enso. Operators should review the official [permissions](https://code.claude.com/docs/en/permissions), [settings](https://code.claude.com/docs/en/settings), [tools reference](https://code.claude.com/docs/en/tools-reference), and [skills](https://code.claude.com/docs/en/skills) documentation, then test their installed CLI. Enso supplies native settings; it does not certify their meaning.
 
-Enso-wide skills live under `~/.enso/skills/`; missing bundled skills are seeded there. Enso-managed descendant workspaces inherit the `.claude/skills` and `.agents/skills` discovery views under `~/.enso/`. Claude uses the former, Codex and Agy use the latter, and Grok reads Claude Code skills. Enso deliberately does not install global-skill links into unrelated project directories.
+Enso-wide skills live canonically under `~/.enso/skills/`, with the exact relative views
+`~/.enso/.agents/skills -> ../skills` and `~/.enso/.claude/skills -> ../skills`. Each
+workspace has its own canonical `<workspace>/skills/`, with `.agents/skills -> ../skills`
+and `.claude/skills -> ../skills`. Claude uses the latter view, Codex and Agy use the
+former, and Grok reads Claude Code skills. Fresh setup copies the bundled global set once;
+workspace skills start empty, and no startup installer changes either source later.
 
-Put a genuinely project-specific skill's canonical copy under `<workspace>/.agents/skills/<name>/SKILL.md`. When a provider also needs a native discovery path such as `.claude/skills/`, expose the same canonical skill using that workspace's management convention instead of maintaining divergent copies. Every skill follows the [Agent Skills specification](https://agentskills.io/specification), and the bundled `workspace` skill carries the operational workflow.
+Put a genuinely project-specific skill's canonical copy under
+`<workspace>/skills/<name>/SKILL.md`. Root and workspace skill directory names must be
+unique for that workspace; duplicates fail validation rather than relying on a provider's
+precedence. Every skill follows the [Agent Skills specification](https://agentskills.io/specification), and the bundled `workspace` skill carries the operational workflow.
 
 A staff route starting directly in a client workspace naturally sees that client's project material. A route starting in the company workspace must explicitly read a client's protected instructions before working across directories.
 
@@ -267,4 +291,4 @@ Provider policy must keep restricted agents away from Enso's config, secrets, po
 
 ## Migration
 
-Legacy `working_dir`, top-level `routes` and `access`, route/job policy overrides, and Telegram without a workspace are rejected. This migration cannot be inferred safely when one old workspace carried several access profiles or one customized prompt mixed shared and local instructions. Follow the [manual unified-workspace migration](../migrations/unified-workspace-policies.md) for backup, file moves, instruction splitting, schema rewrites, validation, service reinstallation, and rollback. Enso provides no `enso migrate` command.
+Legacy `working_dir`, workspace `path`, top-level `routes` and `access`, route/job policy overrides, and Telegram without a workspace are rejected. This migration cannot be inferred safely when one old workspace carried several access profiles, lived outside the canonical tree, or mixed shared and local instructions. First follow the [manual unified-workspace migration](../migrations/unified-workspace-policies.md) for binding and policy changes, then the [v1.3 managed-workspace migration](../migrations/v1.3-managed-workspaces.md) for names, file moves, links, and the removed `path` field. Enso provides no `enso migrate` command or legacy-path fallback.

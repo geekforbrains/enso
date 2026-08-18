@@ -265,6 +265,14 @@ def test_ensure_appends_managed_ignore_block_to_custom_file(tmp_path):
     assert content.count("# >>> Enso protected paths") == 1
 
 
+def test_managed_ignore_has_no_retired_skill_tombstone_rule(tmp_path):
+    root = tmp_path / "enso"
+
+    EnsoRepository(str(root)).ensure()
+
+    assert ".deleted" not in (root / ".gitignore").read_text(encoding="utf-8")
+
+
 @pytest.mark.parametrize(
     "content",
     [

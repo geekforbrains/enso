@@ -28,7 +28,6 @@ class PathDisposition(str, Enum):
 
 _PROTECTED_COMPONENTS = frozenset(
     {
-        ".deleted",
         ".git",
         ".runtime",
         "audits",
@@ -78,7 +77,6 @@ _PROTECTIVE_GITIGNORE_PATTERNS = (
     "/update.lock",
     "/update.json",
     "/update.json.lock",
-    "**/.deleted/",
     "**/.runtime/",
     "**/audits/",
     "**/cache/",

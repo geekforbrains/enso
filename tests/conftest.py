@@ -40,7 +40,6 @@ def tmp_enso(tmp_path, monkeypatch):
         "enso.config.DOCS_DIR": os.path.join(d, "docs"),
         "enso.config.JOBS_DIR": os.path.join(d, "jobs"),
         "enso.config.MESSAGES_FILE": os.path.join(d, "messages.json"),
-        "enso.core.CONFIG_DIR": d,
         "enso.core.STATE_FILE": os.path.join(d, "state.json"),
         "enso.instructions.CONFIG_DIR": d,
         "enso.messages.MESSAGES_FILE": os.path.join(d, "messages.json"),
@@ -75,7 +74,6 @@ def sample_config(tmp_enso):
         },
         "workspaces": {
             "default": {
-                "path": os.path.join(tmp_enso, "workspaces", "default"),
                 "policy": "admin",
                 "concurrency": 1,
             },

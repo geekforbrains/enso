@@ -9,13 +9,19 @@ import pytest
 from enso.teams import load_catalog, load_teams, load_telegram, resolve
 
 
+@pytest.fixture(autouse=True)
+def managed_config_root(tmp_path, monkeypatch):
+    """Keep name-derived workspace roots isolated from the developer's home."""
+    root = tmp_path / "enso"
+    root.mkdir()
+    monkeypatch.setattr("enso.config.CONFIG_DIR", str(root))
+    return root
+
+
 def make_config(tmp_path, **overrides) -> dict:
     """A valid config with two workspaces and reusable policies."""
-    company = tmp_path / "workspaces" / "company"
-    acme = tmp_path / "workspaces" / "clients" / "acme"
     client_policy = tmp_path / "policies" / "client-readonly"
-    for directory in (company, acme, client_policy):
-        directory.mkdir(parents=True, exist_ok=True)
+    client_policy.mkdir(parents=True, exist_ok=True)
     config = {
         "transports": {
             "slack": {
@@ -34,9 +40,8 @@ def make_config(tmp_path, **overrides) -> dict:
             }
         },
         "workspaces": {
-            "company": {"path": str(company), "policy": "admin"},
+            "company": {"policy": "admin"},
             "client-a": {
-                "path": str(acme),
                 "policy": "client-readonly",
                 "concurrency": 2,
             },
@@ -70,10 +75,7 @@ def make_workspace_policy_config(tmp_path) -> dict:
 
 def test_workspace_selects_one_reusable_policy(tmp_path):
     config = make_workspace_policy_config(tmp_path)
-    second = tmp_path / "workspaces" / "client-b"
-    second.mkdir(parents=True)
     config["workspaces"]["client-b"] = {
-        "path": str(second),
         "policy": "client-readonly",
     }
 
@@ -101,18 +103,31 @@ def test_workspace_requires_a_known_policy(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("catalog_name", "item_label"),
-    [("workspaces", "workspace"), ("policies", "policy")],
+    "name",
+    ["Client", "client_ops", "client.ops", "-client", "client-", "client--ops", "a" * 65],
 )
-def test_catalog_names_are_portable_identifiers(tmp_path, catalog_name, item_label):
+def test_workspace_names_are_lowercase_kebab_case(tmp_path, name):
     config = make_workspace_policy_config(tmp_path)
-    config[catalog_name]["nested/name"] = {}
+    config["workspaces"][name] = {"policy": "admin"}
 
     catalog = load_catalog(config)
 
-    assert any(f"{item_label} names must match" in error for error in catalog.errors)
-    target = catalog.workspaces if catalog_name == "workspaces" else catalog.policies
-    assert "nested/name" not in target
+    assert any("workspace names must be lowercase kebab-case" in error for error in catalog.errors)
+    assert name not in catalog.workspaces
+
+
+@pytest.mark.parametrize("name", ["Client.Read_Only", "policy.v2", "OPS_admin"])
+def test_policy_names_keep_their_separate_portable_identifier_rules(tmp_path, name):
+    config = make_workspace_policy_config(tmp_path)
+    config["policies"][name] = {
+        "unrestricted": True,
+        "providers": ["claude"],
+        "default_provider": "claude",
+    }
+
+    catalog = load_catalog(config)
+
+    assert name in catalog.policies
 
 
 def test_route_cannot_override_workspace_policy(tmp_path):
@@ -173,7 +188,9 @@ def test_catalog_loads_without_slack_routes(tmp_path):
     catalog = load_catalog(config)
 
     assert catalog.errors == ()
-    assert catalog.workspaces["company"].path.endswith("workspaces/company")
+    assert catalog.workspaces["company"].path == str(
+        tmp_path / "enso" / "workspaces" / "company"
+    )
     assert catalog.policies["admin"].unrestricted
     assert catalog.usable("company")
 
@@ -248,15 +265,21 @@ def test_catalog_rejects_unknown_or_invalid_bindings(tmp_path):
     assert not catalog.usable("missing")
 
 
-def test_catalog_retains_topology_validation_without_slack_routes(tmp_path):
+@pytest.mark.parametrize("legacy_path", [None, "relative", "/tmp/external"])
+def test_legacy_workspace_path_fails_closed_with_one_migration_diagnostic(
+    tmp_path, legacy_path
+):
     config = make_config(tmp_path)
     del config["transports"]["slack"]
-    config["workspaces"]["client-a"]["path"] = config["workspaces"]["company"]["path"]
+    config["workspaces"]["client-a"]["path"] = legacy_path
 
     catalog = load_catalog(config)
 
-    assert catalog.errors
-    assert not catalog.usable("company")
+    problems = catalog.workspace_errors["client-a"]
+    assert len([problem for problem in problems if "path" in problem]) == 1
+    assert "path is no longer supported" in problems[0]
+    assert "docs/migrations/v1.3-managed-workspaces.md" in problems[0]
+    assert not catalog.usable("client-a")
 
 
 # -- valid schema --
@@ -289,45 +312,41 @@ def test_missing_slack_account_id_is_actionable_invalid_config(tmp_path):
     )
 
 
-def test_paths_are_canonical_absolute(tmp_path):
+def test_workspace_path_is_name_derived_and_policy_path_is_canonical(tmp_path):
     config = make_config(tmp_path)
-    config["workspaces"]["company"]["path"] = str(
-        tmp_path / "workspaces" / ".." / "workspaces" / "company"
-    )
     config["policies"]["client-readonly"]["policy_dir"] = (
         str(tmp_path / "policies" / ".." / "policies" / "client-readonly")
     )
     parsed = load_teams(config)
-    assert parsed.workspaces["company"].path == os.path.realpath(
-        tmp_path / "workspaces" / "company"
+    assert parsed.workspaces["company"].path == str(
+        tmp_path / "enso" / "workspaces" / "company"
     )
     assert parsed.policies["client-readonly"].policy_dir == os.path.realpath(
         tmp_path / "policies" / "client-readonly"
     )
 
 
-@pytest.mark.parametrize(
-    ("section", "name", "field"),
-    [
-        ("workspaces", "company", "path"),
-        ("policies", "client-readonly", "policy_dir"),
-    ],
-)
-def test_catalog_rejects_cwd_dependent_relative_paths(
-    tmp_path, section, name, field
-):
+def test_workspace_path_uses_the_current_managed_root(tmp_path, monkeypatch):
     config = make_config(tmp_path)
-    config[section][name][field] = "relative/path"
+    moved_root = tmp_path / "moved-enso"
+    monkeypatch.setattr("enso.config.CONFIG_DIR", str(moved_root))
 
     catalog = load_catalog(config)
 
-    problems = (
-        catalog.workspace_errors[name]
-        if section == "workspaces"
-        else catalog.policy_errors[name]
+    assert catalog.workspaces["client-a"].path == str(
+        moved_root / "workspaces" / "client-a"
     )
+
+
+def test_catalog_rejects_cwd_dependent_relative_policy_paths(tmp_path):
+    config = make_config(tmp_path)
+    config["policies"]["client-readonly"]["policy_dir"] = "relative/path"
+
+    catalog = load_catalog(config)
+
+    problems = catalog.policy_errors["client-readonly"]
     assert any("must be absolute" in problem for problem in problems)
-    assert not catalog.usable("company" if section == "workspaces" else "client-a")
+    assert not catalog.usable("client-a")
 
 
 def test_policy_dir_defaults_from_policy_name(tmp_path, monkeypatch):
@@ -457,25 +476,11 @@ def test_malformed_audit_block_disables_dispatch(tmp_path, bad):
     assert not load_teams(config).dispatchable
 
 
-def test_nested_workspace_paths_disable_dispatch(tmp_path):
-    config = make_config(tmp_path)
-    nested = tmp_path / "workspaces" / "company" / "clients" / "acme"
-    nested.mkdir(parents=True)
-    config["workspaces"]["client-a"]["path"] = str(nested)
-    assert not load_teams(config).dispatchable
-
-
-def test_duplicate_workspace_paths_disable_dispatch(tmp_path):
-    config = make_config(tmp_path)
-    config["workspaces"]["client-a"]["path"] = config["workspaces"]["company"]["path"]
-    assert not load_teams(config).dispatchable
-
-
 @pytest.mark.parametrize("direction", ["inside", "contains"])
 def test_policy_dir_may_not_overlap_any_workspace(tmp_path, direction):
     config = make_config(tmp_path)
-    workspace = tmp_path / "workspaces" / "clients" / "acme"
-    policy = workspace / "policy" if direction == "inside" else tmp_path / "workspaces" / "clients"
+    workspace = tmp_path / "enso" / "workspaces" / "client-a"
+    policy = workspace / "policy" if direction == "inside" else workspace.parent
     config["policies"]["client-readonly"]["policy_dir"] = str(policy)
     assert not load_teams(config).dispatchable
 
@@ -486,7 +491,6 @@ def test_policy_dir_may_not_overlap_any_workspace(tmp_path, direction):
 @pytest.mark.parametrize(
     ("key", "value"),
     [
-        ("path", None),
         ("concurrency", True),
         ("concurrency", 0),
         ("policy_dir", "/tmp/old-schema"),

@@ -17,9 +17,13 @@ tables. Writes go straight back to owned files (atomic replace) and the run stor
 configuration, policies, Slack routes, and user-table pages are read-only. There is no
 separate web database or cache (see [data-model.md](data-model.md)).
 
+The app factory validates the local Git root and canonical scaffold before serving. That
+check is read-only: the web process never seeds prompts or skills, creates workspaces,
+repairs links, or changes setup state.
+
 **Write boundary.** Every write the UI makes lands inside `~/.enso/` (jobs, Enso-owned
 skills, the canonical shared `AGENTS.md`, and root `AGENTS.md` files under the managed
-`~/.enso/workspaces/` tree). Configured workspaces outside that tree, nested workspace
+`~/.enso/workspaces/` tree). External workspace roots are invalid; nested workspace
 instruction files, native policy files, and external "parent" skills discovered from the
 CLIs' own roots (e.g. `~/.claude/skills/`) are strictly read-only. This is both the safety
 boundary and the ownership model: Enso manages its own files and only observes the rest.
@@ -109,10 +113,12 @@ and detail pages render the configuration held by the running dashboard process;
 not reload or modify `config.json`, and a disk edit takes effect only after the relevant
 service is restarted.
 
-- The list shows the canonical path, exactly one linked policy, concurrency, Slack-route
+- The list shows the canonical name-derived path, exactly one linked policy, concurrency, Slack-route
   and job counts, Telegram binding, instruction-file count, and all structural problems.
-- Detail shows the same binding plus associated routes and jobs. Configured workspace
-  paths outside `~/.enso/workspaces/` are explicitly marked external and read-only.
+- Detail shows the same binding plus associated routes and jobs. Every lowercase
+  kebab-case name resolves exactly to `~/.enso/workspaces/<name>`; configuration cannot
+  provide another path. A symlinked container/root, a direct root `.git` entry, an
+  incorrect discovery link, or a duplicate global/workspace skill name is an error.
 - A bounded no-symlink scan discovers exact `AGENTS.md` names to a maximum depth of six,
   100 files, 2,000 directories, and 20,000 directory entries. Dot directories and common
   generated roots such as `node_modules`, `vendor`, `dist`, `build`, `target`, `uploads`,
@@ -204,13 +210,12 @@ unavailable** state. Neither response includes the raw exception text.
 
 Two tiers, split by the `~/.enso/` write boundary:
 
-- **Enso skills** — everything under `~/.enso/skills/`, whether created here or seeded from
-  Enso's starter set at install. Listed with name + description (from SKILL.md
+- **Enso skills** — everything under `~/.enso/skills/`, whether created here or copied
+  once by fresh setup. Listed with name + description (from SKILL.md
   frontmatter). `/skills/{name}` offers whole-file `SKILL.md` editing and confirmed
-  directory deletion. Missing bundled files are seeded unless they have an explicit
-  deletion marker; known pristine prior versions may be upgraded, and customized files
-  or symlinks are preserved. Deletion also removes any unmodified, unshared tool copy
-  installed from that skill; modified or shared tool files are preserved.
+  directory deletion. Installed copies are user-owned: startup, upgrades, and setup repair
+  do not seed missing bundle entries, advance pristine copies, create deletion markers,
+  resurrect deleted skills, or remove guessed tool copies.
 - **External / "parent" skills** — auto-discovered from the underlying CLIs' own skill
   roots *outside* `~/.enso/` (e.g. `~/.claude/skills/`; the set of roots is configurable,
   see [data-model.md](data-model.md) § Config). Listed **read-only** with their absolute
@@ -297,7 +302,7 @@ for its bounded timeout therefore cannot delay health checks or unrelated web re
   left-aligned beside the sidebar on wide screens, and long IDs, paths, upload controls,
   and metadata must never widen the document.
 - **Text editing**: Enso-owned `SKILL.md`, job prompts, shared and managed-root `AGENTS.md`,
-  and reference docs use plain textareas; nested/external workspace instructions and
+  and reference docs use plain textareas; nested workspace instructions and
   external skills use escaped preformatted text. Rich Markdown rendering is not implemented.
 - **Table grids**: schema and row values remain readable on narrow screens via
   bounded, horizontal overflow; long values cannot widen the whole document.

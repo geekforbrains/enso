@@ -30,9 +30,9 @@ def _database_web_app(tmp_path: Path, monkeypatch):
 
     config_dir = tmp_path / "enso"
     jobs_dir = config_dir / "jobs"
-    workspace = tmp_path / "workspace"
+    workspace = config_dir / "workspaces" / "default"
     jobs_dir.mkdir(parents=True)
-    workspace.mkdir()
+    workspace.mkdir(parents=True)
     (jobs_dir / "demo").mkdir()
     (jobs_dir / "demo" / "JOB.md").write_text(
         "---\n"
@@ -54,7 +54,6 @@ def _database_web_app(tmp_path: Path, monkeypatch):
             "web": {},
             "workspaces": {
                 "default": {
-                    "path": str(workspace),
                     "policy": "admin",
                     "concurrency": 1,
                 }

@@ -17,9 +17,8 @@ runner = CliRunner()
 
 def configure_job_catalog(tmp_enso: str) -> None:
     config = load_config(allow_missing=True)
-    workspace = str(Path(tmp_enso) / "workspaces" / "default")
     config["workspaces"] = {
-        "default": {"path": workspace, "policy": "admin", "concurrency": 1},
+        "default": {"policy": "admin", "concurrency": 1},
     }
     config["policies"] = {
         "admin": {

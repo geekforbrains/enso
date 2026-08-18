@@ -13,18 +13,23 @@ from typer.testing import CliRunner
 from enso import audit
 from enso.cli import app
 from enso.config import save_config
-from enso.core import Runtime
+from enso.repository import EnsoRepository
+from enso.scaffolding import ScaffoldService
 
 runner = CliRunner()
 
 
 def _teams_config(tmp_enso: str) -> dict:
     base = Path(tmp_enso)
-    ops = base / "workspaces" / "ops"
-    acme = base / "workspaces" / "acme"
+    repository = EnsoRepository()
+    repository.ensure()
+    scaffold = ScaffoldService()
+    scaffold.seed_fresh_global()
+    for name in ("ops", "acme"):
+        if not scaffold.workspace_path(name).exists():
+            scaffold.create_workspace(name)
     policies = base / "policies" / "client" / "claude"
-    for d in (ops, acme, policies):
-        d.mkdir(parents=True, exist_ok=True)
+    policies.mkdir(parents=True, exist_ok=True)
     settings = policies / "settings.json"
     settings.write_text(json.dumps({"sandbox": {"enabled": True}, "disableAllHooks": True}))
     settings.chmod(0o600)
@@ -47,8 +52,8 @@ def _teams_config(tmp_enso: str) -> dict:
             }
         },
         "workspaces": {
-            "ops": {"path": str(ops), "policy": "admin"},
-            "acme": {"path": str(acme), "policy": "client"},
+            "ops": {"policy": "admin"},
+            "acme": {"policy": "client"},
         },
         "policies": {
             "admin": {
@@ -113,13 +118,27 @@ def test_config_check_applies_defaults_without_persisting_them(tmp_enso):
 
 
 def test_config_check_fails_when_shared_instructions_are_missing(tmp_enso):
+    config = _teams_config(tmp_enso)
     Path(tmp_enso, "AGENTS.md").unlink()
-    save_config(_teams_config(tmp_enso))
+    save_config(config)
 
     result = runner.invoke(app, ["config", "check"])
 
     assert result.exit_code == 1
     assert "shared instruction file is missing" in result.output
+
+
+def test_config_check_reports_scaffold_errors_without_repairing_them(tmp_enso):
+    config = _teams_config(tmp_enso)
+    discovery = Path(tmp_enso, ".agents", "skills")
+    discovery.unlink()
+    save_config(config)
+
+    result = runner.invoke(app, ["config", "check"])
+
+    assert result.exit_code == 1
+    assert "required discovery link" in result.output
+    assert not discovery.exists()
 
 
 def test_config_check_fails_on_missing_policy(tmp_enso):
@@ -144,8 +163,10 @@ def _grok_teams_config(tmp_enso: str) -> dict:
     config = _teams_config(tmp_enso)
     grok_ws = base / "workspaces" / "grok-client"
     grok_policy = base / "policies" / "grok-client" / "grok"
-    for d in (grok_ws, grok_policy):
-        d.mkdir(parents=True, exist_ok=True)
+    scaffold = ScaffoldService()
+    if not grok_ws.exists():
+        scaffold.create_workspace("grok-client")
+    grok_policy.mkdir(parents=True, exist_ok=True)
     grok_config = grok_policy / "config.toml"
     grok_config.write_text(
         "[permission]\n"
@@ -154,7 +175,7 @@ def _grok_teams_config(tmp_enso: str) -> dict:
     )
     grok_config.chmod(0o600)
     config["transports"]["slack"]["channels"]["C2"] = {"workspace": "grok-client"}
-    config["workspaces"]["grok-client"] = {"path": str(grok_ws), "policy": "grok-client"}
+    config["workspaces"]["grok-client"] = {"policy": "grok-client"}
     config["policies"]["grok-client"] = {
         "policy_dir": str(base / "policies" / "grok-client"),
         "providers": ["grok"],
@@ -170,8 +191,11 @@ def _stub_grok_inspect(monkeypatch, tmp_enso, loaded: int) -> list:
         "enso.policy._user_grok_home", lambda: str(Path(tmp_enso) / "grok-user-home")
     )
     calls: list = []
+    real_run = subprocess.run
 
     def fake_run(cmd, *args, **kwargs):
+        if cmd[0] == "git":
+            return real_run(cmd, *args, **kwargs)
         calls.append((list(cmd), kwargs))
         return subprocess.CompletedProcess(
             cmd,
@@ -185,8 +209,9 @@ def _stub_grok_inspect(monkeypatch, tmp_enso, loaded: int) -> list:
 
 
 def test_config_check_verifies_grok_policy_rules_load(tmp_enso, monkeypatch):
+    config = _grok_teams_config(tmp_enso)
     calls = _stub_grok_inspect(monkeypatch, tmp_enso, loaded=2)
-    save_config(_grok_teams_config(tmp_enso))
+    save_config(config)
 
     result = runner.invoke(app, ["config", "check"])
 
@@ -207,8 +232,9 @@ def test_config_check_verifies_grok_policy_rules_load(tmp_enso, monkeypatch):
 
 
 def test_config_check_fails_when_grok_loads_zero_rules(tmp_enso, monkeypatch):
+    config = _grok_teams_config(tmp_enso)
     _stub_grok_inspect(monkeypatch, tmp_enso, loaded=0)
-    save_config(_grok_teams_config(tmp_enso))
+    save_config(config)
 
     result = runner.invoke(app, ["config", "check"])
 
@@ -224,12 +250,16 @@ def test_config_check_fails_when_grok_loads_rules_the_policy_never_declared(
     """More rules loaded than declared means something outside the policy
     reached the launch — a trusted workspace contributing its own config is
     the case that matters, since that is a policy widening itself."""
+    config = _grok_teams_config(tmp_enso)
     monkeypatch.setattr(
         "enso.policy._user_grok_home", lambda: str(Path(tmp_enso) / "grok-user-home")
     )
     planted = str(Path(tmp_enso) / "workspaces" / "grok-client" / ".grok" / "config.toml")
+    real_run = subprocess.run
 
     def fake_run(cmd, *args, **kwargs):
+        if cmd[0] == "git":
+            return real_run(cmd, *args, **kwargs)
         return subprocess.CompletedProcess(
             cmd,
             0,
@@ -240,7 +270,7 @@ def test_config_check_fails_when_grok_loads_rules_the_policy_never_declared(
         )
 
     monkeypatch.setattr("subprocess.run", fake_run)
-    save_config(_grok_teams_config(tmp_enso))
+    save_config(config)
 
     result = runner.invoke(app, ["config", "check"])
 
@@ -252,15 +282,20 @@ def test_config_check_fails_when_grok_loads_rules_the_policy_never_declared(
 
 
 def test_config_check_fails_when_grok_binary_is_missing(tmp_enso, monkeypatch):
+    config = _grok_teams_config(tmp_enso)
     monkeypatch.setattr(
         "enso.policy._user_grok_home", lambda: str(Path(tmp_enso) / "grok-user-home")
     )
 
+    real_run = subprocess.run
+
     def missing_binary(cmd, *args, **kwargs):
+        if cmd[0] == "git":
+            return real_run(cmd, *args, **kwargs)
         raise FileNotFoundError(2, "No such file or directory", cmd[0])
 
     monkeypatch.setattr("subprocess.run", missing_binary)
-    save_config(_grok_teams_config(tmp_enso))
+    save_config(config)
 
     result = runner.invoke(app, ["config", "check"])
 
@@ -620,38 +655,3 @@ def test_audit_tail_and_export(tmp_enso):
     assert result.exit_code == 0
     row = json.loads(result.output.strip().splitlines()[-1])
     assert row["user_id"] == "U02DEV"
-
-
-def test_install_workspaces_keeps_instructions_local(tmp_enso):
-    """Named workspaces get local instructions, not global skill links."""
-    config = _teams_config(tmp_enso)
-    skills_root = Path(tmp_enso, "skills")
-    (skills_root / "docs").mkdir(parents=True)
-
-    Runtime(config).install_workspaces()
-
-    for ws in ("ops", "acme"):
-        root = Path(tmp_enso, "workspaces", ws)
-        assert (root / "AGENTS.md").is_file()
-        instructions = (root / "AGENTS.md").read_text()
-        assert "knowledge/" in instructions
-        assert "drafts/" in instructions
-        assert "uploads/<random-id>/" in instructions
-        assert "control files" in instructions
-        assert (root / "CLAUDE.md").is_symlink()
-        for cli_dir in (".claude", ".agents"):
-            assert not (root / cli_dir / "skills").exists()
-
-
-def test_install_workspaces_writes_nothing_when_catalog_topology_is_invalid(tmp_enso):
-    config = _teams_config(tmp_enso)
-    policy_root = Path(config["policies"]["client"]["policy_dir"])
-    config["workspaces"]["acme"]["path"] = str(policy_root)
-    ops_root = Path(config["workspaces"]["ops"]["path"])
-
-    Runtime(config).install_workspaces()
-
-    assert not (policy_root / "AGENTS.md").exists()
-    assert not (policy_root / "CLAUDE.md").exists()
-    assert not (policy_root / "uploads").exists()
-    assert not (ops_root / "AGENTS.md").exists()

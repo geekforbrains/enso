@@ -70,3 +70,39 @@ def test_slack_skill_discovers_rich_output_and_guards_text_only_paths():
     assert "Never send an `enso-message` or `enso-surface` envelope through" in skill
     assert "`enso message send`" in skill
     assert 'enso message send "text" --to D0123456789' in skill
+
+
+def test_workspace_skill_documents_only_the_canonical_managed_layout():
+    skill = (
+        importlib.resources.files("enso")
+        .joinpath("skills", "workspace", "SKILL.md")
+        .read_text(encoding="utf-8")
+    )
+
+    for contract in (
+        "lowercase kebab-case",
+        "~/.enso/workspaces/<name>",
+        "~/.enso/skills/",
+        "~/.enso/.agents/skills -> ../skills",
+        "~/.enso/.claude/skills -> ../skills",
+        "<workspace>/skills/",
+        "<workspace>/.agents/skills -> ../skills",
+        "<workspace>/.claude/skills -> ../skills",
+        "CLAUDE.md -> AGENTS.md",
+        "knowledge/README.md",
+    ):
+        assert contract in skill
+
+    assert "starts empty" in skill
+    assert "user-owned" in skill
+    assert "never overwrites" in skill
+    assert "unknown paths" in skill
+    assert "migration guide" in skill
+
+    # Workspace paths are name-derived; the removed configurable-path shape and
+    # hand-built provider copies must not return as a compatibility mechanism.
+    assert '"path": "~/.enso/workspaces/project-name"' not in skill
+    assert "absolute path or a path beginning" not in skill
+    assert "<workspace>/.agents/skills/<skill-name>" not in skill
+    assert "enso workspace create" not in skill
+    assert "enso workspace repair" not in skill

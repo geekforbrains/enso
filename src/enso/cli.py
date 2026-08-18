@@ -33,6 +33,7 @@ from .config import (
     DEFAULT_POLICY_NAME,
     DEFAULT_WORKSPACE_NAME,
     ConfigError,
+    SetupState,
     config_lock,
     detect_providers,
     load_config,
@@ -40,10 +41,10 @@ from .config import (
     provider_models,
     resolve_providers,
     save_config,
+    setup_state,
     unrestricted_policy_config,
 )
 from .docs import MAX_DOCS, create_doc, load_docs
-from .fsutil import is_within
 from .jobs import create_job, load_jobs, load_jobs_with_errors
 from .logging_config import configure_logging
 from .messages import clear as msg_clear
@@ -118,6 +119,45 @@ def _ensure_repository_or_exit() -> None:
     except RepositoryError as exc:
         console.print(f"[red]Could not initialize Enso content history:[/] {escape(str(exc))}")
         raise typer.Exit(1) from None
+
+
+def _installation_errors(config: dict) -> tuple[str, ...]:
+    """Return read-only repository and managed-scaffold diagnostics."""
+    from .repository import EnsoRepository, RepositoryError
+    from .scaffolding import ScaffoldError, ScaffoldService
+    from .teams import load_catalog
+
+    errors: list[str] = []
+    try:
+        EnsoRepository().validate()
+    except RepositoryError as exc:
+        errors.append(str(exc))
+
+    catalog = load_catalog(config)
+    errors.extend(catalog.errors)
+    for problems in catalog.workspace_errors.values():
+        errors.extend(problems)
+
+    service = ScaffoldService()
+    errors.extend(service.validate_global().errors)
+    for name in sorted(catalog.workspaces):
+        try:
+            errors.extend(service.validate_workspace(name).errors)
+        except ScaffoldError as exc:
+            errors.append(str(exc))
+    return tuple(dict.fromkeys(errors))
+
+
+def _validate_installation_or_exit(config: dict) -> None:
+    """Fail an operational startup without seeding or repairing content."""
+    errors = _installation_errors(config)
+    if not errors:
+        return
+    console.print("[red]Enso's managed installation is invalid:[/]")
+    for problem in errors:
+        console.print(f"  [red]✗[/] {escape(problem)}")
+    console.print("[dim]Run `enso setup` to repair structure after migrating legacy paths.[/]")
+    raise typer.Exit(1)
 
 # ---------------------------------------------------------------------------
 # Telegram API helpers (stdlib only — no extra deps for setup)
@@ -627,64 +667,6 @@ def _setup_providers(config: dict) -> None:
         console.print(f"Install at least one of: {', '.join(PROVIDER_NAMES)}")
 
 
-def _setup_workspace_path(
-    candidate: object,
-    name: object,
-    *,
-    default: str | None = None,
-) -> str | None:
-    """Resolve one setup workspace path without depending on process cwd."""
-    if not isinstance(candidate, dict):
-        return None
-    configured = candidate.get("path", default)
-    if configured is None:
-        return None
-    if not isinstance(configured, str) or not configured:
-        raise ValueError(f"workspace {name!r} path must be a non-empty string")
-    expanded = os.path.expanduser(configured)
-    if not os.path.isabs(expanded):
-        raise ValueError(f"workspace {name!r} path must be absolute or start with ~/")
-    return os.path.realpath(expanded)
-
-
-def _select_setup_workspace(workspaces: dict) -> tuple[str, dict]:
-    """Choose the default path owner and reject ambiguous filesystem topology."""
-    managed_path = os.path.realpath(managed_workspace_path())
-    selected_name = DEFAULT_WORKSPACE_NAME
-    if DEFAULT_WORKSPACE_NAME not in workspaces:
-        for name, candidate in workspaces.items():
-            if _setup_workspace_path(candidate, name) != managed_path:
-                continue
-            if selected_name != DEFAULT_WORKSPACE_NAME:
-                raise ValueError(
-                    f"managed default workspace path {managed_path} is already used "
-                    f"by both {selected_name!r} and {name!r}"
-                )
-            selected_name = name
-
-    configured = workspaces.get(selected_name)
-    workspace = configured if isinstance(configured, dict) else {}
-    selected_path = _setup_workspace_path(
-        workspace,
-        selected_name,
-        default=managed_workspace_path(),
-    )
-    assert selected_path is not None
-    for name, candidate in workspaces.items():
-        if name == selected_name:
-            continue
-        existing_path = _setup_workspace_path(candidate, name)
-        if existing_path is not None and (
-            is_within(existing_path, selected_path)
-            or is_within(selected_path, existing_path)
-        ):
-            raise ValueError(
-                f"default workspace path {selected_path} would overlap configured "
-                f"workspace {name!r} at {existing_path}"
-            )
-    return selected_name, workspace
-
-
 def _ensure_default_execution_config(config: dict) -> str:
     """Seed the default workspace and its reusable unrestricted admin policy.
 
@@ -695,10 +677,10 @@ def _ensure_default_execution_config(config: dict) -> str:
     if not isinstance(workspaces, dict):
         workspaces = {}
         config["workspaces"] = workspaces
-    workspace_name, workspace = _select_setup_workspace(workspaces)
-    if not isinstance(workspaces.get(workspace_name), dict):
-        workspaces[workspace_name] = workspace
-    workspace.setdefault("path", managed_workspace_path())
+    workspace_name = DEFAULT_WORKSPACE_NAME
+    configured_workspace = workspaces.get(workspace_name)
+    workspace = configured_workspace if isinstance(configured_workspace, dict) else {}
+    workspaces[workspace_name] = workspace
     workspace.setdefault("policy", DEFAULT_POLICY_NAME)
     workspace.setdefault("concurrency", 1)
 
@@ -1240,14 +1222,14 @@ def _setup_slack(config: dict) -> None:  # noqa: C901
             else:
                 console.print("[red]  Enter one exact Slack user ID (for example U012ABC).[/]")
 
-    # Notify channel — where `enso message send` (no --to), scheduled-job
-    # alerts, and the autocompact hook deliver. Without one they fail with
-    # "no destination" because Slack never auto-broadcasts.
+    # Notify channel — where `enso message send` (no --to) and scheduled-job
+    # alerts deliver. Without one they fail with "no destination" because
+    # Slack never auto-broadcasts.
     console.print()
     console.print(
         "  [bold]Default notify channel[/] \u2014 channel/DM ID where"
-        " background alerts go\n  (autocompact hooks, scheduled-job"
-        " failures, `enso message send` with no --to).\n"
+        " background alerts go\n  (scheduled-job failures and"
+        " `enso message send` with no --to).\n"
     )
     notify = Prompt.ask(
         "  Notify channel (leave blank to configure later)",
@@ -1256,7 +1238,7 @@ def _setup_slack(config: dict) -> None:  # noqa: C901
     if not notify:
         console.print(
             "  [yellow]\u26a0[/] Without a notify channel, background"
-            " Slack messages (hooks, job alerts, `enso message send`)"
+            " Slack messages (job alerts and `enso message send`)"
             " will be dropped.\n      Set it later by editing"
             " ~/.enso/config.json or re-running `enso setup`."
         )
@@ -1312,28 +1294,80 @@ def _setup_slack(config: dict) -> None:  # noqa: C901
 
 def _reject_legacy_setup_config(config: dict) -> None:
     """Stop setup before it partially rewrites a manual workspace migration."""
-    if "working_dir" not in config:
+    if "working_dir" in config:
+        console.print(
+            "[red]working_dir is no longer supported. Move that directory into a"
+            " named workspaces entry (normally default), bind Telegram to the"
+            " workspace if configured, remove working_dir, and rerun setup.[/]"
+        )
+        raise typer.Exit(1)
+    workspaces = config.get("workspaces")
+    if not isinstance(workspaces, dict):
         return
-    console.print(
-        "[red]working_dir is no longer supported. Move that directory into a"
-        " named workspaces entry (normally default), bind Telegram to the"
-        " workspace if configured, remove working_dir, and rerun setup.[/]"
-    )
-    raise typer.Exit(1)
+    for name, workspace in workspaces.items():
+        if isinstance(workspace, dict) and "path" in workspace:
+            console.print(
+                f"[red]workspaces.{escape(str(name))}.path is no longer supported. "
+                "Move its content to the name-derived directory, remove the path key, "
+                "and follow docs/migrations/v1.3-managed-workspaces.md before rerunning "
+                "setup.[/]"
+            )
+            raise typer.Exit(1)
 
 
 def _setup_default_workspace(config: dict) -> str:
-    """Resolve or create setup's managed workspace without creating overlaps."""
+    """Configure setup's canonical default workspace without touching disk."""
     console.rule("[bold]Step 2 \u00b7 Workspace")
-    try:
-        name = _ensure_default_execution_config(config)
-    except ValueError as exc:
-        console.print(f"[red]Could not create default workspace:[/] {exc}")
-        raise typer.Exit(1) from None
-    workspace = config["workspaces"][name]
-    os.makedirs(os.path.expanduser(workspace["path"]), exist_ok=True)
-    console.print(f"  Default workspace: [bold]{workspace['path']}[/]\n")
+    name = _ensure_default_execution_config(config)
+    console.print(f"  Default workspace: [bold]{managed_workspace_path(name)}[/]\n")
     return name
+
+
+def _print_scaffold_warnings(warnings: tuple[str, ...]) -> None:
+    for warning in warnings:
+        console.print(f"  [yellow]![/] {escape(warning)}")
+
+
+def _scaffold_setup_or_exit(config: dict) -> None:
+    """Seed a fresh install once, or conservatively repair an older one."""
+    from .scaffolding import ScaffoldError, ScaffoldService
+
+    service = ScaffoldService()
+    raw_workspaces = config.get("workspaces", {})
+    if not isinstance(raw_workspaces, dict):
+        console.print("[red]Could not scaffold workspaces:[/] workspaces must be an object")
+        raise typer.Exit(1)
+    try:
+        state = setup_state(config)
+        global_report = (
+            service.seed_fresh_global()
+            if state is SetupState.INCOMPLETE
+            else service.repair_global()
+        )
+        _print_scaffold_warnings(global_report.warnings)
+
+        for name in sorted(raw_workspaces):
+            workspace_path = service.workspace_path(name)
+            if state is SetupState.INCOMPLETE:
+                if os.path.lexists(workspace_path):
+                    report = service.validate_workspace(name)
+                    if report.errors:
+                        raise ScaffoldError("; ".join(report.errors))
+                else:
+                    workspace_report = service.create_workspace(name)
+                    _print_scaffold_warnings(workspace_report.warnings)
+            else:
+                workspace_report = service.repair_workspace(name)
+                _print_scaffold_warnings(workspace_report.warnings)
+
+        errors = [*service.validate_global().errors]
+        for name in sorted(raw_workspaces):
+            errors.extend(service.validate_workspace(name).errors)
+        if errors:
+            raise ScaffoldError("; ".join(errors))
+    except (ConfigError, ScaffoldError, OSError) as exc:
+        console.print(f"[red]Could not establish managed workspaces:[/] {escape(str(exc))}")
+        raise typer.Exit(1) from None
 
 
 @app.command()
@@ -1355,12 +1389,7 @@ def setup() -> None:
         _setup_default_workspace(config)
 
         captured_chat_id = _setup_transport(config)
-
-        from .core import Runtime
-
-        runtime = Runtime(config)
-        runtime.install_system_prompts()
-        runtime.install_workspaces()
+        _scaffold_setup_or_exit(config)
 
         with console.status("Saving config..."):
             save_config(config)
@@ -1529,6 +1558,7 @@ def serve(
     from .core import Runtime
 
     config = _load_config_or_exit()
+    _validate_installation_or_exit(config)
     logging_state = configure_logging(config, force=True)
     log.debug("Logging configured: %s", logging_state)
     secret_keys = _load_secret_env()
@@ -1541,8 +1571,6 @@ def serve(
         raise typer.Exit(1)
 
     runtime = Runtime(config)
-    runtime.install_system_prompts()
-    runtime.install_workspaces()
     runtime.load_state()
 
     log.info("Starting Enso v%s", __version__)
@@ -1570,6 +1598,7 @@ def web(
     from .core import Runtime
 
     config = _load_config_or_exit()
+    _validate_installation_or_exit(config)
     web_cfg = config.get("web", {})
     if not isinstance(web_cfg, dict):
         web_cfg = {}
@@ -2432,9 +2461,30 @@ def config_check() -> None:  # noqa: C901
     catalog = load_catalog(config)
 
     failed = False
+    reported = set(catalog.errors)
     for error in catalog.errors:
         failed = True
         console.print(f"[red]✗[/] {error}")
+    for problems in catalog.workspace_errors.values():
+        reported.update(problems)
+    for error in _installation_errors(config):
+        if error in reported:
+            continue
+        failed = True
+        console.print(f"[red]✗[/] {escape(error)}")
+
+    from .repository import EnsoRepository, RepositoryError
+
+    try:
+        protected = EnsoRepository().tracked_protected_paths()
+    except RepositoryError:
+        protected = ()
+    if protected:
+        failed = True
+        console.print(
+            "[red]✗[/] protected paths are already tracked and block snapshots: "
+            + ", ".join(escape(path) for path in protected)
+        )
 
     try:
         shared_instructions = validate_shared_instructions()

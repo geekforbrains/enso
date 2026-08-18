@@ -20,6 +20,7 @@ Design docs live in [`docs/`](docs/) and are the source of truth for planned and
 | [`docs/specs/tables.md`](docs/specs/tables.md)             | Registered SQLite data tables, discovery, and bounded read-only views               |
 | [`docs/specs/web.md`](docs/specs/web.md)                   | The web UI: routes, pages, read/write flows                                         |
 | [`docs/migrations/unified-workspace-policies.md`](docs/migrations/unified-workspace-policies.md) | Manual breaking migration from `working_dir`, `access`, and legacy Slack routes |
+| [`docs/migrations/v1.3-managed-workspaces.md`](docs/migrations/v1.3-managed-workspaces.md) | Manual migration from configurable/external workspace paths to the canonical managed tree |
 | [`CHANGELOG.md`](CHANGELOG.md)                             | What has actually shipped, per version                                              |
 
 > The dashboard and run history ship today. The Web UI docs distinguish current
@@ -48,7 +49,9 @@ enso setup
 
 The setup wizard detects your agent CLIs, connects your chosen transport, and optionally installs a background service (launchd on macOS, systemd on Linux) so Enso starts on boot. Every fresh install creates workspace `default` at `~/.enso/workspaces/default`, bound to an unrestricted `admin` policy. Telegram captures one exact numeric user ID and binds its private one-to-one conversations to that workspace. Slack creates one exact owner DM route with the same binding; add channel routes deliberately in `config.json`.
 
-Enso installs shared operational instructions at `~/.enso/AGENTS.md` with `CLAUDE.md -> AGENTS.md`, injects validated shared content into every provider launch, and seeds a focused local `AGENTS.md` plus symlink inside each workspace. Customized files are preserved. An unsafe or unreadable shared source fails launches closed and is reported by `enso config check`.
+Fresh setup seeds shared operational instructions at `~/.enso/AGENTS.md`, global skills at `~/.enso/skills/`, and a complete default workspace. Root discovery uses relative links: `CLAUDE.md -> AGENTS.md`, `.agents/skills -> ../skills`, and `.claude/skills -> ../skills`. Each workspace lives exactly at `~/.enso/workspaces/<lowercase-kebab-name>` and contains its own `AGENTS.md`, relative `CLAUDE.md` and skill-discovery links, initially empty `skills/`, `knowledge/`, `drafts/`, and `uploads/`. Enso injects validated shared instructions into every provider launch; workspace instructions and skills use provider discovery.
+
+Seeded content becomes user-owned immediately. Startup and `enso config check` validate the repository, physical workspace roots, discovery links, and unique root/workspace skill names without installing, repairing, upgrading, or resurrecting content. A later explicit `enso setup` rerun repairs only missing structural directories and known discovery links, preserving missing or customized content and reporting conflicts.
 
 Once setup is done, start chatting:
 
@@ -70,8 +73,8 @@ The dashboard's **Configuration** section makes the execution model traceable: e
 workspace and its one policy, exact Slack DM/channel routes, Telegram and job bindings,
 shared instructions, and workspace-local `AGENTS.md` files. Policy and Slack pages are
 read-only and never render secret values or native policy contents. Shared instructions
-and managed workspace-root instructions have revision-checked editors; nested and external
-workspace instruction files remain read-only.
+and managed workspace-root instructions have revision-checked editors; nested workspace
+instruction files remain read-only. External workspace roots are not supported.
 
 For remote or Tailscale access, bind the dashboard to the required interface. A
 concrete `web.host` is allowed automatically. If you bind `0.0.0.0` or `::`, list each
@@ -211,7 +214,7 @@ enso route explain slack U012ABC C0ACME    # dry-run how a sender/channel resolv
 enso audit tail                            # inspect recorded Slack audit turns
 ```
 
-The examples in [`docs/examples/`](docs/examples/) are starting points, not policy certification. [`docs/specs/teams.md`](docs/specs/teams.md) covers routing and client projects; [`docs/specs/permissions.md`](docs/specs/permissions.md) covers native policy invocation. Existing installations must follow the [manual breaking-change migration](docs/migrations/unified-workspace-policies.md); there is no `enso migrate` command. Config changes require restarting Enso.
+The examples in [`docs/examples/`](docs/examples/) are starting points, not policy certification. [`docs/specs/teams.md`](docs/specs/teams.md) covers routing and client projects; [`docs/specs/permissions.md`](docs/specs/permissions.md) covers native policy invocation. Existing installations must apply the [unified-policy migration](docs/migrations/unified-workspace-policies.md) where needed and then the [v1.3 managed-workspace migration](docs/migrations/v1.3-managed-workspaces.md); there is no `enso migrate` command. Config changes require restarting Enso.
 
 ### Bundled skills
 
@@ -225,7 +228,7 @@ Enso seeds five portable [Agent Skills](https://agentskills.io/specification) un
 | `tables`    | Durable structured data in Enso's SQLite database              |
 | `workspace` | Workspace layout, instructions, skills, policies, and bindings |
 
-Missing skills are installed automatically. Known pristine copies follow the bundle forward, while customized copies and explicit deletions are preserved. Enso-managed workspaces inherit provider discovery views at `~/.enso/.claude/skills` and `~/.enso/.agents/skills`; Enso deliberately does not install links into unrelated project directories. Keep shared skills global; use the `workspace` skill to place focused project guidance and workspace-only skills.
+Fresh setup copies these skills once into the canonical global source and creates the relative provider views `~/.enso/.agents/skills -> ../skills` and `~/.enso/.claude/skills -> ../skills`. A new workspace starts with an empty canonical `<workspace>/skills/` plus matching relative provider views. Installed skills are user-owned: upgrades, startup, setup repair, and dashboard deletion do not copy new bundle versions, restore deleted skills, create tombstones, or clean up tool copies. Keep shared skills global; use the `workspace` skill for focused project guidance and workspace-only skills. A workspace is invalid if the same skill directory name exists at both global and local scope.
 
 ## Background Jobs
 
@@ -326,7 +329,7 @@ development is in progress.
 
 ## Config
 
-Everything lives under `~/.enso/`. Config is at `~/.enso/config.json` — the setup wizard writes it for you, but you can edit it directly to add models, define workspaces and policies, add Slack routes, bind Telegram to a workspace, or set the interactive timeout through `agent.timeout` (whole seconds). There is no top-level `working_dir`, and `enso serve` has no `--working-dir` override. Upgrades backfill newly supported providers without replacing existing paths or custom model lists. Set `notify_channel` to give `enso message send`, job alerts, and autocompact hooks a default destination when no interactive origin or explicit destination exists. No transport broadcasts implicitly.
+Everything lives under `~/.enso/`. Config is at `~/.enso/config.json` — the setup wizard writes it for you, but you can edit it directly to add models, define workspaces and policies, add Slack routes, bind Telegram to a workspace, or set the interactive timeout through `agent.timeout` (whole seconds). Workspace names use lowercase kebab-case and derive their only valid roots as `~/.enso/workspaces/<name>`; workspace entries contain `policy` and optional `concurrency`, never `path`. External, nested, and symlinked workspace roots are rejected, as is a `.git` entry directly at a workspace root. There is no top-level `working_dir`, and `enso serve` has no `--working-dir` override. Upgrades backfill newly supported providers without replacing custom provider paths or model lists. Set `notify_channel` to give `enso message send` and job alerts a default destination when no interactive origin or explicit destination exists. No transport broadcasts implicitly.
 
 Slack's `rich_messages` and `persistent_surfaces` settings both default to `true`. Set `persistent_surfaces` to the JSON boolean `false` to keep standard Markdown and structured message blocks while disabling App Home and Canvas drafts; set `rich_messages` to `false` to restore legacy text delivery and implicitly disable surfaces too. Non-boolean values fail closed as disabled. Restart Enso after changing either setting.
 
@@ -404,7 +407,7 @@ reference also requires the helper's `op_set_secret` function.
 }
 ```
 
-That fragment demonstrates credential storage, Telegram's required workspace binding, and the default Slack output settings. Add `account_id`, `channel_defaults`, `dms`, and `channels` to that same `transports.slack` object, alongside the top-level `workspaces` and `policies`, as shown in [`docs/examples/teams-config.jsonc`](docs/examples/teams-config.jsonc). Legacy `working_dir`, top-level `routes` and `access`, and route/job policy overrides are rejected; follow the [manual migration guide](docs/migrations/unified-workspace-policies.md), run `enso config check`, reinstall the service definition, and restart Enso.
+That fragment demonstrates credential storage, Telegram's required workspace binding, and the default Slack output settings. Add `account_id`, `channel_defaults`, `dms`, and `channels` to that same `transports.slack` object, alongside the top-level `workspaces` and `policies`, as shown in [`docs/examples/teams-config.jsonc`](docs/examples/teams-config.jsonc). Legacy `working_dir`, workspace `path`, top-level `routes` and `access`, and route/job policy overrides are rejected; follow the [unified-policy guide](docs/migrations/unified-workspace-policies.md) and [v1.3 workspace guide](docs/migrations/v1.3-managed-workspaces.md), run `enso config check`, reinstall the service definition, and restart Enso.
 
 The service-account credential needed by the helper may still use the bootstrap
 `~/.enso/secrets/1password.env` file. Existing literal `bot_token` and `app_token`

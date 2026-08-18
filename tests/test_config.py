@@ -17,9 +17,11 @@ from enso.config import (
     config_lock,
     config_transaction,
     load_config,
+    managed_workspace_path,
     provider_models,
     save_config,
     setup_state,
+    validate_workspace_name,
 )
 from enso.providers import PROVIDER_NAMES, provider_class
 
@@ -37,7 +39,6 @@ def test_setup_load_returns_fresh_defaults_without_writing(tmp_enso):
     assert "working_dir" not in config
     assert config["workspaces"] == {
         "default": {
-            "path": os.path.join(tmp_enso, "workspaces", "default"),
             "policy": "admin",
             "concurrency": 1,
         },
@@ -62,6 +63,33 @@ def test_setup_load_returns_fresh_defaults_without_writing(tmp_enso):
     assert config["setup"] == {"completed_at": None}
     assert "tasks" not in config
     assert not Path(tmp_enso, "config.json").exists()
+
+
+@pytest.mark.parametrize("name", ["default", "client-2", "2fa", "a1-b2-c3"])
+def test_managed_workspace_path_derives_only_from_a_valid_name(tmp_enso, name):
+    assert validate_workspace_name(name) == name
+    assert managed_workspace_path(name) == os.path.join(tmp_enso, "workspaces", name)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "",
+        "Client",
+        "two words",
+        "two_words",
+        "-client",
+        "client-",
+        "client--ops",
+        ".",
+        "..",
+        "client/ops",
+        "a" * 65,
+    ],
+)
+def test_managed_workspace_path_rejects_invalid_names_before_joining(tmp_enso, name):
+    with pytest.raises(ConfigError, match="lowercase kebab-case"):
+        managed_workspace_path(name)
 
 
 @pytest.mark.parametrize(

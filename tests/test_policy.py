@@ -1095,7 +1095,7 @@ def test_env_passthrough_reserves_grok_launch_env(tmp_path, name):
     """GROK_SANDBOX and GROK_FOLDER_TRUST change kernel sandboxing and folder
     trust; all three are launch-owned and may never ride env_passthrough."""
     config = {
-        "workspaces": {"acme": {"path": str(tmp_path / "ws"), "policy": "standard"}},
+        "workspaces": {"acme": {"policy": "standard"}},
         "policies": {
             "standard": {
                 "policy_dir": str(tmp_path / "policies"),

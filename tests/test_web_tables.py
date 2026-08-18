@@ -19,9 +19,9 @@ def _tables_web_app(tmp_path, monkeypatch):
     from starlette.testclient import TestClient
 
     config_dir = tmp_path / "enso"
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    config_dir.mkdir()
+    workspace = config_dir / "workspaces" / "default"
+    workspace.mkdir(parents=True)
+    monkeypatch.setattr("enso.config.CONFIG_DIR", str(config_dir))
     monkeypatch.setattr(tables_mod.config, "CONFIG_DIR", str(config_dir))
     monkeypatch.setattr(web_app, "CONFIG_DIR", str(config_dir))
     monkeypatch.setattr(web_app, "load_jobs", lambda: [])
@@ -34,7 +34,6 @@ def _tables_web_app(tmp_path, monkeypatch):
             "web": {},
             "workspaces": {
                 "default": {
-                    "path": str(workspace),
                     "policy": "admin",
                     "concurrency": 1,
                 }

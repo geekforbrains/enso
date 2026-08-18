@@ -92,7 +92,6 @@ def test_job_session_key_is_stable_and_rotates_with_workspace_policy(
     other_root = Path(tmp_enso, "workspaces", "other")
     other_root.mkdir(parents=True)
     sample_config["workspaces"]["other"] = {
-        "path": str(other_root),
         "policy": "automation",
         "concurrency": 1,
     }
@@ -120,7 +119,6 @@ def configured_job_catalog(sample_config, tmp_enso):
         {
             "workspaces": {
                 "company": {
-                    "path": str(workspace),
                     "policy": "automation",
                     "concurrency": 1,
                 },
@@ -893,12 +891,12 @@ async def test_job_policy_preflight_failure_happens_before_prerun(
     runtime.make_provider.assert_not_called()
 
 
-async def test_missing_job_workspace_path_fails_before_prerun(
+async def test_missing_managed_job_workspace_fails_before_prerun(
     tmp_enso,
     sample_config,
 ):
-    missing = Path(tmp_enso, "workspaces", "missing")
-    sample_config["workspaces"]["company"]["path"] = str(missing)
+    workspace = Path(tmp_enso, "workspaces", "company")
+    workspace.rmdir()
     runtime = Runtime(sample_config)
     job = make_job(tmp_enso)
     runtime.jobs._run_job_prerun = AsyncMock()
@@ -1011,7 +1009,7 @@ async def test_invalid_job_binding_fails_without_global_fallback(
 @pytest.mark.parametrize(
     ("section", "field", "value", "expected"),
     [
-        ("workspaces", "path", "", "Invalid workspace 'company'"),
+        ("workspaces", "concurrency", 0, "Invalid workspace 'company'"),
         ("policies", "unrestricted", "yes", "Invalid policy 'automation'"),
     ],
 )

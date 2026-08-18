@@ -52,7 +52,7 @@ where = ["src"]
 enso = [
     "prompts/*.md",
     "slack_manifest.yaml",
-    "skills/**/*.md",
+    "skills/**/*",
     "web/tailwind.config.js",
     "web/tailwind.input.css",
     "web/templates/**/*",

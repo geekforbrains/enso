@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import TypeGuard
 
 from .auth import parse_telegram_allowed_users
+from .config import ConfigError, managed_workspace_path, validate_workspace_name
 from .providers import PROVIDER_NAMES
 
 AUDIT_ON_FAILURE_VALUES = ("block", "warn")
@@ -54,8 +55,9 @@ _ENV_PASSTHROUGH_RESERVED = frozenset(
     }
 )
 _ENV_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*")
-_CATALOG_NAME_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}"
-_CATALOG_NAME_RE = re.compile(_CATALOG_NAME_PATTERN)
+_POLICY_NAME_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}"
+_POLICY_NAME_RE = re.compile(_POLICY_NAME_PATTERN)
+_MANAGED_WORKSPACES_MIGRATION = "docs/migrations/v1.3-managed-workspaces.md"
 _SLACK_TRANSPORT_KEYS = {
     "account_id",
     "app_token",
@@ -446,17 +448,23 @@ def _load_workspaces(
             errors.append("workspace names must be non-empty strings")
             continue
         name = raw_name
-        if not _CATALOG_NAME_RE.fullmatch(name):
-            errors.append(f"workspace names must match {_CATALOG_NAME_PATTERN}")
+        try:
+            validate_workspace_name(name)
+        except ConfigError as exc:
+            errors.append(str(exc))
             continue
         if not isinstance(cfg, dict):
             errors.append(f"workspaces.{name} must be an object")
             continue
+        # ``path`` is recognized only to emit one focused breaking-migration
+        # diagnostic instead of duplicating it as an unknown-key error.
         problems = _unknown_keys(cfg, {"path", "policy", "concurrency"}, f"workspaces.{name}")
-        path = cfg.get("path")
-        if not isinstance(path, str) or not path:
-            problems.append("path is required and must be a string")
-            path = ""
+        if "path" in cfg:
+            problems.append(
+                "path is no longer supported; move this workspace to "
+                f"~/.enso/workspaces/{name}, remove the path key, and follow "
+                f"{_MANAGED_WORKSPACES_MIGRATION}"
+            )
         policy = cfg.get("policy")
         if not isinstance(policy, str) or not policy:
             problems.append("policy is required and must be a string")
@@ -467,7 +475,7 @@ def _load_workspaces(
             concurrency = 1
         workspaces[name] = Workspace(
             name=name,
-            path=_catalog_path(path, "path", problems) if path else "",
+            path=managed_workspace_path(name),
             policy=policy,
             concurrency=concurrency,
         )
@@ -499,8 +507,8 @@ def _load_policies(
             errors.append("policy names must be non-empty strings")
             continue
         name = raw_name
-        if not _CATALOG_NAME_RE.fullmatch(name):
-            errors.append(f"policy names must match {_CATALOG_NAME_PATTERN}")
+        if not _POLICY_NAME_RE.fullmatch(name):
+            errors.append(f"policy names must match {_POLICY_NAME_PATTERN}")
             continue
         if not isinstance(cfg, dict):
             errors.append(f"policies.{name} must be an object")
@@ -612,13 +620,7 @@ def _check_topology(
     errors: list[str],
 ) -> None:
     """Validate that mutable workspaces cannot overlap policy locations."""
-    paths = {name: ws.path for name, ws in workspaces.items() if ws.path}
-    names = sorted(paths)
-    for i, first in enumerate(names):
-        for second in names[i + 1 :]:
-            if _within(paths[first], paths[second]) or _within(paths[second], paths[first]):
-                errors.append(f"workspaces {first} and {second} have overlapping or nested paths")
-
+    paths = {name: ws.path for name, ws in workspaces.items()}
     for policy_name, policy in policies.items():
         if policy.policy_dir is None:
             continue
