@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, ClassVar
 from . import BaseProvider, StreamEvent, truncate_status
 
 if TYPE_CHECKING:
-    from ..instructions import InstructionBundle
+    from ..instructions import ValidatedInstructions
 
 CODEX_MODEL_ALIASES = {
     "sol": "gpt-5.6-sol",
@@ -73,27 +73,6 @@ def _reasoning_override(effort: str) -> str:
     return f'model_reasoning_effort="{effort}"'
 
 
-def _toml_string(value: str) -> str:
-    """Encode one Python string as a TOML basic string for ``-c``.
-
-    JSON's ASCII string encoding is a compatible subset of TOML's basic
-    string syntax. Validate UTF-8 first so lone surrogates cannot become an
-    invalid TOML Unicode escape that fails later inside the CLI.
-    """
-    try:
-        value.encode("utf-8")
-    except UnicodeEncodeError as exc:
-        raise ValueError(
-            "Codex developer instructions must contain Unicode scalar values"
-        ) from exc
-    return json.dumps(value, ensure_ascii=True)
-
-
-def _developer_instructions_override(content: str) -> str:
-    """Return a safely encoded Codex developer-instructions override."""
-    return f"developer_instructions={_toml_string(content)}"
-
-
 class CodexProvider(BaseProvider):
     name = "codex"
 
@@ -124,9 +103,10 @@ class CodexProvider(BaseProvider):
         today's bypass invocation.
         """
         if launch is not None and launch.mode == "policy":
-            # --skip-git-repo-check bypasses the "are you in a git repo" UX
-            # guard (a workspace need not be one); it is not a security
-            # boundary. The staged CODEX_HOME selects the operator's profile.
+            # --skip-git-repo-check bypasses Codex's repository UX guard; it is
+            # not a security boundary. Enso separately validates the exact
+            # enclosing ~/.enso worktree before spawn, while the staged
+            # CODEX_HOME selects the operator's profile.
             args = ["--strict-config", "--skip-git-repo-check"]
             if launch.ignore_rules:
                 args.append("--ignore-rules")
@@ -141,7 +121,7 @@ class CodexProvider(BaseProvider):
         *,
         effort: str | None = None,
         launch=None,
-        instructions: InstructionBundle | None = None,
+        instructions: ValidatedInstructions | None = None,
     ) -> list[str]:
         cli_model = resolve_codex_model(model)
         cmd = [self.path, "exec"]
@@ -150,10 +130,6 @@ class CodexProvider(BaseProvider):
         cmd.extend([*self._permission_args(launch), "--json", "-m", cli_model])
         if effort:
             cmd.extend(["-c", _reasoning_override(effort)])
-        if instructions is not None:
-            cmd.extend([
-                "-c", _developer_instructions_override(instructions.content),
-            ])
         cmd.append("--")
         if session_id:
             cmd.append(session_id)
@@ -167,7 +143,7 @@ class CodexProvider(BaseProvider):
         *,
         effort: str | None = None,
         launch=None,
-        instructions: InstructionBundle | None = None,
+        instructions: ValidatedInstructions | None = None,
     ) -> list[str]:
         cli_model = resolve_codex_model(model)
         cmd = [
@@ -177,10 +153,6 @@ class CodexProvider(BaseProvider):
         ]
         if effort:
             cmd.extend(["-c", _reasoning_override(effort)])
-        if instructions is not None:
-            cmd.extend([
-                "-c", _developer_instructions_override(instructions.content),
-            ])
         cmd.extend(["--", prompt])
         return cmd
 

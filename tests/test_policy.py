@@ -232,7 +232,7 @@ def test_codex_invalid_toml_fails(tmp_path):
     assert not check.ok
 
 
-def test_codex_policy_cannot_override_shared_developer_instructions(tmp_path):
+def test_codex_policy_cannot_add_duplicate_developer_instructions(tmp_path):
     write_codex_policy(
         tmp_path,
         'developer_instructions = "policy-local override"\n' + CODEX_CONFIG,
@@ -242,7 +242,9 @@ def test_codex_policy_cannot_override_shared_developer_instructions(tmp_path):
 
     assert not check.ok
     assert any(
-        "developer_instructions" in problem and "reserved" in problem
+        "developer_instructions" in problem
+        and "native" in problem
+        and "AGENTS.md" in problem
         for problem in check.problems
     )
 
@@ -660,9 +662,9 @@ def test_revision_rotates_on_mcp_file_add_edit_and_remove(tmp_path):
     assert removed == base
 
 
-def test_launch_contract_is_version_five():
-    assert policy.LAUNCH_CONTRACT_VERSION == "5"
-    assert policy.UNRESTRICTED_REVISION == "unrestricted:v5"
+def test_launch_contract_is_version_six():
+    assert policy.LAUNCH_CONTRACT_VERSION == "6"
+    assert policy.UNRESTRICTED_REVISION == "unrestricted:v6"
 
 
 def test_hard_linked_codex_rule_fails(tmp_path):

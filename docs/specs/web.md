@@ -286,7 +286,9 @@ for its bounded timeout therefore cannot delay health checks or unrelated web re
 
 ### AGENTS.md (`/agents`)
 
-- Renders the canonical shared instructions at `~/.enso/AGENTS.md`, which Enso injects into every workspace launch.
+- Renders the canonical shared instructions at `~/.enso/AGENTS.md`. Claude and Codex
+  discover that live file natively from the managed Git root; Grok and Agy receive one
+  explicit copy after Enso revalidates the launch boundary and current source.
 - **Editable**: a textarea + save, POST to `/agents/edit`, with the same owner/type/link,
   stable-read, size, UTF-8/NUL, revision-conflict, and atomic-replace checks as managed
   workspace roots. The sibling `CLAUDE.md -> AGENTS.md` symlink is left intact because the

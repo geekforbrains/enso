@@ -13,7 +13,7 @@ from .claude import ClaudeProvider
 from .claude import _tool_status as _claude_tool_status
 
 if TYPE_CHECKING:
-    from ..instructions import InstructionBundle
+    from ..instructions import ValidatedInstructions
 
 
 def _tool_status(tool_name: str, tool_input: dict) -> str:
@@ -127,7 +127,7 @@ class GrokProvider(ClaudeProvider):
         *,
         effort: str | None = None,
         launch=None,
-        instructions: InstructionBundle | None = None,
+        instructions: ValidatedInstructions | None = None,
     ) -> list[str]:
         """Build the grok CLI command.
 
@@ -162,7 +162,7 @@ class GrokProvider(ClaudeProvider):
         *,
         effort: str | None = None,
         launch=None,
-        instructions: InstructionBundle | None = None,
+        instructions: ValidatedInstructions | None = None,
     ) -> list[str]:
         """Build command for batch execution (jobs). No session continuity."""
         cmd = [

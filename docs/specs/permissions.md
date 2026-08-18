@@ -53,8 +53,9 @@ Policy directories must be absolute after expansion, outside every writable work
 - `~/.enso/workspaces`, every workspace root, and required structural directories are
   physical rather than symlinked; no workspace has a direct `.git` entry.
 - Root and workspace discovery links have the exact relative targets, and no workspace
-  skill name duplicates a global skill name.
-- The canonical shared instruction source exists, is an owner-owned regular non-symlink file with one hard link and no group/other write bits, passes encoding and size checks, and can be snapshotted for launch.
+  skill name duplicates a global skill name. Canonical skill directories are readable
+  and searchable, and each discovered skill has a readable physical `SKILL.md`.
+- The canonical shared instruction source exists, is an owner-owned regular non-symlink file with one hard link and no group/other write bits, and passes encoding and size checks. The exact root/workspace discovery topology and Git boundary are also usable.
 - Provider files exist at the expected path, are protected regular files, and parse as JSON or TOML.
 - The selected provider is enabled by the workspace's policy.
 - Enso can resolve the native file and policy revision it expects to use for every transport-, route-, or job-bound workspace and its policy.
@@ -90,13 +91,12 @@ For a restricted policy Enso invokes Claude with its native settings file and no
 claude -p --settings <policy-dir>/claude/settings.json \
   --permission-mode dontAsk --setting-sources project \
   --strict-mcp-config [--mcp-config <policy-dir>/claude/mcp.json] \
-  --append-system-prompt-file ~/.enso/runtime/instructions/<sha256>.md \
   --model <model> -- <prompt>
 ```
 
-with `--mcp-config` appended exactly when the conventional file exists. The exact output and session flags vary by interactive operation, but the policy selection does not. Enso removes its unrestricted `--dangerously-skip-permissions` flag. The shared-instruction flag is also present on unrestricted Claude launches; it is independent of policy mode.
+with `--mcp-config` appended exactly when the conventional file exists. The exact output and session flags vary by interactive operation, but the policy selection does not. Enso removes its unrestricted `--dangerously-skip-permissions` flag. It does not pass `--append-system-prompt-file`: Claude natively discovers root and workspace `CLAUDE.md` from the managed tree.
 
-`dontAsk` is necessary because nobody can answer an interactive approval prompt in a headless transport turn or job. `--strict-mcp-config` is what makes the conventional file an exact allowlist: the launch loads only servers named by `--mcp-config` and ignores every other MCP configuration source, so ambient servers the operator configured for themselves stay out, and the policy's own `mcp.json` — when present — is passed explicitly beside it. With no `mcp.json`, that resolves to zero MCP servers. `--append-system-prompt-file` injects an immutable snapshot of Enso's canonical shared instructions independently of cwd, while `--setting-sources project` preserves the CLI's workspace-local instruction and skill discovery.
+`dontAsk` is necessary because nobody can answer an interactive approval prompt in a headless transport turn or job. `--strict-mcp-config` is what makes the conventional file an exact allowlist: the launch loads only servers named by `--mcp-config` and ignores every other MCP configuration source, so ambient servers the operator configured for themselves stay out, and the policy's own `mcp.json` — when present — is passed explicitly beside it. With no `mcp.json`, that resolves to zero MCP servers. `--setting-sources project` preserves Claude's native ancestor instruction and skill discovery. Enso first proves that the cwd is the exact physical workspace beneath the `~/.enso` Git root, so the root and local layers are both present without duplicate injection.
 
 A restricted Claude policy must set:
 
@@ -195,23 +195,23 @@ For a restricted policy Enso stages the policy's Codex tree into a dedicated run
 ```text
 CODEX_HOME=<staged-home> codex exec --strict-config \
   --skip-git-repo-check [--ignore-rules] \
-  -c developer_instructions=<TOML-encoded-shared-instructions> \
   -m <model> -- <prompt>
 ```
 
-The staged policy bytes and protected `.rules` files must match their protected source. Authentication material required by Codex is copied into the staged home; ambient user config is not selected. Enso safely TOML-encodes the validated shared text in the command-line override. It removes its unrestricted `--dangerously-bypass-approvals-and-sandbox` flag. The `developer_instructions` injection applies to restricted and unrestricted Codex launches alike.
+The staged policy bytes and protected `.rules` files must match their protected source. Authentication material required by Codex is copied into the staged home; ambient user config is not selected. Enso removes its unrestricted `--dangerously-bypass-approvals-and-sandbox` flag and does not add a `developer_instructions` override.
 
 `--skip-git-repo-check` bypasses a CLI usability check; it grants no filesystem authority. The native config must select a permission profile and set a non-interactive approval policy. Do not mix permission profiles with legacy `sandbox_mode` configuration: the installed Codex CLI decides which system is active, and mixing them can select a different boundary than intended.
 
-Codex resolves some referenced configuration relative to the declaring config file. Use protected absolute paths for references that Enso does not stage, or keep the complete required source tree inside the policy's Codex directory. The top-level `developer_instructions` key is reserved for Enso's shared injection and is rejected in a restricted policy's `config.toml`; put policy-specific project guidance in the workspace-local `AGENTS.md`. If the protected policy contains no `.rules`, Enso uses `--ignore-rules`; if it contains rules, project-discovered rules may still compose according to the installed CLI's native behavior. Verify the staged launch with the installed version; parsing TOML alone cannot establish that every referenced file or nested setting was accepted.
+Codex resolves some referenced configuration relative to the declaring config file. Use protected absolute paths for references that Enso does not stage, or keep the complete required source tree inside the policy's Codex directory. Top-level `developer_instructions` is rejected in a restricted policy's `config.toml` because it would create a competing provider-specific layer outside the canonical root/workspace `AGENTS.md` contract; put guidance in the appropriate canonical file. If the protected policy contains no `.rules`, Enso uses `--ignore-rules`; if it contains rules, project-discovered rules may still compose according to the installed CLI's native behavior. Verify the staged launch with the installed version; parsing TOML alone cannot establish that every referenced file or nested setting was accepted.
 
-Enso supplies the validated in-memory contents of `~/.enso/AGENTS.md` as Codex
-`developer_instructions` on every launch. Codex separately discovers the focused local
-`AGENTS.md` from its starting workspace. `~/.enso` is a local Git repository for safe
-content history, but the current launch contract does not rely on repository traversal to
-deliver the shared instructions. A company workspace that needs client material should
-explicitly tell the agent where it lives and require the relevant protected instructions
-to be read.
+Codex starts at the exact name-derived workspace inside the `~/.enso` Git worktree and
+natively discovers both the root and focused local `AGENTS.md`. Enso validates that Git
+root and the complete discovery layout immediately before spawn; a missing/corrupt root,
+symlinked workspace, or direct workspace `.git` entry fails closed instead of selecting
+another delivery path. A repository deeper inside ordinary workspace content is allowed
+because Enso still starts at the workspace root. A company workspace that needs client
+material should explicitly tell the agent where it lives and require the relevant
+protected instructions to be read.
 
 Use the [Codex example](../examples/acme-codex-config.toml) only as a starting point. Provider schemas change; the installed CLI's help, diagnostics, and documentation are authoritative.
 
@@ -265,7 +265,7 @@ file discovery as a permission boundary. A duplicate global/workspace skill dire
 name invalidates the workspace rather than selecting provider-specific precedence. A
 restricted policy must remain safe even when the CLI knows that broader skills exist.
 
-The shared instructions declare the active policy authoritative and classify quoted, forwarded, fetched, attached, and other untrusted transport content as data rather than higher-priority instructions. Neither shared nor local instructions can widen the native policy. The canonical source must be a stable, owner-owned regular non-symlink file with no additional hard links or group/other write bits, valid UTF-8 no larger than 20 KiB, and free of NUL bytes. At launch Enso validates it, hashes it, and publishes or verifies the exact owner-only snapshot Claude consumes; Codex, Grok, and Agy receive the same validated content in memory. Protect `~/.enso/AGENTS.md` as operator-owned control material, and keep local instructions focused so changing a workspace does not silently change Enso-wide behavior.
+The shared instructions declare the active policy authoritative and classify quoted, forwarded, fetched, attached, and other untrusted transport content as data rather than higher-priority instructions. Neither shared nor local instructions can widen the native policy. The canonical source must be a stable, owner-owned regular non-symlink file with no additional hard links or group/other write bits, valid UTF-8 no larger than 20 KiB, and free of NUL bytes. Immediately before every spawn, Enso validates and hashes the current source and rechecks the complete repository/discovery boundary. Claude and Codex then open the live native files; Grok and Agy receive the just-validated content explicitly once. The hash is diagnostic rather than an immutable-byte guarantee for native discovery. Protect `~/.enso/AGENTS.md` as operator-owned control material, and keep local instructions focused so changing a workspace does not silently change Enso-wide behavior.
 
 A restricted policy should not let one workspace edit instructions or skills in another workspace that is later trusted under a more permissive policy. Protect those control files with the native policy or an outer filesystem boundary. If both workspaces need to create content, put writable user data in a separate directory from control material.
 

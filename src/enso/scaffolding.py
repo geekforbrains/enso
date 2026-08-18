@@ -387,7 +387,12 @@ class ScaffoldService:
     def duplicate_skill_names(self, name: str) -> tuple[str, ...]:
         """Return skill directory names present at both global and workspace scope."""
         workspace = self.workspace_path(name)
-        global_names = self._physical_child_directories(self.root / "skills")
+        global_skills = self.root / "skills"
+        global_names = (
+            self._physical_child_directories(global_skills)
+            if os.path.lexists(global_skills)
+            else set()
+        )
         workspace_names = self._physical_child_directories(workspace / "skills")
         return tuple(sorted(global_names & workspace_names))
 
@@ -408,6 +413,10 @@ class ScaffoldService:
         self._validate_link(self.root / "CLAUDE.md", "AGENTS.md", errors)
         self._validate_link(self.root / ".agents" / "skills", "../skills", errors)
         self._validate_link(self.root / ".claude" / "skills", "../skills", errors)
+        try:
+            self._validate_skill_scope(self.root / "skills")
+        except ScaffoldError as exc:
+            errors.append(str(exc))
         return ValidationReport(errors=tuple(errors))
 
     def validate_workspace(self, name: str) -> ValidationReport:
@@ -428,9 +437,16 @@ class ScaffoldService:
         self._validate_link(workspace / "CLAUDE.md", "AGENTS.md", errors)
         self._validate_link(workspace / ".agents" / "skills", "../skills", errors)
         self._validate_link(workspace / ".claude" / "skills", "../skills", errors)
+        try:
+            self._validate_skill_scope(workspace / "skills")
+        except ScaffoldError as exc:
+            errors.append(str(exc))
 
-        if not errors:
+        try:
             duplicates = self.duplicate_skill_names(name)
+        except ScaffoldError as exc:
+            errors.append(str(exc))
+        else:
             if duplicates:
                 errors.append(self._duplicate_skill_message(name, duplicates))
         return ValidationReport(errors=tuple(errors))
@@ -1276,22 +1292,131 @@ class ScaffoldService:
             )
 
     @staticmethod
-    def _physical_child_directories(parent: Path) -> set[str]:
+    def _effective_permission_bits(file_stat: os.stat_result) -> int:
+        """Return the rwx bits that apply to the current effective user."""
+        if file_stat.st_uid == os.geteuid():
+            return (stat.S_IMODE(file_stat.st_mode) >> 6) & 0o7
+        groups = {*os.getgroups(), os.getegid()}
+        if file_stat.st_gid in groups:
+            return (stat.S_IMODE(file_stat.st_mode) >> 3) & 0o7
+        return stat.S_IMODE(file_stat.st_mode) & 0o7
+
+    @classmethod
+    def _require_readable_regular_file(cls, path: Path, *, description: str) -> None:
+        try:
+            path_stat = os.lstat(path)
+        except FileNotFoundError as exc:
+            raise ScaffoldError(f"{description} is missing: {path}") from exc
+        except OSError as exc:
+            raise ScaffoldError(f"could not inspect {description} {path}: {exc}") from exc
+        if not stat.S_ISREG(path_stat.st_mode):
+            raise ScaffoldError(f"{description} must be a physical regular file: {path}")
+        if not cls._effective_permission_bits(path_stat) & 0o4:
+            raise ScaffoldError(f"{description} is not readable by current user: {path}")
+
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(path, flags)
+        except OSError as exc:
+            raise ScaffoldError(f"{description} is not safely readable: {path}: {exc}") from exc
+        try:
+            opened_stat = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(opened_stat.st_mode)
+                or cls._stat_identity(opened_stat) != cls._stat_identity(path_stat)
+            ):
+                raise ScaffoldError(f"{description} changed while it was inspected: {path}")
+            try:
+                final_path_stat = os.lstat(path)
+            except OSError as exc:
+                raise ScaffoldError(
+                    f"{description} changed while it was inspected: {path}"
+                ) from exc
+            if cls._stat_identity(opened_stat) != cls._stat_identity(final_path_stat):
+                raise ScaffoldError(f"{description} changed while it was inspected: {path}")
+        finally:
+            os.close(descriptor)
+
+    @classmethod
+    def _physical_child_directories(cls, parent: Path) -> set[str]:
+        """Enumerate physical skill directories or fail on inaccessible state."""
         try:
             parent_stat = os.lstat(parent)
-        except OSError:
-            return set()
+        except FileNotFoundError as exc:
+            raise ScaffoldError(f"skill directory is missing: {parent}") from exc
+        except OSError as exc:
+            raise ScaffoldError(f"could not inspect skill directory {parent}: {exc}") from exc
         if not stat.S_ISDIR(parent_stat.st_mode) or os.path.realpath(parent) != str(parent):
-            return set()
+            raise ScaffoldError(f"skill directory must be a physical directory: {parent}")
+        if cls._effective_permission_bits(parent_stat) & 0o5 != 0o5:
+            raise ScaffoldError(
+                f"skill directory is not readable and searchable by current user: {parent}"
+            )
+
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
         try:
-            with os.scandir(parent) as entries:
-                return {
-                    entry.name
-                    for entry in entries
-                    if entry.is_dir(follow_symlinks=True)
-                }
-        except OSError:
-            return set()
+            descriptor = os.open(parent, flags)
+        except OSError as exc:
+            raise ScaffoldError(
+                f"skill directory is not safely readable and searchable: {parent}: {exc}"
+            ) from exc
+        try:
+            opened_stat = os.fstat(descriptor)
+            if (
+                not stat.S_ISDIR(opened_stat.st_mode)
+                or cls._stat_identity(opened_stat) != cls._stat_identity(parent_stat)
+            ):
+                raise ScaffoldError(f"skill directory changed while inspected: {parent}")
+
+            names: set[str] = set()
+            try:
+                with os.scandir(descriptor) as entries:
+                    for entry in entries:
+                        if not entry.is_dir(follow_symlinks=True):
+                            continue
+                        child = parent / entry.name
+                        child_stat = os.lstat(child)
+                        if (
+                            not stat.S_ISDIR(child_stat.st_mode)
+                            or os.path.realpath(child) != str(child)
+                        ):
+                            raise ScaffoldError(
+                                f"skill must be a physical directory: {child}"
+                            )
+                        if cls._effective_permission_bits(child_stat) & 0o5 != 0o5:
+                            raise ScaffoldError(
+                                "skill directory is not readable and searchable by "
+                                f"current user: {child}"
+                            )
+                        names.add(entry.name)
+            except ScaffoldError:
+                raise
+            except OSError as exc:
+                raise ScaffoldError(f"could not enumerate skill directory {parent}: {exc}") from exc
+
+            final_stat = os.fstat(descriptor)
+            try:
+                final_path_stat = os.lstat(parent)
+            except OSError as exc:
+                raise ScaffoldError(f"skill directory changed while inspected: {parent}") from exc
+            if (
+                cls._stat_identity(opened_stat) != cls._stat_identity(final_stat)
+                or cls._stat_identity(final_stat) != cls._stat_identity(final_path_stat)
+            ):
+                raise ScaffoldError(f"skill directory changed while inspected: {parent}")
+            return names
+        finally:
+            os.close(descriptor)
+
+    @classmethod
+    def _validate_skill_scope(cls, parent: Path) -> None:
+        for name in cls._physical_child_directories(parent):
+            cls._require_readable_regular_file(
+                parent / name / "SKILL.md",
+                description="skill definition",
+            )
 
     @staticmethod
     def _duplicate_skill_message(name: str, duplicates: tuple[str, ...]) -> str:
@@ -1313,19 +1438,15 @@ class ScaffoldService:
             if not stat.S_ISDIR(path_stat.st_mode) or os.path.realpath(path) != str(path):
                 errors.append(f"required path is not a physical directory: {path}")
 
-    @staticmethod
-    def _validate_regular_content(path: Path, errors: list[str]) -> None:
+    @classmethod
+    def _validate_regular_content(cls, path: Path, errors: list[str]) -> None:
         try:
-            path_stat = os.lstat(path)
-        except FileNotFoundError:
-            errors.append(f"required instruction source is missing: {path}")
-        except OSError as exc:
-            errors.append(f"could not inspect instruction source {path}: {exc}")
-        else:
-            if not stat.S_ISREG(path_stat.st_mode):
-                errors.append(
-                    f"required instruction source must be a physical regular file: {path}"
-                )
+            cls._require_readable_regular_file(
+                path,
+                description="required instruction source",
+            )
+        except ScaffoldError as exc:
+            errors.append(str(exc))
 
     @staticmethod
     def _validate_link(path: Path, target: str, errors: list[str]) -> None:

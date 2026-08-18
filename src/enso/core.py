@@ -34,7 +34,6 @@ from .outbound import (
 from .providers import PROVIDER_NAMES, BaseProvider, StreamEvent, provider_class
 
 if TYPE_CHECKING:
-    from .instructions import InstructionBundle
     from .job_runner import JobRunner
     from .policy import Launch
     from .teams import Policy, Workspace
@@ -136,9 +135,6 @@ _LEGACY_TASK_RUNNER_STATE_KEY = "__task_runner__"
 def _redacted_command(cmd: list[str]) -> str:
     """Return a shell-like command string with instruction text redacted."""
     redacted = list(cmd)
-    for index, part in enumerate(redacted[:-1]):
-        if part == "-c" and redacted[index + 1].startswith("developer_instructions="):
-            redacted[index + 1] = "developer_instructions=<redacted>"
     for index, part in enumerate(redacted):
         if part.startswith("--single="):
             prompt = part.removeprefix("--single=")
@@ -225,9 +221,6 @@ class ExecutionContext:
     provider: str
     settings_key: str | None = None  # durable route preferences; jobs have none
     launch: Launch | None = None
-    instructions: InstructionBundle | None = field(
-        default=None, compare=False, repr=False
-    )
     concurrency: int = 1  # max concurrent provider runs sharing the workspace
     model: str | None = None
     effort: str | None = None
@@ -647,24 +640,17 @@ class Runtime:
     async def _prepare_execution_context(
         self, provider: str, context: ExecutionContext
     ) -> ExecutionContext:
-        """Resolve policy and shared instructions at the spawn boundary."""
-        if context.launch is not None and context.instructions is not None:
+        """Resolve the native policy launch under the workspace slot."""
+        if context.launch is not None:
             return context
-        from .instructions import load_shared_instructions
         from .policy import prepare_launch
 
-        launch = context.launch
-        prepared_launch = launch is None
-        if launch is None:
-            launch = await asyncio.to_thread(
-                prepare_launch, context.workspace, context.policy, provider
-            )
-        instructions = context.instructions
-        if instructions is None:
-            instructions = await asyncio.to_thread(load_shared_instructions)
-        if prepared_launch and context.on_launch is not None:
+        launch = await asyncio.to_thread(
+            prepare_launch, context.workspace, context.policy, provider
+        )
+        if context.on_launch is not None:
             await asyncio.to_thread(context.on_launch, launch)
-        return replace(context, launch=launch, instructions=instructions)
+        return replace(context, launch=launch)
 
     def make_provider(
         self,
@@ -1185,9 +1171,17 @@ class Runtime:
         restricted launches — the allowlisted environment.
         """
         launch = context.launch
-        instructions = context.instructions
-        if launch is None or instructions is None:
+        if launch is None:
             raise RuntimeError("execution context must be prepared before provider execution")
+        from .instructions import validate_launch_discovery
+
+        # This must run inside every generator invocation: transient retries
+        # call ``run_provider`` again, so neither a prepared context nor a
+        # previous attempt can cache filesystem discovery state.
+        instructions = await asyncio.to_thread(
+            validate_launch_discovery,
+            context.workspace,
+        )
         session_id = self._get_or_create_session(chat_id, provider.name)
         cmd = provider.build_command(
             prompt,
@@ -1437,6 +1431,23 @@ class Runtime:
         record it on the audit turn: ``completed``, ``error``, ``timeout``, or
         (via cancellation in the caller) ``stopped``.
         """
+        from .instructions import validate_launch_discovery
+
+        # Prompt assembly consumes durable background messages and a one-shot
+        # compact seed. Refuse an invalid discovery boundary before touching
+        # either; ``run_provider`` validates again immediately before every
+        # actual spawn so later filesystem races and retries still fail closed.
+        try:
+            await asyncio.to_thread(validate_launch_discovery, context.workspace)
+        except Exception:
+            log.exception("Launch discovery validation failed for conv=%s", chat_id)
+            with contextlib.suppress(Exception):
+                await ctx.reply(
+                    "This conversation isn't fully configured for Enso — "
+                    "ask an admin to run `enso config check`."
+                )
+            return "blocked", "execution_unavailable"
+
         prompt, output_instructions, surface_instructions = self._assemble_prompt(
             prompt, chat_id, provider_name, ctx, context
         )

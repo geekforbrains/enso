@@ -37,7 +37,7 @@ log = logging.getLogger(__name__)
 
 # Bump when the launch contract (flags, env construction) changes, so a new
 # contract produces a new policy_revision and therefore a fresh execution key.
-LAUNCH_CONTRACT_VERSION = "5"
+LAUNCH_CONTRACT_VERSION = "6"
 UNRESTRICTED_REVISION = f"unrestricted:v{LAUNCH_CONTRACT_VERSION}"
 
 # Environment kept for policy-controlled provider subprocesses. Everything
@@ -403,8 +403,9 @@ def _check_codex_config(path: str) -> list[str]:
         return [f"config.toml does not parse: {exc}"]
     if "developer_instructions" in config:
         return [
-            "config.toml developer_instructions is reserved for Enso's shared "
-            "instructions; move policy-specific guidance into the workspace AGENTS.md"
+            "config.toml developer_instructions would duplicate Codex's native "
+            "AGENTS.md discovery; move policy-specific guidance into the workspace "
+            "AGENTS.md"
         ]
     has_profiles = "default_permissions" in config or "permissions" in config
     has_legacy = "sandbox_mode" in config or "sandbox_workspace_write" in config

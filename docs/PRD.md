@@ -160,6 +160,10 @@ authorized chat senders, not additional owners or dashboard personas.
   bindings, audit/trigger state, and route problems without making Slack API requests.
 - `/agents` renders the canonical shared `~/.enso/AGENTS.md`; its revision-checked editor
   writes only the regular target while leaving `~/.enso/CLAUDE.md -> AGENTS.md` intact.
+- Every provider spawn revalidates the exact physical workspace, `~/.enso` Git root,
+  discovery links, skill-name uniqueness, and current shared source. Claude and Codex use
+  native root/workspace instruction discovery with no duplicate injection; Grok and Agy
+  receive the freshly validated shared content exactly once through their adapters.
 
 ### F5 — Reference docs and starter context
 
@@ -210,6 +214,10 @@ authorized chat senders, not additional owners or dashboard personas.
 - Read-only startup and configuration checks reject an incomplete scaffold or duplicate
   global/workspace skill name without repairing it or applying provider-specific
   precedence.
+- A missing/corrupt root repository, symlinked or mislocated workspace, direct workspace
+  `.git` entry, or discovery change between preparation and spawn prevents every provider
+  from launching; job validation catches the same boundary before trusted prerun and
+  checks it again afterward.
 - A fresh setup exposes the three starter descriptions through the dynamic doc list,
   captures them in its single initial local snapshot, and marks setup complete only
   afterward; deleting a starter leaves it absent through restart, repair, and upgrade.

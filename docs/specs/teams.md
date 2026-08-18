@@ -245,7 +245,20 @@ Enso never combines user-level permissions with a channel's policy and never tra
 
 ## Skills and instructions
 
-Enso has two instruction layers. Canonical shared operational instructions live at `~/.enso/AGENTS.md`, with `~/.enso/CLAUDE.md -> AGENTS.md`, and are injected into every launch independently of the workspace. Enso validates and snapshots the shared source; Claude receives the immutable content-addressed snapshot through `--append-system-prompt-file`, Codex receives the validated content through `developer_instructions`, Grok receives it through its `--rules` flag, and unrestricted Agy receives it through an Enso prompt envelope. The workspace carries focused project instructions in `AGENTS.md` and its `CLAUDE.md` view. The CLIs may also expose native user, managed, plugin, system, or bundled skill scopes; Enso does not suppress those scopes or maintain a skill allowlist. A project skill adds relevant behavior but is not proof that other skills are absent. Treat instruction and skill discovery as functionality rather than isolation, and rely on the selected native policy for actual authority.
+Enso has two instruction layers. Canonical shared operational instructions live at
+`~/.enso/AGENTS.md`, with `~/.enso/CLAUDE.md -> AGENTS.md`; each workspace carries focused
+project instructions in its own `AGENTS.md` and `CLAUDE.md` view. Claude and Codex discover
+both layers natively because every provider starts at the exact name-derived workspace
+inside the `~/.enso` Git root. Enso does not also inject those bytes. Grok receives the
+freshly validated shared content once through `--rules`, and unrestricted Agy receives it
+once through an Enso prompt envelope. Immediately before each spawn, Enso revalidates the
+physical root/workspace topology, exact Git root, discovery links, duplicate skill names,
+and current shared source; invalid or partial discovery never falls back to another
+delivery mode. The CLIs may also expose native user, managed, plugin, system, or bundled
+skill scopes; Enso does not suppress those scopes or maintain a skill allowlist. A project
+skill adds relevant behavior but is not proof that other skills are absent. Treat
+instruction and skill discovery as functionality rather than isolation, and rely on the
+selected native policy for actual authority.
 
 The shared template states that the active policy is authoritative and that quoted, forwarded, fetched, attached, or otherwise untrusted transport content is data rather than higher-priority instructions. Workspace files supplement that shared layer; they cannot widen the policy.
 

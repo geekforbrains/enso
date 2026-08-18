@@ -124,7 +124,24 @@ async def _prepared_context(
         provider=provider_name,
         **kwargs,
     )
+    _ensure_launch_discovery_fixture(context)
     return await runtime._prepare_execution_context(provider_name, context)
+
+
+def _ensure_launch_discovery_fixture(context: ExecutionContext) -> None:
+    """Complete the shared lightweight fixture only for real spawn tests."""
+    from enso.repository import EnsoRepository
+    from enso.scaffolding import ScaffoldService
+
+    root = Path(context.path).parent.parent
+    scaffold = ScaffoldService(root)
+    scaffold.repair_global()
+    scaffold.repair_workspace(context.workspace.name)
+    workspace_agents = Path(context.path, "AGENTS.md")
+    if not workspace_agents.exists():
+        workspace_agents.write_text("# Test workspace instructions\n", encoding="utf-8")
+    scaffold.repair_workspace(context.workspace.name)
+    EnsoRepository(str(root)).ensure()
 
 # -- split_text --
 
@@ -175,21 +192,10 @@ def test_redacted_command_hides_agy_prompt():
     assert "<prompt chars=13>" in rendered
 
 
-def test_redacted_command_hides_codex_shared_and_user_instructions():
-    rendered = _redacted_command(
-        [
-            "codex",
-            "exec",
-            "-c",
-            'developer_instructions="shared secret"',
-            "--",
-            "user secret",
-        ]
-    )
+def test_redacted_command_hides_codex_user_prompt():
+    rendered = _redacted_command(["codex", "exec", "--", "user secret"])
 
-    assert "shared secret" not in rendered
     assert "user secret" not in rendered
-    assert "developer_instructions=<redacted>" in rendered
     assert "<prompt chars=11>" in rendered
 
 
@@ -203,8 +209,7 @@ def test_redacted_command_hides_grok_single_prompt():
 
 
 def test_redacted_command_hides_grok_rules_instructions():
-    """The shared-instruction bundle rides attached to --rules= and must be
-    redacted like codex's developer_instructions payload."""
+    """Grok's explicit shared instructions ride attached and must be redacted."""
     rendered = _redacted_command(
         ["grok", "--rules=SECRET OPERATOR GUIDANCE", "--single=hi"]
     )
@@ -728,6 +733,72 @@ class _FakePlainProcess:
         return b"First paragraph.\n\nSecond paragraph.\n", b""
 
 
+class _CapturingProvider(BaseProvider):
+    """Minimal provider that records the launch-boundary instruction revision."""
+
+    name = "agy"
+
+    def __init__(self):
+        super().__init__("fake")
+        self.instruction_contents: list[str] = []
+
+    def build_command(
+        self,
+        prompt,
+        model,
+        session_id=None,
+        *,
+        effort=None,
+        launch=None,
+        instructions=None,
+    ):
+        assert instructions is not None
+        self.instruction_contents.append(instructions.content)
+        return ["fake"]
+
+    def build_batch_command(
+        self, prompt, model, *, effort=None, launch=None, instructions=None
+    ):
+        raise AssertionError("interactive test must not build a batch command")
+
+    def parse_event(self, event):
+        return []
+
+
+class _RetryingCapturingProvider(_CapturingProvider):
+    def parse_event(self, event):
+        return [StreamEvent(kind="error", text="transient startup failure")]
+
+    def retryable_error(self, text):
+        return text == "transient startup failure"
+
+
+class _OneLineStream:
+    def __init__(self, line: bytes):
+        self._line = line
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._line:
+            raise StopAsyncIteration
+        line, self._line = self._line, b""
+        return line
+
+
+class _RetryProcess:
+    pid = 44
+    returncode = 1
+    stderr = None
+
+    def __init__(self):
+        self.stdout = _OneLineStream(b'{"error": true}\n')
+
+    async def wait(self):
+        return 1
+
+
 @pytest.mark.asyncio
 async def test_run_provider_rejects_unprepared_execution_context(sample_config):
     rt = Runtime(sample_config)
@@ -745,44 +816,113 @@ async def test_run_provider_rejects_unprepared_execution_context(sample_config):
 
 
 @pytest.mark.asyncio
-async def test_execution_preparation_snapshots_current_shared_instructions(
-    tmp_enso, sample_config
-):
-    source = Path(tmp_enso, "AGENTS.md")
+async def test_execution_preparation_does_not_cache_shared_instructions(sample_config):
     rt = Runtime(sample_config)
 
-    first = await rt._prepare_execution_context(
-        "claude", _execution_context(sample_config)
-    )
-    source.write_text("# Revised shared instructions\n", encoding="utf-8")
-    second = await rt._prepare_execution_context(
-        "claude", _execution_context(sample_config)
-    )
+    prepared = await rt._prepare_execution_context("claude", _execution_context(sample_config))
 
-    assert first.instructions is not None and second.instructions is not None
-    assert first.instructions.revision != second.instructions.revision
-    assert Path(first.instructions.snapshot_path).read_text(encoding="utf-8") == (
-        "# Test shared instructions\n"
-    )
-    assert second.instructions.content == "# Revised shared instructions\n"
+    assert prepared.launch is not None
+    assert not hasattr(prepared, "instructions")
 
 
 @pytest.mark.asyncio
-async def test_execution_preparation_records_launch_only_after_instructions_validate(
+async def test_run_provider_revalidates_instructions_after_context_preparation(
     tmp_enso, sample_config
 ):
-    Path(tmp_enso, "AGENTS.md").unlink()
-    recorded = []
     rt = Runtime(sample_config)
-    context = _execution_context(
-        sample_config,
-        on_launch=lambda launch: recorded.append(launch),
+    context = await _prepared_context(rt, sample_config, "agy")
+    provider = _CapturingProvider()
+    rt._spawn_process = AsyncMock(return_value=_FakeSpawnedProcess())
+
+    async for _event in rt.run_provider(provider, "first", "1", "model", context=context):
+        pass
+
+    Path(tmp_enso, "AGENTS.md").write_text(
+        "# Revised shared instructions\n", encoding="utf-8"
+    )
+    async for _event in rt.run_provider(provider, "second", "1", "model", context=context):
+        pass
+
+    assert provider.instruction_contents == [
+        "# Test shared instructions\n",
+        "# Revised shared instructions\n",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_provider_rejects_invalid_discovery_created_after_preparation(
+    tmp_enso, sample_config
+):
+    rt = Runtime(sample_config)
+    context = await _prepared_context(rt, sample_config, "agy")
+    Path(context.path, ".git").touch()
+    rt._spawn_process = AsyncMock(side_effect=AssertionError("must not spawn"))
+
+    with pytest.raises(InstructionError, match=r"forbidden \.git entry"):
+        async for _event in rt.run_provider(
+            _CapturingProvider(), "hi", "1", "model", context=context
+        ):
+            pass
+
+    rt._spawn_process.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_provider_rejects_deleted_instructions_after_preparation(
+    tmp_enso, sample_config
+):
+    rt = Runtime(sample_config)
+    context = await _prepared_context(rt, sample_config, "agy")
+    Path(tmp_enso, "AGENTS.md").unlink()
+    rt._spawn_process = AsyncMock(side_effect=AssertionError("must not spawn"))
+
+    with pytest.raises(InstructionError, match="instruction source is missing"):
+        async for _event in rt.run_provider(
+            _CapturingProvider(), "hi", "1", "model", context=context
+        ):
+            pass
+
+    rt._spawn_process.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_retry_revalidates_current_instructions_before_second_spawn(
+    tmp_enso, sample_config
+):
+    rt = Runtime(sample_config)
+    context = await _prepared_context(rt, sample_config, "agy")
+    provider = _RetryingCapturingProvider()
+    spawn_count = 0
+
+    async def fake_spawn(*_args, **_kwargs):
+        nonlocal spawn_count
+        spawn_count += 1
+        if spawn_count == 1:
+            Path(tmp_enso, "AGENTS.md").write_text(
+                "# Revised before retry\n", encoding="utf-8"
+            )
+        return _RetryProcess()
+
+    rt._spawn_process = fake_spawn
+
+    _parts, error, timed_out = await rt._collect_provider_output(
+        provider,
+        "hello",
+        "1",
+        "model",
+        effort=None,
+        origin_env={},
+        context=context,
+        state={},
     )
 
-    with pytest.raises(InstructionError, match="shared instruction file is missing"):
-        await rt._prepare_execution_context("claude", context)
-
-    assert recorded == []
+    assert not timed_out
+    assert error == "transient startup failure"
+    assert spawn_count == 2
+    assert provider.instruction_contents == [
+        "# Test shared instructions\n",
+        "# Revised before retry\n",
+    ]
 
 
 @pytest.mark.asyncio
@@ -816,9 +956,7 @@ async def test_run_provider_injects_extra_env(tmp_enso, sample_config, monkeypat
     # Parent env is preserved (PATH always exists on Unix / Windows).
     assert "PATH" in env
     assert captured["stdin"] == asyncio.subprocess.DEVNULL
-    flag = captured["command"].index("--append-system-prompt-file")
-    snapshot = Path(captured["command"][flag + 1])
-    assert snapshot.read_text(encoding="utf-8") == "# Test shared instructions\n"
+    assert "--append-system-prompt-file" not in captured["command"]
 
 
 @pytest.mark.asyncio
@@ -1095,12 +1233,13 @@ async def test_process_request_injects_messages(tmp_enso, sample_config):
             yield  # make this an async generator
 
     rt.run_provider = fake_run
+    context = await _prepared_context(rt, sample_config, "claude", "1")
     await rt.process_request(
         "claude",
         "user message",
         "1",
         FakeCtx(),
-        context=_execution_context(sample_config),
+        context=context,
     )
 
     # Messages should have been consumed
@@ -1108,6 +1247,40 @@ async def test_process_request_injects_messages(tmp_enso, sample_config):
     assert len(prompts_received) == 1
     assert "background info" in prompts_received[0]
     assert "user message" in prompts_received[0]
+
+
+@pytest.mark.asyncio
+async def test_invalid_discovery_preserves_messages_and_compact_seed_before_provider_work(
+    tmp_enso, sample_config
+):
+    chat_id = "conversation-1"
+    messages.send("global background", source="test")
+    messages.send("scoped background", source="test", conversation_id=chat_id)
+    runtime = Runtime(sample_config)
+    runtime.compact_seed_by_chat[chat_id] = "prior compacted context"
+    context = await _prepared_context(runtime, sample_config, "claude", chat_id)
+    Path(context.path, ".git").touch()
+    provider_factory = runtime.make_provider
+    runtime.make_provider = Mock(wraps=provider_factory)
+    runtime._spawn_process = AsyncMock(side_effect=AssertionError("must not spawn"))
+    transport = _OutcomeCtx()
+
+    result = await runtime.process_request(
+        "claude",
+        "user message",
+        chat_id,
+        transport,
+        context=context,
+    )
+
+    assert result == ("blocked", "execution_unavailable")
+    assert [message["text"] for message in messages.pending()] == [
+        "global background",
+        "scoped background",
+    ]
+    assert runtime.compact_seed_by_chat[chat_id] == "prior compacted context"
+    runtime.make_provider.assert_not_called()
+    runtime._spawn_process.assert_not_awaited()
 
 
 def test_prompt_assembly_does_not_consume_global_messages_without_opt_in(sample_config):
@@ -1220,10 +1393,13 @@ async def test_workspace_semaphore_serializes_concurrent_runs(sample_config):
 
     def ctx_for(conv):
         return _execution_context(sample_config, conv, concurrency=1)
+    first_context = ctx_for("k1")
+    second_context = ctx_for("k2")
+    _ensure_launch_discovery_fixture(first_context)
     # Two distinct conversations, same workspace — must not overlap.
     await asyncio.gather(
-        rt._run_request("claude", "a", _OutcomeCtx(), ctx_for("k1")),
-        rt._run_request("claude", "b", _OutcomeCtx(), ctx_for("k2")),
+        rt._run_request("claude", "a", _OutcomeCtx(), first_context),
+        rt._run_request("claude", "b", _OutcomeCtx(), second_context),
     )
     assert peak == 1
 
@@ -1243,18 +1419,25 @@ async def test_personal_context_is_still_workspace_bounded(sample_config):
         active -= 1
         yield StreamEvent(kind="response", text="ok")
     rt.run_provider = slow_run
+    first_context = _execution_context(
+        sample_config, "k1", include_global_messages=True
+    )
+    second_context = _execution_context(
+        sample_config, "k2", include_global_messages=True
+    )
+    _ensure_launch_discovery_fixture(first_context)
     await asyncio.gather(
         rt._run_request(
             "claude",
             "a",
             _OutcomeCtx(),
-            _execution_context(sample_config, "k1", include_global_messages=True),
+            first_context,
         ),
         rt._run_request(
             "claude",
             "b",
             _OutcomeCtx(),
-            _execution_context(sample_config, "k2", include_global_messages=True),
+            second_context,
         ),
     )
     assert peak == 1
@@ -1267,7 +1450,7 @@ async def test_process_request_returns_terminal_outcome(sample_config):
     async def ok_run(*a, **k):
         yield StreamEvent(kind="response", text="hi")
     rt.run_provider = ok_run
-    context = _execution_context(sample_config)
+    context = await _prepared_context(rt, sample_config, "claude")
     assert await rt.process_request(
         "claude", "x", "1", _OutcomeCtx(), context=context
     ) == ("completed", None)
@@ -1294,6 +1477,7 @@ async def test_run_request_reports_outcome_to_on_complete(sample_config):
         "k",
         on_complete=lambda outcome, reason: seen.append((outcome, reason)),
     )
+    _ensure_launch_discovery_fixture(ctx_obj)
     await rt._run_request("claude", "x", _OutcomeCtx(), ctx_obj)
     assert seen == [("completed", None)]
 
@@ -2203,9 +2387,11 @@ async def test_manual_cancellation_does_not_queue_timeout_notice(
 
     rt.run_provider = hanging_run
     ctx = FakeCtx()
+    execution = _execution_context(sample_config, "chat-a")
+    _ensure_launch_discovery_fixture(execution)
     request = asyncio.create_task(
         rt._run_request(
-            "claude", "hello", ctx, _execution_context(sample_config, "chat-a")
+            "claude", "hello", ctx, execution
         ),
     )
     await started.wait()

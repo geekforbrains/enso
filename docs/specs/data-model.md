@@ -16,7 +16,7 @@ whose value comes from filtering, joining, and aggregation.
 ├── .git/                # local-only content history; no Enso-created remote
 ├── .gitignore           # Enso-owned protective runtime/credential exclusions
 ├── config.json          # settings, including `web` and `runs` blocks
-├── AGENTS.md            # canonical shared Enso instructions, injected into every launch
+├── AGENTS.md            # canonical shared Enso instructions; native root for Claude/Codex
 ├── CLAUDE.md -> AGENTS.md
 ├── state.json           # durable route settings plus retained session/job state
 ├── messages.json        # background message queue (plus a .lock twin for cross-process writes)
@@ -37,8 +37,7 @@ whose value comes from filtering, joining, and aggregation.
 │   └── <name>/          # JOB.md plus a persistent .run.lock coordination file
 ├── runs/                # captured output, one file per run
 │   └── <run_id>.log
-├── runtime/
-│   └── instructions/<sha256>.md  # immutable validated shared-prompt snapshots
+├── runtime/             # protected provider-policy staging and other ephemeral state
 ├── skills/              # canonical global skills; user-owned after fresh setup
 ├── .agents/
 │   └── skills -> ../skills
@@ -452,20 +451,23 @@ protective ignore block. It accepts an existing repository only when Git reports
 exact directory as the worktree root; corrupt, outer, and ambiguous repository states
 fail setup. Enso never creates, changes, or contacts a remote, and it writes repository-
 local fallback author details only when Git has no effective identity. Shared instructions
-are canonical at `~/.enso/AGENTS.md`, with `CLAUDE.md -> AGENTS.md`, and Enso currently
-injects validated content on every provider launch independently of cwd. The canonical
-source must be a stable, owner-owned regular non-symlink file with no additional hard
-links or group/other write bits, valid UTF-8 no larger than 20 KiB, and no NUL bytes. Enso
-hashes it and publishes or verifies an immutable owner-only snapshot at
-`~/.enso/runtime/instructions/<sha256>.md`; Claude receives that snapshot through
-`--append-system-prompt-file`, while Codex receives the validated in-memory content through
-`developer_instructions`, Grok receives it through its `--rules` flag, and unrestricted
-Agy receives it in Enso's prompt envelope. Missing or unsafe shared instructions fail
-`enso config check` and provider launch closed. Workspace-local instructions and skills
-still follow each provider's native discovery from the selected workspace. A company
-workspace that can access sibling client directories should explicitly tell the agent to
-read the selected client's protected instructions rather than relying on implicit
-discovery after changing directories.
+are canonical at `~/.enso/AGENTS.md`, with `CLAUDE.md -> AGENTS.md`. The canonical source
+must be a stable, owner-owned regular non-symlink file with no additional hard links or
+group/other write bits, valid UTF-8 no larger than 20 KiB, and no NUL bytes.
+
+Immediately before every provider spawn, Enso revalidates that source plus the exact
+name-derived physical workspace, the root and workspace discovery links, global/local
+skill-name uniqueness, the absence of a direct workspace `.git` entry, and `~/.enso` as
+the exact Git worktree root. Claude and Codex then discover the live shared and workspace
+files natively from that root; Enso does not pass a duplicate
+`--append-system-prompt-file` or `developer_instructions` override. Grok receives the
+just-validated shared text once through `--rules`, and unrestricted Agy receives it once
+in Enso's prompt envelope. The validation hash is diagnostic only: native providers open
+the live files after spawn rather than consuming an Enso-pinned snapshot. Missing or
+unsafe instructions or partial discovery fail `enso config check`, job preflight, and the
+actual launch closed. A company workspace that can access sibling client directories
+should explicitly tell the agent to read the selected client's protected instructions
+rather than relying on implicit discovery after changing directories.
 
 An attachment-bearing Telegram or Slack turn gets a unique `uploads/<random-id>/` directory within its resolved workspace. These files persist until the operator removes them; Enso does not treat uploads as temporary or apply automatic retention. Enso config, secrets, policies, database, jobs, and provider credentials are not linked into restricted workspaces.
 
@@ -584,7 +586,7 @@ Schema rules:
   segments.
 - `policies.<name>` requires a non-empty `providers` list and a `default_provider` from that list. `chat_commands` is either a unique list or the explicit string `"*"`; omission means none. It governs Enso chat commands only, not provider-native tools, slash commands, skills, plugins, hooks, or MCP servers.
 - A restricted policy may add `env_passthrough`, a list of environment-variable names (names, never values) copied from the service environment into the child environment. Names must match `[A-Z][A-Z0-9_]*`, be unique, and not name launch-controlled (such as `CODEX_HOME`, `GROK_HOME`, `GROK_SANDBOX`, and `GROK_FOLDER_TRUST`) or `ENSO_`-prefixed variables; the key is invalid alongside `unrestricted: true`. See [permissions.md](permissions.md#granting-credentials-and-mcp-servers-to-a-restricted-policy).
-- A policy uses exactly one mode: explicit `unrestricted: true`, or native policy files under `policy_dir`. An explicit `policy_dir` must be absolute or start with `~/`; for a restricted policy it otherwise defaults to `~/.enso/policies/<policy-name>`. Unrestricted mode does not imply providers or commands. Codex `config.toml` may not define top-level `developer_instructions`, which Enso reserves for the validated shared launch instructions. Grok's `--rules` flag is reserved the same way: every Grok launch injects the validated shared instructions through it.
+- A policy uses exactly one mode: explicit `unrestricted: true`, or native policy files under `policy_dir`. An explicit `policy_dir` must be absolute or start with `~/`; for a restricted policy it otherwise defaults to `~/.enso/policies/<policy-name>`. Unrestricted mode does not imply providers or commands. Codex `config.toml` may not define top-level `developer_instructions`: provider-specific hidden instructions would add a competing layer outside the canonical root/workspace `AGENTS.md` contract. Grok's `--rules` flag remains reserved for the one explicit shared-instruction delivery Enso supplies to every Grok launch.
 - `transports.telegram.workspace` is required whenever Telegram is configured and must name a usable workspace. Telegram derives providers, default provider, Enso chat commands, native policy, cwd, uploads, and concurrency from that workspace. `allowed_users` remains a non-empty list of unique exact numeric strings, and only private chats dispatch.
 - `transports.slack` is the single Slack configuration object: credentials, transport-wide rendering and notification options, `account_id`, and exact route maps coexist there. The legacy top-level `routes` key is rejected.
 - `transports.slack.account_id` must match the Slack account returned by the configured credentials.

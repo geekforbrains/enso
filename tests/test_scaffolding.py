@@ -673,7 +673,9 @@ def test_duplicate_root_and_workspace_skill_names_are_invalid(tmp_path):
     service = ScaffoldService(root)
     service.seed_fresh_global()
     service.create_workspace("client")
-    (root / "workspaces" / "client" / "skills" / "jobs").mkdir()
+    duplicate = root / "workspaces" / "client" / "skills" / "jobs"
+    duplicate.mkdir()
+    (duplicate / "SKILL.md").write_text("# Workspace jobs\n", encoding="utf-8")
 
     assert service.duplicate_skill_names("client") == ("jobs",)
     report = service.validate_workspace("client")
@@ -686,7 +688,9 @@ def test_workspace_with_unique_skill_names_is_valid(tmp_path):
     service = ScaffoldService(root)
     service.seed_fresh_global()
     service.create_workspace("client")
-    (root / "workspaces" / "client" / "skills" / "client-release").mkdir()
+    skill = root / "workspaces" / "client" / "skills" / "client-release"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("# Client release\n", encoding="utf-8")
 
     report = service.validate_workspace("client")
 

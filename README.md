@@ -55,9 +55,11 @@ workspace. Root discovery uses relative links: `CLAUDE.md -> AGENTS.md`,
 `.agents/skills -> ../skills`, and `.claude/skills -> ../skills`. Each workspace lives
 exactly at `~/.enso/workspaces/<lowercase-kebab-name>` and contains its own focused
 `AGENTS.md`, relative `CLAUDE.md` and skill-discovery links, an initially empty `skills/`,
-`knowledge/README.md`, and empty `drafts/` and `uploads/`. Enso injects validated shared
-instructions into every provider launch; workspace instructions and skills use provider
-discovery.
+`knowledge/README.md`, and empty `drafts/` and `uploads/`. Claude and Codex discover the
+global and workspace instruction layers natively from this single Git tree; Grok and Agy
+receive the freshly validated shared text once through their explicit provider adapters.
+Every launch revalidates the physical workspace, exact Git boundary, discovery links, and
+skill-name uniqueness before the provider starts.
 
 For a genuinely fresh install, setup first persists `setup.completed_at: null`, then
 creates the initial content, records it in one local Git snapshot, and finally replaces
@@ -359,7 +361,7 @@ development is in progress.
 
 ## Config
 
-Everything lives under `~/.enso/`. Config is at `~/.enso/config.json` — the setup wizard writes it for you, but you can edit it directly to add models, define workspaces and policies, add Slack routes, bind Telegram to a workspace, or set the interactive timeout through `agent.timeout` (whole seconds). Workspace names use lowercase kebab-case and derive their only valid roots as `~/.enso/workspaces/<name>`; workspace entries contain `policy` and optional `concurrency`, never `path`. External, nested, and symlinked workspace roots are rejected, as is a `.git` entry directly at a workspace root. There is no top-level `working_dir`, and `enso serve` has no `--working-dir` override. Upgrades backfill newly supported providers without replacing custom provider paths or model lists. Set `notify_channel` to give `enso message send` and job alerts a default destination when no interactive origin or explicit destination exists. No transport broadcasts implicitly.
+Everything lives under `~/.enso/`. Config is at `~/.enso/config.json` — the setup wizard writes it for you, but you can edit it directly to add models, define workspaces and policies, add Slack routes, bind Telegram to a workspace, or set the interactive timeout through `agent.timeout` (whole seconds). Workspace names use lowercase kebab-case and derive their only valid roots as `~/.enso/workspaces/<name>`; workspace entries contain `policy` and optional `concurrency`, never `path`. External, nested, and symlinked workspace roots are rejected, as is a `.git` entry directly at a workspace root. Every provider launch also requires `~/.enso` itself to remain the exact, non-corrupt Git worktree root; there is no fallback instruction-delivery mode for a partial layout. There is no top-level `working_dir`, and `enso serve` has no `--working-dir` override. Upgrades backfill newly supported providers without replacing custom provider paths or model lists. Set `notify_channel` to give `enso message send` and job alerts a default destination when no interactive origin or explicit destination exists. No transport broadcasts implicitly.
 
 Slack's `rich_messages` and `persistent_surfaces` settings both default to `true`. Set `persistent_surfaces` to the JSON boolean `false` to keep standard Markdown and structured message blocks while disabling App Home and Canvas drafts; set `rich_messages` to `false` to restore legacy text delivery and implicitly disable surfaces too. Non-boolean values fail closed as disabled. Restart Enso after changing either setting.
 

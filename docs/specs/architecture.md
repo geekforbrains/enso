@@ -206,7 +206,7 @@ Staging a surface stores a validated exact payload and posts an inert preview wi
 
 Workspace and Slack routing are described in [teams.md](teams.md), native CLI invocation in [permissions.md](permissions.md), and storage in [data-model.md](data-model.md). Slack always uses exact routes. Telegram retains its exact numeric user-ID allowlist, rejects non-private chat types, and requires one configured workspace. Both transports derive the workspace's single policy.
 
-Every conversation and job carries an immutable `ExecutionContext`; there is no singleton or service-level cwd. An interactive context contains the resolved workspace and policy, a stable conversation key, a separate durable-settings key, the frozen effective provider/model/effort and their provenance, workspace concurrency, and transport-specific audit/message choices. Jobs carry their explicit provider and model without a settings key. The native provider launch is prepared only after the workspace slot is acquired. The same context is threaded through dispatch, uploads, commands, compaction, session clearing, and provider execution.
+Every conversation and job carries an immutable `ExecutionContext`; there is no singleton or service-level cwd. An interactive context contains the resolved workspace and policy, a stable conversation key, a separate durable-settings key, the frozen effective provider/model/effort and their provenance, workspace concurrency, and transport-specific audit/message choices. Jobs carry their explicit provider and model without a settings key. Native policy preparation happens after the workspace slot is acquired, while filesystem discovery and the current shared instruction source are revalidated for each actual spawn rather than cached on the context. The same context is threaded through dispatch, uploads, commands, compaction, session clearing, and provider execution.
 
 The top-level workspace/policy catalog is parsed independently of either transport so Telegram, Slack, and jobs use the same bindings. Telegram requires `transports.telegram.workspace` and applies that workspace's provider and command controls after exact-user authorization. Slack credentials, transport options, and exact routes share the `transports.slack` block; its routes are loaded and validated when `enso serve` starts. Bindings are not hot-reloaded; changing authorization requires a restart. For each Slack event the transport performs this fixed sequence before fetching surrounding context or downloading attachments:
 
@@ -245,7 +245,17 @@ State schema v3 stores route settings separately. Loading v1 or v2 deliberately 
   content are allowed. Configuration cannot store an alternate, external, or nested path.
 - The resolved workspace supplies the subprocess cwd, persistent uploads, focused local project instructions, native workspace skills, and session scope. It is a shared content root, not a security boundary.
 - A policy supplies provider availability, default provider, allowed Enso chat commands, and native policy selection. It supplies no content and does not govern provider-native slash commands or skills. Each workspace names exactly one policy, while one policy may be reused by many workspaces.
-- Canonical shared instructions live at `~/.enso/AGENTS.md` with `CLAUDE.md -> AGENTS.md` and are injected into every launch independently of cwd. Enso validates a stable owner-owned, non-hard-linked, non-symlink UTF-8 source with no group/other write bits, hashes it, and publishes or verifies an immutable owner-only snapshot under `~/.enso/runtime/instructions/`. Claude receives that snapshot through `--append-system-prompt-file`; Codex receives the validated in-memory content through `developer_instructions`; unrestricted Agy receives it through Enso's prompt envelope. Local workspace `AGENTS.md`/`CLAUDE.md` files remain focused and provider-discovered.
+- Canonical shared instructions live at `~/.enso/AGENTS.md` with
+  `CLAUDE.md -> AGENTS.md`. Immediately before each spawn, Enso validates the exact
+  name-derived physical workspace, the root and local discovery links, skill-name
+  uniqueness, the absence of a workspace-root `.git` entry, and `~/.enso` as the exact
+  Git worktree root. It then validates and hashes the current owner-owned,
+  non-hard-linked, non-symlink UTF-8 source with no group/other write bits. Claude and
+  Codex discover the live global and focused workspace files natively from that Git
+  boundary; Enso does not also inject them. Grok receives the just-validated shared text
+  once through `--rules`, and unrestricted Agy receives it once through Enso's prompt
+  envelope. The hash is diagnostic and does not claim to pin the bytes a native provider
+  reads after spawning.
 - Global skills are canonical under `~/.enso/skills/`, exposed through the relative links
   `.agents/skills -> ../skills` and `.claude/skills -> ../skills`. Each workspace owns an
   initially empty `skills/` with the same two relative discovery views. A duplicate skill
@@ -335,7 +345,11 @@ internet and the PRD makes that a non-goal.
 
 | Area                     | Change                                                                                        |
 | ------------------------ | --------------------------------------------------------------------------------------------- |
-| `core.py`                | Records scheduled runs and resolves final text, structured messages, and surface drafts       |
+| `core.py`                | Resolves native policy, revalidates discovery at each interactive spawn, and handles provider output |
+| `instructions.py`        | Validates the live shared source and complete root/workspace discovery boundary without mutation |
+| `job_runner.py`          | Revalidates discovery before trusted prerun and again at the actual batch-provider boundary   |
+| `providers/`             | Uses native Claude/Codex discovery and one explicit Grok/Agy shared-instruction delivery       |
+| `policy.py`              | Builds native launches and revisions them against the current launch contract                 |
 | `cli.py`                 | Provides standalone `enso web` and manual job-run commands                                    |
 | `config.py`              | Backfills `web` (including `allowed_hosts` / `external_skill_roots`) and `runs` defaults      |
 | `formatting.py`          | Converts legacy Markdown and supplies standard-Markdown-aware splitting                       |
