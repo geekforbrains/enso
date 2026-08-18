@@ -252,28 +252,6 @@ def test_has_session_memory_reports_only_used_sessions(sample_config):
     assert not runtime.has_session_memory("chat", "codex")
 
 
-def test_bundled_prompt_documents_the_doc_commands():
-    """The shared prompt routes doc work without duplicating the whole skill."""
-    current = _bundled_prompt()
-    assert "enso doc list" in current
-    assert "`docs` skill" in current
-
-
-def test_bundled_prompt_documents_the_table_commands():
-    """The shared prompt routes table work without duplicating the whole skill."""
-    current = _bundled_prompt()
-    assert "enso table list" in current
-    assert "`tables` skill" in current
-
-
-def test_bundled_prompt_routes_workspace_changes_to_the_skill():
-    current = _bundled_prompt()
-    assert "enso config check" in current
-    assert "`workspace` skill" in current
-    assert "~/.enso/.claude/skills" in current
-    assert "~/.enso/.agents/skills" in current
-
-
 def test_bundled_prompts_are_transport_neutral():
     prompts = importlib.resources.files("enso").joinpath("prompts")
     for filename in ("AGENTS.md", "WORKSPACE_AGENTS.md"):

@@ -490,6 +490,170 @@ def test_tracked_protected_paths_reads_all_index_paths_with_nul_delimiters(tmp_p
         repository.snapshot(["AGENTS.md"], "must be blocked")
 
 
+def test_has_head_is_false_for_unborn_history_and_true_after_a_commit(tmp_path):
+    root = tmp_path / "enso"
+    repository = EnsoRepository(str(root))
+    repository.ensure()
+
+    assert repository.has_head() is False
+
+    (root / "AGENTS.md").write_text("instructions\n", encoding="utf-8")
+    assert repository.snapshot(["AGENTS.md"], "initial") is True
+
+    assert repository.has_head() is True
+
+
+def test_has_head_rejects_a_detached_missing_object(tmp_path):
+    root = tmp_path / "enso"
+    repository = EnsoRepository(str(root))
+    repository.ensure()
+    (root / ".git" / "HEAD").write_text("0" * 40 + "\n", encoding="ascii")
+
+    with pytest.raises(RepositoryError, match="HEAD"):
+        repository.has_head()
+
+
+def test_has_head_rejects_a_symbolic_branch_ref_with_a_missing_object(tmp_path):
+    root = tmp_path / "enso"
+    repository = EnsoRepository(str(root))
+    repository.ensure()
+    (root / ".git" / "refs" / "heads" / "main").write_text(
+        "0" * 40 + "\n",
+        encoding="ascii",
+    )
+
+    with pytest.raises(RepositoryError, match="HEAD"):
+        repository.has_head()
+
+
+def test_commit_subject_lookup_is_exact_and_limited_to_head_ancestry(tmp_path):
+    root = tmp_path / "enso"
+    repository = EnsoRepository(str(root))
+    repository.ensure()
+    marker = "Initialize Enso content"
+    agents = root / "AGENTS.md"
+    agents.write_text("baseline\n", encoding="utf-8")
+    assert repository.snapshot([".gitignore", "AGENTS.md"], f"{marker} copy") is True
+
+    _git(root, "switch", "--quiet", "-c", "side")
+    agents.write_text("side\n", encoding="utf-8")
+    _commit_all(root, marker)
+    _git(root, "switch", "--quiet", "main")
+    agents.write_text("main\n", encoding="utf-8")
+    _git(root, "add", "--", "AGENTS.md")
+    _git(
+        root,
+        "-c",
+        "user.name=Test Author",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "Different subject",
+        "-m",
+        marker,
+    )
+
+    assert repository.commit_subject_paths(marker) is None
+
+    agents.write_text("exact\n", encoding="utf-8")
+    assert repository.snapshot(["AGENTS.md"], marker) is True
+    agents.write_text("descendant\n", encoding="utf-8")
+    assert repository.snapshot(["AGENTS.md"], "later") is True
+
+    assert repository.commit_subject_paths(marker) is not None
+
+
+def test_commit_subject_paths_reads_the_historical_tree_with_symlinks(tmp_path):
+    root = tmp_path / "enso"
+    repository = EnsoRepository(str(root))
+    repository.ensure()
+    (root / "docs").mkdir()
+    (root / "docs" / "first.md").write_text("first\n", encoding="utf-8")
+    (root / "skills").mkdir()
+    (root / "skills" / "guide.md").write_text("guide\n", encoding="utf-8")
+    (root / ".agents").mkdir()
+    (root / ".agents" / "skills").symlink_to("../skills", target_is_directory=True)
+    marker = "Initialize Enso content"
+    assert repository.snapshot([".agents/skills", "docs", "skills"], marker) is True
+
+    (root / ".agents" / "skills").unlink()
+    (root / "docs" / "first.md").unlink()
+    assert repository.snapshot([".agents/skills", "docs"], "user deletions") is True
+
+    assert repository.commit_subject_paths(marker) == (
+        ".agents/skills",
+        "docs/first.md",
+        "skills/guide.md",
+    )
+
+
+def test_tracked_paths_returns_exact_nul_delimited_index_entries(tmp_path):
+    root = tmp_path / "enso"
+    repository = EnsoRepository(str(root))
+    repository.ensure()
+    (root / "docs").mkdir()
+    (root / "docs" / "--literal.md").write_text("literal\n", encoding="utf-8")
+    (root / "docs" / "line\nbreak.md").write_text("newline\n", encoding="utf-8")
+    (root / "skills").mkdir()
+    (root / ".agents").mkdir()
+    (root / ".agents" / "skills").symlink_to("../skills", target_is_directory=True)
+    _git(root, "add", "--", ".agents/skills", "docs/--literal.md", "docs/line\nbreak.md")
+
+    assert repository.tracked_paths() == (
+        ".agents/skills",
+        "docs/--literal.md",
+        "docs/line\nbreak.md",
+    )
+
+
+def test_ignored_paths_finds_only_exact_missing_allowlisted_paths(tmp_path):
+    root = tmp_path / "enso"
+    root.mkdir()
+    (root / ".gitignore").write_text(
+        "/docs/ignored.md\n/docs/--literal.md\n/workspaces/acme/knowledge/private.md\n",
+        encoding="utf-8",
+    )
+    repository = EnsoRepository(str(root))
+    repository.ensure()
+
+    assert repository.ignored_paths(
+        (
+            "docs/ignored.md.bak",
+            str(root / "docs" / "ignored.md"),
+            "docs/--literal.md",
+            "workspaces/acme/knowledge/private.md",
+            "workspaces/acme/knowledge/public.md",
+        )
+    ) == (
+        "docs/ignored.md",
+        "docs/--literal.md",
+        "workspaces/acme/knowledge/private.md",
+    )
+
+
+def test_ignored_paths_rejects_unsafe_input_without_invoking_git(tmp_path, monkeypatch):
+    root = tmp_path / "enso"
+    repository = EnsoRepository(str(root))
+    repository.ensure()
+    real_run_git = repository._run_git
+    checked_ignore = False
+
+    def observe_run_git(args, **kwargs):
+        nonlocal checked_ignore
+        if "check-ignore" in args:
+            checked_ignore = True
+        return real_run_git(args, **kwargs)
+
+    monkeypatch.setattr(repository, "_run_git", observe_run_git)
+
+    with pytest.raises(RepositoryError, match="non-empty strings"):
+        repository.ignored_paths(["docs/safe.md\0docs/other.md"])
+
+    assert checked_ignore is False
+
+
 @pytest.mark.parametrize(
     ("path", "error"),
     [
@@ -564,6 +728,29 @@ def test_snapshot_requires_explicit_paths_and_message(tmp_path):
         repository.snapshot(["AGENTS.md"], "   ")
 
 
+def test_snapshot_rejects_nul_message_before_staging(tmp_path, monkeypatch):
+    root = tmp_path / "enso"
+    repository = EnsoRepository(str(root))
+    repository.ensure()
+    (root / "AGENTS.md").write_text("instructions\n", encoding="utf-8")
+    real_run_git = repository._run_git
+    staged = False
+
+    def observe_run_git(args, **kwargs):
+        nonlocal staged
+        if "add" in args:
+            staged = True
+        return real_run_git(args, **kwargs)
+
+    monkeypatch.setattr(repository, "_run_git", observe_run_git)
+
+    with pytest.raises(RepositoryError, match="commit message"):
+        repository.snapshot(["AGENTS.md"], "invalid\0message")
+
+    assert staged is False
+    assert _git(root, "diff", "--cached", "--name-only").stdout == b""
+
+
 def test_snapshot_commits_only_explicit_allowlisted_paths(tmp_path):
     root = tmp_path / "enso"
     repository = EnsoRepository(str(root))
@@ -582,6 +769,23 @@ def test_snapshot_commits_only_explicit_allowlisted_paths(tmp_path):
         b"docs/with space.md\0"
     )
     assert _git(root, "status", "--short", "--", "docs/unrelated.md").stdout.startswith(b"??")
+
+
+def test_snapshot_accepts_an_explicit_empty_allowlisted_directory(tmp_path):
+    root = tmp_path / "enso"
+    repository = EnsoRepository(str(root))
+    repository.ensure()
+    workspace = root / "workspaces" / "default"
+    workspace.mkdir(parents=True)
+    (workspace / "AGENTS.md").write_text("instructions\n", encoding="utf-8")
+    (workspace / "skills").mkdir()
+
+    assert repository.snapshot(
+        ["workspaces/default/AGENTS.md", "workspaces/default/skills"],
+        "initial workspace",
+    )
+
+    assert repository.tracked_paths() == ("workspaces/default/AGENTS.md",)
 
 
 def test_snapshot_stages_deletion_for_an_explicit_path(tmp_path):
@@ -624,6 +828,119 @@ def test_snapshot_refuses_an_existing_staging_area(tmp_path):
         repository.snapshot(["docs/new.md"], "must not merge staging")
 
     assert _git(root, "diff", "--cached", "--name-only").stdout == b"AGENTS.md\n"
+
+
+def test_snapshot_can_recover_safe_interrupted_initial_staging(tmp_path):
+    root = tmp_path / "enso"
+    repository = EnsoRepository(str(root))
+    repository.ensure()
+    agents = root / "AGENTS.md"
+    agents.write_text("staged bytes\n", encoding="utf-8")
+    _git(root, "add", "--", "AGENTS.md")
+    agents.write_text("current bytes\n", encoding="utf-8")
+    (root / "docs").mkdir()
+    (root / "docs" / "new.md").write_text("new\n", encoding="utf-8")
+
+    assert (
+        repository.snapshot(
+            ["AGENTS.md", "docs"],
+            "recovered initial snapshot",
+            recover_interrupted=True,
+        )
+        is True
+    )
+
+    assert agents.read_text(encoding="utf-8") == "current bytes\n"
+    assert _git(root, "show", "HEAD:AGENTS.md").stdout == b"current bytes\n"
+    assert _git(root, "show", "HEAD:docs/new.md").stdout == b"new\n"
+
+
+def test_snapshot_recovery_refuses_and_preserves_staging_when_head_exists(tmp_path):
+    root = tmp_path / "enso"
+    repository = EnsoRepository(str(root))
+    repository.ensure()
+    agents = root / "AGENTS.md"
+    agents.write_text("initial\n", encoding="utf-8")
+    assert repository.snapshot(["AGENTS.md"], "initial") is True
+    agents.write_text("staged after head\n", encoding="utf-8")
+    _git(root, "add", "--", "AGENTS.md")
+
+    with pytest.raises(RepositoryError, match=r"no HEAD|first commit"):
+        repository.snapshot(
+            ["AGENTS.md"],
+            "must preserve",
+            recover_interrupted=True,
+        )
+
+    assert agents.read_text(encoding="utf-8") == "staged after head\n"
+    assert _git(root, "show", ":AGENTS.md").stdout == b"staged after head\n"
+
+
+def test_snapshot_recovery_refuses_and_preserves_unrelated_initial_staging(tmp_path):
+    root = tmp_path / "enso"
+    repository = EnsoRepository(str(root))
+    repository.ensure()
+    agents = root / "AGENTS.md"
+    agents.write_text("unrelated\n", encoding="utf-8")
+    _git(root, "add", "--", "AGENTS.md")
+    (root / "docs").mkdir()
+    (root / "docs" / "new.md").write_text("requested\n", encoding="utf-8")
+
+    with pytest.raises(RepositoryError, match="outside the requested snapshot scopes"):
+        repository.snapshot(
+            ["docs"],
+            "must preserve",
+            recover_interrupted=True,
+        )
+
+    assert agents.read_text(encoding="utf-8") == "unrelated\n"
+    assert _git(root, "show", ":AGENTS.md").stdout == b"unrelated\n"
+    assert (root / "docs" / "new.md").read_text(encoding="utf-8") == "requested\n"
+
+
+def test_snapshot_recovery_treats_intent_to_add_as_existing_staging(tmp_path):
+    root = tmp_path / "enso"
+    repository = EnsoRepository(str(root))
+    repository.ensure()
+    agents = root / "AGENTS.md"
+    agents.write_text("intent bytes\n", encoding="utf-8")
+    _git(root, "add", "--intent-to-add", "--", "AGENTS.md")
+    (root / "docs").mkdir()
+    (root / "docs" / "new.md").write_text("requested\n", encoding="utf-8")
+
+    with pytest.raises(RepositoryError, match="outside the requested snapshot scopes"):
+        repository.snapshot(
+            ["docs"],
+            "must preserve",
+            recover_interrupted=True,
+        )
+
+    assert agents.read_text(encoding="utf-8") == "intent bytes\n"
+    assert _git(root, "ls-files", "--", "AGENTS.md").stdout == b"AGENTS.md\n"
+
+
+def test_snapshot_recovery_refuses_and_preserves_protected_initial_staging(tmp_path):
+    root = tmp_path / "enso"
+    repository = EnsoRepository(str(root))
+    repository.ensure()
+    protected = root / "docs" / "uploads" / "token.env"
+    protected.parent.mkdir(parents=True)
+    protected.write_text("secret bytes\n", encoding="utf-8")
+    (root / "docs" / ".gitignore").write_text(
+        "!uploads/\n!uploads/token.env\n",
+        encoding="utf-8",
+    )
+    _git(root, "add", "--force", "--", "docs/uploads/token.env")
+
+    with pytest.raises(RepositoryError, match="protected paths"):
+        repository.snapshot(
+            ["docs"],
+            "must preserve",
+            recover_interrupted=True,
+        )
+
+    assert protected.read_text(encoding="utf-8") == "secret bytes\n"
+    assert _git(root, "show", ":docs/uploads/token.env").stdout == b"secret bytes\n"
 
 
 def test_snapshot_cleans_partial_initial_staging_when_git_add_fails(tmp_path, monkeypatch):

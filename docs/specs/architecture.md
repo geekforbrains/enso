@@ -251,11 +251,19 @@ State schema v3 stores route settings separately. Loading v1 or v2 deliberately 
   initially empty `skills/` with the same two relative discovery views. A duplicate skill
   directory name across global and workspace scope makes that workspace invalid rather
   than relying on provider precedence.
-- Fresh setup seeds the global prompt and bundled skills once; atomic workspace creation
-  seeds that workspace's prompt and knowledge index once. Those files are user-owned
-  immediately. Ordinary `serve`, `web`, and `config check` paths validate read-only, while
-  an explicit setup rerun conservatively repairs structural directories and known links
-  without recreating, upgrading, or deleting content.
+- Global reference docs live below `~/.enso/docs/`. A genuinely fresh setup starts with
+  `enso/content_model.md`, `enso/layout.md`, and `operator.md`; `enso doc list` computes
+  discovery dynamically from whatever docs currently exist. Installed starters are
+  user-owned and may be edited or deleted without a tombstone or later resurrection.
+- Fresh setup persists `setup.completed_at: null` before seeding the global prompt,
+  bundled skills, starter docs, default-workspace prompt, and workspace knowledge index.
+  It creates one local Git snapshot of the complete initial tree, then records a
+  timezone-bearing completion timestamp. A seed or snapshot failure leaves `null` for an
+  explicit retry that preserves completed pieces; a timestamp-write failure after the
+  snapshot retries only the state transition and does not create another initial commit.
+  Timestamped and pre-feature configurations never seed. Ordinary `serve`, `web`, and
+  `config check` paths validate read-only, and structural repair or upgrades never
+  recreate, upgrade, or delete seeded content.
 - Several routes may share one workspace and therefore its files, policy, and concurrency limit while retaining independent route settings and separate sessions.
 - A client route that shares files with a staff route must not be able to rewrite instructions, skill definitions, or provider control files trusted by the staff route.
 - Each workspace has a process-local semaphore shared by chats and compaction. The default is one active turn; operators may raise it when concurrent writes are safe.
@@ -338,17 +346,21 @@ internet and the PRD makes that a non-goal.
 | `jobs.py`                | Loads YAML scalars with `BaseLoader`, then falls back for malformed legacy headers            |
 | `frontmatter.py`         | Provides fence-aware raw edits and YAML serialization, writing through `fsutil`               |
 | `fsutil.py`              | Owns atomic text writes, containment checks, hashing, and SQLite file hardening                |
-| `scaffolding.py`         | Creates canonical root/workspace trees once and validates or conservatively repairs structure |
+| `scaffolding.py`         | Creates canonical trees, exclusively seeds fresh content, and conservatively repairs structure |
+| `repository.py`          | Establishes the local Git boundary and records the complete initial content snapshot           |
 | `sqlite_store.py`        | Owns operation-scoped connections, transactions, bounded timeouts, and failure classification |
 | `docs.py`                | Owns reference-doc path validation, the bounded recursive listing, scaffolding, and deletion  |
+| `starter_docs/`          | Packages the three fresh-only user-owned reference starters                                   |
 | `runs.py`                | Owns SQLite `create`/`finish`/`list_runs`/`get`/`prune` operations                            |
 | `tables.py`              | Owns the registration catalog, identifier validation, schema inspection, and bounded previews |
 | `skills/*/SKILL.md`      | Bundles portable workflows for docs, jobs, Slack, tables, and workspace management            |
 | `web/`                   | Contains the Starlette app, current routes/templates, discovery, and vendored assets          |
 | `pyproject.toml`         | Defines the `web` extra, base `pyyaml` dependency, and package data                           |
 
-Bundled prompts and skills are package resources for fresh setup and new-workspace
-creation only. Once installed, their copies are user-owned: startup and upgrades do not
-run content installers, maintain pristine hashes or deletion tombstones, remove retired
+The bundled root prompt, global skills, and starter docs are fresh-setup-only package
+resources; the workspace prompt and knowledge index are new-workspace-creation-only
+resources. Once installed, their copies are user-owned: startup and upgrades do not run
+content installers, maintain pristine hashes or deletion tombstones, remove retired
 content, or clean up copied tool files. Existing installations adopt bundle changes only
-through an explicit operator-reviewed migration.
+through an explicit operator-reviewed migration, never by fabricating an incomplete
+fresh-setup marker.

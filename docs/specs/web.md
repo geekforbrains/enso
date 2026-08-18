@@ -12,21 +12,22 @@ complete document, and forms and links use ordinary browser requests and redirec
 
 The whole UI is a thin skin over the running process's active configuration, the file model,
 the shared DB, and the existing Slack directory cache. Pages read workspace and policy
-bindings, Slack routes, `JOB.md` / `SKILL.md` / `AGENTS.md`, run history, and registered user
-tables. Writes go straight back to owned files (atomic replace) and the run store;
+bindings, Slack routes, `JOB.md` / `SKILL.md` / `AGENTS.md`, reference docs, run history,
+and registered user tables. Writes go straight back to owned files (atomic replace) and the run store;
 configuration, policies, Slack routes, and user-table pages are read-only. There is no
 separate web database or cache (see [data-model.md](data-model.md)).
 
 The app factory validates the local Git root and canonical scaffold before serving. That
-check is read-only: the web process never seeds prompts or skills, creates workspaces,
-repairs links, or changes setup state.
+check is read-only: the web process never seeds prompts, skills, starter docs, or workspace
+knowledge, creates workspaces, repairs links, or changes setup state.
 
-**Write boundary.** Every write the UI makes lands inside `~/.enso/` (jobs, Enso-owned
-skills, the canonical shared `AGENTS.md`, and root `AGENTS.md` files under the managed
-`~/.enso/workspaces/` tree). External workspace roots are invalid; nested workspace
+**Write boundary.** Every write the UI makes lands inside `~/.enso/` (jobs, user-owned
+global skills and docs, the canonical shared `AGENTS.md`, and root `AGENTS.md` files under
+the managed `~/.enso/workspaces/` tree). External workspace roots are invalid; nested workspace
 instruction files, native policy files, and external "parent" skills discovered from the
 CLIs' own roots (e.g. `~/.claude/skills/`) are strictly read-only. This is both the safety
-boundary and the ownership model: Enso manages its own files and only observes the rest.
+boundary and the scope model: Enso writes user-owned content only inside its managed tree
+and observes the rest.
 
 **Request protection.** Host headers must match loopback, the concrete bind host, or a
 name/IP in `web.allowed_hosts`; wildcard binds do not disable this check. All POST routes
@@ -103,7 +104,7 @@ The dashboard shows:
 - **Jobs enabled** — the enabled and total job counts, linking to the job list.
 - **Skills** — deduplicated Enso-owned and visible system counts, linking to the skill
   list.
-- **Docs** — the reference-doc count, linking to the doc list.
+- **Docs** — a live count from the same dynamic scan as the doc list, linking to that list.
 - **Tables** — available registered user-table count, linking to the read-only table list. A database read failure is shown as **Database busy** or **Database unavailable**, never as a misleading zero.
 
 ### Workspaces (`/workspaces`, `/workspaces/{name}`)
@@ -228,16 +229,24 @@ Two tiers, split by the `~/.enso/` write boundary:
 
 ### Reference docs (`/docs`, `/docs/{path}`)
 
-Operator-authored reference material under `~/.enso/docs/`, nested to any depth. Unlike
-skills there is a single tier: docs are Enso-owned, always editable, never discovered from
-outside `~/.enso/`.
+User-owned reference material under `~/.enso/docs/`, with paths capped at eight segments
+including the filename. Unlike skills there is a single tier: docs inside this managed
+root are editable and never discovered from outside `~/.enso/`. A fresh setup copies
+`enso/content_model.md`, `enso/layout.md`, and `operator.md` only; no empty category docs
+are created.
 
+- The list is computed from the current filesystem and frontmatter on every request. It
+  contains starter and later user-created docs without a static inventory, and immediately
+  reflects an edit, creation, or deletion.
 - Rows show the frontmatter `name` and `description`, with the relative path as a small
   mono secondary line, grouped under their parent directory. Directory headings are
   derived from the path segment (`some_thing` → "Some Thing") because directories carry no
   frontmatter.
 - Detail reuses the same whole-file textarea as `/skills/{name}`, plus confirmed deletion
   that prunes emptied parent directories.
+- Installed starter docs are ordinary user-owned files. The UI may edit or delete them,
+  and completed setup, a pre-feature configuration, repair, service/dashboard startup,
+  and upgrades never restore them; the web process itself has no seeding path.
 - Docs are identified by **relative path**, so they need path-segment validation and a
   symlink-skipping walk rather than the single-segment `_safe_name` check. Mutations carry
   the path in the POST body.

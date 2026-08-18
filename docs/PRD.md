@@ -19,7 +19,8 @@ The web UI is a read/write dashboard for:
   enable or disable it, and edit its prompt body or configured prerun script; full job
   CRUD is planned.
 - **Skills** — browse the bundled/installed skills; edit Enso's own.
-- **Reference docs** — browse, create, edit, and delete operator knowledge.
+- **Reference docs** — discover, browse, create, edit, and delete user-owned operator
+  knowledge, including three fresh-install starter references.
 - **Data tables** — discover registered SQLite tables and inspect their schema
   and a bounded row preview. Agents manage their schemas and rows outside the web UI.
 - **Execution configuration** — inspect workspaces, each workspace's one reusable policy,
@@ -71,13 +72,16 @@ overview, organisation, and managing the scheduled work Enso already runs.
 - **Table** — a registered, user-owned SQLite table containing structured facts an agent
   or operator needs to query. Registration supplies discovery metadata and UI visibility;
   it does not transfer schema/row ownership to Enso. See [tables.md](specs/tables.md).
+- **Reference doc** — user-owned Markdown whose relative path and frontmatter description
+  provide on-demand operator context. `enso doc list` derives its current discovery index
+  directly from the doc tree. See [docs.md](specs/docs.md).
 - **Transport / notify** — the existing chat delivery layer (Telegram/Slack). Host-side job failure and recovery alerts ride it; successful jobs are silent unless the prompt explicitly sends a message. Slack route auditing records inbound turns only and does not change notification behavior.
 
 ## Key decisions
 
 | Decision                       | Choice                                                                                                                                                                           |
 | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Authored intent (jobs, skills) | **Files** — Markdown + YAML frontmatter, source of truth, edited by human and agent alike                                                                                        |
+| Authored intent (jobs, skills, docs) | **Files** — Markdown + YAML frontmatter, source of truth, edited by human and agent alike                                                                                  |
 | Structured storage             | **SQLite** (`~/.enso/enso.db`) for run metadata and explicitly registered user data tables; **run output blobs on disk** (`~/.enso/runs/<id>.log`)                               |
 | Table discovery                | `_enso_tables` is an explicit catalog; only valid registered tables appear in the CLI/UI, while agents use standard SQLite for schema and row operations                         |
 | Frontmatter                    | PyYAML `BaseLoader` for valid job metadata, with a legacy line-parser fallback for malformed older files; raw web edits preserve formatting                                      |
@@ -157,7 +161,27 @@ authorized chat senders, not additional owners or dashboard personas.
 - `/agents` renders the canonical shared `~/.enso/AGENTS.md`; its revision-checked editor
   writes only the regular target while leaving `~/.enso/CLAUDE.md -> AGENTS.md` intact.
 
-### F5 — Registered data tables
+### F5 — Reference docs and starter context
+
+- `/docs` lists the current `~/.enso/docs/` tree from each file's relative path, `name`,
+  and discovery-oriented `description`; there is no static index to drift when a user
+  creates, edits, or deletes a doc.
+- A genuinely fresh setup copies exactly three references:
+  `enso/content_model.md` for content placement and source precedence,
+  `enso/layout.md` for the managed filesystem and local-history boundary, and
+  `operator.md` for confirmed identity, timezone/locale, preferences, and standing
+  personal context. It does not seed empty topic placeholders.
+- Setup persists `setup.completed_at: null` before fresh seeding, records the complete
+  initial content tree in one local Git snapshot, and then writes a timezone-bearing
+  completion timestamp. Failed seeds or snapshots remain retryable; if only the timestamp
+  write fails, retry completes that transition without creating a second initial commit.
+- Installed starters are user-owned and may be edited or deleted. Timestamped setup,
+  pre-feature configurations with no setup field, structural repair, startup, dashboard
+  startup, and upgrades never seed or restore them.
+- The shared prompt treats starter paths as optional routing hints and relies on the
+  dynamic doc list for everything the operator adds later.
+
+### F6 — Registered data tables
 
 - User tables live in the existing WAL-mode `~/.enso/enso.db`; `runs`, `_enso_*`, and
   `sqlite_*` remain reserved internal namespaces.
@@ -186,6 +210,9 @@ authorized chat senders, not additional owners or dashboard personas.
 - Read-only startup and configuration checks reject an incomplete scaffold or duplicate
   global/workspace skill name without repairing it or applying provider-specific
   precedence.
+- A fresh setup exposes the three starter descriptions through the dynamic doc list,
+  captures them in its single initial local snapshot, and marks setup complete only
+  afterward; deleting a starter leaves it absent through restart, repair, and upgrade.
 - A stale shared or managed-workspace instruction form cannot overwrite a newer agent or
   operator edit; unsafe links, path traversal, and files outside `~/.enso/` remain outside
   the browser write boundary.

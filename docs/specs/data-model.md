@@ -29,9 +29,10 @@ whose value comes from filtering, joining, and aggregation.
 ├── secrets/             # *.env files loaded into the `enso serve` environment at
 │   └── 1password.env    #   startup, so jobs inherit credentials a service manager
 │                        #   would not otherwise pass through. Existing vars win.
-├── docs/                # operator reference docs, nested to any depth.
-│   ├── homelab.md       #   Markdown + frontmatter; identity is the relative path.
-│   └── stuff/sub_stuff.md   #   See [docs.md](docs.md)
+├── docs/                # user-owned reference docs; paths have at most eight segments
+│   ├── enso/content_model.md  # three files copied only by genuinely fresh setup
+│   ├── enso/layout.md          # Markdown + frontmatter; identity is relative path
+│   └── operator.md             # editable confirmed-operator template; see docs.md
 ├── jobs/                # user jobs
 │   └── <name>/          # JOB.md plus a persistent .run.lock coordination file
 ├── runs/                # captured output, one file per run
@@ -164,8 +165,13 @@ best-effort restores an earlier field if a later update fails. Sections with no
 reference retain the legacy literal setup flow.
 
 `docs/` is the one file-backed kind identified by a **relative path** rather than a
-directory name, and the only one Enso ships no starter content for — so it needs neither
-seeding nor deletion markers. Deleting a doc prunes the empty parents it leaves behind.
+directory name. Enso packages `enso/content_model.md`, `enso/layout.md`, and `operator.md`
+as fresh-setup-only starters; it does not create placeholder account, browser, network,
+service, project, or business docs. Installed starters and later docs are equally
+user-owned. Deletion creates no marker because startup, repair, completed setup reruns,
+and upgrades never reseed docs; deleting a doc also prunes the empty parents it leaves
+behind. `enso doc list` derives the current index from the files and frontmatter on every
+call, so edited, created, and deleted docs need no separate catalog update.
 
 ## Shared SQLite database
 
@@ -299,11 +305,21 @@ not persist them. `enso config check` follows the same read-only rule. A missing
 fails every operational command closed. Setup alone may request an in-memory fresh-setup
 candidate, without creating the directory or file during that initial read.
 
-The setup-only in-memory candidate contains `setup.completed_at: null`. Once that
-candidate is persisted, `null` means initial setup was started but has not completed; an
-ISO 8601 timestamp with a timezone means it completed. An absent `setup` block identifies
-an installation created before this contract and does not make it eligible for automatic
-starter-content seeding. Invalid setup markers fail configuration loading.
+The setup-only in-memory candidate contains `setup.completed_at: null`, and setup persists
+that marker before seeding any starter content. `null` therefore means initial setup was
+started but has not completed. Only an explicit setup run in that state may seed missing
+fresh-install content. After the complete initial tree exists, setup creates one local Git
+snapshot and only then replaces `null` with an ISO 8601 completion timestamp that includes
+a timezone.
+
+A seed or snapshot failure leaves the marker `null`; retrying explicit setup preserves
+matching files already created, fills only missing pieces, and retries the snapshot. If
+the initial snapshot committed but the timestamp write failed, the next retry recognizes
+the existing commit and records completion without making a second initial snapshot. An
+absent `setup` block identifies a pre-feature installation, not an interrupted setup, and
+does not make it eligible for automatic starter-content seeding. A completed timestamp,
+ordinary startup, `enso web`, `enso config check`, structural repair, and upgrades are
+also non-seeding. Invalid setup markers fail configuration loading.
 
 Every command that performs a config read-modify-write transaction must hold Enso's
 owner-only cross-process config lock from the read through the atomic replacement. A
@@ -415,12 +431,15 @@ provider-specific discovery order. The CLIs may additionally load native user, m
 plugin, system, or bundled scopes, so discovery remains functionality rather than an
 allowlist.
 
-Fresh setup seeds the global prompt and bundled skills once. Atomic workspace creation
-seeds that workspace's prompt and `knowledge/README.md` once. Seeded files become
-user-owned immediately: startup, the dashboard, configuration checks, software upgrades,
-and setup repair never upgrade, overwrite, resurrect, or retire them. Explicit setup
-repair owns structural directories and known discovery links only; conflicts and missing
-user content are preserved and reported.
+Fresh setup seeds the global prompt, bundled skills, and the three starter docs once.
+Atomic workspace creation seeds that workspace's prompt and `knowledge/README.md` once.
+All seeded files become user-owned immediately: startup, the dashboard, configuration
+checks, software upgrades, completed or pre-feature setup reruns, and setup repair never
+upgrade, overwrite, resurrect, or retire them. Explicit setup repair owns structural
+directories and known discovery links only; conflicts and missing user content are
+preserved and reported. Existing installations adopt desired starter resources manually
+after reviewing them; they must not fabricate a `null` setup marker to invoke fresh
+seeding.
 
 A policy directory belongs to a policy and stays outside every writable workspace. This
 separation lets one policy serve several project directories. Policy paths are expanded

@@ -106,3 +106,52 @@ def test_workspace_skill_documents_only_the_canonical_managed_layout():
     assert "<workspace>/.agents/skills/<skill-name>" not in skill
     assert "enso workspace create" not in skill
     assert "enso workspace repair" not in skill
+
+
+def test_docs_skill_is_the_complete_content_placement_contract():
+    skill = (
+        importlib.resources.files("enso")
+        .joinpath("skills", "docs", "SKILL.md")
+        .read_text(encoding="utf-8")
+    )
+
+    for contract in (
+        "Search before creating",
+        "update the existing authoritative source",
+        "link to it instead of copying",
+        "always-loaded behavior",
+        "setup-specific runbooks",
+        "workspace-only durable material",
+        "product and project facts",
+        "configured knowledge base",
+        "reusable general procedures",
+        "structured, queryable facts",
+        "editable output",
+        "current turn",
+        "credential locations",
+        "never secret values",
+        "live verification",
+    ):
+        assert contract in skill
+
+    assert "Enso ships no docs" not in skill
+
+
+def test_workspace_skill_prefers_a_small_prompt_and_knowledge_index():
+    skill = (
+        importlib.resources.files("enso")
+        .joinpath("skills", "workspace", "SKILL.md")
+        .read_text(encoding="utf-8")
+    )
+
+    for contract in (
+        "small routing prompt",
+        "meanings of ambiguous terms",
+        "critical approvals",
+        "authoritative source",
+        "when to read",
+        "knowledge/README.md",
+    ):
+        assert contract in skill
+
+    assert "self-contained domain manual" not in skill

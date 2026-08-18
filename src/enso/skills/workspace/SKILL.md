@@ -61,7 +61,7 @@ All discovery links are relative. `~/.enso/skills/` is the global canonical skil
 
 The exact skill discovery links are `~/.enso/.agents/skills -> ../skills`, `~/.enso/.claude/skills -> ../skills`, `<workspace>/.agents/skills -> ../skills`, and `<workspace>/.claude/skills -> ../skills`.
 
-`AGENTS.md` is canonical at each level. Keep a workspace prompt short: identify its purpose and scope, list only critical approvals or safety rules that must appear every turn, and point to authoritative sources with a “when to read” description. Keep deferred workspace detail in `knowledge/`; when `knowledge/README.md` is present, maintain it as the path-and-reading index instead of turning the prompt into a domain manual.
+`AGENTS.md` is canonical at each level. Keep it as a small routing prompt: identify the workspace purpose and scope, define the meanings of ambiguous terms, list only critical approvals or safety rules that must appear every turn, and point to each authoritative source with a path and specific “when to read” description. Keep detailed operating context in `knowledge/`; when `knowledge/README.md` is present, maintain it as the knowledge index rather than loading domain detail on every turn.
 
 ## Preserve ownership
 

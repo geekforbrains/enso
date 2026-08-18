@@ -49,9 +49,30 @@ enso setup
 
 The setup wizard detects your agent CLIs, connects your chosen transport, and optionally installs a background service (launchd on macOS, systemd on Linux) so Enso starts on boot. Every fresh install creates workspace `default` at `~/.enso/workspaces/default`, bound to an unrestricted `admin` policy. Telegram captures one exact numeric user ID and binds its private one-to-one conversations to that workspace. Slack creates one exact owner DM route with the same binding; add channel routes deliberately in `config.json`.
 
-Fresh setup seeds shared operational instructions at `~/.enso/AGENTS.md`, global skills at `~/.enso/skills/`, and a complete default workspace. Root discovery uses relative links: `CLAUDE.md -> AGENTS.md`, `.agents/skills -> ../skills`, and `.claude/skills -> ../skills`. Each workspace lives exactly at `~/.enso/workspaces/<lowercase-kebab-name>` and contains its own `AGENTS.md`, relative `CLAUDE.md` and skill-discovery links, initially empty `skills/`, `knowledge/`, `drafts/`, and `uploads/`. Enso injects validated shared instructions into every provider launch; workspace instructions and skills use provider discovery.
+Fresh setup seeds shared operational instructions at `~/.enso/AGENTS.md`, global skills at
+`~/.enso/skills/`, three starter references under `~/.enso/docs/`, and a complete default
+workspace. Root discovery uses relative links: `CLAUDE.md -> AGENTS.md`,
+`.agents/skills -> ../skills`, and `.claude/skills -> ../skills`. Each workspace lives
+exactly at `~/.enso/workspaces/<lowercase-kebab-name>` and contains its own focused
+`AGENTS.md`, relative `CLAUDE.md` and skill-discovery links, an initially empty `skills/`,
+`knowledge/README.md`, and empty `drafts/` and `uploads/`. Enso injects validated shared
+instructions into every provider launch; workspace instructions and skills use provider
+discovery.
 
-Seeded content becomes user-owned immediately. Startup and `enso config check` validate the repository, physical workspace roots, discovery links, and unique root/workspace skill names without installing, repairing, upgrading, or resurrecting content. A later explicit `enso setup` rerun repairs only missing structural directories and known discovery links, preserving missing or customized content and reporting conflicts.
+For a genuinely fresh install, setup first persists `setup.completed_at: null`, then
+creates the initial content, records it in one local Git snapshot, and finally replaces
+`null` with an ISO 8601 timestamp that includes a timezone. A failed seed or snapshot
+leaves setup incomplete so an explicit rerun can finish missing work without overwriting
+files already created. If the snapshot succeeded but saving the timestamp failed, the
+rerun recognizes the existing initial snapshot and completes the timestamp without a
+second commit.
+
+Seeded content becomes user-owned immediately and may be edited or deleted. A completed
+setup, a pre-feature installation with no `setup` field, startup, `enso web`, and
+`enso config check` never seed it. For a completed or pre-feature installation, a later
+explicit `enso setup` rerun repairs only missing structural directories and known
+discovery links, preserving missing or customized content and reporting conflicts;
+startup and upgrades likewise never restore or advance seeded copies.
 
 Once setup is done, start chatting:
 
@@ -258,8 +279,15 @@ A job's `provider` and `model` are validated against your configured providers �
 ## Reference Docs
 
 Standing knowledge about your setup — how a machine is wired, a deploy runbook, account
-conventions — lives as Markdown under `~/.enso/docs/`, nested to any depth. Nothing loads
-docs automatically; the agent consults them when a task calls for one.
+conventions — lives as Markdown under `~/.enso/docs/`, with paths capped at eight segments
+including the filename. Nothing loads docs automatically; the agent consults them when a
+task calls for one.
+
+A fresh install starts with exactly three references: `enso/content_model.md` explains
+where durable context belongs, `enso/layout.md` describes the managed filesystem and
+local-history boundaries, and `operator.md` is an editable template for confirmed
+operator context. Enso does not create empty account, browser, network, service, project,
+or business notes.
 
 ```bash
 enso doc list                       # path, name, and description for every doc
@@ -270,9 +298,11 @@ Each doc carries `name` and `description` frontmatter, and identity is the path 
 to `~/.enso/docs/` rather than a slug. `enso doc list` *is* the index — it is computed
 from frontmatter on every call, so it can never drift from what is on disk, which is why
 there is no `INDEX.md` to maintain. The bundled `docs` skill teaches agents to check docs
-before answering from memory about your setup. Browse, create, edit, and delete them under
-**Docs** in the dashboard. See [`docs/specs/docs.md`](docs/specs/docs.md) for the full
-design.
+before answering from memory about your setup. The three installed starters are ordinary
+user-owned docs: edit or delete them as needed, and the dynamic list immediately reflects
+that choice. Completed setup reruns, repair, startup, and upgrades never recreate them.
+Browse, create, edit, and delete docs under **Docs** in the dashboard. See
+[`docs/specs/docs.md`](docs/specs/docs.md) for the full design.
 
 ## Data Tables
 

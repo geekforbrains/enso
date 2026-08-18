@@ -14,8 +14,8 @@ import sys
 import time
 import urllib.request
 import uuid
-from datetime import datetime
-from typing import Annotated
+from datetime import datetime, timezone
+from typing import Annotated, NoReturn
 
 import typer
 from rich.console import Console
@@ -1328,8 +1328,12 @@ def _print_scaffold_warnings(warnings: tuple[str, ...]) -> None:
         console.print(f"  [yellow]![/] {escape(warning)}")
 
 
-def _scaffold_setup_or_exit(config: dict) -> None:
-    """Seed a fresh install once, or conservatively repair an older one."""
+def _scaffold_setup_or_exit(
+    config: dict,
+    *,
+    seed_fresh: bool | None = None,
+) -> None:
+    """Seed a fresh install once, or conservatively repair existing structure."""
     from .scaffolding import ScaffoldError, ScaffoldService
 
     service = ScaffoldService()
@@ -1339,16 +1343,20 @@ def _scaffold_setup_or_exit(config: dict) -> None:
         raise typer.Exit(1)
     try:
         state = setup_state(config)
+        should_seed = state is SetupState.INCOMPLETE if seed_fresh is None else seed_fresh
         global_report = (
             service.seed_fresh_global()
-            if state is SetupState.INCOMPLETE
+            if should_seed
             else service.repair_global()
         )
         _print_scaffold_warnings(global_report.warnings)
+        if should_seed:
+            starter_report = service.seed_fresh_starter_docs()
+            _print_scaffold_warnings(starter_report.warnings)
 
         for name in sorted(raw_workspaces):
             workspace_path = service.workspace_path(name)
-            if state is SetupState.INCOMPLETE:
+            if should_seed:
                 if os.path.lexists(workspace_path):
                     report = service.validate_workspace(name)
                     if report.errors:
@@ -1367,6 +1375,244 @@ def _scaffold_setup_or_exit(config: dict) -> None:
             raise ScaffoldError("; ".join(errors))
     except (ConfigError, ScaffoldError, OSError) as exc:
         console.print(f"[red]Could not establish managed workspaces:[/] {escape(str(exc))}")
+        raise typer.Exit(1) from None
+
+
+_INITIAL_SETUP_SNAPSHOT_SUBJECT = "Initialize Enso content"
+_INITIAL_SETUP_GLOBAL_SNAPSHOT_PATHS = (
+    ".gitignore",
+    "AGENTS.md",
+    "CLAUDE.md",
+    ".agents/skills",
+    ".claude/skills",
+    "docs",
+    "skills",
+)
+_INITIAL_SETUP_GLOBAL_REQUIRED_PATHS = (
+    ".gitignore",
+    "AGENTS.md",
+    "CLAUDE.md",
+    ".agents/skills",
+    ".claude/skills",
+    "skills/docs/SKILL.md",
+    "skills/jobs/SKILL.md",
+    "skills/slack/SKILL.md",
+    "skills/tables/SKILL.md",
+    "skills/workspace/SKILL.md",
+    "docs/enso/content_model.md",
+    "docs/enso/layout.md",
+    "docs/operator.md",
+)
+
+
+def _initial_setup_snapshot_paths(
+    config: dict,
+    repository_root: str,
+) -> tuple[str, ...]:
+    """Return broad versionable scopes captured by the one fresh snapshot."""
+    paths = list(_INITIAL_SETUP_GLOBAL_SNAPSHOT_PATHS)
+    raw_workspaces = config.get("workspaces", {})
+    if not isinstance(raw_workspaces, dict):
+        raise ConfigError("workspaces must be an object")
+    for name in sorted(raw_workspaces):
+        base = f"workspaces/{name}"
+        paths.extend(
+            (
+                f"{base}/AGENTS.md",
+                f"{base}/CLAUDE.md",
+                f"{base}/.agents/skills",
+                f"{base}/.claude/skills",
+                f"{base}/knowledge",
+            )
+        )
+        if os.listdir(os.path.join(repository_root, "workspaces", name, "skills")):
+            paths.append(f"{base}/skills")
+    return tuple(paths)
+
+
+def _initial_setup_required_paths(config: dict) -> tuple[str, ...]:
+    """Return every exact baseline entry required in the initial commit tree."""
+    paths = list(_INITIAL_SETUP_GLOBAL_REQUIRED_PATHS)
+    raw_workspaces = config.get("workspaces", {})
+    if not isinstance(raw_workspaces, dict):
+        raise ConfigError("workspaces must be an object")
+    for name in sorted(raw_workspaces):
+        base = f"workspaces/{name}"
+        paths.extend(
+            (
+                f"{base}/AGENTS.md",
+                f"{base}/CLAUDE.md",
+                f"{base}/.agents/skills",
+                f"{base}/.claude/skills",
+                f"{base}/knowledge/README.md",
+            )
+        )
+    return tuple(paths)
+
+
+def _missing_initial_setup_paths(
+    repository_root: str,
+    required_paths: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Return required exact paths absent from the fresh scaffold."""
+    return tuple(
+        path
+        for path in required_paths
+        if not os.path.lexists(os.path.join(repository_root, *path.split("/")))
+    )
+
+
+def _required_paths_absent_from(
+    required_paths: tuple[str, ...],
+    observed_paths: tuple[str, ...] | None,
+) -> tuple[str, ...]:
+    """Return required paths missing from one index or historical commit tree."""
+    observed = frozenset(observed_paths or ())
+    return tuple(path for path in required_paths if path not in observed)
+
+
+def _initial_snapshot_problem(message: str, paths: tuple[str, ...] = ()) -> NoReturn:
+    """Report an actionable initial-snapshot failure and stop setup."""
+    suffix = f" {', '.join(escape(path) for path in paths)}" if paths else ""
+    console.print(
+        "[red]Could not create the initial Enso content snapshot:[/] "
+        f"{escape(message)}{suffix}"
+    )
+    console.print(
+        "[dim]Setup remains incomplete; repair the listed content-history problem and "
+        "rerun `enso setup`.[/]"
+    )
+    raise typer.Exit(1)
+
+
+def _save_setup_config_or_exit(config: dict, *, action: str) -> None:
+    """Persist setup state with an actionable CLI diagnostic."""
+    try:
+        save_config(config)
+    except (OSError, TypeError, ValueError) as exc:
+        console.print(f"[red]{action}:[/] {escape(str(exc))}")
+        raise typer.Exit(1) from None
+
+
+def _finalize_setup_or_exit(config: dict) -> None:
+    """Persist, scaffold, snapshot, and complete one setup transaction."""
+    from .repository import EnsoRepository, RepositoryError
+
+    try:
+        state = setup_state(config)
+    except ConfigError as exc:
+        console.print(f"[red]Could not finalize setup:[/] {escape(str(exc))}")
+        raise typer.Exit(1) from None
+
+    if state is not SetupState.INCOMPLETE:
+        _scaffold_setup_or_exit(config)
+        _save_setup_config_or_exit(
+            config,
+            action="Could not save the conservatively repaired configuration",
+        )
+        return
+
+    # The on-disk null marker makes every later content mutation recoverable.
+    config["setup"]["completed_at"] = None
+    _save_setup_config_or_exit(
+        config,
+        action="Could not record incomplete setup before seeding content",
+    )
+
+    try:
+        repository = EnsoRepository()
+        repository.ensure()
+        required_paths = _initial_setup_required_paths(config)
+        marker_paths = repository.commit_subject_paths(_INITIAL_SETUP_SNAPSHOT_SUBJECT)
+
+        if marker_paths is not None:
+            missing_from_marker = _required_paths_absent_from(
+                required_paths,
+                marker_paths,
+            )
+            if missing_from_marker:
+                _initial_snapshot_problem(
+                    "the historical initial marker is missing required baseline paths:",
+                    missing_from_marker,
+                )
+            _scaffold_setup_or_exit(config, seed_fresh=False)
+        else:
+            if repository.has_head():
+                _initial_snapshot_problem(
+                    "repository history exists but the exact initial marker is absent; "
+                    "refusing to create a second baseline commit. Review the local Git "
+                    "history and restore the initial marker before retrying."
+                )
+
+            _scaffold_setup_or_exit(config)
+            missing_from_disk = _missing_initial_setup_paths(
+                repository.root,
+                required_paths,
+            )
+            if missing_from_disk:
+                _initial_snapshot_problem(
+                    "required fresh-setup paths are missing after scaffolding:",
+                    missing_from_disk,
+                )
+
+            ignored = repository.ignored_paths(required_paths)
+            if ignored:
+                _initial_snapshot_problem(
+                    "required fresh-setup paths are ignored; remove the matching "
+                    ".gitignore rule before retrying:",
+                    ignored,
+                )
+
+            repository.snapshot(
+                _initial_setup_snapshot_paths(config, repository.root),
+                _INITIAL_SETUP_SNAPSHOT_SUBJECT,
+                recover_interrupted=True,
+            )
+            missing_from_index = _required_paths_absent_from(
+                required_paths,
+                repository.tracked_paths(),
+            )
+            if missing_from_index:
+                _initial_snapshot_problem(
+                    "the completed snapshot did not track required baseline paths:",
+                    missing_from_index,
+                )
+            missing_from_marker = _required_paths_absent_from(
+                required_paths,
+                repository.commit_subject_paths(_INITIAL_SETUP_SNAPSHOT_SUBJECT),
+            )
+            if missing_from_marker:
+                _initial_snapshot_problem(
+                    "the initial marker commit is missing required baseline paths:",
+                    missing_from_marker,
+                )
+    except typer.Exit:
+        raise
+    except (ConfigError, RepositoryError, OSError) as exc:
+        _initial_snapshot_problem(str(exc))
+
+    config["setup"]["completed_at"] = datetime.now(timezone.utc).isoformat()
+    try:
+        save_config(config)
+    except (OSError, TypeError, ValueError) as exc:
+        # The first save left null on disk. Restore the in-memory marker too,
+        # and retry that null write in case a wrapper failed after persisting.
+        config["setup"]["completed_at"] = None
+        rollback_error: Exception | None = None
+        try:
+            save_config(config)
+        except (OSError, TypeError, ValueError) as rollback_exc:
+            rollback_error = rollback_exc
+        console.print(f"[red]Could not mark setup complete:[/] {escape(str(exc))}")
+        if rollback_error is not None:
+            console.print(
+                "[yellow]Could not re-confirm the incomplete setup marker:[/] "
+                f"{escape(str(rollback_error))}"
+            )
+        console.print(
+            "[dim]Rerun `enso setup`; existing seeded content and the clean initial "
+            "snapshot will be reused.[/]"
+        )
         raise typer.Exit(1) from None
 
 
@@ -1389,10 +1635,8 @@ def setup() -> None:
         _setup_default_workspace(config)
 
         captured_chat_id = _setup_transport(config)
-        _scaffold_setup_or_exit(config)
-
         with console.status("Saving config..."):
-            save_config(config)
+            _finalize_setup_or_exit(config)
     console.print(f"[green]\u2713[/] Config saved to {CONFIG_FILE}")
 
     # Send test message

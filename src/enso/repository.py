@@ -299,26 +299,153 @@ class EnsoRepository:
 
     def tracked_protected_paths(self) -> tuple[str, ...]:
         """Return every tracked path that blocks automatic Enso snapshots."""
+        return protected_tracked_paths(self.tracked_paths())
+
+    def has_head(self) -> bool:
+        """Return whether this exact worktree currently has a commit at HEAD."""
+        self.validate()
+        return self._has_head()
+
+    def commit_subject_paths(self, subject: str) -> tuple[str, ...] | None:
+        """Return the recursive tree paths for the newest exact-subject ancestor."""
+        commit_oid = self._commit_oid_with_subject(subject)
+        if commit_oid is None:
+            return None
+        result = self._run_git(
+            ["ls-tree", "-r", "--name-only", "-z", commit_oid],
+            read_only=True,
+            description="inspect the matching Enso commit tree",
+        )
+        return tuple(os.fsdecode(raw) for raw in result.stdout.split(b"\0") if raw)
+
+    def tracked_paths(self) -> tuple[str, ...]:
+        """Return every exact path currently present in the Git index."""
         self.validate()
         result = self._run_git(
             ["ls-files", "--cached", "-z"],
             read_only=True,
             description="inspect tracked Enso paths",
         )
-        paths = [os.fsdecode(raw) for raw in result.stdout.split(b"\0") if raw]
-        return protected_tracked_paths(paths)
+        return tuple(dict.fromkeys(os.fsdecode(raw) for raw in result.stdout.split(b"\0") if raw))
 
-    def snapshot(self, paths: Sequence[str], message: str) -> bool:
+    def ignored_paths(self, paths: Sequence[str]) -> tuple[str, ...]:
+        """Return requested allowlisted paths ignored by effective Git rules."""
+        if isinstance(paths, (str, bytes)):
+            raise RepositoryError("ignored-path inspection requires a sequence of paths")
+        self.validate()
+        normalized = self._normalize_snapshot_paths(paths)
+        if not normalized:
+            return ()
+        input_data = b"".join(os.fsencode(path) + b"\0" for path in normalized)
+        result = self._run_git(
+            ["check-ignore", "--no-index", "--stdin", "-z"],
+            check=False,
+            read_only=True,
+            input_data=input_data,
+            description="inspect effective Git ignore rules",
+        )
+        if result.returncode not in {0, 1}:
+            self._raise_git_failure(result, "inspect effective Git ignore rules")
+        ignored = tuple(os.fsdecode(raw) for raw in result.stdout.split(b"\0") if raw)
+        unexpected = tuple(path for path in ignored if path not in normalized)
+        if unexpected:
+            listed = ", ".join(repr(path) for path in unexpected)
+            raise RepositoryError(
+                f"Git returned unexpected paths while inspecting effective ignore rules: {listed}"
+            )
+        ignored_set = set(ignored)
+        return tuple(path for path in normalized if path in ignored_set)
+
+    def _has_head(self) -> bool:
+        result = self._run_git(
+            ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+            check=False,
+            read_only=True,
+            description="inspect repository history",
+        )
+        if result.returncode == 0:
+            return True
+        if result.returncode != 1:
+            self._raise_git_failure(result, "inspect repository history")
+        symbolic = self._run_git(
+            ["symbolic-ref", "--quiet", "HEAD"],
+            check=False,
+            read_only=True,
+            description="inspect unborn repository HEAD",
+        )
+        if symbolic.returncode == 1:
+            raise RepositoryError("repository HEAD is detached but does not resolve to a commit")
+        if symbolic.returncode != 0:
+            self._raise_git_failure(symbolic, "inspect unborn repository HEAD")
+        target = symbolic.stdout.rstrip(b"\r\n")
+        if (
+            not target.startswith(b"refs/heads/")
+            or b"\0" in target
+            or b"\n" in target
+            or b"\r" in target
+        ):
+            raise RepositoryError("repository HEAD is not a valid unborn branch reference")
+        target_result = self._run_git(
+            ["show-ref", "--verify", "--quiet", os.fsdecode(target)],
+            check=False,
+            read_only=True,
+            description="inspect symbolic repository HEAD target",
+        )
+        if target_result.returncode == 0:
+            raise RepositoryError("repository HEAD target does not resolve to a commit")
+        if target_result.returncode != 1:
+            self._raise_git_failure(target_result, "inspect symbolic repository HEAD target")
+        return False
+
+    def _commit_oid_with_subject(self, subject: str) -> str | None:
+        if (
+            not isinstance(subject, str)
+            or not subject
+            or "\0" in subject
+            or "\n" in subject
+            or "\r" in subject
+        ):
+            raise RepositoryError("commit subject must be a non-empty single-line string")
+        self.validate()
+        if not self._has_head():
+            return None
+        result = self._run_git(
+            ["log", "--format=%H%x00%s", "-z", "HEAD"],
+            read_only=True,
+            description="inspect Enso commit subjects",
+        )
+        fields = result.stdout.split(b"\0")
+        if fields and fields[-1] == b"":
+            fields.pop()
+        if len(fields) % 2:
+            raise RepositoryError("Git returned malformed commit metadata while inspecting history")
+        for index in range(0, len(fields), 2):
+            if os.fsdecode(fields[index + 1]) == subject:
+                return fields[index].decode("ascii")
+        return None
+
+    def snapshot(
+        self,
+        paths: Sequence[str],
+        message: str,
+        *,
+        recover_interrupted: bool = False,
+    ) -> bool:
         """Commit only explicit allowlisted repository-relative or absolute paths.
 
         ``True`` means a commit was created. A clean request is a successful
         no-op and returns ``False``. Existing staged or tracked-sensitive state
-        fails closed rather than being folded into Enso's commit.
+        fails closed rather than being folded into Enso's commit. Opt-in first
+        snapshot recovery clears only a proven-safe index; worktree bytes stay.
         """
         if isinstance(paths, (str, bytes)) or not paths:
             raise RepositoryError("a snapshot requires at least one explicit path")
-        if not isinstance(message, str) or not message.strip():
-            raise RepositoryError("a snapshot requires a non-empty commit message")
+        if not isinstance(message, str) or not message.strip() or "\0" in message:
+            raise RepositoryError(
+                "a snapshot requires a non-empty commit message without NUL bytes"
+            )
+        if not isinstance(recover_interrupted, bool):
+            raise RepositoryError("recover_interrupted must be a boolean")
 
         self.ensure()
         normalized = self._normalize_snapshot_paths(paths)
@@ -330,29 +457,30 @@ class EnsoRepository:
                 f"tracked: {listed}"
             )
 
+        had_head = self._has_head()
         staged = self._run_git(
-            ["diff", "--cached", "--quiet", "--exit-code"],
+            [
+                "diff",
+                "--cached",
+                "--ita-visible-in-index",
+                "--quiet",
+                "--exit-code",
+            ],
             check=False,
             read_only=True,
             description="inspect the Git staging area",
         )
         if staged.returncode == 1:
-            raise RepositoryError(
-                "the Git staging area is not clean; unstage existing changes before snapshotting"
-            )
-        if staged.returncode != 0:
+            if not recover_interrupted:
+                raise RepositoryError(
+                    "the Git staging area is not clean; unstage existing changes before "
+                    "snapshotting"
+                )
+            self._recover_interrupted_staging(normalized, had_head)
+        elif staged.returncode != 0:
             self._raise_git_failure(staged, "inspect the Git staging area")
-
-        had_head = (
-            self._run_git(
-                ["rev-parse", "--verify", "--quiet", "HEAD"],
-                check=False,
-                read_only=True,
-                description="inspect repository history",
-            ).returncode
-            == 0
-        )
-        if not self._stage_snapshot_paths(normalized, had_head):
+        commit_paths = self._stage_snapshot_paths(normalized, had_head)
+        if not commit_paths:
             return False
 
         try:
@@ -369,7 +497,7 @@ class EnsoRepository:
                     "-m",
                     message,
                     "--",
-                    *normalized,
+                    *commit_paths,
                 ],
                 description="commit the requested Enso snapshot",
             )
@@ -377,7 +505,70 @@ class EnsoRepository:
             self._fail_snapshot(exc, normalized, had_head)
         return True
 
-    def _stage_snapshot_paths(self, normalized: list[str], had_head: bool) -> bool:
+    def _recover_interrupted_staging(self, normalized: list[str], had_head: bool) -> None:
+        """Clear only a safely attributable unborn-HEAD index for one retry."""
+        if had_head:
+            raise RepositoryError(
+                "the Git staging area is not clean and interrupted-snapshot recovery is "
+                "allowed only when there is no HEAD; existing staging was preserved"
+            )
+        staged_result = self._run_git(
+            ["diff", "--cached", "--ita-visible-in-index", "--name-only", "-z"],
+            read_only=True,
+            description="inspect interrupted initial snapshot staging",
+        )
+        staged_paths = [os.fsdecode(raw) for raw in staged_result.stdout.split(b"\0") if raw]
+        non_versionable = tuple(
+            path
+            for path in staged_paths
+            if classify_content_path(path) is not PathDisposition.VERSIONABLE
+        )
+        if non_versionable:
+            listed = ", ".join(repr(path) for path in non_versionable)
+            raise RepositoryError(
+                "cannot recover the interrupted first snapshot because staged paths are not "
+                f"versionable: {listed}; existing staging was preserved"
+            )
+        unrelated = tuple(
+            path
+            for path in staged_paths
+            if not any(path == scope or path.startswith(f"{scope}/") for scope in normalized)
+        )
+        if unrelated:
+            listed = ", ".join(repr(path) for path in unrelated)
+            raise RepositoryError(
+                "cannot recover the interrupted first snapshot because staged paths lie "
+                f"outside the requested snapshot scopes: {listed}; existing staging was "
+                "preserved"
+            )
+
+        cleanup_error = self._unstage_after_failure(staged_paths, had_head=False)
+        if cleanup_error is not None:
+            raise RepositoryError(
+                "could not clean safely attributable interrupted initial snapshot staging: "
+                f"{cleanup_error}"
+            ) from cleanup_error
+        clean = self._run_git(
+            [
+                "diff",
+                "--cached",
+                "--ita-visible-in-index",
+                "--quiet",
+                "--exit-code",
+            ],
+            check=False,
+            read_only=True,
+            description="verify interrupted initial snapshot cleanup",
+        )
+        if clean.returncode == 1:
+            raise RepositoryError(
+                "the Git staging area changed during interrupted-snapshot recovery; "
+                "refusing to continue"
+            )
+        if clean.returncode != 0:
+            self._raise_git_failure(clean, "verify interrupted initial snapshot cleanup")
+
+    def _stage_snapshot_paths(self, normalized: list[str], had_head: bool) -> list[str]:
         """Stage, audit, and diff explicit paths while cleaning every failure."""
         literal_paths = ["--literal-pathspecs", "add", "--all", "--", *normalized]
         try:
@@ -386,7 +577,7 @@ class EnsoRepository:
             self._fail_snapshot(exc, normalized, had_head)
         try:
             staged_paths_result = self._run_git(
-                ["diff", "--cached", "--name-only", "-z"],
+                ["diff", "--cached", "--ita-visible-in-index", "--name-only", "-z"],
                 read_only=True,
                 description="verify staged Enso paths",
             )
@@ -403,11 +594,26 @@ class EnsoRepository:
                 normalized,
                 had_head,
             )
+        staged_unrelated = tuple(
+            path
+            for path in staged_paths
+            if not any(path == scope or path.startswith(f"{scope}/") for scope in normalized)
+        )
+        if staged_unrelated:
+            listed = ", ".join(repr(path) for path in staged_unrelated)
+            self._fail_snapshot(
+                RepositoryError(
+                    f"paths outside the explicit snapshot scopes appeared in staging: {listed}"
+                ),
+                normalized,
+                had_head,
+            )
         changed = self._run_git(
             [
                 "--literal-pathspecs",
                 "diff",
                 "--cached",
+                "--ita-visible-in-index",
                 "--quiet",
                 "--exit-code",
                 "--",
@@ -418,13 +624,26 @@ class EnsoRepository:
             description="inspect the requested snapshot",
         )
         if changed.returncode == 0:
-            return False
+            return []
         if changed.returncode != 1:
             try:
                 self._raise_git_failure(changed, "inspect the requested snapshot")
             except RepositoryError as exc:
                 self._fail_snapshot(exc, normalized, had_head)
-        return True
+        commit_paths = [
+            scope
+            for scope in normalized
+            if any(path == scope or path.startswith(f"{scope}/") for path in staged_paths)
+        ]
+        if not commit_paths:
+            self._fail_snapshot(
+                RepositoryError(
+                    "Git reported requested snapshot changes but no explicit scope contained them"
+                ),
+                normalized,
+                had_head,
+            )
+        return commit_paths
 
     def _fail_snapshot(self, error: RepositoryError, paths: list[str], had_head: bool) -> NoReturn:
         cleanup_error = self._unstage_after_failure(paths, had_head)
@@ -702,6 +921,7 @@ class EnsoRepository:
         *,
         check: bool = True,
         read_only: bool = False,
+        input_data: bytes | None = None,
         description: str,
     ) -> subprocess.CompletedProcess[bytes]:
         env = os.environ.copy()
@@ -716,7 +936,8 @@ class EnsoRepository:
                 command,
                 check=False,
                 capture_output=True,
-                stdin=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL if input_data is None else None,
+                input=input_data,
                 timeout=_GIT_TIMEOUT_SECONDS,
                 env=env,
             )
@@ -731,7 +952,9 @@ class EnsoRepository:
         return result
 
     @staticmethod
-    def _raise_git_failure(result: subprocess.CompletedProcess[bytes], description: str) -> None:
+    def _raise_git_failure(
+        result: subprocess.CompletedProcess[bytes], description: str
+    ) -> NoReturn:
         detail = os.fsdecode(result.stderr).strip() or os.fsdecode(result.stdout).strip()
         suffix = f": {detail}" if detail else ""
         raise RepositoryError(f"could not {description}{suffix}")
