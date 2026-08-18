@@ -26,11 +26,14 @@ from rich.table import Table
 from rich.text import Text
 
 from . import __version__, slack_cache, tables
+from . import config as config_module
 from .auth import parse_telegram_allowed_users
 from .config import (
     CONFIG_FILE,
     DEFAULT_POLICY_NAME,
     DEFAULT_WORKSPACE_NAME,
+    ConfigError,
+    config_lock,
     detect_providers,
     load_config,
     managed_workspace_path,
@@ -84,6 +87,15 @@ app.add_typer(audit_app, name="audit")
 console = Console()
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
+
+
+def _load_config_or_exit(*, allow_missing: bool = False) -> dict:
+    """Load strict configuration with a concise CLI diagnostic."""
+    try:
+        return load_config(allow_missing=True) if allow_missing else load_config()
+    except ConfigError as exc:
+        console.print(f"[red]Configuration error:[/] {escape(str(exc))}")
+        raise typer.Exit(1) from None
 
 # ---------------------------------------------------------------------------
 # Telegram API helpers (stdlib only — no extra deps for setup)
@@ -1306,24 +1318,29 @@ def _setup_default_workspace(config: dict) -> str:
 def setup() -> None:
     """Interactive setup wizard."""
     console.print(Panel("Enso Setup", subtitle=f"v{__version__}", expand=False))
-    config = load_config()
-    _reject_legacy_setup_config(config)
+    # Strict preflight must happen before even the config lock is created.
+    _load_config_or_exit(allow_missing=True)
+    with config_lock():
+        # Re-read under the lock so another Enso process cannot win a race
+        # between validation and the setup read-modify-write transaction.
+        config = _load_config_or_exit(allow_missing=True)
+        _reject_legacy_setup_config(config)
 
-    _setup_providers(config)
+        _setup_providers(config)
 
-    # Step 2: managed default workspace and shared execution catalog
-    _setup_default_workspace(config)
+        # Step 2: managed default workspace and shared execution catalog
+        _setup_default_workspace(config)
 
-    captured_chat_id = _setup_transport(config)
+        captured_chat_id = _setup_transport(config)
 
-    from .core import Runtime
+        from .core import Runtime
 
-    runtime = Runtime(config)
-    runtime.install_system_prompts()
-    runtime.install_workspaces()
+        runtime = Runtime(config)
+        runtime.install_system_prompts()
+        runtime.install_workspaces()
 
-    with console.status("Saving config..."):
-        save_config(config)
+        with console.status("Saving config..."):
+            save_config(config)
     console.print(f"[green]\u2713[/] Config saved to {CONFIG_FILE}")
 
     # Send test message
@@ -1488,7 +1505,7 @@ def serve(
     """Start the bot and job scheduler."""
     from .core import Runtime
 
-    config = load_config()
+    config = _load_config_or_exit()
     logging_state = configure_logging(config, force=True)
     log.debug("Logging configured: %s", logging_state)
     secret_keys = _load_secret_env()
@@ -1529,7 +1546,7 @@ def web(
     """Serve the Enso web dashboard (jobs and run history)."""
     from .core import Runtime
 
-    config = load_config()
+    config = _load_config_or_exit()
     web_cfg = config.get("web", {})
     if not isinstance(web_cfg, dict):
         web_cfg = {}
@@ -1637,7 +1654,7 @@ def job_run(
 
     from .core import Runtime
 
-    config = load_config()
+    config = _load_config_or_exit()
     runtime = Runtime(config)
     try:
         result = asyncio.run(runtime.jobs.run_now(name))
@@ -1834,7 +1851,7 @@ def message_send(
     ] = "",
 ) -> None:
     """Send a text-only message via the configured transport."""
-    cfg = load_config()
+    cfg = _load_config_or_exit()
     transport, token, targets, thread_ts = _resolve_send_targets(cfg, to)
 
     if transport == "slack":
@@ -1887,7 +1904,7 @@ def message_attach(
     if not os.path.isfile(file):
         console.print(f"[red]\u2717[/] File not found: {file}")
         raise typer.Exit(1)
-    cfg = load_config()
+    cfg = _load_config_or_exit()
     filename = os.path.basename(file)
     transport, token, targets, thread_ts = _resolve_send_targets(cfg, to)
 
@@ -2037,7 +2054,7 @@ def service_logs_cmd(
 
 def _slack_token_or_exit() -> str:
     """Load the Slack bot token or exit with a clear error."""
-    cfg = load_config()
+    cfg = _load_config_or_exit()
     slack_cfg = cfg.get("transports", {}).get("slack", {})
     token = _resolve_transport_secret_or_exit(slack_cfg, "bot_token", "Slack")
     if not token:
@@ -2383,7 +2400,12 @@ def config_check() -> None:  # noqa: C901
     from .policy import check_provider, verify_grok_rules
     from .teams import load_catalog, load_teams, load_telegram
 
-    config = load_config()
+    if not os.path.lexists(config_module.CONFIG_FILE):
+        console.print(
+            f"[red]✗[/] {config_module.CONFIG_FILE} is missing; run `enso setup` first"
+        )
+        raise typer.Exit(1)
+    config = _load_config_or_exit()
     catalog = load_catalog(config)
 
     failed = False
@@ -2527,7 +2549,7 @@ def route_explain(
     if transport != "slack":
         console.print("[red]✗[/] Only 'slack' has teams routing.")
         raise typer.Exit(1)
-    teams = load_teams(load_config())
+    teams = load_teams(_load_config_or_exit())
 
     console.print(f"Account: {teams.account_id}")
     decision = resolve(teams, user_id=user_id, channel_id=channel_id)

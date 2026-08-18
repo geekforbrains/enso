@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from enso import frontmatter
-from enso.config import load_config, save_config
+from enso.config import ConfigError, load_config, save_config
 from enso.jobs import (
     Job,
     _parse_job,
@@ -25,7 +25,7 @@ from enso.jobs import (
 def configured_job_catalog(tmp_enso):
     workspace = Path(tmp_enso, "workspaces", "company")
     workspace.mkdir(parents=True, exist_ok=True)
-    config = load_config()
+    config = load_config(allow_missing=True)
     config.update(
         {
             "workspaces": {
@@ -180,6 +180,15 @@ def test_create_job(tmp_enso):
     assert parsed.workspace == "company"
     assert parsed.enabled is False
     assert parsed.prompt == job.prompt
+
+
+def test_create_job_requires_existing_config(tmp_enso):
+    Path(tmp_enso, "config.json").unlink()
+
+    with pytest.raises(ConfigError, match="missing"):
+        _create_job("unsafe", "Unsafe", "claude", "opus", "0 0 * * *")
+
+    assert not Path(tmp_enso, "jobs", "unsafe").exists()
 
 
 def _configure_model(model: str) -> None:

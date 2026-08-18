@@ -24,6 +24,7 @@ from enso.cli import (
     _update_referenced_secrets_with_rollback_or_exit,
     serve,
     setup,
+    web,
 )
 from enso.secret_refs import SecretResolutionError
 
@@ -289,7 +290,7 @@ def test_setup_default_workspace_rejects_relative_existing_path_without_writing(
 
 def test_setup_rejects_legacy_working_dir_before_changes(monkeypatch, capsys):
     config = {"working_dir": "/legacy/workspace"}
-    monkeypatch.setattr("enso.cli.load_config", lambda: config)
+    monkeypatch.setattr("enso.cli.load_config", lambda **_kwargs: config)
     monkeypatch.setattr(
         "enso.cli._setup_providers",
         lambda *_: pytest.fail("setup must stop before mutating legacy config"),
@@ -303,6 +304,41 @@ def test_setup_rejects_legacy_working_dir_before_changes(monkeypatch, capsys):
     output = " ".join(capsys.readouterr().out.split())
     assert "working_dir is no longer supported" in output
     assert "workspaces" in output
+
+
+def test_setup_rejects_malformed_config_before_scaffolding(monkeypatch, tmp_enso, capsys):
+    config_file = Path(tmp_enso, "config.json")
+    config_file.write_text("{malformed")
+    original = config_file.read_bytes()
+    monkeypatch.setattr(
+        "enso.cli._setup_providers",
+        lambda *_: pytest.fail("setup must stop before mutating the installation"),
+    )
+
+    with pytest.raises(typer.Exit) as exc_info:
+        setup()
+
+    assert exc_info.value.exit_code == 1
+    assert "Could not read" in capsys.readouterr().out
+    assert config_file.read_bytes() == original
+    assert not Path(f"{config_file}.lock").exists()
+
+
+@pytest.mark.parametrize("command", [serve, web])
+def test_operational_commands_require_existing_config(
+    command, monkeypatch, tmp_enso, capsys
+):
+    monkeypatch.setattr(
+        "enso.core.Runtime",
+        lambda *_: pytest.fail("a runtime must not be created without config.json"),
+    )
+
+    with pytest.raises(typer.Exit) as exc_info:
+        command()
+
+    assert exc_info.value.exit_code == 1
+    assert "config.json" in capsys.readouterr().out
+    assert not Path(tmp_enso, "config.json").exists()
 
 
 @pytest.mark.parametrize("configured_transport", ["", "email", None])

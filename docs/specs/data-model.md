@@ -79,6 +79,24 @@ person is involved:
 
 If the operator chooses to version-control `~/.enso`, a literal credential in `config.json` becomes a credential in git history. Enso does not initialize this repository. Keep sensitive state ignored, or use option 2 or 3 so tracked config contains a reference rather than a secret.
 
+### Content-history safety boundary
+
+Enso's content-history policy is an allowlist, not a broad promise that files under
+`~/.enso` are safe to commit. The versionable set is limited to root and workspace
+instructions and discovery links, canonical skills, global reference docs, workspace
+`knowledge/`, and explicitly recognized durable job files (`JOB.md`, `prerun.sh`, and
+`prerun.py`). Unknown root, workspace, and job-support paths are not automatically
+versionable.
+
+The protected set includes `config.json` and its lock, `secrets/`, `enso.db` and its
+sidecars, `state.json`, the message queue, audits, run output, caches, logs, uploads,
+drafts, updater state, Git metadata, job locks/generated output, and native policy homes.
+Environment and authentication files remain protected even when nested below an
+otherwise versionable directory. Any protected path already tracked by an existing
+repository blocks automatic snapshots; ignore rules do not make an already-tracked file
+safe. Durable scripts must refer to credential locations rather than contain secret
+values.
+
 A supported config value can use a direct 1Password reference named `<key>_1password`:
 
 ```jsonc
@@ -258,6 +276,26 @@ dashboard opens them read-only and fetches bounded previews. Run pruning is scop
 behaviour is specified in [tables.md](tables.md).
 
 ## Config blocks
+
+### Read and mutation semantics
+
+Reading `config.json` is strict and non-mutating. A malformed, non-UTF-8, or non-object
+file is reported and its bytes are preserved; reads may apply defaults in memory but do
+not persist them. `enso config check` follows the same read-only rule. A missing file
+fails every operational command closed. Setup alone may request an in-memory fresh-setup
+candidate, without creating the directory or file during that initial read.
+
+The setup-only in-memory candidate contains `setup.completed_at: null`. Once that
+candidate is persisted, `null` means initial setup was started but has not completed; an
+ISO 8601 timestamp with a timezone means it completed. An absent `setup` block identifies
+an installation created before this contract and does not make it eligible for automatic
+starter-content seeding. Invalid setup markers fail configuration loading.
+
+Every command that performs a config read-modify-write transaction must hold Enso's
+owner-only cross-process config lock from the read through the atomic replacement. A
+failed transaction leaves the previous configuration intact. The lock prevents two
+workspace or policy mutations from silently overwriting each other; it is runtime state
+and never versionable.
 
 The three defaulted blocks documented here are backfilled by
 `_with_config_defaults` without replacing user settings:

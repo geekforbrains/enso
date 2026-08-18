@@ -76,6 +76,42 @@ def test_config_check_passes_valid_config(tmp_enso):
     assert not Path(tmp_enso, "runtime").exists()
 
 
+def test_config_check_rejects_malformed_config_without_replacing_it(tmp_enso):
+    config_file = Path(tmp_enso, "config.json")
+    config_file.write_text("{malformed")
+    original = config_file.read_bytes()
+
+    result = runner.invoke(app, ["config", "check"])
+
+    assert result.exit_code == 1
+    assert "Could not read" in result.output
+    assert config_file.read_bytes() == original
+
+
+def test_config_check_reports_missing_config_without_creating_it(tmp_enso):
+    config_file = Path(tmp_enso, "config.json")
+    assert not config_file.exists()
+
+    result = runner.invoke(app, ["config", "check"])
+
+    assert result.exit_code == 1
+    assert "config.json is missing" in result.output
+    assert not config_file.exists()
+
+
+def test_config_check_applies_defaults_without_persisting_them(tmp_enso):
+    config = _teams_config(tmp_enso)
+    config.pop("agent", None)
+    config_file = Path(tmp_enso, "config.json")
+    original = json.dumps(config, indent=2) + "\n"
+    config_file.write_text(original)
+
+    result = runner.invoke(app, ["config", "check"])
+
+    assert result.exit_code == 0, result.output
+    assert config_file.read_text() == original
+
+
 def test_config_check_fails_when_shared_instructions_are_missing(tmp_enso):
     Path(tmp_enso, "AGENTS.md").unlink()
     save_config(_teams_config(tmp_enso))
