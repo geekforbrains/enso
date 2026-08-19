@@ -15,7 +15,6 @@ from enso.config import (
     ConfigError,
     SetupState,
     config_lock,
-    config_transaction,
     load_config,
     managed_workspace_path,
     provider_models,
@@ -161,27 +160,7 @@ def test_setup_state_rejects_malformed_values(setup):
         setup_state({"setup": setup})
 
 
-def test_config_transaction_does_not_save_after_failure(tmp_enso):
-    save_config({"counter": 1})
-
-    with pytest.raises(RuntimeError, match="abort"), config_transaction() as config:
-        config["counter"] = 2
-        raise RuntimeError("abort")
-
-    assert load_config()["counter"] == 1
-
-
-def test_config_transaction_validates_before_creating_lock(tmp_enso):
-    config_file = Path(tmp_enso, "config.json")
-    config_file.write_text("{malformed")
-
-    with pytest.raises(ConfigError, match=r"config\.json"), config_transaction():
-        pytest.fail("a malformed configuration must not enter a transaction")
-
-    assert not Path(f"{config_file}.lock").exists()
-
-
-def test_config_transaction_rejects_symlink_lock_without_touching_target(
+def test_config_lock_rejects_symlink_lock_without_touching_target(
     tmp_enso, tmp_path
 ):
     save_config({})
@@ -189,7 +168,7 @@ def test_config_transaction_rejects_symlink_lock_without_touching_target(
     target.write_text("outside")
     Path(f"{Path(tmp_enso, 'config.json')}.lock").symlink_to(target)
 
-    with pytest.raises(ConfigError, match="lock"), config_transaction():
+    with pytest.raises(ConfigError, match="lock"), config_lock():
         pytest.fail("an unsafe lock must not be acquired")
 
     assert target.read_text() == "outside"
@@ -211,20 +190,22 @@ def test_config_lock_rejects_symlinked_config_root_without_touching_target(
     assert list(target.iterdir()) == []
 
 
-def test_config_transactions_serialize_cross_process_updates(tmp_path):
+def test_locked_config_updates_serialize_across_processes(tmp_path):
     home = tmp_path / "home"
     config_dir = home / ".enso"
     config_dir.mkdir(parents=True)
     (config_dir / "config.json").write_text('{"counter": 0}\n')
     script = """
 import time
-from enso.config import config_transaction
+from enso.config import config_lock, load_config, save_config
 
 for _ in range(12):
-    with config_transaction() as config:
+    with config_lock():
+        config = load_config()
         current = config["counter"]
         time.sleep(0.003)
         config["counter"] = current + 1
+        save_config(config)
 """
     env = {**os.environ, "HOME": str(home)}
     processes = [

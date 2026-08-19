@@ -1449,22 +1449,13 @@ def _save_setup_config_or_exit(config: dict, *, action: str) -> None:
 
 
 def _finalize_setup_or_exit(config: dict) -> None:
-    """Persist, scaffold, commit the baseline, and complete one setup transaction."""
+    """Persist, scaffold, commit the baseline, and complete one fresh setup.
+
+    Only ``setup`` calls this, and only for an INCOMPLETE (fresh or
+    interrupted) installation; completed and pre-feature installs take the
+    non-fresh repair path instead.
+    """
     from .repository import EnsoRepository, RepositoryError
-
-    try:
-        state = setup_state(config)
-    except ConfigError as exc:
-        console.print(f"[red]Could not finalize setup:[/] {escape(str(exc))}")
-        raise typer.Exit(1) from None
-
-    if state is not SetupState.INCOMPLETE:
-        _scaffold_setup_or_exit(config)
-        _save_setup_config_or_exit(
-            config,
-            action="Could not save the conservatively repaired configuration",
-        )
-        return
 
     # The on-disk null marker makes every later content mutation recoverable.
     config["setup"]["completed_at"] = None

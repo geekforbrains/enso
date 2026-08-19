@@ -67,7 +67,6 @@ _STRUCTURAL_IDENTIFIER_EXCEPTIONS = tuple(
     )
 )
 _PROTECTIVE_GITIGNORE_PATTERNS = (
-    "/.config.lock",
     "/config.json",
     "/config.json.lock",
     "/enso.db*",
@@ -76,7 +75,6 @@ _PROTECTIVE_GITIGNORE_PATTERNS = (
     "/state.json",
     "/update.lock",
     "/update.json",
-    "/update.json.lock",
     "**/.runtime/",
     "**/audits/",
     "**/cache/",

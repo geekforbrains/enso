@@ -942,7 +942,7 @@ def test_existing_history_retry_repairs_structure_without_fresh_seeding(monkeypa
 def test_nonfresh_setup_never_seeds_starter_docs_or_creates_a_commit(
     tmp_enso, setup_block, expected_state, monkeypatch
 ):
-    from enso.config import load_config, setup_state
+    from enso.config import load_config, save_config, setup_state
     from enso.repository import EnsoRepository
     from enso.scaffolding import ScaffoldService
 
@@ -976,9 +976,18 @@ def test_nonfresh_setup_never_seeds_starter_docs_or_creates_a_commit(
     config = {
         **setup_block,
         "workspaces": {"default": {"policy": "admin", "concurrency": 1}},
+        "policies": {
+            "admin": {
+                "unrestricted": True,
+                "providers": ["claude"],
+                "default_provider": "claude",
+                "chat_commands": "*",
+            }
+        },
     }
+    save_config(config)
 
-    _finalize_setup_or_exit(config)
+    setup()
 
     assert setup_state(load_config()).value == expected_state
     persisted = json.loads(Path(tmp_enso, "config.json").read_text())

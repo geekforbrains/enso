@@ -91,7 +91,6 @@ def test_ensure_creates_physical_root_main_repository_and_ignore_first(tmp_path,
     [
         "config.json",
         "config.json.lock",
-        ".config.lock",
         "secrets/transport.env",
         "enso.db",
         "enso.db-wal",
@@ -259,6 +258,8 @@ def test_managed_ignore_has_no_retired_rules(tmp_path):
     content = (root / ".gitignore").read_text(encoding="utf-8")
     assert ".deleted" not in content
     assert ".snapshot" not in content
+    assert ".config.lock" not in content
+    assert "update.json.lock" not in content
 
 
 @pytest.mark.parametrize(

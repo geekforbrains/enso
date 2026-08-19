@@ -277,17 +277,6 @@ def config_lock() -> Iterator[None]:
         os.close(descriptor)
 
 
-@contextlib.contextmanager
-def config_transaction() -> Iterator[dict]:
-    """Yield a locked config and save it atomically after successful mutation."""
-    # Validate before the lock path itself is created. Read again under the
-    # lock so a concurrent Enso mutation cannot leave this transaction stale.
-    load_config()
-    with config_lock():
-        config = load_config()
-        yield config
-        save_config(config)
-
 
 def _build_default_config() -> dict:
     """Build default config with empty transport and all providers."""
