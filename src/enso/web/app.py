@@ -1287,24 +1287,6 @@ def _bounded_page(value: object, maximum: int) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _managed_workspace(path: str) -> bool:
-    """Whether a canonical workspace lives under Enso's managed workspace root."""
-    managed_root = os.path.abspath(os.path.join(CONFIG_DIR, "workspaces"))
-    candidate = os.path.abspath(path)
-    # A symlinked Enso/workspaces directory changes the browser write boundary
-    # to an arbitrary target. Fail closed instead of treating that target as
-    # managed. Workspace paths are already canonicalized by load_catalog; do
-    # not resolve them again after startup and accidentally follow a swap.
-    if os.path.realpath(managed_root) != managed_root:
-        return False
-    try:
-        return candidate != managed_root and os.path.commonpath(
-            (managed_root, candidate)
-        ) == managed_root
-    except ValueError:
-        return False
-
-
 def _agent_error_response(error: AgentFileError) -> Response:
     if isinstance(error, (UnsafeAgentPath, AgentIntegrityError)):
         status_code = 403
@@ -1334,8 +1316,7 @@ def _child_agent_listing(listing: AgentListing) -> AgentListing:
 
 async def _workspace_agent_inventory(workspace_view, workspace):
     """Safely enrich one workspace view and prepare its detail-page documents."""
-    managed = _managed_workspace(workspace.path)
-    root_editable = workspace_view.usable and managed
+    root_editable = workspace_view.usable
     empty_listing = AgentListing(files=(), truncated=False, errors=())
     if not workspace_view.usable:
         return (
@@ -1343,7 +1324,6 @@ async def _workspace_agent_inventory(workspace_view, workspace):
                 workspace_view,
                 agent_files=(),
                 truncated=False,
-                managed=managed,
                 root_editable=False,
             ),
             empty_listing,
@@ -1359,7 +1339,6 @@ async def _workspace_agent_inventory(workspace_view, workspace):
                 workspace_view,
                 agent_files=(),
                 truncated=False,
-                managed=managed,
                 root_editable=False,
                 problem=problem,
             ),
@@ -1387,7 +1366,6 @@ async def _workspace_agent_inventory(workspace_view, workspace):
         workspace_view,
         agent_files=[entry.rel_path for entry in listing.files],
         truncated=listing.truncated,
-        managed=managed,
         root_editable=root_editable,
         problem=root_problem,
     )
@@ -1422,8 +1400,8 @@ async def workspace_detail(request):
     workspace = catalog.workspaces.get(name)
     if workspace_view is None or workspace is None:
         return PlainTextResponse("Workspace not found", status_code=404)
-    workspace_view, agent_listing, root_document, root_problem = (
-        await _workspace_agent_inventory(workspace_view, workspace)
+    workspace_view, agent_listing, root_document, root_problem = await _workspace_agent_inventory(
+        workspace_view, workspace
     )
     return _render(
         request,
@@ -1434,7 +1412,6 @@ async def workspace_detail(request):
         agent_listing=agent_listing,
         root_document=root_document,
         root_revision=root_document.revision if root_document is not None else "",
-        root_editable=workspace_view.root_editable,
         root_problem=root_problem,
     )
 
@@ -1469,7 +1446,6 @@ async def workspace_agent_view(request):
         configuration=configuration,
         workspace=workspace_view,
         agent_document=document,
-        root_editable=False,
     )
 
 
@@ -1480,7 +1456,7 @@ async def workspace_agents_edit(request):
     workspace = catalog.workspaces.get(name)
     if workspace is None:
         return PlainTextResponse("Workspace not found", status_code=404)
-    if not catalog.usable(name) or not _managed_workspace(workspace.path):
+    if not catalog.usable(name):
         return PlainTextResponse("Forbidden", status_code=403)
     form = await request.form()
     content = form.get("content")

@@ -25,8 +25,10 @@ The web UI is a read/write dashboard for:
   and a bounded row preview. Agents manage their schemas and rows outside the web UI.
 - **Execution configuration** — inspect workspaces, each workspace's one reusable policy,
   exact Slack routes, Telegram/job bindings, and safe native-policy validation status.
-- **Instructions** — read and edit the canonical shared `~/.enso/AGENTS.md`, edit managed
-  workspace-root instructions, and inspect nested workspace instructions read-only.
+- **Instructions** — read and edit the canonical shared `~/.enso/AGENTS.md`, edit every
+  valid canonical workspace-root instruction file, and inspect nested workspace
+  instructions read-only. Instruction content below an invalid alternate root is never
+  inspected or rendered.
 
 There is **no chat in the web UI** — chat lives in Telegram/Slack. The web UI is for
 overview, organisation, and managing the scheduled work Enso already runs.
@@ -92,9 +94,9 @@ overview, organisation, and managing the scheduled work Enso already runs.
 | Frontmatter                    | PyYAML `BaseLoader` for valid job metadata, with a legacy line-parser fallback for malformed older files; raw web edits preserve formatting                                      |
 | Web server                     | **Starlette + Uvicorn + Jinja2**, run separately with `enso web` and sharing the file/SQLite model with `enso serve`                                                             |
 | Web access                     | Bind **localhost** by default; Tailscale for remote; Host allowlist and optional shared token. No login                                                                          |
-| Web capability                 | **Read/write, scoped to owned files** — edit job prompts, toggle/run jobs, edit Enso-owned skills, shared instructions, and managed workspace-root instructions. Configuration, policies, nested instructions, and external skills are read-only |
+| Web capability                 | **Read/write, scoped to owned files** — edit job prompts, toggle/run jobs, edit Enso-owned skills, shared instructions, and valid canonical workspace-root instructions. Configuration, policies, nested instructions, and external skills are read-only |
 | Tables web capability          | **Read-only, bounded inspection** — list metadata, show schema, and page through capped previews; no SQL or row/schema mutations                                                 |
-| Local content history          | **Explicit and scoped** — `enso snapshot create` commits reviewed allowlisted paths locally; no implicit broad staging, network Git operation, or destructive history command  |
+| Local content history          | **Scoped** — `enso snapshot create` commits reviewed allowlisted paths locally; workspace creation automatically commits only its five complete versionable entries. No broad staging, network Git operation, or destructive history command |
 | Notifications                  | Reuse `transport.notify` / `enso message send`; exact Slack routing does not alter job delivery. No transport implicitly broadcasts                                              |
 
 ## Personas
@@ -157,8 +159,21 @@ authorized chat senders, not additional owners or dashboard personas.
   concurrency, Slack/Telegram/job consumers, problems, and a bounded nested `AGENTS.md`
   inventory. Every lowercase kebab-case workspace name derives the exact physical root
   `~/.enso/workspaces/<name>`; external, nested, symlinked, and workspace-root Git layouts
-  are invalid. Managed root instructions are revision-checked and editable; child files
-  are read-only.
+  are invalid, and their instruction content is never inspected or rendered. Every valid
+  canonical root instruction file is revision-checked and editable; child files are
+  read-only.
+- `enso workspace list` and `enso workspace show <name>` inspect that catalog without
+  mutation. `enso workspace create <name> --policy <policy> [--concurrency <n>]` accepts
+  no path, requires an existing explicit policy, defaults concurrency to `1`, publishes a
+  complete scaffold atomically, saves the validated candidate config atomically, runs the
+  installation check, and snapshots exactly `AGENTS.md`, `CLAUDE.md`, `.agents/skills`,
+  `.claude/skills`, and `knowledge/README.md`. Fresh setup's unrestricted
+  `admin`/`default` binding is the only automatic authority grant.
+- `enso workspace repair <name>` creates missing structural directories and known
+  discovery links only. It never recreates seeded instructions, skill definitions, docs, or
+  `knowledge/README.md`; it reports missing user content that keeps the workspace from
+  launching. Published directories survive later config/check/snapshot failures for
+  operator recovery, and all binding changes require restart.
 - `/policies` and `/policies/<name>` show reusable policy configuration, consuming
   workspaces, and safe provider-validation results. Native policy contents and secret
   values are never rendered or edited.
@@ -227,9 +242,12 @@ authorized chat senders, not additional owners or dashboard personas.
 - A fresh setup exposes the three starter descriptions through the dynamic doc list,
   captures them in its single initial local snapshot, and marks setup complete only
   afterward; deleting a starter leaves it absent through restart, repair, and upgrade.
-- A stale shared or managed-workspace instruction form cannot overwrite a newer agent or
+- A stale shared or canonical-workspace instruction form cannot overwrite a newer agent or
   operator edit; unsafe links, path traversal, and files outside `~/.enso/` remain outside
   the browser write boundary.
+- A workspace can be listed, inspected, created with an explicit existing policy, and
+  structurally repaired without hand-editing workspace JSON or links; no command accepts
+  an alternate path or silently chooses unrestricted authority.
 - The web UI runs via `enso web`, reachable at `http://localhost:<port>` and, when
   deliberately bound there, over the tailnet.
 - Slack authorization uses exact routes configured alongside credentials and transport options in `transports.slack`; Telegram remains private with exact numeric allowed-user IDs; every Telegram configuration, Slack route, and job requires a named workspace and inherits that workspace's single policy.

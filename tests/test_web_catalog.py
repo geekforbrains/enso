@@ -467,14 +467,13 @@ def test_truncated_instruction_inventory_is_a_warning(tmp_path):
         workspace,
         agent_files=("AGENTS.md",),
         truncated=True,
-        managed=True,
         root_editable=True,
     )
 
     assert enriched.status == "warning"
 
 
-def _managed_catalog_client(tmp_path, monkeypatch):
+def _canonical_catalog_client(tmp_path, monkeypatch):
     config_dir = tmp_path / "enso"
     alpha = config_dir / "workspaces" / "alpha"
     alpha.mkdir(parents=True)
@@ -491,11 +490,11 @@ def _managed_catalog_client(tmp_path, monkeypatch):
     return alpha, zeta, client
 
 
-def test_workspace_detail_edits_managed_root_and_keeps_children_read_only(
+def test_workspace_detail_edits_root_and_keeps_children_read_only(
     tmp_path,
     monkeypatch,
 ):
-    alpha, _, client = _managed_catalog_client(tmp_path, monkeypatch)
+    alpha, _, client = _canonical_catalog_client(tmp_path, monkeypatch)
 
     detail = client.get("/workspaces/alpha")
 
@@ -539,8 +538,8 @@ def test_workspace_detail_edits_managed_root_and_keeps_children_read_only(
     assert (alpha / "AGENTS.md").read_text(encoding="utf-8") == "# Edited\n"
 
 
-def test_workspace_list_counts_agents_in_managed_roots(tmp_path, monkeypatch):
-    _, _, client = _managed_catalog_client(tmp_path, monkeypatch)
+def test_workspace_list_counts_agents_in_canonical_roots(tmp_path, monkeypatch):
+    _, _, client = _canonical_catalog_client(tmp_path, monkeypatch)
 
     response = client.get("/workspaces")
 
@@ -550,7 +549,7 @@ def test_workspace_list_counts_agents_in_managed_roots(tmp_path, monkeypatch):
 
 
 def test_workspace_root_integrity_failure_changes_workspace_status(tmp_path, monkeypatch):
-    alpha, _, client = _managed_catalog_client(tmp_path, monkeypatch)
+    alpha, _, client = _canonical_catalog_client(tmp_path, monkeypatch)
     (alpha / "AGENTS.md").chmod(0o666)
 
     listing = client.get("/workspaces")
@@ -562,8 +561,8 @@ def test_workspace_root_integrity_failure_changes_workspace_status(tmp_path, mon
     assert 'action="/workspaces/alpha/agents/edit"' not in detail.text
 
 
-def test_workspace_root_creation_supports_each_managed_workspace(tmp_path, monkeypatch):
-    alpha, zeta, client = _managed_catalog_client(tmp_path, monkeypatch)
+def test_workspace_root_creation_supports_each_workspace(tmp_path, monkeypatch):
+    alpha, zeta, client = _canonical_catalog_client(tmp_path, monkeypatch)
     (alpha / "AGENTS.md").unlink()
     (zeta / "AGENTS.md").unlink()
 
@@ -593,7 +592,8 @@ def test_workspace_root_creation_supports_each_managed_workspace(tmp_path, monke
     assert client.get("/workspaces/missing").status_code == 404
 
 
-def test_symlinked_managed_workspace_root_is_read_only(tmp_path, monkeypatch):
+@pytest.mark.parametrize("linked_component", ["container", "root"])
+def test_symlinked_workspace_boundary_is_unavailable(tmp_path, monkeypatch, linked_component):
     config_dir = tmp_path / "enso"
     config_dir.mkdir()
     outside = tmp_path / "outside-workspaces"
@@ -601,7 +601,11 @@ def test_symlinked_managed_workspace_root_is_read_only(tmp_path, monkeypatch):
     alpha.mkdir(parents=True)
     agents_file = alpha / "AGENTS.md"
     agents_file.write_text("# Sentinel\n", encoding="utf-8")
-    (config_dir / "workspaces").symlink_to(outside, target_is_directory=True)
+    if linked_component == "container":
+        (config_dir / "workspaces").symlink_to(outside, target_is_directory=True)
+    else:
+        (config_dir / "workspaces").mkdir()
+        (config_dir / "workspaces" / "alpha").symlink_to(alpha, target_is_directory=True)
 
     config = _config(tmp_path)
     config["workspaces"] = {
@@ -626,10 +630,46 @@ def test_symlinked_managed_workspace_root_is_read_only(tmp_path, monkeypatch):
     )
 
     assert detail.status_code == 200
-    assert "External workspace" in detail.text
+    assert "workspace root contains a symlink or non-directory" in detail.text
+    assert "External workspace" not in detail.text
+    assert "# Sentinel" not in detail.text
     assert 'action="/workspaces/alpha/agents/edit"' not in detail.text
     assert edited.status_code == 403
+    assert "workspace root contains a symlink or non-directory" in edited.text
     assert agents_file.read_text(encoding="utf-8") == "# Sentinel\n"
+
+
+def test_legacy_workspace_path_is_diagnostic_only_and_never_read(tmp_path, monkeypatch):
+    outside = tmp_path / "legacy-workspace"
+    outside.mkdir()
+    (outside / "AGENTS.md").write_text("# External sentinel\n", encoding="utf-8")
+    config = _config(tmp_path)
+    config["workspaces"] = {
+        "alpha": {
+            "path": str(outside),
+            "policy": "shared",
+            "concurrency": 1,
+        }
+    }
+    _, client = _client(tmp_path, monkeypatch, config)
+
+    detail = client.get("/workspaces/alpha")
+    edited = client.post(
+        "/workspaces/alpha/agents/edit",
+        data={
+            "content": "# Changed\n",
+            "revision": "",
+            "_csrf": client.app.state.csrf_token,
+        },
+    )
+
+    assert detail.status_code == 200
+    assert "path is no longer supported" in detail.text
+    assert "External workspace" not in detail.text
+    assert "# External sentinel" not in detail.text
+    assert '<form action="/workspaces/alpha/agents/edit"' not in detail.text
+    assert edited.status_code == 403
+    assert (outside / "AGENTS.md").read_text(encoding="utf-8") == "# External sentinel\n"
 
 
 def test_shared_agents_editor_requires_the_displayed_revision(tmp_path, monkeypatch):

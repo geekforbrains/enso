@@ -150,8 +150,24 @@ an operator configured remains untouched.
 ## Mutation ownership
 
 Fresh setup creates one initial snapshot through the same repository service before it
-marks setup complete. Other content workflows stop at the point where their mutation is
-actually coherent:
+marks setup complete. `enso workspace create` is the other automatic snapshot boundary:
+after atomic scaffold publication, atomic config persistence, and the installation check,
+it commits exactly these five new versionable entries beneath the workspace root:
+
+- `AGENTS.md`
+- `CLAUDE.md`
+- `.agents/skills`
+- `.claude/skills`
+- `knowledge/README.md`
+
+The empty canonical `skills/` directory cannot be represented by Git, while `drafts/`,
+`uploads/`, and credential-bearing `config.json` are protected. The commit therefore
+records the portable workspace content, not its binding or a complete configuration
+backup. If this snapshot fails, creation preserves the already published, configured
+directory and reports that an explicit scoped snapshot is still required; it does not
+delete user-visible content.
+
+Other content workflows stop at the point where their mutation is actually coherent:
 
 - `enso doc create` scaffolds incomplete frontmatter and does not snapshot it.
 - `enso job create` scaffolds a disabled job for follow-up editing and does not snapshot

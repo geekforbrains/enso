@@ -32,7 +32,34 @@ from enso.cli import (
     setup,
     web,
 )
+from enso.config import ConfigError
 from enso.secret_refs import SecretResolutionError
+
+
+def _add_default_execution_catalog(config: dict, *, incomplete: bool = False) -> dict:
+    """Give isolated setup-helper tests the catalog established by setup step 2."""
+    config.setdefault(
+        "providers",
+        {"claude": {"path": "claude", "models": ["sonnet"]}},
+    )
+    config.setdefault(
+        "workspaces",
+        {"default": {"policy": "admin", "concurrency": 1}},
+    )
+    config.setdefault(
+        "policies",
+        {
+            "admin": {
+                "unrestricted": True,
+                "providers": ["claude"],
+                "default_provider": "claude",
+                "chat_commands": "*",
+            },
+        },
+    )
+    if incomplete:
+        config["setup"] = {"completed_at": None}
+    return config
 
 
 def test_explicit_to_wins_and_clears_thread(monkeypatch):
@@ -128,10 +155,13 @@ def test_telegram_send_target_does_not_broadcast_to_allowed_users(monkeypatch):
 
 def test_default_execution_config_assigns_admin_policy(tmp_enso):
     config = {
+        "setup": {"completed_at": None},
         "providers": {
             "claude": {"path": "claude", "models": ["sonnet"]},
             "codex": {"path": "codex", "models": ["terra"]},
         },
+        "workspaces": {},
+        "policies": {},
     }
 
     workspace = _ensure_default_execution_config(config)
@@ -178,7 +208,7 @@ def test_default_execution_config_preserves_existing_default_workspace():
     assert "admin" not in config["policies"]
 
 
-def test_default_execution_config_adds_default_beside_existing_workspace():
+def test_default_execution_config_does_not_add_default_to_pre_feature_catalog():
     config = {
         "providers": {"claude": {"path": "claude", "models": ["sonnet"]}},
         "workspaces": {
@@ -197,28 +227,29 @@ def test_default_execution_config_adds_default_beside_existing_workspace():
         },
     }
 
-    workspace = _ensure_default_execution_config(config)
+    original = copy.deepcopy(config)
 
-    assert workspace == "default"
-    assert config["workspaces"]["default"] == {
-        "policy": "admin",
-        "concurrency": 1,
-    }
+    with pytest.raises(ConfigError, match=r"workspaces\.default is required"):
+        _ensure_default_execution_config(config)
+
+    assert config == original
     assert config["workspaces"]["company"]["policy"] == "staff"
-    assert config["policies"]["admin"]["unrestricted"] is True
+    assert "admin" not in config["policies"]
 
 
-def test_default_execution_config_replaces_malformed_workspace_block():
+def test_default_execution_config_rejects_malformed_workspace_block_without_replacing_it():
     config = {
+        "setup": {"completed_at": None},
         "providers": {"claude": {"path": "claude", "models": ["sonnet"]}},
         "workspaces": {"default": "broken"},
+        "policies": {},
     }
+    original = copy.deepcopy(config)
 
-    assert _ensure_default_execution_config(config) == "default"
-    assert config["workspaces"]["default"] == {
-        "policy": "admin",
-        "concurrency": 1,
-    }
+    with pytest.raises(ConfigError, match=r"workspaces\.default must be an object"):
+        _ensure_default_execution_config(config)
+
+    assert config == original
 
 
 def test_setup_rejects_legacy_working_dir_before_changes(monkeypatch, capsys):
@@ -270,7 +301,12 @@ def test_setup_default_workspace_only_updates_config(monkeypatch, tmp_enso, caps
         "enso.cli.os.makedirs",
         lambda *_args, **_kwargs: pytest.fail("workspace creation belongs to scaffolding"),
     )
-    config = {"providers": {"claude": {"path": "claude", "models": ["sonnet"]}}}
+    config = {
+        "setup": {"completed_at": None},
+        "providers": {"claude": {"path": "claude", "models": ["sonnet"]}},
+        "workspaces": {},
+        "policies": {},
+    }
 
     assert _setup_default_workspace(config) == "default"
 
@@ -281,21 +317,47 @@ def test_setup_default_workspace_only_updates_config(monkeypatch, tmp_enso, caps
     assert "workspaces/default" in capsys.readouterr().out
 
 
-def test_fresh_setup_scaffold_seeds_complete_canonical_tree(tmp_enso):
+def test_fresh_setup_scaffold_seeds_complete_canonical_tree(tmp_enso, monkeypatch):
+    from enso.scaffolding import ScaffoldService
+
     workspace = Path(tmp_enso, "workspaces", "default")
     workspace.rmdir()
     config = {
         "setup": {"completed_at": None},
         "workspaces": {"default": {"policy": "admin", "concurrency": 1}},
     }
+    published: list[str] = []
+    real_create = ScaffoldService.create_workspace
+
+    def recording_create(self, name):
+        published.append(name)
+        return real_create(self, name)
+
+    monkeypatch.setattr(ScaffoldService, "create_workspace", recording_create)
 
     _scaffold_setup_or_exit(config)
 
+    assert published == ["default"]
     assert Path(tmp_enso, "skills", "workspace", "SKILL.md").is_file()
     assert os.readlink(Path(tmp_enso, "CLAUDE.md")) == "AGENTS.md"
     assert workspace.joinpath("AGENTS.md").is_file()
     assert workspace.joinpath("knowledge", "README.md").is_file()
     assert os.readlink(workspace / ".agents" / "skills") == "../skills"
+
+
+def test_completed_setup_does_not_synthesize_a_missing_default_or_admin() -> None:
+    config = {
+        "setup": {"completed_at": "2026-01-01T00:00:00+00:00"},
+        "providers": {"claude": {"path": "claude", "models": ["sonnet"]}},
+        "workspaces": {},
+        "policies": {},
+    }
+    original = copy.deepcopy(config)
+
+    with pytest.raises(ConfigError, match=r"workspaces\.default is required"):
+        _ensure_default_execution_config(config)
+
+    assert config == original
 
 
 @pytest.mark.parametrize(
@@ -1412,6 +1474,7 @@ def test_telegram_setup_validates_existing_token_and_binds_default_workspace(
             },
         },
     }
+    _add_default_execution_catalog(config)
     monkeypatch.setattr(
         "enso.cli.resolve_config_secret",
         lambda cfg, key: "resolved-telegram-token",
@@ -1430,7 +1493,7 @@ def test_telegram_setup_validates_existing_token_and_binds_default_workspace(
     assert config["workspaces"]["default"]["policy"] == "admin"
 
 
-def test_telegram_setup_adds_canonical_default_beside_existing_workspace(monkeypatch):
+def test_telegram_setup_does_not_synthesize_default_for_pre_feature_catalog(monkeypatch):
     config = {
         "transports": {
             "telegram": {
@@ -1458,15 +1521,13 @@ def test_telegram_setup_adds_canonical_default_beside_existing_workspace(monkeyp
         "enso.cli._tg_validate_token", lambda token: {"username": "enso_test"}
     )
     monkeypatch.setattr("enso.cli.Confirm.ask", lambda *args, **kwargs: False)
+    original = copy.deepcopy(config)
 
-    assert _setup_telegram(config) is None
+    with pytest.raises(ConfigError, match=r"workspaces\.default is required"):
+        _setup_telegram(config)
 
-    assert config["transports"]["telegram"]["workspace"] == "default"
-    assert config["workspaces"]["default"] == {
-        "policy": "admin",
-        "concurrency": 1,
-    }
-    assert config["workspaces"]["company"]["policy"] == "staff"
+    assert config == original
+    assert "admin" not in config["policies"]
 
 
 def test_slack_setup_validates_resolved_existing_token(monkeypatch):
@@ -1484,6 +1545,7 @@ def test_slack_setup_validates_resolved_existing_token(monkeypatch):
             },
         },
     }
+    _add_default_execution_catalog(config)
     original = copy.deepcopy(config)
     monkeypatch.setattr(
         "enso.cli.resolve_config_secret",
@@ -1550,6 +1612,7 @@ def test_telegram_setup_reconfiguration_updates_reference_without_plaintext(
             },
         },
     }
+    _add_default_execution_catalog(config)
     updates = []
     monkeypatch.setattr(
         "enso.cli.resolve_config_secret",
@@ -1756,6 +1819,7 @@ def test_slack_setup_replaces_only_routing_for_a_different_account(monkeypatch):
             }
         },
     }
+    _add_default_execution_catalog(config)
     confirmations = iter([True, True])
 
     def validate(token):
@@ -2003,7 +2067,7 @@ def test_slack_setup_reprompts_until_app_token_provided(monkeypatch, capsys):
     """A blank app token silently breaks Socket Mode later (or aborts a
     referenced update with a misleading 1Password error), so setup must
     insist on one just like it does for the bot token."""
-    config: dict = {}
+    config: dict = _add_default_execution_catalog({})
     app_prompts = 0
 
     def prompt(label, **kwargs):

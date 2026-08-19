@@ -18,7 +18,12 @@ from dataclasses import dataclass, field
 from typing import TypeGuard
 
 from .auth import parse_telegram_allowed_users
-from .config import ConfigError, managed_workspace_path, validate_workspace_name
+from .config import (
+    DEFAULT_WORKSPACE_CONCURRENCY,
+    ConfigError,
+    managed_workspace_path,
+    validate_workspace_name,
+)
 from .providers import PROVIDER_NAMES
 
 AUDIT_ON_FAILURE_VALUES = ("block", "warn")
@@ -469,10 +474,10 @@ def _load_workspaces(
         if not isinstance(policy, str) or not policy:
             problems.append("policy is required and must be a string")
             policy = ""
-        concurrency = cfg.get("concurrency", 1)
+        concurrency = cfg.get("concurrency", DEFAULT_WORKSPACE_CONCURRENCY)
         if isinstance(concurrency, bool) or not isinstance(concurrency, int) or concurrency < 1:
             problems.append("concurrency must be a positive integer")
-            concurrency = 1
+            concurrency = DEFAULT_WORKSPACE_CONCURRENCY
         workspaces[name] = Workspace(
             name=name,
             path=managed_workspace_path(name),

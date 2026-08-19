@@ -14,7 +14,7 @@ every 60 seconds and fires due jobs through `_execute_job`.
 
 `enso web` builds its own `Runtime` and runs Starlette/Uvicorn as a separate process.
 The dashboard and bot therefore do not share memory or an event loop. They coordinate
-through the same files under `~/.enso/`, the canonical managed workspace tree, and the
+through the same files under `~/.enso/`, the canonical workspace tree, and the
 shared SQLite database. Starting `enso serve` does not start the dashboard.
 
 ```
@@ -26,7 +26,7 @@ shared SQLite database. Starting `enso serve` does not start the dashboard.
               └──────────────┬─────────────────┘
                              ▼
                  files under ~/.enso/ and
-                 managed workspaces
+                 canonical workspaces
                              +
                  SQLite (enso.db, WAL mode)
 ```
@@ -49,8 +49,10 @@ Instruction-file reads and writes use a separate hardened filesystem boundary. I
 absolute roots and descendants through pinned directory descriptors with no symlink
 following, enforces current-user ownership, regular-file/single-link/protected-mode rules,
 caps discovery and UTF-8 content, and carries a content revision from read to atomic save.
-Only the shared file and managed workspace-root instruction files are writable; nested
-workspace instruction files are inspection-only. External workspace roots are invalid.
+Only the shared file and valid canonical workspace-root instruction files are writable;
+nested workspace instruction files are inspection-only. Alternate, external, nested, and
+symlinked workspace roots are invalid; their instruction content is never inspected or
+rendered.
 
 ## Stack
 
@@ -274,6 +276,21 @@ State schema v3 stores route settings separately. Loading v1 or v2 deliberately 
   Timestamped and pre-feature configurations never seed. Ordinary `serve`, `web`, and
   `config check` paths validate read-only, and structural repair or upgrades never
   recreate, upgrade, or delete seeded content.
+- The workspace CLI is the lifecycle boundary after setup. `list` and `show` are
+  read-only. `create` requires a valid lowercase kebab-case name and an explicit existing
+  policy, defaults concurrency to one, and accepts no path. Under the config mutation
+  lock it strictly reloads config, validates the complete candidate catalog, stages the
+  full scaffold in a sibling directory, publishes it with an exclusive atomic rename,
+  saves config atomically, runs the installation check, and snapshots only the five new
+  versionable entries (`AGENTS.md`, `CLAUDE.md`, `.agents/skills`, `.claude/skills`, and
+  `knowledge/README.md`). Fresh setup's unrestricted `admin`/`default` binding is the
+  only implicit authority creation.
+- Workspace publication is never silently undone. A config-save failure leaves a clearly
+  reported unused directory; a later check or snapshot failure leaves the configured
+  directory for repair and an explicit retry. Creation refuses any existing destination.
+  `workspace repair` creates only missing structural directories and exact discovery
+  links, preserves all seeded/user content, and reports launch-blocking omissions.
+  Running bot and dashboard processes keep their loaded bindings until restart.
 - Several routes may share one workspace and therefore its files, policy, and concurrency limit while retaining independent route settings and separate sessions.
 - A client route that shares files with a staff route must not be able to rewrite instructions, skill definitions, or provider control files trusted by the staff route.
 - Each workspace has a process-local semaphore shared by chats and compaction. The default is one active turn; operators may raise it when concurrent writes are safe.
@@ -292,6 +309,11 @@ At personal scale the model is deliberately simple:
 
 - **Dashboard writes are atomic** — a temp file in the same directory plus `os.replace`.
   A reader never sees a half-written `JOB.md`, `SKILL.md`, or shared `~/.enso/AGENTS.md` from a web edit.
+- **Config mutations are serialized and atomic** — workspace creation holds the
+  owner-only cross-process config lock from a strict reread through candidate validation
+  and atomic replacement. A malformed file aborts without defaults or overwrite. The
+  workspace scaffold is a separately atomic publication, so a post-publication failure
+  is reported and preserved rather than hidden behind destructive rollback.
 - **Content snapshots are serialized and scoped** — the owner-only
   `~/.enso/.snapshot.lock` covers repository revalidation, filter-free descriptor reads,
   `hash-object -w --no-filters --stdin` plus `update-index --add --cacheinfo` assembly and
@@ -368,7 +390,7 @@ internet and the PRD makes that a non-goal.
 | `job_runner.py`          | Revalidates discovery before trusted prerun and again at the actual batch-provider boundary   |
 | `providers/`             | Uses native Claude/Codex discovery and one explicit Grok/Agy shared-instruction delivery       |
 | `policy.py`              | Builds native launches and revisions them against the current launch contract                 |
-| `cli.py`                 | Provides standalone web, manual job-run, and scoped local-snapshot commands                    |
+| `cli.py`                 | Provides standalone web, manual job-run, workspace lifecycle, and scoped local-snapshot commands |
 | `config.py`              | Backfills `web` (including `allowed_hosts` / `external_skill_roots`) and `runs` defaults      |
 | `formatting.py`          | Converts legacy Markdown and supplies standard-Markdown-aware splitting                       |
 | `outbound.py`            | Owns strict typed message/surface contracts, parsers, and Slack-aligned limits                |

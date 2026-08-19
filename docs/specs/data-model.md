@@ -361,6 +361,24 @@ failed transaction leaves the previous configuration intact. The lock prevents t
 workspace or policy mutations from silently overwriting each other; it is runtime state
 and never versionable.
 
+`enso workspace create` applies that rule to one complete candidate, not a partial entry.
+It strictly rereads the current object under the lock, rejects a malformed file, validates
+the requested lowercase kebab-case name, derived root, explicit existing policy, positive
+concurrency (default `1`), and complete `load_catalog()` result before persistence. Fresh
+setup is the only code path that automatically creates unrestricted policy `admin` and
+binds workspace `default`; later workspace creation never supplies an authority default.
+There is no workspace path option.
+
+The filesystem and config are separately atomic publications. Creation builds the full
+workspace in a temporary sibling and exclusively renames it to its final root, then
+atomically saves config and runs the installation check. If config saving fails, the
+previous config remains and the published directory is reported as unused. If the later
+check or snapshot fails, the now-configured directory remains visible for operator
+repair; Enso never guesses that user-visible content is safe to delete. Creation refuses
+an existing destination, including a manually migrated or partially created root.
+Changes are not hot-reloaded by `enso serve` or `enso web`, so a successful catalog
+mutation requires restart.
+
 The three defaulted blocks documented here are backfilled by
 `_with_config_defaults` without replacing user settings:
 
@@ -465,6 +483,14 @@ provider-specific discovery order. The CLIs may additionally load native user, m
 plugin, system, or bundled scopes, so discovery remains functionality rather than an
 allowlist.
 
+The supported lifecycle commands are `enso workspace list`, `show <name>`,
+`create <name> --policy <policy> [--concurrency <n>]`, and `repair <name>`. `list` and
+`show` are read-only. Creation automatically snapshots exactly five versionable entries
+under the new workspace: `AGENTS.md`, `CLAUDE.md`, `.agents/skills`, `.claude/skills`,
+and `knowledge/README.md`. Empty directories cannot enter Git, and configuration,
+`drafts/`, and `uploads/` remain ignored/protected, so that commit is local content
+history rather than a complete configuration backup.
+
 Fresh setup seeds the global prompt, bundled skills, and the three starter docs once.
 Atomic workspace creation seeds that workspace's prompt and `knowledge/README.md` once.
 All seeded files become user-owned immediately: startup, the dashboard, configuration
@@ -474,6 +500,11 @@ directories and known discovery links only; conflicts and missing user content a
 preserved and reported. Existing installations adopt desired starter resources manually
 after reviewing them; they must not fabricate a `null` setup marker to invoke fresh
 seeding.
+
+`enso workspace repair <name>` is the focused repair path for a configured workspace. It
+creates missing structural directories and exact known links only. It never creates or
+rewrites `AGENTS.md`, skill definitions, docs, or `knowledge/README.md`; missing seeded/user-owned
+content remains missing and is reported when it prevents a valid launch.
 
 A policy directory belongs to a policy and stays outside every writable workspace. This
 separation lets one policy serve several project directories. Policy paths are expanded

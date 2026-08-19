@@ -21,7 +21,7 @@ Design docs live in [`docs/`](docs/) and are the source of truth for planned and
 | [`docs/specs/tables.md`](docs/specs/tables.md)             | Registered SQLite data tables, discovery, and bounded read-only views               |
 | [`docs/specs/web.md`](docs/specs/web.md)                   | The web UI: routes, pages, read/write flows                                         |
 | [`docs/migrations/unified-workspace-policies.md`](docs/migrations/unified-workspace-policies.md) | Manual breaking migration from `working_dir`, `access`, and legacy Slack routes |
-| [`docs/migrations/v1.3-managed-workspaces.md`](docs/migrations/v1.3-managed-workspaces.md) | Manual migration from configurable/external workspace paths to the canonical managed tree |
+| [`docs/migrations/v1.3-managed-workspaces.md`](docs/migrations/v1.3-managed-workspaces.md) | Manual migration from configurable/external workspace paths to the canonical workspace tree |
 | [`CHANGELOG.md`](CHANGELOG.md)                             | What has actually shipped, per version                                              |
 
 > The dashboard and run history ship today. The Web UI docs distinguish current
@@ -97,8 +97,10 @@ The dashboard's **Configuration** section makes the execution model traceable: e
 workspace and its one policy, exact Slack DM/channel routes, Telegram and job bindings,
 shared instructions, and workspace-local `AGENTS.md` files. Policy and Slack pages are
 read-only and never render secret values or native policy contents. Shared instructions
-and managed workspace-root instructions have revision-checked editors; nested workspace
-instruction files remain read-only. External workspace roots are not supported.
+and every valid canonical workspace-root instruction file have revision-checked editors;
+nested workspace instruction files remain read-only. Alternate, external, nested, and
+symlinked workspace roots are invalid; their instruction content is never inspected or
+rendered.
 
 For remote or Tailscale access, bind the dashboard to the required interface. A
 concrete `web.host` is allowed automatically. If you bind `0.0.0.0` or `::`, list each
@@ -254,6 +256,45 @@ Enso seeds five portable [Agent Skills](https://agentskills.io/specification) un
 
 Fresh setup copies these skills once into the canonical global source and creates the relative provider views `~/.enso/.agents/skills -> ../skills` and `~/.enso/.claude/skills -> ../skills`. A new workspace starts with an empty canonical `<workspace>/skills/` plus matching relative provider views. Installed skills are user-owned: upgrades, startup, setup repair, and dashboard deletion do not copy new bundle versions, restore deleted skills, create tombstones, or clean up tool copies. Keep shared skills global; use the `workspace` skill for focused project guidance and workspace-only skills. A workspace is invalid if the same skill directory name exists at both global and local scope.
 
+## Workspaces
+
+Inspect and manage the canonical workspace catalog through the CLI:
+
+```bash
+enso workspace list
+enso workspace show company
+enso workspace create company --policy staff
+enso workspace create automation --policy automation --concurrency 2
+enso workspace repair company
+```
+
+`list` and `show` are read-only. `create` accepts a lowercase kebab-case name, derives
+the only possible root as `~/.enso/workspaces/<name>`, and defaults concurrency to `1`.
+It has no path option and requires an explicit policy that already exists; it never
+silently grants `admin` or unrestricted execution. The sole automatic unrestricted
+exception is genuinely fresh `enso setup`, which creates `admin` and binds the initial
+`default` workspace to it.
+
+Creation takes the strict current config under the cross-process config lock, validates
+the complete candidate catalog, builds the workspace in a temporary sibling, and
+atomically publishes the finished directory before atomically saving `config.json`.
+It then performs the same installation checks used by `enso config check` and snapshots
+exactly the five new versionable entries: `AGENTS.md`, `CLAUDE.md`, `.agents/skills`,
+`.claude/skills`, and `knowledge/README.md`. Empty `skills/` and the runtime-facing
+`drafts/` and `uploads/` directories are not Git content. Configuration is ignored, so
+this local snapshot is content history rather than a complete configuration backup.
+
+If config persistence, post-save validation, or the snapshot fails after publication,
+Enso preserves the user-visible directory and reports the partial state instead of
+deleting it. A config-write failure leaves an unused directory; a later failure may
+leave a configured workspace that still needs repair or an explicit scoped snapshot.
+`create` refuses any existing destination, including one left by a migration or partial
+attempt. `repair` is conservative: it creates only missing structural directories and
+known relative discovery links, never `AGENTS.md`, skill definitions, docs, or
+`knowledge/README.md`, and reports missing content that prevents launch. Restart Enso
+after a successful workspace creation or any binding change; running processes do not
+hot-reload routing.
+
 ## Local content snapshots
 
 After finishing one coherent change to versionable Enso content, record exactly the
@@ -406,7 +447,22 @@ development is in progress.
 
 ## Config
 
-Everything lives under `~/.enso/`. Config is at `~/.enso/config.json` — the setup wizard writes it for you, but you can edit it directly to add models, define workspaces and policies, add Slack routes, bind Telegram to a workspace, or set the interactive timeout through `agent.timeout` (whole seconds). Workspace names use lowercase kebab-case and derive their only valid roots as `~/.enso/workspaces/<name>`; workspace entries contain `policy` and optional `concurrency`, never `path`. External, nested, and symlinked workspace roots are rejected, as is a `.git` entry directly at a workspace root. Every provider launch also requires `~/.enso` itself to remain the exact, non-corrupt Git worktree root; there is no fallback instruction-delivery mode for a partial layout. There is no top-level `working_dir`, and `enso serve` has no `--working-dir` override. Upgrades backfill newly supported providers without replacing custom provider paths or model lists. Set `notify_channel` to give `enso message send` and job alerts a default destination when no interactive origin or explicit destination exists. No transport broadcasts implicitly.
+Everything lives under `~/.enso/`. Config is at `~/.enso/config.json`; the setup wizard
+writes it for you. Use `enso workspace create` and `enso workspace repair` for workspace
+lifecycle changes instead of hand-editing workspace JSON or constructing discovery links.
+Route, provider, model, policy, Telegram binding, notification, and agent timeout settings
+still live in config and may be edited directly where no focused CLI exists. Workspace
+names use lowercase kebab-case and derive their only valid roots as
+`~/.enso/workspaces/<name>`; entries contain `policy` and optional `concurrency`, never
+`path`. External, nested, and symlinked workspace roots are rejected, as is a `.git`
+entry directly at a workspace root. Every provider launch also requires `~/.enso` itself
+to remain the exact, non-corrupt Git worktree root; there is no fallback
+instruction-delivery mode for a partial layout. There is no top-level `working_dir`, and
+`enso serve` has no `--working-dir` override. Upgrades backfill newly supported providers
+without replacing custom provider paths or model lists. Set `notify_channel` to give
+`enso message send` and job alerts a default destination when no interactive origin or
+explicit destination exists. No transport broadcasts implicitly. Config and binding
+changes require an Enso restart.
 
 Slack's `rich_messages` and `persistent_surfaces` settings both default to `true`. Set `persistent_surfaces` to the JSON boolean `false` to keep standard Markdown and structured message blocks while disabling App Home and Canvas drafts; set `rich_messages` to `false` to restore legacy text delivery and implicitly disable surfaces too. Non-boolean values fail closed as disabled. Restart Enso after changing either setting.
 

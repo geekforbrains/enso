@@ -171,6 +171,26 @@ def test_layout_routes_content_history_through_safe_scoped_snapshots():
         assert contract in prose
 
 
+def test_layout_routes_workspace_lifecycle_through_safe_commands():
+    text = _resource_text("enso/layout.md")
+    prose = " ".join(text.split())
+
+    for contract in (
+        "enso workspace list",
+        "enso workspace show <name>",
+        "enso workspace create <name> --policy <policy>",
+        "--concurrency <n>",
+        "defaults to `1`",
+        "existing policy",
+        "enso workspace repair <name>",
+        "five versionable seed entries",
+        "does not recreate",
+        "service restart",
+    ):
+        assert contract in prose
+    assert "workspace create --path" not in prose
+
+
 def test_operator_doc_is_an_editable_template_without_inferred_or_secret_facts():
     text = _resource_text("operator.md")
 

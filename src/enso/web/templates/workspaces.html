@@ -72,9 +72,6 @@
             {% if workspace.agents_truncated %}(partial scan){% endif %}
           </span>
           {% if workspace.telegram_bound %}<span>Telegram</span>{% endif %}
-          {% if not workspace.managed %}
-            <span>External workspace</span>
-          {% endif %}
         </div>
 
         {% if workspace.problems %}
@@ -90,7 +87,7 @@
 {% else %}
   <div class="rounded-xl border border-dashed border-border-strong bg-surface px-4 py-8 text-center">
     <p class="font-medium">No workspaces configured</p>
-    <p class="mt-1 text-sm text-muted">Define at least one named workspace in config.json.</p>
+    <p class="mt-1 text-sm text-muted">Create one with <span class="font-mono">enso workspace create</span>.</p>
   </div>
 {% endif %}
 {% endblock %}

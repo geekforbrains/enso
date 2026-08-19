@@ -52,6 +52,7 @@ DEFAULT_AGENT = {"timeout": 30 * 60}
 DEFAULT_RUNS = {"keep": 500, "max_age_days": 30}
 DEFAULT_WORKSPACE_NAME = "default"
 DEFAULT_POLICY_NAME = "admin"
+DEFAULT_WORKSPACE_CONCURRENCY = 1
 WORKSPACE_NAME_PATTERN = r"[a-z0-9]+(?:-[a-z0-9]+)*"
 WORKSPACE_NAME_MAX_LENGTH = 64
 _WORKSPACE_NAME_RE = re.compile(WORKSPACE_NAME_PATTERN)
@@ -299,7 +300,7 @@ def _build_default_config() -> dict:
         "workspaces": {
             DEFAULT_WORKSPACE_NAME: {
                 "policy": DEFAULT_POLICY_NAME,
-                "concurrency": 1,
+                "concurrency": DEFAULT_WORKSPACE_CONCURRENCY,
             },
         },
         "policies": {

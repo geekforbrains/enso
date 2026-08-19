@@ -21,11 +21,19 @@ These are current-layout requirements, not conventions to relax for an older ins
 
 ## Inspect before changing
 
-1. Run `enso config check` and record existing errors.
-2. Inspect only the relevant parts of `~/.enso/config.json`; never print the whole file because it may contain credentials.
-3. Resolve the intended workspace name, policy, concurrency, and bindings. Reuse an existing policy unless the user explicitly requests different authority.
-4. Inspect the physical workspace root, its direct `.git` entry, discovery links, instruction files, and global/local skill-name collisions.
-5. Check `enso --help` before invoking a mutation command. Use only commands actually provided by the installed version; do not substitute direct config edits or hand-built links for a missing command.
+1. Run `enso workspace list`, then `enso workspace show <name>` for the relevant
+   workspace.
+2. Run `enso config check` and record existing errors.
+3. Resolve the intended workspace name, policy, concurrency, and bindings. Reuse an
+   existing policy unless the user explicitly requests different authority.
+4. Inspect the physical workspace root, its direct `.git` entry, discovery links,
+   instruction files, and global/local skill-name collisions.
+5. Check `enso workspace --help` before invoking a mutation command. Use only commands
+   actually provided by the installed version.
+
+Do not edit `~/.enso/config.json` or make provider discovery links by hand for workspace
+lifecycle operations. The workspace commands keep configuration, the canonical scaffold,
+validation, and local content history on the same contract.
 
 Never widen a policy merely to make workspace setup pass. Treat permission changes and new transport authorization as security-sensitive.
 
@@ -65,11 +73,37 @@ The exact skill discovery links are `~/.enso/.agents/skills -> ../skills`, `~/.e
 
 ## Preserve ownership
 
-New workspace creation is all-or-nothing: Enso builds the complete scaffold in a staged directory, then moves it into place atomically. An existing destination is an error rather than something to merge into.
+Create a workspace with an explicit existing policy:
+
+```bash
+enso workspace create <name> --policy <policy> [--concurrency <n>]
+```
+
+Concurrency defaults to `1`. The command exposes no path option: `<name>` determines the
+only valid root. It validates the candidate catalog before publishing, builds the complete
+scaffold in a staged directory, moves it into place atomically, saves configuration, runs
+the installation checks, and automatically snapshots the five versionable seed entries:
+`AGENTS.md`, `CLAUDE.md`, `.agents/skills`, `.claude/skills`, and
+`knowledge/README.md`. The ignored `config.json` is not part of that commit, so local
+content history is not a configuration backup. An existing
+destination is an error rather than something to merge into. If configuration persistence
+fails after publication, preserve and report the unused directory; never delete it by
+guessing.
 
 After creation, prompts, knowledge, and skills are user-owned content. Enso never overwrites, upgrades, deletes, or resurrects that seeded content during repair, startup, or a software upgrade. Intentional deletion remains deleted.
 
-Structural repair is conservative. It may create missing structural directories or discovery links and recognize correct relative links. It never overwrites unknown paths, unexpected directories, missing user-owned content, or links with unknown targets; preserve and report them for the user to resolve. Do not make provider discovery links by hand.
+Repair a configured workspace with:
+
+```bash
+enso workspace repair <name>
+```
+
+Structural repair is conservative. It may create missing structural directories or
+discovery links and recognize correct relative links. It never overwrites unknown paths,
+unexpected directories, missing user-owned content, or links with unknown targets;
+preserve and report them for the user to resolve.
+
+Do not make provider discovery links by hand.
 
 Bundled root prompts and global skills are seeded only by fresh setup. Workspace prompts and `knowledge/README.md` are seeded only when that workspace is first created. Ordinary startup validates structure but does not repair or install content.
 
@@ -128,7 +162,11 @@ Consult the relevant transport skill or `enso --help` for exact identifiers and 
 
 ## Verify and report
 
-After a supported change, run `enso config check` until it exits successfully. Use route explanation or a manual job run when available. Restart with `enso service restart` when the service is installed; otherwise say that the running `enso serve` process must be restarted because bindings load at startup.
+After a supported change, run `enso config check` until it exits successfully. Use route
+explanation or a manual job run when available. Workspace creation reports that a service
+restart is required. Restart with `enso service restart` when the service is installed;
+otherwise say that the running `enso serve` process must be restarted because bindings
+load at startup.
 
 Report the derived workspace path, selected policy, bindings changed, structural warnings, validation result, and whether restart completed. Do not claim a route is live until validation and restart both succeed.
 

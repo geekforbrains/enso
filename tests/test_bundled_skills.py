@@ -104,8 +104,21 @@ def test_workspace_skill_documents_only_the_canonical_managed_layout():
     assert '"path": "~/.enso/workspaces/project-name"' not in skill
     assert "absolute path or a path beginning" not in skill
     assert "<workspace>/.agents/skills/<skill-name>" not in skill
-    assert "enso workspace create" not in skill
-    assert "enso workspace repair" not in skill
+    for command in (
+        "enso workspace list",
+        "enso workspace show <name>",
+        "enso workspace create <name> --policy <policy>",
+        "enso workspace repair <name>",
+    ):
+        assert command in skill
+    assert "--concurrency <n>" in skill
+    assert "existing policy" in skill
+    assert "defaults to `1`" in skill
+    assert "Do not edit `~/.enso/config.json`" in skill
+    assert "Do not make provider discovery links by hand" in skill
+    assert "automatically snapshots" in skill
+    assert "not a configuration backup" in skill
+    assert "service restart" in skill
 
 
 def test_docs_skill_is_the_complete_content_placement_contract():

@@ -6,6 +6,18 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- `enso workspace list`, `show`, `create`, and `repair` provide the supported workspace
+  lifecycle. Creation requires a lowercase kebab-case name and an explicit existing
+  policy, derives `~/.enso/workspaces/<name>`, defaults concurrency to `1`, validates the
+  complete candidate catalog under the config lock, atomically publishes a staged
+  scaffold, atomically saves config, performs the installation check, and snapshots its
+  exact five versionable entries (`AGENTS.md`, `CLAUDE.md`, `.agents/skills`,
+  `.claude/skills`, and `knowledge/README.md`). It has no path option and never grants `admin`
+  implicitly; fresh setup's initial unrestricted `admin`/`default` binding remains the
+  sole automatic exception. Repair creates only structural directories and known
+  discovery links, preserves all user-owned seeded content, and reports launch blockers.
+  A failure after directory publication preserves and reports that directory instead of
+  deleting it, and routing changes require an Enso restart.
 - `enso snapshot create --message <message> -- <paths...>` records one coherent local
   content change from explicit relative or absolute paths. Its closed allowlist covers
   instructions, canonical skills, reference docs, workspace knowledge, and recognized
@@ -60,8 +72,22 @@ All notable changes to this project will be documented in this file.
   the same check before trusted prerun and again afterward. Invalid or partial discovery
   fails closed with no fallback delivery mode. The launch contract is now v6, rotating
   every policy revision for the changed invocation.
-- Upgrading across these workspace-policy changes is a manual breaking migration with no `enso migrate` command. Follow the [migration guide](docs/migrations/unified-workspace-policies.md) to back up, move legacy workspace files, split shared and local instructions, rewrite Slack/Telegram/job bindings, validate, reinstall the service definition, and roll back safely if needed.
-- The web dashboard now makes the execution configuration explicit with workspace, reusable-policy, and exact Slack-route list/detail pages backed by the running config snapshot and cache-only Slack labels. Policy pages expose normalized provider checks but never native policy contents or secrets. Shared and managed workspace-root `AGENTS.md` editors use bounded, symlink-resistant, revision-checked atomic writes; nested and external workspace instructions remain read-only.
+- Upgrading across these workspace-policy changes is a manual breaking migration with no
+  `enso migrate` command or runtime compatibility path. Follow the
+  [unified-policy guide](docs/migrations/unified-workspace-policies.md) for bindings and
+  authority, then the [v1.3 workspace guide](docs/migrations/v1.3-managed-workspaces.md)
+  to move content into name-derived physical roots, remove every legacy `path`, use
+  `workspace repair` after relocation, validate, restart, and roll back from the operator
+  backup if needed. `workspace create` deliberately refuses an already migrated
+  destination.
+- The web dashboard now makes the execution configuration explicit with workspace,
+  reusable-policy, and exact Slack-route list/detail pages backed by the running config
+  snapshot and cache-only Slack labels. Policy pages expose normalized provider checks
+  but never native policy contents or secrets. The managed-versus-external workspace
+  tier is removed: alternate and unsafe roots are invalid and their instruction content
+  is never inspected or rendered, while shared and every valid canonical workspace-root
+  `AGENTS.md` editor uses bounded, symlink-resistant, revision-checked atomic writes.
+  Nested workspace instructions remain read-only.
 - Slack channel history is pulled on demand instead of pushed into every new conversation. A top-level message used to arrive with the last 20 channel messages prepended, which in a channel where each request starts its own thread meant the roots of unrelated earlier threads — and the agent answered them. An unrestricted policy now receives, once per conversation, a `[Channel access]` block naming the channel and the `enso slack history` / `enso slack thread` commands for it, and reads history only when the request calls for it. Thread context is unchanged and still pushed. A restricted policy cannot be assumed to reach the network from its sandbox, so it keeps receiving the channel context it cannot fetch for itself.
 - `enso slack history` and `enso slack thread` render what the transport's own injector did: display names instead of raw user IDs, inert `@name (ID)` mention text instead of live `<@U…>` tokens, forwarded-message bodies, and readable timestamps alongside the raw `ts` that `enso slack thread` takes. Channel lifecycle noise (joins, pins, archive events) is dropped unless `--all` is passed, `enso slack history` gains `--since` (`30m`, `24h`, `7d`) to bound the window, and `enso slack thread` gains `-n` to keep the root plus the most recent messages. A trimmed thread reports how many replies it dropped, so a partial read is never mistaken for the whole thread.
 

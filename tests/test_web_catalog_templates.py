@@ -90,7 +90,6 @@ def test_workspaces_list_renders_bindings_and_visible_status_text():
                 "telegram_bound": False,
                 "agent_files": ("AGENTS.md", "services/api/AGENTS.md"),
                 "agents_truncated": False,
-                "managed": True,
                 "root_editable": True,
             },
             {
@@ -106,7 +105,6 @@ def test_workspaces_list_renders_bindings_and_visible_status_text():
                 "telegram_bound": False,
                 "agent_files": (),
                 "agents_truncated": True,
-                "managed": False,
                 "root_editable": False,
             },
         ],
@@ -120,7 +118,7 @@ def test_workspaces_list_renders_bindings_and_visible_status_text():
     assert "1 job" in html
     assert "2 AGENTS.md files" in html
     assert "partial scan" in html
-    assert "External workspace" in html
+    assert "External workspace" not in html
     assert "Workspace directory is missing" in html
 
 
@@ -145,7 +143,7 @@ def test_workspaces_list_explains_transport_and_orphan_job_errors():
     assert "references unknown workspace" in html
 
 
-def test_managed_workspace_detail_edits_only_root_agents_file():
+def test_workspace_detail_edits_only_root_agents_file():
     html = _render(
         "workspace_detail.html",
         current_path="/workspaces/company",
@@ -173,7 +171,6 @@ def test_managed_workspace_detail_edits_only_root_agents_file():
             ),
             "agent_files": ("AGENTS.md", "services/api/AGENTS.md"),
             "agents_truncated": False,
-            "managed": True,
             "root_editable": True,
         },
         root_document={
@@ -183,7 +180,6 @@ def test_managed_workspace_detail_edits_only_root_agents_file():
             "mode": 0o644,
         },
         root_revision="company-revision",
-        root_editable=True,
         root_problem=None,
         agent_listing={
             "files": ({"rel_path": "services/api/AGENTS.md"},),
@@ -203,7 +199,7 @@ def test_managed_workspace_detail_edits_only_root_agents_file():
     assert 'href="/jobs/daily-report"' in html
 
 
-def test_external_workspace_root_agents_is_clearly_read_only():
+def test_workspace_with_failed_integrity_check_is_unavailable():
     html = _render(
         "workspace_detail.html",
         current_path="/workspaces/external",
@@ -220,29 +216,22 @@ def test_external_workspace_root_agents_is_clearly_read_only():
             "jobs": (),
             "agent_files": ("AGENTS.md",),
             "agents_truncated": False,
-            "managed": False,
             "root_editable": False,
         },
-        root_document={
-            "rel_path": "AGENTS.md",
-            "content": "# External\n",
-            "revision": "external-revision",
-            "mode": 0o644,
-        },
-        root_revision="external-revision",
-        root_editable=False,
-        root_problem=None,
+        root_document=None,
+        root_revision="",
+        root_problem="Workspace instruction root failed its integrity check",
         agent_listing={"files": (), "truncated": False, "errors": ()},
         catalog_errors=(),
     )
 
-    assert "External workspace" in html
-    assert "Read-only" in html
-    assert "# External" in html
+    assert "External workspace" not in html
+    assert "Read-only" not in html
+    assert "failed its integrity check" in html
     assert 'action="/workspaces/external/agents/edit"' not in html
 
 
-def test_managed_workspace_can_create_a_missing_root_agents_file():
+def test_workspace_can_create_a_missing_root_agents_file():
     html = _render(
         "workspace_detail.html",
         current_path="/workspaces/default",
@@ -259,12 +248,10 @@ def test_managed_workspace_can_create_a_missing_root_agents_file():
             "jobs": (),
             "agent_files": (),
             "agents_truncated": False,
-            "managed": True,
             "root_editable": True,
         },
         root_document=None,
         root_revision="",
-        root_editable=True,
         root_problem=None,
         agent_listing={"files": (), "truncated": False, "errors": ()},
         catalog_errors=(),
@@ -293,12 +280,10 @@ def test_workspace_discovery_errors_render_as_paths_and_reasons():
             "jobs": (),
             "agent_files": (),
             "agents_truncated": True,
-            "managed": True,
             "root_editable": True,
         },
         root_document=None,
         root_revision="",
-        root_editable=True,
         root_problem=None,
         agent_listing={
             "files": (),
@@ -329,7 +314,6 @@ def test_child_agents_page_is_read_only_and_links_back_to_workspace():
             "revision": "api-revision",
             "mode": 0o644,
         },
-        root_editable=False,
     )
 
     assert 'href="/workspaces/company"' in html

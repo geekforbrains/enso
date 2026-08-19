@@ -79,13 +79,25 @@ MiB and inbound Slack files to 100 MiB per file; Enso checks available metadata 
 received bytes, and skips unsafe or oversized downloads. Enso does not automatically
 expire retained uploads; retention and cleanup belong to the operator.
 
-Fresh setup seeds the global prompt and skills plus the default workspace. Every later
-workspace creation atomically publishes the complete structure shown above, a short local
-prompt, and `knowledge/README.md`; local `skills/` starts empty. Those files become
-user-owned immediately. Startup and configuration checks validate without changing
-content, while explicit setup repair creates only missing structural directories and
-known relative discovery links. It preserves and reports missing content or conflicting
-paths instead of overwriting them.
+Fresh setup seeds the global prompt and skills plus the default workspace and is the only
+flow that automatically creates unrestricted policy `admin`. Every later workspace is
+created with `enso workspace create <name> --policy <existing-policy>` and optional
+`--concurrency <n>`; the policy is mandatory, concurrency defaults to `1`, and no path
+option exists. Creation validates the complete candidate catalog, atomically publishes
+the structure shown above with a short local prompt and `knowledge/README.md`, atomically
+saves configuration, and runs the installation check. It automatically snapshots exactly
+`AGENTS.md`, `CLAUDE.md`, `.agents/skills`, `.claude/skills`, and
+`knowledge/README.md`; local `skills/` starts empty. This Git history excludes config and
+is not a complete backup.
+
+Those files become user-owned immediately. Startup and configuration checks validate
+without changing content. `enso workspace repair <name>` creates only missing structural
+directories and known relative discovery links; it preserves and reports missing content
+or conflicting paths instead of overwriting `AGENTS.md`, skills, docs, or
+`knowledge/README.md`. A published root is preserved if config saving, post-save checking,
+or snapshotting fails; config-save failure leaves it unused, while later failure may leave
+it configured. Creation refuses an existing destination, so the operator must inspect and
+repair a partial or manually migrated root rather than asking create to merge it.
 
 The staff native policy may grant the company route read or write access to selected
 siblings such as `~/.enso/workspaces/acme/**`. This does not mount another workspace or
@@ -194,6 +206,12 @@ Slack credentials, transport-wide options, and exact routes coexist in `transpor
 Here `channel_defaults` makes routed channels fully responsive, and `C0ACME` opts back into mention-only; both settings, their defaults, and their validation rules are specified in [slack-triggers.md](slack-triggers.md). Neither key is valid on a DM route.
 
 The same policy may be reused across many workspaces when its native policy is written in terms of the invocation workspace. For example, every client channel can use `client-readonly`; each route still starts in its own name-derived directory.
+
+Use `enso workspace list` and `enso workspace show <name>` for read-only catalog
+inspection. Do not define workspace entries by hand or construct their discovery links;
+use `workspace create` and `workspace repair`. Route, transport, and job bindings still
+select the resulting workspace by name. Restart Enso after creation or a binding change,
+because the running catalog is intentionally not hot-reloaded.
 
 ## Resolution and lifecycle
 

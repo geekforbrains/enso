@@ -46,6 +46,40 @@ supported provider without copied provider-specific content. Repositories deeper
 a workspace are ordinary content repositories; they do not change the Enso workspace
 root.
 
+## Workspace lifecycle
+
+Inspect the configured catalog without changing it:
+
+```bash
+enso workspace list
+enso workspace show <name>
+```
+
+Create a workspace only through the lifecycle command and bind it to an existing policy:
+
+```bash
+enso workspace create <name> --policy <policy> [--concurrency <n>]
+```
+
+Concurrency defaults to `1`. There is no path option because the name determines the
+root. Enso validates the complete candidate catalog, publishes a staged scaffold
+atomically, saves configuration, runs the installation checks, and automatically records
+the five versionable seed entries (`AGENTS.md`, `CLAUDE.md`, `.agents/skills`,
+`.claude/skills`, and `knowledge/README.md`) in local history. `config.json` stays ignored,
+so that content commit is not a configuration backup. A successful creation requires a
+service restart before routing processes see the new catalog entry.
+
+Repair one configured workspace with:
+
+```bash
+enso workspace repair <name>
+```
+
+Repair owns structural directories and the known relative discovery links only. It does
+not recreate or rewrite user-owned `AGENTS.md`, skill definitions, or
+`knowledge/README.md`; missing
+launch-critical content remains missing and is reported for deliberate repair.
+
 ## Local history boundary
 
 Versioned content is the allowlisted, human-authored layer: instructions and discovery

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import json
 import logging
 import os
@@ -15,7 +16,7 @@ import time
 import urllib.request
 import uuid
 from datetime import datetime, timezone
-from typing import Annotated, NoReturn
+from typing import TYPE_CHECKING, Annotated, NoReturn
 
 import typer
 from rich.console import Console
@@ -31,6 +32,7 @@ from .auth import parse_telegram_allowed_users
 from .config import (
     CONFIG_FILE,
     DEFAULT_POLICY_NAME,
+    DEFAULT_WORKSPACE_CONCURRENCY,
     DEFAULT_WORKSPACE_NAME,
     ConfigError,
     SetupState,
@@ -43,6 +45,7 @@ from .config import (
     save_config,
     setup_state,
     unrestricted_policy_config,
+    validate_workspace_name,
 )
 from .docs import MAX_DOCS, create_doc, load_docs
 from .jobs import create_job, load_jobs, load_jobs_with_errors
@@ -63,6 +66,9 @@ from .slack_text import (
 )
 from .transports import BaseTransport
 
+if TYPE_CHECKING:
+    from .teams import ExecutionCatalog
+
 log = logging.getLogger(__name__)
 
 app = typer.Typer(help="Enso — AI agents from your phone", no_args_is_help=True)
@@ -79,6 +85,10 @@ snapshot_app = typer.Typer(
     help="Create safe, scoped local content snapshots",
     no_args_is_help=True,
 )
+workspace_app = typer.Typer(
+    help="Inspect, create, and conservatively repair managed workspaces",
+    no_args_is_help=True,
+)
 app.add_typer(job_app, name="job")
 app.add_typer(doc_app, name="doc")
 app.add_typer(table_app, name="table")
@@ -89,6 +99,7 @@ app.add_typer(config_app, name="config")
 app.add_typer(route_app, name="route")
 app.add_typer(audit_app, name="audit")
 app.add_typer(snapshot_app, name="snapshot")
+app.add_typer(workspace_app, name="workspace")
 
 console = Console()
 
@@ -673,32 +684,54 @@ def _setup_providers(config: dict) -> None:
 
 
 def _ensure_default_execution_config(config: dict) -> str:
-    """Seed the default workspace and its reusable unrestricted admin policy.
+    """Return setup's default binding, bootstrapping only a fresh install.
 
-    Setup uses the workspace for the first exact Slack DM route and new jobs.
-    Existing definitions are retained; a missing workspace policy is filled in.
+    An incomplete setup marker is the sole authority to create the initial
+    unrestricted policy. Existing/pre-feature installations must migrate or
+    create catalog entries explicitly instead of gaining authority on rerun.
     """
+    from .teams import load_catalog
+
+    bootstrap = setup_state(config) is SetupState.INCOMPLETE
     workspaces = config.get("workspaces")
     if not isinstance(workspaces, dict):
-        workspaces = {}
-        config["workspaces"] = workspaces
+        raise ConfigError("workspaces must be an object")
     workspace_name = DEFAULT_WORKSPACE_NAME
     configured_workspace = workspaces.get(workspace_name)
-    workspace = configured_workspace if isinstance(configured_workspace, dict) else {}
-    workspaces[workspace_name] = workspace
-    workspace.setdefault("policy", DEFAULT_POLICY_NAME)
-    workspace.setdefault("concurrency", 1)
+    if configured_workspace is None:
+        if not bootstrap:
+            raise ConfigError(
+                "workspaces.default is required; create it explicitly with the workspace "
+                "CLI after completing the managed-workspaces migration"
+            )
+        configured_workspace = {
+            "policy": DEFAULT_POLICY_NAME,
+            "concurrency": DEFAULT_WORKSPACE_CONCURRENCY,
+        }
+        workspaces[workspace_name] = configured_workspace
+    elif not isinstance(configured_workspace, dict):
+        raise ConfigError("workspaces.default must be an object")
 
     policies = config.get("policies")
     if not isinstance(policies, dict):
-        policies = {}
-        config["policies"] = policies
+        raise ConfigError("policies must be an object")
     configured = provider_models(config)
-    if workspace["policy"] == DEFAULT_POLICY_NAME:
+    if bootstrap and configured_workspace.get("policy") == DEFAULT_POLICY_NAME:
         policies.setdefault(
             DEFAULT_POLICY_NAME,
             unrestricted_policy_config(list(configured)),
         )
+
+    catalog = load_catalog(config)
+    problems = [*catalog.errors]
+    for workspace_problems in catalog.workspace_errors.values():
+        problems.extend(workspace_problems)
+    for policy_problems in catalog.policy_errors.values():
+        problems.extend(policy_problems)
+    if not catalog.usable(workspace_name) and not problems:
+        problems.append("workspaces.default does not have a usable policy binding")
+    if problems:
+        raise ConfigError("; ".join(dict.fromkeys(problems)))
     return workspace_name
 
 
@@ -1323,7 +1356,11 @@ def _reject_legacy_setup_config(config: dict) -> None:
 def _setup_default_workspace(config: dict) -> str:
     """Configure setup's canonical default workspace without touching disk."""
     console.rule("[bold]Step 2 \u00b7 Workspace")
-    name = _ensure_default_execution_config(config)
+    try:
+        name = _ensure_default_execution_config(config)
+    except ConfigError as exc:
+        console.print(f"[red]Could not configure the default workspace:[/] {escape(str(exc))}")
+        raise typer.Exit(1) from None
     console.print(f"  Default workspace: [bold]{managed_workspace_path(name)}[/]\n")
     return name
 
@@ -1973,6 +2010,416 @@ def job_run(
         console.print(result.output, markup=False)
     if result.status in {"error", "timeout"}:
         raise typer.Exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Workspace subcommands
+# ---------------------------------------------------------------------------
+
+
+_WORKSPACE_SNAPSHOT_SUBJECT_PREFIX = "Create workspace "
+
+
+def _workspace_snapshot_paths(name: str) -> tuple[str, ...]:
+    """Return the exact versionable scaffold entries for one new workspace."""
+    base = f"workspaces/{validate_workspace_name(name)}"
+    return (
+        f"{base}/AGENTS.md",
+        f"{base}/CLAUDE.md",
+        f"{base}/.agents/skills",
+        f"{base}/.claude/skills",
+        f"{base}/knowledge/README.md",
+    )
+
+
+def _catalog_problems(catalog: ExecutionCatalog) -> tuple[str, ...]:
+    """Flatten a catalog's validation findings without duplicate noise."""
+    problems = list(catalog.errors)
+    for workspace_problems in catalog.workspace_errors.values():
+        problems.extend(workspace_problems)
+    for policy_problems in catalog.policy_errors.values():
+        problems.extend(policy_problems)
+    return tuple(dict.fromkeys(problems))
+
+
+def _workspace_inspection_errors(config: dict, name: str) -> tuple[str, ...]:
+    """Return read-only repository, catalog, and scaffold findings for one entry."""
+    from .repository import EnsoRepository, RepositoryError
+    from .scaffolding import ScaffoldError, ScaffoldService
+    from .teams import load_catalog
+
+    errors: list[str] = []
+    catalog = load_catalog(config)
+    errors.extend(catalog.errors)
+    errors.extend(catalog.workspace_errors.get(name, ()))
+    workspace = catalog.workspaces.get(name)
+    if workspace is not None:
+        errors.extend(catalog.policy_errors.get(workspace.policy, ()))
+    try:
+        EnsoRepository().validate()
+    except RepositoryError as exc:
+        errors.append(str(exc))
+    service = ScaffoldService()
+    errors.extend(service.validate_global().errors)
+    try:
+        errors.extend(service.validate_workspace(name).errors)
+    except (ConfigError, ScaffoldError) as exc:
+        errors.append(str(exc))
+    return tuple(dict.fromkeys(errors))
+
+
+def _print_workspace_problems(problems: tuple[str, ...], *, indent: str = "") -> None:
+    for problem in problems:
+        console.print(f"{indent}[red]✗[/] {escape(problem)}")
+
+
+def _validate_workspace_name_or_exit(name: str) -> str:
+    try:
+        return validate_workspace_name(name)
+    except ConfigError as exc:
+        console.print(f"[red]Invalid workspace name:[/] {escape(str(exc))}")
+        raise typer.Exit(1) from None
+
+
+@workspace_app.command("list")
+def workspace_list() -> None:
+    """List derived workspace bindings and their current validation state."""
+    from .teams import load_catalog
+
+    config = _load_config_or_exit()
+    catalog = load_catalog(config)
+    table = Table(box=None, padding=(0, 2))
+    table.add_column("Name")
+    table.add_column("Path", overflow="fold")
+    table.add_column("Policy")
+    table.add_column("Concurrency", justify="right")
+    table.add_column("Validation")
+    failed = bool(catalog.errors)
+    for name, workspace in sorted(catalog.workspaces.items()):
+        problems = _workspace_inspection_errors(config, name)
+        failed = failed or bool(problems)
+        status = "[red]invalid[/]" if problems else "[green]valid[/]"
+        table.add_row(
+            escape(name),
+            escape(workspace.path),
+            escape(workspace.policy or "—"),
+            str(workspace.concurrency),
+            status,
+        )
+    if catalog.workspaces:
+        console.print(table)
+    else:
+        console.print("No workspaces configured.")
+    problems = _catalog_problems(catalog)
+    if problems:
+        console.print("\n[red]Catalog errors:[/]")
+        _print_workspace_problems(problems, indent="  ")
+    if failed or problems:
+        raise typer.Exit(1)
+
+
+@workspace_app.command("show")
+def workspace_show(
+    name: Annotated[str, typer.Argument(help="Configured workspace name")],
+) -> None:
+    """Show one workspace's derived binding and validation findings."""
+    from .teams import load_catalog
+
+    config = _load_config_or_exit()
+    name = _validate_workspace_name_or_exit(name)
+    catalog = load_catalog(config)
+    workspace = catalog.workspaces.get(name)
+    raw_workspaces = config.get("workspaces", {})
+    configured = isinstance(raw_workspaces, dict) and name in raw_workspaces
+    if not configured:
+        console.print(f"[red]Workspace {escape(name)!r} is not configured.[/]")
+        raise typer.Exit(1)
+
+    if workspace is None:
+        console.print(f"[bold]Workspace:[/] {escape(name)}")
+        problems = _catalog_problems(catalog)
+        _print_workspace_problems(problems, indent="  ")
+        raise typer.Exit(1)
+
+    problems = _workspace_inspection_errors(config, name)
+    console.print(f"[bold]Workspace:[/] {escape(workspace.name)}")
+    console.print(f"[bold]Path:[/] {escape(workspace.path)}")
+    console.print(f"[bold]Policy:[/] {escape(workspace.policy)}")
+    console.print(f"[bold]Concurrency:[/] {workspace.concurrency}")
+    console.print(
+        "[bold]Validation:[/] "
+        + ("[red]invalid[/]" if problems else "[green]valid[/]")
+    )
+    if problems:
+        _print_workspace_problems(problems, indent="  ")
+        raise typer.Exit(1)
+
+
+def _create_preflight_errors(config: dict) -> tuple[str, ...]:
+    """Require the existing installation to be safe before publishing content."""
+    from .teams import load_catalog
+
+    return tuple(
+        dict.fromkeys((*_installation_errors(config), *_catalog_problems(load_catalog(config))))
+    )
+
+
+def _report_preserved_workspace(name: str, path: str, problem: str) -> NoReturn:
+    """Explain a post-save failure without destructively rolling anything back."""
+    console.print(f"[red]Workspace {escape(name)!r} needs attention:[/] {escape(problem)}")
+    console.print(
+        "[yellow]The configuration and workspace were preserved at[/] "
+        f"[bold]{escape(path)}[/]."
+    )
+    console.print("[dim]Fix the reported problem, then run `enso config check`.[/]")
+    raise typer.Exit(1)
+
+
+def _new_workspace_candidate_or_exit(
+    config: dict,
+    name: str,
+    policy: str,
+    concurrency: int,
+) -> dict:
+    """Build and catalog-validate one exact workspace config entry."""
+    from .teams import load_catalog
+
+    raw_workspaces = config.get("workspaces")
+    if not isinstance(raw_workspaces, dict):
+        console.print("[red]Configuration error:[/] workspaces must be an object")
+        raise typer.Exit(1)
+    if name in raw_workspaces:
+        console.print(f"[red]Workspace {escape(name)!r} is already configured.[/]")
+        raise typer.Exit(1)
+
+    candidate = copy.deepcopy(config)
+    candidate["workspaces"][name] = {
+        "policy": policy,
+        "concurrency": concurrency,
+    }
+    catalog = load_catalog(candidate)
+    candidate_problems = _catalog_problems(catalog)
+    if policy not in catalog.policies:
+        candidate_problems = tuple(
+            dict.fromkeys((*candidate_problems, f"unknown policy {policy!r}"))
+        )
+    elif policy in catalog.policy_errors:
+        candidate_problems = tuple(
+            dict.fromkeys((*candidate_problems, *catalog.policy_errors[policy]))
+        )
+    if not catalog.usable(name) and not candidate_problems:
+        candidate_problems = (f"workspace {name!r} does not have a usable policy binding",)
+    if candidate_problems:
+        console.print("[red]Invalid workspace configuration:[/]")
+        _print_workspace_problems(candidate_problems, indent="  ")
+        raise typer.Exit(1)
+    return candidate
+
+
+def _save_workspace_candidate_or_exit(candidate: dict, workspace_path: str) -> None:
+    """Persist an already-published binding without deleting content on failure."""
+    try:
+        save_config(candidate)
+    except (ConfigError, OSError, TypeError, ValueError) as exc:
+        console.print(f"[red]Could not save workspace configuration:[/] {escape(str(exc))}")
+        console.print(
+            "[yellow]An unused workspace directory remains at[/] "
+            f"[bold]{escape(workspace_path)}[/]; it was not deleted."
+        )
+        raise typer.Exit(1) from None
+
+
+def _snapshot_workspace_or_exit(name: str, workspace_path: str) -> tuple[str, bool]:
+    """Snapshot exactly one new workspace's five versionable seed entries."""
+    from .repository import EnsoRepository, RepositoryError
+
+    subject = f"{_WORKSPACE_SNAPSHOT_SUBJECT_PREFIX}{name}"
+    snapshot_paths = _workspace_snapshot_paths(name)
+    try:
+        repository = EnsoRepository()
+        created = repository.snapshot(snapshot_paths, subject)
+        observed = (
+            repository.commit_subject_paths(subject)
+            if created
+            else repository.tracked_paths()
+        )
+        missing = _required_paths_absent_from(snapshot_paths, observed)
+        if missing:
+            raise RepositoryError(
+                "completed workspace snapshot is missing required scaffold entries: "
+                + ", ".join(missing)
+            )
+    except (ConfigError, OSError, RepositoryError) as exc:
+        console.print(f"[red]Could not snapshot the workspace scaffold:[/] {escape(str(exc))}")
+        console.print(
+            "[yellow]The configuration and workspace were preserved at[/] "
+            f"[bold]{escape(workspace_path)}[/]."
+        )
+        command_paths = " ".join(snapshot_paths)
+        console.print(
+            "[dim]After fixing content history, retry with "
+            f"`enso snapshot create --message {subject!r} -- {command_paths}`.[/]"
+        )
+        raise typer.Exit(1) from None
+    return subject, created
+
+
+@workspace_app.command("create")
+def workspace_create(
+    name: Annotated[str, typer.Argument(help="Lowercase kebab-case workspace name")],
+    policy: Annotated[
+        str,
+        typer.Option("--policy", help="Existing execution policy to bind"),
+    ],
+    concurrency: Annotated[
+        int,
+        typer.Option("--concurrency", help="Maximum concurrent runs"),
+    ] = DEFAULT_WORKSPACE_CONCURRENCY,
+) -> None:
+    """Create, configure, validate, and snapshot one managed workspace."""
+    from .scaffolding import ScaffoldError, ScaffoldService
+
+    # A strict read must precede creation of config.json.lock.
+    preflight_config = _load_config_or_exit()
+    name = _validate_workspace_name_or_exit(name)
+    if concurrency < 1:
+        console.print("[red]Concurrency must be a positive integer.[/]")
+        raise typer.Exit(1)
+    preflight_problems = _create_preflight_errors(preflight_config)
+    if preflight_problems:
+        console.print("[red]The existing installation must be valid before creation:[/]")
+        _print_workspace_problems(preflight_problems, indent="  ")
+        raise typer.Exit(1)
+
+    with _config_lock_or_exit():
+        config = _load_config_or_exit()
+        existing_problems = _create_preflight_errors(config)
+        if existing_problems:
+            console.print("[red]The existing installation must be valid before creation:[/]")
+            _print_workspace_problems(existing_problems, indent="  ")
+            raise typer.Exit(1)
+
+        candidate = _new_workspace_candidate_or_exit(
+            config,
+            name,
+            policy,
+            concurrency,
+        )
+
+        service = ScaffoldService()
+        workspace_path = os.fspath(service.workspace_path(name))
+        try:
+            service.create_workspace(name)
+        except (ConfigError, ScaffoldError, OSError) as exc:
+            console.print(f"[red]Could not create workspace:[/] {escape(str(exc))}")
+            raise typer.Exit(1) from None
+
+        post_scaffold_problems = _installation_errors(candidate)
+        if post_scaffold_problems:
+            console.print("[red]The published workspace did not validate:[/]")
+            _print_workspace_problems(post_scaffold_problems, indent="  ")
+            console.print(
+                "[yellow]An unused workspace directory remains at[/] "
+                f"[bold]{escape(workspace_path)}[/]; configuration was not changed."
+            )
+            raise typer.Exit(1)
+
+        _save_workspace_candidate_or_exit(candidate, workspace_path)
+
+        try:
+            config_check()
+        except typer.Exit as exc:
+            if exc.exit_code == 0:
+                pass
+            else:
+                _report_preserved_workspace(
+                    name,
+                    workspace_path,
+                    "the post-save configuration check failed",
+                )
+        except Exception as exc:
+            _report_preserved_workspace(
+                name,
+                workspace_path,
+                f"the post-save configuration check failed: {exc}",
+            )
+
+        subject, snapshot_created = _snapshot_workspace_or_exit(name, workspace_path)
+
+    console.print(f"[green]Workspace created:[/] {escape(name)}")
+    console.print(f"  Path: {escape(workspace_path)}")
+    console.print(f"  Policy: {escape(policy)}")
+    console.print(f"  Concurrency: {concurrency}")
+    if snapshot_created:
+        console.print(f"  [green]Snapshot created:[/] {escape(subject)}")
+    else:
+        console.print("  [dim]Snapshot already clean; no commit was needed.[/]")
+    console.print("[yellow]Restart the Enso service before using new routing.[/]")
+
+
+@workspace_app.command("repair")
+def workspace_repair(
+    name: Annotated[str, typer.Argument(help="Configured workspace name")],
+) -> None:
+    """Repair owned directories and discovery links without reseeding content."""
+    from .repository import EnsoRepository, RepositoryError
+    from .scaffolding import ScaffoldError, ScaffoldService
+    from .teams import load_catalog
+
+    # A strict read must precede creation of config.json.lock.
+    _load_config_or_exit()
+    name = _validate_workspace_name_or_exit(name)
+    with _config_lock_or_exit():
+        config = _load_config_or_exit()
+        catalog = load_catalog(config)
+        raw_workspaces = config.get("workspaces")
+        if not isinstance(raw_workspaces, dict) or name not in raw_workspaces:
+            console.print(f"[red]Workspace {escape(name)!r} is not configured.[/]")
+            raise typer.Exit(1)
+        catalog_problems = _catalog_problems(catalog)
+        if catalog_problems or not catalog.usable(name):
+            console.print("[red]Workspace configuration is invalid:[/]")
+            _print_workspace_problems(catalog_problems, indent="  ")
+            raise typer.Exit(1)
+
+        service = ScaffoldService()
+        preflight: list[str] = []
+        try:
+            EnsoRepository().validate()
+        except RepositoryError as exc:
+            preflight.append(str(exc))
+        preflight.extend(service.validate_global().errors)
+        if preflight:
+            console.print("[red]Global installation errors prevent workspace repair:[/]")
+            _print_workspace_problems(tuple(dict.fromkeys(preflight)), indent="  ")
+            raise typer.Exit(1)
+
+        try:
+            report = service.repair_workspace(name)
+        except (ConfigError, ScaffoldError, OSError) as exc:
+            console.print(f"[red]Could not repair workspace:[/] {escape(str(exc))}")
+            raise typer.Exit(1) from None
+
+        created = list(report.created)
+        if created:
+            console.print("[green]Created structural paths:[/]")
+            for path in created:
+                console.print(f"  {escape(os.fspath(path))}")
+        else:
+            console.print("[dim]No structural paths needed repair.[/]")
+        _print_scaffold_warnings(report.warnings)
+
+        errors = _installation_errors(config)
+        if errors:
+            console.print("[red]Workspace still has launch-blocking errors:[/]")
+            _print_workspace_problems(errors, indent="  ")
+            console.print(
+                "[dim]Seeded content is user-owned and was not recreated; restore it "
+                "manually, then rerun `enso workspace repair`.[/]"
+            )
+            raise typer.Exit(1)
+
+    console.print(f"[green]Workspace {escape(name)!r} is structurally valid.[/]")
 
 
 # ---------------------------------------------------------------------------

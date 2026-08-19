@@ -23,11 +23,13 @@ knowledge, creates workspaces, repairs links, or changes setup state.
 
 **Write boundary.** Every write the UI makes lands inside `~/.enso/` (jobs, user-owned
 global skills and docs, the canonical shared `AGENTS.md`, and root `AGENTS.md` files under
-the managed `~/.enso/workspaces/` tree). External workspace roots are invalid; nested workspace
-instruction files, native policy files, and external "parent" skills discovered from the
-CLIs' own roots (e.g. `~/.claude/skills/`) are strictly read-only. This is both the safety
-boundary and the scope model: Enso writes user-owned content only inside its managed tree
-and observes the rest.
+the canonical `~/.enso/workspaces/` tree). Alternate, external, nested, and symlinked
+workspace roots are invalid; their instruction content is never inspected or rendered.
+Nested workspace instruction files, native policy files, and external "parent" skills
+discovered from the CLIs' own roots (e.g. `~/.claude/skills/`) are strictly read-only.
+This is both the safety
+boundary and the scope model: Enso writes user-owned content only inside its canonical
+tree and observes only separately configured external skill roots.
 
 **Request protection.** Host headers must match loopback, the concrete bind host, or a
 name/IP in `web.allowed_hosts`; wildcard binds do not disable this check. All POST routes
@@ -48,7 +50,7 @@ fails app creation if it is malformed, unavailable, or empty. A configured liter
 | `/`                                        | GET       | Implemented | Dashboard — execution configuration plus recent operational activity |
 | `/workspaces`                              | GET       | Implemented | Active workspace catalog, policies, bindings, and status             |
 | `/workspaces/{name}`                       | GET       | Implemented | One workspace, root editor, child instructions, routes, and jobs     |
-| `/workspaces/{name}/agents/edit`           | POST      | Implemented | Revision-checked save of one managed root `AGENTS.md`                 |
+| `/workspaces/{name}/agents/edit`           | POST      | Implemented | Revision-checked save of one valid canonical root `AGENTS.md`         |
 | `/workspaces/{name}/agents/{path:path}`    | GET       | Implemented | Read-only view of one existing nested `AGENTS.md`                    |
 | `/policies`                                | GET       | Implemented | Active reusable policy catalog and consuming workspaces              |
 | `/policies/{name}`                         | GET       | Implemented | Normalized policy configuration and provider validation status       |
@@ -119,17 +121,19 @@ service is restarted.
 - Detail shows the same binding plus associated routes and jobs. Every lowercase
   kebab-case name resolves exactly to `~/.enso/workspaces/<name>`; configuration cannot
   provide another path. A symlinked container/root, a direct root `.git` entry, an
-  incorrect discovery link, or a duplicate global/workspace skill name is an error.
+  incorrect discovery link, or a duplicate global/workspace skill name is an error. The
+  invalid root is not scanned, classified as an external tier, or rendered through an
+  alternate read-only branch.
 - A bounded no-symlink scan discovers exact `AGENTS.md` names to a maximum depth of six,
   100 files, 2,000 directories, and 20,000 directory entries. Dot directories and common
   generated roots such as `node_modules`, `vendor`, `dist`, `build`, `target`, `uploads`,
   and `runtime` are pruned. Reaching a bound is visible rather than silently implying the
   inventory is complete.
-- Existing nested files have read-only detail pages. Only the root `AGENTS.md` of a managed
-  workspace can be created or edited in the browser; `CLAUDE.md` is never traversed or
-  replaced.
+- Existing nested files have read-only detail pages. The root `AGENTS.md` of every valid
+  canonical workspace can be created or edited in the browser; `CLAUDE.md` is never
+  traversed or replaced.
 
-Shared and managed workspace edits use the same hardened file boundary. Every path
+Shared and canonical workspace edits use the same hardened file boundary. Every path
 component is opened relative to pinned directory descriptors with no symlink following;
 files must be current-user-owned regular files with one link and no group/other write bit.
 Reads are stable, bounded UTF-8 with no NUL. The form carries a SHA-256 revision, and the
@@ -287,10 +291,10 @@ for its bounded timeout therefore cannot delay health checks or unrelated web re
 ### AGENTS.md (`/agents`)
 
 - Renders the canonical shared instructions at `~/.enso/AGENTS.md`. Claude and Codex
-  discover that live file natively from the managed Git root; Grok and Agy receive one
+  discover that live file natively from the canonical Git root; Grok and Agy receive one
   explicit copy after Enso revalidates the launch boundary and current source.
 - **Editable**: a textarea + save, POST to `/agents/edit`, with the same owner/type/link,
-  stable-read, size, UTF-8/NUL, revision-conflict, and atomic-replace checks as managed
+  stable-read, size, UTF-8/NUL, revision-conflict, and atomic-replace checks as canonical
   workspace roots. The sibling `CLAUDE.md -> AGENTS.md` symlink is left intact because the
   editor addresses only the canonical `AGENTS.md` regular file. Workspace-local focused
   instructions have their own workspace pages.
@@ -312,7 +316,7 @@ for its bounded timeout therefore cannot delay health checks or unrelated web re
   list still keeps separate card and table markup. The capped main column stays
   left-aligned beside the sidebar on wide screens, and long IDs, paths, upload controls,
   and metadata must never widen the document.
-- **Text editing**: Enso-owned `SKILL.md`, job prompts, shared and managed-root `AGENTS.md`,
+- **Text editing**: Enso-owned `SKILL.md`, job prompts, shared and canonical-root `AGENTS.md`,
   and reference docs use plain textareas; nested workspace instructions and
   external skills use escaped preformatted text. Rich Markdown rendering is not
   implemented. A successful edit is an atomic file mutation, not an automatic Git

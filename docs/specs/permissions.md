@@ -80,7 +80,7 @@ Filtering `PATH` is useful friction but is not an isolation boundary: an agent m
 
 The allowlist covers only the provider process's own environment. Commands the agent then spawns usually run through the user's shell, which re-sources shell startup files — `~/.zshenv` on every invocation, `~/.zprofile` for login shells — so any secret exported there re-enters the child environment despite the allowlist. Keep credentials out of shell startup files; export them only where the service that launches Enso can see them.
 
-The policy must also account for every additional flat managed workspace intentionally
+The policy must also account for every additional flat canonical workspace intentionally
 exposed to a staff or automation workspace, such as `~/.enso/workspaces/client-a/**`.
 
 ## Claude Code
@@ -94,7 +94,7 @@ claude -p --settings <policy-dir>/claude/settings.json \
   --model <model> -- <prompt>
 ```
 
-with `--mcp-config` appended exactly when the conventional file exists. The exact output and session flags vary by interactive operation, but the policy selection does not. Enso removes its unrestricted `--dangerously-skip-permissions` flag. It does not pass `--append-system-prompt-file`: Claude natively discovers root and workspace `CLAUDE.md` from the managed tree.
+with `--mcp-config` appended exactly when the conventional file exists. The exact output and session flags vary by interactive operation, but the policy selection does not. Enso removes its unrestricted `--dangerously-skip-permissions` flag. It does not pass `--append-system-prompt-file`: Claude natively discovers root and workspace `CLAUDE.md` from the canonical tree.
 
 `dontAsk` is necessary because nobody can answer an interactive approval prompt in a headless transport turn or job. `--strict-mcp-config` is what makes the conventional file an exact allowlist: the launch loads only servers named by `--mcp-config` and ignores every other MCP configuration source, so ambient servers the operator configured for themselves stay out, and the policy's own `mcp.json` — when present — is passed explicitly beside it. With no `mcp.json`, that resolves to zero MCP servers. `--setting-sources project` preserves Claude's native ancestor instruction and skill discovery. Enso first proves that the cwd is the exact physical workspace beneath the `~/.enso` Git root, so the root and local layers are both present without duplicate injection.
 
@@ -117,11 +117,16 @@ Under `--permission-mode dontAsk`, unmatched tool calls default to deny for Bash
 Because `--setting-sources project` also loads the workspace's own `.claude/settings.json`, treat that file as attacker-influenced. A `permissions` deny there cannot widen the launch (deny always wins), but a scalar such as `sandbox.enabled: false` can turn the sandbox off on the next launch. Any policy that grants writes must therefore deny writes to the control files that policy trusts — `.claude/**`, `.codex/**`, `AGENTS.md`, `CLAUDE.md`, and skill directories. A Claude `deny` on those paths blocks the Write and Edit tools and Bash redirection to them; a read-only policy that grants no write tool cannot plant them at all.
 
 A policy does not create instructions or copy skills. Fresh setup copies canonical shared
-instructions and global skills once; atomic workspace creation copies a focused local
-`AGENTS.md` and knowledge index once. Startup and `enso config check` validate read-only,
-and explicit setup repair changes only structural directories and known relative links.
-After creation, instructions and skills are user-owned and are never upgraded,
-resurrected, or removed by Enso.
+instructions and global skills once and is the sole automatic unrestricted
+`admin`/`default` exception. Later creation requires
+`enso workspace create <name> --policy <existing-policy> [--concurrency <n>]`; it never
+chooses authority implicitly. Atomic workspace creation copies a focused local
+`AGENTS.md` and knowledge index once, then snapshots the exact five versionable scaffold
+entries. Startup and `enso config check` validate read-only, and
+`enso workspace repair <name>` changes only structural directories and known relative
+links while reporting missing launch content. Repair never recreates `AGENTS.md`, skill definitions,
+docs, or `knowledge/README.md`. After creation, instructions and skills are user-owned
+and are never upgraded, resurrected, or removed by Enso.
 
 ### Granting credentials and MCP servers to a restricted policy
 
@@ -298,4 +303,10 @@ When a company workspace has native access to sibling client directories, its ow
 
 A missing, unreadable, malformed, or structurally unsafe native policy disables that provider for the affected policy. A missing or unsafe canonical shared instruction source, invalid workspace topology/link, or duplicate global/workspace skill name likewise fails `enso config check` and startup or provider launch closed without repair. If the effective provider is policy-allowed but native-unusable, a Telegram or Slack provider turn (or compaction) receives a configuration error and no provider process starts; Enso does not silently substitute another provider. Non-launch repair commands remain available as described above. A stored route provider that the current policy no longer allows is different: it is not an effective selection, so resolution uses that policy's declared default without erasing the stored preference. If a job's explicit provider is unusable, the job fails before prerun or provider execution and records/notifies that failure through the normal job path. Enso never falls back to an unrestricted launch, another policy, another workspace, an implicit cwd, or an unvalidated prompt.
 
-Route, workspace, and policy changes live in `config.json` and require restarting Enso. `JOB.md` files are reloaded by the scheduler and by manual runs. Native policy files are checked again at the provider launch boundary, so a queued request uses the policy bytes available when it actually starts. Stop the service before coordinated or urgent permission changes so a running CLI process cannot outlive the change.
+Route, workspace, and policy bindings live in `config.json` and require restarting Enso.
+Use the workspace CLI for workspace lifecycle mutations; it writes the validated catalog
+instead of requiring hand-built entries or links. `JOB.md` files are reloaded by the
+scheduler and by manual runs. Native policy files are checked again at the provider launch
+boundary, so a queued request uses the policy bytes available when it actually starts.
+Stop the service before coordinated or urgent permission changes so a running CLI process
+cannot outlive the change.
