@@ -153,7 +153,7 @@ outside this lifecycle because they require impact reporting across workspaces, 
 and jobs. Never invent a command or hand-edit a binding merely to finish a policy task.
 
 Policy config and canonical native policy sources are protected runtime/authority state,
-not versionable Enso content. Do not pass them to `enso snapshot create`.
+not versionable Enso content. Never commit them to Enso's local Git history.
 
 ## Validate and report
 

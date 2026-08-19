@@ -14,9 +14,6 @@ directories, not symlinks, and a workspace root has no `.git` entry.
 ~/.enso/
 ├── .git/                         # local history, not a backup
 ├── .gitignore                    # Enso's protected-path boundary
-├── .snapshot.lock                # persistent snapshot serializer
-├── .snapshot.transaction.json    # recoverable transaction marker when present
-├── .snapshot-transaction-*.tmp   # protected atomic marker-write temporary
 ├── AGENTS.md                     # global instructions
 ├── CLAUDE.md -> AGENTS.md
 ├── skills/                       # canonical global skills
@@ -63,11 +60,11 @@ enso workspace create <name> --policy <policy> [--concurrency <n>]
 
 Concurrency defaults to `1`. There is no path option because the name determines the
 root. Enso validates the complete candidate catalog, publishes a staged scaffold
-atomically, saves configuration, runs the installation checks, and automatically records
-the five versionable seed entries (`AGENTS.md`, `CLAUDE.md`, `.agents/skills`,
-`.claude/skills`, and `knowledge/README.md`) in local history. `config.json` stays ignored,
-so that content commit is not a configuration backup. A successful creation requires a
-service restart before routing processes see the new catalog entry.
+atomically, saves configuration, and runs the installation checks. Record the new
+scaffold in local history afterwards with one scoped commit
+(`git -C ~/.enso add workspaces/<name>` and `git -C ~/.enso commit`). `config.json`
+stays ignored, so content history is not a configuration backup. A successful creation
+requires a service restart before routing processes see the new catalog entry.
 
 Repair one configured workspace with:
 
@@ -132,40 +129,23 @@ links, canonical skills, global reference docs, workspace knowledge under `knowl
 and approved durable job definition or support files. Enso's root Git repository keeps
 local history only. It does not create a remote, push, pull, or provide backup.
 
-After one coherent change, create one snapshot with explicit paths only:
+After one coherent change, record one scoped commit with explicit paths only:
 
 ```bash
-enso snapshot create --message "<summary>" -- <changed-path> [<changed-path>...]
+git -C ~/.enso add <changed-path> [<changed-path>...]
+git -C ~/.enso commit -m "<summary>"
 ```
 
-The command requires a clean staging area, leaves unrelated unstaged work alone, and
-treats a request with no diff as a successful no-op. Never use raw broad Git staging or
-invent restore, reset, or delete operations; Enso intentionally exposes none.
+Stage only what changed together and leave unrelated work alone. Never use broad staging
+such as `git add -A`, never `--force`-add an ignored path, and never add a remote, push,
+pull, fetch, or run destructive history or worktree commands (`reset --hard`,
+`checkout`/`restore` over uncommitted files, `clean`, rebase). If history looks broken,
+report it to the operator instead of repairing it.
 
-Internally, Enso builds and audits a protected alternate index named
-`.snapshot-index-<32-lowercase-hex>` inside the resolved Git directory as a complete
-owner-only `0600` index. Enso uses filter-free descriptor reads to preserve the reviewed
-bytes: `git hash-object -w --no-filters --stdin` writes each blob, and
-`git update-index --add --cacheinfo` enters its exact object ID and mode without applying
-worktree attributes and clean filters. The owner-only transaction marker at
-`.snapshot.transaction.json` records its new-index SHA;
-each atomic marker update first uses a protected owner-only
-`.snapshot-transaction-<32-lowercase-hex>.tmp` at the worktree root. Before moving the
-ref, Enso atomically hard-links that index to the native `index.lock`, rechecks the old
-native-index checksum while raw Git is excluded, and atomically compare-and-swaps `HEAD`.
-It then atomically replaces the native index with that exact lock and fsyncs the Git
-directory without changing worktree files.
-
-If an interruption leaves a marker, the next snapshot recovers only the exact `old/old`,
-`new/old`, or `new/new` `HEAD`/native-index states recorded by that transaction; any
-divergence fails closed. Recovery removes or finalizes a native lock only when it matches
-the exact Enso-created lock inode and checksum named by the marker. An unrelated native
-lock is preserved, never deleted on the assumption that it is stale.
-
-Runtime-only or potentially sensitive content is ignored and must not be snapshotted.
-This includes `config.json`, secrets, databases, messages, state, audits, runs, caches,
-logs, native policy homes, snapshot and job locks, job output, `drafts/`, and `uploads/`.
-Unknown paths are not assumed safe merely because they are below `~/.enso/`.
+Runtime-only or potentially sensitive content is excluded by the managed `.gitignore`
+block and must never enter history. This includes `config.json`, secrets, databases,
+messages, state, audits, runs, caches, logs, native policy homes, job locks, job output,
+`drafts/`, and `uploads/`. Do not commit a path merely because it is below `~/.enso/`.
 
 This reference is seeded only during a genuinely fresh setup and is user-owned afterward.
 Upgrades do not replace it. An existing installation adopts newer guidance through the

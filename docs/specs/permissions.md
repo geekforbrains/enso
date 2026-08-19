@@ -154,8 +154,8 @@ instructions and global skills once and is the sole automatic unrestricted
 create`, validate it with `enso config check`, then create a workspace with
 `enso workspace create <name> --policy <existing-policy> [--concurrency <n>]`; it never
 chooses authority implicitly. Atomic workspace creation copies a focused local
-`AGENTS.md` and knowledge index once, then snapshots the exact five versionable scaffold
-entries. Startup and `enso config check` validate read-only, and
+`AGENTS.md` and knowledge index once; the new scaffold is recorded in local history by a
+later scoped commit. Startup and `enso config check` validate read-only, and
 `enso workspace repair <name>` changes only structural directories and known relative
 links while reporting missing launch content. Repair never recreates `AGENTS.md`, skill definitions,
 docs, or `knowledge/README.md`. After creation, instructions and skills are user-owned
@@ -314,20 +314,17 @@ A policy's `chat_commands` field controls only Enso transport commands such as S
 
 Most Enso commands do not launch a provider, so they remain available under `chat_commands` when the effective provider's native policy is broken; this lets a user inspect status or select a usable provider. Compaction does launch the effective provider and therefore requires its native policy to pass. Slack settings commands may run inside a thread but still update the entire channel or DM, as their response states; session commands act only on the current conversation.
 
-The shell command `enso snapshot create` is a provider capability, not a transport chat
-command. `chat_commands` neither grants nor blocks it, and the CLI does not bypass the
-native policy. The selected policy must independently permit the provider to execute
-Enso and read each requested versionable path. A successful snapshot also requires the
-policy to permit Enso's internal transaction writes: the root `.snapshot.lock`,
-`.snapshot.transaction.json`, and `.snapshot-transaction-<32-lowercase-hex>.tmp`; the
-owner-only alternate index and native `index.lock`/`index` in the resolved Git directory;
-and Git object, ref, reflog, and lock bookkeeping. A read-only or narrowly restricted
-policy may intentionally deny any of those writes. In that case the command fails and the
-agent must report the policy boundary; it must not substitute raw Git, widen or rewrite
-the policy, or bypass the sandbox. When the native policy permits the transaction, the
-snapshot service still applies its narrower content allowlist, so permission to invoke it
-cannot capture configuration, credentials, policies, databases, uploads, drafts, or
-runtime state.
+Recording content history is a provider capability, not a transport chat command:
+agents run ordinary `git add`/`git commit` in `~/.enso`. `chat_commands` neither grants
+nor blocks it, and Git does not bypass the native policy. The selected policy must
+independently permit the provider to execute `git`, read the staged paths, and write
+`~/.enso/.git` (index, objects, refs, reflogs, and lock bookkeeping). A read-only or
+narrowly restricted policy may intentionally deny those writes; in that case the commit
+fails and the agent must report the policy boundary rather than widening or rewriting
+the policy or bypassing the sandbox. The managed `.gitignore` keeps configuration,
+credentials, policies, databases, uploads, drafts, and runtime state out of ordinary
+staging, and the root prompt forbids broad staging, force-adds of ignored paths, remote
+operations, and destructive history commands.
 
 When a company workspace has native access to sibling client directories, its own `AGENTS.md` should explicitly require reading the selected client's protected instructions before acting. Merely changing directories during a run does not make every provider rebuild its startup instruction chain.
 

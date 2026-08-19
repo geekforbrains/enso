@@ -5,9 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import os
-import signal
 import subprocess
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -637,38 +635,11 @@ def _required_initial_paths(*workspace_names: str) -> set[str]:
     return paths
 
 
-def _initial_snapshot_scopes(*workspace_names: str) -> set[str]:
-    paths = {
-        ".agents/skills",
-        ".claude/skills",
-        ".gitignore",
-        "AGENTS.md",
-        "CLAUDE.md",
-        "docs",
-        "skills",
-    }
-    for name in workspace_names:
-        base = f"workspaces/{name}"
-        paths.update(
-            {
-                f"{base}/.agents/skills",
-                f"{base}/.claude/skills",
-                f"{base}/AGENTS.md",
-                f"{base}/CLAUDE.md",
-                f"{base}/knowledge",
-                f"{base}/skills",
-            }
-        )
-    return paths
-
-
-def test_fresh_setup_finalization_orders_null_seed_snapshot_then_timestamp(monkeypatch):
+def test_fresh_setup_finalization_orders_null_seed_commit_then_timestamp(monkeypatch):
     from enso import cli as cli_module
     from enso.repository import EnsoRepository
 
     events: list[tuple[str, object]] = []
-    snapshot_paths: tuple[str, ...] = ()
-    required_paths = tuple(_required_initial_paths("alpha", "default"))
     config = {
         "setup": {"completed_at": None},
         "workspaces": {
@@ -689,8 +660,6 @@ def test_fresh_setup_finalization_orders_null_seed_snapshot_then_timestamp(monke
         "_scaffold_setup_or_exit",
         lambda _candidate: events.append(("scaffold", None)),
     )
-    monkeypatch.setattr(cli_module.os.path, "lexists", lambda _path: True)
-    monkeypatch.setattr(cli_module.os, "listdir", lambda _path: ["local-skill"])
     monkeypatch.setattr(
         EnsoRepository,
         "ensure",
@@ -704,33 +673,8 @@ def test_fresh_setup_finalization_orders_null_seed_snapshot_then_timestamp(monke
     )
     monkeypatch.setattr(
         EnsoRepository,
-        "ignored_paths",
-        lambda _self, paths: events.append(("ignored", tuple(paths))) or (),
-        raising=False,
-    )
-
-    def snapshot(_self, paths, message):
-        nonlocal snapshot_paths
-        snapshot_paths = tuple(paths)
-        events.append(("snapshot", message))
-        return True
-
-    monkeypatch.setattr(
-        EnsoRepository,
-        "snapshot",
-        snapshot,
-    )
-    monkeypatch.setattr(
-        EnsoRepository,
-        "tracked_paths",
-        lambda _self: events.append(("tracked", None)) or required_paths,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        EnsoRepository,
-        "commit_subject_paths",
-        lambda _self, subject: events.append(("marker-paths", subject))
-        or (required_paths if snapshot_paths else None),
+        "commit_all",
+        lambda _self, message: events.append(("commit", message)) or True,
         raising=False,
     )
 
@@ -739,24 +683,17 @@ def test_fresh_setup_finalization_orders_null_seed_snapshot_then_timestamp(monke
     assert [event for event, _value in events] == [
         "save",
         "repository",
-        "marker-paths",
         "head",
         "scaffold",
-        "ignored",
-        "snapshot",
-        "tracked",
-        "marker-paths",
+        "commit",
         "save",
     ]
     assert events[0][1] is None
-    assert events[2][1] == _INITIAL_SETUP_SUBJECT
-    assert events[6][1] == _INITIAL_SETUP_SUBJECT
-    assert set(snapshot_paths) == _initial_snapshot_scopes("alpha", "default")
-    assert set(events[5][1]) == _required_initial_paths("alpha", "default")
+    assert events[4][1] == _INITIAL_SETUP_SUBJECT
     assert isinstance(events[-1][1], str)
 
 
-def test_finalize_fresh_setup_seeds_snapshots_then_marks_complete(tmp_enso):
+def test_finalize_fresh_setup_seeds_commits_then_marks_complete(tmp_enso):
     from datetime import datetime
 
     from enso.config import SetupState, load_config, setup_state
@@ -824,141 +761,7 @@ def test_finalize_fresh_setup_seeds_snapshots_then_marks_complete(tmp_enso):
     assert operator_doc.read_text(encoding="utf-8") == "operator-owned content\n"
 
 
-def test_fresh_setup_recovers_a_committed_snapshot_killed_before_index_realign(
-    tmp_path,
-):
-    from datetime import datetime
-
-    home = tmp_path / "home"
-    home.mkdir()
-    root = home / ".enso"
-    custom_content = "operator content survives the crash\n"
-    environment = os.environ.copy()
-    environment["HOME"] = str(home)
-
-    crash_script = "\n".join(
-        (
-            "import os",
-            "import signal",
-            "from pathlib import Path",
-            "from enso.cli import _finalize_setup_or_exit",
-            "from enso.repository import EnsoRepository",
-            "repository = EnsoRepository()",
-            "repository.ensure()",
-            "root = Path(repository.root)",
-            "custom = root / 'docs' / 'custom.md'",
-            "custom.parent.mkdir()",
-            f"custom.write_text({custom_content!r}, encoding='utf-8')",
-            "config = {'setup': {'completed_at': None}, "
-            "'workspaces': {'default': {'policy': 'admin', 'concurrency': 1}}}",
-            "real_run_git = EnsoRepository._run_git",
-            "def crash_after_ref_update(self, args, **kwargs):",
-            "    result = real_run_git(self, args, **kwargs)",
-            "    if 'update-ref' in args:",
-            "        os.kill(os.getpid(), signal.SIGKILL)",
-            "    return result",
-            "EnsoRepository._run_git = crash_after_ref_update",
-            "_finalize_setup_or_exit(config)",
-        )
-    )
-    crashed = subprocess.run(
-        [sys.executable, "-c", crash_script],
-        check=False,
-        capture_output=True,
-        env=environment,
-        timeout=20,
-    )
-
-    assert crashed.returncode == -signal.SIGKILL
-    transaction = root / ".snapshot.transaction.json"
-    temporary_indexes = tuple((root / ".git").glob(".snapshot-index-*"))
-    assert transaction.is_file()
-    assert len(temporary_indexes) == 1
-    assert json.loads((root / "config.json").read_text(encoding="utf-8"))["setup"] == {
-        "completed_at": None
-    }
-    committed_head = _git_output(str(root), "rev-parse", "HEAD")
-    assert _git_output(str(root), "log", "-1", "--format=%s") == _INITIAL_SETUP_SUBJECT
-    assert (
-        subprocess.run(
-            ["git", "-C", str(root), "diff", "--cached", "--quiet", "--exit-code"],
-            check=False,
-            capture_output=True,
-            timeout=10,
-        ).returncode
-        == 1
-    )
-
-    retry_script = "\n".join(
-        (
-            "import json",
-            "from pathlib import Path",
-            "from enso.cli import _finalize_setup_or_exit",
-            "from enso.config import load_config",
-            "from enso.repository import EnsoRepository",
-            "root = Path.home() / '.enso'",
-            "events = []",
-            "real_ensure = EnsoRepository.ensure",
-            "real_subject_paths = EnsoRepository.commit_subject_paths",
-            "def observed_ensure(self):",
-            "    result = real_ensure(self)",
-            "    assert not (root / '.snapshot.transaction.json').exists()",
-            "    assert not tuple((root / '.git').glob('.snapshot-index-*'))",
-            "    clean = self._run_git(",
-            "        ['diff', '--cached', '--quiet', '--exit-code'],",
-            "        check=False, read_only=True, description='verify recovered setup index',",
-            "    )",
-            "    assert clean.returncode == 0",
-            "    events.append('ensure-recovered')",
-            "    return result",
-            "def observed_subject_paths(self, subject):",
-            "    assert events == ['ensure-recovered']",
-            "    assert not (root / '.snapshot.transaction.json').exists()",
-            "    assert not tuple((root / '.git').glob('.snapshot-index-*'))",
-            "    result = real_subject_paths(self, subject)",
-            "    events.append('marker-read')",
-            "    return result",
-            "EnsoRepository.ensure = observed_ensure",
-            "EnsoRepository.commit_subject_paths = observed_subject_paths",
-            "_finalize_setup_or_exit(load_config())",
-            "(Path.home() / 'retry-events.json').write_text(",
-            "    json.dumps(events), encoding='utf-8'",
-            ")",
-        )
-    )
-    retried = subprocess.run(
-        [sys.executable, "-c", retry_script],
-        check=False,
-        capture_output=True,
-        env=environment,
-        timeout=20,
-    )
-
-    assert retried.returncode == 0, retried.stderr.decode(errors="replace")
-    assert json.loads((home / "retry-events.json").read_text(encoding="utf-8")) == [
-        "ensure-recovered",
-        "marker-read",
-    ]
-    persisted = json.loads((root / "config.json").read_text(encoding="utf-8"))
-    completed_at = datetime.fromisoformat(persisted["setup"]["completed_at"])
-    assert completed_at.utcoffset() is not None
-    assert _git_output(str(root), "rev-parse", "HEAD") == committed_head
-    assert _git_output(str(root), "rev-list", "--count", "HEAD") == "1"
-    assert _git_output(str(root), "log", "--format=%s").splitlines().count(
-        _INITIAL_SETUP_SUBJECT
-    ) == 1
-    assert _required_initial_paths("default") | {"docs/custom.md"} <= set(
-        _git_output(str(root), "ls-files").splitlines()
-    )
-    assert (root / "docs" / "custom.md").read_text(encoding="utf-8") == custom_content
-    assert _git_output(str(root), "show", "HEAD:docs/custom.md") == custom_content.rstrip()
-    assert _git_output(str(root), "status", "--porcelain") == ""
-    assert not transaction.exists()
-    assert tuple((root / ".git").glob(".snapshot-index-*")) == ()
-    assert not (root / ".git" / "index.lock").exists()
-
-
-def test_snapshot_failure_leaves_fresh_setup_incomplete(
+def test_baseline_commit_failure_leaves_fresh_setup_incomplete(
     tmp_enso, monkeypatch, capsys
 ):
     from enso.config import SetupState, load_config, setup_state
@@ -971,8 +774,11 @@ def test_snapshot_failure_leaves_fresh_setup_incomplete(
         "workspaces": {"default": {"policy": "admin", "concurrency": 1}},
     }
     monkeypatch.setattr(
-        "enso.repository.EnsoRepository.snapshot",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RepositoryError("snapshot failed")),
+        "enso.repository.EnsoRepository.commit_all",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RepositoryError("baseline commit failed")
+        ),
+        raising=False,
     )
 
     with pytest.raises(typer.Exit) as exc_info:
@@ -980,7 +786,7 @@ def test_snapshot_failure_leaves_fresh_setup_incomplete(
 
     assert exc_info.value.exit_code == 1
     assert setup_state(load_config()) is SetupState.INCOMPLETE
-    assert "snapshot failed" in capsys.readouterr().out
+    assert "baseline commit failed" in capsys.readouterr().out
     assert (
         subprocess.run(
             ["git", "-C", tmp_enso, "rev-parse", "--verify", "HEAD"],
@@ -992,7 +798,7 @@ def test_snapshot_failure_leaves_fresh_setup_incomplete(
 
 
 @pytest.mark.parametrize("edited_path", ["AGENTS.md", "docs/operator.md"])
-def test_timestamp_save_failure_then_user_edit_retries_without_snapshotting_edit(
+def test_timestamp_save_failure_then_user_edit_retries_without_committing_edit(
     tmp_enso, monkeypatch, edited_path
 ):
     from enso import cli as cli_module
@@ -1025,11 +831,12 @@ def test_timestamp_save_failure_then_user_edit_retries_without_snapshotting_edit
     assert _git_output(tmp_enso, "rev-list", "--count", "HEAD") == "1"
 
     edited = Path(tmp_enso, edited_path)
-    edited.write_text("operator-owned change after initial snapshot\n", encoding="utf-8")
+    edited.write_text("operator-owned change after initial baseline\n", encoding="utf-8")
     monkeypatch.setattr(
         EnsoRepository,
-        "snapshot",
-        lambda *_args, **_kwargs: pytest.fail("marker retry must not call snapshot"),
+        "commit_all",
+        lambda *_args, **_kwargs: pytest.fail("retry with history must not commit again"),
+        raising=False,
     )
     _finalize_setup_or_exit(persisted)
 
@@ -1047,226 +854,32 @@ def test_timestamp_save_failure_then_user_edit_retries_without_snapshotting_edit
     )
 
 
-def test_ignored_required_docs_block_before_head_then_clean_retry_commits_once(
-    tmp_enso, capsys
-):
+def test_existing_history_completes_without_second_baseline_commit(tmp_enso):
     from enso.config import SetupState, load_config, setup_state
     from enso.repository import EnsoRepository
+    from enso.scaffolding import ScaffoldService
 
     Path(tmp_enso, "workspaces", "default").rmdir()
+    service = ScaffoldService()
+    service.seed_fresh_global()
+    service.seed_fresh_starter_docs()
+    service.create_workspace("default")
     repository = EnsoRepository()
     repository.ensure()
-    gitignore = Path(tmp_enso, ".gitignore")
-    gitignore.write_text(
-        f"/docs/\n\n{gitignore.read_text(encoding='utf-8')}",
-        encoding="utf-8",
-    )
+    assert repository.commit_all("Initialize Enso content") is True
     config = {
         "setup": {"completed_at": None},
         "workspaces": {"default": {"policy": "admin", "concurrency": 1}},
     }
 
-    with pytest.raises(typer.Exit) as exc_info:
-        _finalize_setup_or_exit(config)
-
-    assert exc_info.value.exit_code == 1
-    assert setup_state(load_config()) is SetupState.INCOMPLETE
-    output = capsys.readouterr().out
-    assert "ignored" in output.lower()
-    assert "docs/operator.md" in output
-    assert (
-        subprocess.run(
-            ["git", "-C", tmp_enso, "rev-parse", "--verify", "HEAD"],
-            check=False,
-            capture_output=True,
-        ).returncode
-        != 0
-    )
-
-    gitignore.write_text(
-        gitignore.read_text(encoding="utf-8").removeprefix("/docs/\n\n"),
-        encoding="utf-8",
-    )
-    _finalize_setup_or_exit(load_config())
+    _finalize_setup_or_exit(config)
 
     assert setup_state(load_config()) is SetupState.COMPLETE
     assert _git_output(tmp_enso, "rev-list", "--count", "HEAD") == "1"
     assert _git_output(tmp_enso, "log", "-1", "--format=%s") == _INITIAL_SETUP_SUBJECT
 
 
-def test_missing_required_baseline_stops_before_snapshot_or_commit(
-    tmp_enso, monkeypatch, capsys
-):
-    from enso import cli as cli_module
-    from enso.config import SetupState, load_config, setup_state
-    from enso.repository import EnsoRepository
-
-    Path(tmp_enso, "workspaces", "default").rmdir()
-    EnsoRepository().ensure()
-    config = {
-        "setup": {"completed_at": None},
-        "workspaces": {"default": {"policy": "admin", "concurrency": 1}},
-    }
-    real_scaffold = cli_module._scaffold_setup_or_exit
-
-    def omit_required_doc(candidate):
-        real_scaffold(candidate)
-        Path(tmp_enso, "docs", "operator.md").unlink()
-
-    snapshot = Mock()
-    monkeypatch.setattr(cli_module, "_scaffold_setup_or_exit", omit_required_doc)
-    monkeypatch.setattr(EnsoRepository, "snapshot", snapshot)
-
-    with pytest.raises(typer.Exit) as exc_info:
-        _finalize_setup_or_exit(config)
-
-    assert exc_info.value.exit_code == 1
-    assert snapshot.call_count == 0
-    assert setup_state(load_config()) is SetupState.INCOMPLETE
-    assert "docs/operator.md" in capsys.readouterr().out
-    assert (
-        subprocess.run(
-            ["git", "-C", tmp_enso, "rev-parse", "--verify", "HEAD"],
-            check=False,
-            capture_output=True,
-        ).returncode
-        != 0
-    )
-
-
-def test_fresh_setup_refuses_and_preserves_preexisting_staging(tmp_enso, capsys):
-    from enso.config import SetupState, load_config, setup_state
-    from enso.repository import EnsoRepository
-
-    Path(tmp_enso, "workspaces", "default").rmdir()
-    repository = EnsoRepository()
-    repository.ensure()
-    config = {
-        "setup": {"completed_at": None},
-        "workspaces": {"default": {"policy": "admin", "concurrency": 1}},
-    }
-    _scaffold_setup_or_exit(config)
-    subprocess.run(
-        ["git", "-C", tmp_enso, "add", "--", "docs/operator.md"],
-        check=True,
-    )
-    assert _git_output(tmp_enso, "diff", "--cached", "--name-only") == (
-        "docs/operator.md"
-    )
-    staged_content = Path(tmp_enso, "docs", "operator.md").read_text(encoding="utf-8")
-
-    with pytest.raises(typer.Exit) as exc_info:
-        _finalize_setup_or_exit(config)
-
-    assert exc_info.value.exit_code == 1
-    assert setup_state(load_config()) is SetupState.INCOMPLETE
-    assert "staging area is not clean" in " ".join(capsys.readouterr().out.split())
-    assert _git_output(tmp_enso, "diff", "--cached", "--name-only") == (
-        "docs/operator.md"
-    )
-    assert Path(tmp_enso, "docs", "operator.md").read_text(encoding="utf-8") == staged_content
-    assert (
-        subprocess.run(
-            ["git", "-C", tmp_enso, "rev-parse", "--verify", "HEAD"],
-            check=False,
-            capture_output=True,
-        ).returncode
-        != 0
-    )
-    assert not Path(tmp_enso, ".snapshot.transaction.json").exists()
-    assert tuple((Path(tmp_enso) / ".git").glob(".snapshot-index-*")) == ()
-
-
-def test_similar_unrelated_commit_subject_blocks_fresh_snapshot(tmp_enso, capsys):
-    from enso.config import SetupState, load_config, setup_state
-    from enso.repository import EnsoRepository
-
-    Path(tmp_enso, "workspaces", "default").rmdir()
-    EnsoRepository().ensure()
-    subprocess.run(
-        ["git", "-C", tmp_enso, "add", "--", "AGENTS.md"],
-        check=True,
-    )
-    subprocess.run(
-        ["git", "-C", tmp_enso, "commit", "--quiet", "-m", f"{_INITIAL_SETUP_SUBJECT} manually"],
-        check=True,
-    )
-    config = {
-        "setup": {"completed_at": None},
-        "workspaces": {"default": {"policy": "admin", "concurrency": 1}},
-    }
-
-    with pytest.raises(typer.Exit) as exc_info:
-        _finalize_setup_or_exit(config)
-
-    assert exc_info.value.exit_code == 1
-    assert setup_state(load_config()) is SetupState.INCOMPLETE
-    assert _git_output(tmp_enso, "rev-list", "--count", "HEAD") == "1"
-    assert not Path(tmp_enso, "docs").exists()
-    output = " ".join(capsys.readouterr().out.split()).lower()
-    assert "history" in output
-    assert "initial" in output
-
-
-def test_initial_marker_below_later_user_commit_skips_snapshot_and_current_tree_check(
-    tmp_enso, monkeypatch
-):
-    from enso import cli as cli_module
-    from enso.config import SetupState, load_config, setup_state
-    from enso.repository import EnsoRepository
-
-    Path(tmp_enso, "workspaces", "default").rmdir()
-    EnsoRepository().ensure()
-    config = {
-        "setup": {"completed_at": None},
-        "workspaces": {"default": {"policy": "admin", "concurrency": 1}},
-    }
-    real_save = cli_module.save_config
-    save_calls = 0
-
-    def fail_first_completion(candidate):
-        nonlocal save_calls
-        save_calls += 1
-        if save_calls == 2:
-            raise OSError("completion write failed")
-        real_save(candidate)
-
-    monkeypatch.setattr(cli_module, "save_config", fail_first_completion)
-    with pytest.raises(typer.Exit):
-        _finalize_setup_or_exit(config)
-
-    operator_doc = Path(tmp_enso, "docs", "operator.md")
-    operator_doc.unlink()
-    subprocess.run(
-        ["git", "-C", tmp_enso, "add", "--update", "--", "docs/operator.md"],
-        check=True,
-    )
-    subprocess.run(
-        ["git", "-C", tmp_enso, "commit", "--quiet", "-m", "Remove starter I do not need"],
-        check=True,
-    )
-    persisted = load_config()
-    assert setup_state(persisted) is SetupState.INCOMPLETE
-    assert _git_output(tmp_enso, "rev-list", "--count", "HEAD") == "2"
-    monkeypatch.setattr(
-        EnsoRepository,
-        "snapshot",
-        lambda *_args, **_kwargs: pytest.fail("historical marker must skip snapshot"),
-    )
-
-    _finalize_setup_or_exit(persisted)
-
-    assert setup_state(load_config()) is SetupState.COMPLETE
-    assert _git_output(tmp_enso, "rev-list", "--count", "HEAD") == "2"
-    assert not operator_doc.exists()
-    assert _git_output(tmp_enso, "log", "--format=%s").splitlines().count(
-        _INITIAL_SETUP_SUBJECT
-    ) == 1
-
-
-def test_new_snapshot_must_track_every_required_exact_path_before_timestamp(
-    monkeypatch, capsys
-):
+def test_existing_history_retry_repairs_structure_without_fresh_seeding(monkeypatch):
     from enso import cli as cli_module
     from enso.repository import EnsoRepository
 
@@ -1274,100 +887,6 @@ def test_new_snapshot_must_track_every_required_exact_path_before_timestamp(
         "setup": {"completed_at": None},
         "workspaces": {"default": {"policy": "admin", "concurrency": 1}},
     }
-    required = _required_initial_paths("default")
-    saves: list[object] = []
-    snapshots = 0
-    monkeypatch.setattr(
-        cli_module,
-        "save_config",
-        lambda candidate: saves.append(candidate["setup"]["completed_at"]),
-    )
-    monkeypatch.setattr(cli_module, "_scaffold_setup_or_exit", lambda _config: None)
-    monkeypatch.setattr(cli_module.os.path, "lexists", lambda _path: True)
-    monkeypatch.setattr(cli_module.os, "listdir", lambda _path: [])
-    monkeypatch.setattr(EnsoRepository, "ensure", lambda _self: None)
-    monkeypatch.setattr(EnsoRepository, "has_head", lambda _self: False, raising=False)
-    monkeypatch.setattr(
-        EnsoRepository, "ignored_paths", lambda _self, _paths: (), raising=False
-    )
-
-    def snapshot(_self, _paths, _message):
-        nonlocal snapshots
-        snapshots += 1
-        return True
-
-    monkeypatch.setattr(EnsoRepository, "snapshot", snapshot)
-    monkeypatch.setattr(
-        EnsoRepository,
-        "tracked_paths",
-        lambda _self: tuple(required - {"docs/operator.md"}),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        EnsoRepository,
-        "commit_subject_paths",
-        lambda _self, _subject: tuple(required) if snapshots else None,
-        raising=False,
-    )
-
-    with pytest.raises(typer.Exit) as exc_info:
-        _finalize_setup_or_exit(config)
-
-    assert exc_info.value.exit_code == 1
-    assert snapshots == 1
-    assert saves == [None]
-    assert config["setup"]["completed_at"] is None
-    assert "docs/operator.md" in capsys.readouterr().out
-
-
-def test_historical_initial_marker_must_contain_the_complete_required_tree(
-    monkeypatch, capsys
-):
-    from enso import cli as cli_module
-    from enso.repository import EnsoRepository
-
-    config = {
-        "setup": {"completed_at": None},
-        "workspaces": {"default": {"policy": "admin", "concurrency": 1}},
-    }
-    required = _required_initial_paths("default")
-    saves: list[object] = []
-    monkeypatch.setattr(
-        cli_module,
-        "save_config",
-        lambda candidate: saves.append(candidate["setup"]["completed_at"]),
-    )
-    monkeypatch.setattr(EnsoRepository, "ensure", lambda _self: None)
-    monkeypatch.setattr(
-        EnsoRepository,
-        "commit_subject_paths",
-        lambda _self, _subject: tuple(required - {"skills/docs/SKILL.md"}),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        EnsoRepository,
-        "snapshot",
-        lambda *_args, **_kwargs: pytest.fail("an existing marker must never snapshot"),
-    )
-
-    with pytest.raises(typer.Exit) as exc_info:
-        _finalize_setup_or_exit(config)
-
-    assert exc_info.value.exit_code == 1
-    assert saves == [None]
-    assert config["setup"]["completed_at"] is None
-    assert "skills/docs/SKILL.md" in capsys.readouterr().out
-
-
-def test_historical_marker_retry_repairs_structure_without_fresh_seeding(monkeypatch):
-    from enso import cli as cli_module
-    from enso.repository import EnsoRepository
-
-    config = {
-        "setup": {"completed_at": None},
-        "workspaces": {"default": {"policy": "admin", "concurrency": 1}},
-    }
-    required = _required_initial_paths("default")
     events: list[tuple[str, object]] = []
     monkeypatch.setattr(
         cli_module,
@@ -1381,8 +900,8 @@ def test_historical_marker_retry_repairs_structure_without_fresh_seeding(monkeyp
     )
     monkeypatch.setattr(
         EnsoRepository,
-        "commit_subject_paths",
-        lambda _self, subject: events.append(("marker-paths", subject)) or tuple(required),
+        "has_head",
+        lambda _self: events.append(("head", None)) or True,
         raising=False,
     )
 
@@ -1392,13 +911,8 @@ def test_historical_marker_retry_repairs_structure_without_fresh_seeding(monkeyp
     monkeypatch.setattr(cli_module, "_scaffold_setup_or_exit", scaffold)
     monkeypatch.setattr(
         EnsoRepository,
-        "snapshot",
-        lambda *_args, **_kwargs: pytest.fail("historical marker must skip snapshot"),
-    )
-    monkeypatch.setattr(
-        EnsoRepository,
-        "tracked_paths",
-        lambda _self: pytest.fail("historical marker must skip current-index checks"),
+        "commit_all",
+        lambda *_args, **_kwargs: pytest.fail("existing history must skip the baseline commit"),
         raising=False,
     )
 
@@ -1407,7 +921,7 @@ def test_historical_marker_retry_repairs_structure_without_fresh_seeding(monkeyp
     assert [event for event, _value in events] == [
         "save",
         "repository",
-        "marker-paths",
+        "head",
         "scaffold",
         "save",
     ]
@@ -1425,7 +939,7 @@ def test_historical_marker_retry_repairs_structure_without_fresh_seeding(monkeyp
         ),
     ],
 )
-def test_nonfresh_setup_never_seeds_starter_docs_or_creates_a_snapshot(
+def test_nonfresh_setup_never_seeds_starter_docs_or_creates_a_commit(
     tmp_enso, setup_block, expected_state, monkeypatch
 ):
     from enso.config import load_config, setup_state

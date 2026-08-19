@@ -116,7 +116,7 @@ def test_workspace_skill_documents_only_the_canonical_managed_layout():
     assert "defaults to `1`" in skill
     assert "Do not edit `~/.enso/config.json`" in skill
     assert "Do not make provider discovery links by hand" in skill
-    assert "automatically snapshots" in skill
+    assert "Record the new scaffold in local" in skill
     assert "not a configuration backup" in skill
     assert "service restart" in skill
 
@@ -229,30 +229,26 @@ def test_workspace_skill_prefers_a_small_prompt_and_knowledge_index():
     assert "self-contained domain manual" not in skill
 
 
-def test_content_mutation_skills_require_scoped_enso_snapshots():
+def test_content_mutation_skills_require_scoped_git_commits():
     bundled = importlib.resources.files("enso").joinpath("skills")
 
     for name in ("docs", "jobs", "workspace"):
         skill = bundled.joinpath(name, "SKILL.md").read_text(encoding="utf-8")
         for contract in (
-            "after each coherent change to versionable Enso content",
-            'enso snapshot create --message "<summary>" -- <changed-path>',
-            "explicit paths",
-            "snapshot locks and transaction state",
-            ".snapshot.transaction.json",
-            ".snapshot-transaction-*.tmp",
-            ".snapshot-index-*",
-            "resolved Git directory",
-            "Never remove a native Git index lock",
-            "Never use raw broad Git staging",
+            "git -C ~/.enso add <changed-path>",
+            'git -C ~/.enso commit -m "<summary>"',
+            "broad staging such as `git add -A`",
+            "History is local only",
+            "never add a remote, push, pull, fetch",
+            "destructive history or worktree commands",
             "If the active policy denies",
             "report that boundary",
-            "restore, reset, or delete",
         ):
             assert contract in skill, f"{name} skill is missing {contract!r}"
+        assert "enso snapshot" not in skill, f"{name} skill still names the removed command"
 
 
-def test_tables_skill_keeps_runtime_database_out_of_content_snapshots():
+def test_tables_skill_keeps_runtime_database_out_of_content_history():
     skill = (
         importlib.resources.files("enso")
         .joinpath("skills", "tables", "SKILL.md")
@@ -262,6 +258,6 @@ def test_tables_skill_keeps_runtime_database_out_of_content_snapshots():
     for contract in (
         "protected runtime state",
         "not versionable Enso content",
-        "never pass it to `enso snapshot create`",
+        "never be committed to Enso's local content history",
     ):
         assert contract in skill

@@ -85,10 +85,10 @@ workspace is created with `enso workspace create <name> --policy <existing-polic
 `--concurrency <n>`; the policy is mandatory, concurrency defaults to `1`, and no path
 option exists. Creation validates the complete candidate catalog, atomically publishes
 the structure shown above with a short local prompt and `knowledge/README.md`, atomically
-saves configuration, and runs the installation check. It automatically snapshots exactly
-`AGENTS.md`, `CLAUDE.md`, `.agents/skills`, `.claude/skills`, and
-`knowledge/README.md`; local `skills/` starts empty. This Git history excludes config and
-is not a complete backup.
+saves configuration, and runs the installation check. The new `AGENTS.md`, `CLAUDE.md`,
+`.agents/skills`, `.claude/skills`, and `knowledge/README.md` are then recorded in local
+history with one scoped commit; local `skills/` starts empty. This Git history excludes
+config and is not a complete backup.
 
 Every later policy is also explicit. Use `enso policy create <name>` with exactly one of
 `--unrestricted` and `--policy-dir <path>`, repeated `--provider`, and one
@@ -103,8 +103,8 @@ Those files become user-owned immediately. Startup and configuration checks vali
 without changing content. `enso workspace repair <name>` creates only missing structural
 directories and known relative discovery links; it preserves and reports missing content
 or conflicting paths instead of overwriting `AGENTS.md`, skills, docs, or
-`knowledge/README.md`. A published root is preserved if config saving, post-save checking,
-or snapshotting fails; config-save failure leaves it unused, while later failure may leave
+`knowledge/README.md`. A published root is preserved if config saving or post-save checking
+fails; config-save failure leaves it unused, while later failure may leave
 it configured. Creation refuses an existing destination, so the operator must inspect and
 repair a partial or manually migrated root rather than asking create to merge it.
 
@@ -328,18 +328,17 @@ unique for that workspace; duplicates fail validation rather than relying on a p
 precedence. Every skill follows the [Agent Skills specification](https://agentskills.io/specification); the bundled `policy` skill carries native-policy authoring and registration, while the `workspace` skill carries workspace structure and binding.
 
 After one coherent edit to instructions, canonical skills, or workspace knowledge, an
-agent should create one local snapshot with explicit paths:
+agent should record one scoped commit with explicit paths:
 
 ```bash
-enso snapshot create --message "docs: update client onboarding" -- \
-  AGENTS.md knowledge/onboarding.md
+git -C ~/.enso add workspaces/client/AGENTS.md workspaces/client/knowledge/onboarding.md
+git -C ~/.enso commit -m "docs: update client onboarding"
 ```
 
-Relative paths resolve from the provider's workspace cwd. The command accepts only
-versionable content below `~/.enso`; policies, configuration, credentials, uploads,
-drafts, and runtime state remain outside its allowlist. A native policy still decides
-whether the provider may execute Enso and modify those files. See
-[snapshots.md](snapshots.md) for the complete boundary.
+The managed `.gitignore` keeps policies, configuration, credentials, uploads, drafts,
+and runtime state out of history; agents never use broad staging or `--force`-add an
+ignored path. A native policy still decides whether the provider may run Git and modify
+those files.
 
 A staff route starting directly in a client workspace naturally sees that client's project material. A route starting in the company workspace must explicitly read a client's protected instructions before working across directories.
 

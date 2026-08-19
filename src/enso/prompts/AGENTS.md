@@ -29,15 +29,14 @@ Keep detailed procedures and changing inventories in their authoritative sources
 
 ## Local content history
 
-Create one scoped local snapshot after each coherent change to versionable Enso content:
+`~/.enso` is a local-only Git repository. After each coherent change to Enso content (instructions, skills, reference docs, workspace knowledge, durable job definitions), record one scoped commit:
 
 ```bash
-enso snapshot create --message "<summary>" -- <changed-path> [<changed-path>...]
+git -C ~/.enso add <changed-path> [<changed-path>...]
+git -C ~/.enso commit -m "<summary>"
 ```
 
-Always pass explicit paths for only that coherent change. Versionable content includes root and workspace instructions, canonical skills, global reference docs, workspace knowledge, and durable job definitions or support scripts. Treat configuration, credentials, databases, messages, audits, run output, caches, logs, uploads, drafts, native policy homes, and snapshot locks and transaction state (`.snapshot.lock`, `.snapshot.transaction.json`, `.snapshot-transaction-*.tmp` at the worktree root, and `.snapshot-index-*` in the resolved Git directory) as protected runtime state that must not be snapshotted. Never remove a native Git index lock; Enso handles one only when its transaction marker proves the exact lock is Enso-created. If the active policy denies a requested read or an internal repository or transaction write, report that boundary; never widen or rewrite the policy or substitute raw Git.
-
-Never use raw broad Git staging such as `git add -A` for Enso content history. The snapshot command is local-only and intentionally has no history-management surface; do not use or invent restore, reset, or delete history operations.
+Stage only the paths you changed; never use broad staging such as `git add -A`, and never use `--force` to add a path Git ignores. The managed `.gitignore` keeps configuration, credentials, databases, and runtime state out of history — leave that boundary alone. History is local: never add a remote, push, pull, or fetch. Never run destructive history or worktree commands (`reset --hard`, `checkout`/`restore` over uncommitted files, `clean`, rebase, history rewriting); if history looks broken, report it to the operator instead of repairing it. If the active policy denies a Git operation, report that boundary rather than widening the policy.
 
 ## Message lifecycle
 

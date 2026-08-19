@@ -151,7 +151,7 @@ def test_changelog_covers_fresh_content_and_exactly_once_discovery() -> None:
     for contract in (
         "`setup.completed_at: null`",
         "three global reference docs",
-        "one initial local Git snapshot",
+        "one baseline Git commit",
         "user-owned immediately",
         "Claude and Codex now discover both instruction and skill scopes natively",
         "without a duplicate `--append-system-prompt-file` or `developer_instructions` override",

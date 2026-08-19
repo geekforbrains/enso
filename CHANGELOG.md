@@ -24,9 +24,8 @@ All notable changes to this project will be documented in this file.
   lifecycle. Creation requires a lowercase kebab-case name and an explicit existing
   policy, derives `~/.enso/workspaces/<name>`, defaults concurrency to `1`, validates the
   complete candidate catalog under the config lock, atomically publishes a staged
-  scaffold, atomically saves config, performs the installation check, and snapshots its
-  exact five versionable entries (`AGENTS.md`, `CLAUDE.md`, `.agents/skills`,
-  `.claude/skills`, and `knowledge/README.md`). It has no path option and never grants `admin`
+  scaffold, atomically saves config, and performs the installation check. It has no path
+  option and never grants `admin`
   implicitly; fresh setup's initial unrestricted `admin`/`default` binding remains the
   sole automatic exception. Repair creates only structural directories and known
   discovery links, preserves all user-owned seeded content, and reports launch blockers.
@@ -35,32 +34,21 @@ All notable changes to this project will be documented in this file.
 - Fresh setup now persists `setup.completed_at: null` before it seeds the minimal global
   and default-workspace prompts, six global skills, three global reference docs, and the
   default workspace knowledge index. It records the complete seed transaction in one
-  initial local Git snapshot before replacing the marker with a timezone-bearing
+  baseline Git commit before replacing the marker with a timezone-bearing
   completion timestamp. Seeded content becomes user-owned immediately: completed or
   pre-feature setup, startup, repair, and upgrades never overwrite, advance, or resurrect
   it. An interrupted fresh transaction reuses matching completed pieces and retries
   without turning older installations into fresh ones.
-- `enso snapshot create --message <message> -- <paths...>` records one coherent local
-  content change from explicit relative or absolute paths. Its closed allowlist covers
-  instructions, canonical skills, reference docs, workspace knowledge, and recognized
-  durable job files while protected/runtime and unknown paths fail closed. A persistent
-  owner-only Enso lock serializes snapshots; dirty staging and pre-existing or unrelated
-  native Git index locks are preserved and rejected. Snapshots are built and audited in a
-  complete owner-only `.snapshot-index-<32-lowercase-hex>` inside the resolved Git
-  directory, while an owner-only root `.snapshot.transaction.json` marker records the
-  transaction and index checksum through atomic owner-only
-  `.snapshot-transaction-<32-lowercase-hex>.tmp` writes. Verified descriptor reads,
-  `hash-object -w --no-filters --stdin`, and
-  `update-index --add --cacheinfo` preserve the reviewed bytes without worktree-attribute
-  or clean-filter transformations. The alternate index is hard-linked to Git's
-  `index.lock`, the old native checksum is rechecked, `HEAD` advances by atomic
-  compare-and-swap, and that exact lock atomically replaces and fsyncs the native index
-  without touching the worktree.
-  Interrupted exact old/new ref/index states recover on the next call; unrelated locks
-  and divergence are preserved and fail closed. No-diff requests are successful no-ops,
-  effective partial-clone/promisor configuration is rejected, every Git child disables
-  lazy fetching and transport protocols, and no snapshot operation contacts or changes a
-  remote. Enso exposes no history, restore, reset, or delete subcommands.
+- `~/.enso` is a local-only Git repository with a managed protective `.gitignore`
+  block written before the repository ever exists, `main` as the initial branch, and a
+  repository-local fallback author identity when Git has none. Configuration,
+  credentials, databases, messages, audits, runs, caches, logs, uploads, drafts, and
+  native policy homes stay out of history through those ignore rules. Content history
+  itself is ordinary Git: agents record scoped `git add <paths>`/`git commit` calls as
+  instructed by the root prompt, fresh setup records one baseline commit of the seeded
+  tree, and `enso config check` reports any tracked file the protective rules would
+  exclude. Enso never creates or contacts a remote and exposes no history, restore,
+  reset, or delete subcommands.
 - A portable `workspace` Agent Skill now guides workspace layout, focused instructions, global-versus-local skill placement, policy binding, validation, and safe retirement. Enso's bundled `docs`, `jobs`, `policy`, `slack`, `tables`, and `workspace` skills now use Agent Skills-compliant metadata with discovery-focused descriptions.
 - Grok Build (xAI's `grok` CLI) is a fourth provider alongside `claude`, `codex`, and `agy`, selectable per workspace policy, Slack route, and job. Grok emits the Anthropic Messages wire format, so streaming event parsing and response formatting are shared with Claude; commands, sessions, reasoning effort (`--effort`, `low`–`xhigh` with no `max`), and instruction injection follow grok's own flags, with the prompt and the canonical shared instructions each riding as one attached argument (`--single=`, `--rules=`) so hyphen-leading content cannot be reparsed as a flag. A transient `Not signed in` auth failure — a lapsed OAuth token refreshing in the background — is retried once on the interactive path; job runs never retry.
 - Restricted Grok policies launch from a revision-keyed staged `GROK_HOME` under `<policy_dir>/.runtime/grok-home`, generalizing the Codex staged-home machinery: owner-read-only policy `config.toml`, auth refreshed from the real Grok home each launch, an allowlisted child environment, and byte-level snapshot verification every launch. Because the CLI appends a `[marketplace]` stanza to its config after each run by replace-by-rename — which read-only staging cannot prevent — staging pre-seeds that stanza so the published bytes stay stable. `GROK_HOME`, `GROK_SANDBOX`, and `GROK_FOLDER_TRUST` are reserved from `env_passthrough`; these inputs remain part of the policy revision, whose current launch contract is v6 after the native instruction-discovery change below.
@@ -79,12 +67,13 @@ All notable changes to this project will be documented in this file.
 - Restricted policies now require an explicit `policy_dir`; the former implicit
   `~/.enso/policies/<name>` fallback is removed. Policy creation registers an already
   complete directory and never creates inactive scaffolds or permission content.
-- The fresh-install root prompt and content-mutating bundled skills now require one
-  scoped `enso snapshot create` after each coherent versionable content change, with
-  explicit paths and no raw broad Git staging. `enso doc create` and `enso job create`
-  remain unsnapshotted because they intentionally produce incomplete placeholders; the
-  agent snapshots once after the follow-up edit is complete. Database, credential,
-  upload, draft, policy, and runtime paths are explicitly excluded.
+- The fresh-install root prompt and content-mutating bundled skills now ask for one
+  scoped `git add <paths>`/`git commit` in `~/.enso` after each coherent content change,
+  with explicit paths, no broad staging, no force-adds of ignored paths, and no remote,
+  push, pull, fetch, or destructive history commands. `enso doc create` and
+  `enso job create` intentionally produce incomplete placeholders; the agent commits
+  once after the follow-up edit is complete. Database, credential, upload, draft,
+  policy, and runtime paths remain excluded by the managed ignore rules.
 - Bundled shared and workspace `AGENTS.md` templates are transport-neutral and route detailed workflows into focused skills. Fresh setup copies them once; installed prompts and skills are user-owned, and startup, repair, and upgrades never replace or resurrect them. The expanded `slack` skill now teaches when to use ordinary rich Markdown, structured interactive replies, and requester-confirmed persistent-surface drafts without duplicating the runtime's versioned message contracts.
 - Provider, model, and effort choices are now durable route settings instead of conversation state: one Slack DM or channel shares them across roots and threads, while each Telegram private chat keeps its own. `status` reports whether each effective value came from a route selection, policy/provider default, or CLI default, and `use default`, `model default`, and `effort default` clear the corresponding choice. The v3 state migration deliberately drops ambiguous v1/v2 conversation-scoped selections while preserving provider sessions, compact seeds, conversation activity, and job state; route settings no longer expire with `ENSO_SESSION_TTL_DAYS`.
 - Slack `!` commands now follow the route's response triggers like ordinary messages. A responsive top level or already-joined thread accepts commands without a mention; mention-gated and unjoined threads remain gated, a bare `!` remains prompt text, and `chat_commands` still authorizes every command. Provider/model/effort commands are valid inside threads, but their replies make clear that the setting applies to the entire channel or DM.

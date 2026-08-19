@@ -82,10 +82,6 @@ slack_app = typer.Typer(help="Slack directory lookups and message search")
 config_app = typer.Typer(help="Validate routes, workspaces, policies, and jobs")
 route_app = typer.Typer(help="Explain Slack routing decisions")
 audit_app = typer.Typer(help="Inspect the Slack audit trail")
-snapshot_app = typer.Typer(
-    help="Create safe, scoped local content snapshots",
-    no_args_is_help=True,
-)
 workspace_app = typer.Typer(
     help="Inspect, create, and conservatively repair managed workspaces",
     no_args_is_help=True,
@@ -103,7 +99,6 @@ app.add_typer(slack_app, name="slack")
 app.add_typer(config_app, name="config")
 app.add_typer(route_app, name="route")
 app.add_typer(audit_app, name="audit")
-app.add_typer(snapshot_app, name="snapshot")
 app.add_typer(workspace_app, name="workspace")
 app.add_typer(policy_app, name="policy")
 
@@ -1441,112 +1436,7 @@ def _scaffold_setup_or_exit(
         raise typer.Exit(1) from None
 
 
-_INITIAL_SETUP_SNAPSHOT_SUBJECT = "Initialize Enso content"
-_INITIAL_SETUP_GLOBAL_SNAPSHOT_PATHS = (
-    ".gitignore",
-    "AGENTS.md",
-    "CLAUDE.md",
-    ".agents/skills",
-    ".claude/skills",
-    "docs",
-    "skills",
-)
-_INITIAL_SETUP_GLOBAL_REQUIRED_PATHS = (
-    ".gitignore",
-    "AGENTS.md",
-    "CLAUDE.md",
-    ".agents/skills",
-    ".claude/skills",
-    "skills/docs/SKILL.md",
-    "skills/jobs/SKILL.md",
-    "skills/policy/SKILL.md",
-    "skills/slack/SKILL.md",
-    "skills/tables/SKILL.md",
-    "skills/workspace/SKILL.md",
-    "docs/enso/content_model.md",
-    "docs/enso/layout.md",
-    "docs/operator.md",
-)
-
-
-def _initial_setup_snapshot_paths(
-    config: dict,
-    repository_root: str,
-) -> tuple[str, ...]:
-    """Return broad versionable scopes captured by the one fresh snapshot."""
-    paths = list(_INITIAL_SETUP_GLOBAL_SNAPSHOT_PATHS)
-    raw_workspaces = config.get("workspaces", {})
-    if not isinstance(raw_workspaces, dict):
-        raise ConfigError("workspaces must be an object")
-    for name in sorted(raw_workspaces):
-        base = f"workspaces/{name}"
-        paths.extend(
-            (
-                f"{base}/AGENTS.md",
-                f"{base}/CLAUDE.md",
-                f"{base}/.agents/skills",
-                f"{base}/.claude/skills",
-                f"{base}/knowledge",
-            )
-        )
-        if os.listdir(os.path.join(repository_root, "workspaces", name, "skills")):
-            paths.append(f"{base}/skills")
-    return tuple(paths)
-
-
-def _initial_setup_required_paths(config: dict) -> tuple[str, ...]:
-    """Return every exact baseline entry required in the initial commit tree."""
-    paths = list(_INITIAL_SETUP_GLOBAL_REQUIRED_PATHS)
-    raw_workspaces = config.get("workspaces", {})
-    if not isinstance(raw_workspaces, dict):
-        raise ConfigError("workspaces must be an object")
-    for name in sorted(raw_workspaces):
-        base = f"workspaces/{name}"
-        paths.extend(
-            (
-                f"{base}/AGENTS.md",
-                f"{base}/CLAUDE.md",
-                f"{base}/.agents/skills",
-                f"{base}/.claude/skills",
-                f"{base}/knowledge/README.md",
-            )
-        )
-    return tuple(paths)
-
-
-def _missing_initial_setup_paths(
-    repository_root: str,
-    required_paths: tuple[str, ...],
-) -> tuple[str, ...]:
-    """Return required exact paths absent from the fresh scaffold."""
-    return tuple(
-        path
-        for path in required_paths
-        if not os.path.lexists(os.path.join(repository_root, *path.split("/")))
-    )
-
-
-def _required_paths_absent_from(
-    required_paths: tuple[str, ...],
-    observed_paths: tuple[str, ...] | None,
-) -> tuple[str, ...]:
-    """Return required paths missing from one index or historical commit tree."""
-    observed = frozenset(observed_paths or ())
-    return tuple(path for path in required_paths if path not in observed)
-
-
-def _initial_snapshot_problem(message: str, paths: tuple[str, ...] = ()) -> NoReturn:
-    """Report an actionable initial-snapshot failure and stop setup."""
-    suffix = f" {', '.join(escape(path) for path in paths)}" if paths else ""
-    console.print(
-        "[red]Could not create the initial Enso content snapshot:[/] "
-        f"{escape(message)}{suffix}"
-    )
-    console.print(
-        "[dim]Setup remains incomplete; repair the listed content-history problem and "
-        "rerun `enso setup`.[/]"
-    )
-    raise typer.Exit(1)
+_INITIAL_SETUP_COMMIT_SUBJECT = "Initialize Enso content"
 
 
 def _save_setup_config_or_exit(config: dict, *, action: str) -> None:
@@ -1559,7 +1449,7 @@ def _save_setup_config_or_exit(config: dict, *, action: str) -> None:
 
 
 def _finalize_setup_or_exit(config: dict) -> None:
-    """Persist, scaffold, snapshot, and complete one setup transaction."""
+    """Persist, scaffold, commit the baseline, and complete one setup transaction."""
     from .repository import EnsoRepository, RepositoryError
 
     try:
@@ -1586,73 +1476,25 @@ def _finalize_setup_or_exit(config: dict) -> None:
     try:
         repository = EnsoRepository()
         repository.ensure()
-        required_paths = _initial_setup_required_paths(config)
-        marker_paths = repository.commit_subject_paths(_INITIAL_SETUP_SNAPSHOT_SUBJECT)
-
-        if marker_paths is not None:
-            missing_from_marker = _required_paths_absent_from(
-                required_paths,
-                marker_paths,
-            )
-            if missing_from_marker:
-                _initial_snapshot_problem(
-                    "the historical initial marker is missing required baseline paths:",
-                    missing_from_marker,
-                )
+        if repository.has_head():
+            # An earlier interrupted run (or the operator) already recorded
+            # history; finish structurally without reseeding user-owned content
+            # and without creating a second baseline commit.
             _scaffold_setup_or_exit(config, seed_fresh=False)
         else:
-            if repository.has_head():
-                _initial_snapshot_problem(
-                    "repository history exists but the exact initial marker is absent; "
-                    "refusing to create a second baseline commit. Review the local Git "
-                    "history and restore the initial marker before retrying."
-                )
-
             _scaffold_setup_or_exit(config)
-            missing_from_disk = _missing_initial_setup_paths(
-                repository.root,
-                required_paths,
-            )
-            if missing_from_disk:
-                _initial_snapshot_problem(
-                    "required fresh-setup paths are missing after scaffolding:",
-                    missing_from_disk,
-                )
-
-            ignored = repository.ignored_paths(required_paths)
-            if ignored:
-                _initial_snapshot_problem(
-                    "required fresh-setup paths are ignored; remove the matching "
-                    ".gitignore rule before retrying:",
-                    ignored,
-                )
-
-            repository.snapshot(
-                _initial_setup_snapshot_paths(config, repository.root),
-                _INITIAL_SETUP_SNAPSHOT_SUBJECT,
-            )
-            missing_from_index = _required_paths_absent_from(
-                required_paths,
-                repository.tracked_paths(),
-            )
-            if missing_from_index:
-                _initial_snapshot_problem(
-                    "the completed snapshot did not track required baseline paths:",
-                    missing_from_index,
-                )
-            missing_from_marker = _required_paths_absent_from(
-                required_paths,
-                repository.commit_subject_paths(_INITIAL_SETUP_SNAPSHOT_SUBJECT),
-            )
-            if missing_from_marker:
-                _initial_snapshot_problem(
-                    "the initial marker commit is missing required baseline paths:",
-                    missing_from_marker,
-                )
+            repository.commit_all(_INITIAL_SETUP_COMMIT_SUBJECT)
     except typer.Exit:
         raise
     except (ConfigError, RepositoryError, OSError) as exc:
-        _initial_snapshot_problem(str(exc))
+        console.print(
+            f"[red]Could not record the initial Enso content baseline:[/] {escape(str(exc))}"
+        )
+        console.print(
+            "[dim]Setup remains incomplete; repair the listed problem and rerun "
+            "`enso setup`.[/]"
+        )
+        raise typer.Exit(1) from None
 
     config["setup"]["completed_at"] = datetime.now(timezone.utc).isoformat()
     try:
@@ -1673,8 +1515,8 @@ def _finalize_setup_or_exit(config: dict) -> None:
                 f"{escape(str(rollback_error))}"
             )
         console.print(
-            "[dim]Rerun `enso setup`; existing seeded content and the clean initial "
-            "snapshot will be reused.[/]"
+            "[dim]Rerun `enso setup`; existing seeded content and the recorded initial "
+            "baseline will be reused.[/]"
         )
         raise typer.Exit(1) from None
 
@@ -2077,21 +1919,6 @@ def job_run(
 # ---------------------------------------------------------------------------
 
 
-_WORKSPACE_SNAPSHOT_SUBJECT_PREFIX = "Create workspace "
-
-
-def _workspace_snapshot_paths(name: str) -> tuple[str, ...]:
-    """Return the exact versionable scaffold entries for one new workspace."""
-    base = f"workspaces/{validate_workspace_name(name)}"
-    return (
-        f"{base}/AGENTS.md",
-        f"{base}/CLAUDE.md",
-        f"{base}/.agents/skills",
-        f"{base}/.claude/skills",
-        f"{base}/knowledge/README.md",
-    )
-
-
 def _catalog_problems(catalog: ExecutionCatalog) -> tuple[str, ...]:
     """Flatten a catalog's validation findings without duplicate noise."""
     problems = list(catalog.errors)
@@ -2289,41 +2116,6 @@ def _save_workspace_candidate_or_exit(candidate: dict, workspace_path: str) -> N
         raise typer.Exit(1) from None
 
 
-def _snapshot_workspace_or_exit(name: str, workspace_path: str) -> tuple[str, bool]:
-    """Snapshot exactly one new workspace's five versionable seed entries."""
-    from .repository import EnsoRepository, RepositoryError
-
-    subject = f"{_WORKSPACE_SNAPSHOT_SUBJECT_PREFIX}{name}"
-    snapshot_paths = _workspace_snapshot_paths(name)
-    try:
-        repository = EnsoRepository()
-        created = repository.snapshot(snapshot_paths, subject)
-        observed = (
-            repository.commit_subject_paths(subject)
-            if created
-            else repository.tracked_paths()
-        )
-        missing = _required_paths_absent_from(snapshot_paths, observed)
-        if missing:
-            raise RepositoryError(
-                "completed workspace snapshot is missing required scaffold entries: "
-                + ", ".join(missing)
-            )
-    except (ConfigError, OSError, RepositoryError) as exc:
-        console.print(f"[red]Could not snapshot the workspace scaffold:[/] {escape(str(exc))}")
-        console.print(
-            "[yellow]The configuration and workspace were preserved at[/] "
-            f"[bold]{escape(workspace_path)}[/]."
-        )
-        command_paths = " ".join(snapshot_paths)
-        console.print(
-            "[dim]After fixing content history, retry with "
-            f"`enso snapshot create --message {subject!r} -- {command_paths}`.[/]"
-        )
-        raise typer.Exit(1) from None
-    return subject, created
-
-
 @workspace_app.command("create")
 def workspace_create(
     name: Annotated[str, typer.Argument(help="Lowercase kebab-case workspace name")],
@@ -2336,7 +2128,7 @@ def workspace_create(
         typer.Option("--concurrency", help="Maximum concurrent runs"),
     ] = DEFAULT_WORKSPACE_CONCURRENCY,
 ) -> None:
-    """Create, configure, validate, and snapshot one managed workspace."""
+    """Create, configure, and validate one managed workspace."""
     from .scaffolding import ScaffoldError, ScaffoldService
 
     # A strict read must precede creation of config.json.lock.
@@ -2404,16 +2196,10 @@ def workspace_create(
                 f"the post-save configuration check failed: {exc}",
             )
 
-        subject, snapshot_created = _snapshot_workspace_or_exit(name, workspace_path)
-
     console.print(f"[green]Workspace created:[/] {escape(name)}")
     console.print(f"  Path: {escape(workspace_path)}")
     console.print(f"  Policy: {escape(policy)}")
     console.print(f"  Concurrency: {concurrency}")
-    if snapshot_created:
-        console.print(f"  [green]Snapshot created:[/] {escape(subject)}")
-    else:
-        console.print("  [dim]Snapshot already clean; no commit was needed.[/]")
     console.print("[yellow]Restart the Enso service before using new routing.[/]")
 
 
@@ -2858,41 +2644,6 @@ def policy_create(
         console.print(f"  [yellow]![/] {_native_policy_warning_summary(len(validation.warnings))}")
     console.print("  [dim]No workspace binding was changed.[/]")
     console.print("[yellow]Restart the Enso service before using this policy.[/]")
-
-
-# ---------------------------------------------------------------------------
-# Snapshot subcommands
-# ---------------------------------------------------------------------------
-
-
-@snapshot_app.command("create")
-def snapshot_create(
-    paths: Annotated[
-        list[str],
-        typer.Argument(help="One or more explicit paths beneath ~/.enso"),
-    ],
-    message: Annotated[
-        str,
-        typer.Option("--message", help="Commit message for this local snapshot"),
-    ],
-) -> None:
-    """Create one local commit containing only the requested versionable paths."""
-    from .repository import EnsoRepository, RepositoryError
-
-    try:
-        created = EnsoRepository().snapshot(
-            paths,
-            message,
-            caller_cwd=os.getcwd(),
-        )
-    except (OSError, RepositoryError) as exc:
-        console.print(f"[red]Could not create Enso snapshot:[/] {escape(str(exc))}")
-        raise typer.Exit(1) from None
-
-    if created:
-        console.print(f"[green]Snapshot created:[/] {escape(message)}")
-    else:
-        console.print("[dim]No changes to snapshot.[/]")
 
 
 # ---------------------------------------------------------------------------
@@ -3650,7 +3401,8 @@ def config_check() -> None:  # noqa: C901
     if protected:
         failed = True
         console.print(
-            "[red]✗[/] protected paths are already tracked and block snapshots: "
+            "[red]✗[/] protected paths are tracked in local Git history and are no "
+            "longer shielded by .gitignore: "
             + ", ".join(escape(path) for path in protected)
         )
 

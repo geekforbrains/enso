@@ -269,10 +269,10 @@ State schema v3 stores route settings separately. Loading v1 or v2 deliberately 
   user-owned and may be edited or deleted without a tombstone or later resurrection.
 - Fresh setup persists `setup.completed_at: null` before seeding the global prompt,
   bundled skills, starter docs, default-workspace prompt, and workspace knowledge index.
-  It creates one local Git snapshot of the complete initial tree, then records a
-  timezone-bearing completion timestamp. A seed or snapshot failure leaves `null` for an
+  It creates one baseline Git commit of the complete initial tree, then records a
+  timezone-bearing completion timestamp. A seed or commit failure leaves `null` for an
   explicit retry that preserves completed pieces; a timestamp-write failure after the
-  snapshot retries only the state transition and does not create another initial commit.
+  baseline retries only the state transition and does not create another initial commit.
   Timestamped and pre-feature configurations never seed. Explicit `enso setup` on either
   state validates the existing catalog before repository mutation and performs
   structural-only repair without provider, workspace, transport, messaging, or service
@@ -284,12 +284,12 @@ State schema v3 stores route settings separately. Loading v1 or v2 deliberately 
   policy, defaults concurrency to one, and accepts no path. Under the config mutation
   lock it strictly reloads config, validates the complete candidate catalog, stages the
   full scaffold in a sibling directory, publishes it with an exclusive atomic rename,
-  saves config atomically, runs the installation check, and snapshots only the five new
-  versionable entries (`AGENTS.md`, `CLAUDE.md`, `.agents/skills`, `.claude/skills`, and
-  `knowledge/README.md`). Fresh setup's full-authority unrestricted `admin`/`default`
+  saves config atomically, and runs the installation check; the new scaffold is
+  recorded in local history by a later scoped commit. Fresh setup's full-authority
+  unrestricted `admin`/`default`
   binding is the only implicit authority creation.
 - Workspace publication is never silently undone. A config-save failure leaves a clearly
-  reported unused directory; a later check or snapshot failure leaves the configured
+  reported unused directory; a later check failure leaves the configured
   directory for repair and an explicit retry. Creation refuses any existing destination.
   `workspace repair` creates only missing structural directories and exact discovery
   links, preserves all seeded/user content, and reports launch-blocking omissions.
@@ -330,24 +330,14 @@ At personal scale the model is deliberately simple:
   is reported and preserved rather than hidden behind destructive rollback. Policy
   creation has no filesystem publication: it registers only an existing restricted
   source or an explicit unrestricted catalog entry after the complete candidate passes.
-- **Content snapshots are serialized and scoped** — the owner-only
-  `~/.enso/.snapshot.lock` covers repository revalidation, filter-free descriptor reads,
-  `hash-object -w --no-filters --stdin` plus `update-index --add --cacheinfo` assembly and
-  audit in a complete owner-only `.snapshot-index-<32-lowercase-hex>` inside the resolved
-  Git directory, owner-only root `.snapshot-transaction-<32-lowercase-hex>.tmp` and
-  `.snapshot.transaction.json` persistence, commit-object creation, atomic hard-link
-  acquisition of native `index.lock`, old-index checksum recheck, atomic ref
-  compare-and-swap, atomic native-index replacement and Git-directory fsync, and cleanup.
-  The command requires a clean pre-existing native index, includes only explicit
-  allowlisted paths in its alternate index without applying worktree attributes or clean
-  filters, and never changes the worktree. A later call recovers only recorded `old/old`,
-  `new/old`, or `new/new` `HEAD`/index states and may
-  handle `index.lock` only when its inode and checksum prove it is Enso-created;
-  divergence and unrelated locks are preserved and fail closed. A later Enso caller waits
-  for the Enso lock rather than racing another Enso transaction. Effective
-  partial/promisor configuration is rejected, and Git children disable lazy fetching and
-  transport protocols. The full transaction and path boundary are specified in
-  [snapshots.md](snapshots.md).
+- **Content history is plain scoped Git** — `~/.enso` is an exact local-only Git
+  worktree whose managed protective `.gitignore` block is written before the repository
+  ever exists, so configuration, credentials, databases, and runtime state cannot enter
+  history through ordinary staging. Agents record scoped `git add <paths>`/`git commit`
+  calls per the root prompt, fresh setup records one baseline commit, and
+  `enso config check` reports any tracked file the protective rules would exclude. Enso
+  never creates or contacts a remote and exposes no snapshot, restore, reset, or delete
+  commands.
 - **Last write wins.** Optimistic locking and conflict resolution are out of scope for
   this single-operator tool.
 - **SQLite in WAL mode** allows the bot, dashboard, CLI, and agent subprocesses to share
@@ -406,7 +396,7 @@ internet and the PRD makes that a non-goal.
 | `job_runner.py`          | Revalidates discovery before trusted prerun and again at the actual batch-provider boundary   |
 | `providers/`             | Uses native Claude/Codex discovery and one explicit Grok/Agy shared-instruction delivery       |
 | `policy.py`              | Builds native launches and revisions them against the current launch contract                 |
-| `cli.py`                 | Provides standalone web, manual job-run, workspace/policy lifecycle, and scoped local-snapshot commands |
+| `cli.py`                 | Provides standalone web, manual job-run, and workspace/policy lifecycle commands              |
 | `config.py`              | Backfills `web` (including `allowed_hosts` / `external_skill_roots`) and `runs` defaults      |
 | `formatting.py`          | Converts legacy Markdown and supplies standard-Markdown-aware splitting                       |
 | `outbound.py`            | Owns strict typed message/surface contracts, parsers, and Slack-aligned limits                |
@@ -417,7 +407,7 @@ internet and the PRD makes that a non-goal.
 | `frontmatter.py`         | Provides fence-aware raw edits and YAML serialization, writing through `fsutil`               |
 | `fsutil.py`              | Owns atomic text writes, containment checks, hashing, and SQLite file hardening                |
 | `scaffolding.py`         | Creates canonical trees, exclusively seeds fresh content, and conservatively repairs structure |
-| `repository.py`          | Establishes the local Git boundary and owns locked, allowlisted content snapshots               |
+| `repository.py`          | Establishes the exact local Git boundary, protective ignore rules, and fallback identity        |
 | `sqlite_store.py`        | Owns operation-scoped connections, transactions, bounded timeouts, and failure classification |
 | `docs.py`                | Owns reference-doc path validation, the bounded recursive listing, scaffolding, and deletion  |
 | `starter_docs/`          | Packages the three fresh-only user-owned reference starters                                   |

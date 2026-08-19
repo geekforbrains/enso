@@ -14,7 +14,6 @@ Design docs live in [`docs/`](docs/) and are the source of truth for planned and
 | [`docs/specs/architecture.md`](docs/specs/architecture.md) | Dashboard/bot process boundaries and shared storage                                 |
 | [`docs/specs/data-model.md`](docs/specs/data-model.md)     | SQLite schemas, config, and the `~/.enso/` layout                                   |
 | [`docs/specs/docs.md`](docs/specs/docs.md)                 | Operator-authored reference docs and their dashboard/CLI workflow                   |
-| [`docs/specs/snapshots.md`](docs/specs/snapshots.md)       | Scoped local content snapshots, path boundaries, locking, and failure behavior      |
 | [`docs/specs/slack-output.md`](docs/specs/slack-output.md) | Rich Slack replies, typed blocks, confirmed App Home, and Canvas publication        |
 | [`docs/specs/teams.md`](docs/specs/teams.md)               | Transport workspace bindings, exact Slack routes, reusable policies, and audit metadata |
 | [`docs/specs/permissions.md`](docs/specs/permissions.md)   | Native Claude/Codex/Grok policy selection and invocation                            |
@@ -63,12 +62,12 @@ Every launch revalidates the physical workspace, exact Git boundary, discovery l
 skill-name uniqueness before the provider starts.
 
 For a genuinely fresh install, setup first persists `setup.completed_at: null`, then
-creates the initial content, records it in one local Git snapshot, and finally replaces
-`null` with an ISO 8601 timestamp that includes a timezone. A failed seed or snapshot
+creates the initial content, records it in one baseline Git commit, and finally replaces
+`null` with an ISO 8601 timestamp that includes a timezone. A failed seed or commit
 leaves setup incomplete so an explicit rerun can finish missing work without overwriting
-files already created. If the snapshot succeeded but saving the timestamp failed, the
-rerun recognizes the existing initial snapshot and completes the timestamp without a
-second commit.
+files already created. If the baseline committed but saving the timestamp failed, the
+rerun recognizes the existing history and completes the timestamp without a second
+commit.
 
 Seeded content becomes user-owned immediately and may be edited or deleted. A completed
 setup, a pre-feature installation with no `setup` field, startup, `enso web`, and
@@ -333,16 +332,16 @@ exception is genuinely fresh `enso setup`, which creates `admin` and binds the i
 Creation takes the strict current config under the cross-process config lock, validates
 the complete candidate catalog, builds the workspace in a temporary sibling, and
 atomically publishes the finished directory before atomically saving `config.json`.
-It then performs the same installation checks used by `enso config check` and snapshots
-exactly the five new versionable entries: `AGENTS.md`, `CLAUDE.md`, `.agents/skills`,
-`.claude/skills`, and `knowledge/README.md`. Empty `skills/` and the runtime-facing
-`drafts/` and `uploads/` directories are not Git content. Configuration is ignored, so
-this local snapshot is content history rather than a complete configuration backup.
+It then performs the same installation checks used by `enso config check`. Record the
+new scaffold in local history afterwards with one scoped commit
+(`git -C ~/.enso add workspaces/<name>` and `git -C ~/.enso commit`). The runtime-facing
+`drafts/` and `uploads/` directories are not Git content, and configuration stays
+ignored, so local history is content history rather than a configuration backup.
 
-If config persistence, post-save validation, or the snapshot fails after publication,
-Enso preserves the user-visible directory and reports the partial state instead of
-deleting it. A config-write failure leaves an unused directory; a later failure may
-leave a configured workspace that still needs repair or an explicit scoped snapshot.
+If config persistence or post-save validation fails after publication, Enso preserves
+the user-visible directory and reports the partial state instead of deleting it. A
+config-write failure leaves an unused directory; a later failure may leave a configured
+workspace that still needs repair.
 `create` refuses any existing destination, including one left by a migration or partial
 attempt. `repair` is conservative: it creates only missing structural directories and
 known relative discovery links, never `AGENTS.md`, skill definitions, docs, or
@@ -350,49 +349,26 @@ known relative discovery links, never `AGENTS.md`, skill definitions, docs, or
 after a successful workspace creation or any binding change; running processes do not
 hot-reload routing.
 
-## Local content snapshots
+## Local content history
 
-After finishing one coherent change to versionable Enso content, record exactly the
-reviewed paths in the local journal:
+`~/.enso` is a local-only Git repository. After finishing one coherent change to Enso
+content, record exactly the reviewed paths with an ordinary scoped commit:
 
 ```bash
-enso snapshot create --message "docs: update onboarding" -- \
-  ~/.enso/workspaces/company/AGENTS.md \
-  ~/.enso/workspaces/company/knowledge/onboarding.md
+git -C ~/.enso add workspaces/company/AGENTS.md workspaces/company/knowledge/onboarding.md
+git -C ~/.enso commit -m "docs: update onboarding"
 ```
 
-Relative paths resolve from the caller's current directory; absolute paths are accepted.
-At least one explicit path is required, directories are recursive scopes, and paths with
-spaces and deletions are supported. The allowlist covers root and workspace instructions
-and discovery links, canonical skills, global reference docs, workspace knowledge, and
-recognized durable job files. Configuration, credentials, databases, uploads, drafts,
-native policies, Git metadata, and runtime output are protected even when nested inside
-a versionable tree.
+The managed `.gitignore` block keeps configuration, credentials, databases, uploads,
+drafts, native policies, and runtime state out of history; never use broad staging such
+as `git add -A`, and never `--force`-add an ignored path. History is local only: Enso
+never creates or contacts a remote, and agents are instructed never to push, pull,
+fetch, or run destructive history or worktree commands. `enso config check` reports any
+tracked file that the protective ignore rules would exclude, because tracking removes a
+file from `.gitignore`'s protection.
 
-Snapshots require a clean Git staging area and an existing valid `~/.enso` repository.
-They serialize through Enso's owner-only snapshot lock, leave unrelated unstaged changes
-alone, and build the requested commit in a protected alternate index. Enso reads the
-requested bytes through verified descriptors, stores them with
-`hash-object -w --no-filters --stdin`, and adds their exact object IDs with
-`update-index --add --cacheinfo`, so worktree attributes and clean filters cannot
-transform the reviewed content. An owner-only root
-`.snapshot.transaction.json` marker, its atomic
-`.snapshot-transaction-<32-lowercase-hex>.tmp` write temporary, and a complete owner-only
-`.snapshot-index-<32-lowercase-hex>` inside the resolved Git directory let the next call
-recover the exact pre-ref, post-ref/pre-index, or completed state after an interruption.
-Enso hard-links that audited index to Git's `index.lock`, rechecks the old native index,
-atomically compare-and-swaps `HEAD`, then atomically installs and fsyncs the new native
-index without changing worktree files. Recovery handles a native lock only when the
-marker proves its exact inode and checksum; every unrelated lock or divergent state is
-preserved and fails closed. Effective partial-clone/promisor configuration is rejected,
-and every Git child disables lazy fetching and transport protocols. A no-diff request is
-a successful no-op. No operation contacts or changes a remote.
-
-`enso doc create` and `enso job create` deliberately do not snapshot their incomplete
-placeholders. Finish the doc or disabled job first, then create one scoped snapshot.
-Enso exposes no restore, reset, delete, or history commands; never substitute raw broad
-Git staging. See the [snapshot specification](docs/specs/snapshots.md) for the complete
-boundary and failure contract.
+`enso doc create` and `enso job create` intentionally produce incomplete placeholders;
+finish the doc or disabled job first, then record one scoped commit.
 
 ## Background Jobs
 
@@ -548,10 +524,10 @@ manager. One reference implementation ships, for 1Password — it is entirely op
 with no reference key configured Enso never invokes the helper.
 
 Enso initializes `~/.enso` as a local Git repository with protective ignore rules before
-it stages any content. `config.json`, secrets, databases, messages, logs, uploads, drafts,
-native policies, and other runtime state are never eligible for Enso snapshots. An
-already-tracked protected file blocks snapshots until the operator repairs the
-repository. Enso never creates or contacts a remote: this history is a local content
+any content is staged. `config.json`, secrets, databases, messages, logs, uploads,
+drafts, native policies, and other runtime state stay out of history through the managed
+`.gitignore` block, and `enso config check` reports any tracked file those rules would
+exclude. Enso never creates or contacts a remote: this history is a local content
 journal, not a configuration backup. Literal credentials in `config.json` remain
 untracked, but a secret-manager reference is still preferable to plaintext at rest.
 

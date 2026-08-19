@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
 
 import enso.scaffolding as scaffolding_module
 from enso.config import validate_workspace_name
-from enso.repository import PathDisposition, classify_content_path
+from enso.repository import EnsoRepository
 from enso.scaffolding import (
     LinkState,
     ScaffoldError,
@@ -353,7 +354,15 @@ def test_crash_staging_artifact_is_outside_docs_and_protected(tmp_path, monkeypa
     assert docs_artifacts == []
     assert len(runtime_artifacts) == 1
     relative = runtime_artifacts[0].relative_to(root).as_posix()
-    assert classify_content_path(relative) is PathDisposition.PROTECTED
+    EnsoRepository(str(root)).ensure()
+    assert (
+        subprocess.run(
+            ["git", "-C", str(root), "check-ignore", "--quiet", "--no-index", "--", relative],
+            check=False,
+            capture_output=True,
+        ).returncode
+        == 0
+    )
 
 
 def test_starter_doc_retry_completes_after_crash_immediately_after_publication(

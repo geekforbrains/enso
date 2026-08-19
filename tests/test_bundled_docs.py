@@ -138,45 +138,24 @@ def test_layout_describes_only_the_canonical_generic_tree_and_history_boundary()
         assert live_install_fact not in lowered
 
 
-def test_layout_routes_content_history_through_safe_scoped_snapshots():
+def test_layout_routes_content_history_through_scoped_git_commits():
     text = _resource_text("enso/layout.md")
     prose = " ".join(text.split())
 
     for contract in (
-        'enso snapshot create --message "<summary>" -- <changed-path>',
-        "one coherent change",
-        "explicit paths",
-        "clean staging area",
-        "successful no-op",
-        "protected alternate index",
-        "complete owner-only `0600` index",
-        "resolved Git directory",
-        "owner-only transaction marker",
-        ".snapshot.transaction.json",
-        ".snapshot-transaction-<32-lowercase-hex>.tmp",
-        ".snapshot-index-<32-lowercase-hex>",
-        "filter-free descriptor reads",
-        "`git hash-object -w --no-filters --stdin`",
-        "`git update-index --add --cacheinfo`",
-        "worktree attributes and clean filters",
-        "new-index SHA",
-        "atomically hard-links",
-        "native `index.lock`",
-        "rechecks the old native-index checksum",
-        "atomically compare-and-swaps `HEAD`",
-        "atomically replaces the native index",
-        "fsyncs the Git directory",
-        "exact Enso-created lock inode and checksum",
-        "unrelated native lock is preserved",
-        "without changing worktree files",
-        "old/old",
-        "new/old",
-        "new/new",
-        "divergence fails closed",
-        "Never use raw broad Git staging",
-        "restore, reset, or delete",
+        "record one scoped commit with explicit paths only",
+        "git -C ~/.enso add <changed-path>",
+        'git -C ~/.enso commit -m "<summary>"',
+        "broad staging such as `git add -A`",
+        "never add a remote, push, pull, fetch",
+        "destructive history or worktree commands",
+        "report it to the operator",
+        "managed `.gitignore` block",
+        "must never enter history",
     ):
         assert contract in prose
+    assert "enso snapshot" not in prose
+    assert ".snapshot" not in prose
 
 
 def test_layout_routes_workspace_lifecycle_through_safe_commands():
@@ -191,7 +170,7 @@ def test_layout_routes_workspace_lifecycle_through_safe_commands():
         "defaults to `1`",
         "existing policy",
         "enso workspace repair <name>",
-        "five versionable seed entries",
+        "Record the new scaffold in local history",
         "does not recreate",
         "service restart",
     ):

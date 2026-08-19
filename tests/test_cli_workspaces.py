@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -14,9 +15,8 @@ import typer
 from typer.testing import CliRunner
 
 from enso import cli as cli_mod
-from enso import repository as repository_mod
 from enso.config import save_config
-from enso.repository import EnsoRepository, RepositoryError
+from enso.repository import EnsoRepository
 from enso.scaffolding import ScaffoldService
 
 runner = CliRunner()
@@ -157,7 +157,7 @@ def test_workspace_mutations_reject_missing_config_before_creating_a_lock(
     assert not Path(f"{config_file}.lock").exists()
 
 
-def test_workspace_create_persists_exact_schema_and_snapshots_only_scaffold(
+def test_workspace_create_persists_exact_schema_and_scaffold(
     tmp_enso: str,
 ) -> None:
     _installed_config(tmp_enso)
@@ -177,7 +177,6 @@ def test_workspace_create_persists_exact_schema_and_snapshots_only_scaffold(
     assert "workspaces/client-ops" in flattened.replace(" ", "")
     assert "Policy: admin" in flattened
     assert "Concurrency: 1" in flattened
-    assert "Snapshot created" in flattened
     assert "restart" in flattened.lower()
     persisted = json.loads(Path(tmp_enso, "config.json").read_text(encoding="utf-8"))
     assert persisted["workspaces"]["client-ops"] == {
@@ -188,15 +187,14 @@ def test_workspace_create_persists_exact_schema_and_snapshots_only_scaffold(
     assert (workspace / "AGENTS.md").is_file()
     assert (workspace / "knowledge" / "README.md").is_file()
     assert os.readlink(workspace / "CLAUDE.md") == "AGENTS.md"
-    assert EnsoRepository().commit_subject_paths("Create workspace client-ops") == (
-        "workspaces/client-ops/.agents/skills",
-        "workspaces/client-ops/.claude/skills",
-        "workspaces/client-ops/AGENTS.md",
-        "workspaces/client-ops/CLAUDE.md",
-        "workspaces/client-ops/knowledge/README.md",
-    )
-    assert "docs/unrelated.md" not in EnsoRepository().tracked_paths()
-    assert "config.json" not in EnsoRepository().tracked_paths()
+    git_status = subprocess.run(
+        ["git", "-C", tmp_enso, "status", "--porcelain", "-uall"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "?? workspaces/client-ops/AGENTS.md" in git_status
+    assert "config.json" not in git_status
 
 
 def test_workspace_create_accepts_explicit_positive_concurrency(tmp_enso: str) -> None:
@@ -334,7 +332,14 @@ def test_workspace_create_leaves_published_directory_when_atomic_save_fails(
     assert "simulated save failure" in flattened
     assert workspace.is_dir()
     assert config_file.read_bytes() == original
-    assert EnsoRepository().commit_subject_paths("Create workspace client") is None
+    assert (
+        subprocess.run(
+            ["git", "-C", tmp_enso, "rev-parse", "--verify", "HEAD"],
+            check=False,
+            capture_output=True,
+        ).returncode
+        != 0
+    )
 
 
 def test_workspace_create_leaves_unconfigured_directory_when_scaffold_validation_fails(
@@ -389,64 +394,13 @@ def test_workspace_create_preserves_config_and_content_when_post_check_fails(
     flattened = _flat(result)
     assert "configuration and workspace were preserved" in flattened
     assert "enso config check" in flattened
-    assert EnsoRepository().commit_subject_paths("Create workspace client") is None
-
-
-def test_workspace_create_preserves_config_and_content_when_snapshot_fails(
-    tmp_enso: str,
-    monkeypatch,
-) -> None:
-    _installed_config(tmp_enso)
-
-    def fail_snapshot(self, paths, message, *, caller_cwd=None):
-        raise RepositoryError("simulated snapshot failure")
-
-    monkeypatch.setattr(repository_mod.EnsoRepository, "snapshot", fail_snapshot)
-
-    result = runner.invoke(
-        cli_mod.app,
-        ["workspace", "create", "client", "--policy", "admin"],
-    )
-
-    assert result.exit_code == 1
-    assert Path(tmp_enso, "workspaces", "client").is_dir()
-    persisted = json.loads(Path(tmp_enso, "config.json").read_text(encoding="utf-8"))
-    assert persisted["workspaces"]["client"]["policy"] == "admin"
-    flattened = _flat(result)
-    assert "simulated snapshot failure" in flattened
-    assert "enso snapshot create" in flattened
-    assert "configuration and workspace were preserved" in flattened
-
-
-def test_workspace_create_reports_an_incomplete_snapshot_if_seed_content_disappears(
-    tmp_enso: str,
-    monkeypatch,
-) -> None:
-    _installed_config(tmp_enso)
-    workspace = Path(tmp_enso, "workspaces", "client")
-
-    def remove_seed_after_validation() -> None:
-        (workspace / "knowledge" / "README.md").unlink()
-
-    monkeypatch.setattr(cli_mod, "config_check", remove_seed_after_validation)
-
-    result = runner.invoke(
-        cli_mod.app,
-        ["workspace", "create", "client", "--policy", "admin"],
-    )
-
-    assert result.exit_code == 1
-    flattened = _flat(result)
-    assert "missing required scaffold entries" in flattened
-    assert "workspaces/client/knowledge/README.md" in flattened
-    assert "configuration and workspace were preserved" in flattened
-    persisted = json.loads(Path(tmp_enso, "config.json").read_text(encoding="utf-8"))
-    assert persisted["workspaces"]["client"]["policy"] == "admin"
-    assert EnsoRepository().commit_subject_paths("Create workspace client") == (
-        "workspaces/client/.agents/skills",
-        "workspaces/client/.claude/skills",
-        "workspaces/client/AGENTS.md",
-        "workspaces/client/CLAUDE.md",
+    assert (
+        subprocess.run(
+            ["git", "-C", tmp_enso, "rev-parse", "--verify", "HEAD"],
+            check=False,
+            capture_output=True,
+        ).returncode
+        != 0
     )
 
 
@@ -527,7 +481,7 @@ def test_workspace_repair_requires_a_configured_workspace(tmp_enso: str) -> None
     assert not Path(tmp_enso, "workspaces", "missing").exists()
 
 
-def test_workspace_create_uses_the_strict_transaction_order_and_exact_snapshot_paths(
+def test_workspace_create_uses_the_strict_transaction_order(
     tmp_enso: str,
     monkeypatch,
 ) -> None:
@@ -569,27 +523,12 @@ def test_workspace_create_uses_the_strict_transaction_order_and_exact_snapshot_p
     def recording_check():
         events.append("config-check")
 
-    def recording_snapshot(self, paths, message, *, caller_cwd=None):
-        events.append(("snapshot", tuple(paths), message, caller_cwd))
-        return True
-
-    def recording_commit_subject_paths(self, subject):
-        events.append("verify-snapshot")
-        assert subject == "Create workspace client"
-        return cli_mod._workspace_snapshot_paths("client")
-
     monkeypatch.setattr(cli_mod, "_load_config_or_exit", recording_load)
     monkeypatch.setattr(cli_mod, "_config_lock_or_exit", recording_lock)
     monkeypatch.setattr(teams_mod, "load_catalog", recording_catalog)
     monkeypatch.setattr(scaffolding_mod.ScaffoldService, "create_workspace", recording_create)
     monkeypatch.setattr(cli_mod, "save_config", recording_save)
     monkeypatch.setattr(cli_mod, "config_check", recording_check)
-    monkeypatch.setattr(repository_mod.EnsoRepository, "snapshot", recording_snapshot)
-    monkeypatch.setattr(
-        repository_mod.EnsoRepository,
-        "commit_subject_paths",
-        recording_commit_subject_paths,
-    )
 
     result = runner.invoke(
         cli_mod.app,
@@ -603,25 +542,7 @@ def test_workspace_create_uses_the_strict_transaction_order_and_exact_snapshot_p
     assert events.index("candidate-catalog") < events.index("scaffold")
     assert events.index("scaffold") < events.index("save")
     assert events.index("save") < events.index("config-check")
-    snapshot = next(item for item in events if isinstance(item, tuple))
-    assert (
-        events.index("config-check")
-        < events.index(snapshot)
-        < events.index("verify-snapshot")
-        < events.index("unlock")
-    )
-    assert snapshot == (
-        "snapshot",
-        (
-            "workspaces/client/AGENTS.md",
-            "workspaces/client/CLAUDE.md",
-            "workspaces/client/.agents/skills",
-            "workspaces/client/.claude/skills",
-            "workspaces/client/knowledge/README.md",
-        ),
-        "Create workspace client",
-        None,
-    )
+    assert events.index("config-check") < events.index("unlock")
 
 
 @pytest.mark.parametrize("problem", ["legacy", "other-catalog", "malformed"])

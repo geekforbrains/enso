@@ -134,19 +134,19 @@ path: validate the relative path, create missing parents, refuse an existing fil
 write a scaffold whose `name` is derived from the filename unless `--name` is given. A
 missing `.md` suffix is appended.
 
-The scaffold is intentionally incomplete, so `enso doc create` does not snapshot it.
+The scaffold is intentionally incomplete, so `enso doc create` does not commit it.
 After filling the frontmatter and body into one coherent reference, record the exact doc
-path with the local content command:
+path with one scoped commit:
 
 ```bash
-enso snapshot create --message "docs: add homelab reference" -- \
-  ~/.enso/docs/stuff/homelab.md
+git -C ~/.enso add docs/stuff/homelab.md
+git -C ~/.enso commit -m "docs: add homelab reference"
 ```
 
-Dashboard and direct filesystem edits likewise do not create hidden snapshots. One
-reviewed content change gets one scoped snapshot after it is complete; never use broad
-Git staging or include config, credentials, databases, uploads, drafts, or runtime state.
-See [snapshots.md](snapshots.md) for the full boundary.
+Dashboard and direct filesystem edits likewise do not create hidden commits. One
+reviewed content change gets one scoped commit after it is complete; never use broad
+Git staging, and the managed `.gitignore` keeps config, credentials, databases, uploads,
+drafts, and runtime state out of history.
 
 No `show` or `delete` subcommands. When the active workspace policy permits filesystem operations, ordinary reads and deletes already cover them — the same reason `enso job` has no `show`; the Enso CLI does not bypass a restrictive policy. `list` earns its place because it surfaces descriptions without opening every file.
 
@@ -201,16 +201,16 @@ assets:
    `setup.completed_at: null` **before** any starter content is seeded.
 2. While that marker remains `null`, explicit setup exclusively creates missing bundled
    prompt, skill, starter-doc, and default-workspace content. It never follows a symlink
-   or replaces a collision. Once the complete tree exists, setup records it in one initial
-   local Git snapshot.
-3. Only after that snapshot succeeds does setup replace `null` with an ISO 8601 completion
+   or replaces a collision. Once the complete tree exists, setup records it in one
+   baseline Git commit.
+3. Only after that commit succeeds does setup replace `null` with an ISO 8601 completion
    timestamp that includes a timezone.
 
-A seed or snapshot failure leaves the marker `null` and reports setup as incomplete. The
-next explicit setup attempt reuses matching files already created, fills only missing
-pieces, and retries the snapshot without overwriting user content. If the initial snapshot
-succeeded but saving the completion timestamp failed, the retry recognizes that snapshot
-and writes the timestamp without creating a second initial commit.
+A seed or commit failure leaves the marker `null` and reports setup as incomplete. The
+next explicit setup attempt reuses matching files already created and fills only missing
+pieces without overwriting user content. If the baseline committed but saving the
+completion timestamp failed, the retry recognizes the existing history and writes the
+timestamp without creating a second initial commit.
 
 A timestamped setup is complete. A configuration with no `setup` field is a pre-feature
 installation, not an interrupted setup. Neither state seeds starter docs, and operators
@@ -282,10 +282,10 @@ The doc count joins the existing job and skill counts, linking to `/docs`.
 | --- | --- |
 | `config.py` | Adds `DOCS_DIR` beside `JOBS_DIR` |
 | `docs.py` *(new)* | Path validation, bounded recursive listing, scaffold and delete |
-| `cli.py` | Adds the `doc` Typer group, the explicit snapshot command, and coordinates the fresh seed → initial snapshot → completion-timestamp transition |
+| `cli.py` | Adds the `doc` Typer group and coordinates the fresh seed → baseline commit → completion-timestamp transition |
 | `scaffolding.py` | Creates the structural docs directory and exclusively copies starter resources only for an incomplete fresh setup |
 | `starter_docs/` | Packages the content-model, layout, and operator starter references |
-| `repository.py` | Records the initial tree and explicit later content changes through the same scoped snapshot service |
+| `repository.py` | Establishes the local Git boundary, protective ignore rules, and the setup baseline commit |
 | `skills/docs/SKILL.md` *(new)* | Bundled skill teaching discovery and authoring |
 | `prompts/AGENTS.md` | Keeps a compact dynamic-doc routing rule and optional pointers to the three starter paths |
 | `web/app.py` | Adds doc routes, path-safe resolution, and the dashboard count |

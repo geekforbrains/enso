@@ -9,7 +9,7 @@ Enso Tables are ordinary SQLite tables in `~/.enso/enso.db`, explicitly
 registered so agents and the dashboard can discover them. The database also
 contains Enso's internal run history, so keep the boundary below exact.
 
-`~/.enso/enso.db` and its sidecars are protected runtime state, not versionable Enso content; never pass it to `enso snapshot create`. Content snapshots are for allowlisted human-authored files, not database rows.
+`~/.enso/enso.db` and its sidecars are protected runtime state, not versionable Enso content; the managed `.gitignore` excludes them, and they must never be committed to Enso's local content history. History is for human-authored files, not database rows.
 
 ## Discover before writing
 

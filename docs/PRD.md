@@ -65,8 +65,9 @@ overview, organisation, and managing the scheduled work Enso already runs.
 - **No configuration or native-policy editor.** Workspace, policy, and Slack views explain
   the active process configuration without changing `config.json` or protected provider
   policy files.
-- **No Git-history manager.** Enso can create one scoped local content snapshot, but the
-  dashboard has no history browser and Enso exposes no restore, reset, or delete command.
+- **No Git-history manager.** Content history is ordinary local Git commits made by
+  agents, but the dashboard has no history browser and Enso exposes no snapshot,
+  restore, reset, or delete command.
 
 ## Vocabulary
 
@@ -79,9 +80,9 @@ overview, organisation, and managing the scheduled work Enso already runs.
 - **Reference doc** — user-owned Markdown whose relative path and frontmatter description
   provide on-demand operator context. `enso doc list` derives its current discovery index
   directly from the doc tree. See [docs.md](specs/docs.md).
-- **Snapshot** — one local Git commit of explicit allowlisted content paths. It excludes
-  configuration, credentials, databases, policies, uploads, drafts, and runtime state;
-  see [snapshots.md](specs/snapshots.md).
+- **Content history** — ordinary local Git commits in `~/.enso`, made with explicit
+  scoped paths. The managed `.gitignore` excludes configuration, credentials, databases,
+  policies, uploads, drafts, and runtime state.
 - **Transport / notify** — the existing chat delivery layer (Telegram/Slack). Host-side job failure and recovery alerts ride it; successful jobs are silent unless the prompt explicitly sends a message. Slack route auditing records inbound turns only and does not change notification behavior.
 
 ## Key decisions
@@ -96,7 +97,7 @@ overview, organisation, and managing the scheduled work Enso already runs.
 | Web access                     | Bind **localhost** by default; Tailscale for remote; Host allowlist and optional shared token. No login                                                                          |
 | Web capability                 | **Read/write, scoped to owned files** — edit job prompts, toggle/run jobs, edit Enso-owned skills, shared instructions, and valid canonical workspace-root instructions. Configuration, policies, nested instructions, and external skills are read-only |
 | Tables web capability          | **Read-only, bounded inspection** — list metadata, show schema, and page through capped previews; no SQL or row/schema mutations                                                 |
-| Local content history          | **Scoped** — `enso snapshot create` commits reviewed allowlisted paths locally; workspace creation automatically commits only its five complete versionable entries. No broad staging, network Git operation, or destructive history command |
+| Local content history          | **Plain scoped Git** — agents commit reviewed explicit paths locally with `git add`/`git commit`; the managed `.gitignore` keeps runtime and credential paths out. No broad staging, network Git operation, or destructive history command |
 | Notifications                  | Reuse `transport.notify` / `enso message send`; exact Slack routing does not alter job delivery. No transport implicitly broadcasts                                              |
 
 ## Personas
@@ -165,14 +166,14 @@ authorized chat senders, not additional owners or dashboard personas.
 - `enso workspace list` and `enso workspace show <name>` inspect that catalog without
   mutation. `enso workspace create <name> --policy <policy> [--concurrency <n>]` accepts
   no path, requires an existing explicit policy, defaults concurrency to `1`, publishes a
-  complete scaffold atomically, saves the validated candidate config atomically, runs the
-  installation check, and snapshots exactly `AGENTS.md`, `CLAUDE.md`, `.agents/skills`,
-  `.claude/skills`, and `knowledge/README.md`. Fresh setup's unrestricted
+  complete scaffold atomically, saves the validated candidate config atomically, and
+  runs the installation check; the new scaffold is recorded in local history by a later
+  scoped commit. Fresh setup's unrestricted
   `admin`/`default` binding is the only automatic full-authority grant.
 - `enso workspace repair <name>` creates missing structural directories and known
   discovery links only. It never recreates seeded instructions, skill definitions, docs, or
   `knowledge/README.md`; it reports missing user content that keeps the workspace from
-  launching. Published directories survive later config/check/snapshot failures for
+  launching. Published directories survive later config or check failures for
   operator recovery, and all binding changes require restart.
 - `/policies` and `/policies/<name>` show reusable policy configuration, consuming
   workspaces, and safe provider-validation results. Native policy contents and secret
@@ -205,8 +206,8 @@ authorized chat senders, not additional owners or dashboard personas.
   `operator.md` for confirmed identity, timezone/locale, preferences, and standing
   personal context. It does not seed empty topic placeholders.
 - Setup persists `setup.completed_at: null` before fresh seeding, records the complete
-  initial content tree in one local Git snapshot, and then writes a timezone-bearing
-  completion timestamp. Failed seeds or snapshots remain retryable; if only the timestamp
+  initial content tree in one baseline Git commit, and then writes a timezone-bearing
+  completion timestamp. Failed seeds or commits remain retryable; if only the timestamp
   write fails, retry completes that transition without creating a second initial commit.
 - Installed starters are user-owned and may be edited or deleted. Timestamped setup,
   pre-feature configurations with no setup field, structural repair, startup, dashboard
@@ -251,7 +252,7 @@ authorized chat senders, not additional owners or dashboard personas.
   from launching; job validation catches the same boundary before trusted prerun and
   checks it again afterward.
 - A fresh setup exposes the three starter descriptions through the dynamic doc list,
-  captures them in its single initial local snapshot, and marks setup complete only
+  captures them in its single baseline commit, and marks setup complete only
   afterward; deleting a starter leaves it absent through restart, repair, and upgrade.
 - A stale shared or canonical-workspace instruction form cannot overwrite a newer agent or
   operator edit; unsafe links, path traversal, and files outside `~/.enso/` remain outside

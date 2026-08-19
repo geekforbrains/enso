@@ -74,10 +74,11 @@ Fresh setup may provide `enso/content_model.md`, `enso/layout.md`, and `operator
 
 ## Record content changes safely
 
-Create one scoped local snapshot after each coherent change to versionable Enso content:
+`~/.enso` is a local-only Git repository. Record one scoped commit after each coherent change to Enso content:
 
 ```bash
-enso snapshot create --message "<summary>" -- <changed-path> [<changed-path>...]
+git -C ~/.enso add <changed-path> [<changed-path>...]
+git -C ~/.enso commit -m "<summary>"
 ```
 
-Pass explicit paths for only the docs, workspace knowledge, instruction files, or related canonical content changed together. Never use raw broad Git staging such as `git add -A`; configuration, credentials, databases, uploads, drafts, snapshot locks and transaction state (`.snapshot.lock`, `.snapshot.transaction.json`, `.snapshot-transaction-*.tmp` at the worktree root, and `.snapshot-index-*` in the resolved Git directory), and other runtime state are not eligible. Never remove a native Git index lock; Enso handles one only when its marker proves the exact lock is Enso-created. If the active policy denies a requested read or an internal repository or transaction write, report that boundary; never widen or rewrite the policy or substitute raw Git. The command intentionally creates local history only: do not use or invent restore, reset, or delete operations.
+Stage explicit paths for only the docs, workspace knowledge, instruction files, or related canonical content changed together. Never use broad staging such as `git add -A`, and never `--force`-add a path Git ignores: the managed `.gitignore` keeps configuration, credentials, databases, uploads, drafts, and runtime state out of history. History is local only — never add a remote, push, pull, fetch, or run destructive history or worktree commands (`reset --hard`, `checkout`/`restore` over uncommitted files, `clean`, rebase). If the active policy denies a Git operation, report that boundary; never widen or rewrite the policy.

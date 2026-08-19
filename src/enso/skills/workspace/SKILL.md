@@ -89,10 +89,10 @@ enso workspace create <name> --policy <policy> [--concurrency <n>]
 Concurrency defaults to `1`. The command exposes no path option: `<name>` determines the
 only valid root. It validates the candidate catalog before publishing, builds the complete
 scaffold in a staged directory, moves it into place atomically, saves configuration, runs
-the installation checks, and automatically snapshots the five versionable seed entries:
-`AGENTS.md`, `CLAUDE.md`, `.agents/skills`, `.claude/skills`, and
-`knowledge/README.md`. The ignored `config.json` is not part of that commit, so local
-content history is not a configuration backup. An existing
+the installation checks, and reports the result. Record the new scaffold in local
+history afterwards with a scoped `git -C ~/.enso add workspaces/<name> && git -C ~/.enso
+commit`. The ignored `config.json` never enters history, so local content history is
+not a configuration backup. An existing
 destination is an error rather than something to merge into. If configuration persistence
 fails after publication, preserve and report the unused directory; never delete it by
 guessing.
@@ -136,13 +136,14 @@ Do not use skill placement as a permission boundary; the workspace policy remain
 
 ## Record content changes safely
 
-Create one scoped local snapshot after each coherent change to versionable Enso content:
+`~/.enso` is a local-only Git repository. Record one scoped commit after each coherent change to Enso content:
 
 ```bash
-enso snapshot create --message "<summary>" -- <changed-path> [<changed-path>...]
+git -C ~/.enso add <changed-path> [<changed-path>...]
+git -C ~/.enso commit -m "<summary>"
 ```
 
-Pass explicit paths for only the workspace or global instruction, skill, knowledge, or discovery content changed together. Never use raw broad Git staging such as `git add -A`; `config.json`, native policy homes, uploads, drafts, credentials, databases, snapshot locks and transaction state (`.snapshot.lock`, `.snapshot.transaction.json`, `.snapshot-transaction-*.tmp` at the worktree root, and `.snapshot-index-*` in the resolved Git directory), and other protected runtime state are not eligible. Never remove a native Git index lock; Enso handles one only when its marker proves the exact lock is Enso-created. If the active policy denies a requested read or an internal repository or transaction write, report that boundary; never widen or rewrite the policy or substitute raw Git. The command creates local history only; do not use or invent restore, reset, or delete operations.
+Stage explicit paths for only the workspace or global instruction, skill, knowledge, or discovery content changed together. Never use broad staging such as `git add -A`, and never `--force`-add a path Git ignores: the managed `.gitignore` keeps `config.json`, native policy homes, uploads, drafts, credentials, databases, and runtime state out of history. History is local only — never add a remote, push, pull, fetch, or run destructive history or worktree commands. If the active policy denies a Git operation, report that boundary; never widen or rewrite the policy.
 
 ## Bind work to the workspace
 

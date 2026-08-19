@@ -62,44 +62,26 @@ def test_root_prompt_does_not_embed_dynamic_inventories_or_operating_manuals():
         assert excluded not in prompt
 
 
-def test_root_prompt_requires_safe_scoped_content_snapshots():
+def test_root_prompt_requires_safe_scoped_git_commits():
     prompt = _prompt("AGENTS.md")
 
     for contract in (
-        "after each coherent change to versionable Enso content",
-        "one scoped local snapshot",
-        'enso snapshot create --message "<summary>" -- <changed-path>',
-        "explicit paths",
-        "root and workspace instructions",
-        "canonical skills",
-        "global reference docs",
-        "workspace knowledge",
-        "durable job definitions",
-        "protected runtime state",
-        "credentials",
-        "databases",
-        "uploads",
-        "drafts",
-        "native policy homes",
-        "snapshot locks and transaction state",
-        ".snapshot.transaction.json",
-        ".snapshot-transaction-*.tmp",
-        ".snapshot-index-*",
-        "resolved Git directory",
-        "Never remove a native Git index lock",
-        "Never use raw broad Git staging",
+        "local-only Git repository",
+        "After each coherent change to Enso content",
+        "record one scoped commit",
+        "git -C ~/.enso add <changed-path>",
+        'git -C ~/.enso commit -m "<summary>"',
+        "Stage only the paths you changed",
+        "never use broad staging such as `git add -A`",
+        "never use `--force`",
+        "credentials, databases, and runtime state",
+        "never add a remote, push, pull, or fetch",
+        "destructive history or worktree commands",
+        "report it to the operator",
         "If the active policy denies",
         "report that boundary",
-        "restore, reset, or delete history operations",
     ):
         assert contract in prompt
-
-    for unavailable in (
-        "enso snapshot restore",
-        "enso snapshot reset",
-        "enso snapshot delete",
-    ):
-        assert unavailable not in prompt
 
 
 def test_workspace_prompt_is_a_minimal_scope_and_source_router():

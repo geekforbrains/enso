@@ -327,8 +327,8 @@ for its bounded timeout therefore cannot delay health checks or unrelated web re
   and reference docs use plain textareas; nested workspace instructions and
   external skills use escaped preformatted text. Rich Markdown rendering is not
   implemented. A successful edit is an atomic file mutation, not an automatic Git
-  snapshot; after a coherent set of edits, the operator or agent uses one scoped
-  `enso snapshot create` with the reviewed versionable paths.
+  commit; after a coherent set of edits, the operator or agent records one scoped
+  `git add`/`git commit` in `~/.enso` with the reviewed paths.
 - **Table grids**: schema and row values remain readable on narrow screens via
   bounded, horizontal overflow; long values cannot widen the whole document.
 - **Form controls**: native single-select dropdowns share consistent spacing, focus
