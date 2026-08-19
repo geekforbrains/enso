@@ -231,17 +231,6 @@ def test_execution_context_requires_workspace_policy_and_message_scope(sample_co
         ExecutionContext(chat_key="chat", path=path, workspace_id="test")  # type: ignore[call-arg]
 
 
-# -- Bundled guidance --
-
-
-def _bundled_prompt(filename: str = "AGENTS.md") -> str:
-    return (
-        importlib.resources.files("enso")
-        .joinpath("prompts", filename)
-        .read_text(encoding="utf-8")
-    )
-
-
 def test_has_session_memory_reports_only_used_sessions(sample_config):
     """A reserved `new:` ID has sent the provider nothing, so it holds no memory."""
     runtime = Runtime(sample_config)
@@ -255,6 +244,9 @@ def test_has_session_memory_reports_only_used_sessions(sample_config):
     assert runtime.has_session_memory("chat", "claude")
     # Sessions are per provider, never shared across them.
     assert not runtime.has_session_memory("chat", "codex")
+
+
+# -- Bundled guidance --
 
 
 def test_bundled_prompts_are_transport_neutral():

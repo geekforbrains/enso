@@ -45,10 +45,10 @@ contents never enter template context. List and overview pages therefore say con
 structurally valid bindings and reserve ready for successful policy-detail checks. Config
 edits are not a web capability and neither the web process nor the bot hot-reloads them.
 
-Instruction-file reads and writes use a separate hardened filesystem boundary. It opens
-absolute roots and descendants through pinned directory descriptors with no symlink
-following, enforces current-user ownership, regular-file/single-link/protected-mode rules,
-caps discovery and UTF-8 content, and carries a content revision from read to atomic save.
+Instruction-file reads and writes use a separate hardened filesystem boundary. It
+requires a physical, owner-protected path chain with no symlink anywhere, enforces
+current-user ownership, regular-file/single-link/protected-mode rules, caps discovery
+and UTF-8 content, and carries a content revision from read to atomic save.
 Only the shared file and valid canonical workspace-root instruction files are writable;
 nested workspace instruction files are inspection-only. Alternate, external, nested, and
 symlinked workspace roots are invalid; their instruction content is never inspected or
@@ -146,8 +146,8 @@ next turn. That context warns the next active provider that partial filesystem o
 session work may remain. Scheduled jobs retain their separate per-job timeout.
 
 Claude accepts an Enso-generated session ID and Codex emits its ID in the event stream.
-Antigravity generates its own ID but exposes it only in diagnostics: each invocation
-uses a private temporary `--log-file`, Enso captures the authoritative active
+Antigravity generates its own ID but exposes it only in diagnostics: each interactive
+invocation uses a private temporary `--log-file`, Enso captures the authoritative active
 conversation ID after the process exits, and the file is immediately removed. `/clear`
 forgets the stored provider session, so the next message starts and captures a new one.
 
@@ -405,7 +405,7 @@ internet and the PRD makes that a non-goal.
 | `slack_manifest.yaml`    | Declares Socket Mode, App Home, interactivity, events, and required bot scopes                |
 | `jobs.py`                | Loads YAML scalars with `BaseLoader`, then falls back for malformed legacy headers            |
 | `frontmatter.py`         | Provides fence-aware raw edits and YAML serialization, writing through `fsutil`               |
-| `fsutil.py`              | Owns atomic text writes, containment checks, hashing, and SQLite file hardening                |
+| `fsutil.py`              | Owns atomic text writes, containment checks, and SQLite file hardening                        |
 | `scaffolding.py`         | Creates canonical trees, exclusively seeds fresh content, and conservatively repairs structure |
 | `repository.py`          | Establishes the exact local Git boundary, protective ignore rules, and fallback identity        |
 | `sqlite_store.py`        | Owns operation-scoped connections, transactions, bounded timeouts, and failure classification |

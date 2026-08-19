@@ -17,9 +17,9 @@ and registered user tables. Writes go straight back to owned files (atomic repla
 configuration, policies, Slack routes, and user-table pages are read-only. There is no
 separate web database or cache (see [data-model.md](data-model.md)).
 
-The app factory validates the local Git root and canonical scaffold before serving. That
-check is read-only: the web process never seeds prompts, skills, starter docs, or workspace
-knowledge, creates workspaces, repairs links, or changes setup state.
+The `enso web` command validates the local Git root and canonical scaffold before serving.
+That check is read-only: the web process never seeds prompts, skills, starter docs, or
+workspace knowledge, creates workspaces, repairs links, or changes setup state.
 
 **Write boundary.** Every write the UI makes lands inside `~/.enso/` (jobs, user-owned
 global skills and docs, the canonical shared `AGENTS.md`, and root `AGENTS.md` files under

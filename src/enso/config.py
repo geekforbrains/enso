@@ -277,7 +277,6 @@ def config_lock() -> Iterator[None]:
         os.close(descriptor)
 
 
-
 def _build_default_config() -> dict:
     """Build default config with empty transport and all providers."""
     providers = resolve_providers()

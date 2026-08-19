@@ -86,8 +86,8 @@ workspace is created with `enso workspace create <name> --policy <existing-polic
 option exists. Creation validates the complete candidate catalog, atomically publishes
 the structure shown above with a short local prompt and `knowledge/README.md`, atomically
 saves configuration, and runs the installation check. The new `AGENTS.md`, `CLAUDE.md`,
-`.agents/skills`, `.claude/skills`, and `knowledge/README.md` are then recorded in local
-history with one scoped commit; local `skills/` starts empty. This Git history excludes
+`.agents/skills`, `.claude/skills`, and `knowledge/README.md` are recorded in local
+history by a later scoped commit; local `skills/` starts empty. This Git history excludes
 config and is not a complete backup.
 
 Every later policy is also explicit. Use `enso policy create <name>` with exactly one of
