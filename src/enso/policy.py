@@ -159,119 +159,49 @@ def _within(child: str, parent: str) -> bool:
     return child == parent or child.startswith(parent + os.sep)
 
 
-@dataclass
-class _PinnedDirectory:
-    """A no-follow descriptor chain from `/` to one physical directory."""
-
-    path: str
-    label: str
-    descriptors: list[int]
-    component_names: list[str]
-
-    @property
-    def descriptor(self) -> int:
-        return self.descriptors[-1]
-
-    def ancestry_problems(self) -> list[str]:
-        problems: list[str] = []
-        traversed = os.path.sep
-        for index, name in enumerate(self.component_names):
-            traversed = os.path.join(traversed, name)
-            parent = self.descriptors[index]
-            held = os.fstat(self.descriptors[index + 1])
-            try:
-                with os.scandir(parent) as iterator:
-                    exact_name_present = any(entry.name == name for entry in iterator)
-            except OSError as exc:
-                problems.append(f"{self.label} ancestry changed at {traversed}: {exc}")
-                break
-            if not exact_name_present:
-                problems.append(f"{self.label} ancestry changed at {traversed}")
-                break
-            try:
-                current = os.stat(name, dir_fd=parent, follow_symlinks=False)
-            except OSError as exc:
-                problems.append(f"{self.label} ancestry changed at {traversed}: {exc}")
-                break
-            if stat.S_ISLNK(current.st_mode) or _stat_identity(current) != _stat_identity(held):
-                problems.append(f"{self.label} ancestry changed at {traversed}")
-                break
-        return problems
-
-    def close(self) -> None:
-        for descriptor in reversed(self.descriptors):
-            os.close(descriptor)
-        self.descriptors.clear()
-
-
-def _stat_identity(metadata: os.stat_result) -> tuple[int, int]:
-    return metadata.st_dev, metadata.st_ino
-
-
 def _directory_open_flags() -> int:
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
     return flags | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_DIRECTORY", 0)
 
 
-def _pin_directory(path: str, label: str) -> tuple[_PinnedDirectory | None, list[str]]:
-    """Open every absolute path component without following symlinks."""
+def _physical_chain_problems(path: str, label: str) -> list[str]:
+    """Reject missing, case-aliased, or symlinked components anywhere in a path.
+
+    The workspace-overlap checks compare path strings, so every component must
+    carry the exact on-disk spelling (the default macOS filesystem is
+    case-insensitive) and be a physical directory rather than a symlink alias.
+    """
     absolute = os.path.abspath(os.path.expanduser(path))
-    if not os.path.isabs(absolute):
-        return None, [f"{label} must be absolute"]
-    descriptors: list[int] = []
-    component_names = [part for part in absolute.split(os.sep) if part]
     traversed = os.path.sep
-    try:
-        descriptors.append(os.open(os.path.sep, _directory_open_flags()))
-        for name in component_names:
-            traversed = os.path.join(traversed, name)
-            parent = descriptors[-1]
-            try:
-                with os.scandir(parent) as iterator:
-                    entry_names = {entry.name for entry in iterator}
-            except OSError as exc:
-                return None, [f"cannot enumerate {label} path component {traversed}: {exc}"]
-            if name not in entry_names:
-                aliases = sorted(
-                    candidate
-                    for candidate in entry_names
-                    if candidate.casefold() == name.casefold()
-                )
-                if not aliases:
-                    return None, [f"{label} does not exist at {traversed}"]
-                found = f" (found {aliases[0]!r})"
-                return None, [
-                    f"{label} path component spelling does not exactly match an "
-                    f"on-disk entry at {traversed}{found}"
-                ]
-            try:
-                before = os.stat(name, dir_fd=parent, follow_symlinks=False)
-            except OSError as exc:
-                return None, [f"cannot inspect {label} path component {traversed}: {exc}"]
-            if stat.S_ISLNK(before.st_mode):
-                return None, [f"{label} path component {traversed} must not be a symlink"]
-            if not stat.S_ISDIR(before.st_mode):
-                return None, [f"{label} path component {traversed} must be a directory"]
-            try:
-                descriptor = os.open(name, _directory_open_flags(), dir_fd=parent)
-            except OSError as exc:
-                return None, [f"could not open {label} path component {traversed}: {exc}"]
-            descriptors.append(descriptor)
-            opened = os.fstat(descriptor)
-            try:
-                after = os.stat(name, dir_fd=parent, follow_symlinks=False)
-            except OSError as exc:
-                return None, [f"could not recheck {label} path component {traversed}: {exc}"]
-            if _stat_identity(before) != _stat_identity(opened) or _stat_identity(
-                opened
-            ) != _stat_identity(after):
-                return None, [f"{label} ancestry changed at {traversed}"]
-        pinned = _PinnedDirectory(absolute, label, descriptors, component_names)
-        descriptors = []
-        return pinned, []
-    finally:
-        for descriptor in reversed(descriptors):
-            os.close(descriptor)
+    for name in (part for part in absolute.split(os.sep) if part):
+        parent = traversed
+        traversed = os.path.join(traversed, name)
+        try:
+            with os.scandir(parent) as iterator:
+                entry_names = {entry.name for entry in iterator}
+        except OSError as exc:
+            return [f"cannot enumerate {label} path component {traversed}: {exc}"]
+        if name not in entry_names:
+            aliases = sorted(
+                candidate
+                for candidate in entry_names
+                if candidate.casefold() == name.casefold()
+            )
+            if not aliases:
+                return [f"{label} does not exist at {traversed}"]
+            return [
+                f"{label} path component spelling does not exactly match an "
+                f"on-disk entry at {traversed} (found {aliases[0]!r})"
+            ]
+        try:
+            metadata = os.lstat(traversed)
+        except OSError as exc:
+            return [f"cannot inspect {label} path component {traversed}: {exc}"]
+        if stat.S_ISLNK(metadata.st_mode):
+            return [f"{label} path component {traversed} must not be a symlink"]
+        if not stat.S_ISDIR(metadata.st_mode):
+            return [f"{label} path component {traversed} must be a directory"]
+    return []
 
 
 def _directory_metadata_problems(
@@ -318,58 +248,16 @@ def _file_metadata_problems(metadata: os.stat_result, label: str) -> list[str]:
     return problems
 
 
-def _metadata_signature(metadata: os.stat_result) -> tuple[int, ...]:
-    return (
-        metadata.st_dev,
-        metadata.st_ino,
-        metadata.st_mode,
-        metadata.st_uid,
-        metadata.st_nlink,
-        metadata.st_size,
-        metadata.st_mtime_ns,
-        metadata.st_ctime_ns,
-    )
-
-
-def _stable_descriptor_read(
-    descriptor: int,
-    label: str,
-    expected: os.stat_result,
-) -> tuple[bytes | None, list[str]]:
-    """Read an already no-follow-opened file and reject in-place mutation."""
-    before = os.fstat(descriptor)
-    problems = _file_metadata_problems(before, label)
-    if _stat_identity(before) != _stat_identity(expected):
-        problems.append(f"{label} changed before it could be read")
+def _read_descriptor(descriptor: int, label: str) -> tuple[bytes | None, list[str]]:
+    """Read one no-follow-opened regular owner-only file completely."""
+    problems = _file_metadata_problems(os.fstat(descriptor), label)
     chunks: list[bytes] = []
     try:
         while chunk := os.read(descriptor, 65536):
             chunks.append(chunk)
     except OSError as exc:
         problems.append(f"could not read {label}: {exc}")
-    after = os.fstat(descriptor)
-    if _metadata_signature(before) != _metadata_signature(after):
-        problems.append(f"{label} changed while it was being read")
     return (None if problems else b"".join(chunks)), problems
-
-
-def _entry_replacement_problem(
-    parent: int,
-    name: str,
-    expected: os.stat_result,
-    label: str,
-    kind: str,
-) -> str | None:
-    """Recheck that a descriptor-read entry still names the same physical object."""
-    try:
-        current = os.stat(name, dir_fd=parent, follow_symlinks=False)
-    except OSError as exc:
-        return f"could not recheck {label}: {exc}"
-    expected_type = stat.S_ISREG if kind == "file" else stat.S_ISDIR
-    if not expected_type(current.st_mode) or _stat_identity(current) != _stat_identity(expected):
-        activity = "being read" if kind == "file" else "inspected"
-        return f"{label} was replaced while it was {activity}"
-    return None
 
 
 def _tree_snapshot_descriptor(
@@ -417,22 +305,9 @@ def _tree_snapshot_descriptor(
                     problems.append(f"could not open {item_label}: {exc}")
                     continue
                 try:
-                    opened = os.fstat(child)
-                    if _stat_identity(opened) != _stat_identity(metadata):
-                        problems.append(f"{item_label} changed while it was being opened")
-                    else:
-                        visit(child, relative)
+                    visit(child, relative)
                 finally:
                     os.close(child)
-                replacement_problem = _entry_replacement_problem(
-                    directory_descriptor,
-                    entry.name,
-                    metadata,
-                    item_label,
-                    "directory",
-                )
-                if replacement_problem is not None:
-                    problems.append(replacement_problem)
                 continue
             if not stat.S_ISREG(metadata.st_mode):
                 problems.append(f"{item_label} must be a regular file or directory")
@@ -446,44 +321,34 @@ def _tree_snapshot_descriptor(
                 problems.append(f"could not open {item_label} safely: {exc}")
                 continue
             try:
-                content, read_problems = _stable_descriptor_read(
-                    descriptor,
-                    item_label,
-                    metadata,
-                )
-                problems.extend(read_problems)
-                replacement_problem = _entry_replacement_problem(
-                    directory_descriptor,
-                    entry.name,
-                    metadata,
-                    item_label,
-                    "file",
-                )
-                if replacement_problem is not None:
-                    problems.append(replacement_problem)
-                if content is not None and replacement_problem is None:
-                    files[relative] = content
+                content, read_problems = _read_descriptor(descriptor, item_label)
             finally:
                 os.close(descriptor)
+            problems.extend(read_problems)
+            if content is not None:
+                files[relative] = content
 
     visit(root_descriptor)
     return files, problems
 
 
 def _tree_snapshot(root: str, label: str) -> tuple[dict[str, bytes], list[str]]:
-    """Return stable bytes for every file below one physical provider tree."""
-    pinned, problems = _pin_directory(root, label)
-    if pinned is None:
+    """Return the bytes of every file below one physical provider tree."""
+    problems = _physical_chain_problems(root, label)
+    if problems:
         return {}, problems
+    absolute = os.path.abspath(os.path.expanduser(root))
     try:
-        root_metadata = os.fstat(pinned.descriptor)
-        problems.extend(_directory_stat_problems(root_metadata, label))
-        files, tree_problems = _tree_snapshot_descriptor(pinned.descriptor, label)
+        descriptor = os.open(absolute, _directory_open_flags())
+    except OSError as exc:
+        return {}, [f"could not open {label}: {exc}"]
+    try:
+        problems.extend(_directory_stat_problems(os.fstat(descriptor), label))
+        files, tree_problems = _tree_snapshot_descriptor(descriptor, label)
         problems.extend(tree_problems)
-        problems.extend(pinned.ancestry_problems())
         return files, problems
     finally:
-        pinned.close()
+        os.close(descriptor)
 
 
 def _policy_directory_problems(
@@ -492,16 +357,15 @@ def _policy_directory_problems(
 ) -> list[str]:
     if policy.policy_dir is None:
         return ["policy_dir is required for a restricted policy"]
-    pinned, problems = _pin_directory(policy.policy_dir, "policy_dir")
-    if pinned is not None:
+    problems = _physical_chain_problems(policy.policy_dir, "policy_dir")
+    policy_lexical = os.path.abspath(os.path.expanduser(policy.policy_dir))
+    if not problems:
         try:
             problems.extend(
-                _directory_stat_problems(os.fstat(pinned.descriptor), "policy_dir")
+                _directory_stat_problems(os.lstat(policy_lexical), "policy_dir")
             )
-            problems.extend(pinned.ancestry_problems())
-        finally:
-            pinned.close()
-    policy_lexical = os.path.abspath(os.path.expanduser(policy.policy_dir))
+        except OSError as exc:
+            problems.append(f"cannot inspect policy_dir: {exc}")
     policy_real = os.path.realpath(policy_lexical)
     for workspace in workspaces:
         workspace_lexical = os.path.abspath(os.path.expanduser(workspace.path))
@@ -1123,21 +987,7 @@ def verify_grok_rules(workspace: Workspace, policy: Policy, grok_path: str) -> l
     assert policy.policy_dir is not None and check.policy_revision is not None
 
     source = _provider_source_root(policy, "grok")
-    pinned, source_problems = _pin_directory(source, "grok policy directory")
-    if pinned is None:
-        return source_problems
-    try:
-        source_problems.extend(
-            _directory_stat_problems(os.fstat(pinned.descriptor), "grok policy directory")
-        )
-        files, tree_problems = _tree_snapshot_descriptor(
-            pinned.descriptor,
-            "grok policy directory",
-        )
-        source_problems.extend(tree_problems)
-        source_problems.extend(pinned.ancestry_problems())
-    finally:
-        pinned.close()
+    files, source_problems = _tree_snapshot(source, "grok policy directory")
     if source_problems:
         return list(dict.fromkeys(source_problems))
     if _source_revision("grok", files) != check.policy_revision:
@@ -1146,27 +996,20 @@ def verify_grok_rules(workspace: Workspace, policy: Policy, grok_path: str) -> l
     raw = files.get("config.toml")
     if raw is None:
         return ["native policy not found at grok/config.toml"]
-    effective_files = {**files, "config.toml": _grok_effective_config(raw)}
+    effective = _grok_effective_config(raw)
+    effective_files = {**files, "config.toml": effective}
+    try:
+        effective_config = tomllib.loads(effective.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return ["grok config does not parse as UTF-8 TOML"]
+    declared = _grok_rule_count(effective_config)
     try:
         with tempfile.TemporaryDirectory(prefix="enso-grok-home-inspect-") as grok_home:
             grok_descriptor = os.open(grok_home, _directory_open_flags())
             try:
                 _materialize_snapshot_at(grok_descriptor, effective_files, "grok")
-                staged_files, staged_problems = _tree_snapshot_descriptor(
-                    grok_descriptor,
-                    "temporary grok policy home",
-                )
             finally:
                 os.close(grok_descriptor)
-            if staged_problems:
-                return list(dict.fromkeys(staged_problems))
-            if _source_revision("grok", staged_files) != check.policy_revision:
-                return ["temporary grok policy digest does not match the checked revision"]
-            try:
-                staged_config = tomllib.loads(staged_files["config.toml"].decode("utf-8"))
-            except (KeyError, UnicodeDecodeError, tomllib.TOMLDecodeError):
-                return ["temporary grok config does not parse as UTF-8 TOML"]
-            declared = _grok_rule_count(staged_config)
             env = _minimal_env("grok", policy.env_passthrough)
             env["GROK_HOME"] = grok_home
             with tempfile.TemporaryDirectory(prefix="enso-grok-inspect-") as scratch_home:
@@ -1250,30 +1093,18 @@ def _write_all(descriptor: int, content: bytes) -> None:
 
 def _open_directory_at(parent: int, name: str, label: str, provider: str) -> int:
     try:
-        before = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        metadata = os.stat(name, dir_fd=parent, follow_symlinks=False)
     except OSError as exc:
         raise PolicyError(provider, (f"cannot inspect {label}: {exc}",)) from exc
-    if stat.S_ISLNK(before.st_mode) or not stat.S_ISDIR(before.st_mode):
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
         raise PolicyError(provider, (f"{label} must be a physical directory",))
-    problems = _directory_stat_problems(before, label)
+    problems = _directory_stat_problems(metadata, label)
+    if problems:
+        raise PolicyError(provider, tuple(problems))
     try:
-        descriptor = os.open(name, _directory_open_flags(), dir_fd=parent)
+        return os.open(name, _directory_open_flags(), dir_fd=parent)
     except OSError as exc:
         raise PolicyError(provider, (f"could not open {label} safely: {exc}",)) from exc
-    opened = os.fstat(descriptor)
-    try:
-        after = os.stat(name, dir_fd=parent, follow_symlinks=False)
-    except OSError as exc:
-        os.close(descriptor)
-        raise PolicyError(provider, (f"could not recheck {label}: {exc}",)) from exc
-    if _stat_identity(before) != _stat_identity(opened) or _stat_identity(
-        opened
-    ) != _stat_identity(after):
-        problems.append(f"{label} changed while it was being opened")
-    if problems:
-        os.close(descriptor)
-        raise PolicyError(provider, tuple(problems))
-    return descriptor
 
 
 def _ensure_runtime_directory_at(parent: int, name: str, label: str, provider: str) -> int:
@@ -1330,15 +1161,6 @@ def _copy_policy_tree(source: int, destination: int) -> None:
                 try:
                     os.fchmod(destination_child, 0o700)
                     _copy_policy_tree(source_child, destination_child)
-                    replacement_problem = _entry_replacement_problem(
-                        source,
-                        name,
-                        os.fstat(source_child),
-                        f"policy directory {name}",
-                        "directory",
-                    )
-                    if replacement_problem is not None:
-                        raise PolicyError(provider, (replacement_problem,))
                 finally:
                     os.close(destination_child)
             finally:
@@ -1352,20 +1174,11 @@ def _copy_policy_tree(source: int, destination: int) -> None:
         )
         source_file = os.open(name, source_flags, dir_fd=source)
         try:
-            content, read_problems = _stable_descriptor_read(source_file, name, metadata)
-            if content is None:
-                raise PolicyError(provider, tuple(read_problems))
-            replacement_problem = _entry_replacement_problem(
-                source,
-                name,
-                os.fstat(source_file),
-                f"policy file {name}",
-                "file",
-            )
-            if replacement_problem is not None:
-                raise PolicyError(provider, (replacement_problem,))
+            content, read_problems = _read_descriptor(source_file, f"policy file {name}")
         finally:
             os.close(source_file)
+        if content is None:
+            raise PolicyError(provider, tuple(read_problems))
         destination_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
         destination_flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
         destination_file = os.open(name, destination_flags, 0o600, dir_fd=destination)
@@ -1373,15 +1186,6 @@ def _copy_policy_tree(source: int, destination: int) -> None:
             os.fchmod(destination_file, 0o600)
             _write_all(destination_file, content)
             os.fsync(destination_file)
-            replacement_problem = _entry_replacement_problem(
-                source,
-                name,
-                metadata,
-                f"policy file {name}",
-                "file",
-            )
-            if replacement_problem is not None:
-                raise PolicyError(provider, (replacement_problem,))
             os.fchmod(destination_file, 0o400)
         finally:
             os.close(destination_file)
@@ -1449,8 +1253,7 @@ def _preseed_grok_marketplace_at(home: int) -> None:
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open("config.toml", flags, dir_fd=home)
     try:
-        metadata = os.fstat(descriptor)
-        raw, problems = _stable_descriptor_read(descriptor, "config.toml", metadata)
+        raw, problems = _read_descriptor(descriptor, "config.toml")
         if raw is None:
             raise PolicyError("grok", tuple(problems))
         effective = _grok_effective_config(raw)
@@ -1493,23 +1296,8 @@ def _remove_tree_at(parent: int, name: str) -> None:
     os.rmdir(name, dir_fd=parent)
 
 
-def _provider_revision_problems(
-    source: int,
-    provider: str,
-    revision: str,
-) -> list[str]:
-    """Require the current held provider tree to remain the checked revision."""
-    files, problems = _tree_snapshot_descriptor(source, f"{provider} policy directory")
-    config_name = os.path.basename(POLICY_FILES[provider])
-    if config_name not in files or _source_revision(provider, files) != revision:
-        problems.append(f"{provider} policy source changed after validation")
-    return list(dict.fromkeys(problems))
-
-
 def _publish_staged_snapshot_at(
     source: int,
-    source_parent: int,
-    source_name: str,
     snapshots: int,
     revision: str,
     provider: str,
@@ -1549,18 +1337,6 @@ def _publish_staged_snapshot_at(
                 ("staged policy digest does not match the checked revision",),
             )
         _write_snapshot_manifest_at(temporary_descriptor, manifest)
-        source_problems = _provider_revision_problems(source, provider, revision)
-        if source_problems:
-            raise PolicyError(provider, tuple(source_problems))
-        replacement_problem = _entry_replacement_problem(
-            source_parent,
-            source_name,
-            os.fstat(source),
-            f"{provider} policy directory",
-            "directory",
-        )
-        if replacement_problem is not None:
-            raise PolicyError(provider, (replacement_problem,))
         try:
             os.rename(
                 temporary,
@@ -1629,24 +1405,6 @@ def _stage_provider_auth_at(home: int, provider: str, user_home: str) -> None:
             os.unlink(temporary, dir_fd=home)
 
 
-def _descriptor_chain_problems(
-    entries: tuple[tuple[int, str, int, str], ...],
-) -> list[str]:
-    """Revalidate every named child in a held descriptor chain."""
-    problems: list[str] = []
-    for parent, name, descriptor, label in entries:
-        problem = _entry_replacement_problem(
-            parent,
-            name,
-            os.fstat(descriptor),
-            label,
-            "directory",
-        )
-        if problem is not None:
-            problems.append(problem)
-    return problems
-
-
 def _stage_provider_home(
     policy: Policy,
     revision: str,
@@ -1655,10 +1413,17 @@ def _stage_provider_home(
 ) -> tuple[str, frozenset[str]]:
     """Select an immutable, revision-keyed policy snapshot and safe auth."""
     assert policy.policy_dir is not None
-    pinned, problems = _pin_directory(policy.policy_dir, "policy_dir")
-    if pinned is None:
+    problems = _physical_chain_problems(policy.policy_dir, "policy_dir")
+    if problems:
         raise PolicyError(provider, tuple(problems))
-    opened: list[int] = []
+    try:
+        root = os.open(
+            os.path.abspath(os.path.expanduser(policy.policy_dir)),
+            _directory_open_flags(),
+        )
+    except OSError as exc:
+        raise PolicyError(provider, (f"could not open policy_dir safely: {exc}",)) from exc
+    opened: list[int] = [root]
     home = os.path.join(
         policy.policy_dir,
         ".runtime",
@@ -1666,18 +1431,18 @@ def _stage_provider_home(
         revision,
     )
     try:
-        root_problems = _directory_stat_problems(os.fstat(pinned.descriptor), "policy_dir")
+        root_problems = _directory_stat_problems(os.fstat(root), "policy_dir")
         if root_problems:
             raise PolicyError(provider, tuple(root_problems))
         source = _open_directory_at(
-            pinned.descriptor,
+            root,
             provider,
             f"{provider} policy directory",
             provider,
         )
         opened.append(source)
         runtime = _ensure_runtime_directory_at(
-            pinned.descriptor,
+            root,
             ".runtime",
             ".runtime directory",
             provider,
@@ -1693,14 +1458,7 @@ def _stage_provider_home(
         try:
             os.stat(revision, dir_fd=snapshots, follow_symlinks=False)
         except FileNotFoundError:
-            _publish_staged_snapshot_at(
-                source,
-                pinned.descriptor,
-                provider,
-                snapshots,
-                revision,
-                provider,
-            )
+            _publish_staged_snapshot_at(source, snapshots, revision, provider)
         home_descriptor = _open_directory_at(
             snapshots,
             revision,
@@ -1709,37 +1467,12 @@ def _stage_provider_home(
         )
         opened.append(home_descriptor)
         staged_files = _verify_staged_snapshot_at(home_descriptor, revision, provider)
-        chain = (
-            (pinned.descriptor, provider, source, f"{provider} policy directory"),
-            (pinned.descriptor, ".runtime", runtime, ".runtime directory"),
-            (
-                runtime,
-                f"{provider}-home",
-                snapshots,
-                f".runtime/{provider}-home",
-            ),
-            (snapshots, revision, home_descriptor, "staged policy revision"),
-        )
-        pre_auth_problems = [
-            *_descriptor_chain_problems(chain),
-            *_provider_revision_problems(source, provider, revision),
-        ]
-        if pre_auth_problems:
-            raise PolicyError(provider, tuple(pre_auth_problems))
         _stage_provider_auth_at(home_descriptor, provider, user_home)
-        final_problems = [
-            *pinned.ancestry_problems(),
-            *_descriptor_chain_problems(chain),
-            *_provider_revision_problems(source, provider, revision),
-        ]
-        if final_problems:
-            raise PolicyError(provider, tuple(final_problems))
         log.debug("Selected %s home at %s (revision %s)", provider, home, revision[:12])
         return home, staged_files
     finally:
         for descriptor in reversed(opened):
             os.close(descriptor)
-        pinned.close()
 
 
 def _stage_codex_home(policy: Policy, revision: str) -> tuple[str, bool]:
