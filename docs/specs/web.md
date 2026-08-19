@@ -133,18 +133,19 @@ service is restarted.
   canonical workspace can be created or edited in the browser; `CLAUDE.md` is never
   traversed or replaced.
 
-Shared and canonical workspace edits use the same hardened file boundary. Every path
-component is opened relative to pinned directory descriptors with no symlink following;
-files must be current-user-owned regular files with one link and no group/other write bit.
-Reads are stable, bounded UTF-8 with no NUL. The form carries a SHA-256 revision, and the
-save uses an atomic name exchange while rechecking the target identity, revision, and staged
-bytes through its final in-operation verification. A conflicting revision or stable one-shot
-race returns `409` and rolls back without discarding the competing bytes. Continuous mutation
-can make a verified rollback impossible; that fails closed as `503` and leaves uncertain
-objects intact for operator recovery. No filesystem API can prevent another same-user process
-from changing the file after the save has completed. Unsafe paths/integrity return `403`,
-missing files `404`, oversized submissions `413`, invalid text `422`, and unavailable secure
-filesystem operations `503` without exposing raw exceptions.
+Shared and canonical workspace edits use the same validated file boundary. The workspace
+root and every ancestor directory must be existing physical, owner-protected directories
+with no symlink anywhere in the chain; files must be current-user-owned regular files with
+one link and no group/other write bit. Reads are bounded UTF-8 with no NUL. The form
+carries a SHA-256 revision; a save re-reads and re-validates the target, requires the
+matching revision, stages the new bytes beside it, and publishes with one atomic
+`os.replace` after a final target-identity check, so a conflicting revision or a detected
+race returns `409` and preserves the competing bytes. Detection of concurrent same-user
+writers is deliberately best-effort — Enso's durable content history is scoped Git, and no
+filesystem API can prevent another same-user process from changing the file after the save
+has completed. Unsafe paths/integrity return `403`, missing files `404`, oversized
+submissions `413`, invalid text `422`, and filesystem failures `503` without exposing raw
+exceptions.
 
 ### Policies (`/policies`, `/policies/{name}`)
 

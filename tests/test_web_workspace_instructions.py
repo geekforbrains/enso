@@ -1,4 +1,4 @@
-"""Secure filesystem boundary for workspace instruction files."""
+"""Validated filesystem boundary for workspace instruction files."""
 
 from __future__ import annotations
 
@@ -186,6 +186,7 @@ def test_write_is_revision_checked_atomic_and_mode_preserving(tmp_path):
             1024,
         )
     assert target.read_text(encoding="utf-8") == "new\n"
+    assert not list((root / "nested").glob(".enso-agents-*.tmp"))
 
 
 def test_write_detects_target_replacement_during_staging(tmp_path, monkeypatch):
@@ -213,176 +214,6 @@ def test_write_detects_target_replacement_during_staging(tmp_path, monkeypatch):
     assert not list(root.glob(".enso-agents-*.tmp"))
 
 
-def test_write_detects_target_replacement_in_the_publication_window(tmp_path, monkeypatch):
-    root = _root(tmp_path)
-    target = _write(root / "AGENTS.md", "old")
-    document = agents_fs.read_agent(str(root), "AGENTS.md", 1024)
-    racer = _write(root / "racer", "racer")
-
-    def replace_target(_parent_fd: int, _staged: str, _target: str) -> None:
-        racer.replace(target)
-
-    monkeypatch.setattr(agents_fs, "_before_publication", replace_target)
-
-    with pytest.raises(agents_fs.AgentConflict):
-        agents_fs.write_agent(str(root), "AGENTS.md", "web edit", document.revision, 1024)
-
-    assert target.read_text(encoding="utf-8") == "racer"
-    assert not list(root.glob(".enso-agents-*.tmp"))
-
-
-def test_write_detects_staged_name_replacement_in_the_publication_window(tmp_path, monkeypatch):
-    root = _root(tmp_path)
-    target = _write(root / "AGENTS.md", "old")
-    document = agents_fs.read_agent(str(root), "AGENTS.md", 1024)
-    outside = _write(tmp_path / "outside-stage", "sentinel")
-    stolen = root / "stolen-stage"
-
-    def replace_stage(parent_fd: int, staged: str, _target: str) -> None:
-        os.rename(staged, stolen.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
-        os.symlink(str(outside), staged, dir_fd=parent_fd)
-
-    monkeypatch.setattr(agents_fs, "_before_publication", replace_stage)
-
-    with pytest.raises(agents_fs.AgentConflict):
-        agents_fs.write_agent(str(root), "AGENTS.md", "web edit", document.revision, 1024)
-
-    assert target.read_text(encoding="utf-8") == "old"
-    assert outside.read_text(encoding="utf-8") == "sentinel"
-    assert stolen.read_bytes() == b""
-    assert not list(root.glob(".enso-agents-*.tmp"))
-
-
-def test_write_rolls_back_an_in_place_change_after_exchange(tmp_path, monkeypatch):
-    root = _root(tmp_path)
-    target = _write(root / "AGENTS.md", "old")
-    document = agents_fs.read_agent(str(root), "AGENTS.md", 1024)
-    real_exchange = agents_fs._exchange_names
-    changed = False
-
-    def exchange_then_change(parent_fd: int, first: str, second: str) -> None:
-        nonlocal changed
-        real_exchange(parent_fd, first, second)
-        if not changed:
-            descriptor = os.open(
-                second,
-                os.O_WRONLY | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
-                dir_fd=parent_fd,
-            )
-            try:
-                os.write(descriptor, b"bad edit")
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
-            changed = True
-
-    monkeypatch.setattr(agents_fs, "_exchange_names", exchange_then_change)
-
-    with pytest.raises(agents_fs.AgentConflict):
-        agents_fs.write_agent(str(root), "AGENTS.md", "web edit", document.revision, 1024)
-
-    assert target.read_text(encoding="utf-8") == "old"
-    assert not list(root.glob(".enso-agents-*.tmp"))
-
-
-def test_write_restores_old_content_when_displaced_name_disappears_after_exchange(
-    tmp_path, monkeypatch
-):
-    root = _root(tmp_path)
-    target = _write(root / "AGENTS.md", "old")
-    document = agents_fs.read_agent(str(root), "AGENTS.md", 1024)
-    real_exchange = agents_fs._exchange_names
-    exchange_count = 0
-
-    def exchange_then_remove(parent_fd: int, first: str, second: str) -> None:
-        nonlocal exchange_count
-        real_exchange(parent_fd, first, second)
-        exchange_count += 1
-        if exchange_count == 1:
-            os.unlink(first, dir_fd=parent_fd)
-
-    monkeypatch.setattr(agents_fs, "_exchange_names", exchange_then_remove)
-
-    with pytest.raises(agents_fs.AgentConflict):
-        agents_fs.write_agent(str(root), "AGENTS.md", "new", document.revision, 1024)
-
-    assert target.read_text(encoding="utf-8") == "old"
-    assert not list(root.glob(".enso-agents-*.tmp"))
-
-
-def test_write_restores_old_content_without_clobbering_a_replaced_displaced_name(
-    tmp_path, monkeypatch
-):
-    root = _root(tmp_path)
-    target = _write(root / "AGENTS.md", "old")
-    document = agents_fs.read_agent(str(root), "AGENTS.md", 1024)
-    racer = _write(root / "racer", "racer")
-    detached_old = root / "detached-old"
-    real_exchange = agents_fs._exchange_names
-    exchange_count = 0
-    replaced_name: str | None = None
-
-    def exchange_then_replace(parent_fd: int, first: str, second: str) -> None:
-        nonlocal exchange_count, replaced_name
-        real_exchange(parent_fd, first, second)
-        exchange_count += 1
-        if exchange_count == 1:
-            replaced_name = first
-            os.rename(first, detached_old.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
-            os.rename(racer.name, first, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
-
-    monkeypatch.setattr(agents_fs, "_exchange_names", exchange_then_replace)
-
-    with pytest.raises(agents_fs.AgentConflict):
-        agents_fs.write_agent(str(root), "AGENTS.md", "new", document.revision, 1024)
-
-    assert replaced_name is not None
-    assert target.read_text(encoding="utf-8") == "old"
-    assert detached_old.read_text(encoding="utf-8") == "old"
-    assert (root / replaced_name).read_text(encoding="utf-8") == "racer"
-
-
-def test_write_rejects_a_workspace_root_moved_during_publication(tmp_path, monkeypatch):
-    root = _root(tmp_path)
-    _write(root / "AGENTS.md", "old")
-    document = agents_fs.read_agent(str(root), "AGENTS.md", 1024)
-    detached = tmp_path / "detached"
-
-    def move_root(_parent_fd: int, _staged: str, _target: str) -> None:
-        root.rename(detached)
-        root.mkdir(mode=0o700)
-        _write(root / "AGENTS.md", "outside sentinel")
-
-    monkeypatch.setattr(agents_fs, "_before_publication", move_root)
-
-    with pytest.raises(agents_fs.AgentConflict):
-        agents_fs.write_agent(str(root), "AGENTS.md", "web edit", document.revision, 1024)
-
-    assert (detached / "AGENTS.md").read_text(encoding="utf-8") == "old"
-    assert (root / "AGENTS.md").read_text(encoding="utf-8") == "outside sentinel"
-
-
-def test_write_rejects_a_nested_parent_moved_during_publication(tmp_path, monkeypatch):
-    root = _root(tmp_path)
-    parent = root / "child"
-    _write(parent / "AGENTS.md", "old")
-    document = agents_fs.read_agent(str(root), "child/AGENTS.md", 1024)
-    detached = root / "detached-child"
-
-    def move_parent(_parent_fd: int, _staged: str, _target: str) -> None:
-        parent.rename(detached)
-        parent.mkdir(mode=0o700)
-        _write(parent / "AGENTS.md", "outside sentinel")
-
-    monkeypatch.setattr(agents_fs, "_before_publication", move_parent)
-
-    with pytest.raises(agents_fs.AgentConflict):
-        agents_fs.write_agent(str(root), "child/AGENTS.md", "web edit", document.revision, 1024)
-
-    assert (detached / "AGENTS.md").read_text(encoding="utf-8") == "old"
-    assert (parent / "AGENTS.md").read_text(encoding="utf-8") == "outside sentinel"
-
-
 def test_failed_staging_removes_its_temporary_file(tmp_path, monkeypatch):
     root = _root(tmp_path)
     target = _write(root / "AGENTS.md", "old")
@@ -400,7 +231,7 @@ def test_failed_staging_removes_its_temporary_file(tmp_path, monkeypatch):
     assert not list(root.glob(".enso-agents-*.tmp"))
 
 
-def test_write_securely_creates_only_a_missing_root_agent_file(tmp_path):
+def test_write_creates_only_a_missing_root_agent_file(tmp_path):
     root = _root(tmp_path)
 
     revision = agents_fs.write_agent(
@@ -409,8 +240,10 @@ def test_write_securely_creates_only_a_missing_root_agent_file(tmp_path):
 
     assert (root / "AGENTS.md").read_text(encoding="utf-8") == "created\n"
     assert (root / "AGENTS.md").stat().st_mode & 0o777 == 0o644
+    assert (root / "AGENTS.md").stat().st_nlink == 1
     assert revision == agents_fs.read_agent(str(root), "AGENTS.md", 1024).revision
     assert not (root / "CLAUDE.md").exists()
+    assert not list(root.glob(".enso-agents-*.tmp"))
 
     with pytest.raises(agents_fs.AgentNotFound):
         agents_fs.write_agent(
@@ -423,141 +256,35 @@ def test_write_securely_creates_only_a_missing_root_agent_file(tmp_path):
         )
 
 
-def test_missing_root_create_rejects_a_swapped_stage_without_following_it(tmp_path, monkeypatch):
+def test_missing_root_create_requires_no_expected_revision(tmp_path):
     root = _root(tmp_path)
-    outside = _write(tmp_path / "outside-create", "sentinel")
-    stolen = root / "stolen-create-stage"
-
-    def replace_stage(parent_fd: int, staged: str, _target: str) -> None:
-        os.rename(staged, stolen.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
-        os.symlink(str(outside), staged, dir_fd=parent_fd)
-
-    monkeypatch.setattr(agents_fs, "_before_publication", replace_stage)
 
     with pytest.raises(agents_fs.AgentConflict):
         agents_fs.write_agent(
             str(root),
             "AGENTS.md",
             "created",
-            None,
+            "a" * 64,
             1024,
             allow_create_root=True,
         )
 
-    assert (root / "AGENTS.md").is_symlink()
-    assert outside.read_text(encoding="utf-8") == "sentinel"
-    assert stolen.read_bytes() == b""
-    assert not list(root.glob(".enso-agents-*.tmp"))
+    assert not (root / "AGENTS.md").exists()
 
 
 def test_missing_root_create_never_clobbers_a_racing_target(tmp_path, monkeypatch):
     root = _root(tmp_path)
+    real_write_all = agents_fs._write_all
+    raced = False
 
-    def create_target(_parent_fd: int, _staged: str, _target: str) -> None:
-        _write(root / "AGENTS.md", "racer")
+    def create_target(fd: int, content: bytes) -> None:
+        nonlocal raced
+        real_write_all(fd, content)
+        if not raced:
+            _write(root / "AGENTS.md", "racer")
+            raced = True
 
-    monkeypatch.setattr(agents_fs, "_before_publication", create_target)
-
-    with pytest.raises(agents_fs.AgentConflict):
-        agents_fs.write_agent(
-            str(root),
-            "AGENTS.md",
-            "created",
-            None,
-            1024,
-            allow_create_root=True,
-        )
-
-    assert (root / "AGENTS.md").read_text(encoding="utf-8") == "racer"
-    assert not list(root.glob(".enso-agents-*.tmp"))
-
-
-def test_missing_root_create_removes_an_in_place_change_after_link(tmp_path, monkeypatch):
-    root = _root(tmp_path)
-    real_link = agents_fs.os.link
-    changed = False
-
-    def link_then_change(
-        source: str,
-        target: str,
-        *,
-        src_dir_fd: int | None = None,
-        dst_dir_fd: int | None = None,
-        follow_symlinks: bool = True,
-    ) -> None:
-        nonlocal changed
-        real_link(
-            source,
-            target,
-            src_dir_fd=src_dir_fd,
-            dst_dir_fd=dst_dir_fd,
-            follow_symlinks=follow_symlinks,
-        )
-        if not changed:
-            assert dst_dir_fd is not None
-            descriptor = os.open(
-                target,
-                os.O_WRONLY | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
-                dir_fd=dst_dir_fd,
-            )
-            try:
-                os.write(descriptor, b"corrupt")
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
-            changed = True
-
-    monkeypatch.setattr(agents_fs.os, "link", link_then_change)
-
-    with pytest.raises(agents_fs.AgentConflict):
-        agents_fs.write_agent(
-            str(root),
-            "AGENTS.md",
-            "created",
-            None,
-            1024,
-            allow_create_root=True,
-        )
-
-    assert not (root / "AGENTS.md").exists()
-    assert not list(root.glob(".enso-agents-*.tmp"))
-
-
-def test_missing_root_create_preserves_a_replacement_after_link(tmp_path, monkeypatch):
-    root = _root(tmp_path)
-    real_link = agents_fs.os.link
-
-    def link_then_replace(
-        source: str,
-        target: str,
-        *,
-        src_dir_fd: int | None = None,
-        dst_dir_fd: int | None = None,
-        follow_symlinks: bool = True,
-    ) -> None:
-        real_link(
-            source,
-            target,
-            src_dir_fd=src_dir_fd,
-            dst_dir_fd=dst_dir_fd,
-            follow_symlinks=follow_symlinks,
-        )
-        assert dst_dir_fd is not None
-        replacement = ".racing-agents"
-        descriptor = os.open(
-            replacement,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-            0o600,
-            dir_fd=dst_dir_fd,
-        )
-        try:
-            os.write(descriptor, b"racer")
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        os.replace(replacement, target, src_dir_fd=dst_dir_fd, dst_dir_fd=dst_dir_fd)
-
-    monkeypatch.setattr(agents_fs.os, "link", link_then_replace)
+    monkeypatch.setattr(agents_fs, "_write_all", create_target)
 
     with pytest.raises(agents_fs.AgentConflict):
         agents_fs.write_agent(
@@ -570,104 +297,6 @@ def test_missing_root_create_preserves_a_replacement_after_link(tmp_path, monkey
         )
 
     assert (root / "AGENTS.md").read_text(encoding="utf-8") == "racer"
-    assert not list(root.glob(".enso-agents-*.tmp"))
-
-
-def test_missing_root_create_cleans_up_when_final_content_check_fails(tmp_path, monkeypatch):
-    root = _root(tmp_path)
-    real_verify = agents_fs._verify_staged_content
-    verification_count = 0
-
-    def mutate_before_final_check(staged, raw, *, expected_links):
-        nonlocal verification_count
-        verification_count += 1
-        if verification_count == 4:
-            os.ftruncate(staged.descriptor, 0)
-            os.write(staged.descriptor, b"late mutation")
-            os.fsync(staged.descriptor)
-        return real_verify(staged, raw, expected_links=expected_links)
-
-    monkeypatch.setattr(agents_fs, "_verify_staged_content", mutate_before_final_check)
-
-    with pytest.raises(agents_fs.AgentConflict):
-        agents_fs.write_agent(
-            str(root),
-            "AGENTS.md",
-            "created",
-            None,
-            1024,
-            allow_create_root=True,
-        )
-
-    assert not (root / "AGENTS.md").exists()
-    assert not list(root.glob(".enso-agents-*.tmp"))
-
-
-def test_missing_root_create_cleans_up_when_pre_unlink_verification_fails(tmp_path, monkeypatch):
-    root = _root(tmp_path)
-    real_verify = agents_fs._verify_staged_content
-    verification_count = 0
-
-    def fail_pre_unlink_check(staged, raw, *, expected_links):
-        nonlocal verification_count
-        verification_count += 1
-        if verification_count == 3:
-            raise agents_fs.AgentConflict("injected verification failure")
-        return real_verify(staged, raw, expected_links=expected_links)
-
-    monkeypatch.setattr(agents_fs, "_verify_staged_content", fail_pre_unlink_check)
-
-    with pytest.raises(agents_fs.AgentConflict, match="injected"):
-        agents_fs.write_agent(
-            str(root),
-            "AGENTS.md",
-            "created",
-            None,
-            1024,
-            allow_create_root=True,
-        )
-
-    assert not (root / "AGENTS.md").exists()
-    assert not list(root.glob(".enso-agents-*.tmp"))
-
-
-def test_missing_root_create_never_scrubs_target_when_rollback_unlink_fails(tmp_path, monkeypatch):
-    root = _root(tmp_path)
-    real_verify = agents_fs._verify_staged_content
-    real_unlink = agents_fs.os.unlink
-    verification_count = 0
-    target_unlink_failed = False
-
-    def fail_pre_unlink_check(staged, raw, *, expected_links):
-        nonlocal verification_count
-        verification_count += 1
-        if verification_count == 3:
-            raise agents_fs.AgentConflict("injected verification failure")
-        return real_verify(staged, raw, expected_links=expected_links)
-
-    def fail_target_unlink(path, *, dir_fd=None):
-        nonlocal target_unlink_failed
-        if path == "AGENTS.md" and dir_fd is not None and not target_unlink_failed:
-            target_unlink_failed = True
-            raise PermissionError("injected target unlink failure")
-        return real_unlink(path, dir_fd=dir_fd)
-
-    monkeypatch.setattr(agents_fs, "_verify_staged_content", fail_pre_unlink_check)
-    monkeypatch.setattr(agents_fs.os, "unlink", fail_target_unlink)
-
-    with pytest.raises(agents_fs.AgentFilesystemError, match="roll back"):
-        agents_fs.write_agent(
-            str(root),
-            "AGENTS.md",
-            "created",
-            None,
-            1024,
-            allow_create_root=True,
-        )
-
-    assert target_unlink_failed is True
-    assert (root / "AGENTS.md").read_text(encoding="utf-8") == "created"
-    assert (root / "AGENTS.md").stat().st_nlink == 1
     assert not list(root.glob(".enso-agents-*.tmp"))
 
 
@@ -696,19 +325,6 @@ def test_write_accepts_an_uppercase_hex_revision(tmp_path):
     agents_fs.write_agent(str(root), "AGENTS.md", "new", document.revision.upper(), 1024)
 
     assert target.read_text(encoding="utf-8") == "new"
-
-
-def test_existing_write_fails_closed_without_atomic_exchange_support(tmp_path, monkeypatch):
-    root = _root(tmp_path)
-    target = _write(root / "AGENTS.md", "old")
-    document = agents_fs.read_agent(str(root), "AGENTS.md", 1024)
-    monkeypatch.setattr(agents_fs.sys, "platform", "unsupported")
-
-    with pytest.raises(agents_fs.AgentFilesystemError, match="exchange is unavailable"):
-        agents_fs.write_agent(str(root), "AGENTS.md", "new", document.revision, 1024)
-
-    assert target.read_text(encoding="utf-8") == "old"
-    assert not list(root.glob(".enso-agents-*.tmp"))
 
 
 def test_workspace_and_child_directories_must_be_owner_protected(tmp_path):
