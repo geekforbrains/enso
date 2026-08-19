@@ -273,9 +273,12 @@ State schema v3 stores route settings separately. Loading v1 or v2 deliberately 
   timezone-bearing completion timestamp. A seed or snapshot failure leaves `null` for an
   explicit retry that preserves completed pieces; a timestamp-write failure after the
   snapshot retries only the state transition and does not create another initial commit.
-  Timestamped and pre-feature configurations never seed. Ordinary `serve`, `web`, and
-  `config check` paths validate read-only, and structural repair or upgrades never
-  recreate, upgrade, or delete seeded content.
+  Timestamped and pre-feature configurations never seed. Explicit `enso setup` on either
+  state validates the existing catalog before repository mutation and performs
+  structural-only repair without provider, workspace, transport, messaging, or service
+  reconfiguration. It does not rewrite `config.json` or synthesize a `setup` marker.
+  Ordinary `serve`, `web`, and `config check` paths validate read-only, and structural
+  repair or upgrades never recreate, upgrade, or delete seeded content.
 - The workspace CLI is the lifecycle boundary after setup. `list` and `show` are
   read-only. `create` requires a valid lowercase kebab-case name and an explicit existing
   policy, defaults concurrency to one, and accepts no path. Under the config mutation

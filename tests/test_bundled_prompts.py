@@ -9,6 +9,17 @@ def _prompt(name: str) -> str:
     return importlib.resources.files("enso").joinpath("prompts", name).read_text(encoding="utf-8")
 
 
+def test_bundled_prompt_inventory_is_complete_and_bounded() -> None:
+    prompts = importlib.resources.files("enso").joinpath("prompts")
+    names = {entry.name for entry in prompts.iterdir() if entry.is_file()}
+
+    assert names == {
+        "AGENTS.md",
+        "WORKSPACE_AGENTS.md",
+        "WORKSPACE_KNOWLEDGE_README.md",
+    }
+
+
 def test_root_prompt_keeps_only_always_needed_authority_and_delivery_rules():
     prompt = _prompt("AGENTS.md")
 
@@ -117,3 +128,19 @@ def test_workspace_prompt_is_a_minimal_scope_and_source_router():
         "enso job",
     ):
         assert excluded not in prompt
+
+
+def test_workspace_knowledge_index_is_a_minimal_source_router() -> None:
+    prompt = _prompt("WORKSPACE_KNOWLEDGE_README.md")
+
+    for contract in (
+        "# Workspace knowledge index",
+        "durable context",
+        "only to this workspace",
+        "authoritative sources",
+        'path-and-"when to read" entry',
+        "added, moved, or removed",
+    ):
+        assert contract in prompt
+
+    assert "references/" not in prompt

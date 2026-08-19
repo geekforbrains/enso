@@ -128,9 +128,9 @@ policy repair are not part of the supported lifecycle.
 ## Local history boundary
 
 Versioned content is the allowlisted, human-authored layer: instructions and discovery
-links, canonical skills, global docs, workspace `knowledge/`, and approved durable job
-definition or support files. Enso's root Git repository keeps local history only. It
-does not create a remote, push, pull, or provide backup.
+links, canonical skills, global reference docs, workspace knowledge under `knowledge/`,
+and approved durable job definition or support files. Enso's root Git repository keeps
+local history only. It does not create a remote, push, pull, or provide backup.
 
 After one coherent change, create one snapshot with explicit paths only:
 
@@ -168,5 +168,6 @@ logs, native policy homes, snapshot and job locks, job output, `drafts/`, and `u
 Unknown paths are not assumed safe merely because they are below `~/.enso/`.
 
 This reference is seeded only during a genuinely fresh setup and is user-owned afterward.
-Upgrades do not replace it; an existing installation adopts newer guidance through the
-documented migration steps.
+Upgrades do not replace it. An existing installation adopts newer guidance through the
+[v1.3 managed-workspace migration guide](https://github.com/geekforbrains/enso/blob/main/docs/migrations/v1.3-managed-workspaces.md),
+never through automatic content replacement.

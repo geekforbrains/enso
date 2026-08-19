@@ -72,10 +72,13 @@ second commit.
 
 Seeded content becomes user-owned immediately and may be edited or deleted. A completed
 setup, a pre-feature installation with no `setup` field, startup, `enso web`, and
-`enso config check` never seed it. For a completed or pre-feature installation, a later
-explicit `enso setup` rerun repairs only missing structural directories and known
-discovery links, preserving missing or customized content and reporting conflicts;
-startup and upgrades likewise never restore or advance seeded copies.
+`enso config check` never seed it. For a pre-feature or completed installation, a later
+explicit `enso setup` is structural-only: it validates the existing execution catalog,
+then repairs only missing structural directories and known discovery links while
+preserving missing or customized content and reporting conflicts. It does not reconfigure
+providers, workspaces, transports, messaging, or the background service, and it does not
+rewrite `config.json` or synthesize a `setup` marker. Startup and upgrades likewise never
+restore or advance seeded copies.
 
 Once setup is done, start chatting:
 
@@ -191,7 +194,14 @@ skill teaches agents when and how to use these commands.
 
 ### Slack app setup
 
-Enso ships a Slack app manifest with its scopes, events, App Home, interactivity, and Socket Mode preconfigured. `enso setup` refreshes `~/.enso/slack-app-manifest.yaml` even when you keep existing credentials, then walks new installations through the one-paste flow. To do it manually:
+Enso ships a Slack app manifest with its scopes, events, App Home, interactivity, and
+Socket Mode preconfigured. During a fresh or incomplete setup that selects Slack, the
+wizard copies it to `~/.enso/slack-app-manifest.yaml` and walks you through the one-paste
+flow. Structural-only setup for a pre-feature or completed installation does not refresh
+`~/.enso/slack-app-manifest.yaml` or reconfigure Slack. Existing installations should
+apply the current bundled [`src/enso/slack_manifest.yaml`](src/enso/slack_manifest.yaml)
+deliberately; copy it to the local manifest path manually only after preserving any local
+edits. To create a new Slack app manually:
 
 1. Open https://api.slack.com/apps?new_app=1
 1. Choose **From an app manifest**
@@ -200,7 +210,7 @@ Enso ships a Slack app manifest with its scopes, events, App Home, interactivity
 1. **Install to workspace** — gives you the xoxb- bot token
 1. Under **Basic Information → App-Level Tokens**, generate a token
    with scope `connections:write` — that's the xapp- token
-1. `enso setup` and paste both tokens when prompted
+1. During fresh or incomplete setup, choose Slack and paste both tokens when prompted
 
 For an existing Enso Slack app, apply the current manifest to that app before upgrading: enable its Home tab and interactivity, add `canvases:write` and `files:read` if missing, reinstall or reauthorize when Slack requests consent, then restart Enso. Block actions continue over Socket Mode; no public interactivity URL or `block_actions` event subscription is required. `chat:write` covers replies and confirmation-card updates, while App Home publication adds no special bot scope. The manifest is a reasonable default; prune features only when you also disable their Enso configuration. Without the directory-cache events the cache still works, but refreshes lazily instead of in real time.
 
@@ -595,12 +605,12 @@ takes precedence and a malformed or unavailable reference fails closed instead o
 falling back to a possibly stale literal. Legacy literal values must still be strings;
 malformed values are rejected rather than treated as empty credentials. `enso setup`, `enso message`, `enso slack`,
 both transport daemons, and the dashboard app factory all use the same resolution path.
-When `enso setup` reconfigures a transport that already uses a reference, it validates
-the replacement token, sends the new value to `op_set_secret` over stdin, and preserves
-the reference in config. A helper failure aborts setup instead of adding a plaintext
-fallback. Slack preloads both previous referenced values before writing either one and
-restores an earlier write if the second update fails. Literal-only transport configs
-keep the original setup behavior.
+When the fresh or incomplete setup wizard reconfigures a transport that already uses a
+reference, it validates the replacement token, sends the new value to `op_set_secret`
+over stdin, and preserves the reference in config. A helper failure aborts setup instead
+of adding a plaintext fallback. Slack preloads both previous referenced values before
+writing either one and restores an earlier write if the second update fails. Literal-only
+transport configs keep the original setup behavior.
 
 ### Environment variables
 

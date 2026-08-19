@@ -57,9 +57,10 @@ def test_fresh_global_seed_creates_canonical_relative_discovery_tree(tmp_path):
     assert os.readlink(root / "CLAUDE.md") == "AGENTS.md"
     assert os.readlink(root / ".agents" / "skills") == "../skills"
     assert os.readlink(root / ".claude" / "skills") == "../skills"
-    assert {entry.name for entry in (root / "skills").iterdir()} >= {
+    assert {entry.name for entry in (root / "skills").iterdir()} == {
         "docs",
         "jobs",
+        "policy",
         "slack",
         "tables",
         "workspace",

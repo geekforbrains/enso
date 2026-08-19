@@ -36,6 +36,7 @@ def test_v13_guide_is_manual_complete_and_ordered() -> None:
         "this setup invocation is structural-only",
         "never opens the provider, default-workspace, transport, test-message, or "
         "background-service prompts",
+        "does not rewrite `config.json` or synthesize a `setup` marker",
         "leaves the stopped service untouched",
         "Service installation and restart belong only in step 7",
         "Only then remove or archive the old roots",
@@ -100,3 +101,90 @@ def test_older_unified_policy_guide_remains_an_identified_historical_record() ->
     )
     assert "Claude receives that snapshot through `--append-system-prompt-file`" in historical
     assert "Codex receives the validated content through `developer_instructions`" in historical
+
+
+def test_rollout_docs_describe_nonfresh_setup_as_structural_only() -> None:
+    readme = " ".join(_read("README.md").split())
+    changelog = " ".join(_read("CHANGELOG.md").split())
+    architecture = " ".join(_read("docs/specs/architecture.md").split())
+    data_model = " ".join(_read("docs/specs/data-model.md").split())
+    docs_spec = " ".join(_read("docs/specs/docs.md").split())
+    product_requirements = " ".join(_read("docs/PRD.md").split())
+
+    for document in (readme, changelog):
+        assert "pre-feature or completed installation" in document
+        assert "structural-only" in document
+        assert (
+            "does not reconfigure providers, workspaces, transports, messaging, or the "
+            "background service"
+        ) in document
+        assert "does not rewrite `config.json` or synthesize a `setup` marker" in document
+
+    for specification in (architecture, data_model, docs_spec, product_requirements):
+        assert "structural-only" in specification
+        assert "does not rewrite `config.json` or synthesize a `setup` marker" in specification
+
+
+def test_nonfresh_setup_guidance_does_not_promise_slack_manifest_refresh() -> None:
+    readme = " ".join(_read("README.md").split())
+    slack_output = " ".join(_read("docs/specs/slack-output.md").split())
+    data_model = " ".join(_read("docs/specs/data-model.md").split())
+
+    stale_claim = (
+        "`enso setup` refreshes `~/.enso/slack-app-manifest.yaml` even when Slack "
+        "credentials are left unchanged"
+    )
+    assert stale_claim not in slack_output
+    assert "even when you keep existing credentials" not in readme
+
+    for document in (readme, slack_output):
+        assert "fresh or incomplete setup" in document
+        assert "does not refresh `~/.enso/slack-app-manifest.yaml`" in document
+
+    assert "When the fresh or incomplete setup wizard reconfigures a transport" in readme
+    assert "copied only by fresh or incomplete Slack setup" in data_model
+
+
+def test_changelog_covers_fresh_content_and_exactly_once_discovery() -> None:
+    changelog = " ".join(_read("CHANGELOG.md").split())
+
+    for contract in (
+        "`setup.completed_at: null`",
+        "three global reference docs",
+        "one initial local Git snapshot",
+        "user-owned immediately",
+        "Claude and Codex now discover both instruction and skill scopes natively",
+        "without a duplicate `--append-system-prompt-file` or `developer_instructions` override",
+        "Grok receives the freshly validated shared content once through `--rules`",
+        "unrestricted Agy receives it once through Enso's prompt envelope",
+        "[unified-policy guide](docs/migrations/unified-workspace-policies.md)",
+        "[v1.3 workspace guide](docs/migrations/v1.3-managed-workspaces.md)",
+    ):
+        assert contract in changelog
+
+
+def test_active_rollout_guidance_contains_no_retired_content_model_claims() -> None:
+    active_files = (
+        ROOT / "README.md",
+        ROOT / "docs" / "PRD.md",
+        *(ROOT / "docs" / "specs").glob("*.md"),
+        *(ROOT / "docs" / "examples").iterdir(),
+        *(ROOT / "src" / "enso" / "prompts").glob("*.md"),
+        *(ROOT / "src" / "enso" / "skills").glob("*/SKILL.md"),
+        *(ROOT / "src" / "enso" / "starter_docs").glob("**/*.md"),
+    )
+    forbidden = (
+        "enso does not initialize git",
+        "enso ships no docs",
+        "docs tree starts empty",
+        "shared instructions are injected into every provider launch",
+        "global docs",
+        "global enso docs",
+        "workspaces/<name>/references/",
+        "~/.enso/workspaces/clients/",
+    )
+
+    for path in active_files:
+        text = path.read_text(encoding="utf-8").lower()
+        for claim in forbidden:
+            assert claim not in text, f"{path.relative_to(ROOT)} contains {claim!r}"

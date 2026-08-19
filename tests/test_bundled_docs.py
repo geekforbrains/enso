@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import importlib.resources
+import shutil
+import subprocess
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -58,7 +61,7 @@ def test_content_model_is_the_complete_placement_and_ownership_contract():
         "`AGENTS.md`",
         "installation and operator facts",
         "setup-specific runbooks",
-        "global docs",
+        "global reference docs",
         "workspace-only durable material",
         "`knowledge/`",
         "product and project facts",
@@ -76,7 +79,10 @@ def test_content_model_is_the_complete_placement_and_ownership_contract():
         "turn-only facts",
         "reply",
     ):
-        assert placement in text
+        assert placement in prose
+
+    assert "a global reference doc instead" in prose
+    assert "a global doc" not in prose
 
     for ownership_rule in (
         "Search before creating",
@@ -115,6 +121,8 @@ def test_layout_describes_only_the_canonical_generic_tree_and_history_boundary()
         "local history, not a backup",
         "Versioned",
         "Runtime-only",
+        "global reference docs",
+        "workspace knowledge",
     ):
         assert contract in text
 
@@ -191,6 +199,15 @@ def test_layout_routes_workspace_lifecycle_through_safe_commands():
     assert "workspace create --path" not in prose
 
 
+def test_layout_links_the_manual_upgrade_procedure() -> None:
+    text = _resource_text("enso/layout.md")
+
+    assert (
+        "https://github.com/geekforbrains/enso/blob/main/docs/migrations/"
+        "v1.3-managed-workspaces.md"
+    ) in text
+
+
 def test_layout_documents_explicit_policy_lifecycle_and_user_ownership():
     text = _resource_text("enso/layout.md")
     prose = " ".join(text.split())
@@ -239,8 +256,52 @@ def test_operator_doc_is_an_editable_template_without_inferred_or_secret_facts()
         assert forbidden not in lowered
 
 
-def test_starter_docs_are_declared_as_package_data():
+def test_fresh_content_resources_are_declared_as_package_data():
     project = Path(__file__).resolve().parents[1]
     pyproject = (project / "pyproject.toml").read_text(encoding="utf-8")
 
+    assert '"prompts/*.md"' in pyproject
+    assert '"skills/**/*"' in pyproject
     assert '"starter_docs/**/*.md"' in pyproject
+
+
+def test_built_wheel_contains_every_bundled_content_resource(tmp_path: Path):
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.skip("uv is required to verify the built wheel")
+
+    project = Path(__file__).resolve().parents[1]
+    build_source = tmp_path / "source"
+    shutil.copytree(
+        project / "src",
+        build_source / "src",
+        ignore=shutil.ignore_patterns("*.egg-info", "__pycache__", "*.pyc"),
+    )
+    shutil.copy2(project / "pyproject.toml", build_source / "pyproject.toml")
+    shutil.copy2(project / "README.md", build_source / "README.md")
+    subprocess.run(
+        [uv, "build", "--wheel", "--quiet", "--out-dir", str(tmp_path)],
+        cwd=build_source,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    (wheel,) = tmp_path.glob("*.whl")
+    resource_roots = ("prompts", "skills", "starter_docs")
+    source_resources = {
+        path.relative_to(project / "src").as_posix()
+        for root in resource_roots
+        for path in (project / "src" / "enso" / root).rglob("*")
+        if path.is_file()
+    }
+    source_resources.add("enso/slack_manifest.yaml")
+
+    with zipfile.ZipFile(wheel) as archive:
+        wheel_resources = {
+            name
+            for name in archive.namelist()
+            if name == "enso/slack_manifest.yaml"
+            or any(name.startswith(f"enso/{root}/") for root in resource_roots)
+        }
+
+    assert wheel_resources == source_resources

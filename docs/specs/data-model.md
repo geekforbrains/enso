@@ -25,7 +25,7 @@ whose value comes from filtering, joining, and aggregation.
 ├── state.json           # durable route settings plus retained session/job state
 ├── messages.json        # background message queue (plus a .lock twin for cross-process writes)
 ├── update.json          # updater-owned metadata (installed revision, pending confirmation)
-├── slack-app-manifest.yaml  # copy of the bundled Slack app manifest (written by `enso setup`)
+├── slack-app-manifest.yaml  # copied only by fresh or incomplete Slack setup
 ├── enso.log             # service log
 ├── enso.db              # SQLite: runs, Slack delivery/drafts/audit, and registered user tables
 ├── cache/
@@ -189,14 +189,15 @@ rejected rather than normalized to empty values. The helper's own service-accoun
 bootstrapped through `secrets/1password.env`; referenced transport reconfiguration also
 requires the helper's `op_set_secret` function.
 
-The setup wizard preserves this storage choice. Reconfiguring a referenced Telegram bot
-token or Slack bot/app token updates the existing 1Password field through
-`op_set_secret`; the replacement value reaches the helper shell over stdin and is never
-placed in process argv. Enso keeps the reference object, removes any stale literal for
-that key, and aborts without writing a plaintext fallback if the helper update fails.
-Slack prevalidates both previous referenced values before changing either field and
-best-effort restores an earlier field if a later update fails. Sections with no
-reference retain the legacy literal setup flow.
+The fresh or incomplete setup wizard preserves this storage choice. Reconfiguring a
+referenced Telegram bot token or Slack bot/app token in that wizard updates the existing
+1Password field through `op_set_secret`; the replacement value reaches the helper shell
+over stdin and is never placed in process argv. Enso keeps the reference object, removes
+any stale literal for that key, and aborts without writing a plaintext fallback if the
+helper update fails. Slack prevalidates both previous referenced values before changing
+either field and best-effort restores an earlier field if a later update fails. Sections
+with no reference retain the literal setup flow. Structural-only setup does not enter
+transport configuration.
 
 `docs/` is the one file-backed kind identified by a **relative path** rather than a
 directory name. Enso packages `enso/content_model.md`, `enso/layout.md`, and `operator.md`
@@ -354,6 +355,11 @@ absent `setup` block identifies a pre-feature installation, not an interrupted s
 does not make it eligible for automatic starter-content seeding. A completed timestamp,
 ordinary startup, `enso web`, `enso config check`, structural repair, and upgrades are
 also non-seeding. Invalid setup markers fail configuration loading.
+
+Explicit `enso setup` on a completed or pre-feature configuration validates the existing
+execution catalog before repository mutation and then performs structural-only repair. It
+does not rewrite `config.json` or synthesize a `setup` marker; provider, workspace,
+transport, messaging, and service configuration remain untouched.
 
 Every command that performs a config read-modify-write transaction must hold Enso's
 owner-only cross-process config lock from the read through the atomic replacement. A

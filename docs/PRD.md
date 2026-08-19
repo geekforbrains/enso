@@ -211,6 +211,9 @@ authorized chat senders, not additional owners or dashboard personas.
 - Installed starters are user-owned and may be edited or deleted. Timestamped setup,
   pre-feature configurations with no setup field, structural repair, startup, dashboard
   startup, and upgrades never seed or restore them.
+- On a timestamped or pre-feature installation, explicit `enso setup` validates the
+  existing catalog before repository mutation and performs structural-only repair. It
+  does not rewrite `config.json` or synthesize a `setup` marker.
 - The shared prompt treats starter paths as optional routing hints and relies on the
   dynamic doc list for everything the operator adds later.
 

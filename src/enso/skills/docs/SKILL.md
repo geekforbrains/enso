@@ -23,7 +23,8 @@ Keep one responsibility per doc. A description must name the material it contain
 ## Choose the owning source
 
 - Put always-loaded behavior and critical rules in the applicable `AGENTS.md`.
-- Put installation and operator facts, account routing, topology, and setup-specific runbooks in global Enso docs.
+- Put installation and operator facts, account routing, topology, and setup-specific
+  runbooks in global reference docs.
 - Put workspace-only durable material in the workspace's `knowledge/` tree and maintain `knowledge/README.md` as its path-and-reading index.
 - Put product and project facts in that product or project's repository docs.
 - Put human and business knowledge in the configured knowledge base.

@@ -192,6 +192,7 @@ def test_docs_skill_is_the_complete_content_placement_contract():
         "link to it instead of copying",
         "always-loaded behavior",
         "setup-specific runbooks",
+        "global reference docs",
         "workspace-only durable material",
         "product and project facts",
         "configured knowledge base",

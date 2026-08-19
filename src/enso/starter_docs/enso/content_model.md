@@ -12,14 +12,14 @@ description that says what it contains and when to read it.
 ## Placement contract
 
 - Put always-loaded behavior and rules needed on every turn in `AGENTS.md`.
-- Put installation and operator facts, plus setup-specific runbooks, in global docs
-  under `~/.enso/docs/`.
+- Put installation and operator facts, plus setup-specific runbooks, in global reference
+  docs under `~/.enso/docs/`.
 - Put workspace-only durable material with no better owner in that workspace's
   `knowledge/` directory.
 - Put product and project facts in their repository docs.
 - Put human and business knowledge in the configured knowledge base.
 - Put reusable general procedures in skills. A procedure specific to this installation
-  is a global doc instead.
+  is a global reference doc instead.
 - Put schedules and recurring automation definitions in jobs.
 - Put structured or queryable facts in tables.
 - Put editable output and work in progress in `drafts/`.

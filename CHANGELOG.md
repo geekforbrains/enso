@@ -32,6 +32,14 @@ All notable changes to this project will be documented in this file.
   discovery links, preserves all user-owned seeded content, and reports launch blockers.
   A failure after directory publication preserves and reports that directory instead of
   deleting it, and routing changes require an Enso restart.
+- Fresh setup now persists `setup.completed_at: null` before it seeds the minimal global
+  and default-workspace prompts, six global skills, three global reference docs, and the
+  default workspace knowledge index. It records the complete seed transaction in one
+  initial local Git snapshot before replacing the marker with a timezone-bearing
+  completion timestamp. Seeded content becomes user-owned immediately: completed or
+  pre-feature setup, startup, repair, and upgrades never overwrite, advance, or resurrect
+  it. An interrupted fresh transaction reuses matching completed pieces and retries
+  without turning older installations into fresh ones.
 - `enso snapshot create --message <message> -- <paths...>` records one coherent local
   content change from explicit relative or absolute paths. Its closed allowlist covers
   instructions, canonical skills, reference docs, workspace knowledge, and recognized
@@ -61,6 +69,13 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- On a pre-feature or completed installation, explicit `enso setup` is now
+  structural-only. It validates the existing execution catalog before repository
+  mutation, conservatively repairs the managed root and configured workspaces, and does
+  not reconfigure providers, workspaces, transports, messaging, or the background
+  service. It does not rewrite `config.json` or synthesize a `setup` marker. The
+  interactive provider/transport/service wizard and one-time content seeding remain
+  exclusive to a genuinely fresh or incomplete setup transaction.
 - Restricted policies now require an explicit `policy_dir`; the former implicit
   `~/.enso/policies/<name>` fallback is removed. Policy creation registers an already
   complete directory and never creates inactive scaffolds or permission content.

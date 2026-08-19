@@ -159,7 +159,7 @@ covers:
 - where docs live and that `enso doc list` enumerates them
 - **check the docs before answering from memory** about the operator's setup
 - search existing docs and authoritative sources before creating or copying material
-- the placement contract across prompts, global docs, workspace knowledge, repository
+- the placement contract across prompts, global reference docs, workspace knowledge, repository
   docs, the configured knowledge base, skills, jobs, tables, drafts, and the current reply
 - how setup-specific runbooks differ from reusable procedures, which belong in skills
 - how to write one: `enso doc create <path>`, fill the frontmatter, and make
@@ -214,10 +214,13 @@ and writes the timestamp without creating a second initial commit.
 
 A timestamped setup is complete. A configuration with no `setup` field is a pre-feature
 installation, not an interrupted setup. Neither state seeds starter docs, and operators
-must never fabricate `setup.completed_at: null` to obtain them. Ordinary `enso serve` and
-`enso web` startup, `enso config check`, structural repair, and software upgrades are also
-non-seeding. Existing installations adopt desired starter references or guidance only
-through an explicit, operator-reviewed copy or merge; adopted files are user-owned.
+must never fabricate `setup.completed_at: null` to obtain them. Explicit `enso setup` on
+either state validates the existing catalog before repository mutation and performs
+structural-only repair; it does not rewrite `config.json` or synthesize a `setup` marker.
+Ordinary `enso serve` and `enso web` startup, `enso config check`, structural repair, and
+software upgrades are also non-seeding. Existing installations adopt desired starter
+references or guidance only through an explicit, operator-reviewed copy or merge;
+adopted files are user-owned.
 
 ## Web UI
 
