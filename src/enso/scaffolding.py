@@ -12,7 +12,6 @@ import ctypes
 import errno
 import importlib.resources
 import os
-import secrets
 import shutil
 import stat
 import tempfile
@@ -98,17 +97,6 @@ class _Resource(Protocol):
     def read_text(self, encoding: str | None = None) -> str: ...
 
 
-@dataclass(frozen=True)
-class _DirectoryHandle:
-    """One held directory and the held parent/name that must still reach it."""
-
-    path: Path
-    descriptor: int
-    identity: tuple[int, int]
-    parent: _DirectoryHandle | None = None
-    name: str | None = None
-
-
 def _validated_workspace_name(name: str) -> str:
     """Adapt the shared configuration error into this service's error type."""
     from .config import ConfigError, validate_workspace_name
@@ -159,46 +147,6 @@ def _publish_exclusive(source: Path, destination: Path) -> None:
             os.strerror(error_number),
             os.fspath(destination),
         )
-
-
-def _publish_exclusive_at(
-    source: str,
-    destination: str,
-    *,
-    src_dir_fd: int,
-    dst_dir_fd: int,
-) -> None:
-    """Atomically move one relative file without replacing a destination."""
-    library = ctypes.CDLL(None, use_errno=True)
-    source_bytes = os.fsencode(source)
-    destination_bytes = os.fsencode(destination)
-    renameat2 = getattr(library, "renameat2", None)
-    if renameat2 is not None:
-        result = renameat2(
-            src_dir_fd,
-            ctypes.c_char_p(source_bytes),
-            dst_dir_fd,
-            ctypes.c_char_p(destination_bytes),
-            _RENAME_NOREPLACE,
-        )
-    else:
-        renameatx = getattr(library, "renameatx_np", None)
-        if renameatx is None:
-            raise OSError(
-                errno.ENOTSUP,
-                "exclusive atomic file publication is not supported",
-                destination,
-            )
-        result = renameatx(
-            src_dir_fd,
-            ctypes.c_char_p(source_bytes),
-            dst_dir_fd,
-            ctypes.c_char_p(destination_bytes),
-            _RENAME_EXCL,
-        )
-    if result != 0:
-        error_number = ctypes.get_errno()
-        raise OSError(error_number, os.strerror(error_number), destination)
 
 
 class ScaffoldService:
@@ -266,39 +214,24 @@ class ScaffoldService:
     def seed_fresh_starter_docs(self) -> ScaffoldReport:
         """Seed the fixed starter documents during explicit fresh setup only.
 
-        An exact existing copy is accepted as an interrupted-setup retry.  Any
-        customized, linked, or non-regular destination is a collision and is
-        left untouched.
+        Existing regular files are user-owned and remain byte-for-byte intact,
+        so an interrupted setup rerun fills only the missing documents.
+        Missing documents are copied with exclusive, non-following creates; a
+        symlink or non-regular collision fails rather than being traversed.
         """
         bundled_root = importlib.resources.files("enso").joinpath("starter_docs")
-        documents: list[tuple[tuple[str, ...], Path, bytes]] = []
-        for source_parts, destination_parts in _STARTER_DOC_MAPPINGS:
-            source = bundled_root.joinpath(*source_parts)
-            if not source.is_file():
-                raise ScaffoldError(
-                    f"bundled starter document resource is missing: {'/'.join(source_parts)}"
-                )
-            documents.append(
-                (destination_parts, self.root.joinpath(*destination_parts), source.read_bytes())
-            )
-
         created: list[Path] = []
-        with self._open_starter_doc_directories(created) as (staging, parents):
-            pending: list[tuple[_DirectoryHandle, Path, bytes]] = []
-            for destination_parts, destination, content in documents:
-                parent = parents[destination_parts[:-1]]
-                existing = self._read_starter_doc_at(parent, destination)
-                if existing is None:
-                    pending.append((parent, destination, content))
-                elif existing != content:
-                    raise ScaffoldError(
-                        f"starter document {destination} collision: existing bytes differ "
-                        "from the bundled document"
-                    )
-
-            for parent, destination, content in pending:
-                if self._create_atomic_starter_doc(staging, parent, destination, content):
-                    created.append(destination)
+        self._ensure_root(created)
+        for source_parts, destination_parts in _STARTER_DOC_MAPPINGS:
+            parent = self.root
+            for part in destination_parts[:-1]:
+                parent = parent / part
+                self._ensure_physical_directory(parent, create=True, created=created)
+            self._seed_resource_file(
+                bundled_root.joinpath(*source_parts),
+                self.root.joinpath(*destination_parts),
+                created,
+            )
         return ScaffoldReport(created=tuple(created))
 
     def create_workspace(self, name: str) -> ScaffoldReport:
@@ -542,22 +475,12 @@ class ScaffoldService:
     @staticmethod
     def _workspace_instructions(source: _Resource, name: str) -> str:
         template = source.read_text(encoding="utf-8")
-        if "{{workspace_name}}" in template:
-            return template.replace("{{workspace_name}}", name)
-        lines = template.splitlines(keepends=True)
-        if lines and lines[0].startswith("# "):
-            lines[0] = f"# {name} workspace\n"
-        else:
-            lines.insert(0, f"# {name} workspace\n\n")
-        charter = (
-            "\nThis managed workspace is named `"
-            + name
-            + "`. If its purpose and scope or critical approval rules are not "
-            "documented here, ask the user for them. Use `knowledge/README.md` (when "
-            "present) as the path-and-when-to-read index for deferred detail.\n"
-        )
-        lines.insert(1, charter)
-        return "".join(lines)
+        if "{{workspace_name}}" not in template:
+            raise ScaffoldError(
+                "bundled workspace instruction resource is missing its "
+                "{{workspace_name}} placeholder"
+            )
+        return template.replace("{{workspace_name}}", name)
 
     def _seed_resource_tree(
         self,
@@ -601,558 +524,6 @@ class ScaffoldService:
         return file_stat.st_dev, file_stat.st_ino
 
     @staticmethod
-    def _directory_open_flags() -> int:
-        no_follow = getattr(os, "O_NOFOLLOW", 0)
-        if not no_follow:
-            raise ScaffoldError("starter document seeding requires no-follow filesystem opens")
-        flags = os.O_RDONLY | os.O_NONBLOCK | no_follow
-        flags |= getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
-        return flags
-
-    @classmethod
-    def _verify_directory_handle(cls, handle: _DirectoryHandle) -> None:
-        """Require every held parent/name edge back to the filesystem root."""
-        current: _DirectoryHandle | None = handle
-        while current is not None:
-            try:
-                held_stat = os.fstat(current.descriptor)
-                if (
-                    not stat.S_ISDIR(held_stat.st_mode)
-                    or cls._stat_identity(held_stat) != current.identity
-                ):
-                    raise ScaffoldError(
-                        f"managed directory ancestry changed: {current.path}"
-                    )
-                if current.parent is not None and current.name is not None:
-                    named_stat = os.stat(
-                        current.name,
-                        dir_fd=current.parent.descriptor,
-                        follow_symlinks=False,
-                    )
-                    if (
-                        not stat.S_ISDIR(named_stat.st_mode)
-                        or cls._stat_identity(named_stat) != current.identity
-                    ):
-                        raise ScaffoldError(
-                            f"managed directory ancestry changed: {current.path}"
-                        )
-            except ScaffoldError:
-                raise
-            except OSError as exc:
-                raise ScaffoldError(
-                    f"managed directory ancestry changed: {current.path}: {exc}"
-                ) from exc
-            current = current.parent
-
-    @classmethod
-    def _open_directory_component(
-        cls,
-        parent: _DirectoryHandle,
-        name: str,
-        path: Path,
-        *,
-        create: bool,
-        created: list[Path],
-        handles: list[_DirectoryHandle],
-    ) -> _DirectoryHandle:
-        """Open one physical child relative to a still-attached held parent."""
-        cls._verify_directory_handle(parent)
-        made_directory = False
-        try:
-            before = os.stat(name, dir_fd=parent.descriptor, follow_symlinks=False)
-        except FileNotFoundError:
-            if not create:
-                raise ScaffoldError(f"managed physical directory is missing: {path}") from None
-            try:
-                os.mkdir(name, mode=_DIRECTORY_MODE, dir_fd=parent.descriptor)
-            except FileExistsError:
-                pass
-            except OSError as exc:
-                raise ScaffoldError(f"could not create managed directory {path}: {exc}") from exc
-            else:
-                made_directory = True
-            try:
-                before = os.stat(name, dir_fd=parent.descriptor, follow_symlinks=False)
-            except OSError as exc:
-                raise ScaffoldError(
-                    f"managed path must be a physical directory: {path}: {exc}"
-                ) from exc
-        except OSError as exc:
-            raise ScaffoldError(f"could not inspect managed path {path}: {exc}") from exc
-
-        if not stat.S_ISDIR(before.st_mode):
-            raise ScaffoldError(f"managed path must be a physical directory: {path}")
-        try:
-            descriptor = os.open(
-                name,
-                cls._directory_open_flags(),
-                dir_fd=parent.descriptor,
-            )
-        except OSError as exc:
-            raise ScaffoldError(
-                f"managed path must be a physical directory: {path}: {exc}"
-            ) from exc
-
-        try:
-            held_stat = os.fstat(descriptor)
-            after = os.stat(name, dir_fd=parent.descriptor, follow_symlinks=False)
-            identity = cls._stat_identity(held_stat)
-            if (
-                not stat.S_ISDIR(held_stat.st_mode)
-                or not stat.S_ISDIR(after.st_mode)
-                or identity != cls._stat_identity(before)
-                or identity != cls._stat_identity(after)
-            ):
-                raise ScaffoldError(f"managed directory ancestry changed: {path}")
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.close(descriptor)
-            raise
-
-        handle = _DirectoryHandle(
-            path=path,
-            descriptor=descriptor,
-            identity=identity,
-            parent=parent,
-            name=name,
-        )
-        handles.append(handle)
-        if made_directory:
-            created.append(path)
-        cls._verify_directory_handle(handle)
-        return handle
-
-    def _open_anchored_root(
-        self,
-        created: list[Path],
-        handles: list[_DirectoryHandle],
-    ) -> _DirectoryHandle:
-        """Walk from the immutable filesystem root without following components."""
-        anchor_path = Path(self.root.anchor)
-        descriptor: int | None = None
-        try:
-            descriptor = os.open(anchor_path, self._directory_open_flags())
-            anchor_stat = os.fstat(descriptor)
-        except OSError as exc:
-            if descriptor is not None:
-                with contextlib.suppress(OSError):
-                    os.close(descriptor)
-            raise ScaffoldError(f"could not anchor the Enso root safely: {exc}") from exc
-        if not stat.S_ISDIR(anchor_stat.st_mode):
-            os.close(descriptor)
-            raise ScaffoldError(f"managed path must be a physical directory: {anchor_path}")
-        current = _DirectoryHandle(
-            path=anchor_path,
-            descriptor=descriptor,
-            identity=self._stat_identity(anchor_stat),
-        )
-        handles.append(current)
-
-        components = self.root.parts[1:]
-        for index, component in enumerate(components):
-            path = current.path / component
-            current = self._open_directory_component(
-                current,
-                component,
-                path,
-                create=index == len(components) - 1,
-                created=created,
-                handles=handles,
-            )
-        return current
-
-    @contextlib.contextmanager
-    def _open_starter_doc_directories(
-        self,
-        created: list[Path],
-    ) -> Iterator[tuple[_DirectoryHandle, dict[tuple[str, ...], _DirectoryHandle]]]:
-        """Hold an attached root, destination directories, and protected staging."""
-        handles: list[_DirectoryHandle] = []
-        try:
-            root = self._open_anchored_root(created, handles)
-            docs = self._open_directory_component(
-                root,
-                "docs",
-                self.root / "docs",
-                create=True,
-                created=created,
-                handles=handles,
-            )
-            enso_docs = self._open_directory_component(
-                docs,
-                "enso",
-                self.root / "docs" / "enso",
-                create=True,
-                created=created,
-                handles=handles,
-            )
-            staging = self._open_directory_component(
-                root,
-                "runtime",
-                self.root / "runtime",
-                create=True,
-                created=created,
-                handles=handles,
-            )
-            self._verify_directory_handle(enso_docs)
-            self._verify_directory_handle(staging)
-            yield staging, {("docs",): docs, ("docs", "enso"): enso_docs}
-        finally:
-            for handle in reversed(handles):
-                with contextlib.suppress(OSError):
-                    os.close(handle.descriptor)
-
-    @staticmethod
-    def _validate_starter_doc_stat(destination: Path, file_stat: os.stat_result) -> None:
-        if not stat.S_ISREG(file_stat.st_mode):
-            raise ScaffoldError(
-                f"starter document {destination} collision: destination is not a physical "
-                "regular file"
-            )
-        if file_stat.st_nlink != 1:
-            raise ScaffoldError(
-                f"starter document {destination} collision: destination has multiple hard links"
-            )
-        if file_stat.st_uid != os.geteuid():
-            raise ScaffoldError(
-                f"starter document {destination} collision: destination is not owned by "
-                "the current user"
-            )
-
-    @classmethod
-    def _read_starter_doc_at(
-        cls,
-        parent: _DirectoryHandle,
-        destination: Path,
-    ) -> bytes | None:
-        """Read an owned single-link file through an attached destination parent."""
-        cls._verify_directory_handle(parent)
-        try:
-            before = os.stat(
-                destination.name,
-                dir_fd=parent.descriptor,
-                follow_symlinks=False,
-            )
-        except FileNotFoundError:
-            cls._verify_directory_handle(parent)
-            return None
-        except OSError as exc:
-            raise ScaffoldError(
-                f"starter document {destination} collision: could not inspect it safely: {exc}"
-            ) from exc
-        cls._validate_starter_doc_stat(destination, before)
-
-        flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0)
-        try:
-            descriptor = os.open(destination.name, flags, dir_fd=parent.descriptor)
-        except FileNotFoundError:
-            raise ScaffoldError(
-                f"starter document {destination} collision: destination changed while "
-                "being inspected"
-            ) from None
-        except OSError as exc:
-            raise ScaffoldError(
-                f"starter document {destination} collision: could not open it safely: {exc}"
-            ) from exc
-        try:
-            held_stat = os.fstat(descriptor)
-            after_open = os.stat(
-                destination.name,
-                dir_fd=parent.descriptor,
-                follow_symlinks=False,
-            )
-            identity = cls._stat_identity(held_stat)
-            if (
-                identity != cls._stat_identity(before)
-                or identity != cls._stat_identity(after_open)
-            ):
-                raise ScaffoldError(
-                    f"starter document {destination} collision: destination changed while "
-                    "being inspected"
-                )
-            cls._validate_starter_doc_stat(destination, held_stat)
-            cls._validate_starter_doc_stat(destination, after_open)
-            cls._verify_directory_handle(parent)
-
-            chunks: list[bytes] = []
-            while chunk := os.read(descriptor, 64 * 1024):
-                chunks.append(chunk)
-
-            after_read = os.fstat(descriptor)
-            named_after_read = os.stat(
-                destination.name,
-                dir_fd=parent.descriptor,
-                follow_symlinks=False,
-            )
-            if (
-                cls._stat_identity(after_read) != identity
-                or cls._stat_identity(named_after_read) != identity
-            ):
-                raise ScaffoldError(
-                    f"starter document {destination} collision: destination changed while "
-                    "being inspected"
-                )
-            cls._validate_starter_doc_stat(destination, after_read)
-            cls._validate_starter_doc_stat(destination, named_after_read)
-            cls._verify_directory_handle(parent)
-            return b"".join(chunks)
-        except ScaffoldError:
-            raise
-        except OSError as exc:
-            raise ScaffoldError(
-                f"starter document {destination} collision: could not read it safely: {exc}"
-            ) from exc
-        finally:
-            os.close(descriptor)
-
-    @classmethod
-    def _unlink_if_identity(
-        cls,
-        parent_descriptor: int,
-        name: str,
-        identity: tuple[int, int],
-    ) -> None:
-        """Best-effort cleanup without knowingly unlinking a replacement name."""
-        try:
-            current = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
-            if cls._stat_identity(current) != identity:
-                return
-            os.unlink(name, dir_fd=parent_descriptor)
-        except OSError:
-            return
-
-    @classmethod
-    def _require_renamed_publication(
-        cls,
-        staging: _DirectoryHandle,
-        temporary_name: str,
-        descriptor: int,
-        destination_parent: _DirectoryHandle,
-        destination: Path,
-        identity: tuple[int, int],
-    ) -> None:
-        try:
-            held = os.fstat(descriptor)
-            published = os.stat(
-                destination.name,
-                dir_fd=destination_parent.descriptor,
-                follow_symlinks=False,
-            )
-        except OSError as exc:
-            raise ScaffoldError(
-                f"starter document {destination} changed during atomic publication: {exc}"
-            ) from exc
-        try:
-            os.stat(
-                temporary_name,
-                dir_fd=staging.descriptor,
-                follow_symlinks=False,
-            )
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            raise ScaffoldError(
-                f"starter document {destination} staging state could not be verified: {exc}"
-            ) from exc
-        else:
-            raise ScaffoldError(
-                f"starter document {destination} staging file remained after publication"
-            )
-        for file_stat in (held, published):
-            if (
-                not stat.S_ISREG(file_stat.st_mode)
-                or cls._stat_identity(file_stat) != identity
-                or file_stat.st_nlink != 1
-                or file_stat.st_uid != os.geteuid()
-            ):
-                raise ScaffoldError(
-                    f"starter document {destination} changed during atomic publication"
-                )
-
-    @classmethod
-    def _reserve_starter_staging_file(
-        cls,
-        staging: _DirectoryHandle,
-        destination: Path,
-    ) -> tuple[int, str, tuple[int, int]]:
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-        flags |= getattr(os, "O_CLOEXEC", 0)
-        descriptor: int | None = None
-        temporary_name: str | None = None
-        identity: tuple[int, int] | None = None
-        try:
-            for _ in range(100):
-                candidate = f".{destination.name}.tmp-{secrets.token_hex(8)}"
-                try:
-                    descriptor = os.open(
-                        candidate,
-                        flags,
-                        _CONTENT_MODE,
-                        dir_fd=staging.descriptor,
-                    )
-                except FileExistsError:
-                    continue
-                except OSError as exc:
-                    raise ScaffoldError(
-                        f"could not reserve an atomic seed file for {destination}: {exc}"
-                    ) from exc
-                temporary_name = candidate
-                break
-            if descriptor is None or temporary_name is None:
-                raise ScaffoldError(f"could not reserve an atomic seed file for {destination}")
-
-            held = os.fstat(descriptor)
-            staged = os.stat(
-                temporary_name,
-                dir_fd=staging.descriptor,
-                follow_symlinks=False,
-            )
-            identity = cls._stat_identity(held)
-            if (
-                not stat.S_ISREG(held.st_mode)
-                or not stat.S_ISREG(staged.st_mode)
-                or cls._stat_identity(staged) != identity
-                or held.st_nlink != 1
-                or staged.st_nlink != 1
-                or held.st_uid != os.geteuid()
-                or staged.st_uid != os.geteuid()
-            ):
-                raise ScaffoldError(
-                    f"could not reserve an owned single-link seed file for {destination}"
-                )
-            cls._verify_directory_handle(staging)
-            return descriptor, temporary_name, identity
-        except BaseException:
-            if descriptor is not None:
-                with contextlib.suppress(OSError):
-                    os.close(descriptor)
-            if temporary_name is not None:
-                if identity is None:
-                    with contextlib.suppress(OSError):
-                        os.unlink(temporary_name, dir_fd=staging.descriptor)
-                else:
-                    cls._unlink_if_identity(staging.descriptor, temporary_name, identity)
-            raise
-
-    @classmethod
-    def _create_atomic_starter_doc(
-        cls,
-        staging: _DirectoryHandle,
-        destination_parent: _DirectoryHandle,
-        destination: Path,
-        content: bytes,
-    ) -> bool:
-        """Publish complete bytes exclusively from protected runtime staging."""
-        cls._verify_directory_handle(staging)
-        cls._verify_directory_handle(destination_parent)
-        temporary_name: str | None = None
-        descriptor: int | None = None
-        temporary_identity: tuple[int, int] | None = None
-        published = False
-        try:
-            descriptor, temporary_name, temporary_identity = (
-                cls._reserve_starter_staging_file(staging, destination)
-            )
-
-            remaining = memoryview(content)
-            while remaining:
-                written = os.write(descriptor, remaining)
-                if written == 0:
-                    raise OSError(errno.EIO, "short write while seeding starter document")
-                remaining = remaining[written:]
-            os.fsync(descriptor)
-
-            held = os.fstat(descriptor)
-            staged = os.stat(
-                temporary_name,
-                dir_fd=staging.descriptor,
-                follow_symlinks=False,
-            )
-            if (
-                cls._stat_identity(held) != temporary_identity
-                or cls._stat_identity(staged) != temporary_identity
-                or held.st_nlink != 1
-                or staged.st_nlink != 1
-            ):
-                raise ScaffoldError(
-                    f"starter document {destination} staging file changed before publication"
-                )
-            cls._verify_directory_handle(staging)
-            cls._verify_directory_handle(destination_parent)
-
-            try:
-                _publish_exclusive_at(
-                    temporary_name,
-                    destination.name,
-                    src_dir_fd=staging.descriptor,
-                    dst_dir_fd=destination_parent.descriptor,
-                )
-            except FileExistsError:
-                existing = cls._read_starter_doc_at(destination_parent, destination)
-                if existing == content:
-                    return False
-                raise ScaffoldError(
-                    f"starter document {destination} collision: destination appeared "
-                    "during atomic publication"
-                ) from None
-            except OSError as exc:
-                raise ScaffoldError(
-                    f"could not publish starter document {destination} atomically: {exc}"
-                ) from exc
-            published = True
-
-            cls._require_renamed_publication(
-                staging,
-                temporary_name,
-                descriptor,
-                destination_parent,
-                destination,
-                temporary_identity,
-            )
-            cls._verify_directory_handle(staging)
-            cls._verify_directory_handle(destination_parent)
-            os.fsync(destination_parent.descriptor)
-            os.fsync(staging.descriptor)
-            cls._verify_directory_handle(destination_parent)
-            final_stat = os.stat(
-                destination.name,
-                dir_fd=destination_parent.descriptor,
-                follow_symlinks=False,
-            )
-            cls._validate_starter_doc_stat(destination, final_stat)
-            if cls._stat_identity(final_stat) != temporary_identity:
-                raise ScaffoldError(
-                    f"starter document {destination} changed during atomic publication"
-                )
-            cls._verify_directory_handle(destination_parent)
-            published = False
-            temporary_name = None
-            return True
-        except ScaffoldError:
-            raise
-        except OSError as exc:
-            raise ScaffoldError(
-                f"could not create starter document {destination} atomically: {exc}"
-            ) from exc
-        finally:
-            if published and temporary_identity is not None:
-                cls._unlink_if_identity(
-                    destination_parent.descriptor,
-                    destination.name,
-                    temporary_identity,
-                )
-            if descriptor is not None:
-                with contextlib.suppress(OSError):
-                    os.close(descriptor)
-            if temporary_name is not None and temporary_identity is not None:
-                cls._unlink_if_identity(
-                    staging.descriptor,
-                    temporary_name,
-                    temporary_identity,
-                )
-
-    @staticmethod
     def _create_exclusive_text(path: Path, content: str) -> None:
         ScaffoldService._create_exclusive_bytes(path, content.encode("utf-8"))
 
@@ -1169,9 +540,11 @@ class ScaffoldService:
                 seed_file.write(content)
                 seed_file.flush()
                 os.fsync(seed_file.fileno())
-        except BaseException:
+        except BaseException as exc:
             with contextlib.suppress(OSError):
                 os.unlink(path)
+            if isinstance(exc, OSError):
+                raise ScaffoldError(f"could not write seed file {path}: {exc}") from exc
             raise
 
     def _reconcile_global_links(

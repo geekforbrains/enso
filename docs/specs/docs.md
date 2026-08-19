@@ -207,7 +207,7 @@ assets:
    timestamp that includes a timezone.
 
 A seed or commit failure leaves the marker `null` and reports setup as incomplete. The
-next explicit setup attempt reuses matching files already created and fills only missing
+next explicit setup attempt keeps files already created and fills only missing
 pieces without overwriting user content. If the baseline committed but saving the
 completion timestamp failed, the retry recognizes the existing history and writes the
 timestamp without creating a second initial commit.

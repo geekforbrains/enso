@@ -37,7 +37,6 @@ whose value comes from filtering, joining, and aggregation.
 │   └── <name>/          # JOB.md plus a persistent .run.lock coordination file
 ├── runs/                # captured output, one file per run
 │   └── <run_id>.log
-├── runtime/             # protected provider-policy staging and other ephemeral state
 ├── skills/              # canonical global skills; user-owned after fresh setup
 ├── .agents/
 │   └── skills -> ../skills

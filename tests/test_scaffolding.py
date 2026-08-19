@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import os
-import subprocess
 from pathlib import Path
 
 import pytest
 
 import enso.scaffolding as scaffolding_module
 from enso.config import validate_workspace_name
-from enso.repository import EnsoRepository
 from enso.scaffolding import (
     LinkState,
     ScaffoldError,
@@ -102,18 +100,20 @@ def test_fresh_starter_docs_seed_is_exclusive_and_idempotent(tmp_path):
     assert {path: path.read_bytes() for path in expected} == original
 
 
-def test_fresh_starter_docs_refuse_a_changed_collision(tmp_path):
+def test_fresh_starter_docs_preserve_existing_user_owned_content(tmp_path):
     root = tmp_path / "enso"
     service = ScaffoldService(root)
     service.repair_global()
-    collision = root / "docs" / "enso" / "content_model.md"
-    collision.parent.mkdir()
-    collision.write_text("operator content\n", encoding="utf-8")
+    customized = root / "docs" / "enso" / "content_model.md"
+    customized.parent.mkdir()
+    customized.write_text("operator content\n", encoding="utf-8")
 
-    with pytest.raises(ScaffoldError, match=r"content_model\.md.*collision"):
-        service.seed_fresh_starter_docs()
+    report = service.seed_fresh_starter_docs()
 
-    assert collision.read_text(encoding="utf-8") == "operator content\n"
+    assert customized.read_text(encoding="utf-8") == "operator content\n"
+    assert customized not in set(report.created)
+    assert (root / "docs" / "enso" / "layout.md").is_file()
+    assert (root / "docs" / "operator.md").is_file()
 
 
 def test_fresh_starter_docs_refuse_a_symlink_without_touching_its_target(tmp_path):
@@ -125,7 +125,7 @@ def test_fresh_starter_docs_refuse_a_symlink_without_touching_its_target(tmp_pat
     collision = root / "docs" / "operator.md"
     collision.symlink_to(outside)
 
-    with pytest.raises(ScaffoldError, match=r"operator\.md.*collision"):
+    with pytest.raises(ScaffoldError, match=r"operator\.md must be a regular file"):
         service.seed_fresh_starter_docs()
 
     assert collision.is_symlink()
@@ -171,228 +171,13 @@ def test_interrupted_starter_doc_write_leaves_no_partial_file_and_reruns(
     assert (root / "docs" / "operator.md").is_file()
 
 
-def test_starter_doc_atomic_publish_preserves_a_race_winner(tmp_path, monkeypatch):
-    root = tmp_path / "enso"
-    service = ScaffoldService(root)
-    service.repair_global()
-    destination = root / "docs" / "enso" / "content_model.md"
-    real_publish = scaffolding_module._publish_exclusive_at
+def test_workspace_instructions_require_the_name_placeholder():
+    class _BrokenTemplate:
+        def read_text(self, encoding=None):
+            return "# Broken template\n"
 
-    def publish_after_racer(source, target, **kwargs):
-        destination.write_bytes(b"racer-owned content\n")
-        return real_publish(source, target, **kwargs)
-
-    monkeypatch.setattr(scaffolding_module, "_publish_exclusive_at", publish_after_racer)
-
-    with pytest.raises(ScaffoldError, match=r"content_model\.md.*appeared"):
-        service.seed_fresh_starter_docs()
-
-    assert destination.read_bytes() == b"racer-owned content\n"
-    assert not list(destination.parent.glob(".content_model.md.tmp-*"))
-
-
-def test_starter_doc_seed_rejects_an_ancestor_swap_between_validation_and_open(
-    tmp_path, monkeypatch
-):
-    root = tmp_path / "enso"
-    service = ScaffoldService(root)
-    service.repair_global()
-    outside_docs = tmp_path / "outside-docs"
-    (outside_docs / "enso").mkdir(parents=True)
-    detached_docs = tmp_path / "detached-docs"
-    real_open = scaffolding_module.os.open
-    absolute_parent_opens = 0
-    swapped = False
-
-    def swap_docs_before_open(path, flags, *args, **kwargs):
-        nonlocal absolute_parent_opens, swapped
-        path_text = os.fspath(path)
-        old_absolute_open = path_text == os.fspath(root / "docs" / "enso")
-        new_anchored_open = path_text == "docs" and kwargs.get("dir_fd") is not None
-        if old_absolute_open:
-            absolute_parent_opens += 1
-        if not swapped and (new_anchored_open or absolute_parent_opens == 3):
-            (root / "docs").rename(detached_docs)
-            (root / "docs").symlink_to(outside_docs, target_is_directory=True)
-            swapped = True
-        return real_open(path, flags, *args, **kwargs)
-
-    monkeypatch.setattr(scaffolding_module.os, "open", swap_docs_before_open)
-
-    with pytest.raises(ScaffoldError, match=r"physical directory|ancestry changed"):
-        service.seed_fresh_starter_docs()
-
-    assert swapped
-    assert list((outside_docs / "enso").iterdir()) == []
-    assert not (outside_docs / "operator.md").exists()
-
-
-def test_starter_doc_seed_rolls_back_if_parent_is_replaced_after_open(
-    tmp_path, monkeypatch
-):
-    root = tmp_path / "enso"
-    service = ScaffoldService(root)
-    service.repair_global()
-    destination_parent = root / "docs" / "enso"
-    detached_parent = root / "docs" / "detached-enso"
-    real_publish = scaffolding_module._publish_exclusive_at
-    swapped = False
-
-    def replace_parent_then_publish(source, target, **kwargs):
-        nonlocal swapped
-        if not swapped:
-            destination_parent.rename(detached_parent)
-            destination_parent.mkdir()
-            swapped = True
-        return real_publish(source, target, **kwargs)
-
-    monkeypatch.setattr(
-        scaffolding_module,
-        "_publish_exclusive_at",
-        replace_parent_then_publish,
-    )
-
-    with pytest.raises(ScaffoldError, match="ancestry changed"):
-        service.seed_fresh_starter_docs()
-
-    assert swapped
-    assert list(destination_parent.iterdir()) == []
-    assert list(detached_parent.iterdir()) == []
-
-
-def test_starter_doc_seed_rolls_back_if_enso_root_is_replaced_after_open(
-    tmp_path, monkeypatch
-):
-    root = tmp_path / "enso"
-    service = ScaffoldService(root)
-    service.repair_global()
-    detached_root = tmp_path / "detached-enso-root"
-    real_publish = scaffolding_module._publish_exclusive_at
-    swapped = False
-
-    def replace_root_then_publish(source, target, **kwargs):
-        nonlocal swapped
-        if not swapped:
-            root.rename(detached_root)
-            (root / "docs" / "enso").mkdir(parents=True)
-            swapped = True
-        return real_publish(source, target, **kwargs)
-
-    monkeypatch.setattr(
-        scaffolding_module,
-        "_publish_exclusive_at",
-        replace_root_then_publish,
-    )
-
-    with pytest.raises(ScaffoldError, match="ancestry changed"):
-        service.seed_fresh_starter_docs()
-
-    assert swapped
-    assert list((root / "docs" / "enso").iterdir()) == []
-    assert list((detached_root / "docs" / "enso").iterdir()) == []
-
-
-def test_fresh_starter_docs_refuse_an_existing_hardlink(tmp_path):
-    root = tmp_path / "enso"
-    service = ScaffoldService(root)
-    service.repair_global()
-    service.seed_fresh_starter_docs()
-    collision = root / "docs" / "enso" / "content_model.md"
-    other_link = tmp_path / "other-link.md"
-    os.link(collision, other_link)
-
-    with pytest.raises(ScaffoldError, match=r"content_model\.md.*multiple hard links"):
-        service.seed_fresh_starter_docs()
-
-    assert collision.stat().st_nlink == 2
-    assert other_link.read_bytes() == collision.read_bytes()
-
-
-def test_fresh_starter_docs_refuse_a_non_owner_file(tmp_path, monkeypatch):
-    root = tmp_path / "enso"
-    service = ScaffoldService(root)
-    service.repair_global()
-    service.seed_fresh_starter_docs()
-    collision = root / "docs" / "enso" / "content_model.md"
-    monkeypatch.setattr(scaffolding_module.os, "geteuid", lambda: collision.stat().st_uid + 1)
-
-    with pytest.raises(ScaffoldError, match=r"content_model\.md.*not owned"):
-        service.seed_fresh_starter_docs()
-
-
-def test_crash_staging_artifact_is_outside_docs_and_protected(tmp_path, monkeypatch):
-    root = tmp_path / "enso"
-    service = ScaffoldService(root)
-    service.repair_global()
-    real_unlink = scaffolding_module.os.unlink
-    staged_name = None
-    staged_parent_descriptor = None
-
-    def interrupt_before_publish(source, _target, **kwargs):
-        nonlocal staged_name, staged_parent_descriptor
-        staged_name = source
-        staged_parent_descriptor = kwargs["src_dir_fd"]
-        raise KeyboardInterrupt("simulated process crash before publication")
-
-    def leave_crash_artifact(path, *args, **kwargs):
-        if path == staged_name and kwargs.get("dir_fd") == staged_parent_descriptor:
-            return None
-        return real_unlink(path, *args, **kwargs)
-
-    monkeypatch.setattr(
-        scaffolding_module,
-        "_publish_exclusive_at",
-        interrupt_before_publish,
-    )
-    monkeypatch.setattr(scaffolding_module.os, "unlink", leave_crash_artifact)
-
-    with pytest.raises(KeyboardInterrupt, match="simulated process crash"):
-        service.seed_fresh_starter_docs()
-
-    docs_artifacts = list((root / "docs").rglob("*.tmp-*"))
-    runtime_artifacts = list((root / "runtime").glob("*.tmp-*"))
-    assert docs_artifacts == []
-    assert len(runtime_artifacts) == 1
-    relative = runtime_artifacts[0].relative_to(root).as_posix()
-    EnsoRepository(str(root)).ensure()
-    assert (
-        subprocess.run(
-            ["git", "-C", str(root), "check-ignore", "--quiet", "--no-index", "--", relative],
-            check=False,
-            capture_output=True,
-        ).returncode
-        == 0
-    )
-
-
-def test_starter_doc_retry_completes_after_crash_immediately_after_publication(
-    tmp_path, monkeypatch
-):
-    root = tmp_path / "enso"
-    service = ScaffoldService(root)
-    service.repair_global()
-    destination = root / "docs" / "enso" / "content_model.md"
-    real_publish = scaffolding_module._publish_exclusive_at
-
-    def publish_then_crash(source, target, **kwargs):
-        real_publish(source, target, **kwargs)
-        raise KeyboardInterrupt("simulated process crash after publication")
-
-    monkeypatch.setattr(scaffolding_module, "_publish_exclusive_at", publish_then_crash)
-
-    with pytest.raises(KeyboardInterrupt, match="simulated process crash"):
-        service.seed_fresh_starter_docs()
-
-    assert list((root / "runtime").iterdir()) == []
-    assert destination.stat().st_nlink == 1
-
-    monkeypatch.setattr(scaffolding_module, "_publish_exclusive_at", real_publish)
-    service.seed_fresh_starter_docs()
-
-    assert destination.stat().st_nlink == 1
-    assert list((root / "runtime").iterdir()) == []
-    assert (root / "docs" / "enso" / "layout.md").is_file()
-    assert (root / "docs" / "operator.md").is_file()
+    with pytest.raises(ScaffoldError, match=r"\{\{workspace_name\}\} placeholder"):
+        ScaffoldService._workspace_instructions(_BrokenTemplate(), "client-a")
 
 
 def test_global_repair_never_seeds_starter_docs(tmp_path):
