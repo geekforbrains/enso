@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -13,10 +15,12 @@ import typer
 
 from enso.cli import (
     _ensure_default_execution_config,
+    _finalize_setup_or_exit,
     _install_launchd,
     _install_systemd,
     _resolve_send_targets,
     _resolve_slack_target,
+    _scaffold_setup_or_exit,
     _setup_default_workspace,
     _setup_slack,
     _setup_telegram,
@@ -24,8 +28,36 @@ from enso.cli import (
     _update_referenced_secrets_with_rollback_or_exit,
     serve,
     setup,
+    web,
 )
+from enso.config import ConfigError
 from enso.secret_refs import SecretResolutionError
+
+
+def _add_default_execution_catalog(config: dict, *, incomplete: bool = False) -> dict:
+    """Give isolated setup-helper tests the catalog established by setup step 2."""
+    config.setdefault(
+        "providers",
+        {"claude": {"path": "claude", "models": ["sonnet"]}},
+    )
+    config.setdefault(
+        "workspaces",
+        {"default": {"policy": "admin", "concurrency": 1}},
+    )
+    config.setdefault(
+        "policies",
+        {
+            "admin": {
+                "unrestricted": True,
+                "providers": ["claude"],
+                "default_provider": "claude",
+                "chat_commands": "*",
+            },
+        },
+    )
+    if incomplete:
+        config["setup"] = {"completed_at": None}
+    return config
 
 
 def test_explicit_to_wins_and_clears_thread(monkeypatch):
@@ -121,17 +153,19 @@ def test_telegram_send_target_does_not_broadcast_to_allowed_users(monkeypatch):
 
 def test_default_execution_config_assigns_admin_policy(tmp_enso):
     config = {
+        "setup": {"completed_at": None},
         "providers": {
             "claude": {"path": "claude", "models": ["sonnet"]},
             "codex": {"path": "codex", "models": ["terra"]},
         },
+        "workspaces": {},
+        "policies": {},
     }
 
     workspace = _ensure_default_execution_config(config)
 
     assert workspace == "default"
     assert config["workspaces"]["default"] == {
-        "path": str(Path(tmp_enso) / "workspaces" / "default"),
         "policy": "admin",
         "concurrency": 1,
     }
@@ -143,37 +177,13 @@ def test_default_execution_config_assigns_admin_policy(tmp_enso):
     }
 
 
-def test_default_execution_config_preserves_existing_default_workspace(tmp_enso):
-    custom_path = str(Path(tmp_enso) / "custom-default")
+def test_default_execution_config_preserves_existing_default_workspace():
     config = {
         "providers": {"claude": {"path": "claude", "models": ["sonnet"]}},
         "workspaces": {
             "default": {
-                "path": custom_path,
-                "concurrency": 1,
-            }
-        },
-    }
-
-    workspace = _ensure_default_execution_config(config)
-
-    assert workspace == "default"
-    assert config["workspaces"]["default"] == {
-        "path": custom_path,
-        "policy": "admin",
-        "concurrency": 1,
-    }
-
-
-def test_default_execution_config_reuses_existing_managed_path_owner(tmp_enso):
-    managed = str(Path(tmp_enso) / "workspaces" / "default")
-    config = {
-        "providers": {"claude": {"path": "claude", "models": ["sonnet"]}},
-        "workspaces": {
-            "company": {
-                "path": managed,
                 "policy": "staff",
-                "concurrency": 2,
+                "concurrency": 1,
             }
         },
         "policies": {
@@ -188,42 +198,25 @@ def test_default_execution_config_reuses_existing_managed_path_owner(tmp_enso):
 
     workspace = _ensure_default_execution_config(config)
 
-    assert workspace == "company"
-    assert "default" not in config["workspaces"]
-    assert config["workspaces"]["company"]["policy"] == "staff"
+    assert workspace == "default"
+    assert config["workspaces"]["default"] == {
+        "policy": "staff",
+        "concurrency": 1,
+    }
     assert "admin" not in config["policies"]
 
 
-def test_default_execution_config_completes_reused_managed_workspace(tmp_enso):
-    managed = str(Path(tmp_enso) / "workspaces" / "default")
-    config = {
-        "providers": {"claude": {"path": "claude", "models": ["sonnet"]}},
-        "workspaces": {"company": {"path": managed}},
-    }
-
-    workspace = _ensure_default_execution_config(config)
-
-    assert workspace == "company"
-    assert config["workspaces"]["company"] == {
-        "path": managed,
-        "policy": "admin",
-        "concurrency": 1,
-    }
-    assert config["policies"]["admin"]["unrestricted"] is True
-
-
-def test_default_execution_config_rejects_overlap_with_managed_path(tmp_enso):
+def test_default_execution_config_does_not_add_default_to_pre_feature_catalog():
     config = {
         "providers": {"claude": {"path": "claude", "models": ["sonnet"]}},
         "workspaces": {
-            "managed-parent": {
-                "path": str(Path(tmp_enso) / "workspaces"),
-                "policy": "admin",
-                "concurrency": 1,
+            "company": {
+                "policy": "staff",
+                "concurrency": 2,
             }
         },
         "policies": {
-            "admin": {
+            "staff": {
                 "unrestricted": True,
                 "providers": ["claude"],
                 "default_provider": "claude",
@@ -231,65 +224,35 @@ def test_default_execution_config_rejects_overlap_with_managed_path(tmp_enso):
             }
         },
     }
+
     original = copy.deepcopy(config)
 
-    with pytest.raises(ValueError, match="overlap"):
+    with pytest.raises(ConfigError, match=r"workspaces\.default is required"):
+        _ensure_default_execution_config(config)
+
+    assert config == original
+    assert config["workspaces"]["company"]["policy"] == "staff"
+    assert "admin" not in config["policies"]
+
+
+def test_default_execution_config_rejects_malformed_workspace_block_without_replacing_it():
+    config = {
+        "setup": {"completed_at": None},
+        "providers": {"claude": {"path": "claude", "models": ["sonnet"]}},
+        "workspaces": {"default": "broken"},
+        "policies": {},
+    }
+    original = copy.deepcopy(config)
+
+    with pytest.raises(ConfigError, match=r"workspaces\.default must be an object"):
         _ensure_default_execution_config(config)
 
     assert config == original
 
 
-def test_setup_default_workspace_reports_overlap_before_creating_directory(
-    monkeypatch, tmp_enso, capsys
-):
-    config = {
-        "workspaces": {
-            "managed-parent": {
-                "path": str(Path(tmp_enso) / "workspaces"),
-                "policy": "admin",
-            }
-        }
-    }
-    monkeypatch.setattr(
-        "enso.cli.os.makedirs",
-        lambda *_args, **_kwargs: pytest.fail("must not create an overlapping path"),
-    )
-
-    with pytest.raises(typer.Exit) as exc_info:
-        _setup_default_workspace(config)
-
-    assert exc_info.value.exit_code == 1
-    assert "would overlap" in capsys.readouterr().out
-
-
-def test_setup_default_workspace_rejects_relative_existing_path_without_writing(
-    monkeypatch, capsys
-):
-    config = {
-        "workspaces": {
-            "default": {
-                "path": "relative-workspace",
-                "policy": "admin",
-            }
-        }
-    }
-    original = copy.deepcopy(config)
-    monkeypatch.setattr(
-        "enso.cli.os.makedirs",
-        lambda *_args, **_kwargs: pytest.fail("must not create a relative path"),
-    )
-
-    with pytest.raises(typer.Exit) as exc_info:
-        _setup_default_workspace(config)
-
-    assert exc_info.value.exit_code == 1
-    assert config == original
-    assert "must be absolute" in capsys.readouterr().out
-
-
 def test_setup_rejects_legacy_working_dir_before_changes(monkeypatch, capsys):
     config = {"working_dir": "/legacy/workspace"}
-    monkeypatch.setattr("enso.cli.load_config", lambda: config)
+    monkeypatch.setattr("enso.cli.load_config", lambda **_kwargs: config)
     monkeypatch.setattr(
         "enso.cli._setup_providers",
         lambda *_: pytest.fail("setup must stop before mutating legacy config"),
@@ -303,6 +266,843 @@ def test_setup_rejects_legacy_working_dir_before_changes(monkeypatch, capsys):
     output = " ".join(capsys.readouterr().out.split())
     assert "working_dir is no longer supported" in output
     assert "workspaces" in output
+
+
+def test_setup_rejects_legacy_workspace_path_before_repository_changes(
+    monkeypatch, capsys
+):
+    config = {
+        "workspaces": {
+            "default": {
+                "path": "/legacy/workspace",
+                "policy": "admin",
+            }
+        }
+    }
+    original = copy.deepcopy(config)
+    mutations: list[str] = []
+    monkeypatch.setattr("enso.cli.load_config", lambda **_kwargs: config)
+    monkeypatch.setattr(
+        "enso.cli._ensure_repository_or_exit",
+        lambda: mutations.append("repository"),
+    )
+    monkeypatch.setattr(
+        "enso.cli._setup_providers",
+        lambda *_args: mutations.append("providers"),
+    )
+    monkeypatch.setattr(
+        "enso.cli._setup_default_workspace",
+        lambda *_args: mutations.append("workspace"),
+    )
+    monkeypatch.setattr(
+        "enso.cli._setup_transport",
+        lambda *_args: mutations.append("transport"),
+    )
+    monkeypatch.setattr(
+        "enso.cli._finalize_setup_or_exit",
+        lambda *_args: mutations.append("scaffold/save"),
+    )
+
+    with pytest.raises(typer.Exit) as exc_info:
+        setup()
+
+    assert exc_info.value.exit_code == 1
+    assert mutations == []
+    assert config == original
+    output = " ".join(capsys.readouterr().out.split())
+    assert "workspaces.default.path is no longer supported" in output
+    assert output.count(
+        "https://github.com/geekforbrains/enso/blob/main/"
+        "docs/migrations/v1.3-managed-workspaces.md"
+    ) == 1
+
+
+@pytest.mark.parametrize(
+    "setup_block",
+    [
+        pytest.param({}, id="pre-feature"),
+        pytest.param(
+            {"setup": {"completed_at": "2026-08-18T12:00:00+00:00"}},
+            id="complete",
+        ),
+    ],
+)
+def test_nonfresh_setup_repairs_only_and_preserves_the_existing_catalog(
+    tmp_enso,
+    monkeypatch,
+    capsys,
+    setup_block,
+):
+    from enso.config import save_config
+    from enso.scaffolding import ScaffoldService
+
+    root = Path(tmp_enso)
+    root.joinpath("workspaces", "default").rmdir()
+    scaffold = ScaffoldService()
+    scaffold.seed_fresh_global()
+    scaffold.create_workspace("client-a")
+    config = {
+        **setup_block,
+        "transport": "telegram",
+        "transports": {
+            "telegram": {
+                "bot_token": "operator-token",
+                "allowed_users": ["123"],
+                "notify_channel": "123",
+                "workspace": "client-a",
+            }
+        },
+        "providers": {
+            "claude": {
+                "path": "/operator/bin/claude",
+                "models": ["operator-model"],
+            }
+        },
+        "workspaces": {
+            "client-a": {"policy": "operator", "concurrency": 2},
+        },
+        "policies": {
+            "operator": {
+                "unrestricted": True,
+                "providers": ["claude"],
+                "default_provider": "claude",
+                "chat_commands": "*",
+            }
+        },
+    }
+    save_config(config)
+    config_file = root / "config.json"
+    original = config_file.read_bytes()
+
+    def unexpected(label):
+        return lambda *_args, **_kwargs: pytest.fail(
+            f"nonfresh setup must not perform {label}"
+        )
+
+    monkeypatch.setattr("enso.cli._setup_providers", unexpected("provider detection"))
+    monkeypatch.setattr(
+        "enso.cli._setup_default_workspace",
+        unexpected("default workspace configuration"),
+    )
+    monkeypatch.setattr("enso.cli._setup_transport", unexpected("transport setup"))
+    monkeypatch.setattr("enso.cli._tg_send_message", unexpected("test messaging"))
+    monkeypatch.setattr("enso.cli._slack_send_message", unexpected("test messaging"))
+    monkeypatch.setattr("enso.cli._service_platform", unexpected("service inspection"))
+    monkeypatch.setattr("enso.cli._service_install", unexpected("service installation"))
+    monkeypatch.setattr("enso.cli.Confirm.ask", unexpected("interactive prompting"))
+    monkeypatch.setattr("enso.cli.save_config", unexpected("configuration save"))
+    monkeypatch.setattr(
+        ScaffoldService,
+        "seed_fresh_global",
+        unexpected("fresh global seeding"),
+    )
+    monkeypatch.setattr(
+        ScaffoldService,
+        "seed_fresh_starter_docs",
+        unexpected("starter document seeding"),
+    )
+    monkeypatch.setattr(
+        ScaffoldService,
+        "create_workspace",
+        unexpected("fresh workspace creation"),
+    )
+
+    setup()
+
+    assert config_file.read_bytes() == original
+    persisted = json.loads(config_file.read_text())
+    assert persisted["providers"]["claude"] == {
+        "path": "/operator/bin/claude",
+        "models": ["operator-model"],
+    }
+    assert set(persisted["workspaces"]) == {"client-a"}
+    assert set(persisted["policies"]) == {"operator"}
+    assert ("setup" in persisted) is bool(setup_block)
+    output = " ".join(capsys.readouterr().out.split())
+    assert "Existing installation structure repaired" in output
+    assert "configuration preserved" in output
+
+
+def test_nonfresh_setup_rejects_an_invalid_catalog_before_repository_mutation(
+    tmp_enso,
+    monkeypatch,
+    capsys,
+):
+    config = {
+        "workspaces": {
+            "client-a": {"policy": "missing", "concurrency": 1},
+        },
+        "policies": {},
+    }
+    original = copy.deepcopy(config)
+    mutations: list[str] = []
+    monkeypatch.setattr("enso.cli.load_config", lambda **_kwargs: config)
+    monkeypatch.setattr(
+        "enso.cli._ensure_repository_or_exit",
+        lambda: mutations.append("repository"),
+    )
+    monkeypatch.setattr(
+        "enso.cli._scaffold_setup_or_exit",
+        lambda *_args, **_kwargs: mutations.append("scaffold"),
+    )
+    monkeypatch.setattr(
+        "enso.cli.save_config",
+        lambda *_args, **_kwargs: mutations.append("config"),
+    )
+
+    with pytest.raises(typer.Exit) as exc_info:
+        setup()
+
+    assert exc_info.value.exit_code == 1
+    assert mutations == []
+    assert config == original
+    output = " ".join(capsys.readouterr().out.split())
+    assert "Existing execution catalog is invalid" in output
+    assert "unknown policy 'missing'" in output
+
+
+def test_setup_default_workspace_only_updates_config(monkeypatch, tmp_enso, capsys):
+    monkeypatch.setattr(
+        "enso.cli.os.makedirs",
+        lambda *_args, **_kwargs: pytest.fail("workspace creation belongs to scaffolding"),
+    )
+    config = {
+        "setup": {"completed_at": None},
+        "providers": {"claude": {"path": "claude", "models": ["sonnet"]}},
+        "workspaces": {},
+        "policies": {},
+    }
+
+    assert _setup_default_workspace(config) == "default"
+
+    assert config["workspaces"]["default"] == {
+        "policy": "admin",
+        "concurrency": 1,
+    }
+    output = " ".join(capsys.readouterr().out.split())
+    assert "workspaces/default" in output
+    assert "Policy: admin (unrestricted)" in output
+
+
+def test_setup_displays_the_existing_default_policy_without_claiming_admin_authority(
+    tmp_enso,
+    capsys,
+):
+    config = {
+        "setup": {"completed_at": "2026-08-18T12:00:00+00:00"},
+        "providers": {"claude": {"path": "claude", "models": ["sonnet"]}},
+        "workspaces": {
+            "default": {"policy": "client-safe", "concurrency": 1},
+        },
+        "policies": {
+            "client-safe": {
+                "policy_dir": str(Path(tmp_enso, "operator-policy")),
+                "providers": ["claude"],
+                "default_provider": "claude",
+                "chat_commands": [],
+            },
+        },
+    }
+
+    assert _setup_default_workspace(config) == "default"
+
+    output = " ".join(capsys.readouterr().out.split())
+    assert "Policy: client-safe (policy-controlled)" in output
+    assert "provider-native policy controls apply" in output
+    assert "admin" not in output
+    assert "full user authority" not in output
+
+
+def test_fresh_setup_scaffold_seeds_complete_canonical_tree(tmp_enso, monkeypatch):
+    from enso.scaffolding import ScaffoldService
+
+    workspace = Path(tmp_enso, "workspaces", "default")
+    workspace.rmdir()
+    config = {
+        "setup": {"completed_at": None},
+        "workspaces": {"default": {"policy": "admin", "concurrency": 1}},
+    }
+    published: list[str] = []
+    real_create = ScaffoldService.create_workspace
+
+    def recording_create(self, name):
+        published.append(name)
+        return real_create(self, name)
+
+    monkeypatch.setattr(ScaffoldService, "create_workspace", recording_create)
+
+    _scaffold_setup_or_exit(config)
+
+    assert published == ["default"]
+    assert Path(tmp_enso, "skills", "policy", "SKILL.md").is_file()
+    assert Path(tmp_enso, "skills", "workspace", "SKILL.md").is_file()
+    assert os.readlink(Path(tmp_enso, "CLAUDE.md")) == "AGENTS.md"
+    assert workspace.joinpath("AGENTS.md").is_file()
+    assert workspace.joinpath("knowledge", "README.md").is_file()
+    assert os.readlink(workspace / ".agents" / "skills") == "../skills"
+
+
+def test_completed_setup_does_not_synthesize_a_missing_default_or_admin() -> None:
+    config = {
+        "setup": {"completed_at": "2026-01-01T00:00:00+00:00"},
+        "providers": {"claude": {"path": "claude", "models": ["sonnet"]}},
+        "workspaces": {},
+        "policies": {},
+    }
+    original = copy.deepcopy(config)
+
+    with pytest.raises(ConfigError, match=r"workspaces\.default is required"):
+        _ensure_default_execution_config(config)
+
+    assert config == original
+
+
+@pytest.mark.parametrize(
+    "setup_block",
+    [
+        pytest.param({}, id="pre-feature"),
+        pytest.param(
+            {"setup": {"completed_at": "2026-08-18T12:00:00+00:00"}},
+            id="complete",
+        ),
+    ],
+)
+def test_nonfresh_setup_repairs_structure_without_reseeding_content(
+    setup_block, tmp_enso
+):
+    from enso.scaffolding import ScaffoldService
+
+    service = ScaffoldService()
+    service.seed_fresh_global()
+    workspace = Path(tmp_enso, "workspaces", "default")
+    workspace.rmdir()
+    service.create_workspace("default")
+    workspace.joinpath("AGENTS.md").unlink()
+    workspace.joinpath("CLAUDE.md").unlink()
+    config = {
+        **setup_block,
+        "workspaces": {"default": {"policy": "admin", "concurrency": 1}},
+    }
+
+    with pytest.raises(typer.Exit):
+        _scaffold_setup_or_exit(config)
+
+    assert not workspace.joinpath("AGENTS.md").exists()
+    assert not workspace.joinpath("CLAUDE.md").exists()
+
+
+def _git_output(root: str, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", root, *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+_INITIAL_SETUP_SUBJECT = "Initialize Enso content"
+
+
+def _required_initial_paths(*workspace_names: str) -> set[str]:
+    paths = {
+        ".agents/skills",
+        ".claude/skills",
+        ".gitignore",
+        "AGENTS.md",
+        "CLAUDE.md",
+        "docs/enso/content_model.md",
+        "docs/enso/layout.md",
+        "docs/operator.md",
+        "skills/docs/SKILL.md",
+        "skills/jobs/SKILL.md",
+        "skills/policy/SKILL.md",
+        "skills/slack/SKILL.md",
+        "skills/tables/SKILL.md",
+        "skills/workspace/SKILL.md",
+    }
+    for name in workspace_names:
+        base = f"workspaces/{name}"
+        paths.update(
+            {
+                f"{base}/.agents/skills",
+                f"{base}/.claude/skills",
+                f"{base}/AGENTS.md",
+                f"{base}/CLAUDE.md",
+                f"{base}/knowledge/README.md",
+            }
+        )
+    return paths
+
+
+def test_fresh_setup_finalization_orders_null_seed_commit_then_timestamp(monkeypatch):
+    from enso import cli as cli_module
+    from enso.repository import EnsoRepository
+
+    events: list[tuple[str, object]] = []
+    config = {
+        "setup": {"completed_at": None},
+        "workspaces": {
+            "alpha": {"policy": "admin", "concurrency": 1},
+            "default": {"policy": "admin", "concurrency": 1},
+        },
+    }
+
+    monkeypatch.setattr(
+        cli_module,
+        "save_config",
+        lambda candidate: events.append(
+            ("save", candidate["setup"]["completed_at"])
+        ),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "_scaffold_setup_or_exit",
+        lambda _candidate: events.append(("scaffold", None)),
+    )
+    monkeypatch.setattr(
+        EnsoRepository,
+        "ensure",
+        lambda _self: events.append(("repository", None)),
+    )
+    monkeypatch.setattr(
+        EnsoRepository,
+        "has_head",
+        lambda _self: events.append(("head", None)) or False,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        EnsoRepository,
+        "commit_all",
+        lambda _self, message: events.append(("commit", message)) or True,
+        raising=False,
+    )
+
+    _finalize_setup_or_exit(config)
+
+    assert [event for event, _value in events] == [
+        "save",
+        "repository",
+        "head",
+        "scaffold",
+        "commit",
+        "save",
+    ]
+    assert events[0][1] is None
+    assert events[4][1] == _INITIAL_SETUP_SUBJECT
+    assert isinstance(events[-1][1], str)
+
+
+def test_finalize_fresh_setup_seeds_commits_then_marks_complete(tmp_enso):
+    from datetime import datetime
+
+    from enso.config import SetupState, load_config, setup_state
+    from enso.docs import load_docs
+    from enso.repository import EnsoRepository
+
+    Path(tmp_enso, "workspaces", "default").rmdir()
+    EnsoRepository().ensure()
+    custom_doc = Path(tmp_enso, "docs", "custom.md")
+    custom_doc.parent.mkdir()
+    custom_doc.write_text(
+        "---\nname: Custom\ndescription: Existing operator content.\n---\n\nKeep me.\n",
+        encoding="utf-8",
+    )
+    custom_skill = Path(tmp_enso, "skills", "custom", "SKILL.md")
+    custom_skill.parent.mkdir(parents=True)
+    custom_skill.write_text(
+        "---\nname: custom\ndescription: Existing operator workflow.\n---\n\n# Custom\n",
+        encoding="utf-8",
+    )
+    config = {
+        "setup": {"completed_at": None},
+        "workspaces": {"default": {"policy": "admin", "concurrency": 1}},
+    }
+
+    _finalize_setup_or_exit(config)
+
+    persisted = load_config()
+    assert setup_state(persisted) is SetupState.COMPLETE
+    completed_at = datetime.fromisoformat(persisted["setup"]["completed_at"])
+    assert completed_at.utcoffset() is not None
+    assert _git_output(tmp_enso, "rev-list", "--count", "HEAD") == "1"
+    tracked = set(_git_output(tmp_enso, "ls-files").splitlines())
+    assert _required_initial_paths("default") <= tracked
+    assert {"docs/custom.md", "skills/custom/SKILL.md"} <= tracked
+    assert "config.json" not in tracked
+    assert _git_output(tmp_enso, "log", "-1", "--format=%s") == _INITIAL_SETUP_SUBJECT
+    assert {
+        (doc.rel_path, doc.description)
+        for doc in load_docs().docs
+    } >= {
+        (
+            "enso/content_model.md",
+            "Where durable Enso context belongs and which source wins; read before "
+            "creating, moving, or duplicating persistent knowledge.",
+        ),
+        (
+            "enso/layout.md",
+            "The current managed Enso filesystem and local-history boundaries; read "
+            "when locating, validating, or repairing installation content.",
+        ),
+        (
+            "operator.md",
+            "Confirmed operator identity, locale, communication preferences, and "
+            "standing personal context; read when a task depends on those facts.",
+        ),
+    }
+
+    operator_doc = Path(tmp_enso, "docs", "operator.md")
+    operator_doc.write_text("operator-owned content\n", encoding="utf-8")
+
+    _finalize_setup_or_exit(persisted)
+
+    assert _git_output(tmp_enso, "rev-list", "--count", "HEAD") == "1"
+    assert operator_doc.read_text(encoding="utf-8") == "operator-owned content\n"
+
+
+def test_baseline_commit_failure_leaves_fresh_setup_incomplete(
+    tmp_enso, monkeypatch, capsys
+):
+    from enso.config import SetupState, load_config, setup_state
+    from enso.repository import EnsoRepository, RepositoryError
+
+    Path(tmp_enso, "workspaces", "default").rmdir()
+    EnsoRepository().ensure()
+    config = {
+        "setup": {"completed_at": None},
+        "workspaces": {"default": {"policy": "admin", "concurrency": 1}},
+    }
+    monkeypatch.setattr(
+        "enso.repository.EnsoRepository.commit_all",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RepositoryError("baseline commit failed")
+        ),
+        raising=False,
+    )
+
+    with pytest.raises(typer.Exit) as exc_info:
+        _finalize_setup_or_exit(config)
+
+    assert exc_info.value.exit_code == 1
+    assert setup_state(load_config()) is SetupState.INCOMPLETE
+    assert "baseline commit failed" in capsys.readouterr().out
+    assert (
+        subprocess.run(
+            ["git", "-C", tmp_enso, "rev-parse", "--verify", "HEAD"],
+            check=False,
+            capture_output=True,
+        ).returncode
+        != 0
+    )
+
+
+@pytest.mark.parametrize("edited_path", ["AGENTS.md", "docs/operator.md"])
+def test_timestamp_save_failure_then_user_edit_retries_without_committing_edit(
+    tmp_enso, monkeypatch, edited_path
+):
+    from enso import cli as cli_module
+    from enso.config import SetupState, load_config, setup_state
+    from enso.repository import EnsoRepository
+
+    Path(tmp_enso, "workspaces", "default").rmdir()
+    EnsoRepository().ensure()
+    config = {
+        "setup": {"completed_at": None},
+        "workspaces": {"default": {"policy": "admin", "concurrency": 1}},
+    }
+    real_save = cli_module.save_config
+    calls = 0
+
+    def fail_completion_save(candidate):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("completion write failed")
+        real_save(candidate)
+
+    monkeypatch.setattr(cli_module, "save_config", fail_completion_save)
+
+    with pytest.raises(typer.Exit):
+        _finalize_setup_or_exit(config)
+
+    persisted = load_config()
+    assert setup_state(persisted) is SetupState.INCOMPLETE
+    assert _git_output(tmp_enso, "rev-list", "--count", "HEAD") == "1"
+
+    edited = Path(tmp_enso, edited_path)
+    edited.write_text("operator-owned change after initial baseline\n", encoding="utf-8")
+    monkeypatch.setattr(
+        EnsoRepository,
+        "commit_all",
+        lambda *_args, **_kwargs: pytest.fail("retry with history must not commit again"),
+        raising=False,
+    )
+    _finalize_setup_or_exit(persisted)
+
+    assert setup_state(load_config()) is SetupState.COMPLETE
+    assert _git_output(tmp_enso, "rev-list", "--count", "HEAD") == "1"
+    assert _git_output(tmp_enso, "status", "--short", "--", edited_path) == (
+        f"M {edited_path}"
+    )
+    assert (
+        subprocess.run(
+            ["git", "-C", tmp_enso, "diff", "--cached", "--quiet", "--", edited_path],
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
+def test_existing_history_completes_without_second_baseline_commit(tmp_enso):
+    from enso.config import SetupState, load_config, setup_state
+    from enso.repository import EnsoRepository
+    from enso.scaffolding import ScaffoldService
+
+    Path(tmp_enso, "workspaces", "default").rmdir()
+    service = ScaffoldService()
+    service.seed_fresh_global()
+    service.seed_fresh_starter_docs()
+    service.create_workspace("default")
+    repository = EnsoRepository()
+    repository.ensure()
+    assert repository.commit_all("Initialize Enso content") is True
+    config = {
+        "setup": {"completed_at": None},
+        "workspaces": {"default": {"policy": "admin", "concurrency": 1}},
+    }
+
+    _finalize_setup_or_exit(config)
+
+    assert setup_state(load_config()) is SetupState.COMPLETE
+    assert _git_output(tmp_enso, "rev-list", "--count", "HEAD") == "1"
+    assert _git_output(tmp_enso, "log", "-1", "--format=%s") == _INITIAL_SETUP_SUBJECT
+
+
+def test_existing_history_retry_repairs_structure_without_fresh_seeding(monkeypatch):
+    from enso import cli as cli_module
+    from enso.repository import EnsoRepository
+
+    config = {
+        "setup": {"completed_at": None},
+        "workspaces": {"default": {"policy": "admin", "concurrency": 1}},
+    }
+    events: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        cli_module,
+        "save_config",
+        lambda candidate: events.append(("save", candidate["setup"]["completed_at"])),
+    )
+    monkeypatch.setattr(
+        EnsoRepository,
+        "ensure",
+        lambda _self: events.append(("repository", None)),
+    )
+    monkeypatch.setattr(
+        EnsoRepository,
+        "has_head",
+        lambda _self: events.append(("head", None)) or True,
+        raising=False,
+    )
+
+    def scaffold(_config, *, seed_fresh=None):
+        events.append(("scaffold", seed_fresh))
+
+    monkeypatch.setattr(cli_module, "_scaffold_setup_or_exit", scaffold)
+    monkeypatch.setattr(
+        EnsoRepository,
+        "commit_all",
+        lambda *_args, **_kwargs: pytest.fail("existing history must skip the baseline commit"),
+        raising=False,
+    )
+
+    _finalize_setup_or_exit(config)
+
+    assert [event for event, _value in events] == [
+        "save",
+        "repository",
+        "head",
+        "scaffold",
+        "save",
+    ]
+    assert events[3] == ("scaffold", False)
+
+
+@pytest.mark.parametrize(
+    ("setup_block", "expected_state"),
+    [
+        pytest.param({}, "pre-feature", id="pre-feature"),
+        pytest.param(
+            {"setup": {"completed_at": "2026-08-18T12:00:00+00:00"}},
+            "complete",
+            id="complete",
+        ),
+    ],
+)
+def test_nonfresh_setup_never_seeds_starter_docs_or_creates_a_commit(
+    tmp_enso, setup_block, expected_state, monkeypatch
+):
+    from enso.config import load_config, save_config, setup_state
+    from enso.repository import EnsoRepository
+    from enso.scaffolding import ScaffoldService
+
+    workspace = Path(tmp_enso, "workspaces", "default")
+    workspace.rmdir()
+    service = ScaffoldService()
+    service.seed_fresh_global()
+    service.create_workspace("default")
+    EnsoRepository().ensure()
+    monkeypatch.setattr(
+        ScaffoldService,
+        "seed_fresh_global",
+        lambda *_args, **_kwargs: pytest.fail(
+            "an existing installation must not receive fresh global content"
+        ),
+    )
+    monkeypatch.setattr(
+        ScaffoldService,
+        "seed_fresh_starter_docs",
+        lambda *_args, **_kwargs: pytest.fail(
+            "an existing installation must not receive starter docs"
+        ),
+    )
+    monkeypatch.setattr(
+        ScaffoldService,
+        "create_workspace",
+        lambda *_args, **_kwargs: pytest.fail(
+            "an existing installation must not receive a fresh workspace scaffold"
+        ),
+    )
+    config = {
+        **setup_block,
+        "workspaces": {"default": {"policy": "admin", "concurrency": 1}},
+        "policies": {
+            "admin": {
+                "unrestricted": True,
+                "providers": ["claude"],
+                "default_provider": "claude",
+                "chat_commands": "*",
+            }
+        },
+    }
+    save_config(config)
+
+    setup()
+
+    assert setup_state(load_config()).value == expected_state
+    persisted = json.loads(Path(tmp_enso, "config.json").read_text())
+    if expected_state == "pre-feature":
+        assert "setup" not in persisted
+    assert list(Path(tmp_enso, "docs").iterdir()) == []
+    assert (
+        subprocess.run(
+            ["git", "-C", tmp_enso, "rev-parse", "--verify", "HEAD"],
+            check=False,
+            capture_output=True,
+        ).returncode
+        != 0
+    )
+
+
+def test_setup_rejects_malformed_config_before_scaffolding(monkeypatch, tmp_enso, capsys):
+    config_file = Path(tmp_enso, "config.json")
+    config_file.write_text("{malformed")
+    original = config_file.read_bytes()
+    monkeypatch.setattr(
+        "enso.cli._setup_providers",
+        lambda *_: pytest.fail("setup must stop before mutating the installation"),
+    )
+
+    with pytest.raises(typer.Exit) as exc_info:
+        setup()
+
+    assert exc_info.value.exit_code == 1
+    assert "Could not read" in capsys.readouterr().out
+    assert config_file.read_bytes() == original
+    assert not Path(f"{config_file}.lock").exists()
+
+
+def test_setup_rejects_symlinked_config_root_before_writing(monkeypatch, tmp_path, capsys):
+    target = tmp_path / "outside-enso"
+    target.mkdir()
+    config_root = tmp_path / "enso"
+    config_root.symlink_to(target, target_is_directory=True)
+    monkeypatch.setattr("enso.config.CONFIG_DIR", str(config_root))
+    monkeypatch.setattr("enso.config.CONFIG_FILE", str(config_root / "config.json"))
+    monkeypatch.setattr(
+        "enso.cli._setup_providers",
+        lambda *_: pytest.fail("setup must stop before provider configuration"),
+    )
+
+    with pytest.raises(typer.Exit) as exc_info:
+        setup()
+
+    assert exc_info.value.exit_code == 1
+    assert "physical directory" in capsys.readouterr().out
+    assert list(target.iterdir()) == []
+
+
+def test_setup_ensures_repository_before_provider_configuration(
+    monkeypatch, tmp_enso
+):
+    events = []
+    monkeypatch.setattr(
+        "enso.cli._ensure_repository_or_exit",
+        lambda: events.append("repository"),
+        raising=False,
+    )
+
+    def stop_after_repository(_config):
+        events.append("providers")
+        raise typer.Exit(7)
+
+    monkeypatch.setattr("enso.cli._setup_providers", stop_after_repository)
+
+    with pytest.raises(typer.Exit) as exc_info:
+        setup()
+
+    assert exc_info.value.exit_code == 7
+    assert events == ["repository", "providers"]
+
+
+@pytest.mark.parametrize("command", [serve, web])
+def test_operational_commands_require_existing_config(
+    command, monkeypatch, tmp_enso, capsys
+):
+    monkeypatch.setattr(
+        "enso.core.Runtime",
+        lambda *_: pytest.fail("a runtime must not be created without config.json"),
+    )
+
+    with pytest.raises(typer.Exit) as exc_info:
+        command()
+
+    assert exc_info.value.exit_code == 1
+    assert "config.json" in capsys.readouterr().out
+    assert not Path(tmp_enso, "config.json").exists()
+
+
+@pytest.mark.parametrize("command", [serve, web])
+def test_operational_startup_validates_before_runtime(command, monkeypatch):
+    config = {"transport": "slack"}
+    events = []
+    monkeypatch.setattr("enso.cli.load_config", lambda: config)
+
+    def stop_at_validation(candidate):
+        events.append(candidate)
+        raise typer.Exit(9)
+
+    monkeypatch.setattr("enso.cli._validate_installation_or_exit", stop_at_validation)
+    monkeypatch.setattr(
+        "enso.core.Runtime",
+        lambda *_: pytest.fail("runtime construction must follow installation validation"),
+    )
+
+    with pytest.raises(typer.Exit) as exc_info:
+        command()
+
+    assert exc_info.value.exit_code == 9
+    assert events == [config]
 
 
 @pytest.mark.parametrize("configured_transport", ["", "email", None])
@@ -421,6 +1221,7 @@ def test_telegram_setup_validates_existing_token_and_binds_default_workspace(
             },
         },
     }
+    _add_default_execution_catalog(config)
     monkeypatch.setattr(
         "enso.cli.resolve_config_secret",
         lambda cfg, key: "resolved-telegram-token",
@@ -435,14 +1236,11 @@ def test_telegram_setup_validates_existing_token_and_binds_default_workspace(
     telegram = config["transports"]["telegram"]
     assert "bot_token" not in telegram
     assert telegram["workspace"] == "default"
-    assert config["workspaces"]["default"]["path"] == str(
-        Path(tmp_enso) / "workspaces" / "default"
-    )
+    assert "path" not in config["workspaces"]["default"]
     assert config["workspaces"]["default"]["policy"] == "admin"
 
 
-def test_telegram_setup_reuses_existing_managed_workspace_name(monkeypatch, tmp_enso):
-    managed = str(Path(tmp_enso) / "workspaces" / "default")
+def test_telegram_setup_does_not_synthesize_default_for_pre_feature_catalog(monkeypatch):
     config = {
         "transports": {
             "telegram": {
@@ -452,7 +1250,6 @@ def test_telegram_setup_reuses_existing_managed_workspace_name(monkeypatch, tmp_
         },
         "workspaces": {
             "company": {
-                "path": managed,
                 "policy": "staff",
                 "concurrency": 1,
             },
@@ -471,11 +1268,13 @@ def test_telegram_setup_reuses_existing_managed_workspace_name(monkeypatch, tmp_
         "enso.cli._tg_validate_token", lambda token: {"username": "enso_test"}
     )
     monkeypatch.setattr("enso.cli.Confirm.ask", lambda *args, **kwargs: False)
+    original = copy.deepcopy(config)
 
-    assert _setup_telegram(config) is None
+    with pytest.raises(ConfigError, match=r"workspaces\.default is required"):
+        _setup_telegram(config)
 
-    assert config["transports"]["telegram"]["workspace"] == "company"
-    assert "default" not in config["workspaces"]
+    assert config == original
+    assert "admin" not in config["policies"]
 
 
 def test_slack_setup_validates_resolved_existing_token(monkeypatch):
@@ -493,6 +1292,7 @@ def test_slack_setup_validates_resolved_existing_token(monkeypatch):
             },
         },
     }
+    _add_default_execution_catalog(config)
     original = copy.deepcopy(config)
     monkeypatch.setattr(
         "enso.cli.resolve_config_secret",
@@ -559,6 +1359,7 @@ def test_telegram_setup_reconfiguration_updates_reference_without_plaintext(
             },
         },
     }
+    _add_default_execution_catalog(config)
     updates = []
     monkeypatch.setattr(
         "enso.cli.resolve_config_secret",
@@ -633,7 +1434,7 @@ def test_slack_setup_reconfiguration_updates_references_without_plaintext(
             },
         },
         "workspaces": {
-            "company": {"path": "/tmp/company", "policy": "admin", "concurrency": 1},
+            "company": {"policy": "admin", "concurrency": 1},
         },
         "policies": {
             "admin": {
@@ -765,6 +1566,7 @@ def test_slack_setup_replaces_only_routing_for_a_different_account(monkeypatch):
             }
         },
     }
+    _add_default_execution_catalog(config)
     confirmations = iter([True, True])
 
     def validate(token):
@@ -1012,7 +1814,7 @@ def test_slack_setup_reprompts_until_app_token_provided(monkeypatch, capsys):
     """A blank app token silently breaks Socket Mode later (or aborts a
     referenced update with a misleading 1Password error), so setup must
     insist on one just like it does for the bot token."""
-    config: dict = {}
+    config: dict = _add_default_execution_catalog({})
     app_prompts = 0
 
     def prompt(label, **kwargs):
@@ -1063,16 +1865,17 @@ def test_serve_reports_secret_resolution_failure_cleanly(
     )
     monkeypatch.setattr("enso.cli.configure_logging", lambda *a, **k: {})
     monkeypatch.setattr("enso.cli._load_secret_env", lambda: [])
+    monkeypatch.setattr("enso.cli._validate_installation_or_exit", lambda _config: None)
 
     class FakeRuntime:
         def __init__(self, config):
             pass
 
         def install_system_prompts(self):
-            pass
+            pytest.fail("serve must not install or upgrade user-owned content")
 
         def install_workspaces(self):
-            pass
+            pytest.fail("serve must not create or repair workspace content")
 
         def load_state(self):
             pass

@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
-import logging
 import os
+import re
 import shutil
+import stat
+from collections.abc import Iterator
+from datetime import datetime
+from enum import Enum
 
 from .fsutil import atomic_write_text
 from .logging_config import default_logging_config
 from .providers import PROVIDER_CLASSES
 from .providers.codex import CODEX_MODEL_ALIASES
-
-log = logging.getLogger(__name__)
 
 CONFIG_DIR = os.path.expanduser("~/.enso")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
@@ -20,7 +24,6 @@ STATE_FILE = os.path.join(CONFIG_DIR, "state.json")
 DOCS_DIR = os.path.join(CONFIG_DIR, "docs")
 JOBS_DIR = os.path.join(CONFIG_DIR, "jobs")
 MESSAGES_FILE = os.path.join(CONFIG_DIR, "messages.json")
-SKILL_TOMBSTONES_DIRNAME = ".deleted"
 
 # Derived from the provider registry so supported names, CLI paths, and
 # default model lists have one source of truth.
@@ -49,11 +52,65 @@ DEFAULT_AGENT = {"timeout": 30 * 60}
 DEFAULT_RUNS = {"keep": 500, "max_age_days": 30}
 DEFAULT_WORKSPACE_NAME = "default"
 DEFAULT_POLICY_NAME = "admin"
+DEFAULT_WORKSPACE_CONCURRENCY = 1
+WORKSPACE_NAME_PATTERN = r"[a-z0-9]+(?:-[a-z0-9]+)*"
+WORKSPACE_NAME_MAX_LENGTH = 64
+_WORKSPACE_NAME_RE = re.compile(WORKSPACE_NAME_PATTERN)
+
+
+class ConfigError(ValueError):
+    """Configuration cannot be read or safely updated."""
+
+
+class SetupState(str, Enum):
+    """Meaning of the optional setup completion marker."""
+
+    PRE_FEATURE = "pre-feature"
+    INCOMPLETE = "incomplete"
+    COMPLETE = "complete"
+
+
+def setup_state(config: dict) -> SetupState:
+    """Classify fresh, interrupted, complete, and pre-feature configurations."""
+    if "setup" not in config:
+        return SetupState.PRE_FEATURE
+    setup = config.get("setup")
+    if not isinstance(setup, dict) or "completed_at" not in setup:
+        raise ConfigError("setup.completed_at must be null or an ISO 8601 timestamp")
+    completed_at = setup["completed_at"]
+    if completed_at is None:
+        return SetupState.INCOMPLETE
+    if not isinstance(completed_at, str):
+        raise ConfigError("setup.completed_at must be null or an ISO 8601 timestamp")
+    try:
+        parsed = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ConfigError(
+            "setup.completed_at must be null or an ISO 8601 timestamp"
+        ) from exc
+    if parsed.tzinfo is None:
+        raise ConfigError("setup.completed_at must include a timezone")
+    return SetupState.COMPLETE
+
+
+def validate_workspace_name(name: str) -> str:
+    """Return a portable workspace name or reject it before path derivation."""
+    if (
+        not isinstance(name, str)
+        or len(name) > WORKSPACE_NAME_MAX_LENGTH
+        or not _WORKSPACE_NAME_RE.fullmatch(name)
+    ):
+        raise ConfigError(
+            "workspace names must be lowercase kebab-case using letters, numbers, "
+            f"and single hyphens ({WORKSPACE_NAME_PATTERN}), with at most "
+            f"{WORKSPACE_NAME_MAX_LENGTH} characters"
+        )
+    return name
 
 
 def managed_workspace_path(name: str = DEFAULT_WORKSPACE_NAME) -> str:
-    """Return the canonical managed location for a named workspace."""
-    return os.path.join(CONFIG_DIR, "workspaces", name)
+    """Return the name-derived managed location for a validated workspace."""
+    return os.path.join(CONFIG_DIR, "workspaces", validate_workspace_name(name))
 
 
 def unrestricted_policy_config(provider_names: list[str]) -> dict:
@@ -91,60 +148,133 @@ def provider_models(config: dict) -> dict[str, list[str]]:
     return result
 
 
-def _providers_need_migration(raw_providers: object) -> bool:
-    """True when provider config is missing defaults or carries retired values."""
-    if not isinstance(raw_providers, dict):
-        return True
-    if any(name not in raw_providers for name in DEFAULT_PROVIDERS):
-        return True
-    for name, pcfg in raw_providers.items():
-        if name not in DEFAULT_PROVIDERS:
-            return True
-        retired = _RETIRED_PROVIDER_KEYS.get(name, frozenset())
-        if isinstance(pcfg, dict) and any(k in retired for k in pcfg):
-            return True
-        if (
-            name == "codex"
-            and isinstance(pcfg, dict)
-            and isinstance(pcfg.get("models"), list)
-            and not any(m in CODEX_MODEL_ALIASES for m in pcfg["models"])
-        ):
-            # Pre-alias config: the alias backfill should persist once.
-            return True
-    return False
+def load_config(*, allow_missing: bool = False) -> dict:
+    """Read config strictly without creating files or persisting migrations.
 
-
-def load_config() -> dict:
-    """Load config from ~/.enso/config.json, creating defaults if missing."""
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE) as f:
-                raw = json.load(f)
-            config = _with_config_defaults(raw)
-            needs_migration = isinstance(raw, dict) and (
-                "tasks" in raw or _providers_need_migration(raw.get("providers"))
-                or raw.get("agent") != config.get("agent")
-            )
-            if needs_migration:
-                try:
-                    save_config(config)
-                except OSError:
-                    log.exception("Could not persist config migration; using it in memory")
-                else:
-                    log.info("Persisted migrated config")
-            return config
-        except Exception:
-            log.exception("Failed to load config.json, using defaults")
-    config = _build_default_config()
-    save_config(config)
+    Existing bytes are authoritative: malformed JSON and non-object roots fail
+    instead of being replaced with defaults. Only setup may opt into an
+    in-memory fresh-install candidate with ``allow_missing=True``.
+    """
+    if not os.path.lexists(CONFIG_FILE):
+        if allow_missing:
+            return _build_default_config()
+        raise ConfigError(f"{CONFIG_FILE} is missing; run `enso setup` first")
+    try:
+        path_stat = os.lstat(CONFIG_FILE)
+        if not stat.S_ISREG(path_stat.st_mode):
+            raise ConfigError(f"{CONFIG_FILE} must be a regular file, not a symlink")
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(CONFIG_FILE, flags)
+        opened_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(opened_stat.st_mode) or not _same_file(path_stat, opened_stat):
+            os.close(descriptor)
+            raise ConfigError(f"{CONFIG_FILE} changed while it was opened")
+        with os.fdopen(descriptor, encoding="utf-8") as file:
+            raw = json.load(file)
+        if not _same_file(opened_stat, os.lstat(CONFIG_FILE)):
+            raise ConfigError(f"{CONFIG_FILE} changed while it was read")
+    except ConfigError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ConfigError(f"Could not read {CONFIG_FILE}: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{CONFIG_FILE} must contain a JSON object")
+    config = _with_config_defaults(raw)
+    setup_state(config)
     return config
 
 
 def save_config(config: dict) -> None:
     """Atomically save config.json with restricted permissions."""
+    if not isinstance(config, dict):
+        raise ConfigError("config must be a JSON object")
+    setup_state(config)
     config = _with_config_defaults(config)
     atomic_write_text(CONFIG_FILE, json.dumps(config, indent=2) + "\n", mode=0o600)
+
+
+def _same_file(left: os.stat_result, right: os.stat_result) -> bool:
+    return (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino)
+
+
+def _validate_config_lock(file_stat: os.stat_result) -> None:
+    if not stat.S_ISREG(file_stat.st_mode):
+        raise ConfigError("config lock must be a regular file")
+    if file_stat.st_uid != os.getuid():
+        raise ConfigError("config lock must be owned by the current user")
+    if file_stat.st_nlink != 1:
+        raise ConfigError("config lock must not have additional hard links")
+
+
+def _ensure_physical_config_dir() -> None:
+    """Create or validate the config root without following directory links."""
+    root = os.path.abspath(CONFIG_DIR)
+    if os.path.dirname(os.path.abspath(CONFIG_FILE)) != root:
+        raise ConfigError("config file must live directly in the config directory")
+
+    if os.path.lexists(root):
+        try:
+            root_stat = os.lstat(root)
+        except OSError as exc:
+            raise ConfigError(f"Could not inspect config directory safely: {exc}") from exc
+        if not stat.S_ISDIR(root_stat.st_mode) or os.path.realpath(root) != root:
+            raise ConfigError(f"{root} must be a physical directory, not a symlink")
+        return
+
+    parent = os.path.dirname(root)
+    try:
+        parent_stat = os.lstat(parent)
+    except OSError as exc:
+        raise ConfigError(
+            f"config directory parent {parent} must be a physical directory: {exc}"
+        ) from exc
+    if not stat.S_ISDIR(parent_stat.st_mode) or os.path.realpath(parent) != parent:
+        raise ConfigError(f"config directory parent {parent} must be a physical directory")
+    try:
+        os.mkdir(root, mode=0o700)
+    except FileExistsError:
+        # A concurrent setup may have created it after the existence check.
+        _ensure_physical_config_dir()
+    except OSError as exc:
+        raise ConfigError(f"Could not create config directory safely: {exc}") from exc
+
+
+@contextlib.contextmanager
+def config_lock() -> Iterator[None]:
+    """Serialize config read-modify-write operations across processes."""
+    _ensure_physical_config_dir()
+    lock_path = f"{CONFIG_FILE}.lock"
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(lock_path, flags, 0o600)
+    except OSError as exc:
+        raise ConfigError(f"Could not open config lock safely: {exc}") from exc
+
+    locked = False
+    try:
+        opened_stat = os.fstat(descriptor)
+        _validate_config_lock(opened_stat)
+        if not _same_file(opened_stat, os.lstat(lock_path)):
+            raise ConfigError("config lock changed while it was opened")
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        locked = True
+        locked_stat = os.fstat(descriptor)
+        _validate_config_lock(locked_stat)
+        if not _same_file(locked_stat, os.lstat(lock_path)):
+            raise ConfigError("config lock changed while it was acquired")
+        os.fchmod(descriptor, 0o600)
+        yield
+    except ConfigError:
+        raise
+    except OSError as exc:
+        raise ConfigError(f"Could not secure config lock: {exc}") from exc
+    finally:
+        if locked:
+            with contextlib.suppress(OSError):
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
 
 
 def _build_default_config() -> dict:
@@ -157,9 +287,8 @@ def _build_default_config() -> dict:
         "providers": providers,
         "workspaces": {
             DEFAULT_WORKSPACE_NAME: {
-                "path": managed_workspace_path(),
                 "policy": DEFAULT_POLICY_NAME,
-                "concurrency": 1,
+                "concurrency": DEFAULT_WORKSPACE_CONCURRENCY,
             },
         },
         "policies": {
@@ -168,6 +297,7 @@ def _build_default_config() -> dict:
         "agent": dict(DEFAULT_AGENT),
         "web": dict(DEFAULT_WEB),
         "runs": dict(DEFAULT_RUNS),
+        "setup": {"completed_at": None},
     }
 
 

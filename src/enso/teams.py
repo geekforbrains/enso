@@ -18,6 +18,12 @@ from dataclasses import dataclass, field
 from typing import TypeGuard
 
 from .auth import parse_telegram_allowed_users
+from .config import (
+    DEFAULT_WORKSPACE_CONCURRENCY,
+    ConfigError,
+    managed_workspace_path,
+    validate_workspace_name,
+)
 from .providers import PROVIDER_NAMES
 
 AUDIT_ON_FAILURE_VALUES = ("block", "warn")
@@ -54,8 +60,12 @@ _ENV_PASSTHROUGH_RESERVED = frozenset(
     }
 )
 _ENV_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*")
-_CATALOG_NAME_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}"
-_CATALOG_NAME_RE = re.compile(_CATALOG_NAME_PATTERN)
+_POLICY_NAME_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}"
+_POLICY_NAME_RE = re.compile(_POLICY_NAME_PATTERN)
+MANAGED_WORKSPACES_MIGRATION_URL = (
+    "https://github.com/geekforbrains/enso/blob/main/"
+    "docs/migrations/v1.3-managed-workspaces.md"
+)
 _SLACK_TRANSPORT_KEYS = {
     "account_id",
     "app_token",
@@ -84,12 +94,6 @@ _TELEGRAM_TRANSPORT_KEYS = {
 }
 
 
-def _default_policy_dir(policy_name: str) -> str:
-    from . import config as config_mod
-
-    return os.path.join(config_mod.CONFIG_DIR, "policies", policy_name)
-
-
 def _is_str_list(value: object) -> TypeGuard[list[str]]:
     return isinstance(value, list) and all(isinstance(v, str) for v in value)
 
@@ -99,11 +103,21 @@ def _canonical(path: str) -> str:
     return os.path.realpath(os.path.abspath(os.path.expanduser(path)))
 
 
+def _legacy_workspace_path_problem(name: str) -> str:
+    """Return the one actionable diagnostic for the removed path setting."""
+    return (
+        f"workspaces.{name}.path is no longer supported; move this workspace to "
+        f"~/.enso/workspaces/{name}, remove the path key, and follow "
+        f"{MANAGED_WORKSPACES_MIGRATION_URL}"
+    )
+
+
 def _catalog_path(path: str, label: str, problems: list[str]) -> str:
-    """Canonicalize a configured path while rejecting process-cwd dependence."""
-    if not os.path.isabs(os.path.expanduser(path)):
+    """Normalize a configured path without erasing lexical symlink evidence."""
+    expanded = os.path.expanduser(path)
+    if not os.path.isabs(expanded):
         problems.append(f"{label} must be absolute or start with ~/")
-    return _canonical(path)
+    return os.path.abspath(expanded)
 
 
 def _within(child: str, parent: str) -> bool:
@@ -446,28 +460,30 @@ def _load_workspaces(
             errors.append("workspace names must be non-empty strings")
             continue
         name = raw_name
-        if not _CATALOG_NAME_RE.fullmatch(name):
-            errors.append(f"workspace names must match {_CATALOG_NAME_PATTERN}")
+        try:
+            validate_workspace_name(name)
+        except ConfigError as exc:
+            errors.append(str(exc))
             continue
         if not isinstance(cfg, dict):
             errors.append(f"workspaces.{name} must be an object")
             continue
+        # ``path`` is recognized only to emit one focused breaking-migration
+        # diagnostic instead of duplicating it as an unknown-key error.
         problems = _unknown_keys(cfg, {"path", "policy", "concurrency"}, f"workspaces.{name}")
-        path = cfg.get("path")
-        if not isinstance(path, str) or not path:
-            problems.append("path is required and must be a string")
-            path = ""
+        if "path" in cfg:
+            problems.append(_legacy_workspace_path_problem(name))
         policy = cfg.get("policy")
         if not isinstance(policy, str) or not policy:
             problems.append("policy is required and must be a string")
             policy = ""
-        concurrency = cfg.get("concurrency", 1)
+        concurrency = cfg.get("concurrency", DEFAULT_WORKSPACE_CONCURRENCY)
         if isinstance(concurrency, bool) or not isinstance(concurrency, int) or concurrency < 1:
             problems.append("concurrency must be a positive integer")
-            concurrency = 1
+            concurrency = DEFAULT_WORKSPACE_CONCURRENCY
         workspaces[name] = Workspace(
             name=name,
-            path=_catalog_path(path, "path", problems) if path else "",
+            path=managed_workspace_path(name),
             policy=policy,
             concurrency=concurrency,
         )
@@ -499,8 +515,8 @@ def _load_policies(
             errors.append("policy names must be non-empty strings")
             continue
         name = raw_name
-        if not _CATALOG_NAME_RE.fullmatch(name):
-            errors.append(f"policy names must match {_CATALOG_NAME_PATTERN}")
+        if not _POLICY_NAME_RE.fullmatch(name):
+            errors.append(f"policy names must match {_POLICY_NAME_PATTERN}")
             continue
         if not isinstance(cfg, dict):
             errors.append(f"policies.{name} must be an object")
@@ -514,22 +530,7 @@ def _load_policies(
         else:
             unrestricted = unrestricted_raw
 
-        explicit_policy_dir = cfg.get("policy_dir")
-        if explicit_policy_dir is not None and (
-            not isinstance(explicit_policy_dir, str) or not explicit_policy_dir
-        ):
-            problems.append("policy_dir must be a non-empty string path")
-            explicit_policy_dir = None
-        if unrestricted and explicit_policy_dir is not None:
-            problems.append("unrestricted: true is invalid alongside policy_dir")
-        policy_dir = None
-        if not unrestricted:
-            configured_policy_dir = explicit_policy_dir or _default_policy_dir(name)
-            policy_dir = _catalog_path(
-                configured_policy_dir,
-                "policy_dir",
-                problems,
-            )
+        policy_dir = _load_policy_dir(cfg, unrestricted, problems)
 
         providers_raw = cfg.get("providers")
         if not _is_str_list(providers_raw) or not providers_raw:
@@ -561,6 +562,24 @@ def _load_policies(
             policy_errors[name] = tuple(problems)
 
     return policies, policy_errors
+
+
+def _load_policy_dir(cfg: dict, unrestricted: bool, problems: list[str]) -> str | None:
+    """Load an explicit lexical policy root without resolving away symlinks."""
+    if "policy_dir" not in cfg:
+        if not unrestricted:
+            problems.append("policy_dir is required for restricted policies")
+        return None
+    configured = cfg["policy_dir"]
+    if not isinstance(configured, str) or not configured:
+        problems.append("policy_dir must be a non-empty string path")
+        configured = None
+    if unrestricted:
+        problems.append("unrestricted: true is invalid alongside policy_dir")
+        return None
+    if configured is None:
+        return None
+    return _catalog_path(configured, "policy_dir", problems)
 
 
 def _load_capability(value: object, key: str, problems: list[str]) -> tuple[str, ...] | str:
@@ -612,18 +631,23 @@ def _check_topology(
     errors: list[str],
 ) -> None:
     """Validate that mutable workspaces cannot overlap policy locations."""
-    paths = {name: ws.path for name, ws in workspaces.items() if ws.path}
-    names = sorted(paths)
-    for i, first in enumerate(names):
-        for second in names[i + 1 :]:
-            if _within(paths[first], paths[second]) or _within(paths[second], paths[first]):
-                errors.append(f"workspaces {first} and {second} have overlapping or nested paths")
-
+    paths = {name: ws.path for name, ws in workspaces.items()}
     for policy_name, policy in policies.items():
         if policy.policy_dir is None:
             continue
+        policy_lexical = os.path.abspath(os.path.expanduser(policy.policy_dir))
+        policy_path = _canonical(policy.policy_dir)
         for workspace_name, root in paths.items():
-            if _within(policy.policy_dir, root) or _within(root, policy.policy_dir):
+            workspace_lexical = os.path.abspath(os.path.expanduser(root))
+            if _within(policy_lexical, workspace_lexical) or _within(
+                workspace_lexical, policy_lexical
+            ):
+                errors.append(
+                    f"policy_dir of policy {policy_name} lexically overlaps {workspace_name}"
+                )
+                continue
+            workspace_path = _canonical(root)
+            if _within(policy_path, workspace_path) or _within(workspace_path, policy_path):
                 errors.append(f"policy_dir of policy {policy_name} overlaps {workspace_name}")
 
 

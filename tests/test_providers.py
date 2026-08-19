@@ -5,17 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python 3.10
-    import tomli as tomllib  # type: ignore[no-redef]
-
 from urllib.parse import quote
 
 import pytest
 
-from enso.instructions import MAX_SHARED_INSTRUCTION_BYTES, InstructionBundle
+from enso.instructions import ValidatedInstructions
 from enso.policy import Launch
 from enso.providers import (
     PROVIDER_CLASSES,
@@ -33,16 +27,13 @@ CLAUDE_SESSION_ID = "11111111-1111-4111-8111-111111111111"
 GROK_SESSION_ID = "77777777-7777-4777-8777-777777777777"
 
 
-def _instruction_bundle(tmp_path, content="Shared operator guidance."):
+def _validated_instructions(tmp_path, content="Shared operator guidance."):
     source = tmp_path / "AGENTS.md"
-    snapshot = tmp_path / "shared-instructions.md"
     source.write_text(content)
-    snapshot.write_text(content)
-    return InstructionBundle(
+    return ValidatedInstructions(
         source_path=str(source),
         content=content,
         revision="a" * 64,
-        snapshot_path=str(snapshot),
     )
 
 # -- Registry --
@@ -113,40 +104,31 @@ def test_claude_build_batch_command():
     assert "--continue" not in cmd
 
 
-@pytest.mark.parametrize("session_id", [None, CLAUDE_SESSION_ID])
-def test_claude_interactive_injects_shared_instructions(
-    tmp_path, session_id,
-):
-    bundle = _instruction_bundle(tmp_path)
+@pytest.mark.parametrize("mode", ["fresh", "resume", "batch"])
+def test_claude_uses_native_shared_instruction_discovery(tmp_path, mode):
+    instructions = _validated_instructions(tmp_path)
+    provider = ClaudeProvider("claude")
 
-    cmd = ClaudeProvider("claude").build_command(
-        "hello", "sonnet", session_id=session_id, instructions=bundle,
-    )
+    if mode == "fresh":
+        cmd = provider.build_command(
+            "hello", "sonnet", instructions=instructions,
+        )
+    elif mode == "resume":
+        cmd = provider.build_command(
+            "hello",
+            "sonnet",
+            session_id=CLAUDE_SESSION_ID,
+            instructions=instructions,
+        )
+    else:
+        cmd = provider.build_batch_command(
+            "hello", "opus", instructions=instructions,
+        )
 
-    flag = cmd.index("--append-system-prompt-file")
-    assert cmd[flag + 1] == str(bundle.snapshot_path)
-    assert flag < cmd.index("--")
+    assert "--append-system-prompt-file" not in cmd
+    assert instructions.source_path not in cmd
+    assert instructions.content not in cmd
     assert cmd[-1] == "hello"
-
-
-def test_claude_batch_injects_shared_instructions(tmp_path):
-    bundle = _instruction_bundle(tmp_path)
-
-    cmd = ClaudeProvider("claude").build_batch_command(
-        "hello", "opus", instructions=bundle,
-    )
-
-    flag = cmd.index("--append-system-prompt-file")
-    assert cmd[flag + 1] == str(bundle.snapshot_path)
-    assert flag < cmd.index("--")
-
-
-def test_claude_omits_instruction_flag_without_bundle():
-    command = ClaudeProvider("claude").build_command("hello", "sonnet")
-    batch = ClaudeProvider("claude").build_batch_command("hello", "sonnet")
-
-    assert "--append-system-prompt-file" not in command
-    assert "--append-system-prompt-file" not in batch
 
 
 def test_codex_build_command():
@@ -170,74 +152,29 @@ def test_codex_build_batch_command():
     assert "--json" not in cmd
 
 
-def _codex_developer_instructions(cmd):
-    overrides = [
-        cmd[index + 1]
-        for index, item in enumerate(cmd[:-1])
-        if item == "-c" and cmd[index + 1].startswith("developer_instructions=")
-    ]
-    assert len(overrides) == 1
-    return tomllib.loads(overrides[0])["developer_instructions"]
-
-
 @pytest.mark.parametrize("mode", ["fresh", "resume", "batch"])
-def test_codex_injects_toml_safe_shared_instructions(tmp_path, mode):
+def test_codex_uses_native_shared_instruction_discovery(tmp_path, mode):
     content = 'First line\nA "quoted" path: C:\\\\tools\\enso\nFinal line\t✓'
-    bundle = _instruction_bundle(tmp_path, content)
+    instructions = _validated_instructions(tmp_path, content)
     provider = CodexProvider("codex")
 
     if mode == "fresh":
-        cmd = provider.build_command("hello", "sol", instructions=bundle)
+        cmd = provider.build_command("hello", "sol", instructions=instructions)
     elif mode == "resume":
         cmd = provider.build_command(
-            "hello", "sol", session_id="thread_123", instructions=bundle,
+            "hello", "sol", session_id="thread_123", instructions=instructions,
         )
     else:
-        cmd = provider.build_batch_command("hello", "sol", instructions=bundle)
+        cmd = provider.build_batch_command(
+            "hello", "sol", instructions=instructions,
+        )
 
-    assert _codex_developer_instructions(cmd) == content
-    assert cmd.index("-c") < cmd.index("--")
+    assert not any(
+        item.startswith("developer_instructions=") for item in cmd
+    )
+    assert instructions.source_path not in cmd
+    assert instructions.content not in cmd
     assert cmd[-1] == "hello"
-
-
-def test_codex_omits_developer_instructions_without_bundle():
-    provider = CodexProvider("codex")
-
-    for cmd in (
-        provider.build_command("hello", "sol"),
-        provider.build_batch_command("hello", "sol"),
-    ):
-        assert not any(
-            item.startswith("developer_instructions=") for item in cmd
-        )
-
-
-def test_codex_rejects_non_scalar_instruction_text(tmp_path):
-    bundle = InstructionBundle(
-        source_path=str(tmp_path / "AGENTS.md"),
-        content="unsafe surrogate: \ud800",
-        revision="a" * 64,
-        snapshot_path=str(tmp_path / "shared-instructions.md"),
-    )
-
-    with pytest.raises(ValueError, match="Unicode scalar"):
-        CodexProvider("codex").build_command(
-            "hello", "sol", instructions=bundle,
-        )
-
-
-def test_codex_maximum_shared_instructions_fit_linux_single_argument_limit(tmp_path):
-    content = "\x01" * MAX_SHARED_INSTRUCTION_BYTES
-    bundle = _instruction_bundle(tmp_path, content)
-
-    cmd = CodexProvider("codex").build_command(
-        "hello", "sol", instructions=bundle,
-    )
-    override = next(
-        item for item in cmd if item.startswith("developer_instructions=")
-    )
-
-    assert len(override.encode("utf-8")) + 1 < 128 * 1024
 
 
 def test_codex_model_aliases_apply_to_all_command_modes():
@@ -306,7 +243,7 @@ def test_agy_batch_command_is_plain_yolo_output():
 def test_agy_wraps_shared_instructions_and_preserves_prompt_verbatim(
     tmp_path, mode,
 ):
-    bundle = _instruction_bundle(tmp_path, "Shared line one.\nShared line two.")
+    bundle = _validated_instructions(tmp_path, "Shared line one.\nShared line two.")
     prompt = "Original prompt.\n\n```py\nprint('unchanged')\n```\n"
     provider = AgyProvider("agy")
     try:
@@ -336,6 +273,8 @@ def test_agy_wraps_shared_instructions_and_preserves_prompt_verbatim(
         "<enso-user-prompt>\n"
         + prompt
     )
+    assert wrapped.count("<enso-shared-instructions>") == 1
+    assert wrapped.count("</enso-shared-instructions>") == 1
     assert wrapped.endswith(prompt)
 
 
@@ -1064,7 +1003,7 @@ def test_grok_build_command_without_effort():
 def test_grok_injects_shared_instruction_content_via_rules(tmp_path, mode):
     """--rules takes the instruction text itself, not a snapshot path."""
     content = "Shared line one.\nShared line two."
-    bundle = _instruction_bundle(tmp_path, content)
+    bundle = _validated_instructions(tmp_path, content)
     provider = GrokProvider("grok")
 
     if mode == "fresh":
@@ -1076,8 +1015,8 @@ def test_grok_injects_shared_instruction_content_via_rules(tmp_path, mode):
     else:
         cmd = provider.build_batch_command("hello", "grok-4.6", instructions=bundle)
 
-    assert f"--rules={content}" in cmd
-    assert str(bundle.snapshot_path) not in cmd
+    assert cmd.count(f"--rules={content}") == 1
+    assert bundle.source_path not in cmd
     assert cmd[-1] == "--single=hello"
 
 
@@ -1088,13 +1027,13 @@ def test_grok_injects_shared_instruction_content_via_rules(tmp_path, mode):
 def test_grok_rules_survive_hyphen_leading_instructions(tmp_path, content):
     """The attached --rules= form: the CLI's parser rejects a detached value
     that starts with '-', which real instruction markdown often does."""
-    bundle = _instruction_bundle(tmp_path, content)
+    bundle = _validated_instructions(tmp_path, content)
     provider = GrokProvider("grok")
     for cmd in (
         provider.build_command("hello", "grok-4.6", instructions=bundle),
         provider.build_batch_command("hello", "grok-4.6", instructions=bundle),
     ):
-        assert f"--rules={content}" in cmd
+        assert cmd.count(f"--rules={content}") == 1
         assert "--rules" not in cmd  # never the detached two-element form
 
 

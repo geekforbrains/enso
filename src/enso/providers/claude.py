@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, ClassVar
 from . import BaseProvider, StreamEvent, truncate_status
 
 if TYPE_CHECKING:
-    from ..instructions import InstructionBundle
+    from ..instructions import ValidatedInstructions
 
 
 def _tool_status(tool_name: str, tool_input: dict) -> str:
@@ -118,7 +118,7 @@ class ClaudeProvider(BaseProvider):
         *,
         effort: str | None = None,
         launch=None,
-        instructions: InstructionBundle | None = None,
+        instructions: ValidatedInstructions | None = None,
     ) -> list[str]:
         """Build the Claude CLI command.
 
@@ -134,11 +134,6 @@ class ClaudeProvider(BaseProvider):
         ]
         if effort:
             cmd.extend(["--effort", effort])
-        if instructions is not None:
-            cmd.extend([
-                "--append-system-prompt-file",
-                str(instructions.snapshot_path),
-            ])
         if session_id and session_id.startswith("new:"):
             cmd.extend(["--session-id", session_id.removeprefix("new:")])
         elif session_id:
@@ -153,7 +148,7 @@ class ClaudeProvider(BaseProvider):
         *,
         effort: str | None = None,
         launch=None,
-        instructions: InstructionBundle | None = None,
+        instructions: ValidatedInstructions | None = None,
     ) -> list[str]:
         """Build command for batch execution (jobs). No session continuity."""
         cmd = [
@@ -164,11 +159,6 @@ class ClaudeProvider(BaseProvider):
         ]
         if effort:
             cmd.extend(["--effort", effort])
-        if instructions is not None:
-            cmd.extend([
-                "--append-system-prompt-file",
-                str(instructions.snapshot_path),
-            ])
         cmd.extend(["--", prompt])
         return cmd
 

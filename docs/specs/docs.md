@@ -1,9 +1,11 @@
 # Reference docs
 
-Operator-authored reference material the agent consults at turn time: how a machine is
-wired, a deploy runbook, service topology, account conventions — the standing context that
-does not belong in a prompt and is not a procedure. Stored as files, listed through the
-CLI, viewed and edited in the dashboard.
+User-owned reference material the agent consults at turn time: how a machine is wired, a
+deploy runbook, service topology, account conventions — the standing context that does
+not belong in a prompt and is not a reusable procedure. Fresh setup provides three small
+starter references; after installation they behave exactly like operator-authored docs.
+All docs are stored as files, listed through the CLI, and viewed or edited in the
+dashboard.
 
 **Status: implemented.** See [data-model.md](data-model.md) for where it sits in storage
 and [web.md](web.md) for the dashboard surface.
@@ -24,16 +26,17 @@ finds them when a task calls for them.
 
 ## Storage layout
 
-A plain Markdown tree under `~/.enso/docs/`, nested to **any depth**:
+A plain Markdown tree under `~/.enso/docs/`, with each doc path capped at **eight
+segments including the filename**:
 
 ```
 ~/.enso/docs/
-├── homelab.md
-├── deploy_runbook.md
+├── enso/
+│   ├── content_model.md  # fresh-install placement and source-of-truth contract
+│   └── layout.md         # fresh-install filesystem and local-history reference
+├── operator.md           # fresh-install editable operator-context template
 └── stuff/
-    ├── sub_stuff.md
-    └── deeper/
-        └── notes.md
+    └── sub_stuff.md      # example later user-created doc
 ```
 
 - **Identity is the path relative to `~/.enso/docs/`** — `stuff/sub_stuff.md`. Not a slug.
@@ -44,8 +47,12 @@ A plain Markdown tree under `~/.enso/docs/`, nested to **any depth**:
 - **Every doc carries frontmatter.** The `name` field is what the UI displays.
 - Non-`.md` files (an image a doc references) may sit in the tree. They are left alone and
   omitted from listings.
-- Enso ships **no bundled docs**. The tree starts empty, so unlike skills there is no
-  seeding, no pristine-hash tracking, and no `.deleted/` tombstone machinery.
+- Enso packages exactly three starter docs: `enso/content_model.md`, `enso/layout.md`, and
+  `operator.md`. Only a genuinely fresh setup copies them. Enso does not seed empty
+  account, browser, network, service, project, or business docs.
+- Installed starters are ordinary user-owned files, with no pristine-hash tracking or
+  deletion tombstones. They may be edited or deleted, and no startup, repair, completed
+  setup rerun, or upgrade restores or advances them.
 
 ## Frontmatter
 
@@ -98,11 +105,11 @@ file validation would reject is never advertised. A `.md` file whose name falls 
 the charset is therefore not a doc: it is left on disk, untouched and unlisted, exactly
 like a `.png`.
 
-The walk is bounded against pathological trees — a depth cap and a total-entry cap. The
-depth cap only prunes directories whose contents could not satisfy rule 1 anyway, so it
-never hides an addressable doc and reports nothing. The entry cap can cut a real listing
-short, and when it does the CLI and the UI **say so** rather than silently presenting a
-partial tree as complete.
+The walk is bounded against pathological trees — the eight-segment path cap and a
+500-document listing cap. The depth cap only prunes directories whose files would fail
+the same path-depth validation, so it never hides an addressable doc and reports nothing.
+The document cap can cut a real listing short, and when it does the CLI and the UI **say
+so** rather than silently presenting a partial tree as complete.
 
 **Deletion** removes the file, then prunes now-empty parent directories up to (but not
 including) the docs root. Without pruning the tree accumulates hollow folders as docs are
@@ -119,11 +126,27 @@ enso doc create stuff/sub_stuff.md  # create parents, scaffold frontmatter
 drift from what is on disk. This is the reason the design carries no `INDEX.md` and keeps
 no doc inventory inside `AGENTS.md`: both would be a second source of truth that every
 create, rename, and delete has to remember to update, with nothing enforcing it.
+Deleting a starter therefore removes it from discovery just like deleting any other doc;
+references to starter paths must always account for their possible absence.
 
 `enso doc create` mirrors `create_job` in `jobs.py`, including its cleanup-on-failure
 path: validate the relative path, create missing parents, refuse an existing file, and
 write a scaffold whose `name` is derived from the filename unless `--name` is given. A
 missing `.md` suffix is appended.
+
+The scaffold is intentionally incomplete, so `enso doc create` does not commit it.
+After filling the frontmatter and body into one coherent reference, record the exact doc
+path with one scoped commit:
+
+```bash
+git -C ~/.enso add docs/stuff/homelab.md
+git -C ~/.enso commit -m "docs: add homelab reference"
+```
+
+Dashboard and direct filesystem edits likewise do not create hidden commits. One
+reviewed content change gets one scoped commit after it is complete; never use broad
+Git staging, and the managed `.gitignore` keeps config, credentials, databases, uploads,
+drafts, and runtime state out of history.
 
 No `show` or `delete` subcommands. When the active workspace policy permits filesystem operations, ordinary reads and deletes already cover them — the same reason `enso job` has no `show`; the Enso CLI does not bypass a restrictive policy. `list` earns its place because it surfaces descriptions without opening every file.
 
@@ -135,38 +158,69 @@ covers:
 
 - where docs live and that `enso doc list` enumerates them
 - **check the docs before answering from memory** about the operator's setup
-- how to write one: `enso doc create <path>`, fill the frontmatter, keep `description`
-  specific enough to match against
-- when a fact belongs in a doc rather than a reply
+- search existing docs and authoritative sources before creating or copying material
+- the placement contract across prompts, global reference docs, workspace knowledge, repository
+  docs, the configured knowledge base, skills, jobs, tables, drafts, and the current reply
+- how setup-specific runbooks differ from reusable procedures, which belong in skills
+- how to write one: `enso doc create <path>`, fill the frontmatter, and make
+  `description` specific enough to match against
+- record credential locations rather than secret values, and live-verify volatile facts
 
-This choice does real work beyond tidiness. `_install_bundled_skills` seeds **missing**
-skills into existing installations on every service start, so a new bundled skill reaches
-every user automatically. It is also lazy: the CLI reads the frontmatter description into
-context and loads the body only when a task looks relevant, so an operator who never
-writes a doc pays nothing.
+Fresh setup copies the bundled `docs` skill into `~/.enso/skills/docs/` along with the
+other global skills. The workflow is lazy: `enso doc list` reads frontmatter descriptions
+for discovery, and the agent opens a body only when a task looks relevant.
 
-Deletion is already handled — `_is_bundled_skill` resolves against the packaged skills
-directory, so removing the `docs` skill from the dashboard writes a
-`skills/.deleted/docs.deleted` tombstone and it is not reseeded. Packaging needs no change
-either: `pyproject.toml` already globs `skills/**/*.md`.
+The installed copy is user-owned immediately. Deleting it in the dashboard removes its
+directory without a tombstone, and neither service startup nor an upgrade recreates it.
+Nested bundled resources are included in package data so a deliberate fresh seed can copy
+the complete skill tree.
 
-### AGENTS.md and existing installs
+### Starter references and the shared prompt
 
-The canonical shared `~/.enso/AGENTS.md` carries a short `enso doc` block in its CLI section, matching how `enso job`
-appears, plus one line pointing at the skill.
+The three package resources deliberately have narrow responsibilities and precise
+discovery descriptions:
 
-That block would have reached **new** installs only. `install_system_prompts` writes
-`~/.enso/AGENTS.md` when the file is absent or its hash matches a known-pristine copy; every other
-copy is treated as customized and preserved. Against a single legacy constant, existing
-users would have kept an `AGENTS.md` that never mentions docs.
+| Installed path | Responsibility |
+| --- | --- |
+| `enso/content_model.md` | Placement, ownership, precedence, secret-handling, and freshness rules; read before creating, moving, or duplicating durable knowledge |
+| `enso/layout.md` | The generic managed tree, discovery links, local Git boundary, and versioned-versus-runtime content; read when locating, validating, or repairing installation content |
+| `operator.md` | Confirmed identity, locale/timezone, communication preferences, and standing personal context; read only when a task depends on those facts |
 
-So that constant was generalized into a **set of known-pristine `AGENTS.md` hashes**,
-exactly like `_BUNDLED_SKILL_PRISTINE_HASHES`. Untouched copies now follow the bundled
-template forward while customized ones stay untouched. This repairs the delivery path for
-every future system-prompt change, not just this one.
+The shared `~/.enso/AGENTS.md` stays a small routing layer. It names those paths only as
+fresh-install starters that may be consulted **when present**, tells the agent to use the
+dynamic list for everything else, and does not enumerate later user-created docs. The
+workspace prompt similarly routes deferred detail through `knowledge/README.md` when
+present instead of becoming a domain manual.
 
-The bundled skill is the backstop: operators with a genuinely customized `AGENTS.md` still
-get docs support through the skill.
+### Fresh-setup lifecycle
+
+Starter docs are part of the one-time initial content transaction, not managed upgrade
+assets:
+
+1. Setup creates and persists a genuinely fresh configuration with
+   `setup.completed_at: null` **before** any starter content is seeded.
+2. While that marker remains `null`, explicit setup exclusively creates missing bundled
+   prompt, skill, starter-doc, and default-workspace content. It never follows a symlink
+   or replaces a collision. Once the complete tree exists, setup records it in one
+   baseline Git commit.
+3. Only after that commit succeeds does setup replace `null` with an ISO 8601 completion
+   timestamp that includes a timezone.
+
+A seed or commit failure leaves the marker `null` and reports setup as incomplete. The
+next explicit setup attempt keeps files already created and fills only missing
+pieces without overwriting user content. If the baseline committed but saving the
+completion timestamp failed, the retry recognizes the existing history and writes the
+timestamp without creating a second initial commit.
+
+A timestamped setup is complete. A configuration with no `setup` field is a pre-feature
+installation, not an interrupted setup. Neither state seeds starter docs, and operators
+must never fabricate `setup.completed_at: null` to obtain them. Explicit `enso setup` on
+either state validates the existing catalog before repository mutation and performs
+structural-only repair; it does not rewrite `config.json` or synthesize a `setup` marker.
+Ordinary `enso serve` and `enso web` startup, `enso config check`, structural repair, and
+software upgrades are also non-seeding. Existing installations adopt desired starter
+references or guidance only through an explicit, operator-reviewed copy or merge;
+adopted files are user-owned.
 
 ## Web UI
 
@@ -216,9 +270,11 @@ The doc count joins the existing job and skill counts, linking to `/docs`.
 - **No wiki.** No cross-links, backlinks, tags, search index, or tree navigator.
 - **No rename or move in the UI.** Path is identity; changing it is a filesystem
   operation the agent performs. A browser affordance can come later.
-- **No external doc roots.** Unlike skills, docs are Enso-owned only. The write boundary
-  stays exactly where it is.
-- **No bundled doc content.** Enso ships the skill that explains docs, never the docs.
+- **No external doc roots.** Unlike skills, every visible doc is user-owned content inside
+  Enso's managed `~/.enso/docs/` write boundary.
+- **No static catalog.** The three fresh-install starters are not a permanent inventory;
+  users may remove them and create different docs, and `enso doc list` remains the only
+  document index.
 
 ## Implementation map
 
@@ -226,10 +282,12 @@ The doc count joins the existing job and skill counts, linking to `/docs`.
 | --- | --- |
 | `config.py` | Adds `DOCS_DIR` beside `JOBS_DIR` |
 | `docs.py` *(new)* | Path validation, bounded recursive listing, scaffold and delete |
-| `cli.py` | Adds a `doc` Typer group with `list` and `create` |
-| `core.py` | Creates `~/.enso/docs/` at install; maintains the canonical shared prompt and generalizes its pristine hash to a set |
+| `cli.py` | Adds the `doc` Typer group and coordinates the fresh seed → baseline commit → completion-timestamp transition |
+| `scaffolding.py` | Creates the structural docs directory and exclusively copies starter resources only for an incomplete fresh setup |
+| `starter_docs/` | Packages the content-model, layout, and operator starter references |
+| `repository.py` | Establishes the local Git boundary, protective ignore rules, and the setup baseline commit |
 | `skills/docs/SKILL.md` *(new)* | Bundled skill teaching discovery and authoring |
-| `prompts/AGENTS.md` | Adds the `enso doc` CLI block and a pointer to the skill in the shared launch instructions |
+| `prompts/AGENTS.md` | Keeps a compact dynamic-doc routing rule and optional pointers to the three starter paths |
 | `web/app.py` | Adds doc routes, path-safe resolution, and the dashboard count |
 | `web/templates/` | Adds `docs.html`, `doc_detail.html`, and `doc_new.html` |
 

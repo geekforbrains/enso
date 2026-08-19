@@ -16,10 +16,9 @@ runner = CliRunner()
 
 
 def configure_job_catalog(tmp_enso: str) -> None:
-    config = load_config()
-    workspace = str(Path(tmp_enso) / "workspaces" / "default")
+    config = load_config(allow_missing=True)
     config["workspaces"] = {
-        "default": {"path": workspace, "policy": "admin", "concurrency": 1},
+        "default": {"policy": "admin", "concurrency": 1},
     }
     config["policies"] = {
         "admin": {
@@ -30,6 +29,30 @@ def configure_job_catalog(tmp_enso: str) -> None:
         },
     }
     save_config(config)
+
+
+def test_job_create_requires_existing_config(tmp_enso):
+    result = runner.invoke(
+        cli_mod.app,
+        [
+            "job",
+            "create",
+            "--name",
+            "Unsafe",
+            "--provider",
+            "claude",
+            "--model",
+            "sonnet",
+            "--schedule",
+            "0 0 * * *",
+            "--workspace",
+            "default",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "config.json is missing" in result.output
+    assert not Path(tmp_enso, "jobs", "unsafe").exists()
 
 
 def stub_runtime(monkeypatch, result: JobRunResult | Exception) -> None:

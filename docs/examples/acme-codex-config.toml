@@ -1,14 +1,17 @@
-# Starting point for <policy_dir>/codex/config.toml. chmod 600 and keep it
-# outside every workspace. This policy uses the invocation workspace root,
-# so one policy can be reused for several project workspaces.
+# Explanatory starting point, not a trusted or certified preset, for
+# <policy_dir>/codex/config.toml. Review and adapt it before copying; the copy
+# is user-owned. Create it before policy registration, chmod 600 yourself, and
+# keep it outside every workspace. Enso validates but never creates, copies,
+# chmods, rewrites, upgrades, or repairs the canonical source. This policy uses
+# the invocation workspace root, so one policy can serve several workspaces.
 #
 # Adapt and test it with the installed Codex version. Enso verifies that TOML
 # parses and that its launch plumbing is intact; it does not prove that the
 # native policy has the intended effect.
 #
-# Do not set top-level developer_instructions here. Enso reserves that key for
-# the validated shared ~/.enso/AGENTS.md injection; put project guidance in
-# the workspace-local AGENTS.md instead.
+# Do not set top-level developer_instructions here. It would create a hidden,
+# provider-specific layer alongside Codex's native root/workspace AGENTS.md
+# discovery; put shared or project guidance in those canonical files instead.
 
 default_permissions = "enso"
 approval_policy = "never"

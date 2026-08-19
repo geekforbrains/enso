@@ -137,9 +137,11 @@ consistent. It instructs the agent to:
 7. Confirm before dropping a table, deleting records in bulk, or making a destructive
    schema change.
 
-The bundled shared launch instructions at `~/.enso/AGENTS.md` mention `enso table` and point to the skill. Existing untouched prompt copies advance through the known-pristine hash mechanism; customized
-copies remain untouched. Bundled-skill seeding gives customized installations the feature
-guidance independently of the prompt update.
+The bundled shared launch instructions at `~/.enso/AGENTS.md` mention `enso table` and
+point to the skill. Fresh setup copies that prompt and the bundled `tables` skill once;
+both installed copies are user-owned immediately. Existing installations and software
+upgrades receive neither automatically because Enso has no pristine-hash upgrade or
+startup content installer. Operators adopt revised guidance deliberately.
 
 ## Web UI
 

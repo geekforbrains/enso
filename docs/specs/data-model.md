@@ -13,13 +13,15 @@ whose value comes from filtering, joining, and aggregation.
 
 ```
 ~/.enso/
+├── .git/                # local-only content history; no Enso-created remote
+├── .gitignore           # Enso-owned protective runtime/credential exclusions
 ├── config.json          # settings, including `web` and `runs` blocks
-├── AGENTS.md            # canonical shared Enso instructions, injected into every launch
+├── AGENTS.md            # canonical shared Enso instructions; native root for Claude/Codex
 ├── CLAUDE.md -> AGENTS.md
 ├── state.json           # durable route settings plus retained session/job state
 ├── messages.json        # background message queue (plus a .lock twin for cross-process writes)
 ├── update.json          # updater-owned metadata (installed revision, pending confirmation)
-├── slack-app-manifest.yaml  # copy of the bundled Slack app manifest (written by `enso setup`)
+├── slack-app-manifest.yaml  # copied only by fresh or incomplete Slack setup
 ├── enso.log             # service log
 ├── enso.db              # SQLite: runs, Slack delivery/drafts/audit, and registered user tables
 ├── cache/
@@ -27,32 +29,39 @@ whose value comes from filtering, joining, and aggregation.
 ├── secrets/             # *.env files loaded into the `enso serve` environment at
 │   └── 1password.env    #   startup, so jobs inherit credentials a service manager
 │                        #   would not otherwise pass through. Existing vars win.
-├── docs/                # operator reference docs, nested to any depth.
-│   ├── homelab.md       #   Markdown + frontmatter; identity is the relative path.
-│   └── stuff/sub_stuff.md   #   See [docs.md](docs.md)
+├── docs/                # user-owned reference docs; paths have at most eight segments
+│   ├── enso/content_model.md  # three files copied only by genuinely fresh setup
+│   ├── enso/layout.md          # Markdown + frontmatter; identity is relative path
+│   └── operator.md             # editable confirmed-operator template; see docs.md
 ├── jobs/                # user jobs
 │   └── <name>/          # JOB.md plus a persistent .run.lock coordination file
 ├── runs/                # captured output, one file per run
 │   └── <run_id>.log
-├── runtime/
-│   └── instructions/<sha256>.md  # immutable validated shared-prompt snapshots
-├── skills/              # Enso-owned skills (editable via UI)
-│   └── .deleted/        # deletion markers preventing bundled skills from being reseeded
-├── .agents/skills -> ../skills
-├── .claude/skills -> ../skills
-├── workspaces/          # named content roots used by transports, routes, and jobs
-│   ├── default/         # fresh-install workspace, bound to policy `admin`
-│   ├── company/
-│   └── clients/<name>/
-└── policies/            # protected native policy files, keyed by policy name
-    └── <policy>/{claude,codex,grok}/
+├── skills/              # canonical global skills; user-owned after fresh setup
+├── .agents/
+│   └── skills -> ../skills
+├── .claude/
+│   └── skills -> ../skills
+├── workspaces/          # flat, name-derived roots used by transports, routes, and jobs
+│   ├── default/         # exact path: ~/.enso/workspaces/default
+│   │   ├── AGENTS.md
+│   │   ├── CLAUDE.md -> AGENTS.md
+│   │   ├── skills/      # canonical workspace skills; initially empty
+│   │   ├── .agents/skills -> ../skills
+│   │   ├── .claude/skills -> ../skills
+│   │   ├── knowledge/
+│   │   │   └── README.md
+│   │   ├── drafts/
+│   │   └── uploads/
+│   └── client-a/        # every other workspace has the same structure
+└── policies/            # optional user-chosen home for protected native policy sources
+    └── <policy>/{claude,codex,grok}/  # never created implicitly by Enso
 ```
 
-Deleting an Enso-owned skill removes its complete directory. For a bundled skill, a
-zero-byte marker at `skills/.deleted/<name>.deleted` records the explicit deletion so it
-is not silently recreated the next time the agent service installs its system prompts.
-Custom and external skill names do not receive markers; external skills cannot be deleted
-by the dashboard.
+Deleting an Enso-owned skill removes its complete directory. Installed bundle copies are
+ordinary user-owned content: deletion creates no marker because startup, setup repair,
+and upgrades never reseed them. Enso also does not remove guessed tool copies when a skill
+is deleted. External skills remain read-only in the dashboard.
 
 `runs/` mirrors a convention already in place: it is a flat blob store keyed by run id.
 
@@ -77,7 +86,40 @@ person is involved:
    1Password, described below. Nothing else depends on it: with no reference key
    configured, Enso never invokes the helper, and every other feature works unchanged.
 
-If the operator chooses to version-control `~/.enso`, a literal credential in `config.json` becomes a credential in git history. Enso does not initialize this repository. Keep sensitive state ignored, or use option 2 or 3 so tracked config contains a reference rather than a secret.
+Enso initializes `~/.enso` as a local Git repository, but `config.json` is always
+covered by its protective ignore rules, so ordinary scoped staging cannot capture a
+literal credential from this file. A repository that already tracks protected content
+is diagnosed by `enso config check` instead of assumed safe. The repository has no
+Enso-created remote and is not a complete configuration backup.
+
+### Content-history safety boundary
+
+Content history is ordinary local Git, protected by the managed `.gitignore` block that
+Enso writes before the repository ever exists. The protected set includes `config.json`
+and its lock, `secrets/`, `enso.db` and its sidecars, `state.json`, the message queue,
+audits, run output, caches, logs, uploads, drafts, updater state, job locks and
+generated output, and native policy homes. Environment and authentication files remain
+excluded even when nested below an otherwise versionable directory, and the same
+directory names are re-allowed in structural identifier slots so a job, skill, or
+workspace legitimately named `logs` still versions normally. Durable scripts must refer
+to credential locations rather than contain secret values.
+
+The intended versionable layer is the human-authored content: root and workspace
+instructions and discovery links, canonical skills, global reference docs, workspace
+`knowledge/`, and durable job definition or support files. Agents record it with
+ordinary scoped commits:
+
+```bash
+git -C ~/.enso add <changed-path> [<changed-path>...]
+git -C ~/.enso commit -m "<summary>"
+```
+
+The root prompt instructs agents to stage explicit paths only, never use broad staging
+or `--force`-add ignored paths, and never add a remote, push, pull, fetch, or run
+destructive history or worktree commands. Because Git stops applying ignore rules to a
+path once it is tracked, `enso config check` reports any tracked file the protective
+rules would exclude; repairing tracking is a deliberate operator action. Fresh setup
+records the seeded tree in one baseline commit; Enso exposes no other history surface.
 
 A supported config value can use a direct 1Password reference named `<key>_1password`:
 
@@ -122,18 +164,24 @@ rejected rather than normalized to empty values. The helper's own service-accoun
 bootstrapped through `secrets/1password.env`; referenced transport reconfiguration also
 requires the helper's `op_set_secret` function.
 
-The setup wizard preserves this storage choice. Reconfiguring a referenced Telegram bot
-token or Slack bot/app token updates the existing 1Password field through
-`op_set_secret`; the replacement value reaches the helper shell over stdin and is never
-placed in process argv. Enso keeps the reference object, removes any stale literal for
-that key, and aborts without writing a plaintext fallback if the helper update fails.
-Slack prevalidates both previous referenced values before changing either field and
-best-effort restores an earlier field if a later update fails. Sections with no
-reference retain the legacy literal setup flow.
+The fresh or incomplete setup wizard preserves this storage choice. Reconfiguring a
+referenced Telegram bot token or Slack bot/app token in that wizard updates the existing
+1Password field through `op_set_secret`; the replacement value reaches the helper shell
+over stdin and is never placed in process argv. Enso keeps the reference object, removes
+any stale literal for that key, and aborts without writing a plaintext fallback if the
+helper update fails. Slack prevalidates both previous referenced values before changing
+either field and best-effort restores an earlier field if a later update fails. Sections
+with no reference retain the literal setup flow. Structural-only setup does not enter
+transport configuration.
 
 `docs/` is the one file-backed kind identified by a **relative path** rather than a
-directory name, and the only one Enso ships no starter content for — so it needs neither
-seeding nor deletion markers. Deleting a doc prunes the empty parents it leaves behind.
+directory name. Enso packages `enso/content_model.md`, `enso/layout.md`, and `operator.md`
+as fresh-setup-only starters; it does not create placeholder account, browser, network,
+service, project, or business docs. Installed starters and later docs are equally
+user-owned. Deletion creates no marker because startup, repair, completed setup reruns,
+and upgrades never reseed docs; deleting a doc also prunes the empty parents it leaves
+behind. `enso doc list` derives the current index from the files and frontmatter on every
+call, so edited, created, and deleted docs need no separate catalog update.
 
 ## Shared SQLite database
 
@@ -259,6 +307,71 @@ behaviour is specified in [tables.md](tables.md).
 
 ## Config blocks
 
+### Read and mutation semantics
+
+Reading `config.json` is strict and non-mutating. A malformed, non-UTF-8, or non-object
+file is reported and its bytes are preserved; reads may apply defaults in memory but do
+not persist them. `enso config check` follows the same read-only rule. A missing file
+fails every operational command closed. Setup alone may request an in-memory fresh-setup
+candidate, without creating the directory or file during that initial read.
+
+The setup-only in-memory candidate contains `setup.completed_at: null`, and setup persists
+that marker before seeding any starter content. `null` therefore means initial setup was
+started but has not completed. Only an explicit setup run in that state may seed missing
+fresh-install content. After the complete initial tree exists, setup creates one baseline
+Git commit and only then replaces `null` with an ISO 8601 completion timestamp that
+includes a timezone.
+
+A seed or commit failure leaves the marker `null`; retrying explicit setup preserves
+matching files already created and fills only missing pieces. If the baseline committed
+but the timestamp write failed, the next retry recognizes the existing history and
+records completion without making a second initial commit. An
+absent `setup` block identifies a pre-feature installation, not an interrupted setup, and
+does not make it eligible for automatic starter-content seeding. A completed timestamp,
+ordinary startup, `enso web`, `enso config check`, structural repair, and upgrades are
+also non-seeding. Invalid setup markers fail configuration loading.
+
+Explicit `enso setup` on a completed or pre-feature configuration validates the existing
+execution catalog before repository mutation and then performs structural-only repair. It
+does not rewrite `config.json` or synthesize a `setup` marker; provider, workspace,
+transport, messaging, and service configuration remain untouched.
+
+Every command that performs a config read-modify-write transaction must hold Enso's
+owner-only cross-process config lock from the read through the atomic replacement. A
+failed transaction leaves the previous configuration intact. The lock prevents two
+workspace or policy mutations from silently overwriting each other; it is runtime state
+and never versionable.
+
+`enso workspace create` applies that rule to one complete candidate, not a partial entry.
+It strictly rereads the current object under the lock, rejects a malformed file, validates
+the requested lowercase kebab-case name, derived root, explicit existing policy, positive
+concurrency (default `1`), and complete `load_catalog()` result before persistence. Fresh
+setup is the only code path that automatically creates unrestricted policy `admin` and
+binds workspace `default`; later workspace creation never supplies an authority default.
+There is no workspace path option.
+
+The filesystem and config are separately atomic publications. Creation builds the full
+workspace in a temporary sibling and exclusively renames it to its final root, then
+atomically saves config and runs the installation check. If config saving fails, the
+previous config remains and the published directory is reported as unused. If the later
+check fails, the now-configured directory remains visible for operator
+repair; Enso never guesses that user-visible content is safe to delete. Creation refuses
+an existing destination, including a manually migrated or partially created root.
+Changes are not hot-reloaded by `enso serve` or `enso web`, so a successful catalog
+mutation requires restart.
+
+`enso policy create` uses the same locked strict-read, candidate-validation, and atomic
+save transaction. It accepts exactly one explicit authority source: `--unrestricted`, or
+`--policy-dir <path>` naming an existing user-authored restricted source. Both forms
+require one or more repeated `--provider` values and a `--default-provider` from that
+set; repeated `--chat-command`, explicit `--all-chat-commands`, and restricted-only
+repeated `--env-passthrough` map to the existing catalog fields. Passing neither chat
+form persists no commands. The unrestricted form publishes only a catalog entry. The
+restricted form validates the complete physical owner-protected directory and selected
+provider files before publishing only its catalog entry. It never creates or changes the
+canonical source. Fresh setup's unrestricted `admin` is the sole automatic policy
+creation.
+
 The three defaulted blocks documented here are backfilled by
 `_with_config_defaults` without replacing user settings:
 
@@ -319,20 +432,22 @@ See [teams.md](teams.md) for route behavior, [slack-triggers.md](slack-triggers.
 
 ### Filesystem layout
 
-A practical installation may use:
+A practical installation uses one flat, name-derived workspace tree:
 
 ```text
 ~/.enso/
 ├── AGENTS.md                          # canonical shared launch instructions
 ├── CLAUDE.md -> AGENTS.md
+├── skills/                            # canonical global skills
+├── .agents/skills -> ../skills
+├── .claude/skills -> ../skills
 ├── workspaces/
 │   ├── default/                       # fresh-install workspace -> admin policy
 │   ├── company/                       # shared content root and provider cwd
 │   ├── automation/
-│   └── clients/
-│       ├── acme/                      # project content + native instructions/skills
-│       └── acme-internal/
-└── policies/
+│   ├── acme/                          # exact root ~/.enso/workspaces/acme
+│   └── acme-internal/
+└── policies/                            # one optional user-chosen source location
     ├── staff/
     │   ├── claude/settings.json
     │   ├── codex/{config.toml,rules/*.rules}
@@ -345,11 +460,88 @@ A practical installation may use:
 
 Beside `claude/settings.json`, a policy's `claude/` directory may hold an optional conventional `claude/mcp.json` declaring that policy's exact Claude MCP server set. Its presence turns MCP on for the policy and is hashed into the launch's `policy_revision`; absence means zero MCP servers. Like every policy source file, it must be a protected owner-only regular file, and a present-but-unusable file fails the launch closed. See [permissions.md](permissions.md#granting-credentials-and-mcp-servers-to-a-restricted-policy).
 
-A workspace is a shared content root and provider cwd, not a security boundary. It may contain project knowledge, a focused local `AGENTS.md`/`CLAUDE.md`, and canonical project skills under `.agents/skills/`, exposed through additional provider-native discovery paths when required. Those paths should reference the canonical definitions or use local tooling that keeps managed copies synchronized, rather than drift as independent copies. The CLIs may additionally load native user, managed, plugin, system, or bundled skill scopes; project placement is not an allowlist. When a configured workspace is missing its instruction file, Enso seeds a small local `AGENTS.md` plus a `CLAUDE.md` symlink but does not add global skill links.
+A workspace is a shared content root and provider cwd, not a security boundary. Its
+lowercase kebab-case name determines the root exactly as
+`~/.enso/workspaces/<name>`; configuration stores no `path`. The workspace container and
+each root must be physical directories, not symlinks, and a workspace root may not have a
+direct `.git` entry of any kind. A repository deeper inside ordinary workspace content is
+allowed. External roots, nested workspace names, alternate paths, and compatibility
+symlinks are invalid.
 
-A policy directory belongs to a policy and stays outside every writable workspace. This separation lets one policy serve several project directories. Paths are expanded and canonicalized before topology checks or child-process use. Workspaces may live at normalized operator-chosen paths, but configured workspace roots must not overlap each other; policy paths must not overlap any workspace. Aliases and hard links must not provide a writable path back to protected policy bytes.
+Every created workspace has focused `AGENTS.md`, `CLAUDE.md -> AGENTS.md`, canonical
+`skills/`, `.agents/skills -> ../skills`, `.claude/skills -> ../skills`, `knowledge/`,
+`drafts/`, and `uploads/`. The local skill source starts empty. A global and local skill
+directory with the same name makes the workspace invalid; Enso does not rely on a
+provider-specific discovery order. The CLIs may additionally load native user, managed,
+plugin, system, or bundled scopes, so discovery remains functionality rather than an
+allowlist.
 
-Enso does not initialize `~/.enso` as a Git repository. Shared instructions are canonical at `~/.enso/AGENTS.md`, with `CLAUDE.md -> AGENTS.md`, and Enso injects validated content on every provider launch independently of cwd. The canonical source must be a stable, owner-owned regular non-symlink file with no additional hard links or group/other write bits, valid UTF-8 no larger than 20 KiB, and no NUL bytes. Enso hashes it and publishes or verifies an immutable owner-only snapshot at `~/.enso/runtime/instructions/<sha256>.md`; Claude receives that snapshot through `--append-system-prompt-file`, while Codex receives the validated in-memory content through `developer_instructions`, Grok receives it through its `--rules` flag, and unrestricted Agy receives it in Enso's prompt envelope. Missing or unsafe shared instructions fail `enso config check` and provider launch closed. Workspace-local instructions and skills still follow each provider's native discovery from the selected workspace. A company workspace that can access sibling client directories should explicitly tell the agent to read the selected client's protected instructions rather than relying on implicit discovery after changing directories.
+The supported lifecycle commands are `enso workspace list`, `show <name>`,
+`create <name> --policy <policy> [--concurrency <n>]`, and `repair <name>`. `list` and
+`show` are read-only. Creation publishes the scaffold and configuration; the new
+versionable entries (`AGENTS.md`, `CLAUDE.md`, `.agents/skills`, `.claude/skills`, and
+`knowledge/README.md`) are recorded in local history by a later scoped commit. Empty
+directories cannot enter Git, and configuration, `drafts/`, and `uploads/` remain
+ignored, so local history is content history rather than a complete configuration
+backup.
+
+Fresh setup seeds the global prompt, bundled skills, and the three starter docs once.
+Atomic workspace creation seeds that workspace's prompt and `knowledge/README.md` once.
+All seeded files become user-owned immediately: startup, the dashboard, configuration
+checks, software upgrades, completed or pre-feature setup reruns, and setup repair never
+upgrade, overwrite, resurrect, or retire them. Explicit setup repair owns structural
+directories and known discovery links only; conflicts and missing user content are
+preserved and reported. Existing installations adopt desired starter resources manually
+after reviewing them; they must not fabricate a `null` setup marker to invoke fresh
+seeding.
+
+`enso workspace repair <name>` is the focused repair path for a configured workspace. It
+creates missing structural directories and exact known links only. It never creates or
+rewrites `AGENTS.md`, skill definitions, docs, or `knowledge/README.md`; missing seeded/user-owned
+content remains missing and is reported when it prevents a valid launch.
+
+A policy directory belongs to a policy and stays outside every writable workspace. This
+separation lets one policy serve several project directories. Policy paths are expanded
+and canonicalized before topology checks or child-process use, and must not overlap a
+workspace. Aliases and hard links must not provide a writable path back to protected
+policy bytes.
+
+The supported policy lifecycle commands are `enso policy list`, `show <name>`, and
+`create <name>`. List output summarizes capabilities, consumers, and validation; show
+adds safe path, revision, warning, environment-name, and MCP-server metadata without
+secret values or native file contents.
+Creation always requires exactly one of `--unrestricted` and `--policy-dir <path>`, plus
+explicit providers and a default provider. A restricted path has no default: before
+registration, the user or agent creates an existing complete provider-native directory,
+makes its directories and regular files physical and owner-safe, and tests them against
+the installed provider CLIs. Enso registers and later validates the canonical content
+but never generates, copies, changes permissions, rewrites, upgrades, or repairs it.
+Source-tree examples are explanatory starting points, not trusted or certified presets,
+and copies are user-owned. `enso config check` remains the complete validator; there is
+no second policy-only validator or mutation surface for repair, deletion, or rebinding.
+
+Enso initializes a new `~/.enso` local Git worktree on `main`, after installing its
+protective ignore block. It accepts an existing repository only when Git reports that
+exact directory as the worktree root; corrupt, outer, and ambiguous repository states
+fail setup. Enso never creates, changes, or contacts a remote, and it writes repository-
+local fallback author details only when Git has no effective identity. Shared instructions
+are canonical at `~/.enso/AGENTS.md`, with `CLAUDE.md -> AGENTS.md`. The canonical source
+must be a stable, owner-owned regular non-symlink file with no additional hard links or
+group/other write bits, valid UTF-8 no larger than 20 KiB, and no NUL bytes.
+
+Immediately before every provider spawn, Enso revalidates that source plus the exact
+name-derived physical workspace, the root and workspace discovery links, global/local
+skill-name uniqueness, the absence of a direct workspace `.git` entry, and `~/.enso` as
+the exact Git worktree root. Claude and Codex then discover the live shared and workspace
+files natively from that root; Enso does not pass a duplicate
+`--append-system-prompt-file` or `developer_instructions` override. Grok receives the
+just-validated shared text once through `--rules`, and unrestricted Agy receives it once
+in Enso's prompt envelope. The validation hash is diagnostic only: native providers open
+the live files after spawn rather than consuming an Enso-pinned snapshot. Missing or
+unsafe instructions or partial discovery fail `enso config check`, job preflight, and the
+actual launch closed. A company workspace that can access sibling client directories
+should explicitly tell the agent to read the selected client's protected instructions
+rather than relying on implicit discovery after changing directories.
 
 An attachment-bearing Telegram or Slack turn gets a unique `uploads/<random-id>/` directory within its resolved workspace. These files persist until the operator removes them; Enso does not treat uploads as temporary or apply automatic retention. Enso config, secrets, policies, database, jobs, and provider credentials are not linked into restricted workspaces.
 
@@ -358,6 +550,13 @@ The Enso service has no configured process working directory. Only provider subp
 ### Configuration
 
 The catalogs are parsed independently of either transport. Telegram requires `workspace` inside `transports.telegram`; Slack requires `account_id` inside `transports.slack`, where any exact routes are declared in the `dms` and `channels` maps.
+
+The following is the resulting persisted shape, not the primary policy/workspace
+authoring workflow. Use `enso policy create` and `enso workspace create` so each complete
+candidate is validated under the config lock; edit exact transport routes and bindings
+directly only where no focused command exists. Fresh setup supplied the illustrated
+unrestricted `admin` entry automatically. Every illustrated restricted `policy_dir` was
+created and populated by its user before registration.
 
 ```jsonc
 {
@@ -401,27 +600,22 @@ The catalogs are parsed independently of either transport. Telegram requires `wo
 
   "workspaces": {
     "default": {
-      "path": "~/.enso/workspaces/default",
       "policy": "admin",
       "concurrency": 1
     },
     "company": {
-      "path": "~/.enso/workspaces/company",
       "policy": "admin",
       "concurrency": 1
     },
     "acme": {
-      "path": "~/.enso/workspaces/clients/acme",
       "policy": "client-readonly",
       "concurrency": 1
     },
     "acme-internal": {
-      "path": "~/.enso/workspaces/clients/acme-internal",
       "policy": "staff",
       "concurrency": 1
     },
     "automation": {
-      "path": "~/.enso/workspaces/automation",
       "policy": "automation",
       "concurrency": 1
     }
@@ -463,11 +657,17 @@ The catalogs are parsed independently of either transport. Telegram requires `wo
 
 Schema rules:
 
-- Workspace and policy names are portable identifiers matching `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`; names cannot contain path separators or traversal segments.
-- `workspaces.<name>.path` is required and must be absolute or start with `~/`; Enso rejects working-directory-relative paths because services have no current-directory contract. `workspaces.<name>.policy` is required and names exactly one configured policy. `concurrency` is a positive integer and defaults to `1`. Workspaces do not contain provider, command, skill, or permission settings; those belong to the selected policy.
+- Workspace names are at most 64 characters of lowercase letters and numbers separated by
+  single hyphens. Each name derives exactly `~/.enso/workspaces/<name>`; a `path` field is
+  invalid. `workspaces.<name>.policy` is required and names exactly one configured policy.
+  `concurrency` is a positive integer and defaults to `1`. Workspaces do not contain
+  provider, command, skill, or permission settings; those belong to the selected policy.
+- Policy names remain portable identifiers matching
+  `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`; they cannot contain path separators or traversal
+  segments.
 - `policies.<name>` requires a non-empty `providers` list and a `default_provider` from that list. `chat_commands` is either a unique list or the explicit string `"*"`; omission means none. It governs Enso chat commands only, not provider-native tools, slash commands, skills, plugins, hooks, or MCP servers.
 - A restricted policy may add `env_passthrough`, a list of environment-variable names (names, never values) copied from the service environment into the child environment. Names must match `[A-Z][A-Z0-9_]*`, be unique, and not name launch-controlled (such as `CODEX_HOME`, `GROK_HOME`, `GROK_SANDBOX`, and `GROK_FOLDER_TRUST`) or `ENSO_`-prefixed variables; the key is invalid alongside `unrestricted: true`. See [permissions.md](permissions.md#granting-credentials-and-mcp-servers-to-a-restricted-policy).
-- A policy uses exactly one mode: explicit `unrestricted: true`, or native policy files under `policy_dir`. An explicit `policy_dir` must be absolute or start with `~/`; for a restricted policy it otherwise defaults to `~/.enso/policies/<policy-name>`. Unrestricted mode does not imply providers or commands. Codex `config.toml` may not define top-level `developer_instructions`, which Enso reserves for the validated shared launch instructions. Grok's `--rules` flag is reserved the same way: every Grok launch injects the validated shared instructions through it.
+- A policy uses exactly one mode: explicit `unrestricted: true`, or native policy files under an explicit `policy_dir`. A restricted policy must supply `policy_dir`; it must be absolute or start with `~/`, and no name-derived fallback is inferred. Unrestricted mode does not imply providers or commands. Codex `config.toml` may not define top-level `developer_instructions`: provider-specific hidden instructions would add a competing layer outside the canonical root/workspace `AGENTS.md` contract. Grok's `--rules` flag remains reserved for the one explicit shared-instruction delivery Enso supplies to every Grok launch.
 - `transports.telegram.workspace` is required whenever Telegram is configured and must name a usable workspace. Telegram derives providers, default provider, Enso chat commands, native policy, cwd, uploads, and concurrency from that workspace. `allowed_users` remains a non-empty list of unique exact numeric strings, and only private chats dispatch.
 - `transports.slack` is the single Slack configuration object: credentials, transport-wide rendering and notification options, `account_id`, and exact route maps coexist there. The legacy top-level `routes` key is rejected.
 - `transports.slack.account_id` must match the Slack account returned by the configured credentials.
@@ -476,7 +676,12 @@ Schema rules:
 - Channel routes and `transports.slack.channel_defaults` accept the optional booleans `mention_required` and `thread_mention_required` (see [slack-triggers.md](slack-triggers.md)). Effective values resolve route key, then `channel_defaults`, then the built-in `true`, which reproduces the original mention-gated behavior. `channel_defaults` must be an object with no unknown keys, both settings must be booleans wherever they appear, and neither key is valid on a DM route.
 - Every route requires a known `workspace`; it derives that workspace's policy and cannot override it. `audit` is optional and defaults to `false`.
 - A missing workspace, policy, provider, or native policy is an error. Nothing falls back to an implicit cwd, another workspace or policy, or unrestricted execution.
-- `config.json` is loaded at service startup. Slack loads and validates its route catalog then; jobs are loaded from disk on scheduler ticks and manual runs and revalidated before execution. `config.json` changes take effect only after restart, and invalid bindings never receive permissive defaults.
+- `config.json` is loaded at service startup. Startup and `enso config check` validate the
+  repository, physical workspace topology, exact discovery links, and root/workspace
+  skill-name uniqueness without seeding or repair. Slack loads and validates its route
+  catalog then; jobs are loaded from disk on scheduler ticks and manual runs and
+  revalidated before execution. `config.json` changes take effect only after restart,
+  and invalid bindings never receive permissive defaults.
 
 Several routes may select the same workspace and therefore share its policy, files, and
 workspace concurrency. Provider/model/effort choices remain independent per exact Slack
@@ -537,15 +742,17 @@ The `.run.lock` file is a persistent lock target, not a temporary in-flight mark
 
 Scheduled successes are silent unless the prompt explicitly calls `enso message send`. Host-side failure and prerun-recovery alerts use the job's `notify` destination or the configured transport `notify_channel`, independently of Slack routes. `enso job run` suppresses those automatic alerts but cannot suppress a message explicitly sent by the provider process.
 
-### Transport authorization and migration
+### Transport authorization
 
-Slack always requires `transports.slack.account_id`; `transports.slack.allowed_users` is invalid. Routes are never synthesized because creating one grants access. Each authorized DM user and channel must be migrated to an exact entry in `transports.slack.dms` or `transports.slack.channels` selecting a known workspace; the workspace selects its policy.
+Slack always requires `transports.slack.account_id`; `transports.slack.allowed_users` is invalid. Routes are never synthesized because creating one grants access. Each authorized DM user and channel has an exact entry in `transports.slack.dms` or `transports.slack.channels` selecting a known workspace; the workspace selects its policy.
 
 Slack outbound delivery resolves an explicit destination, then an interactive origin, then `transports.slack.notify_channel`. It is not inferred from an inbound route and never broadcasts.
 
 Telegram always uses exact numeric strings under `transports.telegram.allowed_users`, accepts private chats only, and requires a known `transports.telegram.workspace`. It derives that workspace's policy and cannot override provider or command controls. `allowed_user_ids` and the `"*"` wildcard are invalid. Telegram outbound delivery resolves an explicit destination, then an interactive origin, then `transports.telegram.notify_channel`; it never broadcasts to the allowlist.
 
-Legacy configurations are rejected when they contain top-level `working_dir`, `routes`, or `access`, route-level `access` or `policy`, job-level `access` or `policy`, `groups`, route `allow`, or route `context_from`. The migration requires moving legacy workspace files, splitting shared and local instructions, assigning exactly one policy to every workspace, binding Telegram, moving Slack route maps, validating, and reinstalling the service definition. Follow the [manual unified-workspace migration](../migrations/unified-workspace-policies.md); there is no automatic migration command.
+Removed configuration shapes are rejected rather than translated or used as runtime
+fallbacks. Versioned migration guides own the historical schema and operator transition
+procedures; this specification describes only the current data model.
 
 ### Slack delivery ledger
 

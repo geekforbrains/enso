@@ -36,8 +36,9 @@ def _docs_web_app(tmp_path, monkeypatch):
 
     config_dir = tmp_path / "enso"
     docs_dir = config_dir / "docs"
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
+    workspace = config_dir / "workspaces" / "default"
+    workspace.mkdir(parents=True)
+    monkeypatch.setattr("enso.config.CONFIG_DIR", str(config_dir))
     monkeypatch.setattr(web_app, "CONFIG_DIR", str(config_dir))
     monkeypatch.setattr(docs_mod, "DOCS_DIR", str(docs_dir))
     monkeypatch.setattr(web_app, "load_jobs", lambda: [])
@@ -48,7 +49,6 @@ def _docs_web_app(tmp_path, monkeypatch):
             "web": {},
             "workspaces": {
                 "default": {
-                    "path": str(workspace),
                     "policy": "admin",
                     "concurrency": 1,
                 }

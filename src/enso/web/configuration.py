@@ -116,7 +116,6 @@ class WorkspaceView:
     telegram_bound: bool = False
     agent_files: tuple[str, ...] = ()
     agents_truncated: bool = False
-    managed: bool = False
     root_editable: bool = False
 
 
@@ -483,7 +482,6 @@ def with_workspace_agents(
     *,
     agent_files: tuple[str, ...] | list[str],
     truncated: bool,
-    managed: bool,
     root_editable: bool,
     problem: str | None = None,
 ) -> WorkspaceView:
@@ -499,7 +497,6 @@ def with_workspace_agents(
         workspace,
         agent_files=tuple(sorted(agent_files)),
         agents_truncated=truncated,
-        managed=managed,
         root_editable=root_editable,
         problems=problems,
         status=status,

@@ -68,8 +68,8 @@ def _teams_config(tmp_enso: str) -> dict:
             "agy": {"path": "agy", "models": ["g"]},
         },
         "workspaces": {
-            "ops": {"path": str(ops), "policy": "admin"},
-            "acme": {"path": str(acme), "policy": "client"},
+            "ops": {"policy": "admin"},
+            "acme": {"policy": "client"},
         },
         "policies": {
             "admin": {

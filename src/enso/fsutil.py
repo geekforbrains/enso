@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import os
 import stat
 import tempfile
@@ -48,20 +47,6 @@ def is_within(base: str, target: str) -> bool:
     base_r = os.path.realpath(base)
     tgt_r = os.path.realpath(target)
     return tgt_r == base_r or tgt_r.startswith(base_r + os.sep)
-
-
-def regular_file_sha256(path: str) -> str | None:
-    """Hash a regular, non-symlink file, or return ``None`` safely."""
-    if os.path.islink(path) or not os.path.isfile(path):
-        return None
-    digest = hashlib.sha256()
-    try:
-        with open(path, "rb") as f:
-            for chunk in iter(lambda: f.read(65536), b""):
-                digest.update(chunk)
-    except OSError:
-        return None
-    return digest.hexdigest()
 
 
 def prepare_private_sqlite_file(path: str) -> None:

@@ -18,7 +18,7 @@ from urllib.parse import unquote, urlparse
 from . import BaseProvider, StreamEvent, truncate_status
 
 if TYPE_CHECKING:
-    from ..instructions import InstructionBundle
+    from ..instructions import ValidatedInstructions
 
 AGY_MODELS = [
     "gemini-3.6-flash-high",
@@ -67,7 +67,7 @@ _CONVERSATION_WAIT_SECS = 60.0
 
 def _with_shared_instructions(
     prompt: str,
-    instructions: InstructionBundle | None,
+    instructions: ValidatedInstructions | None,
 ) -> str:
     """Prepend Enso's explicit shared-instruction envelope to an Agy prompt."""
     if instructions is None:
@@ -183,7 +183,7 @@ class AgyProvider(BaseProvider):
         *,
         effort: str | None = None,
         launch=None,
-        instructions: InstructionBundle | None = None,
+        instructions: ValidatedInstructions | None = None,
     ) -> list[str]:
         # ``launch`` is accepted for signature parity and ignored: agy has no
         # permission model, so policy-controlled dispatch refuses it upstream.
@@ -209,7 +209,7 @@ class AgyProvider(BaseProvider):
         *,
         effort: str | None = None,
         launch=None,
-        instructions: InstructionBundle | None = None,
+        instructions: ValidatedInstructions | None = None,
     ) -> list[str]:
         cmd = [
             self.path,

@@ -4,21 +4,40 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from enso.config import DEFAULT_PROVIDERS, load_config, provider_models, save_config
+from enso.config import (
+    DEFAULT_PROVIDERS,
+    ConfigError,
+    SetupState,
+    config_lock,
+    load_config,
+    managed_workspace_path,
+    provider_models,
+    save_config,
+    setup_state,
+    validate_workspace_name,
+)
 from enso.providers import PROVIDER_NAMES, provider_class
 
 
-def test_load_creates_default(tmp_enso):
-    """Loading with no config file creates a default."""
-    config = load_config()
+def test_load_missing_fails_closed_without_writing(tmp_enso):
+    with pytest.raises(ConfigError, match="missing"):
+        load_config()
+
+    assert not Path(tmp_enso, "config.json").exists()
+
+
+def test_setup_load_returns_fresh_defaults_without_writing(tmp_enso):
+    """A missing config is an in-memory fresh-install candidate, not a write."""
+    config = load_config(allow_missing=True)
     assert "working_dir" not in config
     assert config["workspaces"] == {
         "default": {
-            "path": os.path.join(tmp_enso, "workspaces", "default"),
             "policy": "admin",
             "concurrency": 1,
         },
@@ -40,7 +59,164 @@ def test_load_creates_default(tmp_enso):
     assert "providers" in config
     assert config["agent"] == {"timeout": 30 * 60}
     assert config["runs"] == {"keep": 500, "max_age_days": 30}
+    assert config["setup"] == {"completed_at": None}
     assert "tasks" not in config
+    assert not Path(tmp_enso, "config.json").exists()
+
+
+@pytest.mark.parametrize("name", ["default", "client-2", "2fa", "a1-b2-c3"])
+def test_managed_workspace_path_derives_only_from_a_valid_name(tmp_enso, name):
+    assert validate_workspace_name(name) == name
+    assert managed_workspace_path(name) == os.path.join(tmp_enso, "workspaces", name)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "",
+        "Client",
+        "two words",
+        "two_words",
+        "-client",
+        "client-",
+        "client--ops",
+        ".",
+        "..",
+        "client/ops",
+        "a" * 65,
+    ],
+)
+def test_managed_workspace_path_rejects_invalid_names_before_joining(tmp_enso, name):
+    with pytest.raises(ConfigError, match="lowercase kebab-case"):
+        managed_workspace_path(name)
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["{not json", "[]", "null", '"config"'],
+)
+def test_load_rejects_malformed_or_non_object_config_without_replacing(
+    tmp_enso, content
+):
+    config_file = Path(tmp_enso, "config.json")
+    config_file.write_text(content)
+    original = config_file.read_bytes()
+
+    with pytest.raises(ConfigError, match=r"config\.json"):
+        load_config()
+
+    assert config_file.read_bytes() == original
+
+
+def test_load_rejects_invalid_utf8_without_replacing(tmp_enso):
+    config_file = Path(tmp_enso, "config.json")
+    config_file.write_bytes(b"{\xff}")
+    original = config_file.read_bytes()
+
+    with pytest.raises(ConfigError, match=r"config\.json"):
+        load_config()
+
+    assert config_file.read_bytes() == original
+
+
+@pytest.mark.parametrize("kind", ["symlink", "directory"])
+def test_load_rejects_non_regular_config_paths(tmp_enso, tmp_path, kind):
+    config_file = Path(tmp_enso, "config.json")
+    if kind == "symlink":
+        target = tmp_path / "outside-config.json"
+        target.write_text('{"transport": "telegram"}\n')
+        config_file.symlink_to(target)
+    else:
+        config_file.mkdir()
+
+    with pytest.raises(ConfigError, match="regular file"):
+        load_config()
+
+    if kind == "symlink":
+        assert target.read_text() == '{"transport": "telegram"}\n'
+
+
+@pytest.mark.parametrize(
+    ("config", "expected"),
+    [
+        ({}, SetupState.PRE_FEATURE),
+        ({"setup": {"completed_at": None}}, SetupState.INCOMPLETE),
+        (
+            {"setup": {"completed_at": "2026-08-18T12:34:56+00:00"}},
+            SetupState.COMPLETE,
+        ),
+    ],
+)
+def test_setup_state_has_explicit_backward_compatible_meanings(config, expected):
+    assert setup_state(config) is expected
+
+
+@pytest.mark.parametrize(
+    "setup",
+    [None, [], {}, {"completed_at": 123}, {"completed_at": "yesterday"}],
+)
+def test_setup_state_rejects_malformed_values(setup):
+    with pytest.raises(ConfigError, match=r"setup\.completed_at"):
+        setup_state({"setup": setup})
+
+
+def test_config_lock_rejects_symlink_lock_without_touching_target(
+    tmp_enso, tmp_path
+):
+    save_config({})
+    target = tmp_path / "outside-lock"
+    target.write_text("outside")
+    Path(f"{Path(tmp_enso, 'config.json')}.lock").symlink_to(target)
+
+    with pytest.raises(ConfigError, match="lock"), config_lock():
+        pytest.fail("an unsafe lock must not be acquired")
+
+    assert target.read_text() == "outside"
+
+
+def test_config_lock_rejects_symlinked_config_root_without_touching_target(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "outside-enso"
+    target.mkdir()
+    config_root = tmp_path / "enso"
+    config_root.symlink_to(target, target_is_directory=True)
+    monkeypatch.setattr("enso.config.CONFIG_DIR", str(config_root))
+    monkeypatch.setattr("enso.config.CONFIG_FILE", str(config_root / "config.json"))
+
+    with pytest.raises(ConfigError, match="physical directory"), config_lock():
+        pytest.fail("a lock must not be created through a symlinked config root")
+
+    assert list(target.iterdir()) == []
+
+
+def test_locked_config_updates_serialize_across_processes(tmp_path):
+    home = tmp_path / "home"
+    config_dir = home / ".enso"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.json").write_text('{"counter": 0}\n')
+    script = """
+import time
+from enso.config import config_lock, load_config, save_config
+
+for _ in range(12):
+    with config_lock():
+        config = load_config()
+        current = config["counter"]
+        time.sleep(0.003)
+        config["counter"] = current + 1
+        save_config(config)
+"""
+    env = {**os.environ, "HOME": str(home)}
+    processes = [
+        subprocess.Popen([sys.executable, "-c", script], env=env)
+        for _ in range(2)
+    ]
+
+    for process in processes:
+        assert process.wait(timeout=20) == 0
+
+    assert json.loads((config_dir / "config.json").read_text())["counter"] == 24
 
 
 def test_save_and_load_roundtrip(tmp_enso):
@@ -59,14 +235,15 @@ def test_save_and_load_roundtrip(tmp_enso):
     assert loaded["logging"]["debug_prompts"] is False
 
 
-def test_load_backfills_agent_timeout_and_persists(tmp_enso):
+def test_load_backfills_agent_timeout_without_persisting(tmp_enso):
     config_file = Path(tmp_enso) / "config.json"
-    config_file.write_text(json.dumps({"providers": DEFAULT_PROVIDERS}))
+    original = json.dumps({"providers": DEFAULT_PROVIDERS})
+    config_file.write_text(original)
 
     loaded = load_config()
 
     assert loaded["agent"] == {"timeout": 1800}
-    assert json.loads(config_file.read_text())["agent"] == {"timeout": 1800}
+    assert config_file.read_text() == original
 
 
 @pytest.mark.parametrize("timeout", [0, 75])
@@ -102,11 +279,11 @@ def test_load_merges_missing_logging_defaults(tmp_enso):
 
 
 def test_default_config_has_codex_model_aliases(tmp_enso):
-    config = load_config()
+    config = load_config(allow_missing=True)
     assert config["providers"]["codex"]["models"] == ["sol", "terra", "luna"]
 
 
-def test_existing_config_backfills_new_registry_providers_and_persists(tmp_enso):
+def test_existing_config_backfills_new_registry_providers_in_memory_only(tmp_enso):
     config_file = Path(tmp_enso) / "config.json"
     config_file.write_text(json.dumps({
         "providers": {
@@ -119,9 +296,9 @@ def test_existing_config_backfills_new_registry_providers_and_persists(tmp_enso)
 
     assert loaded["providers"]["agy"] == DEFAULT_PROVIDERS["agy"]
     persisted = json.loads(config_file.read_text())
-    assert persisted["providers"]["agy"] == DEFAULT_PROVIDERS["agy"]
+    assert set(persisted["providers"]) == {"claude", "codex"}
     assert persisted["providers"]["codex"]["path"] == "/custom/codex"
-    assert "gpt-5.5" in persisted["providers"]["codex"]["models"]
+    assert persisted["providers"]["codex"]["models"] == ["gpt-5.5"]
 
 
 def test_default_providers_derive_from_registry():
@@ -159,7 +336,7 @@ def test_provider_models_normalizes_malformed_model_lists():
 
 def test_load_strips_retired_provider_keys(tmp_enso):
     """Keys dropped from a provider's defaults (e.g. the old kage runner set)
-    are removed on load and the cleanup is persisted."""
+    are removed in memory without mutating a read."""
     config_file = Path(tmp_enso) / "config.json"
     config_file.write_text(json.dumps({
         "providers": {
@@ -182,7 +359,7 @@ def test_load_strips_retired_provider_keys(tmp_enso):
     assert claude["path"] == "/custom/claude"
     assert claude["models"] == ["opus"]
     persisted = json.loads(config_file.read_text())
-    assert set(persisted["providers"]["claude"]) == {"path", "models"}
+    assert "runner" in persisted["providers"]["claude"]
 
 
 def test_load_preserves_unknown_provider_keys(tmp_enso):
@@ -234,7 +411,7 @@ def test_load_removes_unsupported_provider_config(tmp_enso):
     loaded = load_config()
 
     assert set(loaded["providers"]) == set(PROVIDER_NAMES)
-    assert set(json.loads(config_file.read_text())["providers"]) == set(PROVIDER_NAMES)
+    assert set(json.loads(config_file.read_text())["providers"]) == {"claude", "retired"}
 
 
 def test_load_replaces_invalid_logging_with_defaults(tmp_enso):
@@ -253,7 +430,7 @@ def test_load_replaces_invalid_logging_with_defaults(tmp_enso):
 
 def test_config_file_permissions(tmp_enso):
     """Config file has restricted permissions."""
-    config = load_config()
+    config = load_config(allow_missing=True)
     save_config(config)
     config_file = os.path.join(tmp_enso, "config.json")
     stat = os.stat(config_file)
@@ -261,7 +438,7 @@ def test_config_file_permissions(tmp_enso):
 
 
 def test_load_migrates_legacy_task_retention_and_drops_tasks(tmp_enso):
-    """Task retention survives the task-system removal."""
+    """Task retention can be interpreted without mutating the source file."""
     config_file = os.path.join(tmp_enso, "config.json")
     with open(config_file, "w") as f:
         json.dump({
@@ -278,8 +455,8 @@ def test_load_migrates_legacy_task_retention_and_drops_tasks(tmp_enso):
     assert "tasks" not in loaded
     with open(config_file) as f:
         persisted = json.load(f)
-    assert persisted["runs"] == {"keep": 123, "max_age_days": 45}
-    assert "tasks" not in persisted
+    assert "runs" not in persisted
+    assert "tasks" in persisted
 
 
 def test_explicit_runs_config_wins_over_legacy_task_retention(tmp_enso):
@@ -330,14 +507,14 @@ def test_save_failure_preserves_existing_config(tmp_enso, monkeypatch):
     assert list(Path(tmp_enso).glob("*.tmp")) == []
 
 
-def test_load_uses_migrated_config_when_persistence_fails(tmp_enso, monkeypatch):
+def test_load_never_calls_save_for_in_memory_defaults(tmp_enso, monkeypatch):
     config_file = Path(tmp_enso, "config.json")
     config_file.write_text(json.dumps({
         "tasks": {"runs_keep": 17, "runs_max_age_days": 4},
     }))
 
     def fail_save(_config):
-        raise OSError("read-only config")
+        pytest.fail("a config read must never save")
 
     monkeypatch.setattr("enso.config.save_config", fail_save)
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import importlib.resources
 import json
 import logging
 import os
@@ -20,14 +19,11 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from . import messages
 from .config import (
-    CONFIG_DIR,
     DEFAULT_AGENT,
-    DEFAULT_WORKSPACE_NAME,
-    SKILL_TOMBSTONES_DIRNAME,
     STATE_FILE,
     provider_models,
 )
-from .fsutil import atomic_write_text, regular_file_sha256
+from .fsutil import atomic_write_text
 from .logging_config import logging_flags
 from .outbound import (
     parse_outbound_fallback,
@@ -36,10 +32,8 @@ from .outbound import (
     parse_surface_publication,
 )
 from .providers import PROVIDER_NAMES, BaseProvider, StreamEvent, provider_class
-from .teams import load_catalog
 
 if TYPE_CHECKING:
-    from .instructions import InstructionBundle
     from .job_runner import JobRunner
     from .policy import Launch
     from .teams import Policy, Workspace
@@ -134,105 +128,13 @@ MAX_QUEUE_SIZE = 5
 SESSION_TTL_DAYS = int(os.environ.get("ENSO_SESSION_TTL_DAYS", "30"))
 PROCESS_TERMINATE_GRACE_SECS = float(os.environ.get("ENSO_PROCESS_TERMINATE_GRACE_SECS", "5"))
 
-# Upgrade markers for artifacts bundled immediately before the built-in task
-# system was removed. Hashes let us recognize pristine installer-owned files
-# without retaining obsolete task instructions in the package.
-_LEGACY_TASKS_SKILL_SHA256 = "661ffca9a360cc40521c274a295a97c7735123a7c8a44e1d307da046f07735cc"
-_LEGACY_TASKS_AGENTS_SHA256 = "ec67ee973a15c38e23451cfc65317643debe0e6e8659589bf0c30433f60a2e4a"
+# Retired task-runner state is discarded during the existing state migration.
 _LEGACY_TASK_RUNNER_STATE_KEY = "__task_runner__"
-
-# Pristine bundled AGENTS.md hashes from prior revisions. Exact matches follow
-# the bundled template forward; customized copies are preserved.
-_PRISTINE_AGENTS_SHA256: frozenset[str] = frozenset(
-    {
-        _LEGACY_TASKS_AGENTS_SHA256,
-        "9da23ee23cccfb466f781d84beb4775872a7427166225ef2da815c0cced035aa",
-        "b06c7da0260b5775f29b008210429b881dbd25035727fe30e8e135258791a531",
-        "dd475e768635484fe13c6f4f906d0e1d88687fc4bbe25f5cefca0dc606aa79b9",
-        "18e29e570f07237eea24a2b329090ccae9b572cdbc7e35f38e22916f3e5acf7f",
-        "b5676b7f1b571a813554c0c580c93a6c9269d82625161f01f2c00e205888da20",
-        "8f9bacc078f4b6bd826c59501f7e110de4e2caacc42fd3975ad3aeab624164f7",
-        "98aaf8d3eecd71ceb4a2a3cea92bb3acbd4167acde31737c7a084083a8521bfb",
-        "00216052e667a7e0d6de59fb331f71e4491af33b5a9ad17439b1836361b3ff6b",
-        "2e14003d6bc25ac89f68d4c883b98ad5fda0095dcfe682a258e272fac6d97c25",
-        "ff4d7c8d7f0651cf8a8e26dbd6e7289f2e6f5edd035223b9f8045af445f55e63",
-        "c4d83056e148464c33ee6fcbb360f9f12fb8a3d3bdb32ab44fe673b2829d976a",
-    }
-)
-
-# Workspace prompts use the same exact-pristine upgrade rule. This keeps
-# installer-owned local guidance coherent while preserving every customized
-# workspace file and symlink.
-_PRISTINE_WORKSPACE_AGENTS_SHA256: frozenset[str] = frozenset(
-    {
-        "71de6f5699f446cc4af520c8c36a59fac3cc109b7754c2f7f70b483c48bc90e3",
-        "e6f12f08d421115292fcad44cfd03e509bfeb0c423ab74acd4c70dae0cc02567",
-        "bfd3af12bb204d8a8aaf406785ea924494297ca20d611c50c807cf03dd226093",
-        "b083179b34f1de30cd1d669d2d3e3f4cfd2174bf956527aeb68d09935846f522",
-    }
-)
-
-# Known hashes of pristine bundled skills from prior revisions. Exact matches
-# can follow the bundled copy forward without overwriting user-customized files.
-_BUNDLED_SKILL_PRISTINE_HASHES: dict[tuple[str, str], frozenset[str]] = {
-    ("docs", "SKILL.md"): frozenset(
-        {
-            "0f657ffd78a63e4d15301eb422b845d8ae2bf2dc60eaacd84c1c4234b9f6ee8e",
-        }
-    ),
-    ("jobs", "SKILL.md"): frozenset(
-        {
-            "f52f890e467bd212534474b1d0ee913edbf6cc968e010686153044aac13bcd77",
-            "8824886bd76e476672395bfcef6d34655b7eeedb40c89cf0fc459706e9ad4cff",
-            "cc8d7abc0e550b901644d7c7feee2e3363608adf794a2f885c7421a5cb7fa08b",
-            "256ce5a5609551246927c9e19ef0be13f68f630fb343815f303e6f90ab8cb51c",
-            "608c4a5d9f34d76ae9143f749fa7b028a4fce413d260e1a5f58d361288730bd8",
-            "1756397ae5838a5aba08c6371cb721f9e1b4f815c8b1907a19b017e7aca53be0",
-            "dabb0fa66f276cd78c8e88e17c38155ad537aa52938e50622dcc2955b70f036a",
-            "ecde110e219de184ccf52594d02d9ae458022a4813dcc8ac417a975c5010f282",
-            "1a97b59fb3361cac02af0d62d0cb472ad0315fe710ece162977a602211161e28",
-            "3f14ca280b44121434a1308e57f23f6cfe36858b79a06d8e06838cade3d06937",
-            "5d9bcd9e89d027af78b3eaa5d665c7f05e855a4a3f7052ad612dc2cfff324ec2",
-            "c292e6f8e8808898cff1efe0a22030da0cea863aecd77bca0fe583b741d96d08",
-            "ed6e39bddc71769546b6a8608aff848120e17a60fac122273d9428a016893679",
-        }
-    ),
-    ("slack", "SKILL.md"): frozenset(
-        {
-            "5d9f76e2bcb757b27ab294a6f7322e07a59ebafbe08566f218348f8d15ac178a",
-            "646d0ab64c0713baf32eec4f0639b4d709d4b1c7a2a1a320e2eed84d55fc5582",
-            "c91732f4c9a702145e9f4beff6dd5b113b7d5616104842a3350a39a262dff072",
-            "70f2dd312d001f23a49aeadb2f556df76e259b80f8591093eb7d36a6ea56b2bd",
-            "c9c84d0a1a994a89ee56cf67ec10347c7730add329505b2959880728c58f2980",
-            "a53162090b0bbbc3d60067674b428e56e1f9c62e0fc555e807d98e03068c0fcd",
-        }
-    ),
-    ("tables", "SKILL.md"): frozenset(
-        {
-            "3ece50cd4ea1d1dbcb60a976b69178e4c81b8bac861e8187dc2208ac87426aba",
-        }
-    ),
-}
-
-# The pre-0.12 bundled slack skill shipped a Python tool script that the
-# `enso slack` CLI replaced. Pristine copies (and their installed
-# workspace/tools twins) are removed on setup/serve; customized copies are
-# preserved with a warning.
-_RETIRED_SKILL_TOOL_HASHES: dict[tuple[str, str], frozenset[str]] = {
-    ("slack", "slack_search.py"): frozenset(
-        {
-            "2a993392c4d58ac7e5ce653ade6070ed9db9baaa6b909ae2167d29de490ded7d",
-        }
-    ),
-}
 
 
 def _redacted_command(cmd: list[str]) -> str:
     """Return a shell-like command string with instruction text redacted."""
     redacted = list(cmd)
-    for index, part in enumerate(redacted[:-1]):
-        if part == "-c" and redacted[index + 1].startswith("developer_instructions="):
-            redacted[index + 1] = "developer_instructions=<redacted>"
     for index, part in enumerate(redacted):
         if part.startswith("--single="):
             prompt = part.removeprefix("--single=")
@@ -319,9 +221,6 @@ class ExecutionContext:
     provider: str
     settings_key: str | None = None  # durable route preferences; jobs have none
     launch: Launch | None = None
-    instructions: InstructionBundle | None = field(
-        default=None, compare=False, repr=False
-    )
     concurrency: int = 1  # max concurrent provider runs sharing the workspace
     model: str | None = None
     effort: str | None = None
@@ -409,355 +308,6 @@ class Runtime:
         from .job_runner import JobRunner
 
         self.jobs: JobRunner = JobRunner(self)
-
-    # -- Workspace setup --
-
-    def install_system_prompts(self) -> None:
-        """Set up shared system prompts, skills, hooks, and config directories.
-
-        Creates:
-        - ~/.enso/docs/, ~/.enso/jobs/, and ~/.enso/skills/
-        - Bundled skills seeded into ~/.enso/skills/
-        - AGENTS.md in ~/.enso/ (from bundled template on first install)
-        - CLAUDE.md as a symlink to AGENTS.md (Claude reads CLAUDE.md;
-          Codex reads AGENTS.md natively)
-        - Enso-local .claude/skills and .agents/skills discovery views
-          symlinked to ~/.enso/skills/
-        - Auto-compact notification hooks for Claude
-        """
-        from .config import DOCS_DIR, JOBS_DIR
-
-        skills_dir = os.path.join(CONFIG_DIR, "skills")
-        for d in (DOCS_DIR, JOBS_DIR, skills_dir):
-            os.makedirs(d, exist_ok=True)
-
-        self._retire_legacy_tasks_skill(skills_dir)
-        self._retire_legacy_skill_tools(skills_dir)
-        self._install_bundled_skills(skills_dir)
-        self._install_skill_tools(skills_dir)
-
-        # System prompt. AGENTS.md is canonical; Claude reads CLAUDE.md, so
-        # it's symlinked to AGENTS.md. Codex reads AGENTS.md natively, so no
-        # further symlinks are needed.
-        source = importlib.resources.files("enso").joinpath("prompts").joinpath("AGENTS.md")
-        content = source.read_text(encoding="utf-8")
-
-        canonical = os.path.join(CONFIG_DIR, "AGENTS.md")
-        is_pristine_template = regular_file_sha256(canonical) in _PRISTINE_AGENTS_SHA256
-        if not os.path.lexists(canonical) or is_pristine_template:
-            try:
-                atomic_write_text(canonical, content)
-                action = "Updated" if is_pristine_template else "Wrote"
-                log.info("%s AGENTS.md in %s", action, CONFIG_DIR)
-            except OSError:
-                log.warning("Could not write AGENTS.md", exc_info=True)
-                return
-        elif self._contains_legacy_task_instructions(canonical):
-            log.warning(
-                "Preserving customized AGENTS.md at %s, but it contains retired task "
-                "instructions; update or remove those instructions manually",
-                canonical,
-            )
-
-        self._ensure_symlink(os.path.join(CONFIG_DIR, "CLAUDE.md"), "AGENTS.md")
-
-        # Enso-local provider discovery views. Managed descendant workspaces
-        # inherit them through project-scope ancestor discovery; Enso does not
-        # install these links into unrelated project directories.
-        for cli_dir in (".claude", ".agents"):
-            parent = os.path.join(CONFIG_DIR, cli_dir)
-            os.makedirs(parent, exist_ok=True)
-            self._ensure_symlink(os.path.join(parent, "skills"), skills_dir)
-
-        # Auto-compact notification hooks — lets the user know via the
-        # configured chat transport when a provider is compacting context
-        # (which can be slow).
-        # Claude: PreCompact with "auto" matcher
-        # Codex: no compaction hooks available
-        notify_cmd = "enso message send 'Autocompacting context, this might take a moment...'"
-        self._ensure_hook_entry(
-            os.path.join(CONFIG_DIR, ".claude", "settings.json"),
-            event="PreCompact",
-            matcher="auto",
-            command=notify_cmd,
-        )
-
-    def install_workspaces(self) -> None:
-        """Bootstrap every structurally valid configured workspace.
-
-        Creates the workspace directory with the bundled system prompt.
-        Instructions and skills are owned by the workspace and discovered by
-        the provider CLIs themselves; jobs, config, and shared skill roots are
-        never linked in.
-        """
-        catalog = load_catalog(self.config)
-        if not catalog.valid:
-            log.warning(
-                "Skipping workspace bootstrap because the execution catalog is invalid: %s",
-                "; ".join(catalog.errors),
-            )
-            return
-        for name, workspace in catalog.workspaces.items():
-            if name in catalog.workspace_errors or not workspace.path:
-                continue
-            try:
-                self._install_workspace(workspace)
-            except OSError:
-                log.warning("Could not bootstrap workspace %s", name, exc_info=True)
-
-    def _install_workspace(self, workspace) -> None:
-        os.makedirs(workspace.path, exist_ok=True)
-        os.makedirs(os.path.join(workspace.path, "uploads"), exist_ok=True)
-
-        canonical = os.path.join(workspace.path, "AGENTS.md")
-        is_pristine_template = (
-            regular_file_sha256(canonical) in _PRISTINE_WORKSPACE_AGENTS_SHA256
-        )
-        if not os.path.lexists(canonical) or is_pristine_template:
-            prompts = importlib.resources.files("enso").joinpath("prompts")
-            source = prompts.joinpath("WORKSPACE_AGENTS.md")
-            atomic_write_text(canonical, source.read_text(encoding="utf-8"))
-            action = "Updated" if is_pristine_template else "Wrote"
-            log.info("%s AGENTS.md in workspace %s", action, workspace.name)
-        self._ensure_symlink(os.path.join(workspace.path, "CLAUDE.md"), "AGENTS.md")
-
-    @staticmethod
-    def _ensure_symlink(link_path: str, target: str) -> None:
-        """Create a symlink if it doesn't already exist."""
-        if os.path.exists(link_path) or os.path.islink(link_path):
-            return
-        try:
-            os.symlink(target, link_path)
-            log.info("Symlinked %s -> %s", link_path, target)
-        except OSError:
-            log.warning("Could not symlink %s", link_path, exc_info=True)
-
-    @staticmethod
-    def _ensure_hook_entry(
-        settings_path: str,
-        *,
-        event: str,
-        matcher: str,
-        command: str,
-    ) -> None:
-        """Ensure a specific hook exists in a CLI settings file.
-
-        Reads the file, checks whether the exact command is already
-        present under the given event, and appends a new entry only
-        if missing.  Other hooks and settings are left untouched.
-        """
-        settings: dict = {}
-        if os.path.exists(settings_path):
-            try:
-                with open(settings_path) as f:
-                    settings = json.load(f)
-            except (json.JSONDecodeError, OSError):
-                log.warning(
-                    "Could not read %s, skipping hook install",
-                    settings_path,
-                )
-                return
-
-        hooks = settings.setdefault("hooks", {})
-        event_hooks = hooks.setdefault(event, [])
-
-        # Check if this exact hook command is already installed
-        for entry in event_hooks:
-            for h in entry.get("hooks", []):
-                if h.get("command") == command:
-                    return
-
-        event_hooks.append(
-            {
-                "matcher": matcher,
-                "hooks": [{"type": "command", "command": command, "async": True}],
-            }
-        )
-
-        try:
-            atomic_write_text(settings_path, json.dumps(settings, indent=2) + "\n")
-            log.info("Installed %s hook in %s", event, settings_path)
-        except OSError:
-            log.warning("Could not write %s", settings_path, exc_info=True)
-
-    @staticmethod
-    def _contains_legacy_task_instructions(path: str) -> bool:
-        """Recognize strong task-era markers in a customized prompt."""
-        if not os.path.isfile(path):
-            return False
-        try:
-            with open(path, encoding="utf-8") as f:
-                content = f.read()
-        except (OSError, UnicodeError):
-            return False
-        return any(
-            marker in content
-            for marker in (
-                "enso task create",
-                "enso task list",
-                "enso task show",
-                "use the `tasks` skill",
-            )
-        )
-
-    @classmethod
-    def _retire_legacy_tasks_skill(cls, skills_dir: str) -> None:
-        """Remove the pristine task skill left by the previous release.
-
-        Any changed file, symlink, or additional directory entry makes the
-        artifact user-owned and leaves it untouched.
-        """
-        skill_dir = os.path.join(skills_dir, "tasks")
-        if not os.path.lexists(skill_dir):
-            return
-        warning = (
-            "Preserving customized retired tasks skill at %s; update or remove it "
-            "manually because the enso task commands no longer exist"
-        )
-        if os.path.islink(skill_dir) or not os.path.isdir(skill_dir):
-            log.warning(warning, skill_dir)
-            return
-        try:
-            entries = os.listdir(skill_dir)
-        except OSError:
-            log.warning(warning, skill_dir)
-            return
-        if entries != ["SKILL.md"]:
-            log.warning(warning, skill_dir)
-            return
-
-        skill_file = os.path.join(skill_dir, "SKILL.md")
-        if regular_file_sha256(skill_file) != _LEGACY_TASKS_SKILL_SHA256:
-            log.warning(warning, skill_dir)
-            return
-        try:
-            os.remove(skill_file)
-            os.rmdir(skill_dir)
-            log.info("Removed retired bundled skill: tasks")
-        except OSError:
-            log.warning("Could not remove retired bundled tasks skill", exc_info=True)
-
-    def _retire_legacy_skill_tools(self, skills_dir: str) -> None:
-        """Remove retired pristine bundled tool scripts and their installed copies.
-
-        Removing the skill copy alone is not enough: ``_install_skill_tools``
-        reinstalls any ``.py`` it finds in a skill dir, so a stale copy in the
-        configured default workspace is removed first when that binding is usable.
-        """
-        workspace_path = self._default_workspace_path()
-        for (skill_name, filename), pristine in _RETIRED_SKILL_TOOL_HASHES.items():
-            skill_copy = os.path.join(skills_dir, skill_name, filename)
-            tool_copy = (
-                os.path.join(workspace_path, "tools", filename)
-                if workspace_path is not None
-                else None
-            )
-            skill_hash = regular_file_sha256(skill_copy)
-            if tool_copy is not None and regular_file_sha256(tool_copy) in pristine:
-                with contextlib.suppress(OSError):
-                    os.remove(tool_copy)
-                    log.info("Removed retired installed tool: %s", filename)
-            if skill_hash in pristine:
-                with contextlib.suppress(OSError):
-                    os.remove(skill_copy)
-                    log.info(
-                        "Removed retired bundled skill tool: %s/%s",
-                        skill_name,
-                        filename,
-                    )
-            elif skill_hash is not None:
-                log.warning(
-                    "Preserving customized retired skill tool at %s; the "
-                    "`enso slack` CLI replaced it — update or remove it manually",
-                    skill_copy,
-                )
-
-    @classmethod
-    def _install_bundled_skills(cls, skills_dir: str) -> None:
-        """Seed missing skills and update only known-pristine older copies."""
-        bundled = importlib.resources.files("enso").joinpath("skills")
-        if not bundled.is_dir():
-            return
-        tombstones_dir = os.path.join(skills_dir, SKILL_TOMBSTONES_DIRNAME)
-        for skill_dir in bundled.iterdir():
-            if not skill_dir.is_dir():
-                continue
-            tombstone = os.path.join(tombstones_dir, f"{skill_dir.name}.deleted")
-            if os.path.lexists(tombstone):
-                log.info("Preserving deleted bundled skill: %s", skill_dir.name)
-                continue
-            dest = os.path.join(skills_dir, skill_dir.name)
-            if os.path.lexists(dest):
-                if os.path.islink(dest) or not os.path.isdir(dest):
-                    continue
-            else:
-                os.makedirs(dest)
-            for f in skill_dir.iterdir():
-                if not f.is_file():
-                    continue
-                dest_file = os.path.join(dest, f.name)
-                action = "Installed"
-                if os.path.lexists(dest_file):
-                    existing_hash = regular_file_sha256(dest_file)
-                    known_pristine = _BUNDLED_SKILL_PRISTINE_HASHES.get(
-                        (skill_dir.name, f.name), frozenset()
-                    )
-                    if existing_hash not in known_pristine:
-                        continue
-                    action = "Updated pristine"
-                try:
-                    content = f.read_text(encoding="utf-8")
-                    atomic_write_text(dest_file, content)
-                    log.info(
-                        "%s bundled skill: %s/%s",
-                        action,
-                        skill_dir.name,
-                        f.name,
-                    )
-                except OSError:
-                    log.warning(
-                        "Could not install/update bundled skill %s/%s",
-                        skill_dir.name,
-                        f.name,
-                        exc_info=True,
-                    )
-
-    def _install_skill_tools(self, skills_dir: str) -> None:
-        """Copy skill tools into the usable configured default workspace."""
-        workspace_path = self._default_workspace_path()
-        if workspace_path is None:
-            return
-        tools_dir = os.path.join(workspace_path, "tools")
-        for entry in os.listdir(skills_dir):
-            skill_path = os.path.join(skills_dir, entry)
-            if not os.path.isdir(skill_path):
-                continue
-            for fname in os.listdir(skill_path):
-                if not fname.endswith(".py"):
-                    continue
-                src = os.path.join(skill_path, fname)
-                os.makedirs(tools_dir, exist_ok=True)
-                dest = os.path.join(tools_dir, fname)
-                try:
-                    with open(src) as f:
-                        content = f.read()
-                    if os.path.exists(dest):
-                        with open(dest) as f:
-                            if f.read() == content:
-                                continue
-                    with open(dest, "w") as f:
-                        f.write(content)
-                    os.chmod(dest, 0o755)
-                    log.info("Installed tool: %s", fname)
-                except OSError:
-                    log.warning("Could not install tool %s", fname, exc_info=True)
-
-    def _default_workspace_path(self) -> str | None:
-        """Return the usable configured default workspace path, if any."""
-        catalog = load_catalog(self.config)
-        if not catalog.usable(DEFAULT_WORKSPACE_NAME):
-            return None
-        return catalog.workspaces[DEFAULT_WORKSPACE_NAME].path
 
     # -- State persistence --
 
@@ -1090,24 +640,17 @@ class Runtime:
     async def _prepare_execution_context(
         self, provider: str, context: ExecutionContext
     ) -> ExecutionContext:
-        """Resolve policy and shared instructions at the spawn boundary."""
-        if context.launch is not None and context.instructions is not None:
+        """Resolve the native policy launch under the workspace slot."""
+        if context.launch is not None:
             return context
-        from .instructions import load_shared_instructions
         from .policy import prepare_launch
 
-        launch = context.launch
-        prepared_launch = launch is None
-        if launch is None:
-            launch = await asyncio.to_thread(
-                prepare_launch, context.workspace, context.policy, provider
-            )
-        instructions = context.instructions
-        if instructions is None:
-            instructions = await asyncio.to_thread(load_shared_instructions)
-        if prepared_launch and context.on_launch is not None:
+        launch = await asyncio.to_thread(
+            prepare_launch, context.workspace, context.policy, provider
+        )
+        if context.on_launch is not None:
             await asyncio.to_thread(context.on_launch, launch)
-        return replace(context, launch=launch, instructions=instructions)
+        return replace(context, launch=launch)
 
     def make_provider(
         self,
@@ -1628,9 +1171,17 @@ class Runtime:
         restricted launches — the allowlisted environment.
         """
         launch = context.launch
-        instructions = context.instructions
-        if launch is None or instructions is None:
+        if launch is None:
             raise RuntimeError("execution context must be prepared before provider execution")
+        from .instructions import validate_launch_discovery
+
+        # This must run inside every generator invocation: transient retries
+        # call ``run_provider`` again, so neither a prepared context nor a
+        # previous attempt can cache filesystem discovery state.
+        instructions = await asyncio.to_thread(
+            validate_launch_discovery,
+            context.workspace,
+        )
         session_id = self._get_or_create_session(chat_id, provider.name)
         cmd = provider.build_command(
             prompt,
@@ -1880,6 +1431,23 @@ class Runtime:
         record it on the audit turn: ``completed``, ``error``, ``timeout``, or
         (via cancellation in the caller) ``stopped``.
         """
+        from .instructions import validate_launch_discovery
+
+        # Prompt assembly consumes durable background messages and a one-shot
+        # compact seed. Refuse an invalid discovery boundary before touching
+        # either; ``run_provider`` validates again immediately before every
+        # actual spawn so later filesystem races and retries still fail closed.
+        try:
+            await asyncio.to_thread(validate_launch_discovery, context.workspace)
+        except Exception:
+            log.exception("Launch discovery validation failed for conv=%s", chat_id)
+            with contextlib.suppress(Exception):
+                await ctx.reply(
+                    "This conversation isn't fully configured for Enso — "
+                    "ask an admin to run `enso config check`."
+                )
+            return "blocked", "execution_unavailable"
+
         prompt, output_instructions, surface_instructions = self._assemble_prompt(
             prompt, chat_id, provider_name, ctx, context
         )

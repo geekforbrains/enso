@@ -92,7 +92,6 @@ def test_job_session_key_is_stable_and_rotates_with_workspace_policy(
     other_root = Path(tmp_enso, "workspaces", "other")
     other_root.mkdir(parents=True)
     sample_config["workspaces"]["other"] = {
-        "path": str(other_root),
         "policy": "automation",
         "concurrency": 1,
     }
@@ -114,13 +113,18 @@ def test_job_session_key_is_stable_and_rotates_with_workspace_policy(
 @pytest.fixture(autouse=True)
 def configured_job_catalog(sample_config, tmp_enso):
     """Give execution tests one valid workspace-owned policy."""
-    workspace = Path(tmp_enso, "workspaces", "company")
-    workspace.mkdir(parents=True, exist_ok=True)
+    from enso.repository import EnsoRepository
+    from enso.scaffolding import ScaffoldService
+
+    scaffold = ScaffoldService(tmp_enso)
+    scaffold.repair_global()
+    workspace = scaffold.create_workspace("company").workspace
+    assert workspace is not None
+    EnsoRepository(tmp_enso).ensure()
     sample_config.update(
         {
             "workspaces": {
                 "company": {
-                    "path": str(workspace),
                     "policy": "automation",
                     "concurrency": 1,
                 },
@@ -860,7 +864,7 @@ async def test_job_missing_shared_instructions_fails_before_prerun(
     )
 
     assert result.status == "error"
-    assert "shared instruction file is missing" in result.output
+    assert "required instruction source is missing" in result.output
     runtime.jobs._run_job_prerun.assert_not_awaited()
     runtime.make_provider.assert_not_called()
 
@@ -893,12 +897,12 @@ async def test_job_policy_preflight_failure_happens_before_prerun(
     runtime.make_provider.assert_not_called()
 
 
-async def test_missing_job_workspace_path_fails_before_prerun(
+async def test_missing_managed_job_workspace_fails_before_prerun(
     tmp_enso,
     sample_config,
 ):
-    missing = Path(tmp_enso, "workspaces", "missing")
-    sample_config["workspaces"]["company"]["path"] = str(missing)
+    workspace = Path(tmp_enso, "workspaces", "company")
+    workspace.rename(Path(tmp_enso, "workspaces", "company-away"))
     runtime = Runtime(sample_config)
     job = make_job(tmp_enso)
     runtime.jobs._run_job_prerun = AsyncMock()
@@ -910,6 +914,135 @@ async def test_missing_job_workspace_path_fails_before_prerun(
     assert "workspace path does not exist" in result.output
     runtime.jobs._run_job_prerun.assert_not_awaited()
     runtime.make_provider.assert_not_called()
+
+
+async def test_workspace_root_git_entry_fails_before_job_prerun(
+    tmp_enso,
+    sample_config,
+    configured_job_catalog,
+):
+    Path(configured_job_catalog, ".git").touch()
+    runtime = Runtime(sample_config)
+    job = make_job(tmp_enso)
+    runtime.jobs._run_job_prerun = AsyncMock(
+        return_value=PrerunResult("open", output="context", exit_code=0)
+    )
+    runtime.make_provider = MagicMock()
+    runtime._spawn_process = AsyncMock()
+
+    result = await runtime.jobs._execute_job(
+        job, trigger="manual", notify_failures=False
+    )
+
+    assert result.status == "error"
+    assert "forbidden .git entry" in result.output
+    runtime.jobs._run_job_prerun.assert_not_awaited()
+    runtime.make_provider.assert_not_called()
+    runtime._spawn_process.assert_not_awaited()
+
+
+async def test_missing_root_repository_fails_before_job_prerun(
+    tmp_enso,
+    sample_config,
+):
+    Path(tmp_enso, ".git").rename(Path(tmp_enso, ".git-away"))
+    runtime = Runtime(sample_config)
+    job = make_job(tmp_enso)
+    runtime.jobs._run_job_prerun = AsyncMock()
+    runtime.make_provider = MagicMock()
+    runtime._spawn_process = AsyncMock()
+
+    result = await runtime.jobs._execute_job(
+        job, trigger="manual", notify_failures=False
+    )
+
+    assert result.status == "error"
+    assert "missing its required .git entry" in result.output
+    runtime.jobs._run_job_prerun.assert_not_awaited()
+    runtime.make_provider.assert_not_called()
+    runtime._spawn_process.assert_not_awaited()
+
+
+async def test_duplicate_scoped_skill_fails_before_job_prerun(
+    tmp_enso,
+    sample_config,
+    configured_job_catalog,
+):
+    for skills_root in (
+        Path(tmp_enso, "skills"),
+        Path(configured_job_catalog, "skills"),
+    ):
+        duplicate = skills_root / "shared"
+        duplicate.mkdir()
+        (duplicate / "SKILL.md").write_text("# Duplicate\n", encoding="utf-8")
+    runtime = Runtime(sample_config)
+    job = make_job(tmp_enso)
+    runtime.jobs._run_job_prerun = AsyncMock()
+    runtime.make_provider = MagicMock()
+    runtime._spawn_process = AsyncMock()
+
+    result = await runtime.jobs._execute_job(
+        job, trigger="manual", notify_failures=False
+    )
+
+    assert result.status == "error"
+    assert "duplicate global/workspace skill names" in result.output
+    runtime.jobs._run_job_prerun.assert_not_awaited()
+    runtime.make_provider.assert_not_called()
+    runtime._spawn_process.assert_not_awaited()
+
+
+async def test_job_prerun_cannot_change_workspace_discovery_boundary(
+    tmp_enso,
+    sample_config,
+    configured_job_catalog,
+):
+    runtime = Runtime(sample_config)
+    job = make_job(tmp_enso)
+
+    async def unsafe_prerun(_job, _tag):
+        Path(configured_job_catalog, ".git").touch()
+        return PrerunResult("open", output="context", exit_code=0)
+
+    runtime.jobs._run_job_prerun = AsyncMock(side_effect=unsafe_prerun)
+    runtime.make_provider = MagicMock()
+    runtime._spawn_process = AsyncMock()
+
+    result = await runtime.jobs._execute_job(
+        job, trigger="manual", notify_failures=False
+    )
+
+    assert result.status == "error"
+    assert "forbidden .git entry" in result.output
+    runtime.jobs._run_job_prerun.assert_awaited_once()
+    runtime.make_provider.assert_not_called()
+    runtime._spawn_process.assert_not_awaited()
+
+
+async def test_job_uses_shared_instructions_revalidated_after_prerun(
+    tmp_enso,
+    sample_config,
+):
+    runtime = Runtime(sample_config)
+    job = make_job(tmp_enso)
+    job.provider = "agy"
+    job.model = sample_config["providers"]["agy"]["models"][0]
+
+    async def revise_instructions(_job, _tag):
+        Path(tmp_enso, "AGENTS.md").write_text(
+            "# Revised after prerun\n", encoding="utf-8"
+        )
+        return PrerunResult("open", output="context", exit_code=0)
+
+    runtime.jobs._run_job_prerun = AsyncMock(side_effect=revise_instructions)
+    provider = stub_provider(runtime)
+
+    result = await runtime.jobs._execute_job(
+        job, trigger="manual", notify_failures=False
+    )
+
+    assert result.status == "ok"
+    assert provider.instructions[0].content == "# Revised after prerun\n"
 
 
 async def test_bound_jobs_share_process_local_workspace_concurrency(
@@ -1011,7 +1144,7 @@ async def test_invalid_job_binding_fails_without_global_fallback(
 @pytest.mark.parametrize(
     ("section", "field", "value", "expected"),
     [
-        ("workspaces", "path", "", "Invalid workspace 'company'"),
+        ("workspaces", "concurrency", 0, "Invalid workspace 'company'"),
         ("policies", "unrestricted", "yes", "Invalid policy 'automation'"),
     ],
 )

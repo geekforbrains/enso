@@ -19,14 +19,16 @@ The web UI is a read/write dashboard for:
   enable or disable it, and edit its prompt body or configured prerun script; full job
   CRUD is planned.
 - **Skills** — browse the bundled/installed skills; edit Enso's own.
-- **Reference docs** — browse, create, edit, and delete operator knowledge.
+- **Reference docs** — discover, browse, create, edit, and delete user-owned operator
+  knowledge, including three fresh-install starter references.
 - **Data tables** — discover registered SQLite tables and inspect their schema
   and a bounded row preview. Agents manage their schemas and rows outside the web UI.
 - **Execution configuration** — inspect workspaces, each workspace's one reusable policy,
   exact Slack routes, Telegram/job bindings, and safe native-policy validation status.
-- **Instructions** — read and edit the canonical shared `~/.enso/AGENTS.md`, edit managed
-  workspace-root instructions, and inspect nested or external workspace instructions
-  read-only.
+- **Instructions** — read and edit the canonical shared `~/.enso/AGENTS.md`, edit every
+  valid canonical workspace-root instruction file, and inspect nested workspace
+  instructions read-only. Instruction content below an invalid alternate root is never
+  inspected or rendered.
 
 There is **no chat in the web UI** — chat lives in Telegram/Slack. The web UI is for
 overview, organisation, and managing the scheduled work Enso already runs.
@@ -63,6 +65,9 @@ overview, organisation, and managing the scheduled work Enso already runs.
 - **No configuration or native-policy editor.** Workspace, policy, and Slack views explain
   the active process configuration without changing `config.json` or protected provider
   policy files.
+- **No Git-history manager.** Content history is ordinary local Git commits made by
+  agents, but the dashboard has no history browser and Enso exposes no snapshot,
+  restore, reset, or delete command.
 
 ## Vocabulary
 
@@ -72,20 +77,27 @@ overview, organisation, and managing the scheduled work Enso already runs.
 - **Table** — a registered, user-owned SQLite table containing structured facts an agent
   or operator needs to query. Registration supplies discovery metadata and UI visibility;
   it does not transfer schema/row ownership to Enso. See [tables.md](specs/tables.md).
+- **Reference doc** — user-owned Markdown whose relative path and frontmatter description
+  provide on-demand operator context. `enso doc list` derives its current discovery index
+  directly from the doc tree. See [docs.md](specs/docs.md).
+- **Content history** — ordinary local Git commits in `~/.enso`, made with explicit
+  scoped paths. The managed `.gitignore` excludes configuration, credentials, databases,
+  policies, uploads, drafts, and runtime state.
 - **Transport / notify** — the existing chat delivery layer (Telegram/Slack). Host-side job failure and recovery alerts ride it; successful jobs are silent unless the prompt explicitly sends a message. Slack route auditing records inbound turns only and does not change notification behavior.
 
 ## Key decisions
 
 | Decision                       | Choice                                                                                                                                                                           |
 | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Authored intent (jobs, skills) | **Files** — Markdown + YAML frontmatter, source of truth, edited by human and agent alike                                                                                        |
+| Authored intent (jobs, skills, docs) | **Files** — Markdown + YAML frontmatter, source of truth, edited by human and agent alike                                                                                  |
 | Structured storage             | **SQLite** (`~/.enso/enso.db`) for run metadata and explicitly registered user data tables; **run output blobs on disk** (`~/.enso/runs/<id>.log`)                               |
 | Table discovery                | `_enso_tables` is an explicit catalog; only valid registered tables appear in the CLI/UI, while agents use standard SQLite for schema and row operations                         |
 | Frontmatter                    | PyYAML `BaseLoader` for valid job metadata, with a legacy line-parser fallback for malformed older files; raw web edits preserve formatting                                      |
 | Web server                     | **Starlette + Uvicorn + Jinja2**, run separately with `enso web` and sharing the file/SQLite model with `enso serve`                                                             |
 | Web access                     | Bind **localhost** by default; Tailscale for remote; Host allowlist and optional shared token. No login                                                                          |
-| Web capability                 | **Read/write, scoped to owned files** — edit job prompts, toggle/run jobs, edit Enso-owned skills, shared instructions, and managed workspace-root instructions. Configuration, policies, nested/external instructions, and external skills are read-only |
+| Web capability                 | **Read/write, scoped to owned files** — edit job prompts, toggle/run jobs, edit Enso-owned skills, shared instructions, and valid canonical workspace-root instructions. Configuration, policies, nested instructions, and external skills are read-only |
 | Tables web capability          | **Read-only, bounded inspection** — list metadata, show schema, and page through capped previews; no SQL or row/schema mutations                                                 |
+| Local content history          | **Plain scoped Git** — agents commit reviewed explicit paths locally with `git add`/`git commit`; the managed `.gitignore` keeps runtime and credential paths out. No broad staging, network Git operation, or destructive history command |
 | Notifications                  | Reuse `transport.notify` / `enso message send`; exact Slack routing does not alter job delivery. No transport implicitly broadcasts                                              |
 
 ## Personas
@@ -138,25 +150,75 @@ authorized chat senders, not additional owners or dashboard personas.
   user-created or seeded from Enso's starter set at install — **editable**; and
   **external / "parent"** skills auto-discovered from the underlying CLIs'
   own skill roots (e.g. `~/.claude/skills/`), shown **read-only with their source path** for
-  awareness. Missing bundled files are seeded unless explicitly deleted, known pristine
-  older copies can advance during upgrades, and customized files or symlinks remain
-  untouched.
+  awareness. Fresh setup copies the starter set once; every installed skill is user-owned
+  thereafter. Startup and upgrades never seed missing bundle entries, advance older
+  copies, create deletion tombstones, or clean up files copied from a skill.
 - Enso-owned skill directories can be edited or deleted after confirmation. **Planned:**
   create skills and edit their tool scripts. The skills UI never writes outside
   `~/.enso/`.
 - `/workspaces` and `/workspaces/<name>` show each active execution root, its one policy,
   concurrency, Slack/Telegram/job consumers, problems, and a bounded nested `AGENTS.md`
-  inventory. Managed root instructions are revision-checked and editable; child and
-  external workspace files are read-only.
+  inventory. Every lowercase kebab-case workspace name derives the exact physical root
+  `~/.enso/workspaces/<name>`; external, nested, symlinked, and workspace-root Git layouts
+  are invalid, and their instruction content is never inspected or rendered. Every valid
+  canonical root instruction file is revision-checked and editable; child files are
+  read-only.
+- `enso workspace list` and `enso workspace show <name>` inspect that catalog without
+  mutation. `enso workspace create <name> --policy <policy> [--concurrency <n>]` accepts
+  no path, requires an existing explicit policy, defaults concurrency to `1`, publishes a
+  complete scaffold atomically, saves the validated candidate config atomically, and
+  runs the installation check; the new scaffold is recorded in local history by a later
+  scoped commit. Fresh setup's unrestricted
+  `admin`/`default` binding is the only automatic full-authority grant.
+- `enso workspace repair <name>` creates missing structural directories and known
+  discovery links only. It never recreates seeded instructions, skill definitions, docs, or
+  `knowledge/README.md`; it reports missing user content that keeps the workspace from
+  launching. Published directories survive later config or check failures for
+  operator recovery, and all binding changes require restart.
 - `/policies` and `/policies/<name>` show reusable policy configuration, consuming
   workspaces, and safe provider-validation results. Native policy contents and secret
   values are never rendered or edited.
+- `enso policy list` and `enso policy show <name>` provide the same safe read-only
+  orientation. `enso policy create <name>` requires exactly one explicit authority
+  source (`--unrestricted` or an existing user-authored `--policy-dir`), repeated explicit
+  providers, a default provider, and deliberate chat-command/environment choices. It
+  validates before persistence and never creates, copies, chmods, rewrites, upgrades, or
+  repairs canonical native policy content. Fresh setup's full-authority unrestricted
+  `admin` is the sole automatic creation; deletion, rebinding, repair, and presets remain
+  out of scope.
 - `/slack` shows exact DM/channel IDs, cache-only friendly labels, workspace-to-policy
   bindings, audit/trigger state, and route problems without making Slack API requests.
 - `/agents` renders the canonical shared `~/.enso/AGENTS.md`; its revision-checked editor
   writes only the regular target while leaving `~/.enso/CLAUDE.md -> AGENTS.md` intact.
+- Every provider spawn revalidates the exact physical workspace, `~/.enso` Git root,
+  discovery links, skill-name uniqueness, and current shared source. Claude and Codex use
+  native root/workspace instruction discovery with no duplicate injection; Grok and Agy
+  receive the freshly validated shared content exactly once through their adapters.
 
-### F5 — Registered data tables
+### F5 — Reference docs and starter context
+
+- `/docs` lists the current `~/.enso/docs/` tree from each file's relative path, `name`,
+  and discovery-oriented `description`; there is no static index to drift when a user
+  creates, edits, or deletes a doc.
+- A genuinely fresh setup copies exactly three references:
+  `enso/content_model.md` for content placement and source precedence,
+  `enso/layout.md` for the managed filesystem and local-history boundary, and
+  `operator.md` for confirmed identity, timezone/locale, preferences, and standing
+  personal context. It does not seed empty topic placeholders.
+- Setup persists `setup.completed_at: null` before fresh seeding, records the complete
+  initial content tree in one baseline Git commit, and then writes a timezone-bearing
+  completion timestamp. Failed seeds or commits remain retryable; if only the timestamp
+  write fails, retry completes that transition without creating a second initial commit.
+- Installed starters are user-owned and may be edited or deleted. Timestamped setup,
+  pre-feature configurations with no setup field, structural repair, startup, dashboard
+  startup, and upgrades never seed or restore them.
+- On a timestamped or pre-feature installation, explicit `enso setup` validates the
+  existing catalog before repository mutation and performs structural-only repair. It
+  does not rewrite `config.json` or synthesize a `setup` marker.
+- The shared prompt treats starter paths as optional routing hints and relies on the
+  dynamic doc list for everything the operator adds later.
+
+### F6 — Registered data tables
 
 - User tables live in the existing WAL-mode `~/.enso/enso.db`; `runs`, `_enso_*`, and
   `sqlite_*` remain reserved internal namespaces.
@@ -182,9 +244,25 @@ authorized chat senders, not additional owners or dashboard personas.
 - Every configured workspace, reusable policy, and exact Slack route can be traced in the
   web UI without exposing a transport secret or native policy source file; an invalid
   binding has a visible, actionable status.
-- A stale shared or managed-workspace instruction form cannot overwrite a newer agent or
+- Read-only startup and configuration checks reject an incomplete scaffold or duplicate
+  global/workspace skill name without repairing it or applying provider-specific
+  precedence.
+- A missing/corrupt root repository, symlinked or mislocated workspace, direct workspace
+  `.git` entry, or discovery change between preparation and spawn prevents every provider
+  from launching; job validation catches the same boundary before trusted prerun and
+  checks it again afterward.
+- A fresh setup exposes the three starter descriptions through the dynamic doc list,
+  captures them in its single baseline commit, and marks setup complete only
+  afterward; deleting a starter leaves it absent through restart, repair, and upgrade.
+- A stale shared or canonical-workspace instruction form cannot overwrite a newer agent or
   operator edit; unsafe links, path traversal, and files outside `~/.enso/` remain outside
   the browser write boundary.
+- A workspace can be listed, inspected, created with an explicit existing policy, and
+  structurally repaired without hand-editing workspace JSON or links; no command accepts
+  an alternate path or silently chooses unrestricted authority.
+- A policy can be safely listed, inspected, and created from one explicit authority
+  source without exposing or mutating provider-native content; restricted policies never
+  receive an implicit directory, and `enso config check` remains the complete validator.
 - The web UI runs via `enso web`, reachable at `http://localhost:<port>` and, when
   deliberately bound there, over the tailnet.
 - Slack authorization uses exact routes configured alongside credentials and transport options in `transports.slack`; Telegram remains private with exact numeric allowed-user IDs; every Telegram configuration, Slack route, and job requires a named workspace and inherits that workspace's single policy.

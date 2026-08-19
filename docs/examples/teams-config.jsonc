@@ -1,4 +1,4 @@
-// Example ~/.enso/config.json for exact Slack routes.
+// Example resulting ~/.enso/config.json for exact Slack routes.
 //
 // Slack keeps credentials, options, and exact routes together under
 // transports.slack. Exact DM users and channel IDs select one workspace and
@@ -15,13 +15,49 @@
 // Rich messages and persistent surfaces require the current bundled Slack app
 // manifest, including App Home, interactivity, canvases:write, and files:read.
 //
-// Config changes require an Enso restart. Before restarting, run:
+// Do not create the policy or workspace catalog entries below by hand. Fresh
+// setup creates only the full-authority unrestricted admin policy plus workspace
+// default. First author, protect, and test every complete restricted
+// provider-native directory, then register it with commands such as:
 //
+//   enso policy create staff --policy-dir ~/.enso/policies/staff \
+//     --provider claude --provider codex --provider grok \
+//     --default-provider claude \
+//     --chat-command status --chat-command clear --chat-command stop \
+//     --chat-command help --chat-command use --chat-command model \
+//     --chat-command effort --chat-command compact \
+//     --env-passthrough METRICS_API_TOKEN
+//   enso policy create client-readonly \
+//     --policy-dir ~/.enso/policies/client-readonly \
+//     --provider claude --default-provider claude \
+//     --chat-command status --chat-command clear --chat-command stop \
+//     --chat-command help
+//   enso policy create automation --policy-dir ~/.enso/policies/automation \
+//     --provider claude --provider codex --default-provider claude
+//
+// The policy sources are user-owned. Enso never creates, copies, chmods,
+// rewrites, upgrades, or repairs them. The acme-* files beside this example
+// are explanatory starting points, not trusted or certified presets.
+//
+// Then create the name-derived workspaces through the workspace CLI:
+//
+//   enso workspace create company --policy staff
+//   enso workspace create acme --policy client-readonly
+//   enso workspace create acme-internal --policy staff
+//   enso workspace create automation --policy automation
+//
+// Add the exact transport routes to the resulting config where no focused
+// routing CLI exists. Config changes require an Enso restart. Before restarting,
+// run:
+//
+//   enso policy list
+//   enso policy show staff
 //   enso config check
 //   enso route explain slack U01OWNER
 //   enso route explain slack U04CLIENT C0ACME
 //
-// config.json is strict JSON, so remove comments when copying this example.
+// config.json is strict JSON. Treat the body as a schema reference; if copying
+// its transport or route fragments, remove comments first.
 {
   "transport": "slack",
   "transports": {
@@ -91,37 +127,34 @@
   },
 
   // A workspace is a provider cwd and shared content root. It selects exactly
-  // one policy; the same policy may be reused by several workspaces.
+  // one policy; the same policy may be reused by several workspaces. Names
+  // derive only ~/.enso/workspaces/<name>; no path field is accepted.
   "workspaces": {
     "default": {
-      "path": "~/.enso/workspaces/default",
       "policy": "admin",
       "concurrency": 1
     },
     "company": {
-      "path": "~/.enso/workspaces/company",
       "policy": "staff",
       "concurrency": 1
     },
     "acme": {
-      "path": "~/.enso/workspaces/clients/acme",
       "policy": "client-readonly",
       "concurrency": 1
     },
     "acme-internal": {
-      "path": "~/.enso/workspaces/clients/acme-internal",
       "policy": "staff",
       "concurrency": 1
     },
     "automation": {
-      "path": "~/.enso/workspaces/automation",
       "policy": "automation",
       "concurrency": 1
     }
   },
 
-  // A policy carries capabilities. Restricted policies point
-  // at protected native CLI policy files outside all writable workspaces.
+  // These are the resulting entries written by policy create. A policy carries
+  // capabilities; restricted policies explicitly point at existing protected
+  // native CLI policy files outside all writable workspaces.
   "policies": {
     "admin": {
       "unrestricted": true,

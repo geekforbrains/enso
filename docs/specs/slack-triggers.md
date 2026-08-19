@@ -106,7 +106,7 @@ Inbound user mentions are flattened to inert text before the model sees them, in
 - Any other mention of the bot becomes `@<bot display name>`, so the model knows when it is being talked about.
 - A mention of anyone else becomes `@<display name> (<user ID>)`, resolved through the Slack directory cache, falling back to `@<user ID>` on a cache miss. The name is for reading; the ID stays authoritative for lookups (`enso slack`).
 
-Raw `<@U…>` syntax never reaches the prompt. This fixes two problems at once: the model previously never saw who a request was about (mentions were stripped wholesale), and raw mention syntax echoed back by the model would render as a live ping, since outbound mrkdwn is not escaped. Flattened text pings no one. Special mentions such as `<!here>` are untouched by this pass; they carry no user identity.
+Raw `<@U…>` syntax never reaches the prompt. Flattening solves two problems at once: the model still sees who a request is about, and mention syntax echoed back by the model cannot render as a live ping, since outbound mrkdwn is not escaped. Flattened text pings no one. Special mentions such as `<!here>` are untouched by this pass; they carry no user identity.
 
 Display names are user-controlled, so they are neutralized before interpolation — angle brackets, square brackets, and line breaks are removed. A crafted profile name can neither reintroduce live mention syntax through the flattener nor forge the `[user …]` author labels on injected context.
 

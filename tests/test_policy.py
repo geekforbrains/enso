@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import FrozenInstanceError, replace
 
 try:
     import tomllib
@@ -114,6 +116,329 @@ def write_claude_mcp(tmp_path, content=None) -> str:
     path.write_text(payload if isinstance(payload, str) else json.dumps(payload))
     path.chmod(0o600)
     return str(path)
+
+
+# -- whole-policy source validation --
+
+
+def test_policy_source_validation_is_frozen(tmp_path):
+    write_claude_policy(tmp_path)
+
+    result = policy.check_policy_sources(
+        make_policy(tmp_path, providers=("claude",)),
+        (make_workspace(tmp_path),),
+    )
+
+    assert isinstance(result, policy.PolicySourceValidation)
+    with pytest.raises(FrozenInstanceError):
+        result.ok = False
+
+
+def test_check_policy_sources_checks_every_provider_without_runtime_writes(tmp_path):
+    write_claude_policy(tmp_path)
+    write_codex_policy(tmp_path)
+    write_grok_policy(tmp_path)
+    access = make_policy(tmp_path, providers=("claude", "codex", "grok"))
+
+    result = policy.check_policy_sources(access, (make_workspace(tmp_path),))
+
+    assert result.ok, result.problems
+    assert tuple(check.provider for check in result.provider_checks) == (
+        "claude",
+        "codex",
+        "grok",
+    )
+    assert all(check.ok for check in result.provider_checks)
+    assert not (tmp_path / "policies" / ".runtime").exists()
+
+
+def test_check_policy_sources_rejects_restricted_agy(tmp_path):
+    policy_dir = tmp_path / "policies"
+    policy_dir.mkdir()
+    access = make_policy(tmp_path, providers=("agy",))
+
+    result = policy.check_policy_sources(access, ())
+
+    assert not result.ok
+    assert any("unrestricted" in problem for problem in result.problems)
+    assert result.provider_checks[0].provider == "agy"
+    assert not result.provider_checks[0].ok
+
+
+@pytest.mark.parametrize("kind", ["missing", "file", "symlink"])
+def test_check_policy_sources_requires_a_physical_existing_policy_directory(tmp_path, kind):
+    policy_dir = tmp_path / "policies"
+    if kind == "file":
+        policy_dir.write_text("not a directory")
+    elif kind == "symlink":
+        target = tmp_path / "real-policies"
+        target.mkdir()
+        policy_dir.symlink_to(target, target_is_directory=True)
+
+    result = policy.check_policy_sources(
+        make_policy(tmp_path, providers=("claude",)),
+        (make_workspace(tmp_path),),
+    )
+
+    assert not result.ok
+    assert any("policy_dir" in problem for problem in result.problems)
+    if kind == "symlink":
+        assert any("symlink" in problem for problem in result.problems)
+    elif kind == "file":
+        assert any("directory" in problem for problem in result.problems)
+    else:
+        assert any("does not exist" in problem for problem in result.problems)
+
+
+def test_check_policy_sources_rejects_non_user_owned_topology(tmp_path, monkeypatch):
+    write_claude_policy(tmp_path)
+    current_uid = os.geteuid()
+    monkeypatch.setattr(policy.os, "geteuid", lambda: current_uid + 1)
+
+    result = policy.check_policy_sources(
+        make_policy(tmp_path, providers=("claude",)),
+        (make_workspace(tmp_path),),
+    )
+
+    assert not result.ok
+    assert any("current user" in problem for problem in result.problems)
+
+
+@pytest.mark.parametrize("location", ["root", "provider", "nested", "file"])
+def test_check_policy_sources_rejects_unsafe_file_and_directory_modes(tmp_path, location):
+    write_codex_policy(tmp_path)
+    nested = tmp_path / "policies" / "codex" / "rules"
+    nested.mkdir()
+    rule = nested / "enso.rules"
+    rule.write_text("x = 1\n")
+    rule.chmod(0o600)
+    targets = {
+        "root": tmp_path / "policies",
+        "provider": tmp_path / "policies" / "codex",
+        "nested": nested,
+        "file": rule,
+    }
+    targets[location].chmod(0o777)
+
+    result = policy.check_policy_sources(
+        make_policy(tmp_path, providers=("codex",)),
+        (make_workspace(tmp_path),),
+    )
+
+    assert not result.ok
+    assert any(
+        "owner-only" in problem or "group/other-writable" in problem
+        for problem in result.problems
+    )
+
+
+@pytest.mark.parametrize("location", ["provider", "nested"])
+def test_check_policy_sources_rejects_symlinked_provider_directories(tmp_path, location):
+    root = tmp_path / "policies"
+    root.mkdir()
+    real_provider = tmp_path / "real-codex"
+    real_provider.mkdir()
+    config = real_provider / "config.toml"
+    config.write_text(CODEX_CONFIG)
+    config.chmod(0o600)
+    if location == "provider":
+        (root / "codex").symlink_to(real_provider, target_is_directory=True)
+    else:
+        provider_dir = root / "codex"
+        provider_dir.mkdir()
+        local_config = provider_dir / "config.toml"
+        local_config.write_text(CODEX_CONFIG)
+        local_config.chmod(0o600)
+        (provider_dir / "rules").symlink_to(real_provider, target_is_directory=True)
+
+    result = policy.check_policy_sources(
+        make_policy(tmp_path, providers=("codex",)),
+        (make_workspace(tmp_path),),
+    )
+
+    assert not result.ok
+    assert any("symlink" in problem for problem in result.problems)
+
+
+def test_check_policy_sources_rejects_nonregular_nested_entries(tmp_path):
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("FIFOs are unavailable on this platform")
+    write_codex_policy(tmp_path)
+    fifo = tmp_path / "policies" / "codex" / "rules.pipe"
+    os.mkfifo(fifo, 0o600)
+
+    result = policy.check_policy_sources(
+        make_policy(tmp_path, providers=("codex",)),
+        (make_workspace(tmp_path),),
+    )
+
+    assert not result.ok
+    assert any("regular file or directory" in problem for problem in result.problems)
+
+
+def test_check_policy_sources_checks_overlap_against_every_workspace_alias(tmp_path):
+    first = make_workspace(tmp_path)
+    second_root = tmp_path / "second-workspace"
+    second_root.mkdir()
+    second = Workspace(
+        name="second",
+        path=str(second_root),
+        policy="standard",
+        concurrency=1,
+    )
+    source = second_root / "native-policy"
+    settings = source / "claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps(CLAUDE_SETTINGS))
+    settings.chmod(0o600)
+    alias = tmp_path / "policy-alias"
+    alias.symlink_to(source, target_is_directory=True)
+    access = replace(
+        make_policy(tmp_path, providers=("claude",)),
+        policy_dir=str(alias),
+    )
+
+    result = policy.check_policy_sources(access, (first, second))
+
+    assert not result.ok
+    assert any("overlaps workspace 'second'" in problem for problem in result.problems)
+
+
+def test_check_policy_sources_rejects_a_symlink_in_policy_dir_ancestry(tmp_path):
+    outside = tmp_path / "outside"
+    settings = outside / "native" / "claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps(CLAUDE_SETTINGS))
+    settings.chmod(0o600)
+    alias = tmp_path / "policy-parent"
+    alias.symlink_to(outside, target_is_directory=True)
+    access = replace(
+        make_policy(tmp_path, providers=("claude",)),
+        policy_dir=str(alias / "native"),
+    )
+
+    result = policy.check_policy_sources(access, (make_workspace(tmp_path),))
+
+    assert not result.ok
+    assert any("path component" in problem and "symlink" in problem for problem in result.problems)
+
+
+def test_check_policy_sources_rejects_wrong_case_policy_component(tmp_path):
+    actual = tmp_path / "PolicyRoot"
+    settings = actual / "claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps(CLAUDE_SETTINGS))
+    settings.chmod(0o600)
+    wrong_case = tmp_path / "policyroot"
+    if not wrong_case.exists():
+        pytest.skip("filesystem is case-sensitive")
+    access = replace(
+        make_policy(tmp_path, providers=("claude",)),
+        policy_dir=str(wrong_case),
+    )
+
+    result = policy.check_policy_sources(access, (make_workspace(tmp_path),))
+
+    assert not result.ok
+    assert any("spelling" in problem and "PolicyRoot" in problem for problem in result.problems)
+
+
+def test_lexical_workspace_overlap_is_reported_before_symlink_alias_resolution(tmp_path):
+    first = make_workspace(tmp_path)
+    second_root = tmp_path / "second-workspace"
+    second_root.mkdir()
+    second = Workspace(
+        name="second",
+        path=str(second_root),
+        policy="standard",
+        concurrency=1,
+    )
+    outside = tmp_path / "outside"
+    settings = outside / "native" / "claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps(CLAUDE_SETTINGS))
+    settings.chmod(0o600)
+    (second_root / "escape").symlink_to(outside, target_is_directory=True)
+    access = replace(
+        make_policy(tmp_path, providers=("claude",)),
+        policy_dir=str(second_root / "escape" / "native"),
+    )
+
+    result = policy.check_policy_sources(access, (first, second))
+
+    assert not result.ok
+    assert any("lexically overlaps workspace 'second'" in problem for problem in result.problems)
+
+
+def test_check_provider_reuses_whole_source_topology_checks(tmp_path):
+    root = tmp_path / "policies"
+    root.mkdir()
+    real_provider = tmp_path / "real-claude"
+    real_provider.mkdir()
+    settings = real_provider / "settings.json"
+    settings.write_text(json.dumps(CLAUDE_SETTINGS))
+    settings.chmod(0o600)
+    (root / "claude").symlink_to(real_provider, target_is_directory=True)
+
+    result = policy.check_provider(
+        make_workspace(tmp_path),
+        make_policy(tmp_path, providers=("claude",)),
+        "claude",
+    )
+
+    assert not result.ok
+    assert any("symlink" in problem for problem in result.problems)
+
+
+def test_check_provider_rejects_unsafe_runtime_without_rewriting_it(tmp_path):
+    write_codex_policy(tmp_path)
+    runtime = tmp_path / "policies" / ".runtime"
+    runtime.mkdir(mode=0o700)
+    runtime.chmod(0o777)
+
+    result = policy.check_provider(
+        make_workspace(tmp_path),
+        make_policy(tmp_path, providers=("codex",)),
+        "codex",
+    )
+
+    assert not result.ok
+    assert any(".runtime" in problem for problem in result.problems)
+    assert runtime.stat().st_mode & 0o777 == 0o777
+
+
+def test_existing_staged_snapshot_rejects_nested_symlink_topology(tmp_path, monkeypatch):
+    write_codex_policy(tmp_path)
+    monkeypatch.setattr(policy, "_user_codex_home", lambda: str(tmp_path / "nope"))
+    workspace = make_workspace(tmp_path)
+    access = make_policy(tmp_path, providers=("codex",))
+    launch = policy.prepare_launch(workspace, access, "codex")
+    rogue = os.path.join(launch.home, "rogue")
+    os.symlink(str(tmp_path), rogue, target_is_directory=True)
+
+    with pytest.raises(policy.PolicyError, match="symlink"):
+        policy.prepare_launch(workspace, access, "codex")
+
+
+def test_staging_fails_closed_when_source_no_longer_matches_the_checked_revision(
+    tmp_path,
+    monkeypatch,
+):
+    source = tmp_path / "policies" / "codex" / "config.toml"
+    write_codex_policy(tmp_path)
+    workspace = make_workspace(tmp_path)
+    access = make_policy(tmp_path, providers=("codex",))
+    checked = policy.check_provider(workspace, access, "codex")
+    assert checked.ok and checked.policy_revision is not None
+    monkeypatch.setattr(policy, "_user_codex_home", lambda: str(tmp_path / "no-auth"))
+    source.write_text(CODEX_CONFIG.replace("enabled = false", "enabled = true"))
+    source.chmod(0o600)
+
+    with pytest.raises(policy.PolicyError, match="does not match the checked revision"):
+        policy._stage_codex_home(access, checked.policy_revision)
+
+    snapshots = tmp_path / "policies" / ".runtime" / "codex-home"
+    assert not (snapshots / checked.policy_revision).exists()
 
 
 # -- check_provider --
@@ -232,7 +557,7 @@ def test_codex_invalid_toml_fails(tmp_path):
     assert not check.ok
 
 
-def test_codex_policy_cannot_override_shared_developer_instructions(tmp_path):
+def test_codex_policy_cannot_add_duplicate_developer_instructions(tmp_path):
     write_codex_policy(
         tmp_path,
         'developer_instructions = "policy-local override"\n' + CODEX_CONFIG,
@@ -242,7 +567,9 @@ def test_codex_policy_cannot_override_shared_developer_instructions(tmp_path):
 
     assert not check.ok
     assert any(
-        "developer_instructions" in problem and "reserved" in problem
+        "developer_instructions" in problem
+        and "native" in problem
+        and "AGENTS.md" in problem
         for problem in check.problems
     )
 
@@ -293,6 +620,19 @@ def test_grok_fail_open_config_shapes_are_static_problems(tmp_path, content):
     check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "grok")
     assert not check.ok
     assert any("permission" in p for p in check.problems)
+
+
+def test_grok_unknown_permission_key_is_not_echoed_in_public_problems(tmp_path):
+    sentinel = "secret_operator_key_token"
+    write_grok_policy(
+        tmp_path,
+        f'[permission]\nallow = ["run_terminal_command(echo *)"]\n{sentinel} = ["x"]\n',
+    )
+
+    check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "grok")
+
+    assert not check.ok
+    assert sentinel not in " ".join(check.problems)
 
 
 @pytest.mark.parametrize(
@@ -491,9 +831,8 @@ def test_mcp_rule_without_mcp_file_warns_inert_rule(tmp_path):
     )
     check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert check.ok, check.problems
-    assert any(
-        'permission rule "mcp__ghost__tool" matches no MCP server' in w for w in check.warnings
-    )
+    assert any("permission rule matches no configured MCP server" in w for w in check.warnings)
+    assert "mcp__ghost__tool" not in " ".join(check.warnings)
 
 
 def test_mcp_rule_matching_a_defined_server_does_not_warn(tmp_path):
@@ -563,9 +902,11 @@ def test_secret_shaped_literal_in_mcp_headers_warns(tmp_path):
     check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert check.ok, check.problems
     assert check.warnings == (
-        'mcp.json server "tickets" has a secret-shaped literal in '
-        "headers.Authorization; use a ${VAR} reference",
+        'mcp.json server "tickets" has a secret-shaped literal in headers; '
+        "use a ${VAR} reference",
     )
+    assert "Authorization" not in " ".join(check.warnings)
+    assert "abc123" not in " ".join(check.warnings)
 
 
 def test_env_reference_in_mcp_headers_does_not_warn(tmp_path):
@@ -596,7 +937,9 @@ def test_secret_shaped_literal_in_mcp_env_warns(tmp_path):
     )
     check = policy.check_provider(make_workspace(tmp_path), make_policy(tmp_path), "claude")
     assert check.ok, check.problems
-    assert any("env.API_KEY" in w and "${VAR}" in w for w in check.warnings)
+    assert any("secret-shaped literal in env" in w and "${VAR}" in w for w in check.warnings)
+    assert "API_KEY" not in " ".join(check.warnings)
+    assert "literal-secret" not in " ".join(check.warnings)
 
 
 # -- policy_revision --
@@ -660,9 +1003,9 @@ def test_revision_rotates_on_mcp_file_add_edit_and_remove(tmp_path):
     assert removed == base
 
 
-def test_launch_contract_is_version_five():
-    assert policy.LAUNCH_CONTRACT_VERSION == "5"
-    assert policy.UNRESTRICTED_REVISION == "unrestricted:v5"
+def test_launch_contract_is_version_six():
+    assert policy.LAUNCH_CONTRACT_VERSION == "6"
+    assert policy.UNRESTRICTED_REVISION == "unrestricted:v6"
 
 
 def test_hard_linked_codex_rule_fails(tmp_path):
@@ -932,6 +1275,108 @@ def test_concurrent_codex_snapshot_publish_has_one_complete_winner(tmp_path, mon
 # -- grok staged GROK_HOME --
 
 
+def test_verify_grok_rules_uses_temporary_homes_without_policy_runtime_writes(
+    tmp_path,
+    monkeypatch,
+):
+    source = write_grok_policy(tmp_path)
+    with open(source, "rb") as native:
+        source_bytes = native.read()
+    source_stat = os.stat(source)
+    before = (source_bytes, source_stat.st_mode, source_stat.st_mtime_ns)
+    inspected: dict[str, str] = {}
+
+    def reject_auth(*_args, **_kwargs):
+        pytest.fail("read-only Grok verification must not inspect or stage user auth")
+
+    def fake_run(cmd, **kwargs):
+        grok_home = kwargs["env"]["GROK_HOME"]
+        scratch_home = kwargs["env"]["HOME"]
+        inspected.update(grok_home=grok_home, scratch_home=scratch_home)
+        assert cmd[-2:] == ["inspect", "--json"]
+        assert os.path.isdir(grok_home)
+        assert os.path.isdir(scratch_home)
+        assert not os.path.exists(os.path.join(grok_home, "auth.json"))
+        with open(os.path.join(grok_home, "config.toml"), "rb") as staged:
+            config = tomllib.load(staged)
+        assert config["marketplace"]["official_marketplace_auto_installed"] is True
+        assert not (tmp_path / "policies" / ".runtime").exists()
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout=json.dumps({"permissions": {"loaded": 2, "sources": []}}),
+            stderr="",
+        )
+
+    monkeypatch.setattr(policy, "_read_provider_auth", reject_auth)
+    monkeypatch.setattr(policy.subprocess, "run", fake_run)
+
+    problems = policy.verify_grok_rules(
+        make_workspace(tmp_path),
+        make_policy(tmp_path, providers=("grok",)),
+        "grok",
+    )
+
+    assert problems == []
+    assert not (tmp_path / "policies" / ".runtime").exists()
+    with open(source, "rb") as native:
+        source_bytes = native.read()
+    source_stat = os.stat(source)
+    assert (source_bytes, source_stat.st_mode, source_stat.st_mtime_ns) == before
+    assert not os.path.exists(inspected["grok_home"])
+    assert not os.path.exists(inspected["scratch_home"])
+
+
+def test_verify_grok_rules_does_not_return_raw_inspect_output(tmp_path, monkeypatch):
+    write_grok_policy(tmp_path)
+    sentinel = "secret-inspect-output-token"
+    monkeypatch.setattr(
+        policy.subprocess,
+        "run",
+        lambda cmd, **_kwargs: subprocess.CompletedProcess(
+            cmd,
+            17,
+            stdout=sentinel,
+            stderr=sentinel,
+        ),
+    )
+
+    problems = policy.verify_grok_rules(
+        make_workspace(tmp_path),
+        make_policy(tmp_path, providers=("grok",)),
+        "grok",
+    )
+
+    assert any("exited 17" in problem for problem in problems)
+    assert sentinel not in " ".join(problems)
+
+
+def test_verify_grok_rules_does_not_return_raw_report_sources(tmp_path, monkeypatch):
+    write_grok_policy(tmp_path)
+    sentinel = "secret-workspace-source-token"
+    monkeypatch.setattr(
+        policy.subprocess,
+        "run",
+        lambda cmd, **_kwargs: subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout=json.dumps(
+                {"permissions": {"loaded": 3, "sources": [sentinel]}}
+            ),
+            stderr="",
+        ),
+    )
+
+    problems = policy.verify_grok_rules(
+        make_workspace(tmp_path),
+        make_policy(tmp_path, providers=("grok",)),
+        "grok",
+    )
+
+    assert any("outside the policy" in problem for problem in problems)
+    assert sentinel not in " ".join(problems)
+
+
 def test_grok_launch_stages_isolated_home(tmp_path, monkeypatch):
     src = write_grok_policy(tmp_path)
     fake_grok_home = tmp_path / "grok-user-home"
@@ -1085,7 +1530,7 @@ def test_grok_staging_failure_raises_policy_error(tmp_path, monkeypatch):
     def boom(*args, **kwargs):
         raise PermissionError(13, "Permission denied")
 
-    monkeypatch.setattr(policy.os, "makedirs", boom)
+    monkeypatch.setattr(policy.os, "mkdir", boom)
     with pytest.raises(policy.PolicyError):
         policy.prepare_launch(workspace, access, "grok")
 
@@ -1095,7 +1540,7 @@ def test_env_passthrough_reserves_grok_launch_env(tmp_path, name):
     """GROK_SANDBOX and GROK_FOLDER_TRUST change kernel sandboxing and folder
     trust; all three are launch-owned and may never ride env_passthrough."""
     config = {
-        "workspaces": {"acme": {"path": str(tmp_path / "ws"), "policy": "standard"}},
+        "workspaces": {"acme": {"policy": "standard"}},
         "policies": {
             "standard": {
                 "policy_dir": str(tmp_path / "policies"),
@@ -1239,6 +1684,6 @@ def test_codex_staging_failure_raises_policy_error(tmp_path, monkeypatch):
     def boom(*args, **kwargs):
         raise PermissionError(13, "Permission denied")
 
-    monkeypatch.setattr(policy.os, "makedirs", boom)
+    monkeypatch.setattr(policy.os, "mkdir", boom)
     with pytest.raises(policy.PolicyError):
         policy.prepare_launch(workspace, access, "codex")

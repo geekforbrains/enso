@@ -14,12 +14,11 @@ pytest.importorskip("jinja2")
 from enso.web import app as web_app
 
 
-def _runtime_config(workspace: Path, web: dict | None = None) -> dict:
+def _runtime_config(web: dict | None = None) -> dict:
     return {
         "web": web or {},
         "workspaces": {
             "default": {
-                "path": str(workspace),
                 "policy": "admin",
                 "concurrency": 1,
             }
@@ -59,13 +58,13 @@ def _skill_web_app(tmp_path, monkeypatch, *external_roots: Path):
     config_dir = tmp_path / "enso"
     skills_dir = config_dir / "skills"
     skills_dir.mkdir(parents=True)
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
+    workspace = config_dir / "workspaces" / "default"
+    workspace.mkdir(parents=True)
+    monkeypatch.setattr("enso.config.CONFIG_DIR", str(config_dir))
     monkeypatch.setattr(web_app, "CONFIG_DIR", str(config_dir))
     runtime = SimpleNamespace(
         config=_runtime_config(
-            workspace,
-            {"external_skill_roots": [str(root) for root in external_roots]},
+            {"external_skill_roots": [str(root) for root in external_roots]}
         ),
     )
     return skills_dir, TestClient(web_app.create_app(runtime), base_url="http://127.0.0.1")
@@ -123,7 +122,7 @@ def test_skill_delete_removes_owned_tree_and_reveals_external_copy(tmp_path, mon
     tool = enso_path.parent / "shared_tool.py"
     tool.write_text("print('tool')\n", encoding="utf-8")
     installed_tool = tmp_path / "workspace" / "tools" / tool.name
-    installed_tool.parent.mkdir()
+    installed_tool.parent.mkdir(parents=True)
     installed_tool.write_bytes(tool.read_bytes())
     outside = tmp_path / "outside-skill.txt"
     outside.write_text("keep me", encoding="utf-8")
@@ -150,7 +149,9 @@ def test_skill_delete_removes_owned_tree_and_reveals_external_copy(tmp_path, mon
     assert not enso_path.parent.exists()
     assert outside.read_text(encoding="utf-8") == "keep me"
     assert not (skills_dir / ".deleted" / "shared.deleted").exists()
-    assert not installed_tool.exists()
+    # Installed skill content is user-owned. Deleting its source does not
+    # guess that an older copied tool is safe to remove.
+    assert installed_tool.is_file()
     assert external_path.is_file()
 
     revealed = client.get("/skills/shared")
@@ -209,7 +210,7 @@ def test_skill_delete_preserves_modified_installed_tool(tmp_path, monkeypatch):
     tool = skill_path.parent / "custom_tool.py"
     tool.write_text("print('source')\n", encoding="utf-8")
     installed_tool = tmp_path / "workspace" / "tools" / tool.name
-    installed_tool.parent.mkdir()
+    installed_tool.parent.mkdir(parents=True)
     installed_tool.write_text("print('locally modified')\n", encoding="utf-8")
 
     response = client.post(
@@ -238,12 +239,12 @@ def test_skill_delete_skips_tool_cleanup_without_usable_default_workspace(
     installed_tool.parent.mkdir(parents=True)
     installed_tool.write_bytes(tool.read_bytes())
     monkeypatch.setattr(web_app, "CONFIG_DIR", str(config_dir))
+    monkeypatch.setattr("enso.config.CONFIG_DIR", str(config_dir))
     runtime = SimpleNamespace(
         config={
             "web": {},
             "workspaces": {
                 "other": {
-                    "path": str(other_workspace),
                     "policy": "admin",
                     "concurrency": 1,
                 }
@@ -271,9 +272,7 @@ def test_skill_delete_skips_tool_cleanup_without_usable_default_workspace(
     assert installed_tool.is_file()
 
 
-def test_skill_delete_tombstone_prevents_bundled_skill_reseed(tmp_path, monkeypatch):
-    from enso.core import Runtime
-
+def test_bundled_skill_delete_needs_no_tombstone(tmp_path, monkeypatch):
     skills_dir, client = _skill_web_app(tmp_path, monkeypatch)
     skill_path = _write_skill(skills_dir, "jobs")
 
@@ -282,14 +281,12 @@ def test_skill_delete_tombstone_prevents_bundled_skill_reseed(tmp_path, monkeypa
         data={"_csrf": client.app.state.csrf_token},
         follow_redirects=False,
     )
-    Runtime._install_bundled_skills(str(skills_dir))
-
     assert response.status_code == 303
-    assert (skills_dir / ".deleted" / "jobs.deleted").is_file()
     assert not skill_path.parent.exists()
+    assert not (skills_dir / ".deleted").exists()
 
 
-def test_skill_delete_rejects_symlinked_tombstone_directory(tmp_path, monkeypatch):
+def test_skill_delete_ignores_obsolete_tombstone_path(tmp_path, monkeypatch):
     skills_dir, client = _skill_web_app(tmp_path, monkeypatch)
     skill_path = _write_skill(skills_dir, "jobs")
     outside = tmp_path / "outside-tombstones"
@@ -302,8 +299,9 @@ def test_skill_delete_rejects_symlinked_tombstone_directory(tmp_path, monkeypatc
         follow_redirects=False,
     )
 
-    assert response.status_code == 403
-    assert skill_path.is_file()
+    assert response.status_code == 303
+    assert not skill_path.exists()
+    assert (skills_dir / ".deleted").is_symlink()
     assert not (outside / "jobs.deleted").exists()
 
 

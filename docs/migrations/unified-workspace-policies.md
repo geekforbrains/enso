@@ -2,6 +2,16 @@
 
 This is a manual, breaking migration for installations created before every execution was bound to a named workspace and that workspace's single reusable policy. Enso deliberately does not provide an `enso migrate` command: choosing which policy owns a workspace, separating formerly shared files, and splitting customized instructions require operator judgment.
 
+> **Historical record:** the schema examples and setup behavior below describe the
+> release that introduced unified policies. For current Enso, use this guide only for
+> the older policy and route rewrite, then follow the
+> [v1.3 managed-workspace guide](v1.3-managed-workspaces.md). It supersedes the path,
+> layout, linking, instruction-delivery, and automatic-seeding instructions below:
+> current Enso uses native ancestor discovery instead of launch injection, no longer
+> reads `~/.enso/runtime/instructions/`, and seeds content only during a genuinely
+> fresh setup, never at service start. Complete both guides before starting current
+> Enso.
+
 The new invariants are:
 
 - The top-level `working_dir` key and `enso serve --working-dir` option no longer exist.

@@ -15,6 +15,7 @@ from enso.commands import (
     cmd_stop_async,
     cmd_use,
 )
+from enso.config import managed_workspace_path
 from enso.core import ExecutionContext, Runtime
 from enso.providers import PROVIDER_NAMES
 from enso.providers.agy import AgyProvider
@@ -29,7 +30,7 @@ def _execution_context(
     include_global_messages: bool = False,
     **kwargs,
 ) -> ExecutionContext:
-    path = sample_config["workspaces"]["default"]["path"]
+    path = managed_workspace_path("default")
     workspace = Workspace("test", path, "test", 1)
     policy = Policy("test", None, True, providers, providers[0], "*")
     settings_key = kwargs.pop("settings_key", chat_key)

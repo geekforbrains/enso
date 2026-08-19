@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from enso.config import managed_workspace_path
 from enso.transports.telegram import (
     COMMANDS,
     CONFIG_ERROR_REPLY,
@@ -17,6 +19,8 @@ from enso.transports.telegram import (
     _resolve_file,
     _settings_key,
 )
+
+pytestmark = pytest.mark.usefixtures("tmp_enso")
 
 
 def _msg(**kwargs):
@@ -39,7 +43,6 @@ def _msg(**kwargs):
 
 
 def _config(
-    workspace_path: str,
     *,
     allowed_users: object = None,
     commands: object = "*",
@@ -61,7 +64,6 @@ def _config(
         },
         "workspaces": {
             workspace_name: {
-                "path": workspace_path,
                 "policy": policy_name,
                 "concurrency": 2,
             },
@@ -103,7 +105,13 @@ def _runtime(config: dict) -> SimpleNamespace:
 
 
 def _bound_transport(tmp_path, **kwargs) -> TelegramTransport:
-    return TelegramTransport(_runtime(_config(str(tmp_path / "workspace"), **kwargs)))
+    workspace_name = kwargs.get("workspace_name", "phone")
+    _workspace_path(workspace_name).mkdir(parents=True, exist_ok=True)
+    return TelegramTransport(_runtime(_config(**kwargs)))
+
+
+def _workspace_path(name: str = "phone") -> Path:
+    return Path(managed_workspace_path(name))
 
 
 def _update(
@@ -445,7 +453,7 @@ def test_execution_context_freezes_resolved_route_settings(tmp_path):
     context = transport._execution_context(999)
 
     assert context is not None
-    assert context.path == str(tmp_path / "workspace")
+    assert context.path == str(_workspace_path())
     assert context.workspace_id == "phone"
     assert context.workspace is transport.telegram.workspace
     assert context.policy is transport.telegram.policy
@@ -503,7 +511,6 @@ def test_settings_key_is_chat_only(tmp_path):
 def test_route_settings_survive_workspace_policy_rebinding_but_sessions_do_not(tmp_path):
     runtime = _runtime(
         _config(
-            str(tmp_path / "first"),
             workspace_name="first",
             policy_name="first-policy",
         )
@@ -521,7 +528,6 @@ def test_route_settings_survive_workspace_policy_rebinding_but_sessions_do_not(t
     runtime.session_by_chat_provider[(first.chat_key, first.provider)] = "old-session"
 
     runtime.config = _config(
-        str(tmp_path / "second"),
         workspace_name="second",
         policy_name="second-policy",
     )
@@ -558,7 +564,7 @@ async def test_message_dispatch_uses_workspace_policy_context(tmp_path):
 
 
 async def test_message_with_invalid_workspace_binding_fails_closed(tmp_path):
-    config = _config(str(tmp_path / "workspace"))
+    config = _config()
     config["transports"]["telegram"]["workspace"] = "missing"
     runtime = _runtime(config)
     transport = TelegramTransport(runtime)
@@ -962,8 +968,8 @@ async def test_compact_refuses_native_unusable_provider(tmp_path, monkeypatch):
 
 async def test_uploads_use_unique_retained_directories_in_workspace(tmp_path):
     transport = _bound_transport(tmp_path)
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
+    workspace = _workspace_path()
+    workspace.mkdir(parents=True, exist_ok=True)
 
     for caption in ("first", "second"):
         download = AsyncMock(return_value=bytearray(b"hello"))
@@ -992,9 +998,9 @@ async def test_uploads_use_unique_retained_directories_in_workspace(tmp_path):
 
 async def test_uploads_parent_symlink_is_rejected(tmp_path):
     transport = _bound_transport(tmp_path)
-    workspace = tmp_path / "workspace"
+    workspace = _workspace_path()
     outside = tmp_path / "outside"
-    workspace.mkdir()
+    workspace.mkdir(parents=True, exist_ok=True)
     outside.mkdir()
     (workspace / "uploads").symlink_to(outside, target_is_directory=True)
     download = AsyncMock(return_value=bytearray(b"secret"))
@@ -1020,9 +1026,9 @@ async def test_uploads_parent_symlink_is_rejected(tmp_path):
 
 async def test_upload_filename_symlink_is_not_followed(tmp_path, monkeypatch):
     transport = _bound_transport(tmp_path)
-    workspace = tmp_path / "workspace"
+    workspace = _workspace_path()
     outside = tmp_path / "outside"
-    workspace.mkdir()
+    workspace.mkdir(parents=True, exist_ok=True)
     outside.mkdir()
     outside_file = outside / "target.txt"
     outside_file.write_bytes(b"original")
@@ -1058,9 +1064,9 @@ async def test_upload_filename_symlink_is_not_followed(tmp_path, monkeypatch):
 
 async def test_swapped_upload_turn_directory_is_not_trusted(tmp_path, monkeypatch):
     transport = _bound_transport(tmp_path)
-    workspace = tmp_path / "workspace"
+    workspace = _workspace_path()
     outside = tmp_path / "outside"
-    workspace.mkdir()
+    workspace.mkdir(parents=True, exist_ok=True)
     outside.mkdir()
     monkeypatch.setattr(
         "enso.transports.telegram.uuid.uuid4",
@@ -1097,8 +1103,8 @@ async def test_swapped_upload_turn_directory_is_not_trusted(tmp_path, monkeypatc
 
 async def test_downloaded_payload_size_is_capped(tmp_path, monkeypatch):
     transport = _bound_transport(tmp_path)
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
+    workspace = _workspace_path()
+    workspace.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr("enso.transports.telegram.MAX_FILE_SIZE", 4)
     download = AsyncMock(return_value=bytearray(b"12345"))
     document = SimpleNamespace(
@@ -1118,7 +1124,7 @@ async def test_downloaded_payload_size_is_capped(tmp_path, monkeypatch):
 
 
 async def test_invalid_binding_downloads_nothing(tmp_path):
-    config = _config(str(tmp_path / "workspace"))
+    config = _config()
     config["transports"]["telegram"]["workspace"] = "missing"
     runtime = _runtime(config)
     transport = TelegramTransport(runtime)
@@ -1133,7 +1139,7 @@ async def test_invalid_binding_downloads_nothing(tmp_path):
 
     document.get_file.assert_not_awaited()
     runtime.dispatch.assert_not_awaited()
-    assert not (tmp_path / "workspace" / "uploads").exists()
+    assert not (_workspace_path() / "uploads").exists()
     message.reply_text.assert_awaited_once_with(CONFIG_ERROR_REPLY)
 
 
@@ -1154,5 +1160,5 @@ async def test_native_unusable_provider_downloads_nothing(tmp_path, monkeypatch)
 
     document.get_file.assert_not_awaited()
     transport.runtime.dispatch.assert_not_awaited()
-    assert not (tmp_path / "workspace" / "uploads").exists()
+    assert not (_workspace_path() / "uploads").exists()
     message.reply_text.assert_awaited_once_with(CONFIG_ERROR_REPLY)

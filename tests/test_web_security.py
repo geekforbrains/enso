@@ -23,13 +23,13 @@ def _client(
 ) -> TestClient:
     workspace = tmp_path / "workspaces" / "default"
     workspace.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr("enso.config.CONFIG_DIR", str(tmp_path))
     monkeypatch.setattr(web_app, "CONFIG_DIR", str(tmp_path))
     runtime = SimpleNamespace(
         config={
             "web": web_config or {},
             "workspaces": {
                 "default": {
-                    "path": str(workspace),
                     "policy": "admin",
                     "concurrency": 1,
                 }

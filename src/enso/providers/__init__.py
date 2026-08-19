@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, Literal
 
 if TYPE_CHECKING:
-    from ..instructions import InstructionBundle
+    from ..instructions import ValidatedInstructions
     from ..policy import Launch
 
 # Status text is shown in a chat bubble alongside a header, so it has to
@@ -96,7 +96,7 @@ class BaseProvider(ABC):
         *,
         effort: str | None = None,
         launch: Launch | None = None,
-        instructions: InstructionBundle | None = None,
+        instructions: ValidatedInstructions | None = None,
     ) -> list[str]:
         """Build the CLI command for interactive streaming.
 
@@ -104,7 +104,10 @@ class BaseProvider(ABC):
         don't support it ignore the argument. ``launch`` selects the policy
         contract: None or an unrestricted launch keeps the bypass invocation,
         while a policy launch substitutes the provider's non-bypass flags
-        (see docs/specs/permissions.md).
+        (see docs/specs/permissions.md). ``instructions`` is the freshly
+        validated shared source; providers without native ancestor discovery
+        deliver its content explicitly, while native providers accept it only
+        to preserve this common launch boundary.
         """
 
     @abstractmethod
@@ -115,7 +118,7 @@ class BaseProvider(ABC):
         *,
         effort: str | None = None,
         launch: Launch | None = None,
-        instructions: InstructionBundle | None = None,
+        instructions: ValidatedInstructions | None = None,
     ) -> list[str]:
         """Build the CLI command for batch execution (text output, no streaming).
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import importlib.resources
 import json
 import os
@@ -16,7 +15,7 @@ import pytest
 
 from enso import core as core_module
 from enso import messages
-from enso.config import SKILL_TOMBSTONES_DIRNAME
+from enso.config import managed_workspace_path
 from enso.core import (
     ExecutionContext,
     Runtime,
@@ -54,8 +53,8 @@ def _execution_context(
     **kwargs,
 ) -> ExecutionContext:
     """Build a complete unrestricted workspace binding for runtime tests."""
-    path = sample_config["workspaces"]["default"]["path"]
-    workspace = Workspace("test", path, "test", concurrency)
+    path = managed_workspace_path()
+    workspace = Workspace("default", path, "test", concurrency)
     policy = Policy("test", None, True, providers, providers[0], "*")
     provider = kwargs.pop("provider", providers[0])
     models = sample_config["providers"][provider]["models"]
@@ -125,7 +124,24 @@ async def _prepared_context(
         provider=provider_name,
         **kwargs,
     )
+    _ensure_launch_discovery_fixture(context)
     return await runtime._prepare_execution_context(provider_name, context)
+
+
+def _ensure_launch_discovery_fixture(context: ExecutionContext) -> None:
+    """Complete the shared lightweight fixture only for real spawn tests."""
+    from enso.repository import EnsoRepository
+    from enso.scaffolding import ScaffoldService
+
+    root = Path(context.path).parent.parent
+    scaffold = ScaffoldService(root)
+    scaffold.repair_global()
+    scaffold.repair_workspace(context.workspace.name)
+    workspace_agents = Path(context.path, "AGENTS.md")
+    if not workspace_agents.exists():
+        workspace_agents.write_text("# Test workspace instructions\n", encoding="utf-8")
+    scaffold.repair_workspace(context.workspace.name)
+    EnsoRepository(str(root)).ensure()
 
 # -- split_text --
 
@@ -176,21 +192,10 @@ def test_redacted_command_hides_agy_prompt():
     assert "<prompt chars=13>" in rendered
 
 
-def test_redacted_command_hides_codex_shared_and_user_instructions():
-    rendered = _redacted_command(
-        [
-            "codex",
-            "exec",
-            "-c",
-            'developer_instructions="shared secret"',
-            "--",
-            "user secret",
-        ]
-    )
+def test_redacted_command_hides_codex_user_prompt():
+    rendered = _redacted_command(["codex", "exec", "--", "user secret"])
 
-    assert "shared secret" not in rendered
     assert "user secret" not in rendered
-    assert "developer_instructions=<redacted>" in rendered
     assert "<prompt chars=11>" in rendered
 
 
@@ -204,8 +209,7 @@ def test_redacted_command_hides_grok_single_prompt():
 
 
 def test_redacted_command_hides_grok_rules_instructions():
-    """The shared-instruction bundle rides attached to --rules= and must be
-    redacted like codex's developer_instructions payload."""
+    """Grok's explicit shared instructions ride attached and must be redacted."""
     rendered = _redacted_command(
         ["grok", "--rules=SECRET OPERATOR GUIDANCE", "--single=hi"]
     )
@@ -221,34 +225,10 @@ def test_runtime_has_no_global_execution_directory_or_context(sample_config):
 
 
 def test_execution_context_requires_workspace_policy_and_message_scope(sample_config):
-    path = sample_config["workspaces"]["default"]["path"]
+    path = managed_workspace_path()
 
     with pytest.raises(TypeError):
         ExecutionContext(chat_key="chat", path=path, workspace_id="test")  # type: ignore[call-arg]
-
-
-# -- Workspace setup --
-
-
-def _legacy_agents_prompt() -> tuple[str, str]:
-    """Return the current and exact pre-task-removal prompt templates.
-
-    The legacy template is a checked-in fixture (the last bundled prompt
-    that still documented the tasks system) so editing the current bundled
-    prompt never breaks migration tests.
-    """
-    current = (
-        importlib.resources.files("enso")
-        .joinpath("prompts", "AGENTS.md")
-        .read_text(encoding="utf-8")
-    )
-    legacy = (
-        Path(__file__).parent / "data" / "legacy_tasks_agents.md"
-    ).read_text(encoding="utf-8")
-    assert hashlib.sha256(legacy.encode()).hexdigest() == (
-        core_module._LEGACY_TASKS_AGENTS_SHA256
-    )
-    return current, legacy
 
 
 def test_has_session_memory_reports_only_used_sessions(sample_config):
@@ -266,152 +246,7 @@ def test_has_session_memory_reports_only_used_sessions(sample_config):
     assert not runtime.has_session_memory("chat", "codex")
 
 
-def test_install_system_prompts_migrates_exact_legacy_template(sample_config):
-    current, legacy = _legacy_agents_prompt()
-    agents_file = Path(core_module.CONFIG_DIR, "AGENTS.md")
-    agents_file.write_text(legacy)
-
-    Runtime(sample_config).install_system_prompts()
-
-    assert agents_file.read_text() == current
-
-
-def test_legacy_prompt_migration_failure_preserves_original(
-    sample_config, monkeypatch
-):
-    _, legacy = _legacy_agents_prompt()
-    agents_file = Path(core_module.CONFIG_DIR, "AGENTS.md")
-    agents_file.write_text(legacy)
-
-    def fail_replace(_source, _target):
-        raise OSError("replace failed")
-
-    monkeypatch.setattr("enso.core.os.replace", fail_replace)
-
-    Runtime(sample_config).install_system_prompts()
-
-    assert agents_file.read_text() == legacy
-    assert list(agents_file.parent.glob("*.tmp")) == []
-
-
-def test_install_system_prompts_preserves_customized_template(sample_config, caplog):
-    _, legacy = _legacy_agents_prompt()
-    agents_file = Path(core_module.CONFIG_DIR, "AGENTS.md")
-    customized = legacy + "\n## Local instructions\nKeep this customization.\n"
-    agents_file.write_text(customized)
-
-    Runtime(sample_config).install_system_prompts()
-
-    assert agents_file.read_text() == customized
-    assert "contains retired task instructions" in caplog.text
-
-
-def test_install_system_prompts_updates_any_known_pristine_template(
-    sample_config, monkeypatch,
-):
-    """An untouched prompt from an earlier release follows the bundle forward."""
-    current, _ = _legacy_agents_prompt()
-    previous = "# Enso\n\nformer pristine bundled prompt\n"
-    agents_file = Path(core_module.CONFIG_DIR, "AGENTS.md")
-    agents_file.write_text(previous)
-    monkeypatch.setattr(
-        core_module,
-        "_PRISTINE_AGENTS_SHA256",
-        frozenset({hashlib.sha256(previous.encode()).hexdigest()}),
-    )
-
-    Runtime(sample_config).install_system_prompts()
-
-    assert agents_file.read_text() == current
-
-
-def test_install_system_prompts_preserves_unknown_template(sample_config, caplog):
-    """A prompt whose hash is unknown is customized — leave it entirely alone."""
-    agents_file = Path(core_module.CONFIG_DIR, "AGENTS.md")
-    customized = "# Enso\n\nMy own prompt.\n"
-    agents_file.write_text(customized)
-
-    Runtime(sample_config).install_system_prompts()
-
-    assert agents_file.read_text() == customized
-    assert "retired task instructions" not in caplog.text
-
-
-def test_install_system_prompts_creates_docs_dir(tmp_enso, sample_config):
-    Runtime(sample_config).install_system_prompts()
-
-    assert Path(tmp_enso, "docs").is_dir()
-    assert Path(tmp_enso, "jobs").is_dir()
-    assert Path(tmp_enso, "AGENTS.md").is_file()
-    assert Path(tmp_enso, "CLAUDE.md").is_symlink()
-    assert Path(tmp_enso, ".claude", "skills").is_symlink()
-    assert Path(tmp_enso, ".agents", "skills").is_symlink()
-    assert Path(tmp_enso, ".claude", "settings.json").is_file()
-    workspace_path = Path(sample_config["workspaces"]["default"]["path"])
-    assert not (workspace_path / "AGENTS.md").exists()
-    assert not (workspace_path / "CLAUDE.md").exists()
-
-
-def test_docs_skill_is_bundled(tmp_path):
-    skills_dir = tmp_path / "skills"
-    skills_dir.mkdir()
-
-    Runtime._install_bundled_skills(str(skills_dir))
-
-    assert (skills_dir / "docs" / "SKILL.md").is_file()
-
-
-def test_tables_skill_is_bundled(tmp_path):
-    skills_dir = tmp_path / "skills"
-    skills_dir.mkdir()
-
-    Runtime._install_bundled_skills(str(skills_dir))
-
-    skill = skills_dir / "tables" / "SKILL.md"
-    assert skill.is_file()
-    content = skill.read_text(encoding="utf-8")
-    assert "enso table list" in content
-    assert "sqlite3 ~/.enso/enso.db" in content
-    assert "runs" in content
-    assert "_enso_" in content
-    assert ".bail on" in content
-    assert "PRAGMA foreign_keys = ON;" in content
-
-
-def test_workspace_skill_is_bundled(tmp_path):
-    skills_dir = tmp_path / "skills"
-    skills_dir.mkdir()
-
-    Runtime._install_bundled_skills(str(skills_dir))
-
-    skill = skills_dir / "workspace" / "SKILL.md"
-    assert skill.is_file()
-    content = skill.read_text(encoding="utf-8")
-    assert "enso config check" in content
-    assert "AGENTS.md" in content
-    assert ".agents/skills" in content
-
-
-def test_bundled_prompt_documents_the_doc_commands():
-    """The shared prompt routes doc work without duplicating the whole skill."""
-    current, _ = _legacy_agents_prompt()
-    assert "enso doc list" in current
-    assert "`docs` skill" in current
-
-
-def test_bundled_prompt_documents_the_table_commands():
-    """The shared prompt routes table work without duplicating the whole skill."""
-    current, _ = _legacy_agents_prompt()
-    assert "enso table list" in current
-    assert "`tables` skill" in current
-
-
-def test_bundled_prompt_routes_workspace_changes_to_the_skill():
-    current, _ = _legacy_agents_prompt()
-    assert "enso config check" in current
-    assert "`workspace` skill" in current
-    assert "~/.enso/.claude/skills" in current
-    assert "~/.enso/.agents/skills" in current
+# -- Bundled guidance --
 
 
 def test_bundled_prompts_are_transport_neutral():
@@ -422,216 +257,11 @@ def test_bundled_prompts_are_transport_neutral():
         assert "telegram" not in content
 
 
-def test_supported_bundled_artifact_hashes_remain_known_pristine():
-    """Clean files from supported prior revisions follow the bundle forward."""
-    assert {
-        "00216052e667a7e0d6de59fb331f71e4491af33b5a9ad17439b1836361b3ff6b",
-        "c4d83056e148464c33ee6fcbb360f9f12fb8a3d3bdb32ab44fe673b2829d976a",
-    } <= core_module._PRISTINE_AGENTS_SHA256
-    assert {
-        "b083179b34f1de30cd1d669d2d3e3f4cfd2174bf956527aeb68d09935846f522",
-    } <= core_module._PRISTINE_WORKSPACE_AGENTS_SHA256
-
-    expected_skill_hashes = {
-        ("docs", "SKILL.md"): {
-            "0f657ffd78a63e4d15301eb422b845d8ae2bf2dc60eaacd84c1c4234b9f6ee8e",
-        },
-        ("jobs", "SKILL.md"): {
-            "3f14ca280b44121434a1308e57f23f6cfe36858b79a06d8e06838cade3d06937",
-            "5d9bcd9e89d027af78b3eaa5d665c7f05e855a4a3f7052ad612dc2cfff324ec2",
-            "ed6e39bddc71769546b6a8608aff848120e17a60fac122273d9428a016893679",
-        },
-        ("slack", "SKILL.md"): {
-            "5d9f76e2bcb757b27ab294a6f7322e07a59ebafbe08566f218348f8d15ac178a",
-            "646d0ab64c0713baf32eec4f0639b4d709d4b1c7a2a1a320e2eed84d55fc5582",
-            "c91732f4c9a702145e9f4beff6dd5b113b7d5616104842a3350a39a262dff072",
-            "70f2dd312d001f23a49aeadb2f556df76e259b80f8591093eb7d36a6ea56b2bd",
-            "c9c84d0a1a994a89ee56cf67ec10347c7730add329505b2959880728c58f2980",
-            "a53162090b0bbbc3d60067674b428e56e1f9c62e0fc555e807d98e03068c0fcd",
-        },
-        ("tables", "SKILL.md"): {
-            "3ece50cd4ea1d1dbcb60a976b69178e4c81b8bac861e8187dc2208ac87426aba",
-        },
-    }
-    for key, expected in expected_skill_hashes.items():
-        assert expected <= core_module._BUNDLED_SKILL_PRISTINE_HASHES[key]
-
-
-def test_workspace_prompt_updates_only_known_pristine_copy(
-    sample_config, monkeypatch,
-):
-    root = Path(sample_config["workspaces"]["default"]["path"])
-    agents_file = root / "AGENTS.md"
-    previous = "# Enso workspace\n\nFormer pristine workspace prompt.\n"
-    agents_file.write_text(previous, encoding="utf-8")
-    monkeypatch.setattr(
-        core_module,
-        "_PRISTINE_WORKSPACE_AGENTS_SHA256",
-        frozenset({hashlib.sha256(previous.encode()).hexdigest()}),
-    )
-
-    Runtime(sample_config).install_workspaces()
-
-    current = (
-        importlib.resources.files("enso")
-        .joinpath("prompts", "WORKSPACE_AGENTS.md")
-        .read_text(encoding="utf-8")
-    )
-    assert agents_file.read_text(encoding="utf-8") == current
-
-
-def test_workspace_prompt_preserves_custom_file(sample_config):
-    root = Path(sample_config["workspaces"]["default"]["path"])
-    agents_file = root / "AGENTS.md"
-    customized = "# My workspace\n\nKeep this local guidance.\n"
-    agents_file.write_text(customized, encoding="utf-8")
-
-    Runtime(sample_config).install_workspaces()
-
-    assert agents_file.read_text(encoding="utf-8") == customized
-
-
-def test_workspace_prompt_preserves_symlink_even_when_target_hash_is_known(
-    sample_config, monkeypatch,
-):
-    root = Path(sample_config["workspaces"]["default"]["path"])
-    agents_file = root / "AGENTS.md"
-    target = root / "custom-instructions.md"
-    previous = "# Enso workspace\n\nFormer pristine workspace prompt.\n"
-    target.write_text(previous, encoding="utf-8")
-    agents_file.symlink_to(target.name)
-    monkeypatch.setattr(
-        core_module,
-        "_PRISTINE_WORKSPACE_AGENTS_SHA256",
-        frozenset({hashlib.sha256(previous.encode()).hexdigest()}),
-    )
-
-    Runtime(sample_config).install_workspaces()
-
-    assert agents_file.is_symlink()
-    assert target.read_text(encoding="utf-8") == previous
-
-
-def test_bundled_skills_are_seeded_once(tmp_path):
-    skills_dir = tmp_path / "skills"
-    skills_dir.mkdir()
-    Runtime._install_bundled_skills(str(skills_dir))
-    skill_file = skills_dir / "jobs" / "SKILL.md"
-    assert skill_file.is_file()
-
-    skill_file.write_text("locally edited through the dashboard\n")
-    Runtime._install_bundled_skills(str(skills_dir))
-
-    assert skill_file.read_text() == "locally edited through the dashboard\n"
-
-
-def test_bundled_skill_tombstone_prevents_reseeding(tmp_path):
-    skills_dir = tmp_path / "skills"
-    tombstones = skills_dir / SKILL_TOMBSTONES_DIRNAME
-    tombstones.mkdir(parents=True)
-    (tombstones / "jobs.deleted").write_text("")
-
-    Runtime._install_bundled_skills(str(skills_dir))
-
-    assert not (skills_dir / "jobs").exists()
-    assert (skills_dir / "slack" / "SKILL.md").is_file()
-
-
-def test_bundled_skills_update_only_known_pristine_files(tmp_path, monkeypatch):
-    skills_dir = tmp_path / "skills"
-    skill_dir = skills_dir / "jobs"
-    skill_dir.mkdir(parents=True)
-    skill_file = skill_dir / "SKILL.md"
-    previous = "former pristine bundled jobs skill\n"
-    skill_file.write_text(previous)
-    monkeypatch.setattr(
-        core_module,
-        "_BUNDLED_SKILL_PRISTINE_HASHES",
-        {
-            ("jobs", "SKILL.md"): frozenset({
-                hashlib.sha256(previous.encode()).hexdigest()
-            })
-        },
-    )
-
-    Runtime._install_bundled_skills(str(skills_dir))
-
-    current = (
-        importlib.resources.files("enso")
-        .joinpath("skills", "jobs", "SKILL.md")
-        .read_text(encoding="utf-8")
-    )
-    assert skill_file.read_text() == current
-
-
-def test_bundled_skills_preserve_symlink_even_when_target_hash_is_known(
-    tmp_path, monkeypatch
-):
-    skills_dir = tmp_path / "skills"
-    skill_dir = skills_dir / "jobs"
-    skill_dir.mkdir(parents=True)
-    target = tmp_path / "custom-jobs-skill.md"
-    previous = "former pristine bundled jobs skill\n"
-    target.write_text(previous)
-    skill_file = skill_dir / "SKILL.md"
-    skill_file.symlink_to(target)
-    monkeypatch.setattr(
-        core_module,
-        "_BUNDLED_SKILL_PRISTINE_HASHES",
-        {
-            ("jobs", "SKILL.md"): frozenset({
-                hashlib.sha256(previous.encode()).hexdigest()
-            })
-        },
-    )
-
-    Runtime._install_bundled_skills(str(skills_dir))
-
-    assert skill_file.is_symlink()
-    assert target.read_text() == previous
-
-
-def test_retire_legacy_tasks_skill_only_when_pristine(tmp_path, monkeypatch):
-    skills_dir = tmp_path / "skills"
-    task_dir = skills_dir / "tasks"
-    task_dir.mkdir(parents=True)
-    pristine = "former bundled task skill\n"
-    monkeypatch.setattr(
-        core_module,
-        "_LEGACY_TASKS_SKILL_SHA256",
-        hashlib.sha256(pristine.encode()).hexdigest(),
-    )
-
-    (task_dir / "SKILL.md").write_text(pristine)
-    Runtime._retire_legacy_tasks_skill(str(skills_dir))
-    assert not task_dir.exists()
-
-    task_dir.mkdir()
-    (task_dir / "SKILL.md").write_text(pristine + "customized\n")
-    Runtime._retire_legacy_tasks_skill(str(skills_dir))
-    assert task_dir.is_dir()
-
-    (task_dir / "SKILL.md").write_text(pristine)
-    (task_dir / "notes.md").write_text("user-owned companion file\n")
-    Runtime._retire_legacy_tasks_skill(str(skills_dir))
-    assert task_dir.is_dir()
-
-
-def test_retire_legacy_tasks_skill_preserves_directory_symlink(tmp_path, caplog):
-    skills_dir = tmp_path / "skills"
-    skills_dir.mkdir()
-    target = tmp_path / "custom-task-skill"
-    target.mkdir()
-    skill_file = target / "SKILL.md"
-    skill_file.write_text("custom task skill\n")
-    task_link = skills_dir / "tasks"
-    task_link.symlink_to(target, target_is_directory=True)
-
-    Runtime._retire_legacy_tasks_skill(str(skills_dir))
-
-    assert task_link.is_symlink()
-    assert skill_file.read_text() == "custom task skill\n"
-    assert "Preserving customized retired tasks skill" in caplog.text
+def test_runtime_has_no_content_installer_api():
+    assert not hasattr(Runtime, "install_system_prompts")
+    assert not hasattr(Runtime, "install_workspaces")
+    assert not hasattr(Runtime, "_install_bundled_skills")
+    assert not hasattr(Runtime, "_install_skill_tools")
 
 
 # -- Runtime state --
@@ -1095,6 +725,72 @@ class _FakePlainProcess:
         return b"First paragraph.\n\nSecond paragraph.\n", b""
 
 
+class _CapturingProvider(BaseProvider):
+    """Minimal provider that records the launch-boundary instruction revision."""
+
+    name = "agy"
+
+    def __init__(self):
+        super().__init__("fake")
+        self.instruction_contents: list[str] = []
+
+    def build_command(
+        self,
+        prompt,
+        model,
+        session_id=None,
+        *,
+        effort=None,
+        launch=None,
+        instructions=None,
+    ):
+        assert instructions is not None
+        self.instruction_contents.append(instructions.content)
+        return ["fake"]
+
+    def build_batch_command(
+        self, prompt, model, *, effort=None, launch=None, instructions=None
+    ):
+        raise AssertionError("interactive test must not build a batch command")
+
+    def parse_event(self, event):
+        return []
+
+
+class _RetryingCapturingProvider(_CapturingProvider):
+    def parse_event(self, event):
+        return [StreamEvent(kind="error", text="transient startup failure")]
+
+    def retryable_error(self, text):
+        return text == "transient startup failure"
+
+
+class _OneLineStream:
+    def __init__(self, line: bytes):
+        self._line = line
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._line:
+            raise StopAsyncIteration
+        line, self._line = self._line, b""
+        return line
+
+
+class _RetryProcess:
+    pid = 44
+    returncode = 1
+    stderr = None
+
+    def __init__(self):
+        self.stdout = _OneLineStream(b'{"error": true}\n')
+
+    async def wait(self):
+        return 1
+
+
 @pytest.mark.asyncio
 async def test_run_provider_rejects_unprepared_execution_context(sample_config):
     rt = Runtime(sample_config)
@@ -1112,44 +808,113 @@ async def test_run_provider_rejects_unprepared_execution_context(sample_config):
 
 
 @pytest.mark.asyncio
-async def test_execution_preparation_snapshots_current_shared_instructions(
-    tmp_enso, sample_config
-):
-    source = Path(tmp_enso, "AGENTS.md")
+async def test_execution_preparation_does_not_cache_shared_instructions(sample_config):
     rt = Runtime(sample_config)
 
-    first = await rt._prepare_execution_context(
-        "claude", _execution_context(sample_config)
-    )
-    source.write_text("# Revised shared instructions\n", encoding="utf-8")
-    second = await rt._prepare_execution_context(
-        "claude", _execution_context(sample_config)
-    )
+    prepared = await rt._prepare_execution_context("claude", _execution_context(sample_config))
 
-    assert first.instructions is not None and second.instructions is not None
-    assert first.instructions.revision != second.instructions.revision
-    assert Path(first.instructions.snapshot_path).read_text(encoding="utf-8") == (
-        "# Test shared instructions\n"
-    )
-    assert second.instructions.content == "# Revised shared instructions\n"
+    assert prepared.launch is not None
+    assert not hasattr(prepared, "instructions")
 
 
 @pytest.mark.asyncio
-async def test_execution_preparation_records_launch_only_after_instructions_validate(
+async def test_run_provider_revalidates_instructions_after_context_preparation(
     tmp_enso, sample_config
 ):
-    Path(tmp_enso, "AGENTS.md").unlink()
-    recorded = []
     rt = Runtime(sample_config)
-    context = _execution_context(
-        sample_config,
-        on_launch=lambda launch: recorded.append(launch),
+    context = await _prepared_context(rt, sample_config, "agy")
+    provider = _CapturingProvider()
+    rt._spawn_process = AsyncMock(return_value=_FakeSpawnedProcess())
+
+    async for _event in rt.run_provider(provider, "first", "1", "model", context=context):
+        pass
+
+    Path(tmp_enso, "AGENTS.md").write_text(
+        "# Revised shared instructions\n", encoding="utf-8"
+    )
+    async for _event in rt.run_provider(provider, "second", "1", "model", context=context):
+        pass
+
+    assert provider.instruction_contents == [
+        "# Test shared instructions\n",
+        "# Revised shared instructions\n",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_provider_rejects_invalid_discovery_created_after_preparation(
+    tmp_enso, sample_config
+):
+    rt = Runtime(sample_config)
+    context = await _prepared_context(rt, sample_config, "agy")
+    Path(context.path, ".git").touch()
+    rt._spawn_process = AsyncMock(side_effect=AssertionError("must not spawn"))
+
+    with pytest.raises(InstructionError, match=r"forbidden \.git entry"):
+        async for _event in rt.run_provider(
+            _CapturingProvider(), "hi", "1", "model", context=context
+        ):
+            pass
+
+    rt._spawn_process.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_provider_rejects_deleted_instructions_after_preparation(
+    tmp_enso, sample_config
+):
+    rt = Runtime(sample_config)
+    context = await _prepared_context(rt, sample_config, "agy")
+    Path(tmp_enso, "AGENTS.md").unlink()
+    rt._spawn_process = AsyncMock(side_effect=AssertionError("must not spawn"))
+
+    with pytest.raises(InstructionError, match="instruction source is missing"):
+        async for _event in rt.run_provider(
+            _CapturingProvider(), "hi", "1", "model", context=context
+        ):
+            pass
+
+    rt._spawn_process.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_retry_revalidates_current_instructions_before_second_spawn(
+    tmp_enso, sample_config
+):
+    rt = Runtime(sample_config)
+    context = await _prepared_context(rt, sample_config, "agy")
+    provider = _RetryingCapturingProvider()
+    spawn_count = 0
+
+    async def fake_spawn(*_args, **_kwargs):
+        nonlocal spawn_count
+        spawn_count += 1
+        if spawn_count == 1:
+            Path(tmp_enso, "AGENTS.md").write_text(
+                "# Revised before retry\n", encoding="utf-8"
+            )
+        return _RetryProcess()
+
+    rt._spawn_process = fake_spawn
+
+    _parts, error, timed_out = await rt._collect_provider_output(
+        provider,
+        "hello",
+        "1",
+        "model",
+        effort=None,
+        origin_env={},
+        context=context,
+        state={},
     )
 
-    with pytest.raises(InstructionError, match="shared instruction file is missing"):
-        await rt._prepare_execution_context("claude", context)
-
-    assert recorded == []
+    assert not timed_out
+    assert error == "transient startup failure"
+    assert spawn_count == 2
+    assert provider.instruction_contents == [
+        "# Test shared instructions\n",
+        "# Revised before retry\n",
+    ]
 
 
 @pytest.mark.asyncio
@@ -1183,9 +948,7 @@ async def test_run_provider_injects_extra_env(tmp_enso, sample_config, monkeypat
     # Parent env is preserved (PATH always exists on Unix / Windows).
     assert "PATH" in env
     assert captured["stdin"] == asyncio.subprocess.DEVNULL
-    flag = captured["command"].index("--append-system-prompt-file")
-    snapshot = Path(captured["command"][flag + 1])
-    assert snapshot.read_text(encoding="utf-8") == "# Test shared instructions\n"
+    assert "--append-system-prompt-file" not in captured["command"]
 
 
 @pytest.mark.asyncio
@@ -1462,12 +1225,13 @@ async def test_process_request_injects_messages(tmp_enso, sample_config):
             yield  # make this an async generator
 
     rt.run_provider = fake_run
+    context = await _prepared_context(rt, sample_config, "claude", "1")
     await rt.process_request(
         "claude",
         "user message",
         "1",
         FakeCtx(),
-        context=_execution_context(sample_config),
+        context=context,
     )
 
     # Messages should have been consumed
@@ -1475,6 +1239,40 @@ async def test_process_request_injects_messages(tmp_enso, sample_config):
     assert len(prompts_received) == 1
     assert "background info" in prompts_received[0]
     assert "user message" in prompts_received[0]
+
+
+@pytest.mark.asyncio
+async def test_invalid_discovery_preserves_messages_and_compact_seed_before_provider_work(
+    tmp_enso, sample_config
+):
+    chat_id = "conversation-1"
+    messages.send("global background", source="test")
+    messages.send("scoped background", source="test", conversation_id=chat_id)
+    runtime = Runtime(sample_config)
+    runtime.compact_seed_by_chat[chat_id] = "prior compacted context"
+    context = await _prepared_context(runtime, sample_config, "claude", chat_id)
+    Path(context.path, ".git").touch()
+    provider_factory = runtime.make_provider
+    runtime.make_provider = Mock(wraps=provider_factory)
+    runtime._spawn_process = AsyncMock(side_effect=AssertionError("must not spawn"))
+    transport = _OutcomeCtx()
+
+    result = await runtime.process_request(
+        "claude",
+        "user message",
+        chat_id,
+        transport,
+        context=context,
+    )
+
+    assert result == ("blocked", "execution_unavailable")
+    assert [message["text"] for message in messages.pending()] == [
+        "global background",
+        "scoped background",
+    ]
+    assert runtime.compact_seed_by_chat[chat_id] == "prior compacted context"
+    runtime.make_provider.assert_not_called()
+    runtime._spawn_process.assert_not_awaited()
 
 
 def test_prompt_assembly_does_not_consume_global_messages_without_opt_in(sample_config):
@@ -1587,10 +1385,13 @@ async def test_workspace_semaphore_serializes_concurrent_runs(sample_config):
 
     def ctx_for(conv):
         return _execution_context(sample_config, conv, concurrency=1)
+    first_context = ctx_for("k1")
+    second_context = ctx_for("k2")
+    _ensure_launch_discovery_fixture(first_context)
     # Two distinct conversations, same workspace — must not overlap.
     await asyncio.gather(
-        rt._run_request("claude", "a", _OutcomeCtx(), ctx_for("k1")),
-        rt._run_request("claude", "b", _OutcomeCtx(), ctx_for("k2")),
+        rt._run_request("claude", "a", _OutcomeCtx(), first_context),
+        rt._run_request("claude", "b", _OutcomeCtx(), second_context),
     )
     assert peak == 1
 
@@ -1610,18 +1411,25 @@ async def test_personal_context_is_still_workspace_bounded(sample_config):
         active -= 1
         yield StreamEvent(kind="response", text="ok")
     rt.run_provider = slow_run
+    first_context = _execution_context(
+        sample_config, "k1", include_global_messages=True
+    )
+    second_context = _execution_context(
+        sample_config, "k2", include_global_messages=True
+    )
+    _ensure_launch_discovery_fixture(first_context)
     await asyncio.gather(
         rt._run_request(
             "claude",
             "a",
             _OutcomeCtx(),
-            _execution_context(sample_config, "k1", include_global_messages=True),
+            first_context,
         ),
         rt._run_request(
             "claude",
             "b",
             _OutcomeCtx(),
-            _execution_context(sample_config, "k2", include_global_messages=True),
+            second_context,
         ),
     )
     assert peak == 1
@@ -1634,7 +1442,7 @@ async def test_process_request_returns_terminal_outcome(sample_config):
     async def ok_run(*a, **k):
         yield StreamEvent(kind="response", text="hi")
     rt.run_provider = ok_run
-    context = _execution_context(sample_config)
+    context = await _prepared_context(rt, sample_config, "claude")
     assert await rt.process_request(
         "claude", "x", "1", _OutcomeCtx(), context=context
     ) == ("completed", None)
@@ -1661,6 +1469,7 @@ async def test_run_request_reports_outcome_to_on_complete(sample_config):
         "k",
         on_complete=lambda outcome, reason: seen.append((outcome, reason)),
     )
+    _ensure_launch_discovery_fixture(ctx_obj)
     await rt._run_request("claude", "x", _OutcomeCtx(), ctx_obj)
     assert seen == [("completed", None)]
 
@@ -2570,9 +2379,11 @@ async def test_manual_cancellation_does_not_queue_timeout_notice(
 
     rt.run_provider = hanging_run
     ctx = FakeCtx()
+    execution = _execution_context(sample_config, "chat-a")
+    _ensure_launch_discovery_fixture(execution)
     request = asyncio.create_task(
         rt._run_request(
-            "claude", "hello", ctx, _execution_context(sample_config, "chat-a")
+            "claude", "hello", ctx, execution
         ),
     )
     await started.wait()
@@ -2591,7 +2402,9 @@ async def test_agy_timeout_captures_session_and_removes_private_log(
     tmp_enso, sample_config,
 ):
     rt = Runtime(sample_config)
-    rt.agent_timeout = 0.01
+    # Leave enough time for the launch-boundary filesystem validation to run
+    # before exercising cancellation of the already-spawned provider.
+    rt.agent_timeout = 0.1
     session_id = "55555555-5555-4555-8555-555555555555"
     captured: dict[str, str] = {}
 
@@ -2629,7 +2442,7 @@ async def test_agy_timeout_captures_session_and_removes_private_log(
 
     await asyncio.wait_for(
         _process_request(rt, sample_config, "agy", "hello", "chat-a", FakeCtx()),
-        timeout=0.5,
+        timeout=1.0,
     )
 
     assert rt.session_by_chat_provider[("chat-a", "agy")] == session_id
@@ -3207,66 +3020,3 @@ async def test_grok_surfaces_a_second_consecutive_auth_failure(
     assert outcome == ("error", "provider_error")
     assert len(spawned) == 2
     assert any("Not signed in" in reply for reply in ctx.replies)
-
-
-def test_retire_legacy_skill_tools_removes_pristine_copies(
-    sample_config, tmp_enso, monkeypatch,
-):
-    """Pristine retired tool scripts vanish from both the skill and tools dirs."""
-    skills_dir = os.path.join(tmp_enso, "skills")
-    skill_dir = os.path.join(skills_dir, "slack")
-    os.makedirs(skill_dir)
-    content = "print('legacy tool')\n"
-    pristine = hashlib.sha256(content.encode()).hexdigest()
-    Path(skill_dir, "slack_search.py").write_text(content)
-    tools_dir = os.path.join(
-        sample_config["workspaces"]["default"]["path"], "tools"
-    )
-    os.makedirs(tools_dir)
-    Path(tools_dir, "slack_search.py").write_text(content)
-    monkeypatch.setattr(
-        core_module,
-        "_RETIRED_SKILL_TOOL_HASHES",
-        {("slack", "slack_search.py"): frozenset({pristine})},
-    )
-
-    Runtime(sample_config)._retire_legacy_skill_tools(skills_dir)
-
-    assert not os.path.exists(os.path.join(skill_dir, "slack_search.py"))
-    assert not os.path.exists(os.path.join(tools_dir, "slack_search.py"))
-
-
-def test_retire_legacy_skill_tools_preserves_customized_copy(
-    sample_config, tmp_enso, monkeypatch,
-):
-    skills_dir = os.path.join(tmp_enso, "skills")
-    skill_dir = os.path.join(skills_dir, "slack")
-    os.makedirs(skill_dir)
-    Path(skill_dir, "slack_search.py").write_text("print('user changed this')\n")
-    monkeypatch.setattr(
-        core_module,
-        "_RETIRED_SKILL_TOOL_HASHES",
-        {("slack", "slack_search.py"): frozenset({"0" * 64})},
-    )
-
-    Runtime(sample_config)._retire_legacy_skill_tools(skills_dir)
-
-    assert os.path.exists(os.path.join(skill_dir, "slack_search.py"))
-
-
-def test_skill_tools_do_not_fall_back_when_default_workspace_is_absent(
-    sample_config, tmp_path,
-):
-    default = sample_config["workspaces"].pop("default")
-    sample_config["workspaces"]["personal"] = default
-    sample_config["transports"]["telegram"]["workspace"] = "personal"
-    skills_dir = tmp_path / "skills"
-    skill_dir = skills_dir / "custom"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "tool.py").write_text("print('custom')\n")
-
-    runtime = Runtime(sample_config)
-    runtime._install_skill_tools(str(skills_dir))
-
-    assert runtime._default_workspace_path() is None
-    assert not (Path(default["path"]) / "tools" / "tool.py").exists()

@@ -536,22 +536,22 @@ class JobRunner:
         if config_error or execution is None:
             return None, config_error
 
-        from .instructions import validate_shared_instructions
+        from .instructions import validate_launch_discovery
         from .policy import prepare_launch
 
         assert execution.workspace is not None
         assert execution.policy is not None
         try:
-            # Prove the native launch and shared control file are usable before
-            # running the trusted host-side prerun. They are resolved again
-            # inside the workspace slot at the actual provider spawn boundary.
+            # Prove both the native launch and complete discovery boundary are
+            # usable before running the trusted host-side prerun. They are
+            # resolved again after prerun at the actual provider boundary.
             await asyncio.to_thread(
                 prepare_launch,
                 execution.workspace,
                 execution.policy,
                 job.provider,
             )
-            await asyncio.to_thread(validate_shared_instructions)
+            await asyncio.to_thread(validate_launch_discovery, execution.workspace)
         except Exception as exc:
             detail = self._sanitize_job_diagnostic(str(exc))
             return None, (
@@ -698,17 +698,22 @@ class JobRunner:
                         job.provider,
                         execution,
                     )
+                    from .instructions import validate_launch_discovery
+
+                    instructions = await asyncio.to_thread(
+                        validate_launch_discovery,
+                        execution.workspace,
+                    )
                     provider = self.runtime.make_provider(
                         job.provider,
                         timeout=job.timeout,
                         context=execution,
                     )
-                    assert execution.instructions is not None
                     cmd = provider.build_batch_command(
                         prompt,
                         job.model,
                         launch=execution.launch,
-                        instructions=execution.instructions,
+                        instructions=instructions,
                     )
                     log.info(
                         "%s spawning provider_class=%s cwd=%s prompt_len=%d",
@@ -720,7 +725,7 @@ class JobRunner:
                     log.info(
                         "%s shared instructions revision=%s",
                         tag,
-                        execution.instructions.revision[:12],
+                        instructions.revision[:12],
                     )
                     log.debug("%s command=%s", tag, _redacted_command(cmd))
                     spawn_kwargs: dict[str, Any] = {
