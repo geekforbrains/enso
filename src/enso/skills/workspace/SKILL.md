@@ -17,7 +17,10 @@ A workspace name uses lowercase kebab-case: lowercase letters and numbers separa
 
 Workspace configuration has no `path` field. Do not accept an external directory, a differently named directory, or a symlink as a workspace root. The managed `~/.enso/workspaces/` directory and each workspace root must be real directories. A workspace root must not contain a `.git` entry; repositories deeper inside it are allowed.
 
-These are current-layout requirements, not conventions to relax for an older install. Direct users with an old configurable path or hand-made discovery links to the versioned migration guide. Do not implement compatibility links or move their content implicitly.
+These are current-layout requirements, not conventions to relax for an older install.
+Direct users with an old configurable path or hand-made discovery links to the
+[v1.3 managed-workspace migration guide](https://github.com/geekforbrains/enso/blob/main/docs/migrations/v1.3-managed-workspaces.md).
+Do not implement compatibility links or move their content implicitly.
 
 ## Inspect before changing
 

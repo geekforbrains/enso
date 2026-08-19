@@ -277,8 +277,15 @@ def test_legacy_workspace_path_fails_closed_with_one_migration_diagnostic(
 
     problems = catalog.workspace_errors["client-a"]
     assert len([problem for problem in problems if "path" in problem]) == 1
-    assert "path is no longer supported" in problems[0]
-    assert "docs/migrations/v1.3-managed-workspaces.md" in problems[0]
+    assert "workspaces.client-a.path is no longer supported" in problems[0]
+    assert (
+        "https://github.com/geekforbrains/enso/blob/main/"
+        "docs/migrations/v1.3-managed-workspaces.md"
+    ) in problems[0]
+    assert catalog.workspaces["client-a"].path == str(
+        tmp_path / "enso" / "workspaces" / "client-a"
+    )
+    assert catalog.workspaces["client-a"].path != legacy_path
     assert not catalog.usable("client-a")
 
 

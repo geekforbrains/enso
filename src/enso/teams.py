@@ -62,7 +62,10 @@ _ENV_PASSTHROUGH_RESERVED = frozenset(
 _ENV_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*")
 _POLICY_NAME_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}"
 _POLICY_NAME_RE = re.compile(_POLICY_NAME_PATTERN)
-_MANAGED_WORKSPACES_MIGRATION = "docs/migrations/v1.3-managed-workspaces.md"
+MANAGED_WORKSPACES_MIGRATION_URL = (
+    "https://github.com/geekforbrains/enso/blob/main/"
+    "docs/migrations/v1.3-managed-workspaces.md"
+)
 _SLACK_TRANSPORT_KEYS = {
     "account_id",
     "app_token",
@@ -98,6 +101,15 @@ def _is_str_list(value: object) -> TypeGuard[list[str]]:
 def _canonical(path: str) -> str:
     """Return an expanded, absolute, symlink-resolved filesystem path."""
     return os.path.realpath(os.path.abspath(os.path.expanduser(path)))
+
+
+def _legacy_workspace_path_problem(name: str) -> str:
+    """Return the one actionable diagnostic for the removed path setting."""
+    return (
+        f"workspaces.{name}.path is no longer supported; move this workspace to "
+        f"~/.enso/workspaces/{name}, remove the path key, and follow "
+        f"{MANAGED_WORKSPACES_MIGRATION_URL}"
+    )
 
 
 def _catalog_path(path: str, label: str, problems: list[str]) -> str:
@@ -460,11 +472,7 @@ def _load_workspaces(
         # diagnostic instead of duplicating it as an unknown-key error.
         problems = _unknown_keys(cfg, {"path", "policy", "concurrency"}, f"workspaces.{name}")
         if "path" in cfg:
-            problems.append(
-                "path is no longer supported; move this workspace to "
-                f"~/.enso/workspaces/{name}, remove the path key, and follow "
-                f"{_MANAGED_WORKSPACES_MIGRATION}"
-            )
+            problems.append(_legacy_workspace_path_problem(name))
         policy = cfg.get("policy")
         if not isinstance(policy, str) or not policy:
             problems.append("policy is required and must be a string")

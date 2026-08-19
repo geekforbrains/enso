@@ -586,7 +586,7 @@ reference also requires the helper's `op_set_secret` function.
 }
 ```
 
-That fragment demonstrates credential storage, Telegram's required workspace binding, and the default Slack output settings. Create policies and workspaces through their focused CLIs, then add `account_id`, `channel_defaults`, `dms`, and `channels` to that same `transports.slack` object where no routing command exists. [`docs/examples/teams-config.jsonc`](docs/examples/teams-config.jsonc) shows the resulting relationship. Legacy `working_dir`, workspace `path`, top-level `routes` and `access`, and route/job policy overrides are rejected; follow the [unified-policy guide](docs/migrations/unified-workspace-policies.md) and [v1.3 workspace guide](docs/migrations/v1.3-managed-workspaces.md), run `enso config check`, reinstall the service definition, and restart Enso.
+That fragment demonstrates credential storage, Telegram's required workspace binding, and the default Slack output settings. Create policies and workspaces through their focused CLIs, then add `account_id`, `channel_defaults`, `dms`, and `channels` to that same `transports.slack` object where no routing command exists. [`docs/examples/teams-config.jsonc`](docs/examples/teams-config.jsonc) shows the resulting relationship. Removed configuration fields are rejected rather than interpreted; upgrading operators should follow the [unified-policy guide](docs/migrations/unified-workspace-policies.md) and [v1.3 workspace guide](docs/migrations/v1.3-managed-workspaces.md).
 
 The service-account credential needed by the helper may still use the bootstrap
 `~/.enso/secrets/1password.env` file. Existing literal `bot_token` and `app_token`

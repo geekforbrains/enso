@@ -1338,6 +1338,8 @@ def _setup_slack(config: dict) -> None:  # noqa: C901
 
 def _reject_legacy_setup_config(config: dict) -> None:
     """Stop setup before it partially rewrites a manual workspace migration."""
+    from .teams import MANAGED_WORKSPACES_MIGRATION_URL
+
     if "working_dir" in config:
         console.print(
             "[red]working_dir is no longer supported. Move that directory into a"
@@ -1353,8 +1355,8 @@ def _reject_legacy_setup_config(config: dict) -> None:
             console.print(
                 f"[red]workspaces.{escape(str(name))}.path is no longer supported. "
                 "Move its content to the name-derived directory, remove the path key, "
-                "and follow docs/migrations/v1.3-managed-workspaces.md before rerunning "
-                "setup.[/]"
+                f"and follow {MANAGED_WORKSPACES_MIGRATION_URL} before rerunning setup.[/]",
+                soft_wrap=True,
             )
             raise typer.Exit(1)
 
@@ -1677,29 +1679,36 @@ def _finalize_setup_or_exit(config: dict) -> None:
         raise typer.Exit(1) from None
 
 
-@app.command()
-def setup() -> None:
-    """Interactive setup wizard."""
-    console.print(Panel("Enso Setup", subtitle=f"v{__version__}", expand=False))
-    # Strict preflight must happen before even the config lock is created.
-    _load_config_or_exit(allow_missing=True)
-    with _config_lock_or_exit():
-        # Re-read under the lock so another Enso process cannot win a race
-        # between validation and the setup read-modify-write transaction.
-        config = _load_config_or_exit(allow_missing=True)
-        _reject_legacy_setup_config(config)
-        _ensure_repository_or_exit()
+def _validate_nonfresh_setup_catalog_or_exit(config: dict) -> None:
+    """Reject an invalid existing catalog before setup mutates repository state."""
+    from .teams import load_catalog
 
-        _setup_providers(config)
+    catalog_problems = _catalog_problems(load_catalog(config))
+    if catalog_problems:
+        console.print(
+            "[red]Existing execution catalog is invalid; no structure was changed:[/]"
+        )
+        _print_workspace_problems(catalog_problems, indent="  ")
+        raise typer.Exit(1)
 
-        # Step 2: managed default workspace and shared execution catalog
-        _setup_default_workspace(config)
 
-        captured_chat_id = _setup_transport(config)
-        with console.status("Saving config..."):
-            _finalize_setup_or_exit(config)
-    console.print(f"[green]\u2713[/] Config saved to {CONFIG_FILE}")
+def _repair_nonfresh_setup_or_exit(config: dict) -> None:
+    """Structurally repair an existing install without rewriting configuration."""
+    console.print(
+        "[dim]Existing configuration detected; repairing managed structure without "
+        "reconfiguring providers, workspaces, transports, messaging, or the background "
+        "service.[/]"
+    )
+    with console.status("Repairing existing installation..."):
+        _scaffold_setup_or_exit(config)
+    console.print(
+        "[green]✓[/] Existing installation structure repaired; configuration preserved "
+        f"at {CONFIG_FILE}"
+    )
 
+
+def _finish_fresh_setup(config: dict, captured_chat_id: int | None) -> None:
+    """Send the fresh-install check and offer optional service installation."""
     # Send test message
     if config.get("transport") == "telegram":
         tg = config.get("transports", {}).get("telegram", {})
@@ -1782,6 +1791,37 @@ def setup() -> None:
             expand=False,
         )
     )
+
+
+@app.command()
+def setup() -> None:
+    """Initialize a fresh install or structurally repair an existing one."""
+    console.print(Panel("Enso Setup", subtitle=f"v{__version__}", expand=False))
+    # Strict preflight must happen before even the config lock is created.
+    _load_config_or_exit(allow_missing=True)
+    with _config_lock_or_exit():
+        # Re-read under the lock so another Enso process cannot win a race
+        # between validation and the setup read-modify-write transaction.
+        config = _load_config_or_exit(allow_missing=True)
+        _reject_legacy_setup_config(config)
+
+        if setup_state(config) is not SetupState.INCOMPLETE:
+            _validate_nonfresh_setup_catalog_or_exit(config)
+            _ensure_repository_or_exit()
+            _repair_nonfresh_setup_or_exit(config)
+            return
+
+        _ensure_repository_or_exit()
+        _setup_providers(config)
+
+        # Step 2: managed default workspace and shared execution catalog
+        _setup_default_workspace(config)
+
+        captured_chat_id = _setup_transport(config)
+        with console.status("Saving config..."):
+            _finalize_setup_or_exit(config)
+    console.print(f"[green]\u2713[/] Config saved to {CONFIG_FILE}")
+    _finish_fresh_setup(config, captured_chat_id)
 
 
 def _load_transport(name: str, runtime) -> BaseTransport:
@@ -2090,7 +2130,7 @@ def _workspace_inspection_errors(config: dict, name: str) -> tuple[str, ...]:
 
 def _print_workspace_problems(problems: tuple[str, ...], *, indent: str = "") -> None:
     for problem in problems:
-        console.print(f"{indent}[red]✗[/] {escape(problem)}")
+        console.print(f"{indent}[red]✗[/] {escape(problem)}", soft_wrap=True)
 
 
 def _validate_workspace_name_or_exit(name: str) -> str:
@@ -3630,7 +3670,7 @@ def config_check() -> None:  # noqa: C901
         console.print(f"\n[bold]Workspace {name}[/] — {workspace.path}")
         for problem in catalog.workspace_errors.get(name, ()):
             failed = True
-            console.print(f"  [red]✗[/] {problem}")
+            console.print(f"  [red]✗[/] {problem}", soft_wrap=True)
         expanded = os.path.expanduser(workspace.path)
         if not os.path.isdir(expanded):
             failed = True
@@ -3695,6 +3735,8 @@ def config_check() -> None:  # noqa: C901
         for route_id, problems in sorted(teams.route_errors.items()):
             failed = True
             for problem in problems:
+                if problem in reported:
+                    continue
                 console.print(f"[red]✗[/] {route_id}: {problem}")
 
     has_telegram_config = isinstance(transports_cfg, dict) and "telegram" in transports_cfg
@@ -3716,6 +3758,8 @@ def config_check() -> None:  # noqa: C901
     for name, problems in sorted(job_errors.items()):
         failed = True
         for problem in problems:
+            if any(reported_problem in problem for reported_problem in reported):
+                continue
             console.print(f"[red]✗[/] jobs.{name}: {problem}")
     for job in jobs:
         if job.dir_name in job_errors:

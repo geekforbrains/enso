@@ -760,15 +760,17 @@ The `.run.lock` file is a persistent lock target, not a temporary in-flight mark
 
 Scheduled successes are silent unless the prompt explicitly calls `enso message send`. Host-side failure and prerun-recovery alerts use the job's `notify` destination or the configured transport `notify_channel`, independently of Slack routes. `enso job run` suppresses those automatic alerts but cannot suppress a message explicitly sent by the provider process.
 
-### Transport authorization and migration
+### Transport authorization
 
-Slack always requires `transports.slack.account_id`; `transports.slack.allowed_users` is invalid. Routes are never synthesized because creating one grants access. Each authorized DM user and channel must be migrated to an exact entry in `transports.slack.dms` or `transports.slack.channels` selecting a known workspace; the workspace selects its policy.
+Slack always requires `transports.slack.account_id`; `transports.slack.allowed_users` is invalid. Routes are never synthesized because creating one grants access. Each authorized DM user and channel has an exact entry in `transports.slack.dms` or `transports.slack.channels` selecting a known workspace; the workspace selects its policy.
 
 Slack outbound delivery resolves an explicit destination, then an interactive origin, then `transports.slack.notify_channel`. It is not inferred from an inbound route and never broadcasts.
 
 Telegram always uses exact numeric strings under `transports.telegram.allowed_users`, accepts private chats only, and requires a known `transports.telegram.workspace`. It derives that workspace's policy and cannot override provider or command controls. `allowed_user_ids` and the `"*"` wildcard are invalid. Telegram outbound delivery resolves an explicit destination, then an interactive origin, then `transports.telegram.notify_channel`; it never broadcasts to the allowlist.
 
-Legacy configurations are rejected when they contain top-level `working_dir`, `routes`, or `access`, a workspace `path`, route-level `access` or `policy`, job-level `access` or `policy`, `groups`, route `allow`, or route `context_from`. The migration requires moving every workspace to its name-derived physical root, splitting shared and local instructions, assigning exactly one policy to every workspace, binding Telegram, moving Slack route maps, validating, and reinstalling the service definition. Follow the [manual unified-workspace migration](../migrations/unified-workspace-policies.md) and then the [v1.3 managed-workspace migration](../migrations/v1.3-managed-workspaces.md); there is no automatic migration command or legacy-path fallback.
+Removed configuration shapes are rejected rather than translated or used as runtime
+fallbacks. Versioned migration guides own the historical schema and operator transition
+procedures; this specification describes only the current data model.
 
 ### Slack delivery ledger
 

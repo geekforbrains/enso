@@ -281,19 +281,186 @@ def test_setup_rejects_legacy_workspace_path_before_repository_changes(
             }
         }
     }
+    original = copy.deepcopy(config)
+    mutations: list[str] = []
     monkeypatch.setattr("enso.cli.load_config", lambda **_kwargs: config)
     monkeypatch.setattr(
         "enso.cli._ensure_repository_or_exit",
-        lambda: pytest.fail("setup must stop before repository changes"),
+        lambda: mutations.append("repository"),
+    )
+    monkeypatch.setattr(
+        "enso.cli._setup_providers",
+        lambda *_args: mutations.append("providers"),
+    )
+    monkeypatch.setattr(
+        "enso.cli._setup_default_workspace",
+        lambda *_args: mutations.append("workspace"),
+    )
+    monkeypatch.setattr(
+        "enso.cli._setup_transport",
+        lambda *_args: mutations.append("transport"),
+    )
+    monkeypatch.setattr(
+        "enso.cli._finalize_setup_or_exit",
+        lambda *_args: mutations.append("scaffold/save"),
     )
 
     with pytest.raises(typer.Exit) as exc_info:
         setup()
 
     assert exc_info.value.exit_code == 1
+    assert mutations == []
+    assert config == original
     output = " ".join(capsys.readouterr().out.split())
     assert "workspaces.default.path is no longer supported" in output
-    assert "v1.3-managed-workspaces.md" in output
+    assert output.count(
+        "https://github.com/geekforbrains/enso/blob/main/"
+        "docs/migrations/v1.3-managed-workspaces.md"
+    ) == 1
+
+
+@pytest.mark.parametrize(
+    "setup_block",
+    [
+        pytest.param({}, id="pre-feature"),
+        pytest.param(
+            {"setup": {"completed_at": "2026-08-18T12:00:00+00:00"}},
+            id="complete",
+        ),
+    ],
+)
+def test_nonfresh_setup_repairs_only_and_preserves_the_existing_catalog(
+    tmp_enso,
+    monkeypatch,
+    capsys,
+    setup_block,
+):
+    from enso.config import save_config
+    from enso.scaffolding import ScaffoldService
+
+    root = Path(tmp_enso)
+    root.joinpath("workspaces", "default").rmdir()
+    scaffold = ScaffoldService()
+    scaffold.seed_fresh_global()
+    scaffold.create_workspace("client-a")
+    config = {
+        **setup_block,
+        "transport": "telegram",
+        "transports": {
+            "telegram": {
+                "bot_token": "operator-token",
+                "allowed_users": ["123"],
+                "notify_channel": "123",
+                "workspace": "client-a",
+            }
+        },
+        "providers": {
+            "claude": {
+                "path": "/operator/bin/claude",
+                "models": ["operator-model"],
+            }
+        },
+        "workspaces": {
+            "client-a": {"policy": "operator", "concurrency": 2},
+        },
+        "policies": {
+            "operator": {
+                "unrestricted": True,
+                "providers": ["claude"],
+                "default_provider": "claude",
+                "chat_commands": "*",
+            }
+        },
+    }
+    save_config(config)
+    config_file = root / "config.json"
+    original = config_file.read_bytes()
+
+    def unexpected(label):
+        return lambda *_args, **_kwargs: pytest.fail(
+            f"nonfresh setup must not perform {label}"
+        )
+
+    monkeypatch.setattr("enso.cli._setup_providers", unexpected("provider detection"))
+    monkeypatch.setattr(
+        "enso.cli._setup_default_workspace",
+        unexpected("default workspace configuration"),
+    )
+    monkeypatch.setattr("enso.cli._setup_transport", unexpected("transport setup"))
+    monkeypatch.setattr("enso.cli._tg_send_message", unexpected("test messaging"))
+    monkeypatch.setattr("enso.cli._slack_send_message", unexpected("test messaging"))
+    monkeypatch.setattr("enso.cli._service_platform", unexpected("service inspection"))
+    monkeypatch.setattr("enso.cli._service_install", unexpected("service installation"))
+    monkeypatch.setattr("enso.cli.Confirm.ask", unexpected("interactive prompting"))
+    monkeypatch.setattr("enso.cli.save_config", unexpected("configuration save"))
+    monkeypatch.setattr(
+        ScaffoldService,
+        "seed_fresh_global",
+        unexpected("fresh global seeding"),
+    )
+    monkeypatch.setattr(
+        ScaffoldService,
+        "seed_fresh_starter_docs",
+        unexpected("starter document seeding"),
+    )
+    monkeypatch.setattr(
+        ScaffoldService,
+        "create_workspace",
+        unexpected("fresh workspace creation"),
+    )
+
+    setup()
+
+    assert config_file.read_bytes() == original
+    persisted = json.loads(config_file.read_text())
+    assert persisted["providers"]["claude"] == {
+        "path": "/operator/bin/claude",
+        "models": ["operator-model"],
+    }
+    assert set(persisted["workspaces"]) == {"client-a"}
+    assert set(persisted["policies"]) == {"operator"}
+    assert ("setup" in persisted) is bool(setup_block)
+    output = " ".join(capsys.readouterr().out.split())
+    assert "Existing installation structure repaired" in output
+    assert "configuration preserved" in output
+
+
+def test_nonfresh_setup_rejects_an_invalid_catalog_before_repository_mutation(
+    tmp_enso,
+    monkeypatch,
+    capsys,
+):
+    config = {
+        "workspaces": {
+            "client-a": {"policy": "missing", "concurrency": 1},
+        },
+        "policies": {},
+    }
+    original = copy.deepcopy(config)
+    mutations: list[str] = []
+    monkeypatch.setattr("enso.cli.load_config", lambda **_kwargs: config)
+    monkeypatch.setattr(
+        "enso.cli._ensure_repository_or_exit",
+        lambda: mutations.append("repository"),
+    )
+    monkeypatch.setattr(
+        "enso.cli._scaffold_setup_or_exit",
+        lambda *_args, **_kwargs: mutations.append("scaffold"),
+    )
+    monkeypatch.setattr(
+        "enso.cli.save_config",
+        lambda *_args, **_kwargs: mutations.append("config"),
+    )
+
+    with pytest.raises(typer.Exit) as exc_info:
+        setup()
+
+    assert exc_info.value.exit_code == 1
+    assert mutations == []
+    assert config == original
+    output = " ".join(capsys.readouterr().out.split())
+    assert "Existing execution catalog is invalid" in output
+    assert "unknown policy 'missing'" in output
 
 
 def test_setup_default_workspace_only_updates_config(monkeypatch, tmp_enso, capsys):
@@ -1259,7 +1426,7 @@ def test_historical_marker_retry_repairs_structure_without_fresh_seeding(monkeyp
     ],
 )
 def test_nonfresh_setup_never_seeds_starter_docs_or_creates_a_snapshot(
-    tmp_enso, setup_block, expected_state
+    tmp_enso, setup_block, expected_state, monkeypatch
 ):
     from enso.config import load_config, setup_state
     from enso.repository import EnsoRepository
@@ -1271,6 +1438,27 @@ def test_nonfresh_setup_never_seeds_starter_docs_or_creates_a_snapshot(
     service.seed_fresh_global()
     service.create_workspace("default")
     EnsoRepository().ensure()
+    monkeypatch.setattr(
+        ScaffoldService,
+        "seed_fresh_global",
+        lambda *_args, **_kwargs: pytest.fail(
+            "an existing installation must not receive fresh global content"
+        ),
+    )
+    monkeypatch.setattr(
+        ScaffoldService,
+        "seed_fresh_starter_docs",
+        lambda *_args, **_kwargs: pytest.fail(
+            "an existing installation must not receive starter docs"
+        ),
+    )
+    monkeypatch.setattr(
+        ScaffoldService,
+        "create_workspace",
+        lambda *_args, **_kwargs: pytest.fail(
+            "an existing installation must not receive a fresh workspace scaffold"
+        ),
+    )
     config = {
         **setup_block,
         "workspaces": {"default": {"policy": "admin", "concurrency": 1}},
@@ -1279,6 +1467,9 @@ def test_nonfresh_setup_never_seeds_starter_docs_or_creates_a_snapshot(
     _finalize_setup_or_exit(config)
 
     assert setup_state(load_config()).value == expected_state
+    persisted = json.loads(Path(tmp_enso, "config.json").read_text())
+    if expected_state == "pre-feature":
+        assert "setup" not in persisted
     assert list(Path(tmp_enso, "docs").iterdir()) == []
     assert (
         subprocess.run(

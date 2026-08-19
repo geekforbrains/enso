@@ -15,10 +15,7 @@ The new invariants are:
 - Every Telegram conversation, exact Slack route, and scheduled job selects a named workspace.
 - Every workspace selects exactly one policy; transports, routes, and jobs derive provider and command authority from it and cannot override it.
 - Slack credentials, options, and exact route maps all live under `transports.slack`.
-- Shared Enso instructions live at `~/.enso/AGENTS.md`, with
-  `~/.enso/CLAUDE.md -> AGENTS.md`; each workspace keeps a focused local `AGENTS.md` and
-  `CLAUDE.md` symlink. Claude and Codex discover both layers natively, while Grok and Agy
-  receive one explicit shared copy.
+- Shared Enso instructions live at `~/.enso/AGENTS.md`, with `~/.enso/CLAUDE.md -> AGENTS.md`, and are injected into every provider launch. Each workspace keeps a separate, focused local `AGENTS.md` and `CLAUDE.md` symlink.
 - The service has no process working directory. Each provider process receives the selected workspace as its cwd.
 
 Do not start the upgraded service until `enso config check` succeeds.
@@ -71,18 +68,9 @@ ln -s AGENTS.md CLAUDE.md
 
 If `CLAUDE.md` already exists, inspect and merge it before replacing it; do not overwrite a customized standalone file blindly.
 
-Put only project-specific context, paths, and local working conventions in each workspace's `AGENTS.md`, using the bundled [workspace template](../../src/enso/prompts/WORKSPACE_AGENTS.md) as the baseline. Each workspace also needs a relative `CLAUDE.md -> AGENTS.md` symlink. Current Enso seeds templates only during a genuinely fresh setup. Existing installations adopt them manually; startup, configuration checks, and setup repair never recreate user-owned prompt content.
+Put only project-specific context, paths, and local working conventions in each workspace's `AGENTS.md`, using the bundled [workspace template](../../src/enso/prompts/WORKSPACE_AGENTS.md) as the baseline. Each workspace also needs a relative `CLAUDE.md -> AGENTS.md` symlink. Enso seeds missing shared and local templates on setup or service start, but never overwrites customized files.
 
-Current Enso relies on one physical discovery tree. Immediately before each launch it
-validates the exact name-derived workspace, root and local links, duplicate skill names,
-the absence of a workspace-root `.git` entry, `~/.enso` as the exact Git root, and the
-current owner-owned UTF-8 shared source. Claude and Codex discover the root and workspace
-files natively; remove any policy-level Codex `developer_instructions` added for the old
-delivery model. Grok receives the validated content once through `--rules`, and
-unrestricted Agy receives it once in Enso's prompt envelope. Agy remains invalid in a
-restricted policy. Old files below `~/.enso/runtime/instructions/` are no longer read;
-archive or remove them manually after the upgraded service is stopped and the new layout
-passes `enso config check`.
+The shared file is injected at launch independently of cwd. Enso validates the owner-owned UTF-8 source and creates or verifies an immutable content-addressed snapshot under `~/.enso/runtime/instructions/`; Claude receives that snapshot through `--append-system-prompt-file`, Codex receives the validated content through `developer_instructions`, and unrestricted Agy launches receive it in Enso's prompt envelope. Agy remains invalid in a restricted policy. Workspace-local instructions continue through each provider's native project discovery.
 
 ## 4. Rewrite `config.json`
 

@@ -367,6 +367,9 @@ The metadata-only Slack delivery ledger exists independently of route auditing a
 
 Provider policy must keep restricted agents away from Enso's config, secrets, policies, database, jobs, and service-control commands whether route auditing is enabled or not.
 
-## Migration
+## Removed configuration
 
-Legacy `working_dir`, workspace `path`, top-level `routes` and `access`, route/job policy overrides, and Telegram without a workspace are rejected. This migration cannot be inferred safely when one old workspace carried several access profiles, lived outside the canonical tree, or mixed shared and local instructions. First follow the [manual unified-workspace migration](../migrations/unified-workspace-policies.md) for binding and policy changes, then the [v1.3 managed-workspace migration](../migrations/v1.3-managed-workspaces.md) for names, file moves, links, and the removed `path` field. Enso provides no `enso migrate` command or legacy-path fallback.
+Fields outside the current workspace, policy, route, and transport schemas are rejected
+rather than interpreted. Enso provides no automatic migration or compatibility fallback.
+Version-specific transition procedures live in the
+[migration guides](../migrations/), separate from this current-state specification.

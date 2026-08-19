@@ -208,6 +208,46 @@ def _stub_grok_inspect(monkeypatch, tmp_enso, loaded: int) -> list:
     return calls
 
 
+def test_config_check_reports_legacy_path_once_without_provider_inspection(
+    tmp_enso,
+    monkeypatch,
+):
+    config = _grok_teams_config(tmp_enso)
+    config["workspaces"]["grok-client"]["path"] = "/legacy/grok-client"
+    job_dir = Path(tmp_enso, "jobs", "legacy-grok")
+    job_dir.mkdir(parents=True)
+    job_dir.joinpath("JOB.md").write_text(
+        "---\n"
+        "name: Legacy Grok\n"
+        'schedule: "0 9 * * *"\n'
+        "provider: grok\n"
+        "model: grok-4.6\n"
+        "workspace: grok-client\n"
+        "enabled: true\n"
+        "---\n\n"
+        "Do work.\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "enso.policy.verify_grok_rules",
+        lambda *_args, **_kwargs: pytest.fail(
+            "a legacy workspace path must fail before provider inspection"
+        ),
+    )
+    save_config(config)
+
+    result = runner.invoke(app, ["config", "check"])
+
+    assert result.exit_code == 1
+    plain = " ".join(result.output.split())
+    assert plain.count("workspaces.grok-client.path is no longer supported") == 1
+    assert plain.count(
+        "https://github.com/geekforbrains/enso/blob/main/"
+        "docs/migrations/v1.3-managed-workspaces.md"
+    ) == 1
+    assert "/legacy/grok-client" not in plain
+
+
 def test_config_check_verifies_grok_policy_rules_load(tmp_enso, monkeypatch):
     config = _grok_teams_config(tmp_enso)
     calls = _stub_grok_inspect(monkeypatch, tmp_enso, loaded=2)
