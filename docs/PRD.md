@@ -63,6 +63,8 @@ overview, organisation, and managing the scheduled work Enso already runs.
 - **No configuration or native-policy editor.** Workspace, policy, and Slack views explain
   the active process configuration without changing `config.json` or protected provider
   policy files.
+- **No Git-history manager.** Enso can create one scoped local content snapshot, but the
+  dashboard has no history browser and Enso exposes no restore, reset, or delete command.
 
 ## Vocabulary
 
@@ -75,6 +77,9 @@ overview, organisation, and managing the scheduled work Enso already runs.
 - **Reference doc** — user-owned Markdown whose relative path and frontmatter description
   provide on-demand operator context. `enso doc list` derives its current discovery index
   directly from the doc tree. See [docs.md](specs/docs.md).
+- **Snapshot** — one local Git commit of explicit allowlisted content paths. It excludes
+  configuration, credentials, databases, policies, uploads, drafts, and runtime state;
+  see [snapshots.md](specs/snapshots.md).
 - **Transport / notify** — the existing chat delivery layer (Telegram/Slack). Host-side job failure and recovery alerts ride it; successful jobs are silent unless the prompt explicitly sends a message. Slack route auditing records inbound turns only and does not change notification behavior.
 
 ## Key decisions
@@ -89,6 +94,7 @@ overview, organisation, and managing the scheduled work Enso already runs.
 | Web access                     | Bind **localhost** by default; Tailscale for remote; Host allowlist and optional shared token. No login                                                                          |
 | Web capability                 | **Read/write, scoped to owned files** — edit job prompts, toggle/run jobs, edit Enso-owned skills, shared instructions, and managed workspace-root instructions. Configuration, policies, nested instructions, and external skills are read-only |
 | Tables web capability          | **Read-only, bounded inspection** — list metadata, show schema, and page through capped previews; no SQL or row/schema mutations                                                 |
+| Local content history          | **Explicit and scoped** — `enso snapshot create` commits reviewed allowlisted paths locally; no implicit broad staging, network Git operation, or destructive history command  |
 | Notifications                  | Reuse `transport.notify` / `enso message send`; exact Slack routing does not alter job delivery. No transport implicitly broadcasts                                              |
 
 ## Personas

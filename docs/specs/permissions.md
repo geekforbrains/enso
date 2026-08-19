@@ -252,8 +252,8 @@ Antigravity (`agy`) is currently available only in an explicitly unrestricted po
 ## Workspace instructions and skills
 
 Instructions have two layers. Canonical shared Enso workflow lives at
-`~/.enso/AGENTS.md`, with `CLAUDE.md -> AGENTS.md`, and is injected explicitly on every
-provider launch. Global skills are canonical in `~/.enso/skills/`, exposed through
+`~/.enso/AGENTS.md`, with `CLAUDE.md -> AGENTS.md`. Global skills are canonical in
+`~/.enso/skills/`, exposed through
 `.agents/skills -> ../skills` and `.claude/skills -> ../skills`. Focused project
 instructions and skills belong to the exact physical
 `~/.enso/workspaces/<lowercase-kebab-name>` root: `AGENTS.md`,
@@ -276,6 +276,21 @@ For Telegram and Slack turns, Enso stores downloaded chat attachments in persist
 A policy's `chat_commands` field controls only Enso transport commands such as Slack `!status` or Telegram `/status`, `/clear`, `/stop`, and `/compact`. Telegram registers and authorizes only allowed commands; Slack resolves the same list from the route's workspace. It does not control provider-native tools, slash commands, skills, plugins, hooks, or MCP servers. `providers` is the authorization ceiling, while the `/use` and `!use` pickers show only its members whose native launch currently checks usable. Durable provider/model/effort settings never widen that ceiling: Slack stores them per exact DM/channel route and Telegram per private chat, and resolution ignores a stored provider the current policy does not allow.
 
 Most Enso commands do not launch a provider, so they remain available under `chat_commands` when the effective provider's native policy is broken; this lets a user inspect status or select a usable provider. Compaction does launch the effective provider and therefore requires its native policy to pass. Slack settings commands may run inside a thread but still update the entire channel or DM, as their response states; session commands act only on the current conversation.
+
+The shell command `enso snapshot create` is a provider capability, not a transport chat
+command. `chat_commands` neither grants nor blocks it, and the CLI does not bypass the
+native policy. The selected policy must independently permit the provider to execute
+Enso and read each requested versionable path. A successful snapshot also requires the
+policy to permit Enso's internal transaction writes: the root `.snapshot.lock`,
+`.snapshot.transaction.json`, and `.snapshot-transaction-<32-lowercase-hex>.tmp`; the
+owner-only alternate index and native `index.lock`/`index` in the resolved Git directory;
+and Git object, ref, reflog, and lock bookkeeping. A read-only or narrowly restricted
+policy may intentionally deny any of those writes. In that case the command fails and the
+agent must report the policy boundary; it must not substitute raw Git, widen or rewrite
+the policy, or bypass the sandbox. When the native policy permits the transaction, the
+snapshot service still applies its narrower content allowlist, so permission to invoke it
+cannot capture configuration, credentials, policies, databases, uploads, drafts, or
+runtime state.
 
 When a company workspace has native access to sibling client directories, its own `AGENTS.md` should explicitly require reading the selected client's protected instructions before acting. Merely changing directories during a run does not make every provider rebuild its startup instruction chain.
 

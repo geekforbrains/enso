@@ -70,3 +70,13 @@ Body prose.
 The `name` is display text; the relative path remains the doc's identity. Use lowercase filenames with `_` or `-`. Make the description discovery-oriented rather than generic.
 
 Fresh setup may provide `enso/content_model.md`, `enso/layout.md`, and `operator.md`. Treat them like all seeded content: after creation they are user-owned, may be edited or deleted, and must not be recreated by ordinary startup or repair.
+
+## Record content changes safely
+
+Create one scoped local snapshot after each coherent change to versionable Enso content:
+
+```bash
+enso snapshot create --message "<summary>" -- <changed-path> [<changed-path>...]
+```
+
+Pass explicit paths for only the docs, workspace knowledge, instruction files, or related canonical content changed together. Never use raw broad Git staging such as `git add -A`; configuration, credentials, databases, uploads, drafts, snapshot locks and transaction state (`.snapshot.lock`, `.snapshot.transaction.json`, `.snapshot-transaction-*.tmp` at the worktree root, and `.snapshot-index-*` in the resolved Git directory), and other runtime state are not eligible. Never remove a native Git index lock; Enso handles one only when its marker proves the exact lock is Enso-created. If the active policy denies a requested read or an internal repository or transaction write, report that boundary; never widen or rewrite the policy or substitute raw Git. The command intentionally creates local history only: do not use or invent restore, reset, or delete operations.

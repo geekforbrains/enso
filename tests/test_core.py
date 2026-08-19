@@ -2410,7 +2410,9 @@ async def test_agy_timeout_captures_session_and_removes_private_log(
     tmp_enso, sample_config,
 ):
     rt = Runtime(sample_config)
-    rt.agent_timeout = 0.01
+    # Leave enough time for the launch-boundary filesystem validation to run
+    # before exercising cancellation of the already-spawned provider.
+    rt.agent_timeout = 0.1
     session_id = "55555555-5555-4555-8555-555555555555"
     captured: dict[str, str] = {}
 
@@ -2448,7 +2450,7 @@ async def test_agy_timeout_captures_session_and_removes_private_log(
 
     await asyncio.wait_for(
         _process_request(rt, sample_config, "agy", "hello", "chat-a", FakeCtx()),
-        timeout=0.5,
+        timeout=1.0,
     )
 
     assert rt.session_by_chat_provider[("chat-a", "agy")] == session_id

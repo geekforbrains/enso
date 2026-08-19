@@ -292,6 +292,24 @@ At personal scale the model is deliberately simple:
 
 - **Dashboard writes are atomic** — a temp file in the same directory plus `os.replace`.
   A reader never sees a half-written `JOB.md`, `SKILL.md`, or shared `~/.enso/AGENTS.md` from a web edit.
+- **Content snapshots are serialized and scoped** — the owner-only
+  `~/.enso/.snapshot.lock` covers repository revalidation, filter-free descriptor reads,
+  `hash-object -w --no-filters --stdin` plus `update-index --add --cacheinfo` assembly and
+  audit in a complete owner-only `.snapshot-index-<32-lowercase-hex>` inside the resolved
+  Git directory, owner-only root `.snapshot-transaction-<32-lowercase-hex>.tmp` and
+  `.snapshot.transaction.json` persistence, commit-object creation, atomic hard-link
+  acquisition of native `index.lock`, old-index checksum recheck, atomic ref
+  compare-and-swap, atomic native-index replacement and Git-directory fsync, and cleanup.
+  The command requires a clean pre-existing native index, includes only explicit
+  allowlisted paths in its alternate index without applying worktree attributes or clean
+  filters, and never changes the worktree. A later call recovers only recorded `old/old`,
+  `new/old`, or `new/new` `HEAD`/index states and may
+  handle `index.lock` only when its inode and checksum prove it is Enso-created;
+  divergence and unrelated locks are preserved and fail closed. A later Enso caller waits
+  for the Enso lock rather than racing another Enso transaction. Effective
+  partial/promisor configuration is rejected, and Git children disable lazy fetching and
+  transport protocols. The full transaction and path boundary are specified in
+  [snapshots.md](snapshots.md).
 - **Last write wins.** Optimistic locking and conflict resolution are out of scope for
   this single-operator tool.
 - **SQLite in WAL mode** allows the bot, dashboard, CLI, and agent subprocesses to share
@@ -350,7 +368,7 @@ internet and the PRD makes that a non-goal.
 | `job_runner.py`          | Revalidates discovery before trusted prerun and again at the actual batch-provider boundary   |
 | `providers/`             | Uses native Claude/Codex discovery and one explicit Grok/Agy shared-instruction delivery       |
 | `policy.py`              | Builds native launches and revisions them against the current launch contract                 |
-| `cli.py`                 | Provides standalone `enso web` and manual job-run commands                                    |
+| `cli.py`                 | Provides standalone web, manual job-run, and scoped local-snapshot commands                    |
 | `config.py`              | Backfills `web` (including `allowed_hosts` / `external_skill_roots`) and `runs` defaults      |
 | `formatting.py`          | Converts legacy Markdown and supplies standard-Markdown-aware splitting                       |
 | `outbound.py`            | Owns strict typed message/surface contracts, parsers, and Slack-aligned limits                |
@@ -361,7 +379,7 @@ internet and the PRD makes that a non-goal.
 | `frontmatter.py`         | Provides fence-aware raw edits and YAML serialization, writing through `fsutil`               |
 | `fsutil.py`              | Owns atomic text writes, containment checks, hashing, and SQLite file hardening                |
 | `scaffolding.py`         | Creates canonical trees, exclusively seeds fresh content, and conservatively repairs structure |
-| `repository.py`          | Establishes the local Git boundary and records the complete initial content snapshot           |
+| `repository.py`          | Establishes the local Git boundary and owns locked, allowlisted content snapshots               |
 | `sqlite_store.py`        | Owns operation-scoped connections, transactions, bounded timeouts, and failure classification |
 | `docs.py`                | Owns reference-doc path validation, the bounded recursive listing, scaffolding, and deletion  |
 | `starter_docs/`          | Packages the three fresh-only user-owned reference starters                                   |

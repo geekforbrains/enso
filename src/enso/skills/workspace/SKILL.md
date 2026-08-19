@@ -93,6 +93,16 @@ Every skill follows the Agent Skills specification: its directory name and front
 
 Do not use skill placement as a permission boundary; the workspace policy remains authoritative.
 
+## Record content changes safely
+
+Create one scoped local snapshot after each coherent change to versionable Enso content:
+
+```bash
+enso snapshot create --message "<summary>" -- <changed-path> [<changed-path>...]
+```
+
+Pass explicit paths for only the workspace or global instruction, skill, knowledge, or discovery content changed together. Never use raw broad Git staging such as `git add -A`; `config.json`, native policy homes, uploads, drafts, credentials, databases, snapshot locks and transaction state (`.snapshot.lock`, `.snapshot.transaction.json`, `.snapshot-transaction-*.tmp` at the worktree root, and `.snapshot-index-*` in the resolved Git directory), and other protected runtime state are not eligible. Never remove a native Git index lock; Enso handles one only when its marker proves the exact lock is Enso-created. If the active policy denies a requested read or an internal repository or transaction write, report that boundary; never widen or rewrite the policy or substitute raw Git. The command creates local history only; do not use or invent restore, reset, or delete operations.
+
 ## Bind work to the workspace
 
 A workspace entry names policy and concurrency, but never a filesystem path:

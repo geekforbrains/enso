@@ -51,6 +51,46 @@ def test_root_prompt_does_not_embed_dynamic_inventories_or_operating_manuals():
         assert excluded not in prompt
 
 
+def test_root_prompt_requires_safe_scoped_content_snapshots():
+    prompt = _prompt("AGENTS.md")
+
+    for contract in (
+        "after each coherent change to versionable Enso content",
+        "one scoped local snapshot",
+        'enso snapshot create --message "<summary>" -- <changed-path>',
+        "explicit paths",
+        "root and workspace instructions",
+        "canonical skills",
+        "global reference docs",
+        "workspace knowledge",
+        "durable job definitions",
+        "protected runtime state",
+        "credentials",
+        "databases",
+        "uploads",
+        "drafts",
+        "native policy homes",
+        "snapshot locks and transaction state",
+        ".snapshot.transaction.json",
+        ".snapshot-transaction-*.tmp",
+        ".snapshot-index-*",
+        "resolved Git directory",
+        "Never remove a native Git index lock",
+        "Never use raw broad Git staging",
+        "If the active policy denies",
+        "report that boundary",
+        "restore, reset, or delete history operations",
+    ):
+        assert contract in prompt
+
+    for unavailable in (
+        "enso snapshot restore",
+        "enso snapshot reset",
+        "enso snapshot delete",
+    ):
+        assert unavailable not in prompt
+
+
 def test_workspace_prompt_is_a_minimal_scope_and_source_router():
     prompt = _prompt("WORKSPACE_AGENTS.md")
 

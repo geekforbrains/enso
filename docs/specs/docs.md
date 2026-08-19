@@ -134,6 +134,20 @@ path: validate the relative path, create missing parents, refuse an existing fil
 write a scaffold whose `name` is derived from the filename unless `--name` is given. A
 missing `.md` suffix is appended.
 
+The scaffold is intentionally incomplete, so `enso doc create` does not snapshot it.
+After filling the frontmatter and body into one coherent reference, record the exact doc
+path with the local content command:
+
+```bash
+enso snapshot create --message "docs: add homelab reference" -- \
+  ~/.enso/docs/stuff/homelab.md
+```
+
+Dashboard and direct filesystem edits likewise do not create hidden snapshots. One
+reviewed content change gets one scoped snapshot after it is complete; never use broad
+Git staging or include config, credentials, databases, uploads, drafts, or runtime state.
+See [snapshots.md](snapshots.md) for the full boundary.
+
 No `show` or `delete` subcommands. When the active workspace policy permits filesystem operations, ordinary reads and deletes already cover them — the same reason `enso job` has no `show`; the Enso CLI does not bypass a restrictive policy. `list` earns its place because it surfaces descriptions without opening every file.
 
 ## Discovery: the `docs` skill
@@ -265,10 +279,10 @@ The doc count joins the existing job and skill counts, linking to `/docs`.
 | --- | --- |
 | `config.py` | Adds `DOCS_DIR` beside `JOBS_DIR` |
 | `docs.py` *(new)* | Path validation, bounded recursive listing, scaffold and delete |
-| `cli.py` | Adds the `doc` Typer group and coordinates the fresh seed → initial snapshot → completion-timestamp transition |
+| `cli.py` | Adds the `doc` Typer group, the explicit snapshot command, and coordinates the fresh seed → initial snapshot → completion-timestamp transition |
 | `scaffolding.py` | Creates the structural docs directory and exclusively copies starter resources only for an incomplete fresh setup |
 | `starter_docs/` | Packages the content-model, layout, and operator starter references |
-| `repository.py` | Records the complete initial content tree in one local snapshot before setup completion |
+| `repository.py` | Records the initial tree and explicit later content changes through the same scoped snapshot service |
 | `skills/docs/SKILL.md` *(new)* | Bundled skill teaching discovery and authoring |
 | `prompts/AGENTS.md` | Keeps a compact dynamic-doc routing rule and optional pointers to the three starter paths |
 | `web/app.py` | Adds doc routes, path-safe resolution, and the dashboard count |

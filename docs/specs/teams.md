@@ -276,6 +276,20 @@ Put a genuinely project-specific skill's canonical copy under
 unique for that workspace; duplicates fail validation rather than relying on a provider's
 precedence. Every skill follows the [Agent Skills specification](https://agentskills.io/specification), and the bundled `workspace` skill carries the operational workflow.
 
+After one coherent edit to instructions, canonical skills, or workspace knowledge, an
+agent should create one local snapshot with explicit paths:
+
+```bash
+enso snapshot create --message "docs: update client onboarding" -- \
+  AGENTS.md knowledge/onboarding.md
+```
+
+Relative paths resolve from the provider's workspace cwd. The command accepts only
+versionable content below `~/.enso`; policies, configuration, credentials, uploads,
+drafts, and runtime state remain outside its allowlist. A native policy still decides
+whether the provider may execute Enso and modify those files. See
+[snapshots.md](snapshots.md) for the complete boundary.
+
 A staff route starting directly in a client workspace naturally sees that client's project material. A route starting in the company workspace must explicitly read a client's protected instructions before working across directories.
 
 ## Jobs

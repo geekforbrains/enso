@@ -14,7 +14,11 @@ whose value comes from filtering, joining, and aggregation.
 ```
 ~/.enso/
 ├── .git/                # local-only content history; no Enso-created remote
+│   └── .snapshot-index-*  # protected 0600 alternate index while a snapshot is in flight
 ├── .gitignore           # Enso-owned protective runtime/credential exclusions
+├── .snapshot.lock       # persistent owner-only Enso snapshot serializer
+├── .snapshot.transaction.json  # owner-only marker while recovery may be needed
+├── .snapshot-transaction-*.tmp  # protected owner-only atomic marker-write temporary
 ├── config.json          # settings, including `web` and `runs` blocks
 ├── AGENTS.md            # canonical shared Enso instructions; native root for Claude/Codex
 ├── CLAUDE.md -> AGENTS.md
@@ -104,12 +108,43 @@ versionable.
 
 The protected set includes `config.json` and its lock, `secrets/`, `enso.db` and its
 sidecars, `state.json`, the message queue, audits, run output, caches, logs, uploads,
-drafts, updater state, Git metadata, job locks/generated output, and native policy homes.
+drafts, updater state, Git metadata, `.snapshot.lock`, the owner-only
+`.snapshot.transaction.json` marker, root owner-only
+`.snapshot-transaction-<32-lowercase-hex>.tmp` marker-write temporaries, complete
+owner-only `.snapshot-index-<32-lowercase-hex>` alternate indexes inside the resolved Git
+directory, job locks/generated output, and native policy homes.
 Environment and authentication files remain protected even when nested below an
 otherwise versionable directory. Any protected path already tracked by an existing
-repository blocks automatic snapshots; ignore rules do not make an already-tracked file
+repository blocks snapshots; ignore rules do not make an already-tracked file
 safe. Durable scripts must refer to credential locations rather than contain secret
 values.
+
+The public write is intentionally narrow:
+
+```bash
+enso snapshot create --message "<summary>" -- <paths...>
+```
+
+Relative paths resolve from the caller's current directory and absolute paths are
+accepted, but every path must remain canonically below `~/.enso` and match the allowlist.
+The repository must already exist, its staging area must be clean, and a pre-existing
+native Git index lock is never removed. An owner-only `.snapshot.lock` serializes callers
+through validation, filter-free descriptor reads, `hash-object -w --no-filters --stdin`
+and `update-index --add --cacheinfo` assembly and audit in the Git-dir alternate index,
+atomic owner-only root marker-temporary replacement, persistence of the marker and
+new-index SHA, `commit-tree`, atomic hard-link acquisition of Git's `index.lock`, old-index checksum
+recheck, atomic `HEAD` compare-and-swap, atomic native-index replacement and Git-directory
+fsync without worktree update, and cleanup. Worktree attributes and clean filters never
+transform the reviewed bytes.
+
+No-diff requests succeed without a commit. Interrupted exact
+`old/old`, `new/old`, and `new/new` ref/index states recover on the next call; divergence
+and unrelated native locks are preserved and fail closed, and a post-ref interruption
+may correctly leave the new `HEAD` pending exact-lock installation. Worktree bytes,
+unrelated unstaged changes, and configured remotes are untouched, and no network
+operation occurs; effective partial/promisor configuration is rejected and Git transport
+protocols are disabled. See
+[snapshots.md](snapshots.md) for the complete CLI, path, transaction, and failure contract.
 
 A supported config value can use a direct 1Password reference named `<key>_1password`:
 

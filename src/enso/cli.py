@@ -75,6 +75,10 @@ slack_app = typer.Typer(help="Slack directory lookups and message search")
 config_app = typer.Typer(help="Validate routes, workspaces, policies, and jobs")
 route_app = typer.Typer(help="Explain Slack routing decisions")
 audit_app = typer.Typer(help="Inspect the Slack audit trail")
+snapshot_app = typer.Typer(
+    help="Create safe, scoped local content snapshots",
+    no_args_is_help=True,
+)
 app.add_typer(job_app, name="job")
 app.add_typer(doc_app, name="doc")
 app.add_typer(table_app, name="table")
@@ -84,6 +88,7 @@ app.add_typer(slack_app, name="slack")
 app.add_typer(config_app, name="config")
 app.add_typer(route_app, name="route")
 app.add_typer(audit_app, name="audit")
+app.add_typer(snapshot_app, name="snapshot")
 
 console = Console()
 
@@ -1566,7 +1571,6 @@ def _finalize_setup_or_exit(config: dict) -> None:
             repository.snapshot(
                 _initial_setup_snapshot_paths(config, repository.root),
                 _INITIAL_SETUP_SNAPSHOT_SUBJECT,
-                recover_interrupted=True,
             )
             missing_from_index = _required_paths_absent_from(
                 required_paths,
@@ -1969,6 +1973,41 @@ def job_run(
         console.print(result.output, markup=False)
     if result.status in {"error", "timeout"}:
         raise typer.Exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Snapshot subcommands
+# ---------------------------------------------------------------------------
+
+
+@snapshot_app.command("create")
+def snapshot_create(
+    paths: Annotated[
+        list[str],
+        typer.Argument(help="One or more explicit paths beneath ~/.enso"),
+    ],
+    message: Annotated[
+        str,
+        typer.Option("--message", help="Commit message for this local snapshot"),
+    ],
+) -> None:
+    """Create one local commit containing only the requested versionable paths."""
+    from .repository import EnsoRepository, RepositoryError
+
+    try:
+        created = EnsoRepository().snapshot(
+            paths,
+            message,
+            caller_cwd=os.getcwd(),
+        )
+    except (OSError, RepositoryError) as exc:
+        console.print(f"[red]Could not create Enso snapshot:[/] {escape(str(exc))}")
+        raise typer.Exit(1) from None
+
+    if created:
+        console.print(f"[green]Snapshot created:[/] {escape(message)}")
+    else:
+        console.print("[dim]No changes to snapshot.[/]")
 
 
 # ---------------------------------------------------------------------------

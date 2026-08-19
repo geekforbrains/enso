@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
+import signal
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -444,10 +447,10 @@ def test_fresh_setup_finalization_orders_null_seed_snapshot_then_timestamp(monke
         raising=False,
     )
 
-    def snapshot(_self, paths, message, *, recover_interrupted=False):
+    def snapshot(_self, paths, message):
         nonlocal snapshot_paths
         snapshot_paths = tuple(paths)
-        events.append(("snapshot", (message, recover_interrupted)))
+        events.append(("snapshot", message))
         return True
 
     monkeypatch.setattr(
@@ -485,7 +488,7 @@ def test_fresh_setup_finalization_orders_null_seed_snapshot_then_timestamp(monke
     ]
     assert events[0][1] is None
     assert events[2][1] == _INITIAL_SETUP_SUBJECT
-    assert events[6][1] == (_INITIAL_SETUP_SUBJECT, True)
+    assert events[6][1] == _INITIAL_SETUP_SUBJECT
     assert set(snapshot_paths) == _initial_snapshot_scopes("alpha", "default")
     assert set(events[5][1]) == _required_initial_paths("alpha", "default")
     assert isinstance(events[-1][1], str)
@@ -557,6 +560,140 @@ def test_finalize_fresh_setup_seeds_snapshots_then_marks_complete(tmp_enso):
 
     assert _git_output(tmp_enso, "rev-list", "--count", "HEAD") == "1"
     assert operator_doc.read_text(encoding="utf-8") == "operator-owned content\n"
+
+
+def test_fresh_setup_recovers_a_committed_snapshot_killed_before_index_realign(
+    tmp_path,
+):
+    from datetime import datetime
+
+    home = tmp_path / "home"
+    home.mkdir()
+    root = home / ".enso"
+    custom_content = "operator content survives the crash\n"
+    environment = os.environ.copy()
+    environment["HOME"] = str(home)
+
+    crash_script = "\n".join(
+        (
+            "import os",
+            "import signal",
+            "from pathlib import Path",
+            "from enso.cli import _finalize_setup_or_exit",
+            "from enso.repository import EnsoRepository",
+            "repository = EnsoRepository()",
+            "repository.ensure()",
+            "root = Path(repository.root)",
+            "custom = root / 'docs' / 'custom.md'",
+            "custom.parent.mkdir()",
+            f"custom.write_text({custom_content!r}, encoding='utf-8')",
+            "config = {'setup': {'completed_at': None}, "
+            "'workspaces': {'default': {'policy': 'admin', 'concurrency': 1}}}",
+            "real_run_git = EnsoRepository._run_git",
+            "def crash_after_ref_update(self, args, **kwargs):",
+            "    result = real_run_git(self, args, **kwargs)",
+            "    if 'update-ref' in args:",
+            "        os.kill(os.getpid(), signal.SIGKILL)",
+            "    return result",
+            "EnsoRepository._run_git = crash_after_ref_update",
+            "_finalize_setup_or_exit(config)",
+        )
+    )
+    crashed = subprocess.run(
+        [sys.executable, "-c", crash_script],
+        check=False,
+        capture_output=True,
+        env=environment,
+        timeout=20,
+    )
+
+    assert crashed.returncode == -signal.SIGKILL
+    transaction = root / ".snapshot.transaction.json"
+    temporary_indexes = tuple((root / ".git").glob(".snapshot-index-*"))
+    assert transaction.is_file()
+    assert len(temporary_indexes) == 1
+    assert json.loads((root / "config.json").read_text(encoding="utf-8"))["setup"] == {
+        "completed_at": None
+    }
+    committed_head = _git_output(str(root), "rev-parse", "HEAD")
+    assert _git_output(str(root), "log", "-1", "--format=%s") == _INITIAL_SETUP_SUBJECT
+    assert (
+        subprocess.run(
+            ["git", "-C", str(root), "diff", "--cached", "--quiet", "--exit-code"],
+            check=False,
+            capture_output=True,
+            timeout=10,
+        ).returncode
+        == 1
+    )
+
+    retry_script = "\n".join(
+        (
+            "import json",
+            "from pathlib import Path",
+            "from enso.cli import _finalize_setup_or_exit",
+            "from enso.config import load_config",
+            "from enso.repository import EnsoRepository",
+            "root = Path.home() / '.enso'",
+            "events = []",
+            "real_ensure = EnsoRepository.ensure",
+            "real_subject_paths = EnsoRepository.commit_subject_paths",
+            "def observed_ensure(self):",
+            "    result = real_ensure(self)",
+            "    assert not (root / '.snapshot.transaction.json').exists()",
+            "    assert not tuple((root / '.git').glob('.snapshot-index-*'))",
+            "    clean = self._run_git(",
+            "        ['diff', '--cached', '--quiet', '--exit-code'],",
+            "        check=False, read_only=True, description='verify recovered setup index',",
+            "    )",
+            "    assert clean.returncode == 0",
+            "    events.append('ensure-recovered')",
+            "    return result",
+            "def observed_subject_paths(self, subject):",
+            "    assert events == ['ensure-recovered']",
+            "    assert not (root / '.snapshot.transaction.json').exists()",
+            "    assert not tuple((root / '.git').glob('.snapshot-index-*'))",
+            "    result = real_subject_paths(self, subject)",
+            "    events.append('marker-read')",
+            "    return result",
+            "EnsoRepository.ensure = observed_ensure",
+            "EnsoRepository.commit_subject_paths = observed_subject_paths",
+            "_finalize_setup_or_exit(load_config())",
+            "(Path.home() / 'retry-events.json').write_text(",
+            "    json.dumps(events), encoding='utf-8'",
+            ")",
+        )
+    )
+    retried = subprocess.run(
+        [sys.executable, "-c", retry_script],
+        check=False,
+        capture_output=True,
+        env=environment,
+        timeout=20,
+    )
+
+    assert retried.returncode == 0, retried.stderr.decode(errors="replace")
+    assert json.loads((home / "retry-events.json").read_text(encoding="utf-8")) == [
+        "ensure-recovered",
+        "marker-read",
+    ]
+    persisted = json.loads((root / "config.json").read_text(encoding="utf-8"))
+    completed_at = datetime.fromisoformat(persisted["setup"]["completed_at"])
+    assert completed_at.utcoffset() is not None
+    assert _git_output(str(root), "rev-parse", "HEAD") == committed_head
+    assert _git_output(str(root), "rev-list", "--count", "HEAD") == "1"
+    assert _git_output(str(root), "log", "--format=%s").splitlines().count(
+        _INITIAL_SETUP_SUBJECT
+    ) == 1
+    assert _required_initial_paths("default") | {"docs/custom.md"} <= set(
+        _git_output(str(root), "ls-files").splitlines()
+    )
+    assert (root / "docs" / "custom.md").read_text(encoding="utf-8") == custom_content
+    assert _git_output(str(root), "show", "HEAD:docs/custom.md") == custom_content.rstrip()
+    assert _git_output(str(root), "status", "--porcelain") == ""
+    assert not transaction.exists()
+    assert tuple((root / ".git").glob(".snapshot-index-*")) == ()
+    assert not (root / ".git" / "index.lock").exists()
 
 
 def test_snapshot_failure_leaves_fresh_setup_incomplete(
@@ -735,7 +872,7 @@ def test_missing_required_baseline_stops_before_snapshot_or_commit(
     )
 
 
-def test_interrupted_unborn_snapshot_recovers_only_its_dirty_index(tmp_enso):
+def test_fresh_setup_refuses_and_preserves_preexisting_staging(tmp_enso, capsys):
     from enso.config import SetupState, load_config, setup_state
     from enso.repository import EnsoRepository
 
@@ -754,14 +891,28 @@ def test_interrupted_unborn_snapshot_recovers_only_its_dirty_index(tmp_enso):
     assert _git_output(tmp_enso, "diff", "--cached", "--name-only") == (
         "docs/operator.md"
     )
+    staged_content = Path(tmp_enso, "docs", "operator.md").read_text(encoding="utf-8")
 
-    _finalize_setup_or_exit(config)
+    with pytest.raises(typer.Exit) as exc_info:
+        _finalize_setup_or_exit(config)
 
-    assert setup_state(load_config()) is SetupState.COMPLETE
-    assert _git_output(tmp_enso, "rev-list", "--count", "HEAD") == "1"
-    assert set(_git_output(tmp_enso, "show", "--format=", "--name-only", "HEAD").splitlines()) == (
-        _required_initial_paths("default")
+    assert exc_info.value.exit_code == 1
+    assert setup_state(load_config()) is SetupState.INCOMPLETE
+    assert "staging area is not clean" in " ".join(capsys.readouterr().out.split())
+    assert _git_output(tmp_enso, "diff", "--cached", "--name-only") == (
+        "docs/operator.md"
     )
+    assert Path(tmp_enso, "docs", "operator.md").read_text(encoding="utf-8") == staged_content
+    assert (
+        subprocess.run(
+            ["git", "-C", tmp_enso, "rev-parse", "--verify", "HEAD"],
+            check=False,
+            capture_output=True,
+        ).returncode
+        != 0
+    )
+    assert not Path(tmp_enso, ".snapshot.transaction.json").exists()
+    assert tuple((Path(tmp_enso) / ".git").glob(".snapshot-index-*")) == ()
 
 
 def test_similar_unrelated_commit_subject_blocks_fresh_snapshot(tmp_enso, capsys):
@@ -878,10 +1029,9 @@ def test_new_snapshot_must_track_every_required_exact_path_before_timestamp(
         EnsoRepository, "ignored_paths", lambda _self, _paths: (), raising=False
     )
 
-    def snapshot(_self, _paths, _message, *, recover_interrupted=False):
+    def snapshot(_self, _paths, _message):
         nonlocal snapshots
         snapshots += 1
-        assert recover_interrupted is True
         return True
 
     monkeypatch.setattr(EnsoRepository, "snapshot", snapshot)

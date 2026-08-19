@@ -155,3 +155,41 @@ def test_workspace_skill_prefers_a_small_prompt_and_knowledge_index():
         assert contract in skill
 
     assert "self-contained domain manual" not in skill
+
+
+def test_content_mutation_skills_require_scoped_enso_snapshots():
+    bundled = importlib.resources.files("enso").joinpath("skills")
+
+    for name in ("docs", "jobs", "workspace"):
+        skill = bundled.joinpath(name, "SKILL.md").read_text(encoding="utf-8")
+        for contract in (
+            "after each coherent change to versionable Enso content",
+            'enso snapshot create --message "<summary>" -- <changed-path>',
+            "explicit paths",
+            "snapshot locks and transaction state",
+            ".snapshot.transaction.json",
+            ".snapshot-transaction-*.tmp",
+            ".snapshot-index-*",
+            "resolved Git directory",
+            "Never remove a native Git index lock",
+            "Never use raw broad Git staging",
+            "If the active policy denies",
+            "report that boundary",
+            "restore, reset, or delete",
+        ):
+            assert contract in skill, f"{name} skill is missing {contract!r}"
+
+
+def test_tables_skill_keeps_runtime_database_out_of_content_snapshots():
+    skill = (
+        importlib.resources.files("enso")
+        .joinpath("skills", "tables", "SKILL.md")
+        .read_text(encoding="utf-8")
+    )
+
+    for contract in (
+        "protected runtime state",
+        "not versionable Enso content",
+        "never pass it to `enso snapshot create`",
+    ):
+        assert contract in skill

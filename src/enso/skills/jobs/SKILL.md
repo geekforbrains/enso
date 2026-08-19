@@ -15,6 +15,14 @@ Background jobs run autonomously through the Enso service. Each job selects a na
 4. **Test**: Run `enso job run <name>` and fix any validation or runtime errors.
 5. **Enable**: Set `enabled: true` only after the manual run succeeds. The scheduler picks it up on its next tick.
 
+Create one scoped local snapshot after each coherent change to versionable Enso content, covering only the durable job files changed together:
+
+```bash
+enso snapshot create --message "<summary>" -- <changed-path> [<changed-path>...]
+```
+
+Use explicit paths such as a job's `JOB.md`, `prerun.sh`, or `prerun.py`. Never use raw broad Git staging such as `git add -A`, and never include run output, caches, credentials, snapshot locks and transaction state (`.snapshot.lock`, `.snapshot.transaction.json`, `.snapshot-transaction-*.tmp` at the worktree root, and `.snapshot-index-*` in the resolved Git directory), or other protected runtime state. Never remove a native Git index lock; Enso handles one only when its marker proves the exact lock is Enso-created. If the active policy denies a requested read or an internal repository or transaction write, report that boundary; never widen or rewrite the policy or substitute raw Git. The command creates local history only; do not use or invent restore, reset, or delete operations.
+
 ## CLI
 
 ```bash
