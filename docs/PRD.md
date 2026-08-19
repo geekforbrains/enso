@@ -168,7 +168,7 @@ authorized chat senders, not additional owners or dashboard personas.
   complete scaffold atomically, saves the validated candidate config atomically, runs the
   installation check, and snapshots exactly `AGENTS.md`, `CLAUDE.md`, `.agents/skills`,
   `.claude/skills`, and `knowledge/README.md`. Fresh setup's unrestricted
-  `admin`/`default` binding is the only automatic authority grant.
+  `admin`/`default` binding is the only automatic full-authority grant.
 - `enso workspace repair <name>` creates missing structural directories and known
   discovery links only. It never recreates seeded instructions, skill definitions, docs, or
   `knowledge/README.md`; it reports missing user content that keeps the workspace from
@@ -177,6 +177,14 @@ authorized chat senders, not additional owners or dashboard personas.
 - `/policies` and `/policies/<name>` show reusable policy configuration, consuming
   workspaces, and safe provider-validation results. Native policy contents and secret
   values are never rendered or edited.
+- `enso policy list` and `enso policy show <name>` provide the same safe read-only
+  orientation. `enso policy create <name>` requires exactly one explicit authority
+  source (`--unrestricted` or an existing user-authored `--policy-dir`), repeated explicit
+  providers, a default provider, and deliberate chat-command/environment choices. It
+  validates before persistence and never creates, copies, chmods, rewrites, upgrades, or
+  repairs canonical native policy content. Fresh setup's full-authority unrestricted
+  `admin` is the sole automatic creation; deletion, rebinding, repair, and presets remain
+  out of scope.
 - `/slack` shows exact DM/channel IDs, cache-only friendly labels, workspace-to-policy
   bindings, audit/trigger state, and route problems without making Slack API requests.
 - `/agents` renders the canonical shared `~/.enso/AGENTS.md`; its revision-checked editor
@@ -248,6 +256,9 @@ authorized chat senders, not additional owners or dashboard personas.
 - A workspace can be listed, inspected, created with an explicit existing policy, and
   structurally repaired without hand-editing workspace JSON or links; no command accepts
   an alternate path or silently chooses unrestricted authority.
+- A policy can be safely listed, inspected, and created from one explicit authority
+  source without exposing or mutating provider-native content; restricted policies never
+  receive an implicit directory, and `enso config check` remains the complete validator.
 - The web UI runs via `enso web`, reachable at `http://localhost:<port>` and, when
   deliberately bound there, over the tailnet.
 - Slack authorization uses exact routes configured alongside credentials and transport options in `transports.slack`; Telegram remains private with exact numeric allowed-user IDs; every Telegram configuration, Slack route, and job requires a named workspace and inherits that workspace's single policy.

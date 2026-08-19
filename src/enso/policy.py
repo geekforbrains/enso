@@ -18,14 +18,15 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterable
 from dataclasses import dataclass
 
-from .fsutil import regular_file_sha256
 from .teams import POLICY_FILES, Policy, Workspace
 
 try:
@@ -73,6 +74,7 @@ _GROK_MARKETPLACE_STANZA = (
 # Header/env keys in mcp.json that look credential-bearing; a literal value
 # (one with no ${...} reference) under such a key draws a warning.
 _SECRET_KEY_RE = re.compile(r"(?i)(auth|token|secret|key|password|bearer)")
+_KNOWN_PROVIDERS = frozenset((*POLICY_FILES, "agy"))
 
 
 class PolicyError(Exception):
@@ -95,6 +97,16 @@ class PolicyCheck:
     policy_path: str | None = None
     policy_revision: str | None = None
     mcp_servers: tuple[str, ...] = ()  # claude: server names resolved from mcp.json
+
+
+@dataclass(frozen=True)
+class PolicySourceValidation:
+    """Read-only validation of every native source selected by one policy."""
+
+    ok: bool
+    problems: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+    provider_checks: tuple[PolicyCheck, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -143,136 +155,542 @@ def _provider_source_root(policy: Policy, provider: str) -> str:
     return os.path.join(policy.policy_dir, provider)
 
 
-def check_provider(workspace: Workspace, policy: Policy, provider: str) -> PolicyCheck:
-    """Statically validate one workspace/policy/provider binding.
+def _within(child: str, parent: str) -> bool:
+    return child == parent or child.startswith(parent + os.sep)
 
-    Verifies selection and integrity, not semantics: a file that parses and
-    deliberately grants broad access is still the operator's policy.
-    """
-    if policy.unrestricted:
-        return PolicyCheck(provider=provider, ok=True, policy_revision=UNRESTRICTED_REVISION)
 
-    path = policy_path(policy, provider)
-    if path is None:
-        reason = (
-            "agy has no verified Enso launch contract and requires an unrestricted workspace"
-            if provider == "agy"
-            else f"unknown provider {provider!r}"
-        )
-        return PolicyCheck(provider=provider, ok=False, problems=(reason,))
+@dataclass
+class _PinnedDirectory:
+    """A no-follow descriptor chain from `/` to one physical directory."""
 
-    problems = _file_problems(path, workspace)
-    if problems:
-        return PolicyCheck(provider=provider, ok=False, problems=tuple(problems), policy_path=path)
+    path: str
+    label: str
+    descriptors: list[int]
+    component_names: list[str]
 
-    warnings: list[str] = []
-    mcp_servers: tuple[str, ...] = ()
-    mcp_digest: str | None = None
-    if provider == "claude":
-        problems, warnings, settings = _check_claude_settings(path)
-        mcp_problems, servers, mcp_digest = _check_claude_mcp(policy, workspace)
-        problems.extend(mcp_problems)
-        mcp_servers = tuple(sorted(servers))
-        if not problems and settings is not None:
-            warnings.extend(_claude_mcp_rule_warnings(settings, mcp_servers))
-            warnings.extend(_claude_mcp_secret_warnings(servers))
-    elif provider == "codex":
-        problems = _check_codex_config(path)
-        problems.extend(_tree_problems(policy, workspace, "codex", skip=path))
-    elif provider == "grok":
-        problems, warnings = _check_grok_config(path)
-        problems.extend(_tree_problems(policy, workspace, "grok", skip=path))
+    @property
+    def descriptor(self) -> int:
+        return self.descriptors[-1]
 
-    if problems:
-        return PolicyCheck(provider=provider, ok=False, problems=tuple(problems), policy_path=path)
+    def ancestry_problems(self) -> list[str]:
+        problems: list[str] = []
+        traversed = os.path.sep
+        for index, name in enumerate(self.component_names):
+            traversed = os.path.join(traversed, name)
+            parent = self.descriptors[index]
+            held = os.fstat(self.descriptors[index + 1])
+            try:
+                with os.scandir(parent) as iterator:
+                    exact_name_present = any(entry.name == name for entry in iterator)
+            except OSError as exc:
+                problems.append(f"{self.label} ancestry changed at {traversed}: {exc}")
+                break
+            if not exact_name_present:
+                problems.append(f"{self.label} ancestry changed at {traversed}")
+                break
+            try:
+                current = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            except OSError as exc:
+                problems.append(f"{self.label} ancestry changed at {traversed}: {exc}")
+                break
+            if stat.S_ISLNK(current.st_mode) or _stat_identity(current) != _stat_identity(held):
+                problems.append(f"{self.label} ancestry changed at {traversed}")
+                break
+        return problems
+
+    def close(self) -> None:
+        for descriptor in reversed(self.descriptors):
+            os.close(descriptor)
+        self.descriptors.clear()
+
+
+def _stat_identity(metadata: os.stat_result) -> tuple[int, int]:
+    return metadata.st_dev, metadata.st_ino
+
+
+def _directory_open_flags() -> int:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    return flags | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_DIRECTORY", 0)
+
+
+def _pin_directory(path: str, label: str) -> tuple[_PinnedDirectory | None, list[str]]:
+    """Open every absolute path component without following symlinks."""
+    absolute = os.path.abspath(os.path.expanduser(path))
+    if not os.path.isabs(absolute):
+        return None, [f"{label} must be absolute"]
+    descriptors: list[int] = []
+    component_names = [part for part in absolute.split(os.sep) if part]
+    traversed = os.path.sep
     try:
-        revision = _policy_revision(policy, provider, path, claude_mcp_digest=mcp_digest)
+        descriptors.append(os.open(os.path.sep, _directory_open_flags()))
+        for name in component_names:
+            traversed = os.path.join(traversed, name)
+            parent = descriptors[-1]
+            try:
+                with os.scandir(parent) as iterator:
+                    entry_names = {entry.name for entry in iterator}
+            except OSError as exc:
+                return None, [f"cannot enumerate {label} path component {traversed}: {exc}"]
+            if name not in entry_names:
+                aliases = sorted(
+                    candidate
+                    for candidate in entry_names
+                    if candidate.casefold() == name.casefold()
+                )
+                if not aliases:
+                    return None, [f"{label} does not exist at {traversed}"]
+                found = f" (found {aliases[0]!r})"
+                return None, [
+                    f"{label} path component spelling does not exactly match an "
+                    f"on-disk entry at {traversed}{found}"
+                ]
+            try:
+                before = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            except OSError as exc:
+                return None, [f"cannot inspect {label} path component {traversed}: {exc}"]
+            if stat.S_ISLNK(before.st_mode):
+                return None, [f"{label} path component {traversed} must not be a symlink"]
+            if not stat.S_ISDIR(before.st_mode):
+                return None, [f"{label} path component {traversed} must be a directory"]
+            try:
+                descriptor = os.open(name, _directory_open_flags(), dir_fd=parent)
+            except OSError as exc:
+                return None, [f"could not open {label} path component {traversed}: {exc}"]
+            descriptors.append(descriptor)
+            opened = os.fstat(descriptor)
+            try:
+                after = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            except OSError as exc:
+                return None, [f"could not recheck {label} path component {traversed}: {exc}"]
+            if _stat_identity(before) != _stat_identity(opened) or _stat_identity(
+                opened
+            ) != _stat_identity(after):
+                return None, [f"{label} ancestry changed at {traversed}"]
+        pinned = _PinnedDirectory(absolute, label, descriptors, component_names)
+        descriptors = []
+        return pinned, []
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def _directory_metadata_problems(
+    path: str,
+    label: str,
+    *,
+    missing_ok: bool = False,
+) -> tuple[os.stat_result | None, list[str]]:
+    """Validate one physical current-user directory without changing it."""
+    try:
+        metadata = os.lstat(path)
+    except FileNotFoundError:
+        if missing_ok:
+            return None, []
+        return None, [f"{label} does not exist at {path}"]
     except OSError as exc:
+        return None, [f"cannot inspect {label}: {exc}"]
+    if stat.S_ISLNK(metadata.st_mode):
+        return None, [f"{label} must be a physical directory, not a symlink"]
+    if not stat.S_ISDIR(metadata.st_mode):
+        return None, [f"{label} must be a directory"]
+    return metadata, _directory_stat_problems(metadata, label)
+
+
+def _directory_stat_problems(metadata: os.stat_result, label: str) -> list[str]:
+    problems: list[str] = []
+    if metadata.st_uid != os.geteuid():
+        problems.append(f"{label} must be owned by the current user")
+    if stat.S_IMODE(metadata.st_mode) & 0o022:
+        problems.append(f"{label} must not be group/other-writable")
+    return problems
+
+
+def _file_metadata_problems(metadata: os.stat_result, label: str) -> list[str]:
+    problems: list[str] = []
+    if not stat.S_ISREG(metadata.st_mode):
+        return [f"{label} must be a regular file"]
+    if metadata.st_uid != os.geteuid():
+        problems.append(f"{label} must be owned by the current user")
+    if metadata.st_nlink != 1:
+        problems.append(f"{label} must not have hard links")
+    if stat.S_IMODE(metadata.st_mode) & 0o077:
+        problems.append(f"{label} must be owner-only (chmod 600 or 400)")
+    return problems
+
+
+def _metadata_signature(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_uid,
+        metadata.st_nlink,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _stable_descriptor_read(
+    descriptor: int,
+    label: str,
+    expected: os.stat_result,
+) -> tuple[bytes | None, list[str]]:
+    """Read an already no-follow-opened file and reject in-place mutation."""
+    before = os.fstat(descriptor)
+    problems = _file_metadata_problems(before, label)
+    if _stat_identity(before) != _stat_identity(expected):
+        problems.append(f"{label} changed before it could be read")
+    chunks: list[bytes] = []
+    try:
+        while chunk := os.read(descriptor, 65536):
+            chunks.append(chunk)
+    except OSError as exc:
+        problems.append(f"could not read {label}: {exc}")
+    after = os.fstat(descriptor)
+    if _metadata_signature(before) != _metadata_signature(after):
+        problems.append(f"{label} changed while it was being read")
+    return (None if problems else b"".join(chunks)), problems
+
+
+def _entry_replacement_problem(
+    parent: int,
+    name: str,
+    expected: os.stat_result,
+    label: str,
+    kind: str,
+) -> str | None:
+    """Recheck that a descriptor-read entry still names the same physical object."""
+    try:
+        current = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    except OSError as exc:
+        return f"could not recheck {label}: {exc}"
+    expected_type = stat.S_ISREG if kind == "file" else stat.S_ISDIR
+    if not expected_type(current.st_mode) or _stat_identity(current) != _stat_identity(expected):
+        activity = "being read" if kind == "file" else "inspected"
+        return f"{label} was replaced while it was {activity}"
+    return None
+
+
+def _tree_snapshot_descriptor(
+    root_descriptor: int,
+    label: str,
+) -> tuple[dict[str, bytes], list[str]]:
+    """Read a complete tree relative to a pinned physical root descriptor."""
+    files: dict[str, bytes] = {}
+    problems: list[str] = []
+
+    def visit(directory_descriptor: int, prefix: str = "") -> None:
+        try:
+            with os.scandir(directory_descriptor) as iterator:
+                entries = sorted(iterator, key=lambda entry: entry.name)
+        except OSError as exc:
+            problems.append(f"cannot inspect {label}: {exc}")
+            return
+        for entry in entries:
+            relative = f"{prefix}/{entry.name}" if prefix else entry.name
+            item_label = f"{label} entry {relative}"
+            try:
+                metadata = os.stat(
+                    entry.name,
+                    dir_fd=directory_descriptor,
+                    follow_symlinks=False,
+                )
+            except OSError as exc:
+                problems.append(f"cannot inspect {item_label}: {exc}")
+                continue
+            if stat.S_ISLNK(metadata.st_mode):
+                if relative == "mcp.json":
+                    problems.append("mcp.json must be a regular file, not a symlink")
+                else:
+                    problems.append(f"{item_label} must not be a symlink")
+                continue
+            if stat.S_ISDIR(metadata.st_mode):
+                problems.extend(_directory_stat_problems(metadata, item_label))
+                try:
+                    child = os.open(
+                        entry.name,
+                        _directory_open_flags(),
+                        dir_fd=directory_descriptor,
+                    )
+                except OSError as exc:
+                    problems.append(f"could not open {item_label}: {exc}")
+                    continue
+                try:
+                    opened = os.fstat(child)
+                    if _stat_identity(opened) != _stat_identity(metadata):
+                        problems.append(f"{item_label} changed while it was being opened")
+                    else:
+                        visit(child, relative)
+                finally:
+                    os.close(child)
+                replacement_problem = _entry_replacement_problem(
+                    directory_descriptor,
+                    entry.name,
+                    metadata,
+                    item_label,
+                    "directory",
+                )
+                if replacement_problem is not None:
+                    problems.append(replacement_problem)
+                continue
+            if not stat.S_ISREG(metadata.st_mode):
+                problems.append(f"{item_label} must be a regular file or directory")
+                continue
+            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(
+                os, "O_NOFOLLOW", 0
+            )
+            try:
+                descriptor = os.open(entry.name, flags, dir_fd=directory_descriptor)
+            except OSError as exc:
+                problems.append(f"could not open {item_label} safely: {exc}")
+                continue
+            try:
+                content, read_problems = _stable_descriptor_read(
+                    descriptor,
+                    item_label,
+                    metadata,
+                )
+                problems.extend(read_problems)
+                replacement_problem = _entry_replacement_problem(
+                    directory_descriptor,
+                    entry.name,
+                    metadata,
+                    item_label,
+                    "file",
+                )
+                if replacement_problem is not None:
+                    problems.append(replacement_problem)
+                if content is not None and replacement_problem is None:
+                    files[relative] = content
+            finally:
+                os.close(descriptor)
+
+    visit(root_descriptor)
+    return files, problems
+
+
+def _tree_snapshot(root: str, label: str) -> tuple[dict[str, bytes], list[str]]:
+    """Return stable bytes for every file below one physical provider tree."""
+    pinned, problems = _pin_directory(root, label)
+    if pinned is None:
+        return {}, problems
+    try:
+        root_metadata = os.fstat(pinned.descriptor)
+        problems.extend(_directory_stat_problems(root_metadata, label))
+        files, tree_problems = _tree_snapshot_descriptor(pinned.descriptor, label)
+        problems.extend(tree_problems)
+        problems.extend(pinned.ancestry_problems())
+        return files, problems
+    finally:
+        pinned.close()
+
+
+def _policy_directory_problems(
+    policy: Policy,
+    workspaces: tuple[Workspace, ...],
+) -> list[str]:
+    if policy.policy_dir is None:
+        return ["policy_dir is required for a restricted policy"]
+    pinned, problems = _pin_directory(policy.policy_dir, "policy_dir")
+    if pinned is not None:
+        try:
+            problems.extend(
+                _directory_stat_problems(os.fstat(pinned.descriptor), "policy_dir")
+            )
+            problems.extend(pinned.ancestry_problems())
+        finally:
+            pinned.close()
+    policy_lexical = os.path.abspath(os.path.expanduser(policy.policy_dir))
+    policy_real = os.path.realpath(policy_lexical)
+    for workspace in workspaces:
+        workspace_lexical = os.path.abspath(os.path.expanduser(workspace.path))
+        if _within(policy_lexical, workspace_lexical) or _within(
+            workspace_lexical,
+            policy_lexical,
+        ):
+            problems.append(
+                f"policy_dir lexically overlaps workspace {workspace.name!r}; "
+                "the workspace could rewrite protected policy content"
+            )
+            continue
+        workspace_real = os.path.realpath(workspace_lexical)
+        if _within(policy_real, workspace_real) or _within(workspace_real, policy_real):
+            problems.append(
+                f"policy_dir overlaps workspace {workspace.name!r}; "
+                "the workspace could rewrite protected policy content"
+            )
+    return problems
+
+
+def _runtime_topology_problems(policy: Policy, provider: str) -> list[str]:
+    """Inspect an existing staged-home tree without creating or repairing it."""
+    assert policy.policy_dir is not None
+    runtime = os.path.join(policy.policy_dir, ".runtime")
+    _metadata, problems = _directory_metadata_problems(
+        runtime,
+        ".runtime directory",
+        missing_ok=True,
+    )
+    if _metadata is None:
+        return problems
+    homes = os.path.join(runtime, f"{provider}-home")
+    if not os.path.lexists(homes):
+        return problems
+    _files, home_problems = _tree_snapshot(homes, f".runtime/{provider}-home")
+    problems.extend(home_problems)
+    return problems
+
+
+def _validate_native_format(
+    provider: str,
+    raw: bytes,
+    files: dict[str, bytes],
+) -> tuple[list[str], list[str], dict | None, dict, str | None]:
+    """Validate stable provider bytes and return Claude cross-check inputs."""
+    if provider == "claude":
+        problems, warnings, settings = _check_claude_settings_bytes(raw)
+        servers: dict = {}
+        mcp_digest: str | None = None
+        mcp_raw = files.get("mcp.json")
+        if mcp_raw is not None:
+            mcp_problems, servers, mcp_digest = _check_claude_mcp_bytes(mcp_raw)
+            problems.extend(mcp_problems)
+        return problems, warnings, settings, servers, mcp_digest
+    if provider == "codex":
+        return _check_codex_config_bytes(raw), [], None, {}, None
+    problems, warnings = _check_grok_config_bytes(raw)
+    return problems, warnings, None, {}, None
+
+
+def _provider_source_check(
+    policy: Policy,
+    provider: str,
+    workspaces: tuple[Workspace, ...],
+) -> PolicyCheck:
+    if provider not in _KNOWN_PROVIDERS:
         return PolicyCheck(
             provider=provider,
             ok=False,
-            problems=(f"could not hash native policy: {exc}",),
-            policy_path=path,
+            problems=(f"unknown provider {provider!r}",),
         )
+    if policy.unrestricted:
+        if policy.policy_dir is not None:
+            return PolicyCheck(
+                provider=provider,
+                ok=False,
+                problems=("unrestricted policy must not define policy_dir",),
+            )
+        return PolicyCheck(provider=provider, ok=True, policy_revision=UNRESTRICTED_REVISION)
+
+    path = policy_path(policy, provider)
+    problems = _policy_directory_problems(policy, workspaces)
+    if provider == "agy":
+        problems.append(
+            "agy has no verified Enso launch contract and requires an unrestricted workspace"
+        )
+        return PolicyCheck(provider=provider, ok=False, problems=tuple(problems))
+    if path is None or policy.policy_dir is None:
+        return PolicyCheck(provider=provider, ok=False, problems=tuple(problems))
+
+    root = _provider_source_root(policy, provider)
+    files, tree_problems = _tree_snapshot(root, f"{provider} policy directory")
+    problems.extend(tree_problems)
+    relative_path = os.path.relpath(path, root).replace(os.sep, "/")
+    raw = files.get(relative_path)
+    if raw is None and not any(relative_path in problem for problem in tree_problems):
+        problems.append(f"native policy not found at {path}")
+
+    reserved = _STAGED_SOURCE_RESERVED | _PROVIDER_SOURCE_RESERVED.get(
+        provider, frozenset()
+    )
+    for relative in sorted(files):
+        if relative in reserved:
+            problems.append(f"{provider} policy tree reserves {relative}")
+
+    if provider in ("codex", "grok"):
+        problems.extend(_runtime_topology_problems(policy, provider))
+
+    warnings: list[str] = []
+    servers: dict = {}
+    mcp_digest: str | None = None
+    if raw is not None:
+        format_problems, warnings, settings, servers, mcp_digest = _validate_native_format(
+            provider,
+            raw,
+            files,
+        )
+        problems.extend(format_problems)
+        if provider == "claude" and not problems and settings is not None:
+            known_servers = tuple(sorted(servers))
+            warnings.extend(_claude_mcp_rule_warnings(settings, known_servers))
+            warnings.extend(_claude_mcp_secret_warnings(servers))
+
+    if problems:
+        return PolicyCheck(
+            provider=provider,
+            ok=False,
+            problems=tuple(dict.fromkeys(problems)),
+            warnings=tuple(warnings),
+            policy_path=path,
+            mcp_servers=tuple(sorted(servers)),
+        )
+    revision = _source_revision(provider, files, mcp_digest=mcp_digest)
     return PolicyCheck(
         provider=provider,
         ok=True,
         warnings=tuple(warnings),
         policy_path=path,
         policy_revision=revision,
-        mcp_servers=mcp_servers,
+        mcp_servers=tuple(sorted(servers)),
     )
 
 
-def _file_problems(path: str, workspace: Workspace) -> list[str]:
-    """Integrity checks every policy source file must pass."""
-    label = os.path.basename(path)
-    if not os.path.lexists(path):
-        return [f"native policy not found at {path}"]
-    if os.path.islink(path):
-        return [f"{label} must be a regular file, not a symlink"]
-    try:
-        file_stat = os.stat(path)
-    except OSError as exc:
-        return [f"cannot stat {label}: {exc}"]
-    if not stat.S_ISREG(file_stat.st_mode):
-        return [f"{label} must be a regular file"]
-    if file_stat.st_nlink != 1:
-        return [f"{label} must not have hard links"]
-    if stat.S_IMODE(file_stat.st_mode) & 0o077:
-        return [f"{label} must be owner-only (chmod 600)"]
-    real = os.path.realpath(path)
-    ws_real = os.path.realpath(workspace.path)
-    if real == ws_real or real.startswith(ws_real + os.sep):
-        return [f"{label} resolves inside the workspace; the agent could rewrite it"]
-    return []
+def check_policy_sources(
+    policy: Policy,
+    workspaces: Iterable[Workspace],
+) -> PolicySourceValidation:
+    """Validate every selected provider source without writing runtime state."""
+    workspace_items = tuple(workspaces)
+    checks = tuple(
+        _provider_source_check(policy, provider, workspace_items)
+        for provider in policy.providers
+    )
+    problems = tuple(
+        dict.fromkeys(
+            f"{check.provider}: {problem}"
+            for check in checks
+            for problem in check.problems
+        )
+    )
+    warnings = tuple(
+        dict.fromkeys(
+            f"{check.provider}: {warning}"
+            for check in checks
+            for warning in check.warnings
+        )
+    )
+    if not checks:
+        problems = ("policy selects no providers",)
+    return PolicySourceValidation(
+        ok=bool(checks) and not problems,
+        problems=problems,
+        warnings=warnings,
+        provider_checks=checks,
+    )
 
 
-def _tree_files(root: str) -> list[tuple[str, str]]:
-    """Return every regular source path as a stable relative-path list."""
-    files: list[tuple[str, str]] = []
-    for directory, dirnames, filenames in os.walk(root, followlinks=False):
-        dirnames.sort()
-        filenames.sort()
-        for name in filenames:
-            path = os.path.join(directory, name)
-            relative = os.path.relpath(path, root).replace(os.sep, "/")
-            files.append((relative, path))
-    return files
+def check_provider(workspace: Workspace, policy: Policy, provider: str) -> PolicyCheck:
+    """Statically validate one workspace/policy/provider binding."""
+    return _provider_source_check(policy, provider, (workspace,))
 
 
-def _tree_problems(policy: Policy, workspace: Workspace, provider: str, *, skip: str) -> list[str]:
-    """Validate every file copied into a provider's immutable policy snapshot."""
-    root = _provider_source_root(policy, provider)
-    reserved = _STAGED_SOURCE_RESERVED | _PROVIDER_SOURCE_RESERVED.get(provider, frozenset())
-    problems: list[str] = []
-    if os.path.islink(root):
-        problems.append(f"{provider} policy directory must not be a symlink")
-        return problems
-    for directory, dirnames, filenames in os.walk(root, followlinks=False):
-        for name in list(dirnames):
-            path = os.path.join(directory, name)
-            if os.path.islink(path):
-                relative = os.path.relpath(path, root)
-                problems.append(f"{relative} must be a directory, not a symlink")
-                dirnames.remove(name)
-        for name in filenames:
-            path = os.path.join(directory, name)
-            relative = os.path.relpath(path, root).replace(os.sep, "/")
-            if relative in reserved:
-                problems.append(f"{provider} policy tree reserves {relative}")
-            if os.path.abspath(path) != os.path.abspath(skip):
-                problems.extend(_file_problems(path, workspace))
-    return problems
-
-
-def _check_claude_settings(path: str) -> tuple[list[str], list[str], dict | None]:
+def _check_claude_settings_bytes(raw: bytes) -> tuple[list[str], list[str], dict | None]:
     """Validate settings.json, returning it parsed for further cross-checks."""
     try:
-        with open(path, encoding="utf-8") as f:
-            settings = json.load(f)
-    except (OSError, json.JSONDecodeError) as exc:
-        return [f"settings.json does not parse: {exc}"], [], None
+        settings = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return ["settings.json does not parse as UTF-8 JSON"], [], None
     if not isinstance(settings, dict):
         return ["settings.json must be a JSON object"], [], None
     problems = []
@@ -294,30 +712,12 @@ def _check_claude_settings(path: str) -> tuple[list[str], list[str], dict | None
     return problems, warnings, settings
 
 
-def _check_claude_mcp(
-    policy: Policy, workspace: Workspace
-) -> tuple[list[str], dict, str | None]:
-    """Validate the conventional claude/mcp.json when present.
-
-    Returns (problems, servers, digest) where servers is the parsed mcpServers
-    object and digest is the sha256 of the bytes those servers were parsed
-    from, so the policy revision and the launched server set come from a
-    single read; both are empty/None when the file is absent or unusable.
-    Presence is tested with lexists, so a symlink at the conventional path is
-    an integrity error, never absence.
-    """
-    path = _claude_mcp_path(policy)
-    if not os.path.lexists(path):
-        return [], {}, None
-    problems = _file_problems(path, workspace)
-    if problems:
-        return problems, {}, None
+def _check_claude_mcp_bytes(raw: bytes) -> tuple[list[str], dict, str | None]:
+    """Validate mcp.json bytes and bind the parsed servers to their digest."""
     try:
-        with open(path, "rb") as f:
-            raw = f.read()
         mcp = json.loads(raw.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        return [f"mcp.json does not parse: {exc}"], {}, None
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return ["mcp.json does not parse as UTF-8 JSON"], {}, None
     if not isinstance(mcp, dict):
         return ["mcp.json must be a JSON object"], {}, None
     servers = mcp.get("mcpServers")
@@ -359,7 +759,7 @@ def _claude_mcp_rule_warnings(settings: dict, known: tuple[str, ...]) -> list[st
         }
         if not matched:
             warnings.append(
-                f'permission rule "{rule}" matches no MCP server in claude/mcp.json '
+                "permission rule matches no configured MCP server in claude/mcp.json "
                 "and can never apply"
             )
         elif list_name == "allow":
@@ -375,7 +775,7 @@ def _claude_mcp_rule_warnings(settings: dict, known: tuple[str, ...]) -> list[st
 
 def _claude_mcp_secret_warnings(servers: dict) -> list[str]:
     """Flag credential-shaped literals in mcp.json; values belong in the environment."""
-    warnings: list[str] = []
+    affected: set[tuple[str, str]] = set()
     for name in sorted(servers):
         server = servers[name]
         if not isinstance(server, dict):
@@ -388,19 +788,19 @@ def _claude_mcp_secret_warnings(servers: dict) -> list[str]:
                 if not _SECRET_KEY_RE.search(key):
                     continue
                 if isinstance(value, str) and value and "${" not in value:
-                    warnings.append(
-                        f'mcp.json server "{name}" has a secret-shaped literal in '
-                        f"{section}.{key}; use a ${{VAR}} reference"
-                    )
-    return warnings
+                    affected.add((name, section))
+    return [
+        f'mcp.json server "{name}" has a secret-shaped literal in {section}; '
+        "use a ${VAR} reference"
+        for name, section in sorted(affected)
+    ]
 
 
-def _check_codex_config(path: str) -> list[str]:
+def _check_codex_config_bytes(raw: bytes) -> list[str]:
     try:
-        with open(path, "rb") as f:
-            config = tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        return [f"config.toml does not parse: {exc}"]
+        config = tomllib.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return ["config.toml does not parse as UTF-8 TOML"]
     if "developer_instructions" in config:
         return [
             "config.toml developer_instructions would duplicate Codex's native "
@@ -417,7 +817,7 @@ def _check_codex_config(path: str) -> list[str]:
     return []
 
 
-def _check_grok_config(path: str) -> tuple[list[str], list[str]]:
+def _check_grok_config_bytes(raw: bytes) -> tuple[list[str], list[str]]:
     """Statically reject config shapes the Grok CLI loads as zero rules.
 
     The CLI reports no error and no skipped entry for a missing or misspelled
@@ -429,10 +829,9 @@ def _check_grok_config(path: str) -> tuple[list[str], list[str]]:
     into the launch, which is the one way a policy file can widen itself.
     """
     try:
-        with open(path, "rb") as f:
-            config = tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        return [f"config.toml does not parse: {exc}"], []
+        config = tomllib.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return ["config.toml does not parse as UTF-8 TOML"], []
     warnings: list[str] = []
     problems: list[str] = _grok_folder_trust_problems(config)
     if "marketplace" in config:
@@ -453,10 +852,16 @@ def _check_grok_config(path: str) -> tuple[list[str], list[str]]:
     for key in sorted(permission):
         value = permission[key]
         if key not in _GROK_PERMISSION_KEYS:
-            problems.append(
-                f"config.toml [permission] key {key!r} is not one of "
-                "allow/deny/ask/rules; the Grok CLI would silently drop it"
-            )
+            if key == "folder_trust":
+                problems.append(
+                    "config.toml must not configure folder_trust inside [permission]; "
+                    "the Grok CLI would silently drop it"
+                )
+            else:
+                problems.append(
+                    "config.toml [permission] contains an unrecognized key; only "
+                    "allow/deny/ask/rules; the Grok CLI would silently drop it"
+                )
         elif key == "rules":
             if isinstance(value, list) and all(
                 isinstance(entry, dict) and "action" in entry and "tool" in entry
@@ -555,53 +960,27 @@ def _manifest_revision(provider: str, manifest: dict[str, str]) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def _tree_manifest(root: str) -> dict[str, str]:
-    manifest: dict[str, str] = {}
-    for relative, path in _tree_files(root):
-        if relative == _SNAPSHOT_MANIFEST:
-            continue
-        digest = regular_file_sha256(path)
-        if digest is None:
-            raise OSError(f"could not hash {path}")
-        manifest[relative] = digest
-    return manifest
-
-
-def _grok_manifest(root: str) -> dict[str, str]:
-    """Tree manifest hashing the effective (pre-seeded) config.toml bytes.
-
-    The revision must cover exactly what staging publishes, so the config
-    entry digests the bytes after the marketplace pre-seed, never the raw
-    operator file.
-    """
-    manifest = _tree_manifest(root)
-    config_path = os.path.join(root, "config.toml")
-    with open(config_path, "rb") as file:
-        raw = file.read()
-    manifest["config.toml"] = hashlib.sha256(_grok_effective_config(raw)).hexdigest()
-    return manifest
-
-
-def _policy_revision(
-    policy: Policy, provider: str, path: str, *, claude_mcp_digest: str | None = None
+def _source_revision(
+    provider: str,
+    files: dict[str, bytes],
+    *,
+    mcp_digest: str | None = None,
 ) -> str:
-    """Digest of the complete policy source tree plus the launch contract.
-
-    ``claude_mcp_digest`` is the hash computed by ``_check_claude_mcp`` from
-    the same bytes the resolved server set was parsed from; re-reading
-    mcp.json here could hash a file that appeared or changed since the check.
-    """
-    digest = regular_file_sha256(path)
-    if digest is None:
-        raise OSError(f"could not hash {path}")
-    manifest = {os.path.basename(path): digest}
+    """Hash exactly the stable source bytes used for native-format validation."""
     if provider == "claude":
-        if claude_mcp_digest is not None:
-            manifest["mcp.json"] = claude_mcp_digest
-    elif provider == "codex":
-        manifest = _tree_manifest(_provider_source_root(policy, "codex"))
-    elif provider == "grok":
-        manifest = _grok_manifest(_provider_source_root(policy, "grok"))
+        manifest = {"settings.json": hashlib.sha256(files["settings.json"]).hexdigest()}
+        if mcp_digest is not None:
+            manifest["mcp.json"] = mcp_digest
+    else:
+        manifest = {
+            relative: hashlib.sha256(content).hexdigest()
+            for relative, content in files.items()
+            if relative != _SNAPSHOT_MANIFEST
+        }
+        if provider == "grok":
+            manifest["config.toml"] = hashlib.sha256(
+                _grok_effective_config(files["config.toml"])
+            ).hexdigest()
     return _manifest_revision(provider, manifest)
 
 
@@ -664,49 +1043,54 @@ def prepare_launch(workspace: Workspace, policy: Policy, provider: str) -> Launc
     )
 
 
-def verify_grok_rules(workspace: Workspace, policy: Policy, grok_path: str) -> list[str]:
-    """Dynamically confirm the Grok CLI loads the staged policy's rules.
+def _materialize_snapshot_at(
+    root: int,
+    files: dict[str, bytes],
+    provider: str,
+) -> None:
+    """Write already-validated bytes below one agent-created temp descriptor."""
+    for relative, content in sorted(files.items()):
+        parts = relative.split("/")
+        if not parts or any(part in {"", ".", ".."} for part in parts):
+            raise PolicyError(provider, (f"policy contains unsafe path {relative!r}",))
+        parent = os.dup(root)
+        try:
+            for index, name in enumerate(parts[:-1]):
+                with contextlib.suppress(FileExistsError):
+                    os.mkdir(name, mode=0o700, dir_fd=parent)
+                child = _open_directory_at(
+                    parent,
+                    name,
+                    f"temporary policy directory {'/'.join(parts[: index + 1])}",
+                    provider,
+                )
+                os.close(parent)
+                parent = child
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(parts[-1], flags, 0o600, dir_fd=parent)
+            try:
+                os.fchmod(descriptor, 0o600)
+                _write_all(descriptor, content)
+                os.fsync(descriptor)
+                os.fchmod(descriptor, 0o400)
+            finally:
+                os.close(descriptor)
+        finally:
+            os.close(parent)
 
-    A wrong-shaped permission config loads zero rules with no error and no
-    skipped entry, so the static checks are backed by running ``grok inspect
-    --json`` exactly as a launch would — workspace cwd, staged revision home
-    in GROK_HOME — and requiring the reported ``permissions.loaded`` to equal
-    the rule count the effective config declares. The inspect run gets a
-    scratch HOME: grok counts the operator's always-trusted home-scope
-    vendor-compat rules (``~/.claude/settings.json``) into the total, which
-    would both false-fail the equality and let ambient rules mask a silently
-    dropped policy rule. Failures come back as problems; this never raises.
-    """
-    try:
-        launch = prepare_launch(workspace, policy, "grok")
-    except PolicyError as exc:
-        return list(exc.problems)
-    if launch.home is None or launch.env is None:
-        return []  # unrestricted launches have no staged policy to verify
-    try:
-        with open(os.path.join(launch.home, "config.toml"), "rb") as file:
-            declared = _grok_rule_count(tomllib.load(file))
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        return [f"could not read the staged grok config: {exc}"]
-    try:
-        with tempfile.TemporaryDirectory(prefix="enso-grok-inspect-") as scratch_home:
-            completed = subprocess.run(
-                [grok_path, "inspect", "--json"],
-                cwd=workspace.path,
-                env={**launch.env, "HOME": scratch_home},
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-    except (OSError, subprocess.SubprocessError) as exc:
-        return [f"could not run grok inspect: {exc}"]
+
+def _grok_inspection_problems(
+    completed: subprocess.CompletedProcess[str],
+    declared: int,
+) -> list[str]:
+    """Compare a content-redacted Grok inspection report with the policy."""
     if completed.returncode != 0:
-        detail = completed.stderr.strip() or completed.stdout.strip()
-        return [f"grok inspect exited {completed.returncode}: {detail}"]
+        return [f"grok inspect exited {completed.returncode}"]
     try:
         report = json.loads(completed.stdout)
-    except json.JSONDecodeError as exc:
-        return [f"grok inspect --json output does not parse: {exc}"]
+    except json.JSONDecodeError:
+        return ["grok inspect --json output is not valid JSON"]
     permissions = report.get("permissions") if isinstance(report, dict) else None
     loaded = permissions.get("loaded") if isinstance(permissions, dict) else None
     if isinstance(loaded, bool) or not isinstance(loaded, int):
@@ -717,20 +1101,88 @@ def verify_grok_rules(workspace: Workspace, policy: Policy, grok_path: str) -> l
             f"{declared}; grok silently ignores wrong-shaped rules"
         ]
     if loaded > declared:
-        # More rules than the policy wrote means something outside it reached
-        # the launch — a trusted workspace contributing its own config is the
-        # path that matters, since that is a policy widening itself.
-        sources = permissions.get("sources") if isinstance(permissions, dict) else None
-        detail = ""
-        if isinstance(sources, list) and sources:
-            named = ", ".join(str(source) for source in sources)
-            detail = f" (sources: {named})"
         return [
             f"grok inspect loaded {loaded} permission rules but the policy declares "
             f"{declared}; rules are reaching the launch from outside the policy"
-            f"{detail}"
         ]
     return []
+
+
+def verify_grok_rules(workspace: Workspace, policy: Policy, grok_path: str) -> list[str]:
+    """Dynamically confirm Grok loads the checked policy, without persistent writes.
+
+    Stable checked bytes go into a disposable GROK_HOME, and inspection gets a
+    separate scratch HOME. Canonical policy ``.runtime`` and user auth remain
+    untouched. Failures come back as problems; this never raises.
+    """
+    check = check_provider(workspace, policy, "grok")
+    if not check.ok:
+        return list(check.problems)
+    if policy.unrestricted:
+        return []
+    assert policy.policy_dir is not None and check.policy_revision is not None
+
+    source = _provider_source_root(policy, "grok")
+    pinned, source_problems = _pin_directory(source, "grok policy directory")
+    if pinned is None:
+        return source_problems
+    try:
+        source_problems.extend(
+            _directory_stat_problems(os.fstat(pinned.descriptor), "grok policy directory")
+        )
+        files, tree_problems = _tree_snapshot_descriptor(
+            pinned.descriptor,
+            "grok policy directory",
+        )
+        source_problems.extend(tree_problems)
+        source_problems.extend(pinned.ancestry_problems())
+    finally:
+        pinned.close()
+    if source_problems:
+        return list(dict.fromkeys(source_problems))
+    if _source_revision("grok", files) != check.policy_revision:
+        return ["grok policy changed between static validation and dynamic inspection"]
+
+    raw = files.get("config.toml")
+    if raw is None:
+        return ["native policy not found at grok/config.toml"]
+    effective_files = {**files, "config.toml": _grok_effective_config(raw)}
+    try:
+        with tempfile.TemporaryDirectory(prefix="enso-grok-home-inspect-") as grok_home:
+            grok_descriptor = os.open(grok_home, _directory_open_flags())
+            try:
+                _materialize_snapshot_at(grok_descriptor, effective_files, "grok")
+                staged_files, staged_problems = _tree_snapshot_descriptor(
+                    grok_descriptor,
+                    "temporary grok policy home",
+                )
+            finally:
+                os.close(grok_descriptor)
+            if staged_problems:
+                return list(dict.fromkeys(staged_problems))
+            if _source_revision("grok", staged_files) != check.policy_revision:
+                return ["temporary grok policy digest does not match the checked revision"]
+            try:
+                staged_config = tomllib.loads(staged_files["config.toml"].decode("utf-8"))
+            except (KeyError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+                return ["temporary grok config does not parse as UTF-8 TOML"]
+            declared = _grok_rule_count(staged_config)
+            env = _minimal_env("grok", policy.env_passthrough)
+            env["GROK_HOME"] = grok_home
+            with tempfile.TemporaryDirectory(prefix="enso-grok-inspect-") as scratch_home:
+                completed = subprocess.run(
+                    [grok_path, "inspect", "--json"],
+                    cwd=workspace.path,
+                    env={**env, "HOME": scratch_home},
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+    except PolicyError as exc:
+        return list(exc.problems)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return [f"could not run grok inspect: {exc}"]
+    return _grok_inspection_problems(completed, declared)
 
 
 def _minimal_env(provider: str, passthrough: tuple[str, ...] = ()) -> dict[str, str]:
@@ -787,40 +1239,183 @@ def _user_grok_home() -> str:
     return os.environ.get("GROK_HOME") or os.path.expanduser("~/.grok")
 
 
-def _copy_codex_tree(source: str, destination: str) -> None:
-    """Copy a validated native policy tree into an unpublished directory."""
-    for directory, dirnames, filenames in os.walk(source, followlinks=False):
-        dirnames.sort()
-        filenames.sort()
-        relative_dir = os.path.relpath(directory, source)
-        target_dir = destination if relative_dir == "." else os.path.join(destination, relative_dir)
-        os.makedirs(target_dir, mode=0o700, exist_ok=True)
-        os.chmod(target_dir, 0o700)
-        for name in filenames:
-            source_file = os.path.join(directory, name)
-            target_file = os.path.join(target_dir, name)
-            shutil.copyfile(source_file, target_file)
-            os.chmod(target_file, 0o400)
+def _write_all(descriptor: int, content: bytes) -> None:
+    offset = 0
+    while offset < len(content):
+        written = os.write(descriptor, content[offset:])
+        if written <= 0:
+            raise OSError("short write")
+        offset += written
 
 
-def _write_snapshot_manifest(home: str, manifest: dict[str, str]) -> None:
-    path = os.path.join(home, _SNAPSHOT_MANIFEST)
-    with open(path, "x", encoding="utf-8") as file:
-        json.dump(manifest, file, sort_keys=True, separators=(",", ":"))
-        file.flush()
-        os.fsync(file.fileno())
-    os.chmod(path, 0o400)
-
-
-def _verify_staged_snapshot(home: str, revision: str, provider: str) -> None:
-    """Ensure a published revision still contains its original policy bytes."""
-    manifest_path = os.path.join(home, _SNAPSHOT_MANIFEST)
-    if os.path.islink(manifest_path):
-        raise PolicyError(provider, ("staged policy manifest must not be a symlink",))
+def _open_directory_at(parent: int, name: str, label: str, provider: str) -> int:
     try:
-        with open(manifest_path, encoding="utf-8") as file:
-            manifest = json.load(file)
-    except (OSError, json.JSONDecodeError) as exc:
+        before = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    except OSError as exc:
+        raise PolicyError(provider, (f"cannot inspect {label}: {exc}",)) from exc
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISDIR(before.st_mode):
+        raise PolicyError(provider, (f"{label} must be a physical directory",))
+    problems = _directory_stat_problems(before, label)
+    try:
+        descriptor = os.open(name, _directory_open_flags(), dir_fd=parent)
+    except OSError as exc:
+        raise PolicyError(provider, (f"could not open {label} safely: {exc}",)) from exc
+    opened = os.fstat(descriptor)
+    try:
+        after = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    except OSError as exc:
+        os.close(descriptor)
+        raise PolicyError(provider, (f"could not recheck {label}: {exc}",)) from exc
+    if _stat_identity(before) != _stat_identity(opened) or _stat_identity(
+        opened
+    ) != _stat_identity(after):
+        problems.append(f"{label} changed while it was being opened")
+    if problems:
+        os.close(descriptor)
+        raise PolicyError(provider, tuple(problems))
+    return descriptor
+
+
+def _ensure_runtime_directory_at(parent: int, name: str, label: str, provider: str) -> int:
+    """Create one private child relative to a pinned parent, or reject it."""
+    created = False
+    try:
+        os.mkdir(name, mode=0o700, dir_fd=parent)
+        created = True
+    except FileExistsError:
+        pass
+    except OSError as exc:
+        raise PolicyError(provider, (f"could not create {label}: {exc}",)) from exc
+    descriptor = _open_directory_at(parent, name, label, provider)
+    if created:
+        os.fchmod(descriptor, 0o700)
+    return descriptor
+
+
+def _copy_codex_tree(source: int, destination: int) -> None:
+    """Copy a pinned native source tree into a pinned unpublished directory.
+
+    Keep this two-argument seam for the concurrent-publish tests; provider
+    attribution is applied by the caller that owns the publication attempt.
+    """
+    _copy_policy_tree(source, destination)
+
+
+def _copy_policy_tree(source: int, destination: int) -> None:
+    """Descriptor-relative implementation shared by Codex and Grok."""
+    provider = "codex"
+    with os.scandir(source) as iterator:
+        entries = sorted(iterator, key=lambda entry: entry.name)
+    for entry in entries:
+        name = entry.name
+        try:
+            metadata = os.stat(name, dir_fd=source, follow_symlinks=False)
+        except OSError as exc:
+            raise PolicyError(provider, (f"could not inspect policy entry {name}: {exc}",)) from exc
+        if stat.S_ISLNK(metadata.st_mode):
+            raise PolicyError(provider, (f"policy entry {name} must not be a symlink",))
+        if stat.S_ISDIR(metadata.st_mode):
+            problems = _directory_stat_problems(metadata, f"policy directory {name}")
+            if problems:
+                raise PolicyError(provider, tuple(problems))
+            source_child = _open_directory_at(source, name, f"policy directory {name}", provider)
+            try:
+                os.mkdir(name, mode=0o700, dir_fd=destination)
+                destination_child = _open_directory_at(
+                    destination,
+                    name,
+                    f"staged directory {name}",
+                    provider,
+                )
+                try:
+                    os.fchmod(destination_child, 0o700)
+                    _copy_policy_tree(source_child, destination_child)
+                    replacement_problem = _entry_replacement_problem(
+                        source,
+                        name,
+                        os.fstat(source_child),
+                        f"policy directory {name}",
+                        "directory",
+                    )
+                    if replacement_problem is not None:
+                        raise PolicyError(provider, (replacement_problem,))
+                finally:
+                    os.close(destination_child)
+            finally:
+                os.close(source_child)
+            continue
+        problems = _file_metadata_problems(metadata, f"policy file {name}")
+        if problems:
+            raise PolicyError(provider, tuple(problems))
+        source_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(
+            os, "O_NOFOLLOW", 0
+        )
+        source_file = os.open(name, source_flags, dir_fd=source)
+        try:
+            content, read_problems = _stable_descriptor_read(source_file, name, metadata)
+            if content is None:
+                raise PolicyError(provider, tuple(read_problems))
+            replacement_problem = _entry_replacement_problem(
+                source,
+                name,
+                os.fstat(source_file),
+                f"policy file {name}",
+                "file",
+            )
+            if replacement_problem is not None:
+                raise PolicyError(provider, (replacement_problem,))
+        finally:
+            os.close(source_file)
+        destination_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        destination_flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        destination_file = os.open(name, destination_flags, 0o600, dir_fd=destination)
+        try:
+            os.fchmod(destination_file, 0o600)
+            _write_all(destination_file, content)
+            os.fsync(destination_file)
+            replacement_problem = _entry_replacement_problem(
+                source,
+                name,
+                metadata,
+                f"policy file {name}",
+                "file",
+            )
+            if replacement_problem is not None:
+                raise PolicyError(provider, (replacement_problem,))
+            os.fchmod(destination_file, 0o400)
+        finally:
+            os.close(destination_file)
+
+
+def _write_snapshot_manifest_at(home: int, manifest: dict[str, str]) -> None:
+    content = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(_SNAPSHOT_MANIFEST, flags, 0o600, dir_fd=home)
+    try:
+        os.fchmod(descriptor, 0o600)
+        _write_all(descriptor, content)
+        os.fsync(descriptor)
+        os.fchmod(descriptor, 0o400)
+    finally:
+        os.close(descriptor)
+
+
+def _verify_staged_snapshot_at(
+    home: int,
+    revision: str,
+    provider: str,
+) -> frozenset[str]:
+    """Verify one published revision through its pinned directory descriptor."""
+    files, topology_problems = _tree_snapshot_descriptor(home, "staged policy revision")
+    if topology_problems:
+        raise PolicyError(provider, tuple(topology_problems))
+    manifest_raw = files.get(_SNAPSHOT_MANIFEST)
+    if manifest_raw is None:
+        raise PolicyError(provider, ("staged policy manifest is missing",))
+    try:
+        manifest = json.loads(manifest_raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise PolicyError(provider, (f"could not read staged policy manifest: {exc}",)) from exc
     if not isinstance(manifest, dict) or not all(
         isinstance(relative, str) and isinstance(digest, str)
@@ -834,64 +1429,154 @@ def _verify_staged_snapshot(home: str, revision: str, provider: str) -> None:
     for relative, expected in manifest.items():
         if os.path.isabs(relative) or ".." in relative.split("/"):
             raise PolicyError(provider, ("staged policy manifest contains an unsafe path",))
-        staged = os.path.join(home, *relative.split("/"))
-        if regular_file_sha256(staged) != expected:
+        content = files.get(relative)
+        if content is None or hashlib.sha256(content).hexdigest() != expected:
             raise PolicyError(provider, (f"staged {relative} digest does not match its manifest",))
 
-    if provider != "codex":
-        return  # .rules files are a codex concept; nothing further to cross-check
-    configured_rules = {
+    allowed_runtime_files = {"auth.json", _SNAPSHOT_MANIFEST}
+    staged_policy_files = {
         relative
-        for relative in manifest
-        if relative.startswith("rules/") and relative.endswith(".rules")
+        for relative in files
+        if relative not in allowed_runtime_files and not relative.startswith(".auth-")
     }
-    staged_rules = {
-        relative
-        for relative, _path in _tree_files(os.path.join(home, "rules"))
-        if relative.endswith(".rules")
-    }
-    staged_rules = {f"rules/{relative}" for relative in staged_rules}
-    if staged_rules != configured_rules:
-        raise PolicyError(provider, ("staged rules do not match the policy manifest",))
+    if staged_policy_files != set(manifest):
+        raise PolicyError(provider, ("staged files do not match the policy manifest",))
+    return frozenset(files)
 
 
-def _preseed_grok_marketplace(home: str) -> None:
+def _preseed_grok_marketplace_at(home: int) -> None:
     """Rewrite an unpublished config.toml copy with its effective bytes."""
-    path = os.path.join(home, "config.toml")
-    with open(path, "rb") as file:
-        raw = file.read()
-    effective = _grok_effective_config(raw)
-    if effective == raw:
-        return
-    os.chmod(path, 0o600)
-    with open(path, "wb") as file:
-        file.write(effective)
-    os.chmod(path, 0o400)
-
-
-def _publish_staged_snapshot(source: str, home: str, revision: str, provider: str) -> None:
-    """Atomically publish one immutable revision, tolerating a concurrent winner."""
-    parent = os.path.dirname(home)
-    temporary = tempfile.mkdtemp(prefix=f".{revision[:12]}-", dir=parent)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open("config.toml", flags, dir_fd=home)
     try:
-        _copy_codex_tree(source, temporary)
+        metadata = os.fstat(descriptor)
+        raw, problems = _stable_descriptor_read(descriptor, "config.toml", metadata)
+        if raw is None:
+            raise PolicyError("grok", tuple(problems))
+        effective = _grok_effective_config(raw)
+        if effective == raw:
+            return
+        os.fchmod(descriptor, 0o600)
+        write_flags = os.O_WRONLY | getattr(os, "O_CLOEXEC", 0) | getattr(
+            os, "O_NOFOLLOW", 0
+        )
+        writer = os.open("config.toml", write_flags, dir_fd=home)
+        try:
+            os.ftruncate(writer, 0)
+            _write_all(writer, effective)
+            os.fsync(writer)
+        finally:
+            os.fchmod(writer, 0o400)
+            os.close(writer)
+    finally:
+        os.fchmod(descriptor, 0o400)
+        os.close(descriptor)
+
+
+def _remove_tree_at(parent: int, name: str) -> None:
+    """Remove one agent-created temporary tree without following entries."""
+    try:
+        metadata = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        os.unlink(name, dir_fd=parent)
+        return
+    descriptor = os.open(name, _directory_open_flags(), dir_fd=parent)
+    try:
+        with os.scandir(descriptor) as iterator:
+            entries = list(iterator)
+        for entry in entries:
+            _remove_tree_at(descriptor, entry.name)
+    finally:
+        os.close(descriptor)
+    os.rmdir(name, dir_fd=parent)
+
+
+def _provider_revision_problems(
+    source: int,
+    provider: str,
+    revision: str,
+) -> list[str]:
+    """Require the current held provider tree to remain the checked revision."""
+    files, problems = _tree_snapshot_descriptor(source, f"{provider} policy directory")
+    config_name = os.path.basename(POLICY_FILES[provider])
+    if config_name not in files or _source_revision(provider, files) != revision:
+        problems.append(f"{provider} policy source changed after validation")
+    return list(dict.fromkeys(problems))
+
+
+def _publish_staged_snapshot_at(
+    source: int,
+    source_parent: int,
+    source_name: str,
+    snapshots: int,
+    revision: str,
+    provider: str,
+) -> None:
+    """Publish one immutable revision entirely below pinned descriptors."""
+    temporary = f".{revision[:12]}-{secrets.token_hex(8)}"
+    os.mkdir(temporary, mode=0o700, dir_fd=snapshots)
+    temporary_descriptor = _open_directory_at(
+        snapshots,
+        temporary,
+        "temporary staged policy revision",
+        provider,
+    )
+    published = False
+    try:
+        os.fchmod(temporary_descriptor, 0o700)
+        try:
+            _copy_codex_tree(source, temporary_descriptor)
+        except PolicyError as exc:
+            raise PolicyError(provider, exc.problems) from exc
         if provider == "grok":
-            _preseed_grok_marketplace(temporary)
-        manifest = _tree_manifest(temporary)
+            _preseed_grok_marketplace_at(temporary_descriptor)
+        files, problems = _tree_snapshot_descriptor(
+            temporary_descriptor,
+            "temporary staged policy revision",
+        )
+        if problems:
+            raise PolicyError(provider, tuple(problems))
+        manifest = {
+            relative: hashlib.sha256(content).hexdigest()
+            for relative, content in files.items()
+            if relative != _SNAPSHOT_MANIFEST
+        }
         if _manifest_revision(provider, manifest) != revision:
             raise PolicyError(
-                provider, ("staged policy digest does not match the checked revision",)
+                provider,
+                ("staged policy digest does not match the checked revision",),
             )
-        _write_snapshot_manifest(temporary, manifest)
+        _write_snapshot_manifest_at(temporary_descriptor, manifest)
+        source_problems = _provider_revision_problems(source, provider, revision)
+        if source_problems:
+            raise PolicyError(provider, tuple(source_problems))
+        replacement_problem = _entry_replacement_problem(
+            source_parent,
+            source_name,
+            os.fstat(source),
+            f"{provider} policy directory",
+            "directory",
+        )
+        if replacement_problem is not None:
+            raise PolicyError(provider, (replacement_problem,))
         try:
-            os.rename(temporary, home)
+            os.rename(
+                temporary,
+                revision,
+                src_dir_fd=snapshots,
+                dst_dir_fd=snapshots,
+            )
+            published = True
         except OSError as exc:
             concurrent_publish = exc.errno in {errno.EEXIST, errno.ENOTEMPTY}
-            if not concurrent_publish or not os.path.isdir(home) or os.path.islink(home):
+            if not concurrent_publish:
                 raise
     finally:
-        if os.path.isdir(temporary):
-            shutil.rmtree(temporary)
+        os.close(temporary_descriptor)
+        if not published:
+            _remove_tree_at(snapshots, temporary)
 
 
 def _read_provider_auth(path: str, provider: str) -> bytes | None:
@@ -918,62 +1603,161 @@ def _read_provider_auth(path: str, provider: str) -> bytes | None:
         os.close(descriptor)
 
 
-def _stage_provider_auth(home: str, provider: str, user_home: str) -> None:
+def _stage_provider_auth_at(home: int, provider: str, user_home: str) -> None:
     """Atomically refresh auth without ever exposing a partial credential file."""
     source = os.path.join(user_home, "auth.json")
-    destination = os.path.join(home, "auth.json")
     content = _read_provider_auth(source, provider)
     if content is None:
         with contextlib.suppress(FileNotFoundError):
-            os.remove(destination)
+            os.unlink("auth.json", dir_fd=home)
         return
-
-    descriptor, temporary = tempfile.mkstemp(prefix=".auth-", dir=home)
+    temporary = f".auth-{secrets.token_hex(8)}"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(temporary, flags, 0o600, dir_fd=home)
     try:
         os.fchmod(descriptor, 0o600)
-        with os.fdopen(descriptor, "wb") as file:
-            descriptor = -1
-            file.write(content)
-            file.flush()
-            os.fsync(file.fileno())
-        os.replace(temporary, destination)
+        _write_all(descriptor, content)
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = -1
+        os.replace(temporary, "auth.json", src_dir_fd=home, dst_dir_fd=home)
     finally:
         if descriptor >= 0:
             os.close(descriptor)
         with contextlib.suppress(FileNotFoundError):
-            os.remove(temporary)
+            os.unlink(temporary, dir_fd=home)
 
 
-def _stage_provider_home(policy: Policy, revision: str, provider: str, user_home: str) -> str:
+def _descriptor_chain_problems(
+    entries: tuple[tuple[int, str, int, str], ...],
+) -> list[str]:
+    """Revalidate every named child in a held descriptor chain."""
+    problems: list[str] = []
+    for parent, name, descriptor, label in entries:
+        problem = _entry_replacement_problem(
+            parent,
+            name,
+            os.fstat(descriptor),
+            label,
+            "directory",
+        )
+        if problem is not None:
+            problems.append(problem)
+    return problems
+
+
+def _stage_provider_home(
+    policy: Policy,
+    revision: str,
+    provider: str,
+    user_home: str,
+) -> tuple[str, frozenset[str]]:
     """Select an immutable, revision-keyed policy snapshot and safe auth."""
     assert policy.policy_dir is not None
-    source = _provider_source_root(policy, provider)
-    snapshots = os.path.join(policy.policy_dir, ".runtime", f"{provider}-home")
-    os.makedirs(snapshots, mode=0o700, exist_ok=True)
-    os.chmod(snapshots, 0o700)
-    home = os.path.join(snapshots, revision)
-    if os.path.lexists(home):
-        if os.path.islink(home) or not os.path.isdir(home):
-            raise PolicyError(provider, ("staged policy revision is not a directory",))
-    else:
-        _publish_staged_snapshot(source, home, revision, provider)
-    _verify_staged_snapshot(home, revision, provider)
-    _stage_provider_auth(home, provider, user_home)
-
-    log.debug("Selected %s home at %s (revision %s)", provider, home, revision[:12])
-    return home
+    pinned, problems = _pin_directory(policy.policy_dir, "policy_dir")
+    if pinned is None:
+        raise PolicyError(provider, tuple(problems))
+    opened: list[int] = []
+    home = os.path.join(
+        policy.policy_dir,
+        ".runtime",
+        f"{provider}-home",
+        revision,
+    )
+    try:
+        root_problems = _directory_stat_problems(os.fstat(pinned.descriptor), "policy_dir")
+        if root_problems:
+            raise PolicyError(provider, tuple(root_problems))
+        source = _open_directory_at(
+            pinned.descriptor,
+            provider,
+            f"{provider} policy directory",
+            provider,
+        )
+        opened.append(source)
+        runtime = _ensure_runtime_directory_at(
+            pinned.descriptor,
+            ".runtime",
+            ".runtime directory",
+            provider,
+        )
+        opened.append(runtime)
+        snapshots = _ensure_runtime_directory_at(
+            runtime,
+            f"{provider}-home",
+            f".runtime/{provider}-home",
+            provider,
+        )
+        opened.append(snapshots)
+        try:
+            os.stat(revision, dir_fd=snapshots, follow_symlinks=False)
+        except FileNotFoundError:
+            _publish_staged_snapshot_at(
+                source,
+                pinned.descriptor,
+                provider,
+                snapshots,
+                revision,
+                provider,
+            )
+        home_descriptor = _open_directory_at(
+            snapshots,
+            revision,
+            "staged policy revision",
+            provider,
+        )
+        opened.append(home_descriptor)
+        staged_files = _verify_staged_snapshot_at(home_descriptor, revision, provider)
+        chain = (
+            (pinned.descriptor, provider, source, f"{provider} policy directory"),
+            (pinned.descriptor, ".runtime", runtime, ".runtime directory"),
+            (
+                runtime,
+                f"{provider}-home",
+                snapshots,
+                f".runtime/{provider}-home",
+            ),
+            (snapshots, revision, home_descriptor, "staged policy revision"),
+        )
+        pre_auth_problems = [
+            *_descriptor_chain_problems(chain),
+            *_provider_revision_problems(source, provider, revision),
+        ]
+        if pre_auth_problems:
+            raise PolicyError(provider, tuple(pre_auth_problems))
+        _stage_provider_auth_at(home_descriptor, provider, user_home)
+        final_problems = [
+            *pinned.ancestry_problems(),
+            *_descriptor_chain_problems(chain),
+            *_provider_revision_problems(source, provider, revision),
+        ]
+        if final_problems:
+            raise PolicyError(provider, tuple(final_problems))
+        log.debug("Selected %s home at %s (revision %s)", provider, home, revision[:12])
+        return home, staged_files
+    finally:
+        for descriptor in reversed(opened):
+            os.close(descriptor)
+        pinned.close()
 
 
 def _stage_codex_home(policy: Policy, revision: str) -> tuple[str, bool]:
     """Codex snapshot selection plus whether any .rules files were staged."""
-    home = _stage_provider_home(policy, revision, "codex", _user_codex_home())
-    staged_rules = os.path.join(home, "rules")
+    home, staged_files = _stage_provider_home(
+        policy,
+        revision,
+        "codex",
+        _user_codex_home(),
+    )
     has_rules = any(
-        relative.endswith(".rules") for relative, _path in _tree_files(staged_rules)
+        relative.startswith("rules/") and relative.endswith(".rules")
+        for relative in staged_files
     )
     return home, not has_rules
 
 
 def _stage_grok_home(policy: Policy, revision: str) -> str:
     """Grok snapshot selection; grok has no .rules concept to toggle."""
-    return _stage_provider_home(policy, revision, "grok", _user_grok_home())
+    home, _staged_files = _stage_provider_home(policy, revision, "grok", _user_grok_home())
+    return home

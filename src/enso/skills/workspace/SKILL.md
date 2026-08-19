@@ -1,6 +1,6 @@
 ---
 name: workspace
-description: Use this skill to inspect, create, repair, bind, or retire an Enso-managed workspace; write focused workspace guidance; place global or local skills; or diagnose workspace discovery, policy, and routing configuration.
+description: Use this skill to inspect, create, repair, bind, or retire an Enso-managed workspace; write focused workspace guidance; place global or local skills; bind an existing policy; or diagnose workspace discovery and routing configuration.
 ---
 
 # Workspace
@@ -36,6 +36,10 @@ lifecycle operations. The workspace commands keep configuration, the canonical s
 validation, and local content history on the same contract.
 
 Never widen a policy merely to make workspace setup pass. Treat permission changes and new transport authorization as security-sensitive.
+
+Use the `policy` skill whenever the task is to author or register a policy. This skill
+binds an existing policy to a workspace; it does not define provider-native authority or
+create policy catalog entries.
 
 ## Know the canonical layout
 

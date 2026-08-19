@@ -231,7 +231,7 @@ Cwd alone does not define either preferences or sessions. Interactive state has 
 
 A Slack settings key includes the authenticated account and exact DM/channel route ID; every root and thread on that route shares it, while two routes bound to one workspace remain independent. A Telegram settings key contains only the private chat ID, so the chat keeps its choices if its workspace or policy binding changes. Provider is stored per settings key, model per settings key and provider, and effort per settings key, provider, and model. `use default`, `model default`, and `effort default` delete the corresponding explicit choice.
 
-Resolution never writes a default back as a selection. An absent or currently policy-disallowed provider choice uses `policy.default_provider`; its stored choice is retained and becomes effective again if a later policy permits it. A policy-allowed but native-unusable provider remains the effective choice and fails provider work through the existing configuration-error path instead of silently switching providers; non-launch commands remain available to inspect or repair it. Model falls back to the provider's first configured model, and effort to the provider CLI's own default. `status` identifies those sources as route selection, policy default, provider default, or CLI default. The `use` picker is narrower than policy authorization: it shows only authorized providers whose current native launch check succeeds.
+Resolution never writes a default back as a selection. An absent or currently policy-disallowed provider choice uses `policy.default_provider`; its stored choice is retained and becomes effective again if a later policy permits it. A policy-allowed but native-unusable provider remains the effective choice and fails provider work through the existing configuration-error path instead of silently switching providers; non-launch commands remain available to inspect status or select another authorized provider. Model falls back to the provider's first configured model, and effort to the provider CLI's own default. `status` identifies those sources as route selection, policy default, provider default, or CLI default. The `use` picker is narrower than policy authorization: it shows only authorized providers whose current native launch check succeeds.
 
 Conversation keys retain the authority boundary. A Slack key contains account, channel, thread/root, workspace, and policy; a Telegram key contains private chat, workspace, and policy. Changing a workspace or its selected policy therefore starts a new session scope without erasing the route setting. A Slack thread is distinct from every other root but shares its channel's settings. Per-provider sessions, compact seeds, stop/lock/process state, and the in-memory incoming-message queue use this conversation key. Telegram alone exposes `/queue`; Slack can clear its queue through `!stop` but has no `!queue` command.
 
@@ -283,14 +283,25 @@ State schema v3 stores route settings separately. Loading v1 or v2 deliberately 
   full scaffold in a sibling directory, publishes it with an exclusive atomic rename,
   saves config atomically, runs the installation check, and snapshots only the five new
   versionable entries (`AGENTS.md`, `CLAUDE.md`, `.agents/skills`, `.claude/skills`, and
-  `knowledge/README.md`). Fresh setup's unrestricted `admin`/`default` binding is the
-  only implicit authority creation.
+  `knowledge/README.md`). Fresh setup's full-authority unrestricted `admin`/`default`
+  binding is the only implicit authority creation.
 - Workspace publication is never silently undone. A config-save failure leaves a clearly
   reported unused directory; a later check or snapshot failure leaves the configured
   directory for repair and an explicit retry. Creation refuses any existing destination.
   `workspace repair` creates only missing structural directories and exact discovery
   links, preserves all seeded/user content, and reports launch-blocking omissions.
   Running bot and dashboard processes keep their loaded bindings until restart.
+- The policy CLI is the authority-registration boundary after setup. `list` and `show`
+  expose safe catalog and validation metadata without native contents or secrets.
+  `create` requires exactly one explicit authority source (`--unrestricted` or an
+  existing `--policy-dir`), one or more explicit providers, and a default provider. A
+  restricted source is complete, physical, owner-protected, and user-authored before
+  registration; Enso validates it but never generates, copies, changes permissions,
+  rewrites, upgrades, or repairs its canonical content. Fresh setup's full-authority
+  unrestricted `admin` is the sole automatic creation, and no implicit restricted
+  directory exists.
+  `enso config check` remains the complete validator; deletion, rebinding, repair, and
+  presets are outside this lifecycle.
 - Several routes may share one workspace and therefore its files, policy, and concurrency limit while retaining independent route settings and separate sessions.
 - A client route that shares files with a staff route must not be able to rewrite instructions, skill definitions, or provider control files trusted by the staff route.
 - Each workspace has a process-local semaphore shared by chats and compaction. The default is one active turn; operators may raise it when concurrent writes are safe.
@@ -309,11 +320,13 @@ At personal scale the model is deliberately simple:
 
 - **Dashboard writes are atomic** — a temp file in the same directory plus `os.replace`.
   A reader never sees a half-written `JOB.md`, `SKILL.md`, or shared `~/.enso/AGENTS.md` from a web edit.
-- **Config mutations are serialized and atomic** — workspace creation holds the
+- **Config mutations are serialized and atomic** — workspace and policy creation hold the
   owner-only cross-process config lock from a strict reread through candidate validation
   and atomic replacement. A malformed file aborts without defaults or overwrite. The
   workspace scaffold is a separately atomic publication, so a post-publication failure
-  is reported and preserved rather than hidden behind destructive rollback.
+  is reported and preserved rather than hidden behind destructive rollback. Policy
+  creation has no filesystem publication: it registers only an existing restricted
+  source or an explicit unrestricted catalog entry after the complete candidate passes.
 - **Content snapshots are serialized and scoped** — the owner-only
   `~/.enso/.snapshot.lock` covers repository revalidation, filter-free descriptor reads,
   `hash-object -w --no-filters --stdin` plus `update-index --add --cacheinfo` assembly and
@@ -390,7 +403,7 @@ internet and the PRD makes that a non-goal.
 | `job_runner.py`          | Revalidates discovery before trusted prerun and again at the actual batch-provider boundary   |
 | `providers/`             | Uses native Claude/Codex discovery and one explicit Grok/Agy shared-instruction delivery       |
 | `policy.py`              | Builds native launches and revisions them against the current launch contract                 |
-| `cli.py`                 | Provides standalone web, manual job-run, workspace lifecycle, and scoped local-snapshot commands |
+| `cli.py`                 | Provides standalone web, manual job-run, workspace/policy lifecycle, and scoped local-snapshot commands |
 | `config.py`              | Backfills `web` (including `allowed_hosts` / `external_skill_roots`) and `runs` defaults      |
 | `formatting.py`          | Converts legacy Markdown and supplies standard-Markdown-aware splitting                       |
 | `outbound.py`            | Owns strict typed message/surface contracts, parsers, and Slack-aligned limits                |
@@ -407,7 +420,7 @@ internet and the PRD makes that a non-goal.
 | `starter_docs/`          | Packages the three fresh-only user-owned reference starters                                   |
 | `runs.py`                | Owns SQLite `create`/`finish`/`list_runs`/`get`/`prune` operations                            |
 | `tables.py`              | Owns the registration catalog, identifier validation, schema inspection, and bounded previews |
-| `skills/*/SKILL.md`      | Bundles portable workflows for docs, jobs, Slack, tables, and workspace management            |
+| `skills/*/SKILL.md`      | Bundles portable workflows for docs, jobs, policy, Slack, tables, and workspace management    |
 | `web/`                   | Contains the Starlette app, current routes/templates, discovery, and vendored assets          |
 | `pyproject.toml`         | Defines the `web` extra, base `pyyaml` dependency, and package data                           |
 

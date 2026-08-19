@@ -162,6 +162,13 @@ files are intentionally checked only on policy detail, where successful checks a
 **ready** and failures or warnings replace that status. This avoids both filesystem scans on
 every dashboard request and a false claim that a protected launch was validated.
 
+Policy mutation remains outside the web boundary. Use `enso policy list` and `enso policy
+show <name>` for CLI inspection, `enso policy create <name>` with one explicit
+`--unrestricted` or existing `--policy-dir` authority source for registration, and
+`enso config check` as the complete validator. Restricted canonical sources are
+user-authored and owner-protected before registration; neither the dashboard nor the CLI
+generates, copies, changes permissions, rewrites, upgrades, or repairs them.
+
 ### Slack routes (`/slack`)
 
 The Slack page shows each exact DM-user or channel ID, its workspace and derived policy,

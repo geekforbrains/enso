@@ -80,8 +80,8 @@ received bytes, and skips unsafe or oversized downloads. Enso does not automatic
 expire retained uploads; retention and cleanup belong to the operator.
 
 Fresh setup seeds the global prompt and skills plus the default workspace and is the only
-flow that automatically creates unrestricted policy `admin`. Every later workspace is
-created with `enso workspace create <name> --policy <existing-policy>` and optional
+flow that automatically creates full-authority unrestricted policy `admin`. Every later
+workspace is created with `enso workspace create <name> --policy <existing-policy>` and optional
 `--concurrency <n>`; the policy is mandatory, concurrency defaults to `1`, and no path
 option exists. Creation validates the complete candidate catalog, atomically publishes
 the structure shown above with a short local prompt and `knowledge/README.md`, atomically
@@ -89,6 +89,15 @@ saves configuration, and runs the installation check. It automatically snapshots
 `AGENTS.md`, `CLAUDE.md`, `.agents/skills`, `.claude/skills`, and
 `knowledge/README.md`; local `skills/` starts empty. This Git history excludes config and
 is not a complete backup.
+
+Every later policy is also explicit. Use `enso policy create <name>` with exactly one of
+`--unrestricted` and `--policy-dir <path>`, repeated `--provider`, and one
+`--default-provider`. A restricted directory is user-authored or deliberately copied,
+complete for the selected providers, physical, and owner-protected before registration;
+there is no implicit path. Enso validates and registers it but never generates, copies,
+changes permissions, rewrites, upgrades, or repairs its canonical content. Native source
+examples are explanatory starting points rather than trusted or certified presets, and a
+copy is user-owned.
 
 Those files become user-owned immediately. Startup and configuration checks validate
 without changing content. `enso workspace repair <name>` creates only missing structural
@@ -110,6 +119,24 @@ For work that should automatically begin with one client's project instructions 
 ## Configuration
 
 The complete schema is in [data-model.md](data-model.md#execution-catalog-and-transport-bindings). Workspace names are at most 64 characters of lowercase letters and numbers separated by single hyphens; policy names retain their broader portable identifier syntax. This example shows the relationships:
+
+Inspect and create policy entries through the supported CLI:
+
+```bash
+enso policy list
+enso policy show <name>
+enso policy create <name> --unrestricted \
+  --provider <provider> [--provider <provider>...] \
+  --default-provider <provider>
+enso policy create <name> --policy-dir <path> \
+  --provider <provider> [--provider <provider>...] \
+  --default-provider <provider>
+```
+
+The create command also accepts repeated `--chat-command` or the mutually exclusive
+`--all-chat-commands`, plus repeated restricted-only `--env-passthrough`. Passing neither
+chat form grants no Enso chat commands. The following JSON is the resulting persisted
+shape and relationship to routes, not the primary policy/workspace authoring workflow:
 
 ```jsonc
 {
@@ -207,6 +234,12 @@ Here `channel_defaults` makes routed channels fully responsive, and `C0ACME` opt
 
 The same policy may be reused across many workspaces when its native policy is written in terms of the invocation workspace. For example, every client channel can use `client-readonly`; each route still starts in its own name-derived directory.
 
+Use `enso policy list` and `enso policy show <name>` for safe read-only policy inspection,
+then `enso config check` as the sole complete configuration validator. Do not define new
+policy entries by hand: prepare restricted native sources first, then register them with
+`enso policy create`. Policy deletion, repair, rebinding, and presets are not lifecycle
+commands in this release; they require separate impact review across consumers.
+
 Use `enso workspace list` and `enso workspace show <name>` for read-only catalog
 inspection. Do not define workspace entries by hand or construct their discovery links;
 use `workspace create` and `workspace repair`. Route, transport, and job bindings still
@@ -227,7 +260,7 @@ For each Slack event Enso:
 6. Resolves the route's durable provider/model/effort choices through the current policy.
 7. Handles an admitted `!` command, or checks the effective provider's native policy and runs it directly in the workspace directory.
 
-An invalid route or native policy never falls back to another workspace, policy, implicit cwd, or unrestricted execution. A stored provider choice that the current policy no longer allows is ignored in favor of that policy's declared default without erasing the stored preference. By contrast, a policy-allowed but native-unusable effective provider reports the existing configuration error for provider work; non-launch commands remain available so the user can inspect status or repair the choice. A globally invalid configuration cannot establish usable Slack routing, and an event from the wrong Slack account remains silent and is logged rather than receiving an access response.
+An invalid route or native policy never falls back to another workspace, policy, implicit cwd, or unrestricted execution. A stored provider choice that the current policy no longer allows is ignored in favor of that policy's declared default without erasing the stored preference. By contrast, a policy-allowed but native-unusable effective provider reports the existing configuration error for provider work; non-launch commands remain available so the user can inspect status or select a usable authorized provider. A globally invalid configuration cannot establish usable Slack routing, and an event from the wrong Slack account remains silent and is logged rather than receiving an access response.
 
 Slack DMs dispatch ordinary messages. Channels always dispatch explicit bot mentions, including inside threads; a routed channel additionally dispatches non-mention messages where its effective `mention_required` or `thread_mention_required` is `false` ([slack-triggers.md](slack-triggers.md)), and replies to channel messages always land in the message's thread. Unlisted locations respond only to explicit contact. An unlisted DM receives `I haven't been enabled for your DMs yet. Ask an Enso admin for access.` An explicit mention in an unlisted channel receives `I haven't been enabled in this channel yet. Ask an Enso admin to set me up.` as a thread reply. These are fixed transport responses: Enso does not resolve a workspace or policy, fetch context or attachments, invoke an LLM, or create an audit record. They pass through the delivery ledger so a retried Slack event receives at most one reply.
 
@@ -292,7 +325,7 @@ workspace skills start empty, and no startup installer changes either source lat
 Put a genuinely project-specific skill's canonical copy under
 `<workspace>/skills/<name>/SKILL.md`. Root and workspace skill directory names must be
 unique for that workspace; duplicates fail validation rather than relying on a provider's
-precedence. Every skill follows the [Agent Skills specification](https://agentskills.io/specification), and the bundled `workspace` skill carries the operational workflow.
+precedence. Every skill follows the [Agent Skills specification](https://agentskills.io/specification); the bundled `policy` skill carries native-policy authoring and registration, while the `workspace` skill carries workspace structure and binding.
 
 After one coherent edit to instructions, canonical skills, or workspace knowledge, an
 agent should create one local snapshot with explicit paths:

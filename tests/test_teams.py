@@ -349,13 +349,66 @@ def test_catalog_rejects_cwd_dependent_relative_policy_paths(tmp_path):
     assert not catalog.usable("client-a")
 
 
-def test_policy_dir_defaults_from_policy_name(tmp_path, monkeypatch):
-    monkeypatch.setattr("enso.config.CONFIG_DIR", str(tmp_path))
+def test_restricted_policy_requires_explicit_policy_dir(tmp_path):
     config = make_config(tmp_path)
     del config["policies"]["client-readonly"]["policy_dir"]
-    parsed = load_teams(config)
-    assert parsed.policies["client-readonly"].policy_dir == str(
-        tmp_path / "policies" / "client-readonly"
+
+    catalog = load_catalog(config)
+
+    assert catalog.policies["client-readonly"].policy_dir is None
+    assert any(
+        "policy_dir is required for restricted policies" in problem
+        for problem in catalog.policy_errors["client-readonly"]
+    )
+    assert not catalog.usable("client-a")
+
+
+def test_policy_dir_preserves_lexical_symlink_evidence(tmp_path):
+    config = make_config(tmp_path)
+    real = tmp_path / "real-policy"
+    real.mkdir()
+    alias = tmp_path / "policy-alias"
+    alias.symlink_to(real, target_is_directory=True)
+    config["policies"]["client-readonly"]["policy_dir"] = str(alias)
+
+    catalog = load_catalog(config)
+
+    assert catalog.policies["client-readonly"].policy_dir == str(alias)
+
+
+def test_policy_topology_compares_canonical_workspace_aliases(tmp_path):
+    config = make_config(tmp_path)
+    workspace = tmp_path / "enso" / "workspaces" / "client-a"
+    policy_source = workspace / "native-policy"
+    policy_source.mkdir(parents=True)
+    alias = tmp_path / "policy-alias"
+    alias.symlink_to(policy_source, target_is_directory=True)
+    config["policies"]["client-readonly"]["policy_dir"] = str(alias)
+
+    catalog = load_catalog(config)
+
+    assert catalog.policies["client-readonly"].policy_dir == str(alias)
+    assert any("overlaps client-a" in error for error in catalog.errors)
+
+
+def test_policy_topology_rejects_lexical_workspace_overlap_before_alias_resolution(tmp_path):
+    config = make_config(tmp_path)
+    workspace = tmp_path / "enso" / "workspaces" / "client-a"
+    workspace.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    policy_source = outside / "native-policy"
+    policy_source.mkdir(parents=True)
+    escape = workspace / "escape"
+    escape.symlink_to(outside, target_is_directory=True)
+    config["policies"]["client-readonly"]["policy_dir"] = str(
+        escape / "native-policy"
+    )
+
+    catalog = load_catalog(config)
+
+    assert any(
+        "lexically overlaps client-a" in error
+        for error in catalog.errors
     )
 
 

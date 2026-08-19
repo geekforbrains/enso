@@ -91,12 +91,6 @@ _TELEGRAM_TRANSPORT_KEYS = {
 }
 
 
-def _default_policy_dir(policy_name: str) -> str:
-    from . import config as config_mod
-
-    return os.path.join(config_mod.CONFIG_DIR, "policies", policy_name)
-
-
 def _is_str_list(value: object) -> TypeGuard[list[str]]:
     return isinstance(value, list) and all(isinstance(v, str) for v in value)
 
@@ -107,10 +101,11 @@ def _canonical(path: str) -> str:
 
 
 def _catalog_path(path: str, label: str, problems: list[str]) -> str:
-    """Canonicalize a configured path while rejecting process-cwd dependence."""
-    if not os.path.isabs(os.path.expanduser(path)):
+    """Normalize a configured path without erasing lexical symlink evidence."""
+    expanded = os.path.expanduser(path)
+    if not os.path.isabs(expanded):
         problems.append(f"{label} must be absolute or start with ~/")
-    return _canonical(path)
+    return os.path.abspath(expanded)
 
 
 def _within(child: str, parent: str) -> bool:
@@ -527,22 +522,7 @@ def _load_policies(
         else:
             unrestricted = unrestricted_raw
 
-        explicit_policy_dir = cfg.get("policy_dir")
-        if explicit_policy_dir is not None and (
-            not isinstance(explicit_policy_dir, str) or not explicit_policy_dir
-        ):
-            problems.append("policy_dir must be a non-empty string path")
-            explicit_policy_dir = None
-        if unrestricted and explicit_policy_dir is not None:
-            problems.append("unrestricted: true is invalid alongside policy_dir")
-        policy_dir = None
-        if not unrestricted:
-            configured_policy_dir = explicit_policy_dir or _default_policy_dir(name)
-            policy_dir = _catalog_path(
-                configured_policy_dir,
-                "policy_dir",
-                problems,
-            )
+        policy_dir = _load_policy_dir(cfg, unrestricted, problems)
 
         providers_raw = cfg.get("providers")
         if not _is_str_list(providers_raw) or not providers_raw:
@@ -574,6 +554,24 @@ def _load_policies(
             policy_errors[name] = tuple(problems)
 
     return policies, policy_errors
+
+
+def _load_policy_dir(cfg: dict, unrestricted: bool, problems: list[str]) -> str | None:
+    """Load an explicit lexical policy root without resolving away symlinks."""
+    if "policy_dir" not in cfg:
+        if not unrestricted:
+            problems.append("policy_dir is required for restricted policies")
+        return None
+    configured = cfg["policy_dir"]
+    if not isinstance(configured, str) or not configured:
+        problems.append("policy_dir must be a non-empty string path")
+        configured = None
+    if unrestricted:
+        problems.append("unrestricted: true is invalid alongside policy_dir")
+        return None
+    if configured is None:
+        return None
+    return _catalog_path(configured, "policy_dir", problems)
 
 
 def _load_capability(value: object, key: str, problems: list[str]) -> tuple[str, ...] | str:
@@ -629,8 +627,19 @@ def _check_topology(
     for policy_name, policy in policies.items():
         if policy.policy_dir is None:
             continue
+        policy_lexical = os.path.abspath(os.path.expanduser(policy.policy_dir))
+        policy_path = _canonical(policy.policy_dir)
         for workspace_name, root in paths.items():
-            if _within(policy.policy_dir, root) or _within(root, policy.policy_dir):
+            workspace_lexical = os.path.abspath(os.path.expanduser(root))
+            if _within(policy_lexical, workspace_lexical) or _within(
+                workspace_lexical, policy_lexical
+            ):
+                errors.append(
+                    f"policy_dir of policy {policy_name} lexically overlaps {workspace_name}"
+                )
+                continue
+            workspace_path = _canonical(root)
+            if _within(policy_path, workspace_path) or _within(workspace_path, policy_path):
                 errors.append(f"policy_dir of policy {policy_name} overlaps {workspace_name}")
 
 

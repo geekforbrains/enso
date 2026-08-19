@@ -80,6 +80,51 @@ not recreate or rewrite user-owned `AGENTS.md`, skill definitions, or
 `knowledge/README.md`; missing
 launch-critical content remains missing and is reported for deliberate repair.
 
+## Policy lifecycle
+
+Inspect policy capability metadata and safe validation state without exposing native
+policy contents or secret values:
+
+```bash
+enso policy list
+enso policy show <name>
+```
+
+Every post-setup policy chooses one explicit authority source and names its authorized
+and default providers:
+
+```bash
+enso policy create <name> --unrestricted \
+  --provider <provider> --default-provider <provider> \
+  [--chat-command <command>...] [--all-chat-commands]
+
+enso policy create <name> --policy-dir <path> \
+  --provider <provider> --default-provider <provider> \
+  [--chat-command <command>...] [--all-chat-commands] \
+  [--env-passthrough <name>...]
+```
+
+The provider, named chat-command, and environment-name options may be repeated. Passing
+neither chat-command form grants no Enso chat commands; `--all-chat-commands` is the
+explicit all-commands choice, and it is mutually exclusive with `--chat-command`.
+Environment passthrough is restricted-only and records names, never values.
+
+Fresh setup's unrestricted `admin` policy has full authority and is the only automatic
+policy creation. For a restricted policy, the user or agent first authors or deliberately
+copies an existing, complete provider-native policy directory outside every writable
+workspace, makes its physical regular files owner-safe, and tests them with the installed
+providers. The create command validates and registers that exact directory; it never
+supplies a default path or partial scaffold. Canonical restricted native content stays
+user-owned: Enso does not generate, copy, change permissions, rewrite, upgrade, or repair
+it. Source-tree examples are explanatory starting points rather than trusted or certified
+presets, and copies become user-owned immediately.
+
+`enso config check` remains the one complete read-only validator for workspaces, routes,
+jobs, discovery, and native-policy plumbing; native behavioral testing remains the
+operator's responsibility. Policy creation and later binding changes require a service
+restart before a running process sees them. Deletion, consumer rebinding, presets, and
+policy repair are not part of the supported lifecycle.
+
 ## Local history boundary
 
 Versioned content is the allowlisted, human-authored layer: instructions and discovery

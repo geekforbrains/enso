@@ -191,6 +191,34 @@ def test_layout_routes_workspace_lifecycle_through_safe_commands():
     assert "workspace create --path" not in prose
 
 
+def test_layout_documents_explicit_policy_lifecycle_and_user_ownership():
+    text = _resource_text("enso/layout.md")
+    prose = " ".join(text.split())
+
+    for contract in (
+        "enso policy list",
+        "enso policy show <name>",
+        "enso policy create <name> --unrestricted",
+        "enso policy create <name> --policy-dir <path>",
+        "--provider <provider>",
+        "--default-provider <provider>",
+        "--chat-command <command>",
+        "--all-chat-commands",
+        "--env-passthrough <name>",
+        "only automatic policy creation",
+        "full authority",
+        "existing, complete provider-native policy directory",
+        "user-owned",
+        "enso config check",
+        "service restart",
+    ):
+        assert contract in prose
+
+    assert "policy directory defaults" not in prose
+    assert "enso policy check" not in prose
+    assert "enso policy repair" not in prose
+
+
 def test_operator_doc_is_an_editable_template_without_inferred_or_secret_facts():
     text = _resource_text("operator.md")
 

@@ -1,6 +1,9 @@
-# Starting point for <policy_dir>/grok/config.toml. chmod 600 and keep it
-# outside every workspace. This policy uses the invocation workspace root,
-# so one policy can be reused for several project workspaces.
+# Explanatory starting point, not a trusted or certified preset, for
+# <policy_dir>/grok/config.toml. Review and adapt it before copying; the copy
+# is user-owned. Create it before policy registration, chmod 600 yourself, and
+# keep it outside every workspace. Enso validates but never creates, copies,
+# chmods, rewrites, upgrades, or repairs the canonical source. This policy uses
+# the invocation workspace root, so one policy can serve several workspaces.
 #
 # Adapt and test it with the installed Grok Build version. Enso verifies that
 # TOML parses, that [permission] has a recognized shape, and that its launch

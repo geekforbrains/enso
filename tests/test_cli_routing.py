@@ -314,7 +314,38 @@ def test_setup_default_workspace_only_updates_config(monkeypatch, tmp_enso, caps
         "policy": "admin",
         "concurrency": 1,
     }
-    assert "workspaces/default" in capsys.readouterr().out
+    output = " ".join(capsys.readouterr().out.split())
+    assert "workspaces/default" in output
+    assert "Policy: admin (unrestricted)" in output
+
+
+def test_setup_displays_the_existing_default_policy_without_claiming_admin_authority(
+    tmp_enso,
+    capsys,
+):
+    config = {
+        "setup": {"completed_at": "2026-08-18T12:00:00+00:00"},
+        "providers": {"claude": {"path": "claude", "models": ["sonnet"]}},
+        "workspaces": {
+            "default": {"policy": "client-safe", "concurrency": 1},
+        },
+        "policies": {
+            "client-safe": {
+                "policy_dir": str(Path(tmp_enso, "operator-policy")),
+                "providers": ["claude"],
+                "default_provider": "claude",
+                "chat_commands": [],
+            },
+        },
+    }
+
+    assert _setup_default_workspace(config) == "default"
+
+    output = " ".join(capsys.readouterr().out.split())
+    assert "Policy: client-safe (policy-controlled)" in output
+    assert "provider-native policy controls apply" in output
+    assert "admin" not in output
+    assert "full user authority" not in output
 
 
 def test_fresh_setup_scaffold_seeds_complete_canonical_tree(tmp_enso, monkeypatch):
@@ -338,6 +369,7 @@ def test_fresh_setup_scaffold_seeds_complete_canonical_tree(tmp_enso, monkeypatc
     _scaffold_setup_or_exit(config)
 
     assert published == ["default"]
+    assert Path(tmp_enso, "skills", "policy", "SKILL.md").is_file()
     assert Path(tmp_enso, "skills", "workspace", "SKILL.md").is_file()
     assert os.readlink(Path(tmp_enso, "CLAUDE.md")) == "AGENTS.md"
     assert workspace.joinpath("AGENTS.md").is_file()
@@ -419,6 +451,7 @@ def _required_initial_paths(*workspace_names: str) -> set[str]:
         "docs/operator.md",
         "skills/docs/SKILL.md",
         "skills/jobs/SKILL.md",
+        "skills/policy/SKILL.md",
         "skills/slack/SKILL.md",
         "skills/tables/SKILL.md",
         "skills/workspace/SKILL.md",

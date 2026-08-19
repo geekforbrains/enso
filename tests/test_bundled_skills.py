@@ -7,7 +7,7 @@ import re
 
 from enso import frontmatter
 
-EXPECTED_SKILLS = {"docs", "jobs", "slack", "tables", "workspace"}
+EXPECTED_SKILLS = {"docs", "jobs", "policy", "slack", "tables", "workspace"}
 ALLOWED_FRONTMATTER = {
     "name",
     "description",
@@ -119,6 +119,64 @@ def test_workspace_skill_documents_only_the_canonical_managed_layout():
     assert "automatically snapshots" in skill
     assert "not a configuration backup" in skill
     assert "service restart" in skill
+
+
+def test_policy_skill_teaches_explicit_user_owned_policy_authoring():
+    skill = (
+        importlib.resources.files("enso")
+        .joinpath("skills", "policy", "SKILL.md")
+        .read_text(encoding="utf-8")
+    )
+
+    for contract in (
+        "enso policy list",
+        "enso policy show <name>",
+        "enso policy create <name> --unrestricted",
+        "enso policy create <name> --policy-dir <path>",
+        "--provider <provider>",
+        "--default-provider <provider>",
+        "--chat-command <command>",
+        "--all-chat-commands",
+        "--env-passthrough <name>",
+        "enso config check",
+        "full authority",
+        "user-owned",
+        "existing",
+        "complete",
+        "provider-native",
+        "service restart",
+    ):
+        assert contract in skill
+
+    for ownership_rule in (
+        "never generates",
+        "never copies",
+        "never changes permissions",
+        "never rewrites",
+        "never upgrades",
+        "never repairs",
+    ):
+        assert ownership_rule in skill
+
+    assert "only automatic policy creation" in skill
+    assert "starting points, not trusted or certified presets" in skill
+    assert "Do not edit `~/.enso/config.json`" in skill
+    assert "enso policy check" not in skill
+    assert "enso policy repair" not in skill
+    assert "enso policy delete" not in skill
+    assert "enso policy rebind" not in skill
+    assert "defaults to `~/.enso/policies/<name>`" not in skill
+
+
+def test_workspace_skill_routes_policy_authoring_to_the_policy_skill():
+    skill = (
+        importlib.resources.files("enso")
+        .joinpath("skills", "workspace", "SKILL.md")
+        .read_text(encoding="utf-8")
+    )
+
+    assert "Use the `policy` skill" in skill
+    assert "author or register a policy" in skill
 
 
 def test_docs_skill_is_the_complete_content_placement_contract():

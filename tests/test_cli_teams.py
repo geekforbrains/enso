@@ -240,7 +240,7 @@ def test_config_check_fails_when_grok_loads_zero_rules(tmp_enso, monkeypatch):
 
     assert result.exit_code == 1
     plain = " ".join(result.output.split())
-    assert "loaded 0" in plain
+    assert "dynamic native-policy inspection failed (1 problem)" in plain
     assert "grok-client" in plain
 
 
@@ -254,7 +254,13 @@ def test_config_check_fails_when_grok_loads_rules_the_policy_never_declared(
     monkeypatch.setattr(
         "enso.policy._user_grok_home", lambda: str(Path(tmp_enso) / "grok-user-home")
     )
-    planted = str(Path(tmp_enso) / "workspaces" / "grok-client" / ".grok" / "config.toml")
+    planted = str(
+        Path(tmp_enso)
+        / "workspaces"
+        / "grok-client"
+        / ".grok"
+        / "NATIVE_SOURCE_SENTINEL.toml"
+    )
     real_run = subprocess.run
 
     def fake_run(cmd, *args, **kwargs):
@@ -276,9 +282,38 @@ def test_config_check_fails_when_grok_loads_rules_the_policy_never_declared(
 
     assert result.exit_code == 1
     plain = " ".join(result.output.split())
-    assert "loaded 5" in plain
-    assert "outside the policy" in plain
-    assert ".grok" in plain
+    assert "dynamic native-policy inspection failed (1 problem)" in plain
+    assert "NATIVE_SOURCE_SENTINEL" not in plain
+    assert ".grok" not in plain
+
+
+def test_config_check_does_not_echo_grok_inspection_output(tmp_enso, monkeypatch):
+    config = _grok_teams_config(tmp_enso)
+    monkeypatch.setattr(
+        "enso.policy._user_grok_home", lambda: str(Path(tmp_enso) / "grok-user-home")
+    )
+    real_run = subprocess.run
+
+    def leaking_failure(cmd, *args, **kwargs):
+        if cmd[0] == "git":
+            return real_run(cmd, *args, **kwargs)
+        return subprocess.CompletedProcess(
+            cmd,
+            17,
+            stdout="NATIVE_STDOUT_SENTINEL",
+            stderr="NATIVE_STDERR_SENTINEL",
+        )
+
+    monkeypatch.setattr("subprocess.run", leaking_failure)
+    save_config(config)
+
+    result = runner.invoke(app, ["config", "check"])
+
+    assert result.exit_code == 1
+    plain = " ".join(result.output.split())
+    assert "dynamic native-policy inspection failed (1 problem)" in plain
+    assert "NATIVE_STDOUT_SENTINEL" not in plain
+    assert "NATIVE_STDERR_SENTINEL" not in plain
 
 
 def test_config_check_fails_when_grok_binary_is_missing(tmp_enso, monkeypatch):
@@ -301,7 +336,42 @@ def test_config_check_fails_when_grok_binary_is_missing(tmp_enso, monkeypatch):
 
     assert result.exit_code == 1
     plain = " ".join(result.output.split())
-    assert "grok inspect" in plain
+    assert "dynamic native-policy inspection failed (1 problem)" in plain
+
+
+def test_config_check_does_not_dynamically_inspect_an_unused_grok_policy(
+    tmp_enso,
+    monkeypatch,
+):
+    config = _teams_config(tmp_enso)
+    policy_root = Path(tmp_enso, "policies", "unused-grok")
+    native = policy_root / "grok" / "config.toml"
+    native.parent.mkdir(parents=True)
+    native.write_text(
+        "[permission]\n"
+        'allow = ["run_terminal_command(echo *)"]\n'
+        'deny = ["run_terminal_command(enso *)"]\n'
+    )
+    native.chmod(0o600)
+    config["policies"]["unused-grok"] = {
+        "policy_dir": str(policy_root),
+        "providers": ["grok"],
+        "default_provider": "grok",
+        "chat_commands": [],
+    }
+    monkeypatch.setattr(
+        "enso.policy.verify_grok_rules",
+        lambda *_args, **_kwargs: pytest.fail(
+            "dynamic Grok inspection is only valid for a real execution binding"
+        ),
+    )
+    save_config(config)
+
+    result = runner.invoke(app, ["config", "check"])
+
+    assert result.exit_code == 0, result.output
+    assert "Policy unused-grok" in result.output
+    assert not Path(policy_root, ".runtime").exists()
 
 
 def _isolate_secrets(tmp_enso, monkeypatch) -> Path:
@@ -409,8 +479,8 @@ def test_config_check_surfaces_mcp_cross_check_warnings(tmp_enso):
 
     assert result.exit_code == 0, result.output
     plain = " ".join(result.output.split())
-    assert 'permission rule "mcp__ghost__tool" matches no MCP server' in plain
-    assert 'no allow rule references MCP server "metrics"' in plain
+    assert "native source validation reported 2 warnings" in plain
+    assert "mcp__ghost__tool" not in plain
 
 
 def test_config_check_validates_catalog_without_slack_routes(tmp_enso):
@@ -589,7 +659,11 @@ def test_config_check_reports_jobs_missing_execution_binding(tmp_enso):
 def test_removed_policy_check_is_not_advertised(tmp_enso):
     save_config(_teams_config(tmp_enso))
     result = runner.invoke(app, ["policy", "check"])
-    assert result.exit_code != 0
+    assert result.exit_code == 2
+    assert "No such command 'check'" in result.output
+    help_result = runner.invoke(app, ["policy", "--help"])
+    assert help_result.exit_code == 0
+    assert "check" not in help_result.output
 
 
 def test_route_explain_authorized(tmp_enso):

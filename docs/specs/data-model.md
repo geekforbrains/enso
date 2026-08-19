@@ -59,8 +59,8 @@ whose value comes from filtering, joining, and aggregation.
 │   │   ├── drafts/
 │   │   └── uploads/
 │   └── client-a/        # every other workspace has the same structure
-└── policies/            # protected native policy files, keyed by policy name
-    └── <policy>/{claude,codex,grok}/
+└── policies/            # optional user-chosen home for protected native policy sources
+    └── <policy>/{claude,codex,grok}/  # never created implicitly by Enso
 ```
 
 Deleting an Enso-owned skill removes its complete directory. Installed bundle copies are
@@ -379,6 +379,18 @@ an existing destination, including a manually migrated or partially created root
 Changes are not hot-reloaded by `enso serve` or `enso web`, so a successful catalog
 mutation requires restart.
 
+`enso policy create` uses the same locked strict-read, candidate-validation, and atomic
+save transaction. It accepts exactly one explicit authority source: `--unrestricted`, or
+`--policy-dir <path>` naming an existing user-authored restricted source. Both forms
+require one or more repeated `--provider` values and a `--default-provider` from that
+set; repeated `--chat-command`, explicit `--all-chat-commands`, and restricted-only
+repeated `--env-passthrough` map to the existing catalog fields. Passing neither chat
+form persists no commands. The unrestricted form publishes only a catalog entry. The
+restricted form validates the complete physical owner-protected directory and selected
+provider files before publishing only its catalog entry. It never creates or changes the
+canonical source. Fresh setup's unrestricted `admin` is the sole automatic policy
+creation.
+
 The three defaulted blocks documented here are backfilled by
 `_with_config_defaults` without replacing user settings:
 
@@ -454,7 +466,7 @@ A practical installation uses one flat, name-derived workspace tree:
 │   ├── automation/
 │   ├── acme/                          # exact root ~/.enso/workspaces/acme
 │   └── acme-internal/
-└── policies/
+└── policies/                            # one optional user-chosen source location
     ├── staff/
     │   ├── claude/settings.json
     │   ├── codex/{config.toml,rules/*.rules}
@@ -512,6 +524,20 @@ and canonicalized before topology checks or child-process use, and must not over
 workspace. Aliases and hard links must not provide a writable path back to protected
 policy bytes.
 
+The supported policy lifecycle commands are `enso policy list`, `show <name>`, and
+`create <name>`. List output summarizes capabilities, consumers, and validation; show
+adds safe path, revision, warning, environment-name, and MCP-server metadata without
+secret values or native file contents.
+Creation always requires exactly one of `--unrestricted` and `--policy-dir <path>`, plus
+explicit providers and a default provider. A restricted path has no default: before
+registration, the user or agent creates an existing complete provider-native directory,
+makes its directories and regular files physical and owner-safe, and tests them against
+the installed provider CLIs. Enso registers and later validates the canonical content
+but never generates, copies, changes permissions, rewrites, upgrades, or repairs it.
+Source-tree examples are explanatory starting points, not trusted or certified presets,
+and copies are user-owned. `enso config check` remains the complete validator; there is
+no second policy-only validator or mutation surface for repair, deletion, or rebinding.
+
 Enso initializes a new `~/.enso` local Git worktree on `main`, after installing its
 protective ignore block. It accepts an existing repository only when Git reports that
 exact directory as the worktree root; corrupt, outer, and ambiguous repository states
@@ -542,6 +568,13 @@ The Enso service has no configured process working directory. Only provider subp
 ### Configuration
 
 The catalogs are parsed independently of either transport. Telegram requires `workspace` inside `transports.telegram`; Slack requires `account_id` inside `transports.slack`, where any exact routes are declared in the `dms` and `channels` maps.
+
+The following is the resulting persisted shape, not the primary policy/workspace
+authoring workflow. Use `enso policy create` and `enso workspace create` so each complete
+candidate is validated under the config lock; edit exact transport routes and bindings
+directly only where no focused command exists. Fresh setup supplied the illustrated
+unrestricted `admin` entry automatically. Every illustrated restricted `policy_dir` was
+created and populated by its user before registration.
 
 ```jsonc
 {
@@ -652,7 +685,7 @@ Schema rules:
   segments.
 - `policies.<name>` requires a non-empty `providers` list and a `default_provider` from that list. `chat_commands` is either a unique list or the explicit string `"*"`; omission means none. It governs Enso chat commands only, not provider-native tools, slash commands, skills, plugins, hooks, or MCP servers.
 - A restricted policy may add `env_passthrough`, a list of environment-variable names (names, never values) copied from the service environment into the child environment. Names must match `[A-Z][A-Z0-9_]*`, be unique, and not name launch-controlled (such as `CODEX_HOME`, `GROK_HOME`, `GROK_SANDBOX`, and `GROK_FOLDER_TRUST`) or `ENSO_`-prefixed variables; the key is invalid alongside `unrestricted: true`. See [permissions.md](permissions.md#granting-credentials-and-mcp-servers-to-a-restricted-policy).
-- A policy uses exactly one mode: explicit `unrestricted: true`, or native policy files under `policy_dir`. An explicit `policy_dir` must be absolute or start with `~/`; for a restricted policy it otherwise defaults to `~/.enso/policies/<policy-name>`. Unrestricted mode does not imply providers or commands. Codex `config.toml` may not define top-level `developer_instructions`: provider-specific hidden instructions would add a competing layer outside the canonical root/workspace `AGENTS.md` contract. Grok's `--rules` flag remains reserved for the one explicit shared-instruction delivery Enso supplies to every Grok launch.
+- A policy uses exactly one mode: explicit `unrestricted: true`, or native policy files under an explicit `policy_dir`. A restricted policy must supply `policy_dir`; it must be absolute or start with `~/`, and no name-derived fallback is inferred. Unrestricted mode does not imply providers or commands. Codex `config.toml` may not define top-level `developer_instructions`: provider-specific hidden instructions would add a competing layer outside the canonical root/workspace `AGENTS.md` contract. Grok's `--rules` flag remains reserved for the one explicit shared-instruction delivery Enso supplies to every Grok launch.
 - `transports.telegram.workspace` is required whenever Telegram is configured and must name a usable workspace. Telegram derives providers, default provider, Enso chat commands, native policy, cwd, uploads, and concurrency from that workspace. `allowed_users` remains a non-empty list of unique exact numeric strings, and only private chats dispatch.
 - `transports.slack` is the single Slack configuration object: credentials, transport-wide rendering and notification options, `account_id`, and exact route maps coexist there. The legacy top-level `routes` key is rejected.
 - `transports.slack.account_id` must match the Slack account returned by the configured credentials.

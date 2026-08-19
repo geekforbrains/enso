@@ -48,7 +48,7 @@ pip install -e ".[telegram]"    # or ".[slack]", or ".[telegram,slack]"
 enso setup
 ```
 
-The setup wizard detects your agent CLIs, connects your chosen transport, and optionally installs a background service (launchd on macOS, systemd on Linux) so Enso starts on boot. Every fresh install creates workspace `default` at `~/.enso/workspaces/default`, bound to an unrestricted `admin` policy. Telegram captures one exact numeric user ID and binds its private one-to-one conversations to that workspace. Slack creates one exact owner DM route with the same binding; add channel routes deliberately in `config.json`.
+The setup wizard detects your agent CLIs, connects your chosen transport, and optionally installs a background service (launchd on macOS, systemd on Linux) so Enso starts on boot. Every fresh install creates workspace `default` at `~/.enso/workspaces/default`, bound to an unrestricted `admin` policy with full authority. This setup-only bootstrap is the sole automatic policy creation; later policies and workspace bindings are explicit. Telegram captures one exact numeric user ID and binds its private one-to-one conversations to that workspace. Slack creates one exact owner DM route with the same binding; add channel routes deliberately in `config.json`.
 
 Fresh setup seeds shared operational instructions at `~/.enso/AGENTS.md`, global skills at
 `~/.enso/skills/`, three starter references under `~/.enso/docs/`, and a complete default
@@ -148,7 +148,7 @@ The bound workspace policy decides which providers and commands are available. T
 
 Provider, model, and effort choices are durable route settings, separate from conversation sessions. One Slack DM or channel shares them across every top-level message and thread, while each Telegram private chat has its own settings; Slack accepts the settings commands inside threads and names their whole-channel or whole-DM scope in the reply. Model choices are kept per route and provider, and effort choices per route, provider, and model. `default` clears the corresponding explicit choice, and `status` labels the effective provider as a route selection or policy default, the model as a route selection or provider default, and effort as a route selection or CLI default. Route settings survive session retention. Per-conversation incoming-message queues are process-memory only and disappear on restart; Slack has no `!queue` command, although `!stop` still clears that conversation's queue.
 
-If the current policy stops authorizing a stored provider choice, its default becomes effective without erasing that preference. A provider that remains policy-allowed but has an unusable native policy does not silently fall back: provider work reports the configuration error, while non-launch commands remain available to inspect or repair the setting.
+If the current policy stops authorizing a stored provider choice, its default becomes effective without erasing that preference. A provider that remains policy-allowed but has an unusable native policy does not silently fall back: provider work reports the configuration error, while non-launch commands remain available to inspect status or select another authorized provider.
 
 You can also send files — they're downloaded and passed to the active agent. Responses render with per-transport formatting: Telegram uses HTML, while successful interactive Slack answers use standard Markdown by default, including headings, links, fenced code, task lists, and Markdown tables. Slack agents can also choose validated native tables, compact fields, and line, bar, area, or pie charts when those layouts are useful. While a request runs, Enso keeps one transient status message showing which provider, model, and effort are handling it, how long it has been running, and what the agent is doing right now (`Reading core.py`, `Running pytest`, `Writing report.md`) — including for Antigravity, whose headless mode prints only a final answer. The elapsed counter updates every second through 30 seconds, then every five seconds to stay within transport limits; each edit includes the latest activity. The final response contains only the agent's answer. Interactive turns stop after `agent.timeout` seconds (1,800 by default; set it to `0` to disable). A timeout leaves a conversation-scoped background notice for the next turn so the active provider knows partial work may remain.
 
@@ -235,24 +235,69 @@ Channel membership is the authorization boundary. Everyone in a configured chann
 An unlisted DM receives a fixed access message, and an explicit mention in an unlisted channel receives a fixed thread reply; neither response invokes an LLM, resolves a workspace, fetches context, or creates a route audit record. Ordinary messages in unlisted channels remain ignored — only a configured channel route can dispatch an un-mentioned message, and only when its effective `mention_required` is `false`. A broken configured route or native policy reports a configuration error and never falls back to another workspace or unrestricted execution.
 
 ```bash
+enso policy list                          # inspect policy capabilities and consumers
+enso policy show staff                    # inspect safe native validation metadata
 enso config check                          # check routes, jobs, and native policy plumbing
 enso route explain slack U012ABC C0ACME    # dry-run how a sender/channel resolves
 enso audit tail                            # inspect recorded Slack audit turns
 ```
 
-The examples in [`docs/examples/`](docs/examples/) are starting points, not policy certification. [`docs/specs/teams.md`](docs/specs/teams.md) covers routing and client projects; [`docs/specs/permissions.md`](docs/specs/permissions.md) covers native policy invocation. Existing installations must apply the [unified-policy migration](docs/migrations/unified-workspace-policies.md) where needed and then the [v1.3 managed-workspace migration](docs/migrations/v1.3-managed-workspaces.md); there is no `enso migrate` command. Config changes require restarting Enso.
+The examples in [`docs/examples/`](docs/examples/) are explanatory starting points, not trusted or certified policy presets. A copy becomes user-owned native policy content. [`docs/specs/teams.md`](docs/specs/teams.md) covers routing and client projects; [`docs/specs/permissions.md`](docs/specs/permissions.md) covers native policy invocation. Existing installations must apply the [unified-policy migration](docs/migrations/unified-workspace-policies.md) where needed and then the [v1.3 managed-workspace migration](docs/migrations/v1.3-managed-workspaces.md); there is no `enso migrate` command. Config changes require restarting Enso.
 
-### Bundled skills
+## Policies
 
-Enso seeds five portable [Agent Skills](https://agentskills.io/specification) under `~/.enso/skills/`:
+Inspect the policy catalog without exposing secret values or native file contents:
+
+```bash
+enso policy list
+enso policy show <name>
+```
+
+Every post-setup policy creation names exactly one authority source, at least one
+provider, and a default from that provider set:
+
+```bash
+enso policy create <name> --unrestricted \
+  --provider <provider> [--provider <provider>...] \
+  --default-provider <provider> \
+  [--chat-command <command>...] [--all-chat-commands]
+
+enso policy create <name> --policy-dir <path> \
+  --provider <provider> [--provider <provider>...] \
+  --default-provider <provider> \
+  [--chat-command <command>...] [--all-chat-commands] \
+  [--env-passthrough <name>...]
+```
+
+The named options are repeatable. `--chat-command` and `--all-chat-commands` are mutually
+exclusive. Passing neither form grants no Enso chat commands; the latter explicitly
+grants all of them. Environment passthrough is available only for restricted policies
+and records names, never values.
+
+For `--policy-dir`, first author or deliberately copy the complete provider-native files
+into a physical, owner-protected directory outside every writable workspace, then test them
+with the installed provider CLIs. The path is always explicit; there is no implicit
+policy directory. Enso validates and registers that existing source but never generates,
+copies, changes permissions on, rewrites, upgrades, or repairs canonical restricted
+policy content. The files remain user-owned.
+
+Use `enso config check` as the one complete validator after creation. It checks plumbing,
+not the meaning or safety of native rules. Deletion, consumer rebinding, repair, and
+trusted presets are intentionally absent from this policy lifecycle. Restart Enso after
+policy creation or a later binding change.
+
+## Bundled skills
+
+Enso seeds six portable [Agent Skills](https://agentskills.io/specification) under `~/.enso/skills/`:
 
 | Skill       | Use it for                                                    |
 | ----------- | ------------------------------------------------------------- |
 | `docs`      | Installation-specific reference notes and durable setup facts |
 | `jobs`      | Scheduled and recurring work                                  |
+| `policy`    | Explicit policy authority, native authoring, and validation   |
 | `slack`     | Slack lookup, history, rich replies, and persistent surfaces   |
 | `tables`    | Durable structured data in Enso's SQLite database              |
-| `workspace` | Workspace layout, instructions, skills, policies, and bindings |
+| `workspace` | Workspace layout, instructions, skills, and existing bindings  |
 
 Fresh setup copies these skills once into the canonical global source and creates the relative provider views `~/.enso/.agents/skills -> ../skills` and `~/.enso/.claude/skills -> ../skills`. A new workspace starts with an empty canonical `<workspace>/skills/` plus matching relative provider views. Installed skills are user-owned: upgrades, startup, setup repair, and dashboard deletion do not copy new bundle versions, restore deleted skills, create tombstones, or clean up tool copies. Keep shared skills global; use the `workspace` skill for focused project guidance and workspace-only skills. A workspace is invalid if the same skill directory name exists at both global and local scope.
 
@@ -449,9 +494,10 @@ development is in progress.
 
 Everything lives under `~/.enso/`. Config is at `~/.enso/config.json`; the setup wizard
 writes it for you. Use `enso workspace create` and `enso workspace repair` for workspace
-lifecycle changes instead of hand-editing workspace JSON or constructing discovery links.
-Route, provider, model, policy, Telegram binding, notification, and agent timeout settings
-still live in config and may be edited directly where no focused CLI exists. Workspace
+lifecycle changes instead of hand-editing workspace JSON or constructing discovery links,
+and use `enso policy create` for every post-setup policy registration. Route, model,
+Telegram binding, notification, and agent timeout settings still live in config and may
+be edited directly where no focused CLI exists. Workspace
 names use lowercase kebab-case and derive their only valid roots as
 `~/.enso/workspaces/<name>`; entries contain `policy` and optional `concurrency`, never
 `path`. External, nested, and symlinked workspace roots are rejected, as is a `.git`
@@ -540,7 +586,7 @@ reference also requires the helper's `op_set_secret` function.
 }
 ```
 
-That fragment demonstrates credential storage, Telegram's required workspace binding, and the default Slack output settings. Add `account_id`, `channel_defaults`, `dms`, and `channels` to that same `transports.slack` object, alongside the top-level `workspaces` and `policies`, as shown in [`docs/examples/teams-config.jsonc`](docs/examples/teams-config.jsonc). Legacy `working_dir`, workspace `path`, top-level `routes` and `access`, and route/job policy overrides are rejected; follow the [unified-policy guide](docs/migrations/unified-workspace-policies.md) and [v1.3 workspace guide](docs/migrations/v1.3-managed-workspaces.md), run `enso config check`, reinstall the service definition, and restart Enso.
+That fragment demonstrates credential storage, Telegram's required workspace binding, and the default Slack output settings. Create policies and workspaces through their focused CLIs, then add `account_id`, `channel_defaults`, `dms`, and `channels` to that same `transports.slack` object where no routing command exists. [`docs/examples/teams-config.jsonc`](docs/examples/teams-config.jsonc) shows the resulting relationship. Legacy `working_dir`, workspace `path`, top-level `routes` and `access`, and route/job policy overrides are rejected; follow the [unified-policy guide](docs/migrations/unified-workspace-policies.md) and [v1.3 workspace guide](docs/migrations/v1.3-managed-workspaces.md), run `enso config check`, reinstall the service definition, and restart Enso.
 
 The service-account credential needed by the helper may still use the bootstrap
 `~/.enso/secrets/1password.env` file. Existing literal `bot_token` and `app_token`

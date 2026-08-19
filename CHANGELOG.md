@@ -6,6 +6,20 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- `enso policy list`, `show`, and `create` provide the supported policy lifecycle. List
+  output summarizes capabilities, consumers, and validation; detail output adds safe
+  path, revision, warning, environment-name, and MCP-server metadata without native
+  policy contents or secret values. Creation requires
+  exactly one explicit authority source (`--unrestricted` or an existing
+  `--policy-dir`), repeated explicit providers, a default provider, and deliberate
+  chat-command/environment choices; it validates the complete candidate under the config
+  lock before saving. Fresh setup's full-authority unrestricted `admin` remains the sole
+  automatic policy creation. Restricted canonical source content is authored and
+  protected first, remains user-owned, and is never generated, copied, changed to
+  different permissions, rewritten, upgraded, or repaired by Enso. `enso config check`
+  remains the one complete validator, with no delete, repair, rebind, or preset surface.
+  The new portable `policy` skill teaches the workflow and treats source examples as
+  untrusted explanatory starting points.
 - `enso workspace list`, `show`, `create`, and `repair` provide the supported workspace
   lifecycle. Creation requires a lowercase kebab-case name and an explicit existing
   policy, derives `~/.enso/workspaces/<name>`, defaults concurrency to `1`, validates the
@@ -39,14 +53,17 @@ All notable changes to this project will be documented in this file.
   effective partial-clone/promisor configuration is rejected, every Git child disables
   lazy fetching and transport protocols, and no snapshot operation contacts or changes a
   remote. Enso exposes no history, restore, reset, or delete subcommands.
-- A portable `workspace` Agent Skill now guides workspace layout, focused instructions, global-versus-local skill placement, policy binding, validation, and safe retirement. Enso's bundled `docs`, `jobs`, `slack`, `tables`, and `workspace` skills now use Agent Skills-compliant metadata with discovery-focused descriptions.
+- A portable `workspace` Agent Skill now guides workspace layout, focused instructions, global-versus-local skill placement, policy binding, validation, and safe retirement. Enso's bundled `docs`, `jobs`, `policy`, `slack`, `tables`, and `workspace` skills now use Agent Skills-compliant metadata with discovery-focused descriptions.
 - Grok Build (xAI's `grok` CLI) is a fourth provider alongside `claude`, `codex`, and `agy`, selectable per workspace policy, Slack route, and job. Grok emits the Anthropic Messages wire format, so streaming event parsing and response formatting are shared with Claude; commands, sessions, reasoning effort (`--effort`, `low`–`xhigh` with no `max`), and instruction injection follow grok's own flags, with the prompt and the canonical shared instructions each riding as one attached argument (`--single=`, `--rules=`) so hyphen-leading content cannot be reparsed as a flag. A transient `Not signed in` auth failure — a lapsed OAuth token refreshing in the background — is retried once on the interactive path; job runs never retry.
 - Restricted Grok policies launch from a revision-keyed staged `GROK_HOME` under `<policy_dir>/.runtime/grok-home`, generalizing the Codex staged-home machinery: owner-read-only policy `config.toml`, auth refreshed from the real Grok home each launch, an allowlisted child environment, and byte-level snapshot verification every launch. Because the CLI appends a `[marketplace]` stanza to its config after each run by replace-by-rename — which read-only staging cannot prevent — staging pre-seeds that stanza so the published bytes stay stable. `GROK_HOME`, `GROK_SANDBOX`, and `GROK_FOLDER_TRUST` are reserved from `env_passthrough`; these inputs remain part of the policy revision, whose current launch contract is v6 after the native instruction-discovery change below.
-- `enso config check` gates every Grok policy binding dynamically. Grok loads zero permission rules from a wrong-shaped `[permission]` table with no error, no non-zero exit, and an empty `skipped` list, so the check stages the home, runs `grok inspect --json` from the workspace under a scratch `HOME`, and requires the reported `permissions.loaded` count to equal the rules the policy declares. Loading fewer rules than declared means rules were silently dropped; loading more means rules reached the launch from outside the policy, and the failure names the contributing sources. Wrong-shaped and rule-less configs are also rejected statically.
+- `enso config check` gates every Grok policy binding dynamically. Grok loads zero permission rules from a wrong-shaped `[permission]` table with no error, no non-zero exit, and an empty `skipped` list, so the check materializes the stable checked bytes in a disposable `GROK_HOME`, runs `grok inspect --json` from the workspace under a separate scratch `HOME`, and requires the reported `permissions.loaded` count to equal the rules the policy declares. Loading fewer rules than declared means rules were silently dropped; loading more means rules reached the launch from outside the policy. The diagnostic reports the mismatch without echoing native source names or CLI output, and the check never creates canonical policy runtime state or reads user auth. Wrong-shaped and rule-less configs are also rejected statically.
 - A Grok policy may not disable folder trust or stage its own `trusted_folders.toml`. Folder trust only ever loosens — with it off the CLI applies a workspace's own `.grok/config.toml` and vendor-compat settings — so an agent-writable workspace could otherwise grant itself rules, hooks, and MCP servers the policy never declared. A fresh staged home leaves the workspace untrusted, and both routes to undoing that are now closed. See [permissions.md](docs/specs/permissions.md#grok) for the staged-home contract, the silent fail-open risk, and the documented limit that home-scope vendor-compat sources (`~/.claude`, `~/.cursor`) are discovered relative to `$HOME` and are not excluded by a staged home.
 
 ### Changed
 
+- Restricted policies now require an explicit `policy_dir`; the former implicit
+  `~/.enso/policies/<name>` fallback is removed. Policy creation registers an already
+  complete directory and never creates inactive scaffolds or permission content.
 - The fresh-install root prompt and content-mutating bundled skills now require one
   scoped `enso snapshot create` after each coherent versionable content change, with
   explicit paths and no raw broad Git staging. `enso doc create` and `enso job create`

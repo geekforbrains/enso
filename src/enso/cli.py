@@ -67,6 +67,7 @@ from .slack_text import (
 from .transports import BaseTransport
 
 if TYPE_CHECKING:
+    from .policy import PolicyCheck, PolicySourceValidation
     from .teams import ExecutionCatalog
 
 log = logging.getLogger(__name__)
@@ -89,6 +90,10 @@ workspace_app = typer.Typer(
     help="Inspect, create, and conservatively repair managed workspaces",
     no_args_is_help=True,
 )
+policy_app = typer.Typer(
+    help="Inspect and register execution policies",
+    no_args_is_help=True,
+)
 app.add_typer(job_app, name="job")
 app.add_typer(doc_app, name="doc")
 app.add_typer(table_app, name="table")
@@ -100,6 +105,7 @@ app.add_typer(route_app, name="route")
 app.add_typer(audit_app, name="audit")
 app.add_typer(snapshot_app, name="snapshot")
 app.add_typer(workspace_app, name="workspace")
+app.add_typer(policy_app, name="policy")
 
 console = Console()
 
@@ -1355,13 +1361,26 @@ def _reject_legacy_setup_config(config: dict) -> None:
 
 def _setup_default_workspace(config: dict) -> str:
     """Configure setup's canonical default workspace without touching disk."""
+    from .teams import load_catalog
+
     console.rule("[bold]Step 2 \u00b7 Workspace")
     try:
         name = _ensure_default_execution_config(config)
     except ConfigError as exc:
         console.print(f"[red]Could not configure the default workspace:[/] {escape(str(exc))}")
         raise typer.Exit(1) from None
-    console.print(f"  Default workspace: [bold]{managed_workspace_path(name)}[/]\n")
+    catalog = load_catalog(config)
+    workspace = catalog.workspaces[name]
+    policy = catalog.policy_for(workspace)
+    authority = "unrestricted" if policy.unrestricted else "policy-controlled"
+    console.print(f"  Default workspace: [bold]{managed_workspace_path(name)}[/]")
+    console.print(f"  Policy: [bold]{escape(policy.name)}[/] ({authority})")
+    if policy.unrestricted:
+        console.print(
+            "  [yellow]Authority: full user authority for every selected provider.[/]\n"
+        )
+    else:
+        console.print("  Authority: provider-native policy controls apply.\n")
     return name
 
 
@@ -1438,6 +1457,7 @@ _INITIAL_SETUP_GLOBAL_REQUIRED_PATHS = (
     ".claude/skills",
     "skills/docs/SKILL.md",
     "skills/jobs/SKILL.md",
+    "skills/policy/SKILL.md",
     "skills/slack/SKILL.md",
     "skills/tables/SKILL.md",
     "skills/workspace/SKILL.md",
@@ -2423,6 +2443,384 @@ def workspace_repair(
 
 
 # ---------------------------------------------------------------------------
+# Policy subcommands
+# ---------------------------------------------------------------------------
+
+
+def _policy_source_validations(
+    catalog: ExecutionCatalog,
+) -> dict[str, PolicySourceValidation]:
+    """Return read-only native-source validation for every catalog policy."""
+    from .policy import check_policy_sources
+
+    workspaces = tuple(catalog.workspaces.values())
+    return {
+        name: check_policy_sources(policy, workspaces)
+        for name, policy in catalog.policies.items()
+    }
+
+
+def _policy_bound_workspaces(catalog: ExecutionCatalog, name: str) -> tuple[str, ...]:
+    """Return the configured workspaces that explicitly select one policy."""
+    return tuple(
+        workspace_name
+        for workspace_name, workspace in sorted(catalog.workspaces.items())
+        if workspace.policy == name
+    )
+
+
+def _policy_commands_text(commands: tuple[str, ...] | str) -> str:
+    if commands == "*":
+        return "all"
+    return ", ".join(commands) if commands else "none"
+
+
+def _policy_environment_text(*, unrestricted: bool, names: tuple[str, ...]) -> str:
+    if unrestricted:
+        return "inherited (unrestricted)"
+    return ", ".join(names) if names else "none"
+
+
+def _native_policy_problem_summary(count: int) -> str:
+    noun = "problem" if count == 1 else "problems"
+    return (
+        f"native source validation failed ({count} {noun}); "
+        "inspect the provider-native files locally"
+    )
+
+
+def _native_policy_warning_summary(count: int) -> str:
+    noun = "warning" if count == 1 else "warnings"
+    return (
+        f"native source validation reported {count} {noun}; "
+        "inspect the provider-native files locally"
+    )
+
+
+def _print_policy_check_findings(
+    check: PolicyCheck,
+    *,
+    indent: str = "  ",
+) -> None:
+    """Print content-safe counts, never provider-native diagnostic values."""
+    if check.problems:
+        console.print(
+            f"{indent}[red]✗[/] {escape(check.provider)}: "
+            f"{_native_policy_problem_summary(len(check.problems))}"
+        )
+    if check.warnings:
+        console.print(
+            f"{indent}[yellow]![/] {escape(check.provider)}: "
+            f"{_native_policy_warning_summary(len(check.warnings))}"
+        )
+
+
+def _policy_validation_problems(
+    catalog: ExecutionCatalog,
+    name: str,
+    source_validation: PolicySourceValidation,
+) -> tuple[str, ...]:
+    """Combine schema and source findings for one displayed policy."""
+    return tuple(
+        dict.fromkeys(
+            (*catalog.policy_errors.get(name, ()), *source_validation.problems)
+        )
+    )
+
+
+@policy_app.command("list")
+def policy_list() -> None:
+    """List policy capabilities, bindings, and static validation state."""
+    from .teams import load_catalog
+
+    config = _load_config_or_exit()
+    catalog = load_catalog(config)
+    validations = _policy_source_validations(catalog)
+    table = Table(
+        box=None,
+        padding=(0, 1),
+        collapse_padding=True,
+        pad_edge=False,
+    )
+    for column in (
+        "Name",
+        "Authority",
+        "Providers",
+        "Default",
+        "Commands",
+        "Env",
+        "Workspaces",
+        "Validation",
+    ):
+        table.add_column(column, min_width=len(column), overflow="fold")
+
+    failed = bool(_catalog_problems(catalog))
+    for name, policy in sorted(catalog.policies.items()):
+        validation = validations[name]
+        problems = _policy_validation_problems(catalog, name, validation)
+        failed = failed or bool(problems)
+        workspaces = _policy_bound_workspaces(catalog, name)
+        status = "[red]invalid[/]" if problems else "[green]valid[/]"
+        if not problems and validation.warnings:
+            status = "[yellow]valid (warnings)[/]"
+        table.add_row(
+            escape(name),
+            "unrestricted" if policy.unrestricted else "policy-controlled",
+            escape(", ".join(policy.providers) or "none"),
+            escape(policy.default_provider or "none"),
+            escape(_policy_commands_text(policy.chat_commands)),
+            escape(
+                _policy_environment_text(
+                    unrestricted=policy.unrestricted,
+                    names=policy.env_passthrough,
+                )
+            ),
+            escape(", ".join(workspaces) if workspaces else "unused"),
+            status,
+        )
+
+    if catalog.policies:
+        console.print(table)
+    else:
+        console.print("No policies configured.")
+
+    catalog_problems = _catalog_problems(catalog)
+    if catalog_problems:
+        console.print("\n[red]Catalog errors:[/]")
+        _print_workspace_problems(catalog_problems, indent="  ")
+    if failed:
+        raise typer.Exit(1)
+
+
+@policy_app.command("show")
+def policy_show(
+    name: Annotated[str, typer.Argument(help="Configured policy name")],
+) -> None:
+    """Show safe metadata and static native-source findings for one policy."""
+    from .teams import load_catalog
+
+    config = _load_config_or_exit()
+    catalog = load_catalog(config)
+    policy = catalog.policies.get(name)
+    raw_policies = config.get("policies")
+    configured = isinstance(raw_policies, dict) and name in raw_policies
+    if not configured:
+        console.print(f"[red]Policy {escape(name)!r} is not configured.[/]")
+        raise typer.Exit(1)
+    if policy is None:
+        console.print(f"[bold]Policy:[/] {escape(name)}")
+        _print_workspace_problems(_catalog_problems(catalog), indent="  ")
+        raise typer.Exit(1)
+
+    validation = _policy_source_validations(catalog)[name]
+    problems = _policy_validation_problems(catalog, name, validation)
+    catalog_problems = _catalog_problems(catalog)
+    workspaces = _policy_bound_workspaces(catalog, name)
+
+    console.print(f"[bold]Policy:[/] {escape(policy.name)}")
+    console.print(
+        "[bold]Authority:[/] "
+        + ("unrestricted" if policy.unrestricted else "policy-controlled")
+    )
+    if policy.policy_dir is not None:
+        console.print(f"[bold]Policy directory:[/] {escape(policy.policy_dir)}")
+    console.print(f"[bold]Providers:[/] {escape(', '.join(policy.providers) or 'none')}")
+    console.print(f"[bold]Default provider:[/] {escape(policy.default_provider or 'none')}")
+    console.print(
+        f"[bold]Chat commands:[/] {escape(_policy_commands_text(policy.chat_commands))}"
+    )
+    console.print(
+        "[bold]Environment passthrough:[/] "
+        + escape(
+            _policy_environment_text(
+                unrestricted=policy.unrestricted,
+                names=policy.env_passthrough,
+            )
+        )
+    )
+    console.print(
+        f"[bold]Workspaces:[/] {escape(', '.join(workspaces) if workspaces else 'unused')}"
+    )
+    console.print(
+        "[bold]Validation:[/] "
+        + ("[red]invalid[/]" if problems else "[green]valid[/]")
+    )
+
+    for check in validation.provider_checks:
+        console.print(f"\n[bold]Provider {escape(check.provider)}[/]")
+        console.print(f"  Path: {escape(check.policy_path or 'none (unrestricted)')}")
+        console.print(f"  Revision: {escape(check.policy_revision or 'unavailable')}")
+        console.print(
+            "  MCP servers: "
+            + escape(", ".join(check.mcp_servers) if check.mcp_servers else "none")
+        )
+        _print_policy_check_findings(check)
+
+    schema_problems = catalog.policy_errors.get(name, ())
+    if schema_problems:
+        console.print("\n[red]Policy schema errors:[/]")
+        _print_workspace_problems(schema_problems, indent="  ")
+    unrelated_catalog_problems = tuple(
+        problem for problem in catalog_problems if problem not in problems
+    )
+    if unrelated_catalog_problems:
+        console.print("\n[red]Catalog errors:[/]")
+        _print_workspace_problems(unrelated_catalog_problems, indent="  ")
+    if problems or catalog_problems:
+        raise typer.Exit(1)
+
+
+def _new_policy_candidate_or_exit(
+    config: dict,
+    name: str,
+    entry: dict,
+) -> tuple[dict, ExecutionCatalog, PolicySourceValidation]:
+    """Build and wholly validate one exact policy catalog candidate."""
+    from .policy import check_policy_sources
+    from .teams import load_catalog
+
+    raw_policies = config.get("policies")
+    if not isinstance(raw_policies, dict):
+        console.print("[red]Configuration error:[/] policies must be an object")
+        raise typer.Exit(1)
+    if name in raw_policies:
+        console.print(f"[red]Policy {escape(name)!r} is already configured.[/]")
+        raise typer.Exit(1)
+
+    candidate = copy.deepcopy(config)
+    candidate["policies"][name] = entry
+    catalog = load_catalog(candidate)
+    problems = list(_catalog_problems(catalog))
+    workspaces = tuple(catalog.workspaces.values())
+    validations: dict[str, PolicySourceValidation] = {}
+    for policy_name, policy in sorted(catalog.policies.items()):
+        validation = check_policy_sources(policy, workspaces)
+        validations[policy_name] = validation
+        if validation.problems:
+            problems.append(
+                f"policies.{policy_name}: "
+                f"{_native_policy_problem_summary(len(validation.problems))}"
+            )
+    if name not in catalog.policies and not problems:
+        problems.append(f"policy {name!r} is invalid")
+    if problems:
+        console.print("[red]Invalid policy configuration:[/]")
+        _print_workspace_problems(tuple(dict.fromkeys(problems)), indent="  ")
+        raise typer.Exit(1)
+    return candidate, catalog, validations[name]
+
+
+@policy_app.command("create")
+def policy_create(
+    name: Annotated[str, typer.Argument(help="Portable policy name")],
+    providers: Annotated[
+        list[str],
+        typer.Option("--provider", help="Selected provider; repeat for each provider"),
+    ],
+    default_provider: Annotated[
+        str,
+        typer.Option("--default-provider", help="Default selected provider"),
+    ],
+    unrestricted: Annotated[
+        bool,
+        typer.Option("--unrestricted", help="Grant full user authority"),
+    ] = False,
+    policy_dir: Annotated[
+        str | None,
+        typer.Option("--policy-dir", help="Existing user-authored native policy root"),
+    ] = None,
+    chat_commands: Annotated[
+        list[str] | None,
+        typer.Option("--chat-command", help="Allowed chat command; repeat as needed"),
+    ] = None,
+    all_chat_commands: Annotated[
+        bool,
+        typer.Option("--all-chat-commands", help="Allow every chat command"),
+    ] = False,
+    env_passthrough: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--env-passthrough",
+            help="Environment variable name admitted to restricted launches; repeat as needed",
+        ),
+    ] = None,
+) -> None:
+    """Register one explicitly selected execution authority."""
+    # A strict read must precede creation of config.json.lock.
+    _load_config_or_exit()
+
+    if unrestricted == (policy_dir is not None):
+        console.print(
+            "[red]Exactly one authority source is required:[/] "
+            "use either --unrestricted or --policy-dir."
+        )
+        raise typer.Exit(1)
+    if chat_commands and all_chat_commands:
+        console.print(
+            "[red]--chat-command may not be combined with --all-chat-commands.[/]"
+        )
+        raise typer.Exit(1)
+
+    provider_names = list(providers)
+    command_names: list[str] | str = (
+        "*" if all_chat_commands else list(chat_commands or ())
+    )
+    environment_names = list(env_passthrough or ())
+    entry: dict = {
+        "providers": provider_names,
+        "default_provider": default_provider,
+        "chat_commands": command_names,
+    }
+    if unrestricted:
+        entry["unrestricted"] = True
+    else:
+        assert policy_dir is not None
+        entry["policy_dir"] = policy_dir
+    if environment_names:
+        entry["env_passthrough"] = environment_names
+
+    with _config_lock_or_exit():
+        config = _load_config_or_exit()
+        candidate, catalog, validation = _new_policy_candidate_or_exit(
+            config,
+            name,
+            entry,
+        )
+        try:
+            save_config(candidate)
+        except (ConfigError, OSError, TypeError, ValueError) as exc:
+            console.print(
+                f"[red]Could not save policy configuration:[/] {escape(str(exc))}"
+            )
+            raise typer.Exit(1) from None
+
+    created = catalog.policies[name]
+    console.print(f"[green]Policy created:[/] {escape(name)}")
+    console.print(
+        "  Authority: "
+        + ("unrestricted" if created.unrestricted else "policy-controlled")
+    )
+    if created.policy_dir is not None:
+        console.print(f"  Policy directory: {escape(created.policy_dir)}")
+    console.print(f"  Providers: {escape(', '.join(created.providers))}")
+    console.print(f"  Default provider: {escape(created.default_provider or 'none')}")
+    console.print(f"  Chat commands: {escape(_policy_commands_text(created.chat_commands))}")
+    console.print(
+        "  Environment passthrough: "
+        + escape(
+            _policy_environment_text(
+                unrestricted=created.unrestricted,
+                names=created.env_passthrough,
+            )
+        )
+    )
+    if validation.warnings:
+        console.print(f"  [yellow]![/] {_native_policy_warning_summary(len(validation.warnings))}")
+    console.print("  [dim]No workspace binding was changed.[/]")
+    console.print("[yellow]Restart the Enso service before using this policy.[/]")
+
+
+# ---------------------------------------------------------------------------
 # Snapshot subcommands
 # ---------------------------------------------------------------------------
 
@@ -3179,7 +3577,7 @@ def slack_thread(
 def config_check() -> None:  # noqa: C901
     """Validate execution bindings and native-policy launch plumbing."""
     from .instructions import InstructionError, validate_shared_instructions
-    from .policy import check_provider, verify_grok_rules
+    from .policy import check_policy_sources, verify_grok_rules
     from .teams import load_catalog, load_teams, load_telegram
 
     if not os.path.lexists(config_module.CONFIG_FILE):
@@ -3239,6 +3637,7 @@ def config_check() -> None:  # noqa: C901
             console.print("  [red]✗[/] workspace path does not exist")
 
     secret_env = _read_secret_env()
+    source_validations = {}
     for name, execution_policy in sorted(catalog.policies.items()):
         mode = "unrestricted" if execution_policy.unrestricted else "policy-controlled"
         console.print(f"\n[bold]Policy {name}[/] ({mode})")
@@ -3256,6 +3655,26 @@ def config_check() -> None:  # noqa: C901
                 "  [dim]checked against this shell and ~/.enso/secrets/*.env; "
                 "the service environment may differ[/]"
             )
+        source_validation = check_policy_sources(
+            execution_policy,
+            catalog.workspaces.values(),
+        )
+        source_validations[name] = source_validation
+        for check in source_validation.provider_checks:
+            if check.ok:
+                revision = (check.policy_revision or "")[:12]
+                servers = (
+                    f" mcp: {', '.join(check.mcp_servers)}"
+                    if check.mcp_servers
+                    else ""
+                )
+                console.print(
+                    f"  [green]✓[/] {escape(check.provider)} "
+                    f"({escape(revision)}){escape(servers)}"
+                )
+            else:
+                failed = True
+            _print_policy_check_findings(check)
 
     bindings: dict[str, set[str]] = {}
     transports_cfg = config.get("transports", {})
@@ -3310,25 +3729,42 @@ def config_check() -> None:  # noqa: C901
         console.print(
             f"\n[bold]{workspace_name} → {execution_policy.name}[/] native launch"
         )
+        checks_by_provider = {
+            check.provider: check
+            for check in source_validations[execution_policy.name].provider_checks
+        }
         for provider in sorted(providers):
-            check = check_provider(workspace, execution_policy, provider)
+            check = checks_by_provider[provider]
             provider_problems = list(check.problems)
+            dynamic_inspection = False
             if check.ok and provider == "grok":
                 # A wrong-shaped grok permission config loads zero rules with
                 # no error, so back the static checks with the rule count the
                 # CLI actually loads from the staged home.
                 grok_path = config.get("providers", {}).get("grok", {}).get("path", "grok")
                 provider_problems = verify_grok_rules(workspace, execution_policy, grok_path)
+                dynamic_inspection = True
             if check.ok and not provider_problems:
                 revision = (check.policy_revision or "")[:12]
                 servers = f" mcp: {', '.join(check.mcp_servers)}" if check.mcp_servers else ""
                 console.print(f"  [green]✓[/] {provider} ({revision}){escape(servers)}")
-                for warning in check.warnings:
-                    console.print(f"    [yellow]![/] {escape(warning)}")
+                if check.warnings:
+                    console.print(
+                        f"    [yellow]![/] {escape(provider)}: "
+                        f"{_native_policy_warning_summary(len(check.warnings))}"
+                    )
             else:
                 failed = True
-                for problem in provider_problems:
-                    console.print(f"  [red]✗[/] {provider}: {escape(problem)}")
+                noun = "problem" if len(provider_problems) == 1 else "problems"
+                category = (
+                    "dynamic native-policy inspection"
+                    if dynamic_inspection
+                    else "native source validation"
+                )
+                console.print(
+                    f"  [red]✗[/] {escape(provider)}: {category} failed "
+                    f"({len(provider_problems)} {noun}); inspect the provider CLI locally"
+                )
 
     if failed:
         raise typer.Exit(1)
