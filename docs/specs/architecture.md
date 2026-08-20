@@ -143,7 +143,9 @@ Each interactive provider turn has the shared `agent.timeout` budget from `confi
 reached, Enso cancels the provider, terminates its process tree, changes the progress
 message to a timeout notice, and stores conversation-scoped background context for the
 next turn. That context warns the next active provider that partial filesystem or
-session work may remain. Scheduled jobs retain their separate per-job timeout.
+session work may remain. A same-session structured-output correction attempt shares this
+single budget rather than starting a fresh timeout. Scheduled jobs retain their separate
+per-job timeout.
 
 Claude accepts an Enso-generated session ID and Codex emits its ID in the event stream.
 Antigravity generates its own ID but exposes it only in diagnostics: each interactive

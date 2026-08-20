@@ -1808,18 +1808,21 @@ async def test_process_request_preserves_surface_fence_without_surface_capabilit
 
 
 @pytest.mark.asyncio
-async def test_process_request_invalid_surface_stays_ordinary_text(sample_config):
+async def test_process_request_retries_invalid_surface_in_same_request(sample_config):
     rt = Runtime(sample_config)
-    response = "```enso-surface\n{not json}\n```"
+    rt.session_by_chat_provider[("1", "claude")] = "session-1"
+    invalid_response = "```enso-surface\n{not json}\n```"
+    responses = iter([invalid_response, "Recovered as ordinary Markdown."])
 
     class FakeCtx(TransportContext):
         rich_markdown_enabled = True
 
         def __init__(self):
+            self.replies = []
             self.rich_replies = []
             self.publications = []
 
-        async def reply(self, text): raise AssertionError("unexpected plain reply")
+        async def reply(self, text): self.replies.append(text)
         async def reply_markdown(self, text): self.rich_replies.append(text)
         async def offer_surface_draft(self, publication, source_text):
             self.publications.append((publication, source_text))
@@ -1831,16 +1834,30 @@ async def test_process_request_invalid_surface_stays_ordinary_text(sample_config
         def get_output_instructions(self): return ""
         def get_surface_instructions(self): return "Persistent surface instructions."
 
-    async def fake_run(*args, **kwargs):
-        yield StreamEvent(kind="response", text=response)
-
     ctx = FakeCtx()
+    calls = []
+
+    async def fake_run(provider, prompt, chat_id, *args, **kwargs):
+        calls.append((provider, prompt, chat_id, kwargs["context"]))
+        assert ctx.replies == []
+        assert ctx.rich_replies == []
+        assert ctx.publications == []
+        yield StreamEvent(kind="response", text=next(responses))
+
     rt.run_provider = fake_run
 
-    await _process_request(rt, sample_config, "claude", "hello", "1", ctx)
+    outcome = await _process_request(rt, sample_config, "claude", "hello", "1", ctx)
 
+    assert outcome == ("completed", None)
+    assert len(calls) == 2
+    assert calls[0][0] is calls[1][0]
+    assert calls[0][2:] == calls[1][2:]
+    assert "enso-surface" in calls[1][1]
+    assert "did not deliver" in calls[1][1]
+    assert invalid_response not in calls[1][1]
     assert ctx.publications == []
-    assert ctx.rich_replies == [response]
+    assert ctx.replies == []
+    assert ctx.rich_replies == ["Recovered as ordinary Markdown."]
 
 
 @pytest.mark.asyncio
@@ -1875,7 +1892,11 @@ async def test_process_request_uses_safe_fallback_for_over_limit_app_home(sample
         def get_output_instructions(self): return ""
         def get_surface_instructions(self): return "Persistent surface instructions."
 
+    calls = 0
+
     async def fake_run(*args, **kwargs):
+        nonlocal calls
+        calls += 1
         yield StreamEvent(kind="response", text=response)
 
     ctx = FakeCtx()
@@ -1883,6 +1904,7 @@ async def test_process_request_uses_safe_fallback_for_over_limit_app_home(sample
 
     await _process_request(rt, sample_config, "claude", "hello", "1", ctx)
 
+    assert calls == 1
     assert ctx.replies == ["Compact complete dashboard fallback."]
     assert ctx.publications == []
 
@@ -2048,8 +2070,81 @@ async def test_process_request_preserves_structured_fence_without_capability(sam
 
 
 @pytest.mark.asyncio
-async def test_process_request_invalid_structured_response_stays_ordinary_text(sample_config):
+async def test_process_request_retries_invalid_structured_response(
+    sample_config, monkeypatch
+):
     rt = Runtime(sample_config)
+    rt.session_by_chat_provider[("1", "claude")] = "session-1"
+    invalid_response = "```enso-message\n{not json}\n```"
+    valid_response = (
+        "```enso-message\n"
+        '{"version":1,"fallback_text":"Recovered summary","blocks":'
+        '[{"type":"markdown","text":"# Recovered"}]}\n'
+        "```"
+    )
+    responses = iter([invalid_response, valid_response])
+
+    class FakeCtx(TransportContext):
+        rich_markdown_enabled = True
+
+        def __init__(self):
+            self.replies = []
+            self.rich_replies = []
+            self.messages = []
+
+        async def reply(self, text): self.replies.append(text)
+        async def reply_markdown(self, text): self.rich_replies.append(text)
+        async def reply_message(self, message): self.messages.append(message)
+        async def reply_status(self, text): return "handle"
+        async def edit_status(self, handle, text): pass
+        async def delete_status(self, handle): pass
+        async def send_typing(self): pass
+        def get_origin_env(self): return {}
+        def get_output_instructions(self): return "Structured output instructions."
+
+    ctx = FakeCtx()
+    prompts = []
+    wait_timeouts = []
+    real_wait = asyncio.wait
+
+    async def recording_wait(tasks, **kwargs):
+        wait_timeouts.append(kwargs.get("timeout"))
+        return await real_wait(tasks, **kwargs)
+
+    async def fake_run(provider, prompt, *args, **kwargs):
+        prompts.append(prompt)
+        assert ctx.replies == []
+        assert ctx.rich_replies == []
+        assert ctx.messages == []
+        yield StreamEvent(kind="response", text=next(responses))
+
+    rt.run_provider = fake_run
+    monkeypatch.setattr(asyncio, "wait", recording_wait)
+
+    outcome = await _process_request(rt, sample_config, "claude", "hello", "1", ctx)
+
+    assert outcome == ("completed", None)
+    assert len(prompts) == 2
+    assert prompts[0] == "hello\n\nStructured output instructions."
+    assert "enso-message" in prompts[1]
+    assert "did not deliver" in prompts[1]
+    assert invalid_response not in prompts[1]
+    assert len(wait_timeouts) == 2
+    assert wait_timeouts[1] < wait_timeouts[0]
+    assert ctx.messages == [
+        OutboundMessage(
+            fallback_text="Recovered summary",
+            blocks=(MarkdownBlock(text="# Recovered"),),
+        )
+    ]
+    assert ctx.replies == []
+    assert ctx.rich_replies == []
+
+
+@pytest.mark.asyncio
+async def test_process_request_stops_after_second_invalid_structured_response(sample_config):
+    rt = Runtime(sample_config)
+    rt.session_by_chat_provider[("1", "claude")] = "session-1"
     response = "```enso-message\n{not json}\n```"
 
     class FakeCtx(TransportContext):
@@ -2068,18 +2163,64 @@ async def test_process_request_invalid_structured_response_stays_ordinary_text(s
         async def delete_status(self, handle): pass
         async def send_typing(self): pass
         def get_origin_env(self): return {}
+        def get_output_instructions(self): return "Structured output instructions."
+
+    calls = 0
 
     async def fake_run(*args, **kwargs):
+        nonlocal calls
+        calls += 1
         yield StreamEvent(kind="response", text=response)
 
     ctx = FakeCtx()
     rt.run_provider = fake_run
 
-    await _process_request(rt, sample_config, "claude", "hello", "1", ctx)
+    outcome = await _process_request(rt, sample_config, "claude", "hello", "1", ctx)
 
+    assert outcome == ("error", "invalid_structured_output")
+    assert calls == 2
+    assert ctx.replies == ["I couldn't format that response correctly. Please try again."]
+    assert ctx.rich_replies == []
     assert ctx.messages == []
-    assert ctx.replies == []
-    assert ctx.rich_replies == [response]
+
+
+@pytest.mark.asyncio
+async def test_process_request_does_not_retry_without_a_resumable_session(sample_config):
+    rt = Runtime(sample_config)
+    response = "```enso-message\n{not json}\n```"
+
+    class FakeCtx(TransportContext):
+        rich_markdown_enabled = True
+
+        def __init__(self):
+            self.replies = []
+            self.rich_replies = []
+
+        async def reply(self, text): self.replies.append(text)
+        async def reply_markdown(self, text): self.rich_replies.append(text)
+        async def reply_status(self, text): return "handle"
+        async def edit_status(self, handle, text): pass
+        async def delete_status(self, handle): pass
+        async def send_typing(self): pass
+        def get_origin_env(self): return {}
+        def get_output_instructions(self): return "Structured output instructions."
+
+    calls = 0
+
+    async def fake_run(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        yield StreamEvent(kind="response", text=response)
+
+    ctx = FakeCtx()
+    rt.run_provider = fake_run
+
+    outcome = await _process_request(rt, sample_config, "claude", "hello", "1", ctx)
+
+    assert outcome == ("error", "invalid_structured_output")
+    assert calls == 1
+    assert ctx.replies == ["I couldn't format that response correctly. Please try again."]
+    assert ctx.rich_replies == []
 
 
 @pytest.mark.asyncio
@@ -2126,7 +2267,11 @@ async def test_process_request_uses_safe_fallback_for_over_limit_native_table(
         def get_origin_env(self): return {}
         def get_output_instructions(self): return "Structured output instructions."
 
+    calls = 0
+
     async def fake_run(*args, **kwargs):
+        nonlocal calls
+        calls += 1
         yield StreamEvent(kind="response", text=response)
 
     ctx = FakeCtx()
@@ -2134,6 +2279,7 @@ async def test_process_request_uses_safe_fallback_for_over_limit_native_table(
 
     await _process_request(rt, sample_config, "claude", "hello", "1", ctx)
 
+    assert calls == 1
     assert ctx.replies == ["Compact complete fallback"]
     assert ctx.rich_replies == []
     assert ctx.messages == []
