@@ -62,6 +62,50 @@ STATUS_MAX_EDIT_FAILURES = 3
 # Shown as the action line until the provider reports its first real status,
 # so the message keeps the same shape from the moment it is posted.
 STATUS_INITIAL_ACTION = "Processing"
+STRUCTURED_OUTPUT_REPAIR_ATTEMPTS = 1
+STRUCTURED_OUTPUT_FAILURE_NOTICE = (
+    "I couldn't format that response correctly. Please try again."
+)
+
+_STRUCTURED_OUTPUT_FENCE_RE = re.compile(
+    r"(?m)^[^\S\r\n]*```(?P<kind>enso-message|enso-surface)\b"
+)
+
+
+def _structured_output_repair_prompt(
+    response_text: str,
+    *,
+    output_instructions: str,
+    surface_instructions: str,
+) -> str | None:
+    """Return a correction prompt for a malformed attempted rich response."""
+    attempted_kinds = {
+        match.group("kind") for match in _STRUCTURED_OUTPUT_FENCE_RE.finditer(response_text)
+    }
+
+    kind: str | None = None
+    if (
+        surface_instructions
+        and "enso-surface" in attempted_kinds
+        and parse_surface_publication(response_text) is None
+        and parse_surface_fallback(response_text) is None
+    ):
+        kind = "enso-surface"
+    elif (
+        output_instructions
+        and "enso-message" in attempted_kinds
+        and parse_outbound_message(response_text) is None
+        and parse_outbound_fallback(response_text) is None
+    ):
+        kind = "enso-message"
+
+    if kind is None:
+        return None
+    return (
+        f"Enso did not deliver your previous `{kind}` response because its formatting "
+        f"was invalid. Send the response again using the exact `{kind}` format from "
+        "your instructions."
+    )
 
 
 def format_elapsed(seconds: int) -> str:
@@ -1466,28 +1510,77 @@ class Runtime:
         stop = asyncio.Event()
         ticker = asyncio.create_task(self._run_ticker(ctx, status_msg, state, stop))
         msg_limit = self.transport.message_limit if self.transport else 4096
+        request_deadline = (
+            asyncio.get_running_loop().time() + self.agent_timeout
+            if self.agent_timeout
+            else None
+        )
 
         try:
-            response_parts, error_text, timed_out = await self._collect_provider_output(
-                provider,
-                prompt,
-                chat_id,
-                model,
-                effort=effort,
-                origin_env=origin_env,
-                context=context,
-                state=state,
-            )
-            if timed_out:
-                await self._stop_ticker(ticker, stop, chat_id)
-                await self._report_timeout(ctx, chat_id, provider_name, status_msg)
-                return "timeout", None
+            repair_attempts = 0
+            provider_prompt = prompt
+            while True:
+                response_parts, error_text, timed_out = await self._collect_provider_output(
+                    provider,
+                    provider_prompt,
+                    chat_id,
+                    model,
+                    effort=effort,
+                    origin_env=origin_env,
+                    context=context,
+                    state=state,
+                    deadline=request_deadline,
+                )
+                if timed_out:
+                    await self._stop_ticker(ticker, stop, chat_id)
+                    await self._report_timeout(ctx, chat_id, provider_name, status_msg)
+                    return "timeout", None
+
+                response_text = provider.format_response(response_parts)
+                repair_prompt = (
+                    _structured_output_repair_prompt(
+                        response_text,
+                        output_instructions=output_instructions,
+                        surface_instructions=surface_instructions,
+                    )
+                    if response_text and not error_text
+                    else None
+                )
+                if repair_prompt is None:
+                    break
+                resumable_session = self.has_session_memory(chat_id, provider.name)
+                if (
+                    repair_attempts >= STRUCTURED_OUTPUT_REPAIR_ATTEMPTS
+                    or not resumable_session
+                ):
+                    await self._stop_ticker(ticker, stop, chat_id)
+                    if status_msg is not None:
+                        await ctx.delete_status(status_msg)
+                    await ctx.reply(STRUCTURED_OUTPUT_FAILURE_NOTICE)
+                    log.warning(
+                        "[%s] invalid structured output not corrected chat=%s "
+                        "resumable_session=%s attempts=%d",
+                        provider_name,
+                        chat_id,
+                        resumable_session,
+                        repair_attempts,
+                    )
+                    return "error", "invalid_structured_output"
+
+                repair_attempts += 1
+                provider_prompt = repair_prompt
+                state["action"] = "Correcting response formatting"
+                log.info(
+                    "[%s] correcting invalid structured output chat=%s attempt=%d",
+                    provider_name,
+                    chat_id,
+                    repair_attempts,
+                )
 
             await self._stop_ticker(ticker, stop, chat_id)
             if status_msg is not None:
                 await ctx.delete_status(status_msg)
 
-            response_text = provider.format_response(response_parts)
             log.info(
                 "[%s] request complete chat=%s response_parts=%d "
                 "response_len=%d error=%s elapsed=%s",
@@ -1643,6 +1736,7 @@ class Runtime:
         origin_env: dict[str, str],
         context: ExecutionContext,
         state: dict[str, Any],
+        deadline: float | None = None,
     ) -> tuple[list[str], str, bool]:
         """Stream the provider to completion under the configured deadline.
 
@@ -1680,7 +1774,9 @@ class Runtime:
                 elif event.kind == "error":
                     error_text = event.text
 
-        timed_out = await self._run_until_deadline(consume_provider_events(), chat_id)
+        timed_out = await self._run_until_deadline(
+            consume_provider_events(), chat_id, deadline=deadline
+        )
         if not timed_out and error_text and provider.retryable_error(error_text):
             # One retry for transient startup failures (grok's lapsed OAuth
             # token refreshing in the background). run_provider re-reads
@@ -1693,16 +1789,26 @@ class Runtime:
             )
             response_parts.clear()
             error_text = ""
-            timed_out = await self._run_until_deadline(consume_provider_events(), chat_id)
+            timed_out = await self._run_until_deadline(
+                consume_provider_events(), chat_id, deadline=deadline
+            )
         return response_parts, error_text, timed_out
 
     async def _run_until_deadline(
-        self, work: Coroutine[Any, Any, None], chat_id: str
+        self,
+        work: Coroutine[Any, Any, None],
+        chat_id: str,
+        *,
+        deadline: float | None = None,
     ) -> bool:
         """Run ``work`` and return True only when our deadline expires."""
-        if not self.agent_timeout:
+        if deadline is None and not self.agent_timeout:
             await work
             return False
+
+        timeout = self.agent_timeout
+        if deadline is not None:
+            timeout = max(0.0, deadline - asyncio.get_running_loop().time())
 
         provider_task = asyncio.create_task(work)
 
@@ -1718,7 +1824,7 @@ class Runtime:
         try:
             done, _ = await asyncio.wait(
                 {provider_task},
-                timeout=self.agent_timeout,
+                timeout=timeout,
             )
             if provider_task in done:
                 await provider_task
