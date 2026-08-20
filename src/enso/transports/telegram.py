@@ -45,6 +45,7 @@ from ..commands import (
 )
 from ..core import ExecutionContext
 from ..formatting import md_to_html
+from ..images import downscale_iphone_screenshot
 from ..secret_refs import resolve_config_secret
 from ..teams import load_telegram
 from . import BaseTransport, SecureUploadDirectory, TransportContext, safe_filename
@@ -511,6 +512,7 @@ class TelegramTransport(BaseTransport):
                 if dest_path is None:
                     raise OSError("Telegram upload path changed after download")
                 log.info("Downloaded %s to %s (%d bytes)", desc, dest_path, len(payload))
+                downscale_iphone_screenshot(dest_path)
         except Exception:
             log.exception("Failed to download %s", desc)
             await msg.reply_text("Failed to download file. Please try again.")

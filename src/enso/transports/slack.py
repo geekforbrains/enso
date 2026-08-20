@@ -39,6 +39,7 @@ from ..commands import (
     cmd_use,
 )
 from ..formatting import md_to_mrkdwn, split_markdown
+from ..images import downscale_iphone_screenshot
 from ..outbound import (
     MAX_APP_HOME_CONFIRMATION_BLOCKS,
     MAX_CANVAS_CONFIRMATION_MARKDOWN,
@@ -2711,6 +2712,8 @@ class SlackTransport(BaseTransport):
                     verified_downloads.append(dest_path)
                 else:
                     log.error("Discarding Slack upload path changed during download: %s", name)
+        for dest_path in verified_downloads:
+            downscale_iphone_screenshot(dest_path)
         return verified_downloads
 
     async def notify(self, text: str, *, destination: str | None = None) -> None:
