@@ -18,19 +18,37 @@ from enso.web import app as web_app
 
 def _client(
     tmp_path: Path,
+    monkeypatch,
     web_config: dict | None = None,
 ) -> TestClient:
+    workspace = tmp_path / "workspaces" / "default"
+    workspace.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr("enso.config.CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(web_app, "CONFIG_DIR", str(tmp_path))
     runtime = SimpleNamespace(
-        config={"web": web_config or {}},
-        working_dir=str(tmp_path),
+        config={
+            "web": web_config or {},
+            "workspaces": {
+                "default": {
+                    "policy": "admin",
+                    "concurrency": 1,
+                }
+            },
+            "policies": {
+                "admin": {
+                    "unrestricted": True,
+                    "providers": ["claude"],
+                    "default_provider": "claude",
+                    "chat_commands": "*",
+                }
+            },
+        },
     )
-    return TestClient(
-        web_app.create_app(runtime), base_url="http://127.0.0.1"
-    )
+    return TestClient(web_app.create_app(runtime), base_url="http://127.0.0.1")
 
 
-def test_write_forms_include_process_scoped_csrf_token(tmp_path):
-    client = _client(tmp_path)
+def test_write_forms_include_process_scoped_csrf_token(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
 
     response = client.get("/agents")
 
@@ -46,8 +64,8 @@ def test_write_forms_include_process_scoped_csrf_token(tmp_path):
     assert response.headers["cache-control"] == "no-store"
 
 
-def test_every_post_route_is_csrf_protected(tmp_path):
-    client = _client(tmp_path)
+def test_every_post_route_is_csrf_protected(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
     post_routes = [
         route
         for route in client.app.routes
@@ -61,8 +79,8 @@ def test_every_post_route_is_csrf_protected(tmp_path):
     )
 
 
-def test_arbitrary_host_cannot_read_token_or_submit_write(tmp_path):
-    app = _client(tmp_path).app
+def test_arbitrary_host_cannot_read_token_or_submit_write(tmp_path, monkeypatch):
+    app = _client(tmp_path, monkeypatch).app
     attacker = TestClient(app, base_url="http://attacker.example")
 
     get_response = attacker.get("/agents")
@@ -81,9 +99,10 @@ def test_arbitrary_host_cannot_read_token_or_submit_write(tmp_path):
     assert not (tmp_path / "AGENTS.md").exists()
 
 
-def test_configured_allowed_host_permits_named_remote_host_only(tmp_path):
+def test_configured_allowed_host_permits_named_remote_host_only(tmp_path, monkeypatch):
     client = _client(
         tmp_path,
+        monkeypatch,
         {
             "host": "0.0.0.0",
             "allowed_hosts": ["enso.example.test", "*"],
@@ -97,8 +116,8 @@ def test_configured_allowed_host_permits_named_remote_host_only(tmp_path):
     assert arbitrary.get("/agents").status_code == 400
 
 
-def test_shared_token_bootstraps_http_only_cookie(tmp_path):
-    client = _client(tmp_path, {"token": "correct-horse"})
+def test_shared_token_bootstraps_http_only_cookie(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch, {"token": "correct-horse"})
 
     assert client.get("/agents").status_code == 401
     assert client.get("/health").status_code == 200
@@ -122,6 +141,7 @@ def test_1password_web_token_takes_precedence_over_literal(
     monkeypatch.setattr("enso.secret_refs.ONEPASSWORD_HELPER", str(helper))
     client = _client(
         tmp_path,
+        monkeypatch,
         {
             "token": "stale-literal-token",
             "token_1password": {
@@ -145,8 +165,9 @@ def test_invalid_1password_web_token_reference_fails_app_creation(tmp_path):
                     "field": "",
                 },
             },
+            "workspaces": {},
+            "policies": {},
         },
-        working_dir=str(tmp_path),
     )
 
     with pytest.raises(SecretResolutionError, match=r"token_1password\.field"):
@@ -156,8 +177,7 @@ def test_invalid_1password_web_token_reference_fails_app_creation(tmp_path):
 @pytest.mark.parametrize("token", [None, True, 123, {}, ["token"]])
 def test_invalid_literal_web_token_fails_app_creation(tmp_path, token):
     runtime = SimpleNamespace(
-        config={"web": {"token": token}},
-        working_dir=str(tmp_path),
+        config={"web": {"token": token}, "workspaces": {}, "policies": {}},
     )
 
     with pytest.raises(SecretResolutionError, match="token must be a string"):
@@ -165,8 +185,10 @@ def test_invalid_literal_web_token_fails_app_creation(tmp_path, token):
 
 
 @pytest.mark.parametrize("token", [None, "wrong-token"])
-def test_agents_edit_rejects_missing_or_invalid_csrf_token(tmp_path, token):
-    client = _client(tmp_path)
+def test_agents_edit_rejects_missing_or_invalid_csrf_token(
+    tmp_path, monkeypatch, token
+):
+    client = _client(tmp_path, monkeypatch)
     data = {"content": "attacker instructions"}
     if token is not None:
         data["_csrf"] = token
@@ -182,8 +204,8 @@ def test_agents_edit_rejects_missing_or_invalid_csrf_token(tmp_path, token):
     assert not (tmp_path / "AGENTS.md").exists()
 
 
-def test_agents_edit_accepts_valid_csrf_token(tmp_path):
-    client = _client(tmp_path)
+def test_agents_edit_accepts_valid_csrf_token(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
 
     response = client.post(
         "/agents/edit",
@@ -196,3 +218,18 @@ def test_agents_edit_accepts_valid_csrf_token(tmp_path):
 
     assert response.status_code == 303
     assert (tmp_path / "AGENTS.md").read_text() == "trusted instructions"
+
+
+def test_agents_view_reads_install_instructions_not_workspace_instructions(
+    tmp_path, monkeypatch
+):
+    client = _client(tmp_path, monkeypatch)
+    (tmp_path / "AGENTS.md").write_text("shared instructions", encoding="utf-8")
+    workspace_agents = tmp_path / "workspaces" / "default" / "AGENTS.md"
+    workspace_agents.write_text("workspace instructions", encoding="utf-8")
+
+    response = client.get("/agents")
+
+    assert response.status_code == 200
+    assert "shared instructions" in response.text
+    assert "workspace instructions" not in response.text

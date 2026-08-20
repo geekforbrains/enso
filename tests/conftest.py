@@ -27,7 +27,11 @@ def tmp_enso(tmp_path, monkeypatch):
     """
     d = str(tmp_path / "enso")
     os.makedirs(d)
-    os.makedirs(os.path.join(d, "workspace"))
+    os.makedirs(os.path.join(d, "workspaces", "default"))
+    shared_agents = os.path.join(d, "AGENTS.md")
+    with open(shared_agents, "w", encoding="utf-8") as file:
+        file.write("# Test shared instructions\n")
+    os.chmod(shared_agents, 0o600)
 
     paths = {
         "enso.config.CONFIG_DIR": d,
@@ -36,8 +40,8 @@ def tmp_enso(tmp_path, monkeypatch):
         "enso.config.DOCS_DIR": os.path.join(d, "docs"),
         "enso.config.JOBS_DIR": os.path.join(d, "jobs"),
         "enso.config.MESSAGES_FILE": os.path.join(d, "messages.json"),
-        "enso.core.CONFIG_DIR": d,
         "enso.core.STATE_FILE": os.path.join(d, "state.json"),
+        "enso.instructions.CONFIG_DIR": d,
         "enso.messages.MESSAGES_FILE": os.path.join(d, "messages.json"),
         "enso.docs.DOCS_DIR": os.path.join(d, "docs"),
         "enso.jobs.JOBS_DIR": os.path.join(d, "jobs"),
@@ -54,17 +58,32 @@ def tmp_enso(tmp_path, monkeypatch):
 def sample_config(tmp_enso):
     """Return a minimal config dict for testing."""
     return {
-        "working_dir": os.path.join(tmp_enso, "workspace"),
         "transport": "telegram",
         "transports": {
             "telegram": {
                 "bot_token": "fake-token",
                 "allowed_users": ["12345"],
+                "workspace": "default",
             }
         },
         "providers": {
             "claude": {"path": "claude", "models": ["opus", "sonnet"]},
             "codex": {"path": "codex", "models": ["gpt-5.3-codex"]},
             "agy": {"path": "agy", "models": ["gemini-3.6-flash-high"]},
+            "grok": {"path": "grok", "models": ["grok-4.6", "grok-4.5"]},
+        },
+        "workspaces": {
+            "default": {
+                "policy": "admin",
+                "concurrency": 1,
+            },
+        },
+        "policies": {
+            "admin": {
+                "unrestricted": True,
+                "providers": ["claude", "codex", "agy", "grok"],
+                "default_provider": "claude",
+                "chat_commands": "*",
+            },
         },
     }

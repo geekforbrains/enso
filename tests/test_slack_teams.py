@@ -12,7 +12,9 @@ import pytest
 pytest.importorskip("slack_bolt")
 
 from enso.core import Runtime
+from enso.surface_drafts import SurfaceDraftOrigin
 from enso.transports.slack import SlackTransport
+from enso.transports.slack_teams import _key_digest
 
 ACCOUNT = "T0ENSO"
 ADMIN, DEV, CLIENT = "U01ADMIN", "U02DEV", "U04CLIENT"
@@ -38,10 +40,27 @@ def _teams_config(tmp_enso: str) -> dict:
     )
     codex.chmod(0o600)
     return {
-        "working_dir": str(base / "workspace"),
         "transport": "slack",
         "transports": {
-            "slack": {"bot_token": "xoxb-x", "app_token": "xapp-x", "bot_user_id": "UBOT"},
+            "slack": {
+                "bot_token": "xoxb-x",
+                "app_token": "xapp-x",
+                "bot_user_id": "UBOT",
+                "account_id": ACCOUNT,
+                "dms": {
+                    ADMIN: {"workspace": "ops", "audit": False},
+                },
+                "channels": {
+                    "C0ACME": {
+                        "workspace": "acme",
+                        "audit": True,
+                    },
+                    "C0OPS": {
+                        "workspace": "ops",
+                        "audit": False,
+                    },
+                },
+            },
         },
         "providers": {
             "claude": {"path": "claude", "models": ["opus", "sonnet"]},
@@ -49,10 +68,10 @@ def _teams_config(tmp_enso: str) -> dict:
             "agy": {"path": "agy", "models": ["g"]},
         },
         "workspaces": {
-            "ops": {"path": str(ops)},
-            "acme": {"path": str(acme)},
+            "ops": {"policy": "admin"},
+            "acme": {"policy": "client"},
         },
-        "access": {
+        "policies": {
             "admin": {
                 "unrestricted": True,
                 "providers": ["claude", "codex", "agy"],
@@ -65,26 +84,6 @@ def _teams_config(tmp_enso: str) -> dict:
                 "default_provider": "claude",
                 "chat_commands": ["status", "clear", "stop", "help", "use", "compact"],
             },
-        },
-        "routes": {
-            "slack": {
-                "account_id": ACCOUNT,
-                "dms": {
-                    ADMIN: {"workspace": "ops", "access": "admin", "audit": False},
-                },
-                "channels": {
-                    "C0ACME": {
-                        "workspace": "acme",
-                        "access": "client",
-                        "audit": True,
-                    },
-                    "C0OPS": {
-                        "workspace": "ops",
-                        "access": "admin",
-                        "audit": False,
-                    },
-                },
-            }
         },
     }
 
@@ -104,6 +103,7 @@ def _make_transport(tmp_enso, _monkeypatch, config=None):
     transport = SlackTransport(runtime)
     assert transport.teams_router is not None
     transport.teams_router.set_authenticated_account(ACCOUNT)
+    transport._cache_account_id = ACCOUNT
     return transport, runtime
 
 
@@ -147,6 +147,31 @@ def _audit_rows(tmp_enso):
 # -- authorization outcomes --
 
 
+def test_surface_origin_reauthorizes_derived_workspace_policy(tmp_enso, monkeypatch):
+    config = _teams_config(tmp_enso)
+    transport, _rt = _make_transport(tmp_enso, monkeypatch, config)
+    router = transport.teams_router
+    assert router is not None
+    origin = SurfaceDraftOrigin(
+        account_id=ACCOUNT,
+        route_id="slack.channel.C0ACME",
+        route_kind="channel",
+        workspace_id="acme",
+        policy="client",
+        route_audit=True,
+        user_id=DEV,
+        channel_id="C0ACME",
+    )
+
+    assert router.surface_origin_authorized(origin)
+
+    config["workspaces"]["acme"]["policy"] = "admin"
+    changed, _rt = _make_transport(tmp_enso, monkeypatch, config)
+    changed_router = changed.teams_router
+    assert changed_router is not None
+    assert not changed_router.surface_origin_authorized(origin)
+
+
 async def test_authorized_mention_dispatches_with_policy_context(tmp_enso, monkeypatch):
     transport, rt = _make_transport(tmp_enso, monkeypatch)
     client = _make_client()
@@ -161,8 +186,8 @@ async def test_authorized_mention_dispatches_with_policy_context(tmp_enso, monke
     assert context.path.endswith("workspaces/acme")
     assert context.launch is None
     assert context.workspace.name == "acme"
-    assert context.access.name == "client"
-    assert not context.access.unrestricted
+    assert context.policy.name == "client"
+    assert not context.policy.unrestricted
     assert context.chat_key.startswith("teams:")
     # Audited route: an accepted provider turn exists before the spawn.
     (row,) = _audit_rows(tmp_enso)
@@ -316,8 +341,8 @@ async def test_authorized_dm_uses_dm_route_workspace(tmp_enso, monkeypatch):
     context = rt.dispatch.call_args.kwargs["context"]
     assert context.workspace_id == "ops"
     assert context.launch is None
-    assert context.access.name == "admin"
-    assert context.access.unrestricted
+    assert context.policy.name == "admin"
+    assert context.policy.unrestricted
 
 
 async def test_dm_without_route_gets_fixed_inline_reply(tmp_enso, monkeypatch):
@@ -394,7 +419,7 @@ async def test_missing_policy_gets_config_error(tmp_enso, monkeypatch):
 
 async def test_unusable_route_gets_config_error(tmp_enso, monkeypatch):
     config = _teams_config(tmp_enso)
-    config["routes"]["slack"]["channels"]["C0ACME"]["workspace"] = "ghost"
+    config["transports"]["slack"]["channels"]["C0ACME"]["workspace"] = "ghost"
     transport, rt = _make_transport(tmp_enso, monkeypatch, config)
     client = _make_client()
     await transport._handle_app_mention(_mention(), client)
@@ -464,7 +489,7 @@ async def test_allowed_command_runs_and_is_recorded(tmp_enso, monkeypatch):
     assert "claude" in row["response_text"]
 
 
-async def test_use_lists_only_access_profile_providers(tmp_enso, monkeypatch):
+async def test_use_lists_only_policy_providers(tmp_enso, monkeypatch):
     transport, _rt = _make_transport(tmp_enso, monkeypatch)
     client = _make_client()
     await transport._handle_app_mention(_mention(text="<@UBOT> !use"), client)
@@ -474,7 +499,7 @@ async def test_use_lists_only_access_profile_providers(tmp_enso, monkeypatch):
     assert "agy" not in reply
 
 
-async def test_use_refuses_provider_outside_access_profile(tmp_enso, monkeypatch):
+async def test_use_refuses_provider_outside_policy(tmp_enso, monkeypatch):
     transport, _rt = _make_transport(tmp_enso, monkeypatch)
     client = _make_client()
     await transport._handle_app_mention(_mention(text="<@UBOT> !use agy"), client)
@@ -491,6 +516,143 @@ async def test_bare_bang_is_not_a_command_and_does_not_crash(tmp_enso, monkeypat
     await transport._handle_app_mention(_mention(text="<@UBOT> !"), client)
     rt.dispatch.assert_awaited_once()
     assert rt.dispatch.call_args.args[1] == "!"
+
+
+async def test_route_settings_follow_new_roots_and_threads_but_sessions_do_not(
+    tmp_enso, monkeypatch
+):
+    config = _route_settings_config(tmp_enso)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    # Settings commands are valid in a thread and make their route-wide scope clear.
+    for ts, command in (
+        ("500.2", "!use codex"),
+        ("500.3", "!model sol"),
+        ("500.4", "!effort high"),
+    ):
+        await transport._handle_app_mention(
+            _mention(ts=ts, thread_ts="500.1", text=f"<@UBOT> {command}"),
+            client,
+        )
+        assert "channel" in client.chat_postMessage.call_args.kwargs["text"].lower()
+
+    await transport._handle_app_mention(_mention(ts="510.1", text="<@UBOT> first"), client)
+    first = rt.dispatch.call_args.kwargs["context"]
+    rt.session_by_chat_provider[(first.chat_key, "codex")] = "session-for-first-root"
+
+    await transport._handle_app_mention(_mention(ts="520.1", text="<@UBOT> second"), client)
+    second = rt.dispatch.call_args.kwargs["context"]
+    await transport._handle_app_mention(
+        _mention(ts="520.2", thread_ts="520.1", text="<@UBOT> in thread"),
+        client,
+    )
+    threaded = rt.dispatch.call_args.kwargs["context"]
+
+    assert {
+        (context.provider, context.model, context.effort)
+        for context in (first, second, threaded)
+    } == {("codex", "sol", "high")}
+    assert first.settings_key == second.settings_key == threaded.settings_key
+    assert (
+        first.provider_source,
+        first.model_source,
+        first.effort_source,
+    ) == ("route", "route", "route")
+    assert first.chat_key != second.chat_key
+    assert second.chat_key == threaded.chat_key
+    assert (second.chat_key, "codex") not in rt.session_by_chat_provider
+
+
+async def test_routes_sharing_a_workspace_keep_independent_settings(
+    tmp_enso, monkeypatch
+):
+    config = _route_settings_config(tmp_enso)
+    config["transports"]["slack"]["channels"]["C0TWIN"] = {
+        "workspace": "acme",
+        "audit": False,
+    }
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    for ts, command in (
+        ("600.2", "!use codex"),
+        ("600.3", "!model sol"),
+        ("600.4", "!effort high"),
+    ):
+        await transport._handle_app_mention(
+            _mention(ts=ts, thread_ts="600.1", text=f"<@UBOT> {command}"),
+            client,
+        )
+
+    await transport._handle_app_mention(
+        _mention(channel="C0ACME", ts="610.1", text="<@UBOT> configured route"),
+        client,
+    )
+    configured = rt.dispatch.call_args.kwargs["context"]
+    await transport._handle_app_mention(
+        _mention(channel="C0TWIN", ts="620.1", text="<@UBOT> untouched route"),
+        client,
+    )
+    untouched = rt.dispatch.call_args.kwargs["context"]
+
+    assert configured.workspace_id == untouched.workspace_id == "acme"
+    assert configured.settings_key != untouched.settings_key
+    assert (configured.provider, configured.model, configured.effort) == (
+        "codex",
+        "sol",
+        "high",
+    )
+    assert (untouched.provider, untouched.model, untouched.effort) == (
+        "claude",
+        "opus",
+        None,
+    )
+    assert (
+        untouched.provider_source,
+        untouched.model_source,
+        untouched.effort_source,
+    ) == ("policy_default", "provider_default", "cli_default")
+
+
+async def test_slack_settings_key_includes_account_identity(tmp_enso, monkeypatch):
+    first_transport, first_runtime = _make_transport(tmp_enso, monkeypatch)
+    await first_transport._handle_app_mention(
+        _mention(ts="700.1", text="<@UBOT> first account"),
+        _make_client(),
+    )
+    first = first_runtime.dispatch.call_args.kwargs["context"]
+
+    other_account = "T0OTHER"
+    config = _teams_config(tmp_enso)
+    config["transports"]["slack"]["account_id"] = other_account
+    second_runtime = Runtime(config)
+    second_runtime.dispatch = AsyncMock()
+    second_transport = SlackTransport(second_runtime)
+    assert second_transport.teams_router is not None
+    second_transport.teams_router.set_authenticated_account(other_account)
+    second_transport._cache_account_id = other_account
+    await second_transport._handle_app_mention(
+        _mention(ts="700.2", text="<@UBOT> second account"),
+        _make_client(),
+    )
+    second = second_runtime.dispatch.call_args.kwargs["context"]
+
+    # The human-visible route id is identical; account identity still isolates state.
+    assert first.workspace_id == second.workspace_id == "acme"
+    assert first.settings_key != second.settings_key
+
+
+async def test_settings_command_in_dm_thread_names_dm_scope(tmp_enso, monkeypatch):
+    transport, rt = _make_transport(tmp_enso, monkeypatch)
+    client = _make_client()
+    event = _dm(ts="800.2", text="!use codex")
+    event["thread_ts"] = "800.1"
+
+    await transport._handle_message(event, client)
+
+    rt.dispatch.assert_not_awaited()
+    assert "dm" in client.chat_postMessage.call_args.kwargs["text"].lower()
 
 
 # -- context injection --
@@ -518,8 +680,8 @@ async def test_channel_context_includes_all_authors_as_untrusted(tmp_enso, monke
 async def test_routes_are_a_startup_snapshot(tmp_enso, monkeypatch):
     config = _teams_config(tmp_enso)
     transport, rt = _make_transport(tmp_enso, monkeypatch, config)
-    config["routes"]["slack"]["channels"]["C0ACME"]["workspace"] = "ghost"
-    config["routes"]["slack"]["account_id"] = "TDIFFERENT"
+    config["transports"]["slack"]["channels"]["C0ACME"]["workspace"] = "ghost"
+    config["transports"]["slack"]["account_id"] = "TDIFFERENT"
 
     await transport._handle_app_mention(_mention(), _make_client())
 
@@ -554,6 +716,7 @@ def _channel_message(
     text="hello there",
     thread_ts=None,
     channel_type="channel",
+    parent_user_id=None,
 ):
     event = {
         "user": user,
@@ -564,6 +727,8 @@ def _channel_message(
     }
     if thread_ts is not None:
         event["thread_ts"] = thread_ts
+    if parent_user_id is not None:
+        event["parent_user_id"] = parent_user_id
     return event
 
 
@@ -582,7 +747,15 @@ def _ledger_rows(tmp_enso):
 
 def _triggers_config(tmp_enso, **settings):
     config = _teams_config(tmp_enso)
-    config["routes"]["slack"]["channels"]["C0ACME"].update(settings)
+    config["transports"]["slack"]["channels"]["C0ACME"].update(settings)
+    return config
+
+
+def _route_settings_config(tmp_enso, **settings):
+    """Client route with every durable settings command enabled."""
+    config = _triggers_config(tmp_enso, **settings)
+    commands = config["policies"]["client"]["chat_commands"]
+    commands.extend(["model", "effort"])
     return config
 
 
@@ -683,11 +856,202 @@ async def test_thread_following_lapses_without_a_session(tmp_enso, monkeypatch):
     await transport._handle_app_mention(_mention(), client)
     rt.dispatch.assert_awaited_once()
 
-    rt.active_provider_by_chat.clear()  # simulate session retention pruning
+    rt._last_active.clear()  # simulate session retention pruning
     await transport._handle_message(
         _channel_message(ts="100.2", thread_ts="100.1", text="still there?"), client
     )
     rt.dispatch.assert_awaited_once()  # unchanged: the reply was ignored
+
+
+async def test_enso_rooted_thread_follows_unmentioned_replies(tmp_enso, monkeypatch):
+    """A thread Enso started itself is one Enso is in, with no prior dispatch.
+
+    Job notifications and `enso message send` post a top-level message
+    without dispatching, so the thread has no conversation session.
+    """
+    config = _triggers_config(tmp_enso, thread_mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    await transport._handle_message(
+        _channel_message(
+            ts="300.2",
+            thread_ts="300.1",
+            text="why did that job fail?",
+            parent_user_id="UBOT",
+        ),
+        client,
+    )
+
+    rt.dispatch.assert_awaited_once()
+    args, _kwargs = rt.dispatch.call_args
+    assert args[0] == "C0ACME:300.1"
+    assert "why did that job fail?" in args[1]
+    assert args[2]._thread_ts == "300.1"
+
+
+async def test_enso_rooted_thread_reply_carries_the_root_into_the_prompt(
+    tmp_enso, monkeypatch
+):
+    """The root Enso posted must reach the model: no session holds it yet."""
+    config = _triggers_config(tmp_enso, thread_mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+    client.conversations_replies.return_value = {
+        "messages": [
+            {"user": "UBOT", "text": "nightly billing job failed: 3 invoices stuck"},
+            {"user": DEV, "text": "why did that job fail?"},
+        ]
+    }
+
+    await transport._handle_message(
+        _channel_message(
+            ts="300.2",
+            thread_ts="300.1",
+            text="why did that job fail?",
+            parent_user_id="UBOT",
+        ),
+        client,
+    )
+
+    rt.dispatch.assert_awaited_once()
+    prompt = rt.dispatch.call_args.args[1]
+    assert "nightly billing job failed: 3 invoices stuck" in prompt
+    assert "why did that job fail?" in prompt
+
+
+async def test_resumed_thread_omits_bot_history_already_in_session(tmp_enso, monkeypatch):
+    """Once the session holds the history, stop re-sending Enso's own messages."""
+    config = _triggers_config(tmp_enso, thread_mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+    client.conversations_replies.return_value = {
+        "messages": [
+            {"user": "UBOT", "text": "nightly billing job failed"},
+            {"user": DEV, "text": "why did that job fail?"},
+            {"user": "UBOT", "text": "three invoices are stuck"},
+            {"user": DEV, "text": "and now?"},
+        ]
+    }
+    # Simulate a live provider session for this thread's conversation.
+    chat_key = _key_digest("conversation", ACCOUNT, "C0ACME", "300.1", "acme", "client")
+    rt.session_by_chat_provider[(chat_key, "claude")] = "abc-123"
+
+    await transport._handle_message(
+        _channel_message(ts="300.4", thread_ts="300.1", text="and now?", parent_user_id="UBOT"),
+        client,
+    )
+
+    rt.dispatch.assert_awaited_once()
+    prompt = rt.dispatch.call_args.args[1]
+    assert "nightly billing job failed" not in prompt
+    assert "three invoices are stuck" not in prompt
+
+
+async def test_unused_session_id_still_counts_as_no_memory(tmp_enso, monkeypatch):
+    """A reserved but unused `new:` session has sent the provider nothing."""
+    config = _triggers_config(tmp_enso, thread_mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+    client.conversations_replies.return_value = {
+        "messages": [
+            {"user": "UBOT", "text": "nightly billing job failed"},
+            {"user": DEV, "text": "why did that job fail?"},
+        ]
+    }
+    chat_key = _key_digest("conversation", ACCOUNT, "C0ACME", "300.1", "acme", "client")
+    rt.session_by_chat_provider[(chat_key, "claude")] = "new:abc-123"
+
+    await transport._handle_message(
+        _channel_message(
+            ts="300.2",
+            thread_ts="300.1",
+            text="why did that job fail?",
+            parent_user_id="UBOT",
+        ),
+        client,
+    )
+
+    rt.dispatch.assert_awaited_once()
+    assert "nightly billing job failed" in rt.dispatch.call_args.args[1]
+
+
+async def test_enso_rooted_thread_stays_gated_when_thread_mentions_required(
+    tmp_enso, monkeypatch
+):
+    """thread_mention_required: true is unconditional — own roots included."""
+    config = _triggers_config(tmp_enso, thread_mention_required=True)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    await transport._handle_message(
+        _channel_message(ts="300.2", thread_ts="300.1", parent_user_id="UBOT"),
+        client,
+    )
+
+    rt.dispatch.assert_not_awaited()
+    assert _ledger_rows(tmp_enso) == []
+
+
+async def test_thread_rooted_by_another_human_stays_gated(tmp_enso, monkeypatch):
+    """Only Enso's own roots join a thread; someone else's still needs a mention."""
+    config = _triggers_config(tmp_enso, thread_mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    await transport._handle_message(
+        _channel_message(ts="300.2", thread_ts="300.1", parent_user_id=CLIENT),
+        client,
+    )
+
+    rt.dispatch.assert_not_awaited()
+    assert _ledger_rows(tmp_enso) == []
+
+
+async def test_enso_rooted_dispatch_joins_the_thread(tmp_enso, monkeypatch):
+    """The first own-root reply records the session every later reply rides."""
+    config = _triggers_config(tmp_enso, thread_mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    await transport._handle_message(
+        _channel_message(ts="300.2", thread_ts="300.1", parent_user_id="UBOT"),
+        client,
+    )
+    rt.dispatch.assert_awaited_once()
+
+    # A later reply carrying no parent_user_id still follows, via the session.
+    await transport._handle_message(
+        _channel_message(ts="300.3", thread_ts="300.1", text="and another thing"),
+        client,
+    )
+    assert rt.dispatch.await_count == 2
+    assert rt.dispatch.call_args.args[0] == "C0ACME:300.1"
+
+
+async def test_unrouted_channel_ignores_enso_rooted_thread_replies(tmp_enso, monkeypatch):
+    """Enso posting into an unrouted channel never authorizes that channel."""
+    config = _teams_config(tmp_enso)
+    config["transports"]["slack"]["channel_defaults"] = {
+        "mention_required": False,
+        "thread_mention_required": False,
+    }
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    await transport._handle_message(
+        _channel_message(
+            channel="CUNROUTED",
+            ts="300.2",
+            thread_ts="300.1",
+            parent_user_id="UBOT",
+        ),
+        client,
+    )
+
+    rt.dispatch.assert_not_awaited()
+    client.chat_postMessage.assert_not_awaited()
+    assert _ledger_rows(tmp_enso) == []
 
 
 async def test_unrouted_channels_ignore_unmentioned_messages_despite_defaults(
@@ -695,7 +1059,7 @@ async def test_unrouted_channels_ignore_unmentioned_messages_despite_defaults(
 ):
     """channel_defaults is settings inheritance, never authorization."""
     config = _teams_config(tmp_enso)
-    config["routes"]["slack"]["channel_defaults"] = {
+    config["transports"]["slack"]["channel_defaults"] = {
         "mention_required": False,
         "thread_mention_required": False,
     }
@@ -726,7 +1090,24 @@ async def test_double_delivered_mention_dispatches_once_in_optional_channel(
     assert rt.dispatch.call_args.args[2]._thread_ts == "100.1"
 
 
-async def test_channel_context_injected_for_unmentioned_top_level(tmp_enso, monkeypatch):
+async def test_injected_context_unescapes_slack_entities(tmp_enso, monkeypatch):
+    config = _triggers_config(tmp_enso, mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+    client.conversations_history.return_value = {
+        "messages": [{"user": DEV, "text": "compare a &lt; b &amp;&amp; c &gt; d"}]
+    }
+
+    await transport._handle_message(_channel_message(text="thoughts?"), client)
+
+    prompt = rt.dispatch.call_args.args[1]
+    assert "compare a < b && c > d" in prompt
+
+
+async def test_restricted_channel_still_gets_pushed_context_it_cannot_pull(
+    tmp_enso, monkeypatch
+):
+    """A restricted policy keeps the push: its sandbox cannot run the CLI to pull."""
     config = _triggers_config(tmp_enso, mention_required=False)
     transport, rt = _make_transport(tmp_enso, monkeypatch, config)
     client = _make_client()
@@ -739,18 +1120,191 @@ async def test_channel_context_injected_for_unmentioned_top_level(tmp_enso, monk
     prompt = rt.dispatch.call_args.args[1]
     assert "Channel context" in prompt
     assert "the deploy failed" in prompt
+    assert "enso slack history" not in prompt
 
 
-async def test_unaddressed_command_text_is_ordinary_prompt(tmp_enso, monkeypatch):
-    """Commands always require addressing; bare !text dispatches as prompt."""
+def _ops_triggers_config(tmp_enso, **settings):
+    """C0OPS routes to the unrestricted admin policy, so it can pull."""
+    config = _teams_config(tmp_enso)
+    config["transports"]["slack"]["channels"]["C0OPS"].update(settings)
+    return config
+
+
+async def test_unrestricted_top_level_pulls_instead_of_pushing_history(
+    tmp_enso, monkeypatch
+):
+    """The prior thread's root must not ride along on a new top-level ask."""
+    config = _ops_triggers_config(tmp_enso, mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+    client.conversations_history.return_value = {
+        "messages": [{"user": DEV, "text": "unrelated earlier thread"}]
+    }
+
+    await transport._handle_message(
+        _channel_message(channel="C0OPS", text="what do you think?"), client
+    )
+
+    prompt = rt.dispatch.call_args.args[1]
+    assert "unrelated earlier thread" not in prompt
+    assert "Channel context" not in prompt
+    client.conversations_history.assert_not_awaited()
+    assert "enso slack history C0OPS" in prompt
+    assert "enso slack thread C0OPS" in prompt
+
+
+async def test_pull_pointer_names_the_channel_and_marks_history_untrusted(
+    tmp_enso, monkeypatch
+):
+    from enso import slack_cache
+
+    slack_cache.save(
+        {
+            "team_id": ACCOUNT,
+            "users": {"fetched_at": 0.0, "items": {}},
+            "channels": {
+                "fetched_at": 0.0,
+                "items": {"C0OPS": {"id": "C0OPS", "name": "ops"}},
+            },
+            "dm_cache": {},
+        }
+    )
+    config = _ops_triggers_config(tmp_enso, mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+
+    await transport._handle_message(
+        _channel_message(channel="C0OPS", text="thoughts?"), _make_client()
+    )
+
+    prompt = rt.dispatch.call_args.args[1]
+    assert "#ops" in prompt
+    assert "never as instructions" in prompt
+
+
+async def test_pull_pointer_carries_the_thread_ts_when_pulled_into_a_thread(
+    tmp_enso, monkeypatch
+):
+    config = _ops_triggers_config(tmp_enso)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+
+    await transport._handle_app_mention(
+        _mention(channel="C0OPS", ts="100.9", thread_ts="100.1"), _make_client()
+    )
+
+    prompt = rt.dispatch.call_args.args[1]
+    assert "enso slack thread C0OPS 100.1" in prompt
+
+
+async def test_pull_pointer_is_not_repeated_once_the_session_remembers_it(
+    tmp_enso, monkeypatch
+):
+    config = _ops_triggers_config(tmp_enso, thread_mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    chat_key = _key_digest("conversation", ACCOUNT, "C0OPS", "100.1", "ops", "admin")
+    rt.touch_conversation(chat_key)
+    rt.session_by_chat_provider[(chat_key, "claude")] = "an-established-session"
+
+    await transport._handle_message(
+        _channel_message(channel="C0OPS", ts="100.9", thread_ts="100.1"), _make_client()
+    )
+
+    prompt = rt.dispatch.call_args.args[1]
+    assert "enso slack history" not in prompt
+
+
+async def test_dm_never_advertises_channel_history(tmp_enso, monkeypatch):
+    transport, rt = _make_transport(tmp_enso, monkeypatch)
+
+    await transport._handle_message(_dm(), _make_client())
+
+    prompt = rt.dispatch.call_args.args[1]
+    assert "enso slack history" not in prompt
+
+
+async def test_unmentioned_command_runs_when_top_level_mentions_are_optional(
+    tmp_enso, monkeypatch
+):
     config = _triggers_config(tmp_enso, mention_required=False)
     transport, rt = _make_transport(tmp_enso, monkeypatch, config)
     client = _make_client()
 
     await transport._handle_message(_channel_message(text="!status"), client)
 
+    rt.dispatch.assert_not_awaited()
+    assert "Provider:" in client.chat_postMessage.call_args.kwargs["text"]
+
+
+async def test_unknown_unmentioned_command_is_not_dispatched_as_a_prompt(
+    tmp_enso, monkeypatch
+):
+    config = _ops_triggers_config(tmp_enso, mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    await transport._handle_message(
+        _channel_message(channel="C0OPS", text="!not-a-command"), client
+    )
+
+    rt.dispatch.assert_not_awaited()
+    assert "Unknown command" in client.chat_postMessage.call_args.kwargs["text"]
+
+
+async def test_bare_bang_remains_a_prompt_when_top_level_mentions_are_optional(
+    tmp_enso, monkeypatch
+):
+    config = _triggers_config(tmp_enso, mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+
+    await transport._handle_message(_channel_message(text="!"), _make_client())
+
     rt.dispatch.assert_awaited_once()
-    assert rt.dispatch.call_args.args[1].endswith("!status")
+    assert rt.dispatch.call_args.args[1].endswith("!")
+
+
+async def test_unmentioned_command_is_ignored_when_top_level_mention_is_required(
+    tmp_enso, monkeypatch
+):
+    transport, rt = _make_transport(tmp_enso, monkeypatch)
+    client = _make_client()
+
+    await transport._handle_message(_channel_message(text="!status"), client)
+
+    rt.dispatch.assert_not_awaited()
+    client.chat_postMessage.assert_not_awaited()
+
+
+async def test_unmentioned_command_runs_in_a_joined_optional_thread(
+    tmp_enso, monkeypatch
+):
+    config = _triggers_config(tmp_enso, thread_mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    await transport._handle_app_mention(_mention(ts="400.1"), client)
+    await transport._handle_message(
+        _channel_message(ts="400.2", thread_ts="400.1", text="!status"),
+        client,
+    )
+
+    # The first turn joined the thread; the second was handled as a command.
+    rt.dispatch.assert_awaited_once()
+    assert "Provider:" in client.chat_postMessage.call_args.kwargs["text"]
+
+
+async def test_unmentioned_command_stays_gated_in_an_unjoined_optional_thread(
+    tmp_enso, monkeypatch
+):
+    config = _triggers_config(tmp_enso, thread_mention_required=False)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+
+    await transport._handle_message(
+        _channel_message(ts="400.2", thread_ts="400.1", text="!status"),
+        client,
+    )
+
+    rt.dispatch.assert_not_awaited()
+    client.chat_postMessage.assert_not_awaited()
 
 
 async def test_mentioned_command_still_runs_in_optional_channel(tmp_enso, monkeypatch):
@@ -817,7 +1371,7 @@ async def test_channel_defaults_relax_channels_at_the_transport_level(
     tmp_enso, monkeypatch
 ):
     config = _teams_config(tmp_enso)
-    config["routes"]["slack"]["channel_defaults"] = {"mention_required": False}
+    config["transports"]["slack"]["channel_defaults"] = {"mention_required": False}
     transport, rt = _make_transport(tmp_enso, monkeypatch, config)
     client = _make_client()
 
@@ -900,7 +1454,8 @@ async def test_removed_allowlist_invalidates_exact_route_config(tmp_enso, monkey
 
 async def test_allowlist_without_routes_cannot_enable_slack(tmp_enso, monkeypatch):
     config = _teams_config(tmp_enso)
-    del config["routes"]
+    for key in ("account_id", "dms", "channels"):
+        config["transports"]["slack"].pop(key)
     config["transports"]["slack"]["allowed_users"] = [DEV]
     runtime = Runtime(config)
     runtime.dispatch = AsyncMock()
@@ -908,7 +1463,8 @@ async def test_allowlist_without_routes_cannot_enable_slack(tmp_enso, monkeypatc
     assert transport.teams_router is not None
     assert not transport.teams_router.teams.dispatchable
     assert any(
-        "routes.slack is required" in problem for problem in transport.teams_router.teams.errors
+        "transports.slack.account_id is required" in problem
+        for problem in transport.teams_router.teams.errors
     )
     client = _make_client()
     await transport._handle_app_mention(_mention(), client)
@@ -928,6 +1484,45 @@ async def test_commands_work_when_current_provider_policy_is_broken(tmp_enso, mo
     rt.dispatch.assert_not_awaited()
 
 
+@pytest.mark.parametrize("command", ["!status", "!help", "!stop", "!clear"])
+async def test_non_launch_commands_work_when_current_provider_policy_is_broken(
+    tmp_enso, monkeypatch, command
+):
+    config = _teams_config(tmp_enso)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+    Path(tmp_enso, "policies", "client", "claude", "settings.json").unlink()
+
+    await transport._handle_app_mention(
+        _mention(text=f"<@UBOT> {command}"),
+        client,
+    )
+
+    rt.dispatch.assert_not_awaited()
+    reply = client.chat_postMessage.call_args.kwargs["text"]
+    assert reply
+    assert "enso config check" not in reply.lower()
+
+
+async def test_compact_refuses_when_current_provider_policy_is_broken(
+    tmp_enso, monkeypatch
+):
+    config = _teams_config(tmp_enso)
+    transport, rt = _make_transport(tmp_enso, monkeypatch, config)
+    client = _make_client()
+    Path(tmp_enso, "policies", "client", "claude", "settings.json").unlink()
+
+    await transport._handle_app_mention(
+        _mention(text="<@UBOT> !compact"),
+        client,
+    )
+
+    rt.dispatch.assert_not_awaited()
+    reply = client.chat_postMessage.call_args.kwargs["text"]
+    assert "enso config check" in reply.lower()
+    assert "Compacting context" not in reply
+
+
 async def test_chat_key_stays_stable_across_provider_switch_and_stop(tmp_enso, monkeypatch):
     transport, rt = _make_transport(tmp_enso, monkeypatch)
     client = _make_client()
@@ -944,7 +1539,7 @@ async def test_chat_key_stays_stable_across_provider_switch_and_stop(tmp_enso, m
     )
     second_key = rt.dispatch.call_args.kwargs["context"].chat_key
     assert second_key == first_key
-    assert rt.active_provider_by_chat[first_key] == "codex"
+    assert rt.dispatch.call_args.kwargs["context"].provider == "codex"
 
     rt.clear_queue = AsyncMock(return_value=0)
     rt.stop_chat = AsyncMock(return_value=(True, None))

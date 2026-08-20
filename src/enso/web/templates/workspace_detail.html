@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+{% from "macros.html" import back_link, editor_form, problem_list, status_badge, text_link %}
+{% block title %}{{ workspace.name }} · Workspaces · enso{% endblock %}
+
+{% block content %}
+<div class="mb-4">{{ back_link("/workspaces", "Workspaces") }}</div>
+
+<div class="mb-5 flex flex-wrap items-start justify-between gap-3">
+  <div class="min-w-0">
+    <h1 class="break-words text-2xl font-semibold tracking-tight">{{ workspace.name }}</h1>
+    <p class="break-anywhere mt-2 font-mono text-xs text-faint">{{ workspace.path }}</p>
+  </div>
+  {{ status_badge(workspace.status) }}
+</div>
+
+{% if catalog_errors %}
+  <div class="mb-5">{{ problem_list(catalog_errors, "Catalog configuration errors") }}</div>
+{% endif %}
+{% if workspace.problems %}
+  <div class="mb-5">{{ problem_list(workspace.problems, "Workspace configuration errors") }}</div>
+{% endif %}
+
+<div class="mb-6 grid grid-cols-1 gap-6 xl:grid-cols-2">
+  <section aria-labelledby="workspace-configuration" class="rounded-xl border border-border bg-surface p-5">
+    <h2 id="workspace-configuration" class="mb-4 text-lg font-semibold">Configuration</h2>
+    <dl class="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
+      <div>
+        <dt class="text-xs font-medium uppercase tracking-wide text-faint">Policy</dt>
+        <dd class="mt-1 font-medium">
+          <a href="/policies/{{ workspace.policy_name }}" class="hover:underline">{{ workspace.policy_name }}</a>
+        </dd>
+      </div>
+      <div>
+        <dt class="text-xs font-medium uppercase tracking-wide text-faint">Concurrency</dt>
+        <dd class="mt-1">{{ workspace.concurrency }} concurrent turn{% if workspace.concurrency != 1 %}s{% endif %} per process</dd>
+      </div>
+      <div>
+        <dt class="text-xs font-medium uppercase tracking-wide text-faint">Slack routes</dt>
+        <dd class="mt-1">{{ workspace.slack_routes | length }}</dd>
+      </div>
+      <div>
+        <dt class="text-xs font-medium uppercase tracking-wide text-faint">Scheduled jobs</dt>
+        <dd class="mt-1">{{ workspace.jobs | length }}</dd>
+      </div>
+      <div class="sm:col-span-2">
+        <dt class="text-xs font-medium uppercase tracking-wide text-faint">Telegram</dt>
+        <dd class="mt-1">{{ "Bound to this workspace" if workspace.telegram_bound else "Not bound" }}</dd>
+      </div>
+    </dl>
+  </section>
+
+  <section aria-labelledby="workspace-bindings" class="rounded-xl border border-border bg-surface p-5">
+    <div class="mb-3 flex items-center justify-between gap-3">
+      <h2 id="workspace-bindings" class="text-lg font-semibold">Slack bindings</h2>
+      {{ text_link("/slack", "All routes →") }}
+    </div>
+    {% if workspace.slack_routes %}
+      <ul class="divide-y divide-border">
+        {% for route in workspace.slack_routes %}
+          <li class="flex min-w-0 items-center justify-between gap-3 py-3 first:pt-0 last:pb-0">
+            <div class="min-w-0">
+              <p class="break-words text-sm font-medium">{{ route.label }}</p>
+              <p class="break-anywhere mt-0.5 font-mono text-xs text-muted">{{ route.key }}</p>
+            </div>
+            {{ status_badge(route.status) }}
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="text-sm text-muted">No Slack routes use this workspace.</p>
+    {% endif %}
+  </section>
+</div>
+
+<section aria-labelledby="workspace-jobs" class="mb-6 rounded-xl border border-border bg-surface p-5">
+  <div class="mb-3 flex items-center justify-between gap-3">
+    <h2 id="workspace-jobs" class="text-lg font-semibold">Scheduled jobs</h2>
+    {{ text_link("/jobs", "All jobs →") }}
+  </div>
+  {% if workspace.jobs %}
+    <div class="grid gap-3 sm:grid-cols-2">
+      {% for job in workspace.jobs %}
+        <a href="/jobs/{{ job.dir_name }}"
+           class="min-w-0 rounded-lg border border-border px-4 py-3 hover:bg-surface-muted
+                  focus:outline-none focus-visible:ring-2 focus-visible:ring-focus">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <p class="break-words text-sm font-medium">{{ job.name }}</p>
+              <p class="break-anywhere mt-1 text-xs text-muted">{{ job.provider }}/{{ job.model }}</p>
+            </div>
+            {% if job.problems %}{{ status_badge("error") }}
+            {% elif job.enabled %}{{ status_badge("ready", "enabled") }}
+            {% else %}{{ status_badge("unused", "disabled") }}{% endif %}
+          </div>
+          {% if job.problems %}
+            <p class="break-anywhere mt-2 text-xs text-red-700 dark:text-red-300">{{ job.problems | join("; ") }}</p>
+          {% endif %}
+        </a>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="text-sm text-muted">No scheduled jobs use this workspace.</p>
+  {% endif %}
+</section>
+
+<section aria-labelledby="root-instructions" class="mb-6">
+  <div class="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+    <div>
+      <h2 id="root-instructions" class="text-lg font-semibold">Workspace instructions</h2>
+      <p class="mt-1 text-sm text-muted">Focused AGENTS.md guidance layered after the shared install instructions.</p>
+    </div>
+    {% if root_document %}
+      <span class="break-anywhere font-mono text-xs text-faint">{{ workspace.path }}/{{ root_document.rel_path }}</span>
+    {% endif %}
+  </div>
+
+  {% if root_problem %}
+    {{ problem_list([root_problem], "AGENTS.md unavailable") }}
+  {% elif workspace.root_editable %}
+    {{ editor_form("/workspaces/" ~ workspace.name ~ "/agents/edit",
+                   "workspace-agents-content", "Workspace AGENTS.md content",
+                   root_document.content if root_document else "",
+                   "Save workspace AGENTS.md", 24, csrf_token,
+                   revision=root_revision) }}
+  {% endif %}
+</section>
+
+<section aria-labelledby="child-instructions">
+  <div class="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+    <div>
+      <h2 id="child-instructions" class="text-lg font-semibold">Child instructions</h2>
+      <p class="mt-1 text-sm text-muted">Existing nested AGENTS.md files are discovered safely and shown read-only.</p>
+    </div>
+    <span class="text-xs text-muted">{{ agent_listing.files | length }}</span>
+  </div>
+
+  {% if agent_listing.errors %}
+    <div class="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800
+                dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-300">
+      <p class="font-semibold">Some instruction files could not be inspected</p>
+      <ul class="mt-1 list-disc space-y-1 pl-5">
+        {% for error in agent_listing.errors %}
+          <li class="break-anywhere"><span class="font-mono">{{ error.rel_path }}</span>: {{ error.reason }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
+  {% if agent_listing.files %}
+    <div class="grid gap-3 sm:grid-cols-2">
+      {% for entry in agent_listing.files %}
+        <a href="/workspaces/{{ workspace.name }}/agents/{{ entry.rel_path | urlencode }}"
+           class="min-w-0 rounded-xl border border-border bg-surface p-4 transition-colors
+                  hover:border-border-strong hover:bg-surface-hover focus:outline-none
+                  focus-visible:ring-2 focus-visible:ring-focus">
+          <p class="break-anywhere font-mono text-sm font-medium text-ink">{{ entry.rel_path }}</p>
+          <p class="mt-1 text-xs text-muted">Read-only</p>
+        </a>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="rounded-xl border border-dashed border-border-strong bg-surface px-4 py-6 text-sm text-muted">
+      No child AGENTS.md files found.
+    </p>
+  {% endif %}
+
+  {% if agent_listing.truncated %}
+    <p class="mt-3 text-sm text-amber-700 dark:text-amber-300">The bounded scan reached its display limit; additional files may exist.</p>
+  {% endif %}
+</section>
+{% endblock %}

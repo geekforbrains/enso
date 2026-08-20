@@ -137,10 +137,11 @@ consistent. It instructs the agent to:
 7. Confirm before dropping a table, deleting records in bulk, or making a destructive
    schema change.
 
-The bundled system prompt mentions `enso table` and points to the skill. Existing
-untouched prompt copies advance through the known-pristine hash mechanism; customized
-copies remain untouched. Bundled-skill seeding gives customized installations the feature
-guidance independently of the prompt update.
+The bundled shared launch instructions at `~/.enso/AGENTS.md` mention `enso table` and
+point to the skill. Fresh setup copies that prompt and the bundled `tables` skill once;
+both installed copies are user-owned immediately. Existing installations and software
+upgrades receive neither automatically because Enso has no pristine-hash upgrade or
+startup content installer. Operators adopt revised guidance deliberately.
 
 ## Web UI
 
@@ -214,7 +215,7 @@ source of truth.
 | `tables.py` *(new)* | Catalog initialization, validation, registration, schema inspection, and bounded previews |
 | `cli.py` | Adds the `table` group with `list`, `schema`, and `register` |
 | `skills/tables/SKILL.md` *(new)* | Bundled authoring/query workflow and safety rules |
-| `prompts/AGENTS.md` | Adds CLI discovery guidance and points to the tables skill |
+| `prompts/AGENTS.md` | Adds CLI discovery guidance and points to the tables skill in the shared launch instructions |
 | `web/app.py` | Adds read-only table list/detail routes and dashboard count |
 | `web/templates/` | Adds table list/detail views and navigation |
 | `tests/` | Covers catalog safety, identifiers, CLI, bounded rendering, locking, and run-write concurrency |

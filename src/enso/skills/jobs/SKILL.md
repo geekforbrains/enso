@@ -1,28 +1,35 @@
 ---
 name: jobs
-description: Create and manage scheduled background jobs. Use when the user asks to set up recurring tasks, cron jobs, or anything that should run automatically on a schedule.
+description: Use this skill to create, inspect, test, change, pause, or troubleshoot scheduled Enso jobs when the user asks for recurring work, cron-like automation, background monitoring, or anything that should run automatically on a schedule.
 ---
 
 # Jobs
 
-Background jobs are scheduled tasks that run autonomously via the Enso service. Each job selects a named workspace and access profile, then spawns a CLI agent there on a cron schedule. Scheduled failures notify the configured destination automatically. Manual runs print their result and suppress Enso's automatic failure notification. Successful jobs are silent unless their prompt deliberately sends a message. Job alerts and messages sent with `enso message send` are text-only; interactive Slack structured blocks and persistent-surface drafts are not parsed on this path.
+Background jobs run autonomously through the Enso service. Each job selects a named workspace and derives its policy from that workspace, then spawns a configured CLI agent on a cron schedule. Scheduled failures notify the configured destination automatically. Manual runs print their result and suppress Enso's automatic failure notification. Successful jobs are silent unless their prompt deliberately sends a message. Job alerts and `enso message send` output are text-only; interactive structured-response and persistent-surface envelopes are not parsed on this path.
 
 ## Workflow
 
-1. **Scaffold**: `enso job create --name "Name" --provider claude --model sonnet --schedule "0 9 * * *" --workspace company --access automation` — creates the directory and a `JOB.md` with `enabled: false`
-1. **Edit**: Write the prompt in the JOB.md body, add a prerun script if needed
-1. **Enable**: Set `enabled: true` in the frontmatter
-1. **Test**: `enso job run <name>` to verify it works
-1. The job scheduler picks it up automatically on the next tick
+1. **Discover**: Run `enso job --help`, `enso job list`, and `enso config check`; select a configured provider, model, and workspace.
+2. **Scaffold**: `enso job create --name "Name" --provider <provider> --model <model> --schedule "0 9 * * *" --workspace <workspace>` creates the directory and a `JOB.md` with `enabled: false`.
+3. **Edit**: Write the prompt in the `JOB.md` body and add a prerun script if needed.
+4. **Test**: Run `enso job run <name>` and fix any validation or runtime errors.
+5. **Enable**: Set `enabled: true` only after the manual run succeeds. The scheduler picks it up on its next tick.
+
+Record one scoped Git commit after each coherent change to durable job files:
+
+```bash
+git -C ~/.enso add <changed-path> [<changed-path>...]
+git -C ~/.enso commit -m "<summary>"
+```
+
+Stage explicit paths such as a job's `JOB.md`, `prerun.sh`, or `prerun.py`. Never use broad staging such as `git add -A`, and never `--force`-add run output, caches, credentials, or other paths the managed `.gitignore` excludes. History is local only — never add a remote, push, pull, fetch, or run destructive history or worktree commands. If the active policy denies a Git operation, report that boundary; never widen or rewrite the policy.
 
 ## CLI
 
 ```bash
 enso job list                    # show all jobs with status
 enso job run <name>              # manual run (output to stdout)
-enso job create --name "Name" --provider claude --model sonnet --schedule "0 9 * * *" --workspace company --access automation
-enso job create --name "Name" --provider codex --model terra --schedule "0 9 * * *" --workspace company --access automation
-enso job create --name "Name" --provider agy --model gemini-3.6-flash-high --schedule "0 9 * * *" --workspace company --access automation
+enso job create --name "Name" --provider <provider> --model <model> --schedule "0 9 * * *" --workspace <workspace>
 ```
 
 ## Directory structure
@@ -43,7 +50,6 @@ schedule: "0 9 * * *"
 provider: claude
 model: sonnet
 workspace: company
-access: automation
 enabled: true
 prerun: prerun.sh
 ---
@@ -57,21 +63,20 @@ The prompt goes here. Use {{prerun_output}} to inject prerun results.
 | ----------------------- | -------- | ------------------------------------------------------------------------------------------ |
 | `name`                  | yes      | Display name (shown in notifications)                                                      |
 | `schedule`              | yes      | Cron: `minute hour dom month dow`                                                          |
-| `provider`              | yes      | `claude`, `codex`, or `agy`                                                                |
-| `model`                 | yes      | Model name (e.g. `sonnet`; Codex: `sol`, `terra`, or `luna`; Agy: `gemini-3.6-flash-high`) |
-| `workspace`             | yes      | Named entry from top-level `workspaces`; its path is the provider cwd                      |
-| `access`                | yes      | Named entry from top-level `access`; it must allow the selected provider                   |
+| `provider`              | yes      | Provider configured in `~/.enso/config.json`                                               |
+| `model`                 | yes      | Model configured for that provider                                                         |
+| `workspace`             | yes      | Lowercase kebab-case entry from `workspaces`; `~/.enso/workspaces/<name>` is the provider cwd |
 | `enabled`               | yes      | `true` or `false` — disabled jobs are skipped                                              |
 | `prerun`                | no       | Script filename in the job directory                                                       |
 | `prerun_timeout`        | no       | Max seconds for the prerun (default 120)                                                   |
-| `notify`                | no       | Telegram user ID or Slack channel/DM for failure alerts                                    |
+| `notify`                | no       | Explicit destination accepted by the configured transport for failure alerts               |
 | `timeout`               | no       | Max seconds for the run (default 900)                                                      |
 | `catch_up`              | no       | `true` to run a missed schedule late (default `false`)                                     |
 | `misfire_grace_seconds` | no       | How late a missed run may still fire (default 300)                                         |
 
 `provider` and `model` are validated against the configured providers and their model lists — a job naming an unknown provider or model is rejected at creation and fails with a clear error instead of running. The cron schedule is validated at creation too; if a hand-edited schedule later becomes invalid, the scheduler skips that job (with a log warning) rather than run it.
 
-`workspace` and `access` use exactly the same named objects as Slack routes. Both are mandatory; Enso never falls back to the global `working_dir` or an unrestricted launch. The access profile selects native Claude/Codex policy plumbing. Enso does not reinterpret what those provider policies mean.
+`workspace` uses the same named object as interactive conversation bindings. Its name derives the only valid root, `~/.enso/workspaces/<name>`; configuration cannot supply another path. It is mandatory and selects exactly one top-level policy; Enso never accepts a job-level policy override or falls back to an unrestricted launch. The workspace policy selects the provider's native policy plumbing. Enso does not reinterpret what that native policy means.
 
 By default a job that misses its scheduled time by more than `misfire_grace_seconds` (e.g. the machine was asleep) is skipped rather than run late; set `catch_up: true` when a late run is better than no run.
 
@@ -140,7 +145,7 @@ fi
 echo "$RESULT"
 ```
 
-Enso invokes the file through `bash` from the job directory, so it does not require an executable bit. The prerun is trusted host-side automation and is not sandboxed by the access profile; only the provider CLI launch receives the selected native policy. Treat every prerun and everything it emits into `{{prerun_output}}` accordingly.
+Enso invokes the file through `bash` from the job directory, so it does not require an executable bit. The prerun is trusted host-side automation and is not sandboxed by the policy; only the provider CLI launch receives the selected native policy. Treat every prerun and everything it emits into `{{prerun_output}}` accordingly.
 
 ## Examples
 
@@ -152,8 +157,7 @@ name: Daily Overview
 schedule: "30 6 * * *"
 provider: claude
 model: sonnet
-workspace: company
-access: automation
+workspace: default
 enabled: true
 ---
 
@@ -169,8 +173,7 @@ name: YouTube Summaries
 schedule: "*/15 * * * *"
 provider: claude
 model: haiku
-workspace: company
-access: automation
+workspace: default
 enabled: true
 prerun: prerun.sh
 ---
@@ -203,8 +206,7 @@ name: Meeting Prep
 schedule: "0 7 * * 1-5"
 provider: claude
 model: sonnet
-workspace: company
-access: automation
+workspace: default
 enabled: true
 prerun: prerun.sh
 ---
@@ -231,10 +233,7 @@ echo "$NEW_PEOPLE"
 
 ## Tips
 
-- Use `haiku` or `sonnet` for frequent/simple jobs to save cost
-- Use `opus` for jobs that need deep reasoning or complex output
-- For Codex, use `sol` for frontier work, `terra` for balanced everyday work, or `luna` for fast, affordable runs
-- For Antigravity (`agy`), use a `gemini-3.6-flash-*` model for fast, inexpensive runs or `gemini-3.1-pro-*` for deeper reasoning
+- Choose from the providers and models in the current Enso configuration; use a lower-cost model for frequent simple work and a stronger model only when the task warrants it.
 - Test with `enso job run <name>` before relying on the schedule
 - Check logs with `enso service logs` if a job isn't firing
 - Set `enabled: false` to pause a job without deleting it

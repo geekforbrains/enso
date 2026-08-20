@@ -1,47 +1,47 @@
-# Slack routes and team access
+# Transport bindings and workspace policies
 
-Slack gives each exact conversation route a workspace and an access profile. The model is intentionally small: Slack decides who belongs in a channel, Enso selects where the provider CLI starts and which native policy it receives, and the installed CLI enforces that policy.
+Slack gives each exact conversation route a workspace, and each workspace selects exactly one reusable policy. The model is intentionally small: Slack decides who belongs in a channel, Enso selects where the provider CLI starts, the workspace selects which native policy it receives, and the installed CLI enforces that policy.
 
 This document owns who may invoke a Slack route. [slack-triggers.md](slack-triggers.md) owns when a channel message engages Enso at all — per-channel mention requirements, thread following, and `!` command addressing. [slack-output.md](slack-output.md) owns how authorized replies render and how App Home or Canvas drafts are confirmed.
 
-Telegram is separate. It remains private, one-to-one, and authorized by exact numeric IDs in `transports.telegram.allowed_users`; interactive Telegram work uses the global `working_dir`.
+Telegram remains private, one-to-one, and authorized by exact numeric IDs in `transports.telegram.allowed_users`, but it uses the same execution catalog. `transports.telegram.workspace` is required and derives that workspace's single policy, including provider availability, default provider, Enso commands, native launch, cwd, uploads, and concurrency.
 
 ## Model
 
-| Concept        | Purpose                                                                                                 |
-| -------------- | ------------------------------------------------------------------------------------------------------- |
-| Route          | An exact Slack DM user ID or channel ID mapped to one workspace and one access profile                  |
-| Workspace      | A shared content root and provider cwd, with a process-local concurrency limit                          |
-| Access profile | Available providers, default provider, allowed Enso chat commands, and native provider policy selection |
-| Native policy  | Provider-specific settings interpreted and enforced by the installed Claude Code or Codex CLI           |
+| Concept       | Purpose                                                                                                    |
+| ------------- | ---------------------------------------------------------------------------------------------------------- |
+| Route         | An exact Slack DM user ID or channel ID mapped to one workspace, with durable provider/model/effort choices |
+| Workspace     | A shared content root and provider cwd, with one policy and a process-local concurrency limit               |
+| Policy        | Available providers, default provider, allowed Enso chat commands, and native provider policy selection    |
+| Native policy | Provider-specific settings interpreted and enforced by the installed Claude Code, Codex, or Grok CLI       |
 
 A user does not carry a permission level into every room:
 
 - An exact DM route authorizes that Slack user.
 - An exact channel route authorizes every human member who can post in that channel.
-- Everyone using a channel gets the same workspace and access profile, including administrators.
-- Threads inherit their parent channel route — including its response-trigger settings ([slack-triggers.md](slack-triggers.md)) — but keep their own conversation session.
+- Everyone using a channel gets the same workspace, policy, and durable provider/model/effort settings, including administrators.
+- Threads inherit their parent channel route — including its durable settings and response triggers ([slack-triggers.md](slack-triggers.md)) — but keep their own conversation session.
 - An unlisted DM or explicit mention in an unlisted channel receives a fixed local access message. Ordinary messages in unlisted channels are ignored; `mention_required` and `channel_defaults` configure routed channels only and never make an unrouted channel responsive.
-- There is no default route, wildcard route, group overlay, sender ranking, or Slack `allowed_users` mode. `routes.slack.channel_defaults` supplies default response-trigger settings to channel routes ([slack-triggers.md](slack-triggers.md)); it is settings inheritance, not authorization, and routes nothing by itself.
+- There is no default route, wildcard route, group overlay, sender ranking, or Slack `allowed_users` mode. `transports.slack.channel_defaults` supplies default response-trigger settings to channel routes ([slack-triggers.md](slack-triggers.md)); it is settings inheritance, not authorization, and routes nothing by itself.
 
-The workspace is not a security boundary. It is shared content and cwd. Authority comes from the route's access profile and the selected CLI's native policy, plus any outer operating-system isolation the operator chooses to add.
+The workspace is not itself a security boundary. It is shared content and cwd. Authority comes from the workspace's policy and the selected CLI's native policy, plus any outer operating-system isolation the operator chooses to add.
 
 ## Example: one client, two trust levels
 
-`#client-acme` and `#client-acme-internal` can share the same files while using different access profiles:
+`#client-acme` and `#client-acme-internal` use distinct workspaces when they need different policies:
 
 ```text
-#client-acme          -> workspace acme -> access client-readonly
-#client-acme-internal -> workspace acme -> access staff
-owner DM              -> workspace company -> access admin
-#company              -> workspace company -> access staff
+#client-acme          -> workspace acme          -> policy client-readonly
+#client-acme-internal -> workspace acme-internal -> policy staff
+owner DM              -> workspace default       -> policy admin
+#company              -> workspace company       -> policy staff
 ```
 
-The client channel may answer questions from project knowledge but deny edits and administrative commands. The internal channel starts in the same directory, so it sees the same project material, but the staff profile may write documentation or use additional tools. Sessions remain separate because they belong to their Slack channel or thread, not merely to the filesystem directory.
+The client channel may answer questions from project knowledge but deny edits and administrative commands. The internal workspace can hold or deliberately reference the material needed by trusted staff while using broader authority. Sessions remain separate because they belong to their Slack channel or thread.
 
-The client native policy should prevent writes to control files such as `AGENTS.md`, `CLAUDE.md`, `.claude/`, `.agents/`, and skill definitions. If clients need to create material, grant write access only to an ordinary data directory such as `drafts/`. Otherwise a client could alter instructions later trusted by the more privileged internal route.
+The client native policy should prevent writes to control files such as `AGENTS.md`, `CLAUDE.md`, `.claude/`, `.agents/`, and skill definitions. If clients need to create material, grant write access only to an ordinary data directory such as `drafts/`.
 
-## Company and client directories
+## Company and client workspaces
 
 A practical convention for a small team is:
 
@@ -50,26 +50,67 @@ A practical convention for a small team is:
 ├── company/
 │   ├── AGENTS.md
 │   ├── CLAUDE.md -> AGENTS.md
+│   ├── skills/
+│   ├── .agents/skills -> ../skills
+│   ├── .claude/skills -> ../skills
 │   ├── knowledge/
 │   ├── drafts/
-│   ├── uploads/
-│   ├── .agents/skills/
-│   └── .claude/skills/
-└── clients/
-    ├── acme/
-    │   ├── AGENTS.md
-    │   ├── CLAUDE.md -> AGENTS.md
-    │   ├── knowledge/
-    │   ├── drafts/
-    │   ├── uploads/
-    │   ├── .agents/skills/
-    │   └── .claude/skills/
-    └── globex/
+│   └── uploads/
+├── acme/
+│   ├── AGENTS.md
+│   ├── CLAUDE.md -> AGENTS.md
+│   ├── skills/
+│   ├── .agents/skills -> ../skills
+│   ├── .claude/skills -> ../skills
+│   ├── knowledge/
+│   ├── drafts/
+│   └── uploads/
+└── globex/
 ```
 
-These directory names are conventions, not Enso policy syntax. `knowledge/` holds durable shared material, `drafts/` holds ordinary writable output, and Enso stores downloaded attachments in persistent `uploads/<random-id>/` directories. Enso does not automatically expire those uploads; retention and cleanup belong to the operator.
+Workspace names are lowercase kebab-case and determine these roots exactly:
+`~/.enso/workspaces/<name>`. The tree is flat; config cannot select an external path,
+nested root, or workspace symlink. `~/.enso/workspaces` and every workspace root must be
+physical directories, and a direct `.git` entry makes a workspace invalid (repositories
+deeper inside ordinary content are allowed). `knowledge/` holds durable shared material,
+`drafts/` holds ordinary writable output, and Enso stores downloaded attachments in
+persistent `uploads/<random-id>/` directories. Inbound Telegram files are limited to 20
+MiB and inbound Slack files to 100 MiB per file; Enso checks available metadata and the
+received bytes, and skips unsafe or oversized downloads. Enso does not automatically
+expire retained uploads; retention and cleanup belong to the operator.
 
-The staff native policy may grant the company route read or write access to `~/.enso/workspaces/clients/**`. This lets an operator normalize project storage with ordinary directories instead of teaching Enso about project types or mounting several workspaces into one request.
+Fresh setup seeds the global prompt and skills plus the default workspace and is the only
+flow that automatically creates full-authority unrestricted policy `admin`. Every later
+workspace is created with `enso workspace create <name> --policy <existing-policy>` and optional
+`--concurrency <n>`; the policy is mandatory, concurrency defaults to `1`, and no path
+option exists. Creation validates the complete candidate catalog, atomically publishes
+the structure shown above with a short local prompt and `knowledge/README.md`, atomically
+saves configuration, and runs the installation check. The new `AGENTS.md`, `CLAUDE.md`,
+`.agents/skills`, `.claude/skills`, and `knowledge/README.md` are recorded in local
+history by a later scoped commit; local `skills/` starts empty. This Git history excludes
+config and is not a complete backup.
+
+Every later policy is also explicit. Use `enso policy create <name>` with exactly one of
+`--unrestricted` and `--policy-dir <path>`, repeated `--provider`, and one
+`--default-provider`. A restricted directory is user-authored or deliberately copied,
+complete for the selected providers, physical, and owner-protected before registration;
+there is no implicit path. Enso validates and registers it but never generates, copies,
+changes permissions, rewrites, upgrades, or repairs its canonical content. Native source
+examples are explanatory starting points rather than trusted or certified presets, and a
+copy is user-owned.
+
+Those files become user-owned immediately. Startup and configuration checks validate
+without changing content. `enso workspace repair <name>` creates only missing structural
+directories and known relative discovery links; it preserves and reports missing content
+or conflicting paths instead of overwriting `AGENTS.md`, skills, docs, or
+`knowledge/README.md`. A published root is preserved if config saving or post-save checking
+fails; config-save failure leaves it unused, while later failure may leave
+it configured. Creation refuses an existing destination, so the operator must inspect and
+repair a partial or manually migrated root rather than asking create to merge it.
+
+The staff native policy may grant the company route read or write access to selected
+siblings such as `~/.enso/workspaces/acme/**`. This does not mount another workspace or
+change the company route's own cwd.
 
 Starting the CLI in `company/` does not reliably make every provider discover instructions or skills in a sibling client directory. The company `AGENTS.md` should tell the agent where client workspaces live and require it to read the selected client's protected instructions and project overview before working there. Enso does not synthesize an instruction chain.
 
@@ -77,31 +118,97 @@ For work that should automatically begin with one client's project instructions 
 
 ## Configuration
 
-The complete schema is in [data-model.md](data-model.md#execution-catalog-and-slack-routes). This example shows the relationships:
+The complete schema is in [data-model.md](data-model.md#execution-catalog-and-transport-bindings). Workspace names are at most 64 characters of lowercase letters and numbers separated by single hyphens; policy names retain their broader portable identifier syntax. This example shows the relationships:
+
+Inspect and create policy entries through the supported CLI:
+
+```bash
+enso policy list
+enso policy show <name>
+enso policy create <name> --unrestricted \
+  --provider <provider> [--provider <provider>...] \
+  --default-provider <provider>
+enso policy create <name> --policy-dir <path> \
+  --provider <provider> [--provider <provider>...] \
+  --default-provider <provider>
+```
+
+The create command also accepts repeated `--chat-command` or the mutually exclusive
+`--all-chat-commands`, plus repeated restricted-only `--env-passthrough`. Passing neither
+chat form grants no Enso chat commands. The following JSON is the resulting persisted
+shape and relationship to routes, not the primary policy/workspace authoring workflow:
 
 ```jsonc
 {
+  "transports": {
+    "telegram": {
+      "bot_token": "...",
+      "allowed_users": ["123456789"],
+      "notify_channel": "123456789",
+      "workspace": "default"
+    },
+    "slack": {
+      "bot_token": "xoxb-...",
+      "app_token": "xapp-...",
+      "account_id": "T0YOURTEAM",
+      "channel_defaults": {
+        "mention_required": false,
+        "thread_mention_required": false
+      },
+      "dms": {
+        "U01OWNER": {
+          "workspace": "default",
+          "audit": false
+        }
+      },
+      "channels": {
+        "C0ACME": {
+          "workspace": "acme",
+          "audit": true,
+          "mention_required": true,
+          "thread_mention_required": true
+        },
+        "C0ACMEINTERNAL": {
+          "workspace": "acme-internal",
+          "audit": false
+        },
+        "C0COMPANY": {
+          "workspace": "company",
+          "audit": false
+        }
+      }
+    }
+  },
+
   "workspaces": {
+    "default": {
+      "policy": "admin",
+      "concurrency": 1
+    },
     "company": {
-      "path": "~/.enso/workspaces/company",
+      "policy": "staff",
       "concurrency": 1
     },
     "acme": {
-      "path": "~/.enso/workspaces/clients/acme",
+      "policy": "client-readonly",
+      "concurrency": 1
+    },
+    "acme-internal": {
+      "policy": "staff",
       "concurrency": 1
     }
   },
 
-  "access": {
+  "policies": {
     "admin": {
       "unrestricted": true,
-      "providers": ["claude", "codex", "agy"],
+      "providers": ["claude", "codex", "grok", "agy"],
       "default_provider": "claude",
       "chat_commands": "*"
     },
     "staff": {
       "policy_dir": "~/.enso/policies/staff",
-      "providers": ["claude", "codex"],
+      "providers": ["claude", "codex", "grok"],
       "default_provider": "claude",
       "chat_commands": ["status", "clear", "stop", "help", "use", "model", "effort", "compact"]
     },
@@ -117,106 +224,133 @@ The complete schema is in [data-model.md](data-model.md#execution-catalog-and-sl
       "default_provider": "claude",
       "chat_commands": []
     }
-  },
-
-  "routes": {
-    "slack": {
-      "account_id": "T0YOURTEAM",
-      "channel_defaults": {
-        "mention_required": false,
-        "thread_mention_required": false
-      },
-      "dms": {
-        "U01OWNER": {
-          "workspace": "company",
-          "access": "admin",
-          "audit": false
-        }
-      },
-      "channels": {
-        "C0ACME": {
-          "workspace": "acme",
-          "access": "client-readonly",
-          "audit": true,
-          "mention_required": true,
-          "thread_mention_required": true
-        },
-        "C0ACMEINTERNAL": {
-          "workspace": "acme",
-          "access": "staff",
-          "audit": false
-        },
-        "C0COMPANY": {
-          "workspace": "company",
-          "access": "staff",
-          "audit": false
-        }
-      }
-    }
   }
 }
 ```
 
-Slack requires `routes.slack`. The same top-level workspace and access catalogs also serve jobs and are parsed independently of Slack, so a Telegram-only installation can still run policy-bound jobs.
+Slack credentials, transport-wide options, and exact routes coexist in `transports.slack`. Slack requires `account_id` there; any DM and channel routes are declared in its `dms` and `channels` maps. The same top-level workspace and policy catalogs serve Telegram and jobs and are parsed independently of Slack.
 
 Here `channel_defaults` makes routed channels fully responsive, and `C0ACME` opts back into mention-only; both settings, their defaults, and their validation rules are specified in [slack-triggers.md](slack-triggers.md). Neither key is valid on a DM route.
 
-The same access profile may be reused across many workspaces when its native policy is written in terms of the invocation workspace. For example, every external client channel can use `client-readonly`; each route still starts in its own client's directory.
+The same policy may be reused across many workspaces when its native policy is written in terms of the invocation workspace. For example, every client channel can use `client-readonly`; each route still starts in its own name-derived directory.
+
+Use `enso policy list` and `enso policy show <name>` for safe read-only policy inspection,
+then `enso config check` as the sole complete configuration validator. Do not define new
+policy entries by hand: prepare restricted native sources first, then register them with
+`enso policy create`. Policy deletion, repair, rebinding, and presets are not lifecycle
+commands in this release; they require separate impact review across consumers.
+
+Use `enso workspace list` and `enso workspace show <name>` for read-only catalog
+inspection. Do not define workspace entries by hand or construct their discovery links;
+use `workspace create` and `workspace repair`. Route, transport, and job bindings still
+select the resulting workspace by name. Restart Enso after creation or a binding change,
+because the running catalog is intentionally not hot-reloaded.
 
 ## Resolution and lifecycle
 
-At Slack startup Enso authenticates the account, loads the exact routes and execution catalog, and checks native policy plumbing for providers used by those routes. Jobs are checked separately by `enso config check` and revalidated before each execution. Changes to `config.json` require an Enso restart; Enso deliberately does not hot-reload route authorization while work is queued or running.
+At Slack startup Enso authenticates the account, loads the exact routes and execution catalog, and checks the repository, canonical workspace scaffold, unique global/workspace skill names, and native policy plumbing without seeding or repair. Jobs are checked separately by the read-only `enso config check` and revalidated before each execution. Changes to `config.json` require an Enso restart; Enso deliberately does not hot-reload route authorization while work is queued or running.
 
 For each Slack event Enso:
 
 1. Verifies the authenticated Slack account.
-1. Accepts an ordinary DM or explicit channel mention always, and a non-mention channel message only when its channel's route settings allow it ([slack-triggers.md](slack-triggers.md)): effective `mention_required: false` for a top-level message, or effective `thread_mention_required: false` for a reply in a thread Enso already participates in. Other channel messages are ignored.
-1. Resolves the exact DM user ID or channel ID and claims its delivery ID for retry deduplication.
-1. If the location is unlisted, returns the fixed local response described below and stops.
-1. Resolves a configured route's workspace and access profile.
-1. Checks that the selected provider and native policy can be launched.
-1. Runs the provider directly in the workspace directory.
+2. Accepts an ordinary DM or explicit channel mention always, and a non-mention channel message only when its channel's route settings allow it ([slack-triggers.md](slack-triggers.md)): effective `mention_required: false` for a top-level message, or effective `thread_mention_required: false` for a reply in a thread Enso already participates in (a thread a prior dispatch joined, or one rooted by a message Enso posted itself). Other channel messages are ignored.
+3. Resolves the exact DM user ID or channel ID and claims its delivery ID for retry deduplication.
+4. If the location is unlisted, returns the fixed local response described below and stops.
+5. Resolves the configured workspace and its policy.
+6. Resolves the route's durable provider/model/effort choices through the current policy.
+7. Handles an admitted `!` command, or checks the effective provider's native policy and runs it directly in the workspace directory.
 
-An invalid route or native policy never falls back to another workspace, access profile, global `working_dir`, or unrestricted execution. Configuration errors for an otherwise authorized route are reported. A globally invalid configuration cannot establish usable Slack routing, and an event from the wrong Slack account remains silent and is logged rather than receiving an access response.
+An invalid route or native policy never falls back to another workspace, policy, implicit cwd, or unrestricted execution. A stored provider choice that the current policy no longer allows is ignored in favor of that policy's declared default without erasing the stored preference. By contrast, a policy-allowed but native-unusable effective provider reports the existing configuration error for provider work; non-launch commands remain available so the user can inspect status or select a usable authorized provider. A globally invalid configuration cannot establish usable Slack routing, and an event from the wrong Slack account remains silent and is logged rather than receiving an access response.
 
-Slack DMs dispatch ordinary messages. Channels always dispatch explicit bot mentions, including inside threads; a routed channel additionally dispatches non-mention messages where its effective `mention_required` or `thread_mention_required` is `false` ([slack-triggers.md](slack-triggers.md)), and replies to channel messages always land in the message's thread. Unlisted locations respond only to explicit contact. An unlisted DM receives `I haven't been enabled for your DMs yet. Ask an Enso admin for access.` An explicit mention in an unlisted channel receives `I haven't been enabled in this channel yet. Ask an Enso admin to set me up.` as a thread reply. These are fixed transport responses: Enso does not resolve a workspace or access profile, fetch context or attachments, invoke an LLM, or create an audit record. They pass through the delivery ledger so a retried Slack event receives at most one reply.
+Slack DMs dispatch ordinary messages. Channels always dispatch explicit bot mentions, including inside threads; a routed channel additionally dispatches non-mention messages where its effective `mention_required` or `thread_mention_required` is `false` ([slack-triggers.md](slack-triggers.md)), and replies to channel messages always land in the message's thread. Unlisted locations respond only to explicit contact. An unlisted DM receives `I haven't been enabled for your DMs yet. Ask an Enso admin for access.` An explicit mention in an unlisted channel receives `I haven't been enabled in this channel yet. Ask an Enso admin to set me up.` as a thread reply. These are fixed transport responses: Enso does not resolve a workspace or policy, fetch context or attachments, invoke an LLM, or create an audit record. They pass through the delivery ledger so a retried Slack event receives at most one reply.
 
 For configured routes, route resolution still occurs before surrounding context or attachments are fetched. Channel context is untrusted input even though every member is authorized to invoke the route.
 
-Rich output does not add route authority. A structured reply receives the same destination as its ordinary text fallback. A persistent-surface draft captures the exact authenticated account, route, requester, workspace, access profile, audit setting, conversation, and confirmation message before it can be shown. Only that requester may use its controls. At click time Enso resolves the route again and requires those bindings to remain identical; a removed or changed route revokes the draft instead of falling back to another workspace or policy.
+Thread context is always pushed: a threaded turn receives that thread's messages since Enso last spoke, or the whole thread when the conversation has no provider session yet. Channel history is not. An unrestricted policy instead receives, on the first turn of a conversation, the `enso slack history` and `enso slack thread` commands for the channel it is replying in, and fetches history only when the request calls for it. A restricted policy cannot be assumed to reach the network, so it keeps receiving the pushed channel context it cannot fetch for itself. Pushing that history unconditionally meant a new top-level request arrived carrying the roots of unrelated earlier threads, and the agent answered them.
+
+Rich output does not add route authority. A structured reply receives the same destination as its ordinary text fallback. A persistent-surface draft captures the exact authenticated account, route, requester, workspace, policy, audit setting, conversation, and confirmation message before it can be shown. Only that requester may use its controls. At click time Enso resolves the route again and requires those bindings to remain identical; a removed or changed route revokes the draft instead of falling back to another workspace or policy.
 
 On an audited route, Publish or Cancel creates a separate `surface_confirmation` audit turn before the draft is consumed. The existing `audit.on_failure` policy applies before any Canvas or App Home mutation. The original provider turn retains the full exact confirmation preview that was delivered; the click records the same preview plus the human decision and terminal publication result.
 
-`enso config check` inspects Enso's configuration and native-policy launch plumbing. `enso route explain slack <user-id> [channel-id]` explains the local routing decision. Neither command certifies that a native policy has the intended meaning; test policies with the installed provider CLI and disposable files.
+`enso config check` inspects Enso's configuration, validates the canonical shared instruction source, and checks native-policy launch plumbing. `enso route explain slack <user-id> [channel-id]` explains the local routing decision. Neither command certifies that a native policy has the intended meaning; test policies with the installed provider CLI and disposable files.
+
+### Telegram resolution
+
+Telegram rejects non-private chats and authorizes the sender by exact numeric ID before resolving execution. A usable `transports.telegram.workspace` then supplies the workspace and its single policy. If the binding or selected provider's native policy is invalid, Enso returns a fixed configuration error and launches no provider.
+
+Telegram's command menu contains only commands allowed by the bound policy, `/use` lists the subset of policy-authorized providers whose native launch is usable, and every command callback reauthorizes the same current binding. Durable provider/model/effort settings are keyed only by private chat, while conversation state is keyed by chat, workspace, and policy. Changing the binding therefore keeps the chat's settings but cannot silently resume a session created under different authority. Telegram receives global background messages by explicit transport choice; Slack routes and jobs do not.
+
+Messages, compaction, session clearing, and unique `uploads/<random-id>/` attachment directories all use that resolved workspace. Telegram has no global or unrestricted execution path and cannot override the workspace policy.
 
 ## Providers and Enso commands
 
-An access profile declares available providers, a default provider, and allowed Enso chat commands. `!help` and `!use` show only capabilities offered by the route's access profile. Service-wide Enso commands such as update, restart, and logs normally belong only to an administrative profile.
+A policy declares authorized providers, a default provider, and allowed Enso chat commands. Slack's `!help` and Telegram's menu and `/help` show only commands offered by the workspace policy. `!use` and `/use` show the narrower subset of authorized providers whose current native launch is usable. Service-wide Enso commands such as update, restart, and logs normally belong only to an administrative policy.
 
-A policy-controlled profile can additionally grant named environment variables through `env_passthrough` (names, never values) and, for Claude, an exact MCP server allowlist through the conventional `<policy_dir>/claude/mcp.json`. Both default to off, and both are real grants: MCP servers are dialled by the provider process itself and bypass the sandbox's network rules, so grant only servers whose entire tool surface is acceptable, and a passthrough variable's value is readable by any profile that can run Bash — passthrough delivers a credential, it does not scope one. Neither applies to an unrestricted profile, which already inherits everything (`env_passthrough` there is a config error). See [permissions.md](permissions.md#granting-credentials-and-mcp-servers-to-a-restricted-profile) for how and when to use them.
+`!use`, `!model`, and `!effort` update the whole Slack route, not one root or thread; they are valid inside a thread and explicitly say that their result applies to the entire channel or DM. Telegram applies the equivalent commands to that private chat. Passing `default` clears the explicit provider, model, or effort choice so resolution follows the policy, provider configuration, or CLI default again. `!status` and `/status` report the effective values and label each as a route selection, policy default, provider default, or CLI default. These settings are durable and do not expire with conversation retention.
 
-`chat_commands` controls Enso's `!` command surface. It does not hide or authorize the provider CLI's own tools, slash commands, skills, plugins, hooks, or MCP servers. A `!` command is recognized only when explicitly addressed — a bot mention in a channel, whatever the route's response triggers, or any DM message; an unaddressed `!`-prefixed message in a responsive channel is ordinary prompt text, never a command. This is a fixed rule, not a setting ([slack-triggers.md](slack-triggers.md)), so making a channel responsive never widens its command surface. Commands such as `!status`, `!clear`, and `!stop` are handled by Enso; `!compact` launches the active provider and therefore also remains subject to the selected native policy.
+A restricted policy can additionally grant named environment variables through `env_passthrough` (names, never values) and, for Claude, an exact MCP server allowlist through the conventional `<policy_dir>/claude/mcp.json`. Grok has no policy-declared MCP channel wired today: the untrusted workspace contributes no MCP servers, but Grok's home-scope vendor-compat discovery still reaches the operator's own MCP configuration through `$HOME` ([permissions.md's known limitation](permissions.md#grok)), so a restricted Grok policy that must not reach ambient MCP tools carries a bare `MCPTool` deny rule. Both grants default to off, and both are real grants: MCP servers are dialled by the provider process itself and bypass the sandbox's network rules, so grant only servers whose entire tool surface is acceptable, and a passthrough variable's value is readable by any policy that can run Bash — passthrough delivers a credential, it does not scope one. Neither applies to an unrestricted policy, which already inherits everything (`env_passthrough` there is a config error). See [permissions.md](permissions.md#granting-credentials-and-mcp-servers-to-a-restricted-policy) for how and when to use them.
 
-Enso never combines user-level permissions with a channel's access profile and never translates policies between providers. A route selects one complete access profile, and that profile selects one native policy for the active CLI.
+`chat_commands` controls Enso's `!` command surface. It does not hide or authorize the provider CLI's own tools, slash commands, skills, plugins, hooks, or MCP servers. Slack first applies the route's normal response trigger; once the message is admitted, any non-bare `!` prefix is parsed as a command whether or not it used a mention. A responsive top level or joined thread therefore accepts mention-free commands, while mention-gated and unjoined threads remain gated; a bare `!` stays prompt text ([slack-triggers.md](slack-triggers.md)). Commands such as `!status`, `!clear`, and `!stop` are handled without launching a provider; `!compact` launches the effective provider and therefore also remains subject to its native policy.
+
+Enso never combines user-level permissions with a channel's policy and never translates policies between providers. A route selects one workspace, and that workspace selects one complete policy for the active CLI.
 
 ## Skills and instructions
 
-Project instructions and skills are ordinary provider-native files in the workspace: `AGENTS.md` and `.agents/skills/` for Codex, plus `CLAUDE.md` and `.claude/skills/` for Claude Code. The CLIs may also expose native user, managed, plugin, system, or bundled skill scopes; Enso does not suppress those scopes or maintain a skill allowlist. A project skill adds relevant behavior but is not proof that other skills are absent. Treat skill discovery as functionality rather than isolation, and rely on the selected native policy for actual authority.
+Enso has two instruction layers. Canonical shared operational instructions live at
+`~/.enso/AGENTS.md`, with `~/.enso/CLAUDE.md -> AGENTS.md`; each workspace carries focused
+project instructions in its own `AGENTS.md` and `CLAUDE.md` view. Claude and Codex discover
+both layers natively because every provider starts at the exact name-derived workspace
+inside the `~/.enso` Git root. Enso does not also inject those bytes. Grok receives the
+freshly validated shared content once through `--rules`, and unrestricted Agy receives it
+once through an Enso prompt envelope. Immediately before each spawn, Enso revalidates the
+physical root/workspace topology, exact Git root, discovery links, duplicate skill names,
+and current shared source; invalid or partial discovery never falls back to another
+delivery mode. The CLIs may also expose native user, managed, plugin, system, or bundled
+skill scopes; Enso does not suppress those scopes or maintain a skill allowlist. A project
+skill adds relevant behavior but is not proof that other skills are absent. Treat
+instruction and skill discovery as functionality rather than isolation, and rely on the
+selected native policy for actual authority.
+
+The shared template states that the active policy is authoritative and that quoted, forwarded, fetched, attached, or otherwise untrusted transport content is data rather than higher-priority instructions. Workspace files supplement that shared layer; they cannot widen the policy.
 
 Claude Code behavior changes independently of Enso. Operators should review the official [permissions](https://code.claude.com/docs/en/permissions), [settings](https://code.claude.com/docs/en/settings), [tools reference](https://code.claude.com/docs/en/tools-reference), and [skills](https://code.claude.com/docs/en/skills) documentation, then test their installed CLI. Enso supplies native settings; it does not certify their meaning.
 
-Use project-specific skills in the relevant client workspace and company-wide skills in the company workspace. A staff route starting directly in a client workspace naturally sees that client's project material. A route starting in the company workspace must explicitly read a client's protected instructions before working across directories.
+Enso-wide skills live canonically under `~/.enso/skills/`, with the exact relative views
+`~/.enso/.agents/skills -> ../skills` and `~/.enso/.claude/skills -> ../skills`. Each
+workspace has its own canonical `<workspace>/skills/`, with `.agents/skills -> ../skills`
+and `.claude/skills -> ../skills`. Claude uses the latter view, Codex and Agy use the
+former, and Grok reads Claude Code skills. Fresh setup copies the bundled global set once;
+workspace skills start empty, and no startup installer changes either source later.
+
+Put a genuinely project-specific skill's canonical copy under
+`<workspace>/skills/<name>/SKILL.md`. Root and workspace skill directory names must be
+unique for that workspace; duplicates fail validation rather than relying on a provider's
+precedence. Every skill follows the [Agent Skills specification](https://agentskills.io/specification); the bundled `policy` skill carries native-policy authoring and registration, while the `workspace` skill carries workspace structure and binding.
+
+After one coherent edit to instructions, canonical skills, or workspace knowledge, an
+agent should record one scoped commit with explicit paths:
+
+```bash
+git -C ~/.enso add workspaces/client/AGENTS.md workspaces/client/knowledge/onboarding.md
+git -C ~/.enso commit -m "docs: update client onboarding"
+```
+
+The managed `.gitignore` keeps policies, configuration, credentials, uploads, drafts,
+and runtime state out of history; agents never use broad staging or `--force`-add an
+ignored path. A native policy still decides whether the provider may run Git and modify
+those files.
+
+A staff route starting directly in a client workspace naturally sees that client's project material. A route starting in the company workspace must explicitly read a client's protected instructions before working across directories.
 
 ## Jobs
 
-Jobs are defined under `~/.enso/jobs/`, not as Slack routes, but every `JOB.md` must select the same two named execution objects:
+Jobs are defined under `~/.enso/jobs/`, not as Slack routes, but every `JOB.md` must select one named workspace:
 
 ```yaml
 workspace: company
-access: automation
 ```
 
-The job's existing `provider` and `model` remain authoritative. The provider must be allowed by the selected access profile, runs with the named workspace as cwd, and receives that profile's native policy. Missing, unknown, incomplete, or unsafe bindings fail before prerun and provider execution; there is no global or unrestricted fallback.
+The job's existing `provider` and `model` remain authoritative. The provider must be allowed by the workspace policy, runs with the named workspace as cwd, and receives that policy's native configuration plus shared and workspace-local instructions. Missing, unknown, incomplete, or unsafe bindings fail before prerun and provider execution; there is no implicit or unrestricted fallback.
 
 An optional prerun script remains trusted host-side automation. Enso runs it through Bash with the job directory as cwd, outside the provider's native policy, then injects allowed stdout into the provider prompt. Keep prerun scripts protected and review them as executable operator code.
 
@@ -232,12 +366,9 @@ The metadata-only Slack delivery ledger exists independently of route auditing a
 
 Provider policy must keep restricted agents away from Enso's config, secrets, policies, database, jobs, and service-control commands whether route auditing is enabled or not.
 
-## Migration
+## Removed configuration
 
-This release intentionally removes the old Slack allowlist path. A Slack transport without `routes.slack`, or with `transports.slack.allowed_users`, is invalid. Migrate each authorized DM user and channel to an exact route selecting a known workspace and access profile. Enso never synthesizes routes because doing so grants access.
-
-Telegram still uses `transports.telegram.allowed_users`, but entries must be exact numeric user IDs. The old `allowed_user_ids` spelling and `"*"` wildcard are not supported. Telegram accepts only private chats.
-
-Every existing job must add both `workspace` and `access`. The catalogs are top-level configuration and do not depend on Slack being enabled.
-
-Earlier branch configurations using `groups`, route `allow`, route `context_from`, or permission fields inside `workspaces` are also rejected. Move `unrestricted`, `policy_dir`, `providers`, `default_provider`, and `chat_commands` into named access profiles; add `access` to every route and job; and key each DM route by exact Slack user ID.
+Fields outside the current workspace, policy, route, and transport schemas are rejected
+rather than interpreted. Enso provides no automatic migration or compatibility fallback.
+Version-specific transition procedures live in the
+[migration guides](../migrations/), separate from this current-state specification.

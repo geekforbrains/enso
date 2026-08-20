@@ -19,16 +19,35 @@ def _tables_web_app(tmp_path, monkeypatch):
     from starlette.testclient import TestClient
 
     config_dir = tmp_path / "enso"
-    working_dir = tmp_path / "workspace"
-    working_dir.mkdir()
-    config_dir.mkdir()
+    workspace = config_dir / "workspaces" / "default"
+    workspace.mkdir(parents=True)
+    monkeypatch.setattr("enso.config.CONFIG_DIR", str(config_dir))
     monkeypatch.setattr(tables_mod.config, "CONFIG_DIR", str(config_dir))
     monkeypatch.setattr(web_app, "CONFIG_DIR", str(config_dir))
     monkeypatch.setattr(web_app, "load_jobs", lambda: [])
+    monkeypatch.setattr(web_app, "load_jobs_with_errors", lambda _config: ([], {}))
     monkeypatch.setattr(web_app.runs, "list_runs", lambda **_kwargs: [])
     monkeypatch.setattr(web_app.docs, "load_docs", lambda: SimpleNamespace(docs=[]))
     monkeypatch.setattr(web_app, "_skill_inventory", lambda _request: ([], []))
-    runtime = SimpleNamespace(working_dir=str(working_dir), config={"web": {}})
+    runtime = SimpleNamespace(
+        config={
+            "web": {},
+            "workspaces": {
+                "default": {
+                    "policy": "admin",
+                    "concurrency": 1,
+                }
+            },
+            "policies": {
+                "admin": {
+                    "unrestricted": True,
+                    "providers": ["claude"],
+                    "default_provider": "claude",
+                    "chat_commands": "*",
+                }
+            },
+        }
+    )
     client = TestClient(web_app.create_app(runtime), base_url="http://127.0.0.1")
     return config_dir, client
 

@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from . import BaseProvider, StreamEvent, truncate_status
+
+if TYPE_CHECKING:
+    from ..instructions import ValidatedInstructions
 
 CODEX_MODEL_ALIASES = {
     "sol": "gpt-5.6-sol",
@@ -100,9 +103,10 @@ class CodexProvider(BaseProvider):
         today's bypass invocation.
         """
         if launch is not None and launch.mode == "policy":
-            # --skip-git-repo-check bypasses the "are you in a git repo" UX
-            # guard (a workspace need not be one); it is not a security
-            # boundary. The staged CODEX_HOME selects the operator's profile.
+            # --skip-git-repo-check bypasses Codex's repository UX guard; it is
+            # not a security boundary. Enso separately validates the exact
+            # enclosing ~/.enso worktree before spawn, while the staged
+            # CODEX_HOME selects the operator's profile.
             args = ["--strict-config", "--skip-git-repo-check"]
             if launch.ignore_rules:
                 args.append("--ignore-rules")
@@ -117,6 +121,7 @@ class CodexProvider(BaseProvider):
         *,
         effort: str | None = None,
         launch=None,
+        instructions: ValidatedInstructions | None = None,
     ) -> list[str]:
         cli_model = resolve_codex_model(model)
         cmd = [self.path, "exec"]
@@ -132,7 +137,13 @@ class CodexProvider(BaseProvider):
         return cmd
 
     def build_batch_command(
-        self, prompt: str, model: str, *, effort: str | None = None, launch=None,
+        self,
+        prompt: str,
+        model: str,
+        *,
+        effort: str | None = None,
+        launch=None,
+        instructions: ValidatedInstructions | None = None,
     ) -> list[str]:
         cli_model = resolve_codex_model(model)
         cmd = [

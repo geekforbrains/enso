@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import importlib.resources
 import json
 import logging
 import os
@@ -20,13 +19,11 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from . import messages
 from .config import (
-    CONFIG_DIR,
     DEFAULT_AGENT,
-    SKILL_TOMBSTONES_DIRNAME,
     STATE_FILE,
     provider_models,
 )
-from .fsutil import atomic_write_text, regular_file_sha256
+from .fsutil import atomic_write_text
 from .logging_config import logging_flags
 from .outbound import (
     parse_outbound_fallback,
@@ -35,12 +32,11 @@ from .outbound import (
     parse_surface_publication,
 )
 from .providers import PROVIDER_NAMES, BaseProvider, StreamEvent, provider_class
-from .teams import load_catalog
 
 if TYPE_CHECKING:
     from .job_runner import JobRunner
     from .policy import Launch
-    from .teams import AccessProfile, Workspace
+    from .teams import Policy, Workspace
     from .transports import BaseTransport, TransportContext
 
 log = logging.getLogger(__name__)
@@ -66,6 +62,50 @@ STATUS_MAX_EDIT_FAILURES = 3
 # Shown as the action line until the provider reports its first real status,
 # so the message keeps the same shape from the moment it is posted.
 STATUS_INITIAL_ACTION = "Processing"
+STRUCTURED_OUTPUT_REPAIR_ATTEMPTS = 1
+STRUCTURED_OUTPUT_FAILURE_NOTICE = (
+    "I couldn't format that response correctly. Please try again."
+)
+
+_STRUCTURED_OUTPUT_FENCE_RE = re.compile(
+    r"(?m)^[^\S\r\n]*```(?P<kind>enso-message|enso-surface)\b"
+)
+
+
+def _structured_output_repair_prompt(
+    response_text: str,
+    *,
+    output_instructions: str,
+    surface_instructions: str,
+) -> str | None:
+    """Return a correction prompt for a malformed attempted rich response."""
+    attempted_kinds = {
+        match.group("kind") for match in _STRUCTURED_OUTPUT_FENCE_RE.finditer(response_text)
+    }
+
+    kind: str | None = None
+    if (
+        surface_instructions
+        and "enso-surface" in attempted_kinds
+        and parse_surface_publication(response_text) is None
+        and parse_surface_fallback(response_text) is None
+    ):
+        kind = "enso-surface"
+    elif (
+        output_instructions
+        and "enso-message" in attempted_kinds
+        and parse_outbound_message(response_text) is None
+        and parse_outbound_fallback(response_text) is None
+    ):
+        kind = "enso-message"
+
+    if kind is None:
+        return None
+    return (
+        f"Enso did not deliver your previous `{kind}` response because its formatting "
+        f"was invalid. Send the response again using the exact `{kind}` format from "
+        "your instructions."
+    )
 
 
 def format_elapsed(seconds: int) -> str:
@@ -132,76 +172,31 @@ MAX_QUEUE_SIZE = 5
 SESSION_TTL_DAYS = int(os.environ.get("ENSO_SESSION_TTL_DAYS", "30"))
 PROCESS_TERMINATE_GRACE_SECS = float(os.environ.get("ENSO_PROCESS_TERMINATE_GRACE_SECS", "5"))
 
-# Upgrade markers for artifacts bundled immediately before the built-in task
-# system was removed. Hashes let us recognize pristine installer-owned files
-# without retaining obsolete task instructions in the package.
-_LEGACY_TASKS_SKILL_SHA256 = "661ffca9a360cc40521c274a295a97c7735123a7c8a44e1d307da046f07735cc"
-_LEGACY_TASKS_AGENTS_SHA256 = "ec67ee973a15c38e23451cfc65317643debe0e6e8659589bf0c30433f60a2e4a"
+# Retired task-runner state is discarded during the existing state migration.
 _LEGACY_TASK_RUNNER_STATE_KEY = "__task_runner__"
-
-# Pristine bundled AGENTS.md hashes from prior releases. Exact matches follow
-# the bundled template forward; customized copies are preserved.
-_PRISTINE_AGENTS_SHA256: frozenset[str] = frozenset(
-    {
-        _LEGACY_TASKS_AGENTS_SHA256,
-        "18e29e570f07237eea24a2b329090ccae9b572cdbc7e35f38e22916f3e5acf7f",
-        "b5676b7f1b571a813554c0c580c93a6c9269d82625161f01f2c00e205888da20",
-        "8f9bacc078f4b6bd826c59501f7e110de4e2caacc42fd3975ad3aeab624164f7",
-    }
-)
-
-# Known hashes of pristine bundled skills from prior releases. Exact matches
-# can follow the bundled copy forward without overwriting user-customized files.
-_BUNDLED_SKILL_PRISTINE_HASHES: dict[tuple[str, str], frozenset[str]] = {
-    ("jobs", "SKILL.md"): frozenset(
-        {
-            "f52f890e467bd212534474b1d0ee913edbf6cc968e010686153044aac13bcd77",
-            "8824886bd76e476672395bfcef6d34655b7eeedb40c89cf0fc459706e9ad4cff",
-            "cc8d7abc0e550b901644d7c7feee2e3363608adf794a2f885c7421a5cb7fa08b",
-            "256ce5a5609551246927c9e19ef0be13f68f630fb343815f303e6f90ab8cb51c",
-            "608c4a5d9f34d76ae9143f749fa7b028a4fce413d260e1a5f58d361288730bd8",
-            "1756397ae5838a5aba08c6371cb721f9e1b4f815c8b1907a19b017e7aca53be0",
-            "dabb0fa66f276cd78c8e88e17c38155ad537aa52938e50622dcc2955b70f036a",
-            "ecde110e219de184ccf52594d02d9ae458022a4813dcc8ac417a975c5010f282",
-            "1a97b59fb3361cac02af0d62d0cb472ad0315fe710ece162977a602211161e28",
-        }
-    ),
-    ("slack", "SKILL.md"): frozenset(
-        {
-            "5d9f76e2bcb757b27ab294a6f7322e07a59ebafbe08566f218348f8d15ac178a",
-            "646d0ab64c0713baf32eec4f0639b4d709d4b1c7a2a1a320e2eed84d55fc5582",
-            "70f2dd312d001f23a49aeadb2f556df76e259b80f8591093eb7d36a6ea56b2bd",
-        }
-    ),
-}
-
-# The pre-0.12 bundled slack skill shipped a Python tool script that the
-# `enso slack` CLI replaced. Pristine copies (and their installed
-# workspace/tools twins) are removed on setup/serve; customized copies are
-# preserved with a warning.
-_RETIRED_SKILL_TOOL_HASHES: dict[tuple[str, str], frozenset[str]] = {
-    ("slack", "slack_search.py"): frozenset(
-        {
-            "2a993392c4d58ac7e5ce653ade6070ed9db9baaa6b909ae2167d29de490ded7d",
-        }
-    ),
-}
 
 
 def _redacted_command(cmd: list[str]) -> str:
-    """Return a shell-like command string with the prompt argument redacted."""
-    if "--" in cmd:
-        sep = cmd.index("--")
+    """Return a shell-like command string with instruction text redacted."""
+    redacted = list(cmd)
+    for index, part in enumerate(redacted):
+        if part.startswith("--single="):
+            prompt = part.removeprefix("--single=")
+            redacted[index] = f"--single=<prompt chars={len(prompt)}>"
+        elif part.startswith("--rules="):
+            rules = part.removeprefix("--rules=")
+            redacted[index] = f"--rules=<instructions chars={len(rules)}>"
+    if "--" in redacted:
+        sep = redacted.index("--")
         prompt_chars = sum(len(part) for part in cmd[sep + 1 :])
-        return shlex.join([*cmd[: sep + 1], f"<prompt chars={prompt_chars}>"])
+        return shlex.join([*redacted[: sep + 1], f"<prompt chars={prompt_chars}>"])
     for flag in ("--prompt", "--print", "-p"):
-        if flag in cmd:
-            prompt_index = cmd.index(flag) + 1
-            if prompt_index < len(cmd):
-                redacted = list(cmd)
+        if flag in redacted:
+            prompt_index = redacted.index(flag) + 1
+            if prompt_index < len(redacted):
                 redacted[prompt_index] = f"<prompt chars={len(cmd[prompt_index])}>"
                 return shlex.join(redacted)
-    return shlex.join(cmd)
+    return shlex.join(redacted)
 
 
 def _state_rows(raw: object, migrate: Callable[[dict], list[dict]]) -> tuple[Iterable, bool]:
@@ -230,54 +225,52 @@ def _migrate_v1_pairs(raw: dict, value_key: str) -> list[dict]:
     ]
 
 
-def _migrate_v1_efforts(raw: dict) -> list[dict]:
-    """Expand v1 ``<chat>:<provider>:<model>`` effort keys into row dicts."""
-    rows = []
-    for key, value in raw.items():
-        parts = key.rsplit(":", 2)
-        if len(parts) == 3:
-            rows.append(
-                {
-                    "chat": parts[0],
-                    "provider": parts[1],
-                    "model": parts[2],
-                    "effort": value,
-                }
-            )
-    return rows
-
-
 @dataclass
-class _QueuedItem:
-    """A message waiting to be dispatched while another request is running."""
+class RoutePreferences:
+    """Explicit provider choices for one transport route."""
 
-    prompt: str
-    ctx: TransportContext
-    preview: str
+    provider: str | None = None
+    models: dict[str, str] = field(default_factory=dict)
+    efforts: dict[str, dict[str, str]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ResolvedSettings:
+    """Effective settings and where each value came from."""
+
     provider: str
-    context: ExecutionContext | None = None
+    model: str
+    effort: str | None
+    provider_source: str
+    model_source: str
+    effort_source: str
 
 
 @dataclass(frozen=True)
 class ExecutionContext:
     """Immutable execution binding for one conversation's work.
 
-    Telegram conversations bind the global ``working_dir`` with the unrestricted
-    invocation and use the conversation ID as their state key. Slack routes and
-    jobs bind a named workspace and access profile. The native launch is prepared
-    only after the workspace slot is acquired, immediately before the provider
-    process starts.
+    Every transport and job binds a named workspace and its policy. The native
+    launch is prepared only after the workspace slot is acquired, immediately
+    before the provider process starts. ``include_global_messages`` is an
+    explicit transport choice: Telegram opts in, while Slack and jobs do not.
     """
 
-    chat_key: str  # key for all per-chat state: sessions, queues, locks
+    chat_key: str  # conversation state: sessions, queues, locks, activity
     path: str  # subprocess cwd — the workspace root
-    workspace_id: str | None = None
-    launch: Launch | None = None  # None → unrestricted global invocation
+    workspace_id: str
+    workspace: Workspace = field(compare=False, repr=False)
+    policy: Policy = field(compare=False, repr=False)
+    include_global_messages: bool
+    provider: str
+    settings_key: str | None = None  # durable route preferences; jobs have none
+    launch: Launch | None = None
     concurrency: int = 1  # max concurrent provider runs sharing the workspace
-    workspace: Workspace | None = field(default=None, compare=False, repr=False)
-    access: AccessProfile | None = field(default=None, compare=False, repr=False)
     model: str | None = None
     effort: str | None = None
+    provider_source: str | None = None
+    model_source: str | None = None
+    effort_source: str | None = None
     on_launch: Callable[[Launch], None] | None = field(default=None, compare=False, repr=False)
     # Invoked (in a worker thread) with the turn's terminal outcome once it
     # reaches a terminal state — a real dispatch, a revalidation refusal, or
@@ -287,6 +280,16 @@ class ExecutionContext:
     on_complete: Callable[[str, str | None], None] | None = field(
         default=None, compare=False, repr=False
     )
+
+
+@dataclass
+class _QueuedItem:
+    """A message waiting to be dispatched while another request is running."""
+
+    prompt: str
+    ctx: TransportContext
+    preview: str
+    context: ExecutionContext
 
 
 class Runtime:
@@ -301,8 +304,6 @@ class Runtime:
         flags = logging_flags(config)
         self.debug_prompts: bool = flags["debug_prompts"]
         self.debug_events: bool = flags["debug_events"]
-        self.working_dir: str = config.get("working_dir", os.getcwd())
-        os.makedirs(self.working_dir, exist_ok=True)
         self.models: dict[str, list[str]] = provider_models(config)
         agent_config = config.get("agent")
         timeout = (
@@ -315,10 +316,11 @@ class Runtime:
         self.agent_timeout: int | float = timeout
         self.transport: BaseTransport | None = None
 
-        # Per-chat state (keyed by conversation ID — str for all transports)
-        self.active_provider_by_chat: dict[str, str] = {}
-        self.active_model_by_chat_provider: dict[tuple[str, str], str] = {}
-        self.effort_by_chat_provider_model: dict[tuple[str, str, str], str] = {}
+        # Durable user preferences are keyed by transport route, independently
+        # from the conversation/session state below.
+        self.route_preferences: dict[str, RoutePreferences] = {}
+
+        # Per-conversation state (opaque string keys for all transports)
         self.session_by_chat_provider: dict[tuple[str, str], str] = {}
         self.running_process_by_chat: dict[str, Process] = {}
         self.running_task_by_chat: dict[str, asyncio.Task] = {}
@@ -351,347 +353,25 @@ class Runtime:
 
         self.jobs: JobRunner = JobRunner(self)
 
-    # -- Workspace setup --
-
-    def install_system_prompts(self) -> None:
-        """Set up working directory, system prompts, skills, hooks, and config dirs.
-
-        Creates:
-        - ~/.enso/docs/, ~/.enso/jobs/, and ~/.enso/skills/
-        - Bundled skills seeded into ~/.enso/skills/
-        - AGENTS.md in working_dir (from bundled template on first install)
-        - CLAUDE.md as a symlink to AGENTS.md (Claude reads CLAUDE.md;
-          Codex reads AGENTS.md natively)
-        - .claude/skills and .agents/skills symlinked to ~/.enso/skills/
-          (so Claude and Codex auto-discover skills)
-        - Auto-compact notification hooks for Claude
-        """
-        from .config import DOCS_DIR, JOBS_DIR
-
-        skills_dir = os.path.join(CONFIG_DIR, "skills")
-        for d in (DOCS_DIR, JOBS_DIR, skills_dir):
-            os.makedirs(d, exist_ok=True)
-
-        self._retire_legacy_tasks_skill(skills_dir)
-        self._retire_legacy_skill_tools(skills_dir)
-        self._install_bundled_skills(skills_dir)
-        self._install_skill_tools(skills_dir)
-
-        # System prompt. AGENTS.md is canonical; Claude reads CLAUDE.md, so
-        # it's symlinked to AGENTS.md. Codex reads AGENTS.md natively, so no
-        # further symlinks are needed.
-        source = importlib.resources.files("enso").joinpath("prompts").joinpath("AGENTS.md")
-        content = source.read_text(encoding="utf-8")
-
-        canonical = os.path.join(self.working_dir, "AGENTS.md")
-        is_pristine_template = regular_file_sha256(canonical) in _PRISTINE_AGENTS_SHA256
-        if not os.path.lexists(canonical) or is_pristine_template:
-            try:
-                atomic_write_text(canonical, content)
-                action = "Updated" if is_pristine_template else "Wrote"
-                log.info("%s AGENTS.md in %s", action, self.working_dir)
-            except OSError:
-                log.warning("Could not write AGENTS.md", exc_info=True)
-                return
-        elif self._contains_legacy_task_instructions(canonical):
-            log.warning(
-                "Preserving customized AGENTS.md at %s, but it contains retired task "
-                "instructions; update or remove those instructions manually",
-                canonical,
-            )
-
-        self._ensure_symlink(os.path.join(self.working_dir, "CLAUDE.md"), "AGENTS.md")
-
-        # Symlink skills into CLI-specific discovery paths
-        # .claude/skills -> ~/.enso/skills (Claude Code)
-        # .agents/skills -> ~/.enso/skills (Codex)
-        for cli_dir in (".claude", ".agents"):
-            parent = os.path.join(self.working_dir, cli_dir)
-            os.makedirs(parent, exist_ok=True)
-            self._ensure_symlink(os.path.join(parent, "skills"), skills_dir)
-
-        # Auto-compact notification hooks — lets the user know via the
-        # configured chat transport when a provider is compacting context
-        # (which can be slow).
-        # Claude: PreCompact with "auto" matcher
-        # Codex: no compaction hooks available
-        notify_cmd = "enso message send 'Autocompacting context, this might take a moment...'"
-        self._ensure_hook_entry(
-            os.path.join(self.working_dir, ".claude", "settings.json"),
-            event="PreCompact",
-            matcher="auto",
-            command=notify_cmd,
-        )
-
-    def install_workspaces(self) -> None:
-        """Bootstrap every structurally valid configured workspace.
-
-        Creates the workspace directory with the bundled system prompt.
-        Instructions and skills are owned by the workspace and discovered by
-        the provider CLIs themselves; jobs, config, and shared skill roots are
-        never linked in.
-        """
-        catalog = load_catalog(self.config)
-        for name, workspace in catalog.workspaces.items():
-            if name in catalog.workspace_errors or not workspace.path:
-                continue
-            try:
-                self._install_workspace(workspace)
-            except OSError:
-                log.warning("Could not bootstrap workspace %s", name, exc_info=True)
-
-    def _install_workspace(self, workspace) -> None:
-        os.makedirs(workspace.path, exist_ok=True)
-        os.makedirs(os.path.join(workspace.path, "uploads"), exist_ok=True)
-
-        canonical = os.path.join(workspace.path, "AGENTS.md")
-        if not os.path.lexists(canonical):
-            prompts = importlib.resources.files("enso").joinpath("prompts")
-            source = prompts.joinpath("WORKSPACE_AGENTS.md")
-            atomic_write_text(canonical, source.read_text(encoding="utf-8"))
-            log.info("Wrote AGENTS.md in workspace %s", workspace.name)
-        self._ensure_symlink(os.path.join(workspace.path, "CLAUDE.md"), "AGENTS.md")
-
-    @staticmethod
-    def _ensure_symlink(link_path: str, target: str) -> None:
-        """Create a symlink if it doesn't already exist."""
-        if os.path.exists(link_path) or os.path.islink(link_path):
-            return
-        try:
-            os.symlink(target, link_path)
-            log.info("Symlinked %s -> %s", link_path, target)
-        except OSError:
-            log.warning("Could not symlink %s", link_path, exc_info=True)
-
-    @staticmethod
-    def _ensure_hook_entry(
-        settings_path: str,
-        *,
-        event: str,
-        matcher: str,
-        command: str,
-    ) -> None:
-        """Ensure a specific hook exists in a CLI settings file.
-
-        Reads the file, checks whether the exact command is already
-        present under the given event, and appends a new entry only
-        if missing.  Other hooks and settings are left untouched.
-        """
-        settings: dict = {}
-        if os.path.exists(settings_path):
-            try:
-                with open(settings_path) as f:
-                    settings = json.load(f)
-            except (json.JSONDecodeError, OSError):
-                log.warning(
-                    "Could not read %s, skipping hook install",
-                    settings_path,
-                )
-                return
-
-        hooks = settings.setdefault("hooks", {})
-        event_hooks = hooks.setdefault(event, [])
-
-        # Check if this exact hook command is already installed
-        for entry in event_hooks:
-            for h in entry.get("hooks", []):
-                if h.get("command") == command:
-                    return
-
-        event_hooks.append(
-            {
-                "matcher": matcher,
-                "hooks": [{"type": "command", "command": command, "async": True}],
-            }
-        )
-
-        try:
-            atomic_write_text(settings_path, json.dumps(settings, indent=2) + "\n")
-            log.info("Installed %s hook in %s", event, settings_path)
-        except OSError:
-            log.warning("Could not write %s", settings_path, exc_info=True)
-
-    @staticmethod
-    def _contains_legacy_task_instructions(path: str) -> bool:
-        """Recognize strong task-era markers in a customized prompt."""
-        if not os.path.isfile(path):
-            return False
-        try:
-            with open(path, encoding="utf-8") as f:
-                content = f.read()
-        except (OSError, UnicodeError):
-            return False
-        return any(
-            marker in content
-            for marker in (
-                "enso task create",
-                "enso task list",
-                "enso task show",
-                "use the `tasks` skill",
-            )
-        )
-
-    @classmethod
-    def _retire_legacy_tasks_skill(cls, skills_dir: str) -> None:
-        """Remove the pristine task skill left by the previous release.
-
-        Any changed file, symlink, or additional directory entry makes the
-        artifact user-owned and leaves it untouched.
-        """
-        skill_dir = os.path.join(skills_dir, "tasks")
-        if not os.path.lexists(skill_dir):
-            return
-        warning = (
-            "Preserving customized retired tasks skill at %s; update or remove it "
-            "manually because the enso task commands no longer exist"
-        )
-        if os.path.islink(skill_dir) or not os.path.isdir(skill_dir):
-            log.warning(warning, skill_dir)
-            return
-        try:
-            entries = os.listdir(skill_dir)
-        except OSError:
-            log.warning(warning, skill_dir)
-            return
-        if entries != ["SKILL.md"]:
-            log.warning(warning, skill_dir)
-            return
-
-        skill_file = os.path.join(skill_dir, "SKILL.md")
-        if regular_file_sha256(skill_file) != _LEGACY_TASKS_SKILL_SHA256:
-            log.warning(warning, skill_dir)
-            return
-        try:
-            os.remove(skill_file)
-            os.rmdir(skill_dir)
-            log.info("Removed retired bundled skill: tasks")
-        except OSError:
-            log.warning("Could not remove retired bundled tasks skill", exc_info=True)
-
-    def _retire_legacy_skill_tools(self, skills_dir: str) -> None:
-        """Remove retired pristine bundled tool scripts and their installed copies.
-
-        Removing the skill copy alone is not enough: ``_install_skill_tools``
-        reinstalls any ``.py`` it finds in a skill dir, so the stale
-        ``workspace/tools/`` twin is removed first.
-        """
-        for (skill_name, filename), pristine in _RETIRED_SKILL_TOOL_HASHES.items():
-            skill_copy = os.path.join(skills_dir, skill_name, filename)
-            tool_copy = os.path.join(self.working_dir, "tools", filename)
-            skill_hash = regular_file_sha256(skill_copy)
-            if regular_file_sha256(tool_copy) in pristine:
-                with contextlib.suppress(OSError):
-                    os.remove(tool_copy)
-                    log.info("Removed retired installed tool: %s", filename)
-            if skill_hash in pristine:
-                with contextlib.suppress(OSError):
-                    os.remove(skill_copy)
-                    log.info(
-                        "Removed retired bundled skill tool: %s/%s",
-                        skill_name,
-                        filename,
-                    )
-            elif skill_hash is not None:
-                log.warning(
-                    "Preserving customized retired skill tool at %s; the "
-                    "`enso slack` CLI replaced it — update or remove it manually",
-                    skill_copy,
-                )
-
-    @classmethod
-    def _install_bundled_skills(cls, skills_dir: str) -> None:
-        """Seed missing skills and update only known-pristine older copies."""
-        bundled = importlib.resources.files("enso").joinpath("skills")
-        if not bundled.is_dir():
-            return
-        tombstones_dir = os.path.join(skills_dir, SKILL_TOMBSTONES_DIRNAME)
-        for skill_dir in bundled.iterdir():
-            if not skill_dir.is_dir():
-                continue
-            tombstone = os.path.join(tombstones_dir, f"{skill_dir.name}.deleted")
-            if os.path.lexists(tombstone):
-                log.info("Preserving deleted bundled skill: %s", skill_dir.name)
-                continue
-            dest = os.path.join(skills_dir, skill_dir.name)
-            if os.path.lexists(dest):
-                if os.path.islink(dest) or not os.path.isdir(dest):
-                    continue
-            else:
-                os.makedirs(dest)
-            for f in skill_dir.iterdir():
-                if not f.is_file():
-                    continue
-                dest_file = os.path.join(dest, f.name)
-                action = "Installed"
-                if os.path.lexists(dest_file):
-                    existing_hash = regular_file_sha256(dest_file)
-                    known_pristine = _BUNDLED_SKILL_PRISTINE_HASHES.get(
-                        (skill_dir.name, f.name), frozenset()
-                    )
-                    if existing_hash not in known_pristine:
-                        continue
-                    action = "Updated pristine"
-                try:
-                    content = f.read_text(encoding="utf-8")
-                    atomic_write_text(dest_file, content)
-                    log.info(
-                        "%s bundled skill: %s/%s",
-                        action,
-                        skill_dir.name,
-                        f.name,
-                    )
-                except OSError:
-                    log.warning(
-                        "Could not install/update bundled skill %s/%s",
-                        skill_dir.name,
-                        f.name,
-                        exc_info=True,
-                    )
-
-    def _install_skill_tools(self, skills_dir: str) -> None:
-        """Copy executable tool scripts from skills into workspace/tools/."""
-        tools_dir = os.path.join(self.working_dir, "tools")
-        for entry in os.listdir(skills_dir):
-            skill_path = os.path.join(skills_dir, entry)
-            if not os.path.isdir(skill_path):
-                continue
-            for fname in os.listdir(skill_path):
-                if not fname.endswith(".py"):
-                    continue
-                src = os.path.join(skill_path, fname)
-                os.makedirs(tools_dir, exist_ok=True)
-                dest = os.path.join(tools_dir, fname)
-                try:
-                    with open(src) as f:
-                        content = f.read()
-                    if os.path.exists(dest):
-                        with open(dest) as f:
-                            if f.read() == content:
-                                continue
-                    with open(dest, "w") as f:
-                        f.write(content)
-                    os.chmod(dest, 0o755)
-                    log.info("Installed tool: %s", fname)
-                except OSError:
-                    log.warning("Could not install tool %s", fname, exc_info=True)
-
     # -- State persistence --
 
     def save_state(self) -> None:
-        """Atomically persist session and job state to disk."""
+        """Atomically persist route, conversation, and job state to disk."""
         data: dict[str, Any] = {
-            "version": 2,
-            "active_provider_by_chat": {str(k): v for k, v in self.active_provider_by_chat.items()},
+            "version": 3,
+            "route_preferences": {
+                route: {
+                    "provider": preferences.provider,
+                    "models": dict(preferences.models),
+                    "efforts": {
+                        provider: dict(efforts)
+                        for provider, efforts in preferences.efforts.items()
+                    },
+                }
+                for route, preferences in self.route_preferences.items()
+            },
             # Conversation keys are opaque and may contain colons. Store
             # compound keys as records instead of inventing a delimiter.
-            "active_model_by_chat_provider": [
-                {"chat": cid, "provider": prov, "model": model}
-                for (cid, prov), model in self.active_model_by_chat_provider.items()
-            ],
-            "effort_by_chat_provider_model": [
-                {"chat": cid, "provider": prov, "model": model, "effort": eff}
-                for (cid, prov, model), eff in self.effort_by_chat_provider_model.items()
-            ],
             "session_by_chat_provider": [
                 {"chat": cid, "provider": prov, "session": sid}
                 for (cid, prov), sid in self.session_by_chat_provider.items()
@@ -719,14 +399,12 @@ class Runtime:
         try:
             with open(STATE_FILE) as f:
                 data = json.load(f)
-            state_changed = False
-            for k, v in data.get("active_provider_by_chat", {}).items():
-                if v in PROVIDER_NAMES:
-                    self.active_provider_by_chat[k] = v
-                else:
-                    state_changed = True
-            state_changed |= self._load_model_rows(data.get("active_model_by_chat_provider", []))
-            state_changed |= self._load_effort_rows(data.get("effort_by_chat_provider_model", []))
+            version = data.get("version")
+            state_changed = version != 3
+            if version == 3:
+                state_changed |= self._load_route_preferences(
+                    data.get("route_preferences", {})
+                )
             state_changed |= self._load_session_rows(data.get("session_by_chat_provider", []))
             for k, v in data.get("compact_seed_by_chat", {}).items():
                 self.compact_seed_by_chat[k] = v
@@ -743,8 +421,8 @@ class Runtime:
             for cid, ts in data.get("last_active", {}).items():
                 self._last_active[cid] = datetime.fromisoformat(ts)
             log.info(
-                "Loaded state: %d providers, %d sessions",
-                len(self.active_provider_by_chat),
+                "Loaded state: %d route preference(s), %d sessions",
+                len(self.route_preferences),
                 len(self.session_by_chat_provider),
             )
             self._prune_stale_sessions(persist=persist)
@@ -753,50 +431,64 @@ class Runtime:
         except Exception:
             log.exception("Failed to load state, starting fresh")
 
-    def _load_model_rows(self, raw: object) -> bool:
-        """Restore per-chat model selections. True when state needs rewriting."""
-        rows, changed = _state_rows(raw, lambda data: _migrate_v1_pairs(data, "model"))
-        for row in rows:
-            if not isinstance(row, dict):
+    def _load_route_preferences(self, raw: object) -> bool:
+        """Restore validated v3 route preferences."""
+        if not isinstance(raw, dict):
+            return True
+        changed = False
+        for route, value in raw.items():
+            if not isinstance(route, str) or not isinstance(value, dict):
                 changed = True
                 continue
-            cid = row.get("chat")
-            provider = row.get("provider")
-            model = row.get("model")
-            # Entries for retired providers or models removed from config
-            # are inert (selection falls back anyway) — prune them.
-            if (
-                isinstance(cid, str)
-                and isinstance(provider, str)
-                and model in self.models.get(provider, [])
-            ):
-                self.active_model_by_chat_provider[(cid, provider)] = model
+            preferences = RoutePreferences()
+            provider = value.get("provider")
+            if provider is None:
+                pass
+            elif isinstance(provider, str) and provider in PROVIDER_NAMES:
+                preferences.provider = provider
             else:
                 changed = True
-        return changed
 
-    def _load_effort_rows(self, raw: object) -> bool:
-        """Restore per-chat effort levels. True when state needs rewriting."""
-        rows, changed = _state_rows(raw, _migrate_v1_efforts)
-        for row in rows:
-            if not isinstance(row, dict):
-                changed = True
-                continue
-            cid = row.get("chat")
-            provider = row.get("provider")
-            model = row.get("model")
-            effort = row.get("effort")
-            if (
-                isinstance(cid, str)
-                and isinstance(provider, str)
-                and isinstance(model, str)
-                and isinstance(effort, str)
-                and model in self.models.get(provider, [])
-                and provider_class(provider).effort_levels
-            ):
-                self.effort_by_chat_provider_model[(cid, provider, model)] = effort
+            models = value.get("models", {})
+            if isinstance(models, dict):
+                for provider_name, model in models.items():
+                    if (
+                        isinstance(provider_name, str)
+                        and isinstance(model, str)
+                        and model in self.models.get(provider_name, [])
+                    ):
+                        preferences.models[provider_name] = model
+                    else:
+                        changed = True
             else:
                 changed = True
+
+            efforts = value.get("efforts", {})
+            if isinstance(efforts, dict):
+                for provider_name, by_model in efforts.items():
+                    if not isinstance(provider_name, str) or not isinstance(by_model, dict):
+                        changed = True
+                        continue
+                    provider_levels = (
+                        provider_class(provider_name).effort_levels
+                        if provider_name in PROVIDER_NAMES
+                        else ()
+                    )
+                    for model, effort in by_model.items():
+                        if (
+                            isinstance(model, str)
+                            and isinstance(effort, str)
+                            and model in self.models.get(provider_name, [])
+                            and effort in provider_levels
+                        ):
+                            preferences.efforts.setdefault(provider_name, {})[model] = effort
+                        else:
+                            changed = True
+            else:
+                changed = True
+
+            if preferences.provider or preferences.models or preferences.efforts:
+                self.route_preferences[route] = preferences
         return changed
 
     def _load_session_rows(self, raw: object) -> bool:
@@ -820,13 +512,13 @@ class Runtime:
                 changed = True
         return changed
 
-    def touch_session(self, chat_key: str) -> None:
-        """Mark a state key active so stale-session pruning can reach it.
-
-        The teams router writes a durable provider-selection key that is not a
-        dispatch chat_key; without a last-active stamp it would never prune.
-        """
+    def touch_conversation(self, chat_key: str) -> None:
+        """Mark a conversation active for retention and participation."""
         self._last_active[chat_key] = datetime.now()
+
+    def conversation_is_active(self, chat_key: str) -> bool:
+        """Whether a conversation has retained activity state."""
+        return chat_key in self._last_active
 
     def _prune_stale_sessions(self, *, persist: bool = True) -> None:
         """Remove state entries for conversations inactive beyond SESSION_TTL_DAYS."""
@@ -835,51 +527,134 @@ class Runtime:
         if not stale:
             return
         for cid in stale:
-            self.active_provider_by_chat.pop(cid, None)
             for session_key in [k for k in self.session_by_chat_provider if k[0] == cid]:
                 self.session_by_chat_provider.pop(session_key)
-            for model_key in [k for k in self.active_model_by_chat_provider if k[0] == cid]:
-                self.active_model_by_chat_provider.pop(model_key)
-            for effort_key in [k for k in self.effort_by_chat_provider_model if k[0] == cid]:
-                self.effort_by_chat_provider_model.pop(effort_key)
             self.compact_seed_by_chat.pop(cid, None)
             self._last_active.pop(cid)
         log.info("Pruned %d stale conversation(s) (>%dd)", len(stale), SESSION_TTL_DAYS)
         if persist:
             self.save_state()
 
-    # -- Accessors --
+    # -- Route preferences and session accessors --
 
-    def get_active_provider(self, chat_id: str) -> str:
-        """Return active provider for chat, defaulting to claude."""
-        provider = self.active_provider_by_chat.get(chat_id)
-        return provider if provider in PROVIDER_NAMES else "claude"
+    def _route_preferences_for_write(self, settings_key: str) -> RoutePreferences:
+        preferences = self.route_preferences.get(settings_key)
+        if preferences is None:
+            preferences = RoutePreferences()
+            self.route_preferences[settings_key] = preferences
+        return preferences
 
-    def get_active_model(self, chat_id: str, provider: str) -> str:
-        """Return active model for chat+provider, defaulting to first in list."""
-        stored = self.active_model_by_chat_provider.get((chat_id, provider))
-        if stored and stored in self.models.get(provider, []):
-            return stored
-        models = self.models.get(provider, [])
-        return models[0] if models else "default"
+    def _discard_empty_route_preferences(self, settings_key: str) -> None:
+        preferences = self.route_preferences.get(settings_key)
+        if preferences is not None and not (
+            preferences.provider or preferences.models or preferences.efforts
+        ):
+            self.route_preferences.pop(settings_key, None)
 
-    def get_active_effort(
+    def set_route_provider(self, settings_key: str, provider: str | None) -> None:
+        """Set or clear a route's explicit provider preference."""
+        if provider is None:
+            preferences = self.route_preferences.get(settings_key)
+            if preferences is None:
+                return
+            preferences.provider = None
+            self._discard_empty_route_preferences(settings_key)
+            return
+        self._route_preferences_for_write(settings_key).provider = provider
+
+    def set_route_model(
         self,
-        chat_id: str,
+        settings_key: str,
+        provider: str,
+        model: str | None,
+    ) -> None:
+        """Set or clear a route's explicit model preference for a provider."""
+        if model is None:
+            preferences = self.route_preferences.get(settings_key)
+            if preferences is None:
+                return
+            preferences.models.pop(provider, None)
+            self._discard_empty_route_preferences(settings_key)
+            return
+        self._route_preferences_for_write(settings_key).models[provider] = model
+
+    def set_route_effort(
+        self,
+        settings_key: str,
         provider: str,
         model: str,
-    ) -> str | None:
-        """Return the effective effort level for chat+provider+model.
+        effort: str | None,
+    ) -> None:
+        """Set or clear a route's explicit effort preference for a model."""
+        if effort is None:
+            preferences = self.route_preferences.get(settings_key)
+            if preferences is None:
+                return
+            by_model = preferences.efforts.get(provider)
+            if by_model is not None:
+                by_model.pop(model, None)
+                if not by_model:
+                    preferences.efforts.pop(provider, None)
+            self._discard_empty_route_preferences(settings_key)
+            return
+        preferences = self._route_preferences_for_write(settings_key)
+        preferences.efforts.setdefault(provider, {})[model] = effort
 
-        Returns ``None`` when the user hasn't picked a level. A stored level
-        is clamped to whatever the model actually accepts so callers always
-        see the real value in use.
-        """
-        stored = self.effort_by_chat_provider_model.get((chat_id, provider, model))
+    def resolve_route_settings(self, settings_key: str, policy: Policy) -> ResolvedSettings:
+        """Resolve one route's explicit preferences through its current policy."""
+        preferences = self.route_preferences.get(settings_key)
+        selected_provider = preferences.provider if preferences is not None else None
+        provider: str | None
+        if selected_provider in policy.providers:
+            provider = selected_provider
+            provider_source = "route"
+        else:
+            provider = policy.default_provider
+            provider_source = "policy_default"
+        if provider is None:
+            raise ValueError(f"policy {policy.name!r} has no default provider")
+
+        models = self.models.get(provider, [])
+        selected_model = preferences.models.get(provider) if preferences is not None else None
+        if selected_model in models:
+            model = selected_model
+            model_source = "route"
+        else:
+            model = models[0] if models else "default"
+            model_source = "provider_default"
+
+        selected_effort = None
+        if preferences is not None:
+            selected_effort = preferences.efforts.get(provider, {}).get(model)
         provider_cls = provider_class(provider)
-        if stored is None or not provider_cls.effort_levels:
-            return None
-        return provider_cls.clamp_effort(stored, model)
+        if selected_effort in provider_cls.effort_levels:
+            effort = provider_cls.clamp_effort(selected_effort, model)
+            effort_source = "route"
+        else:
+            effort = None
+            effort_source = "cli_default"
+
+        return ResolvedSettings(
+            provider=provider,
+            model=model,
+            effort=effort,
+            provider_source=provider_source,
+            model_source=model_source,
+            effort_source=effort_source,
+        )
+
+    def has_session_memory(self, chat_id: str, provider: str) -> bool:
+        """Whether a provider session for this conversation already holds history.
+
+        Transports inject conversation history on the assumption that whatever
+        the agent said itself is already in its session. That assumption needs
+        this check: a ``new:``-prefixed ID is reserved but unused, so the
+        provider has not seen a single turn yet.
+        """
+        session_id = self.session_by_chat_provider.get((chat_id, provider))
+        if not session_id:
+            return False
+        return not session_id.startswith("new:")
 
     def get_chat_lock(self, chat_id: str) -> asyncio.Lock:
         """Get or create a per-chat lock to serialize requests."""
@@ -891,22 +666,14 @@ class Runtime:
 
     # -- Provider management --
 
-    def global_context(self, conv_id: str) -> ExecutionContext:
-        """The Telegram execution binding: global working_dir, unrestricted."""
-        return ExecutionContext(chat_key=conv_id, path=self.working_dir)
-
     @contextlib.asynccontextmanager
     async def _workspace_slot(self, context: ExecutionContext):
         """Hold the workspace's concurrency slot for the duration of a run.
 
-        A no-op for global (non-workspace) contexts, which stay unbounded.
         The semaphore is shared across Slack chats, compaction, and jobs bound
         to the same workspace; the default limit is one active writer.
         """
         workspace_id = context.workspace_id
-        if workspace_id is None:
-            yield
-            return
         sem = self._workspace_sems.get(workspace_id)
         if sem is None:
             sem = asyncio.Semaphore(max(1, context.concurrency))
@@ -917,15 +684,13 @@ class Runtime:
     async def _prepare_execution_context(
         self, provider: str, context: ExecutionContext
     ) -> ExecutionContext:
-        """Resolve a teams profile into a native launch at the spawn boundary."""
-        if context.launch is not None or context.access is None:
+        """Resolve the native policy launch under the workspace slot."""
+        if context.launch is not None:
             return context
-        if context.workspace is None:
-            raise RuntimeError("access profile is missing its workspace binding")
         from .policy import prepare_launch
 
         launch = await asyncio.to_thread(
-            prepare_launch, context.workspace, context.access, provider
+            prepare_launch, context.workspace, context.policy, provider
         )
         if context.on_launch is not None:
             await asyncio.to_thread(context.on_launch, launch)
@@ -935,17 +700,16 @@ class Runtime:
         self,
         provider_name: str,
         *,
+        context: ExecutionContext,
         timeout: int | float | None = None,
-        context: ExecutionContext | None = None,
     ) -> BaseProvider:
-        """Create a fresh provider instance using the configured CLI path."""
+        """Create a provider bound to an explicit workspace execution context."""
         provider_cfg = self.config.get("providers", {}).get(provider_name, {})
         path = provider_cfg.get("path", provider_name)
         effective_timeout = self.agent_timeout if timeout is None else timeout
-        working_dir = context.path if context is not None else self.working_dir
         return provider_class(provider_name)(
             path,
-            working_dir=working_dir,
+            working_dir=context.path,
             timeout=effective_timeout,
         )
 
@@ -954,15 +718,15 @@ class Runtime:
     # Providers that support pre-assigned session IDs. For these,
     # Enso generates the ID upfront so it persists across restarts.
     # Codex and Agy generate their own IDs, which we capture after spawning.
-    _SELF_MANAGED_SESSIONS: ClassVar[set[str]] = {"claude"}
+    _SELF_MANAGED_SESSIONS: ClassVar[set[str]] = {"claude", "grok"}
 
     def _get_or_create_session(self, chat_id: str, provider_name: str) -> str | None:
         """Get existing session ID, or generate one for providers that support it.
 
-        For self-managed providers (Claude), generates a UUID upfront and
-        stores it. The first call uses --session-id to create the session;
-        subsequent calls use --resume. We track this by prefixing new
-        (unused) session IDs with 'new:'.
+        For self-managed providers (Claude, Grok), generates a UUID upfront
+        and stores it. The first call uses --session-id to create the
+        session; subsequent calls use --resume. We track this by prefixing
+        new (unused) session IDs with 'new:'.
         """
         key = (chat_id, provider_name)
         session_id = self.session_by_chat_provider.get(key)
@@ -990,15 +754,10 @@ class Runtime:
         prompt: str,
         ctx: TransportContext,
         *,
+        context: ExecutionContext,
         preview: str = "",
-        context: ExecutionContext | None = None,
     ) -> None:
-        """Dispatch a prompt, queuing if a request is already running.
-
-        ``context`` is the resolved execution binding; None binds the global
-        context (global working_dir, conversation-keyed state).
-        """
-        context = context or self.global_context(conversation_id)
+        """Dispatch a prompt under its resolved workspace-policy binding."""
         if self.update_in_progress:
             await ctx.reply("Enso is updating. Please try again after it restarts.")
             await self._finalize_unrun(context, "update_in_progress")
@@ -1006,7 +765,7 @@ class Runtime:
         chat_key = context.chat_key
         self._last_active[chat_key] = datetime.now()
         lock = self.get_chat_lock(chat_key)
-        provider = self.get_active_provider(chat_key)
+        provider = context.provider
 
         if lock.locked():
             queue = self._queue_by_conversation.setdefault(chat_key, deque())
@@ -1019,15 +778,13 @@ class Runtime:
                     prompt=prompt,
                     ctx=ctx,
                     preview=preview,
-                    provider=provider,
                     context=context,
                 )
             )
             pos = len(queue)
             label = f"{preview}\u2026" if len(preview) == 50 else preview
             await ctx.reply(f"Queued (#{pos}): {label}")
-            # Teams-mode logs are metadata-only; the preview is content.
-            logged = "<redacted>" if context.workspace_id is not None else preview
+            logged = preview if context.include_global_messages else "<redacted>"
             log.info("Queued #%d for %s: %s", pos, conversation_id, logged)
             return
 
@@ -1037,9 +794,8 @@ class Runtime:
             provider,
             len(prompt),
         )
-        if context.workspace_id is None:
+        if context.include_global_messages:
             log.debug("Dispatch prompt:\n%s", prompt)
-
         async with lock:
             await self._run_request(provider, prompt, ctx, context)
             await self._drain_queue(chat_key)
@@ -1100,13 +856,13 @@ class Runtime:
             try:
                 prepared = await self._prepare_execution_context(provider, context)
             except Exception:
-                log.exception("Native policy launch failed for conv=%s", chat_key)
+                log.exception("Execution preparation failed for conv=%s", chat_key)
                 with contextlib.suppress(Exception):
                     await ctx.reply(
                         "This conversation isn't fully configured for Enso — "
                         "ask an admin to run `enso config check`."
                     )
-                return "blocked", "policy_unavailable"
+                return "blocked", "execution_unavailable"
             return await self.process_request(provider, prompt, chat_key, ctx, context=prepared)
 
     async def _drain_queue(self, chat_key: str) -> None:
@@ -1120,10 +876,14 @@ class Runtime:
                 "Dequeuing for conv=%s (%d remaining): %s",
                 chat_key,
                 len(queue),
-                "<redacted>" if item.context and item.context.workspace_id else item.preview,
+                item.preview if item.context.include_global_messages else "<redacted>",
             )
-            context = item.context or self.global_context(chat_key)
-            await self._run_request(item.provider, item.prompt, item.ctx, context)
+            await self._run_request(
+                item.context.provider,
+                item.prompt,
+                item.ctx,
+                item.context,
+            )
 
     def kick_queue(self, conv_id: str) -> None:
         """Schedule a queue drain outside dispatch (e.g. after /compact).
@@ -1163,8 +923,7 @@ class Runtime:
         items = list(queue)
         queue.clear()
         for item in items:
-            if item.context is not None:
-                await self._finalize_unrun(item.context, "queue_cleared")
+            await self._finalize_unrun(item.context, "queue_cleared")
         return len(items)
 
     async def remove_from_queue(self, conv_id: str, index: int) -> bool:
@@ -1173,8 +932,7 @@ class Runtime:
         if queue and 0 <= index < len(queue):
             item = queue[index]
             del queue[index]
-            if item.context is not None:
-                await self._finalize_unrun(item.context, "queue_removed")
+            await self._finalize_unrun(item.context, "queue_removed")
             log.info("Removed queue item %d for conv=%s", index, conv_id)
             return True
         return False
@@ -1234,7 +992,7 @@ class Runtime:
         chat_id: str,
         provider_name: str,
         *,
-        context: ExecutionContext | None = None,
+        context: ExecutionContext,
     ) -> str:
         """Run a hidden summarisation pass and return the summary text.
 
@@ -1249,27 +1007,18 @@ class Runtime:
             log.warning("run_compaction skipped — chat %s is busy", chat_id)
             return ""
 
-        slot = self._workspace_slot(context) if context is not None else contextlib.nullcontext()
-        async with lock, slot:
-            if context is not None:
-                try:
-                    context = await self._prepare_execution_context(provider_name, context)
-                except Exception:
-                    log.exception(
-                        "Native policy launch failed during compaction for chat=%s",
-                        chat_id,
-                    )
-                    return ""
-            model = (
-                context.model
-                if context is not None and context.model is not None
-                else self.get_active_model(chat_id, provider_name)
-            )
-            effort = (
-                context.effort
-                if context is not None and context.model is not None
-                else self.get_active_effort(chat_id, provider_name, model)
-            )
+        async with lock, self._workspace_slot(context):
+            try:
+                context = await self._prepare_execution_context(provider_name, context)
+            except Exception:
+                log.exception(
+                    "Execution preparation failed during compaction for chat=%s",
+                    chat_id,
+                )
+                return ""
+            models = self.models.get(provider_name, [])
+            model = context.model or (models[0] if models else "default")
+            effort = context.effort
             provider = self.make_provider(
                 provider_name, timeout=self.agent_timeout, context=context
             )
@@ -1450,9 +1199,9 @@ class Runtime:
         chat_id: str,
         model: str,
         *,
+        context: ExecutionContext,
         effort: str | None = None,
         extra_env: dict[str, str] | None = None,
-        context: ExecutionContext | None = None,
     ):
         """Spawn a provider subprocess and yield StreamEvents.
 
@@ -1461,14 +1210,31 @@ class Runtime:
         ``ENSO_ORIGIN_*`` so commands like ``enso message send`` can route
         back to the triggering conversation without an explicit ``--to``.
 
-        ``context`` selects the execution binding: cwd, the policy launch
-        (non-bypass flags), and — for policy launches — the allowlisted
-        minimal environment instead of the full parent environment.
+        ``context`` must already carry the policy launch prepared under its
+        workspace slot. It selects the cwd, non-bypass flags, and — for
+        restricted launches — the allowlisted environment.
         """
-        context = context or self.global_context(chat_id)
         launch = context.launch
+        if launch is None:
+            raise RuntimeError("execution context must be prepared before provider execution")
+        from .instructions import validate_launch_discovery
+
+        # This must run inside every generator invocation: transient retries
+        # call ``run_provider`` again, so neither a prepared context nor a
+        # previous attempt can cache filesystem discovery state.
+        instructions = await asyncio.to_thread(
+            validate_launch_discovery,
+            context.workspace,
+        )
         session_id = self._get_or_create_session(chat_id, provider.name)
-        cmd = provider.build_command(prompt, model, session_id, effort=effort, launch=launch)
+        cmd = provider.build_command(
+            prompt,
+            model,
+            session_id,
+            effort=effort,
+            launch=launch,
+            instructions=instructions,
+        )
         log.info(
             "[%s] spawning class=%s chat=%s model=%s effort=%s session=%s prompt_len=%d",
             provider.name,
@@ -1478,6 +1244,11 @@ class Runtime:
             effort or "-",
             session_id or "-",
             len(prompt),
+        )
+        log.info(
+            "[%s] shared instructions revision=%s",
+            provider.name,
+            instructions.revision[:12],
         )
         log.debug("[%s] command=%s", provider.name, _redacted_command(cmd))
 
@@ -1517,9 +1288,9 @@ class Runtime:
         limit = provider.stdout_limit()
         if limit:
             kwargs["limit"] = limit
-        # A policy launch supplies a complete allowlisted environment; the
-        # unrestricted/legacy path inherits the parent environment as before.
-        base_env = launch.env if launch is not None and launch.env is not None else None
+        # A restricted policy launch supplies a complete allowlisted
+        # environment; an explicitly prepared unrestricted policy inherits.
+        base_env = launch.env
         if base_env is not None or extra_env:
             merged = dict(base_env) if base_env is not None else os.environ.copy()
             merged.update(extra_env or {})
@@ -1528,7 +1299,7 @@ class Runtime:
             "[%s] subprocess cwd=%s launch=%s extra_env_keys=%s",
             provider.name,
             context.path,
-            launch.mode if launch is not None else "legacy",
+            launch.mode,
             sorted(extra_env) if extra_env else [],
         )
 
@@ -1695,7 +1466,7 @@ class Runtime:
         chat_id: str,
         ctx: TransportContext,
         *,
-        context: ExecutionContext | None = None,
+        context: ExecutionContext,
     ) -> tuple[str, str | None]:
         """Run a full provider request with status ticker and response delivery.
 
@@ -1704,7 +1475,23 @@ class Runtime:
         record it on the audit turn: ``completed``, ``error``, ``timeout``, or
         (via cancellation in the caller) ``stopped``.
         """
-        context = context or self.global_context(chat_id)
+        from .instructions import validate_launch_discovery
+
+        # Prompt assembly consumes durable background messages and a one-shot
+        # compact seed. Refuse an invalid discovery boundary before touching
+        # either; ``run_provider`` validates again immediately before every
+        # actual spawn so later filesystem races and retries still fail closed.
+        try:
+            await asyncio.to_thread(validate_launch_discovery, context.workspace)
+        except Exception:
+            log.exception("Launch discovery validation failed for conv=%s", chat_id)
+            with contextlib.suppress(Exception):
+                await ctx.reply(
+                    "This conversation isn't fully configured for Enso — "
+                    "ask an admin to run `enso config check`."
+                )
+            return "blocked", "execution_unavailable"
+
         prompt, output_instructions, surface_instructions = self._assemble_prompt(
             prompt, chat_id, provider_name, ctx, context
         )
@@ -1723,28 +1510,77 @@ class Runtime:
         stop = asyncio.Event()
         ticker = asyncio.create_task(self._run_ticker(ctx, status_msg, state, stop))
         msg_limit = self.transport.message_limit if self.transport else 4096
+        request_deadline = (
+            asyncio.get_running_loop().time() + self.agent_timeout
+            if self.agent_timeout
+            else None
+        )
 
         try:
-            response_parts, error_text, timed_out = await self._collect_provider_output(
-                provider,
-                prompt,
-                chat_id,
-                model,
-                effort=effort,
-                origin_env=origin_env,
-                context=context,
-                state=state,
-            )
-            if timed_out:
-                await self._stop_ticker(ticker, stop, chat_id)
-                await self._report_timeout(ctx, chat_id, provider_name, status_msg)
-                return "timeout", None
+            repair_attempts = 0
+            provider_prompt = prompt
+            while True:
+                response_parts, error_text, timed_out = await self._collect_provider_output(
+                    provider,
+                    provider_prompt,
+                    chat_id,
+                    model,
+                    effort=effort,
+                    origin_env=origin_env,
+                    context=context,
+                    state=state,
+                    deadline=request_deadline,
+                )
+                if timed_out:
+                    await self._stop_ticker(ticker, stop, chat_id)
+                    await self._report_timeout(ctx, chat_id, provider_name, status_msg)
+                    return "timeout", None
+
+                response_text = provider.format_response(response_parts)
+                repair_prompt = (
+                    _structured_output_repair_prompt(
+                        response_text,
+                        output_instructions=output_instructions,
+                        surface_instructions=surface_instructions,
+                    )
+                    if response_text and not error_text
+                    else None
+                )
+                if repair_prompt is None:
+                    break
+                resumable_session = self.has_session_memory(chat_id, provider.name)
+                if (
+                    repair_attempts >= STRUCTURED_OUTPUT_REPAIR_ATTEMPTS
+                    or not resumable_session
+                ):
+                    await self._stop_ticker(ticker, stop, chat_id)
+                    if status_msg is not None:
+                        await ctx.delete_status(status_msg)
+                    await ctx.reply(STRUCTURED_OUTPUT_FAILURE_NOTICE)
+                    log.warning(
+                        "[%s] invalid structured output not corrected chat=%s "
+                        "resumable_session=%s attempts=%d",
+                        provider_name,
+                        chat_id,
+                        resumable_session,
+                        repair_attempts,
+                    )
+                    return "error", "invalid_structured_output"
+
+                repair_attempts += 1
+                provider_prompt = repair_prompt
+                state["action"] = "Correcting response formatting"
+                log.info(
+                    "[%s] correcting invalid structured output chat=%s attempt=%d",
+                    provider_name,
+                    chat_id,
+                    repair_attempts,
+                )
 
             await self._stop_ticker(ticker, stop, chat_id)
             if status_msg is not None:
                 await ctx.delete_status(status_msg)
 
-            response_text = provider.format_response(response_parts)
             log.info(
                 "[%s] request complete chat=%s response_parts=%d "
                 "response_len=%d error=%s elapsed=%s",
@@ -1800,10 +1636,9 @@ class Runtime:
         The instruction strings come back alongside the prompt because response
         delivery may only honour a fence the agent was actually told to emit.
         """
-        # Inject background messages. Teams executions consume only messages
-        # explicitly addressed to them — a global message must not leak into
-        # an arbitrary route's context.
-        bg = messages.consume(chat_id, include_global=context.workspace_id is None)
+        # Global message consumption is an explicit transport decision. Slack
+        # and jobs keep it off so a shared message cannot leak into their work.
+        bg = messages.consume(chat_id, include_global=context.include_global_messages)
         if bg:
             prompt = f"{messages.format_for_injection(bg)}\n\n{prompt}"
             log.info("[%s] Injected %d background message(s) into prompt", provider_name, len(bg))
@@ -1830,16 +1665,9 @@ class Runtime:
         context: ExecutionContext,
     ) -> tuple[BaseProvider, str, str | None, dict[str, str]]:
         """Resolve what to run this request with, and log that decision."""
-        model = (
-            context.model
-            if context.model is not None
-            else self.get_active_model(chat_id, provider_name)
-        )
-        effort = (
-            context.effort
-            if context.model is not None
-            else self.get_active_effort(chat_id, provider_name, model)
-        )
+        models = self.models.get(provider_name, [])
+        model = context.model or (models[0] if models else "default")
+        effort = context.effort
         provider = self.make_provider(provider_name, timeout=self.agent_timeout, context=context)
 
         try:
@@ -1848,10 +1676,9 @@ class Runtime:
             log.warning("get_origin_env failed for chat %s", chat_id, exc_info=True)
             origin_env = {}
 
-        # Named-workspace operational logs are metadata-only; global Telegram
-        # work retains the existing optional prompt logging behavior.
-        is_bound = context.workspace_id is not None
-        preview = "<redacted>" if is_bound else f"{prompt[:120]}"
+        # Shared Slack/job work is metadata-only; personal Telegram work keeps
+        # its existing opt-in prompt diagnostics.
+        preview = f"{prompt[:120]}" if context.include_global_messages else "<redacted>"
         log.info(
             "[%s] request chat=%s provider_class=%s model=%s effort=%s prompt_len=%d preview=%s",
             provider_name,
@@ -1863,7 +1690,7 @@ class Runtime:
             preview,
         )
         log.debug("[%s] origin_env_keys=%s", provider_name, sorted(origin_env))
-        if self.debug_prompts and not is_bound:
+        if self.debug_prompts and context.include_global_messages:
             log.debug("[%s] full_prompt:\n%s", provider_name, prompt)
         return provider, model, effort, origin_env
 
@@ -1909,6 +1736,7 @@ class Runtime:
         origin_env: dict[str, str],
         context: ExecutionContext,
         state: dict[str, Any],
+        deadline: float | None = None,
     ) -> tuple[list[str], str, bool]:
         """Stream the provider to completion under the configured deadline.
 
@@ -1946,16 +1774,41 @@ class Runtime:
                 elif event.kind == "error":
                     error_text = event.text
 
-        timed_out = await self._run_until_deadline(consume_provider_events(), chat_id)
+        timed_out = await self._run_until_deadline(
+            consume_provider_events(), chat_id, deadline=deadline
+        )
+        if not timed_out and error_text and provider.retryable_error(error_text):
+            # One retry for transient startup failures (grok's lapsed OAuth
+            # token refreshing in the background). run_provider re-reads
+            # session state, so a session reverted by the failed run is
+            # created again rather than resumed.
+            log.info(
+                "[%s] retrying once after transient error: %s",
+                provider.name,
+                error_text[:200],
+            )
+            response_parts.clear()
+            error_text = ""
+            timed_out = await self._run_until_deadline(
+                consume_provider_events(), chat_id, deadline=deadline
+            )
         return response_parts, error_text, timed_out
 
     async def _run_until_deadline(
-        self, work: Coroutine[Any, Any, None], chat_id: str
+        self,
+        work: Coroutine[Any, Any, None],
+        chat_id: str,
+        *,
+        deadline: float | None = None,
     ) -> bool:
         """Run ``work`` and return True only when our deadline expires."""
-        if not self.agent_timeout:
+        if deadline is None and not self.agent_timeout:
             await work
             return False
+
+        timeout = self.agent_timeout
+        if deadline is not None:
+            timeout = max(0.0, deadline - asyncio.get_running_loop().time())
 
         provider_task = asyncio.create_task(work)
 
@@ -1971,7 +1824,7 @@ class Runtime:
         try:
             done, _ = await asyncio.wait(
                 {provider_task},
-                timeout=self.agent_timeout,
+                timeout=timeout,
             )
             if provider_task in done:
                 await provider_task

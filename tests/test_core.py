@@ -3,20 +3,21 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import importlib.resources
 import json
 import os
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from enso import core as core_module
 from enso import messages
-from enso.config import SKILL_TOMBSTONES_DIRNAME
+from enso.config import managed_workspace_path
 from enso.core import (
+    ExecutionContext,
     Runtime,
     _redacted_command,
     format_elapsed,
@@ -24,6 +25,7 @@ from enso.core import (
     status_header,
     status_text,
 )
+from enso.instructions import InstructionError
 from enso.jobs import Job
 from enso.outbound import (
     CanvasPublication,
@@ -36,9 +38,110 @@ from enso.outbound import (
     SeriesChart,
 )
 from enso.providers import BaseProvider, StreamEvent
-from enso.providers.agy import AgyProvider
 from enso.providers.claude import ClaudeProvider
+from enso.teams import Policy, Workspace
 from enso.transports import TransportContext
+
+
+def _execution_context(
+    sample_config: dict,
+    chat_key: str = "1",
+    *,
+    include_global_messages: bool = True,
+    providers: tuple[str, ...] = ("claude", "codex", "agy"),
+    concurrency: int = 1,
+    **kwargs,
+) -> ExecutionContext:
+    """Build a complete unrestricted workspace binding for runtime tests."""
+    path = managed_workspace_path()
+    workspace = Workspace("default", path, "test", concurrency)
+    policy = Policy("test", None, True, providers, providers[0], "*")
+    provider = kwargs.pop("provider", providers[0])
+    models = sample_config["providers"][provider]["models"]
+    model = kwargs.pop("model", models[0] if models else "default")
+    effort = kwargs.pop("effort", None)
+    return ExecutionContext(
+        chat_key=chat_key,
+        settings_key=kwargs.pop("settings_key", chat_key),
+        path=path,
+        workspace_id=workspace.name,
+        workspace=workspace,
+        policy=policy,
+        include_global_messages=include_global_messages,
+        provider=provider,
+        concurrency=concurrency,
+        model=model,
+        effort=effort,
+        provider_source=kwargs.pop(
+            "provider_source",
+            "policy_default" if provider == policy.default_provider else "route",
+        ),
+        model_source=kwargs.pop("model_source", "provider_default"),
+        effort_source=kwargs.pop(
+            "effort_source",
+            "route" if effort is not None else "cli_default",
+        ),
+        **kwargs,
+    )
+
+
+async def _process_request(
+    runtime: Runtime,
+    sample_config: dict,
+    provider_name: str,
+    prompt: str,
+    chat_id: str,
+    ctx: TransportContext,
+    **kwargs,
+):
+    """Exercise request handling with a complete personal workspace binding."""
+    context = await _prepared_context(
+        runtime,
+        sample_config,
+        provider_name,
+        chat_id,
+        **kwargs,
+    )
+    return await runtime.process_request(
+        provider_name,
+        prompt,
+        chat_id,
+        ctx,
+        context=context,
+    )
+
+
+async def _prepared_context(
+    runtime: Runtime,
+    sample_config: dict,
+    provider_name: str,
+    chat_key: str = "1",
+    **kwargs,
+) -> ExecutionContext:
+    context = _execution_context(
+        sample_config,
+        chat_key,
+        provider=provider_name,
+        **kwargs,
+    )
+    _ensure_launch_discovery_fixture(context)
+    return await runtime._prepare_execution_context(provider_name, context)
+
+
+def _ensure_launch_discovery_fixture(context: ExecutionContext) -> None:
+    """Complete the shared lightweight fixture only for real spawn tests."""
+    from enso.repository import EnsoRepository
+    from enso.scaffolding import ScaffoldService
+
+    root = Path(context.path).parent.parent
+    scaffold = ScaffoldService(root)
+    scaffold.repair_global()
+    scaffold.repair_workspace(context.workspace.name)
+    workspace_agents = Path(context.path, "AGENTS.md")
+    if not workspace_agents.exists():
+        workspace_agents.write_text("# Test workspace instructions\n", encoding="utf-8")
+    scaffold.repair_workspace(context.workspace.name)
+    EnsoRepository(str(root)).ensure()
 
 # -- split_text --
 
@@ -89,271 +192,76 @@ def test_redacted_command_hides_agy_prompt():
     assert "<prompt chars=13>" in rendered
 
 
-# -- Workspace setup --
+def test_redacted_command_hides_codex_user_prompt():
+    rendered = _redacted_command(["codex", "exec", "--", "user secret"])
+
+    assert "user secret" not in rendered
+    assert "<prompt chars=11>" in rendered
 
 
-def _legacy_agents_prompt() -> tuple[str, str]:
-    """Return the current and exact pre-task-removal prompt templates.
-
-    The legacy template is a checked-in fixture (the last bundled prompt
-    that still documented the tasks system) so editing the current bundled
-    prompt never breaks migration tests.
-    """
-    current = (
-        importlib.resources.files("enso")
-        .joinpath("prompts", "AGENTS.md")
-        .read_text(encoding="utf-8")
+def test_redacted_command_hides_grok_single_prompt():
+    """Grok's prompt rides attached to its flag, not behind a separator."""
+    rendered = _redacted_command(
+        ["grok", "--output-format", "streaming-messages-json", "--single=secret prompt"]
     )
-    legacy = (
-        Path(__file__).parent / "data" / "legacy_tasks_agents.md"
-    ).read_text(encoding="utf-8")
-    assert hashlib.sha256(legacy.encode()).hexdigest() == (
-        core_module._LEGACY_TASKS_AGENTS_SHA256
+    assert "secret prompt" not in rendered
+    assert "--single=<prompt chars=13>" in rendered
+
+
+def test_redacted_command_hides_grok_rules_instructions():
+    """Grok's explicit shared instructions ride attached and must be redacted."""
+    rendered = _redacted_command(
+        ["grok", "--rules=SECRET OPERATOR GUIDANCE", "--single=hi"]
     )
-    return current, legacy
+    assert "SECRET" not in rendered
+    assert "--rules=<instructions chars=24>" in rendered
 
 
-def test_install_system_prompts_migrates_exact_legacy_template(sample_config):
-    current, legacy = _legacy_agents_prompt()
-    agents_file = Path(sample_config["working_dir"], "AGENTS.md")
-    agents_file.write_text(legacy)
+def test_runtime_has_no_global_execution_directory_or_context(sample_config):
+    runtime = Runtime(sample_config)
 
-    Runtime(sample_config).install_system_prompts()
-
-    assert agents_file.read_text() == current
+    assert not hasattr(runtime, "working_dir")
+    assert not hasattr(runtime, "global_context")
 
 
-def test_legacy_prompt_migration_failure_preserves_original(
-    sample_config, monkeypatch
-):
-    _, legacy = _legacy_agents_prompt()
-    agents_file = Path(sample_config["working_dir"], "AGENTS.md")
-    agents_file.write_text(legacy)
+def test_execution_context_requires_workspace_policy_and_message_scope(sample_config):
+    path = managed_workspace_path()
 
-    def fail_replace(_source, _target):
-        raise OSError("replace failed")
-
-    monkeypatch.setattr("enso.core.os.replace", fail_replace)
-
-    Runtime(sample_config).install_system_prompts()
-
-    assert agents_file.read_text() == legacy
-    assert list(agents_file.parent.glob("*.tmp")) == []
+    with pytest.raises(TypeError):
+        ExecutionContext(chat_key="chat", path=path, workspace_id="test")  # type: ignore[call-arg]
 
 
-def test_install_system_prompts_preserves_customized_template(sample_config, caplog):
-    _, legacy = _legacy_agents_prompt()
-    agents_file = Path(sample_config["working_dir"], "AGENTS.md")
-    customized = legacy + "\n## Local instructions\nKeep this customization.\n"
-    agents_file.write_text(customized)
+def test_has_session_memory_reports_only_used_sessions(sample_config):
+    """A reserved `new:` ID has sent the provider nothing, so it holds no memory."""
+    runtime = Runtime(sample_config)
 
-    Runtime(sample_config).install_system_prompts()
+    assert not runtime.has_session_memory("chat", "claude")
 
-    assert agents_file.read_text() == customized
-    assert "contains retired task instructions" in caplog.text
+    runtime.session_by_chat_provider[("chat", "claude")] = "new:abc-123"
+    assert not runtime.has_session_memory("chat", "claude")
 
-
-def test_install_system_prompts_updates_any_known_pristine_template(
-    sample_config, monkeypatch,
-):
-    """An untouched prompt from an earlier release follows the bundle forward."""
-    current, _ = _legacy_agents_prompt()
-    previous = "# Enso\n\nformer pristine bundled prompt\n"
-    agents_file = Path(sample_config["working_dir"], "AGENTS.md")
-    agents_file.write_text(previous)
-    monkeypatch.setattr(
-        core_module,
-        "_PRISTINE_AGENTS_SHA256",
-        frozenset({hashlib.sha256(previous.encode()).hexdigest()}),
-    )
-
-    Runtime(sample_config).install_system_prompts()
-
-    assert agents_file.read_text() == current
+    runtime.session_by_chat_provider[("chat", "claude")] = "abc-123"
+    assert runtime.has_session_memory("chat", "claude")
+    # Sessions are per provider, never shared across them.
+    assert not runtime.has_session_memory("chat", "codex")
 
 
-def test_install_system_prompts_preserves_unknown_template(sample_config, caplog):
-    """A prompt whose hash is unknown is customized — leave it entirely alone."""
-    agents_file = Path(sample_config["working_dir"], "AGENTS.md")
-    customized = "# Enso\n\nMy own prompt.\n"
-    agents_file.write_text(customized)
-
-    Runtime(sample_config).install_system_prompts()
-
-    assert agents_file.read_text() == customized
-    assert "retired task instructions" not in caplog.text
+# -- Bundled guidance --
 
 
-def test_install_system_prompts_creates_docs_dir(tmp_enso, sample_config):
-    Runtime(sample_config).install_system_prompts()
-
-    assert Path(tmp_enso, "docs").is_dir()
-    assert Path(tmp_enso, "jobs").is_dir()
-
-
-def test_docs_skill_is_bundled(tmp_path):
-    skills_dir = tmp_path / "skills"
-    skills_dir.mkdir()
-
-    Runtime._install_bundled_skills(str(skills_dir))
-
-    assert (skills_dir / "docs" / "SKILL.md").is_file()
+def test_bundled_prompts_are_transport_neutral():
+    prompts = importlib.resources.files("enso").joinpath("prompts")
+    for filename in ("AGENTS.md", "WORKSPACE_AGENTS.md"):
+        content = prompts.joinpath(filename).read_text(encoding="utf-8").lower()
+        assert "slack" not in content
+        assert "telegram" not in content
 
 
-def test_tables_skill_is_bundled(tmp_path):
-    skills_dir = tmp_path / "skills"
-    skills_dir.mkdir()
-
-    Runtime._install_bundled_skills(str(skills_dir))
-
-    skill = skills_dir / "tables" / "SKILL.md"
-    assert skill.is_file()
-    content = skill.read_text(encoding="utf-8")
-    assert "enso table list" in content
-    assert "sqlite3 ~/.enso/enso.db" in content
-    assert "runs" in content
-    assert "_enso_" in content
-    assert ".bail on" in content
-    assert "PRAGMA foreign_keys = ON;" in content
-
-
-def test_bundled_prompt_documents_the_doc_commands():
-    """AGENTS.md is always in context; the doc surface has to appear there."""
-    current, _ = _legacy_agents_prompt()
-    assert "enso doc list" in current
-    assert "enso doc create" in current
-    assert "`docs` skill" in current
-
-
-def test_bundled_prompt_documents_the_table_commands():
-    """AGENTS.md keeps the data-table discovery surface always available."""
-    current, _ = _legacy_agents_prompt()
-    assert "enso table list" in current
-    assert "enso table schema" in current
-    assert "enso table register" in current
-    assert "`tables` skill" in current
-
-
-def test_bundled_skills_are_seeded_once(tmp_path):
-    skills_dir = tmp_path / "skills"
-    skills_dir.mkdir()
-    Runtime._install_bundled_skills(str(skills_dir))
-    skill_file = skills_dir / "jobs" / "SKILL.md"
-    assert skill_file.is_file()
-
-    skill_file.write_text("locally edited through the dashboard\n")
-    Runtime._install_bundled_skills(str(skills_dir))
-
-    assert skill_file.read_text() == "locally edited through the dashboard\n"
-
-
-def test_bundled_skill_tombstone_prevents_reseeding(tmp_path):
-    skills_dir = tmp_path / "skills"
-    tombstones = skills_dir / SKILL_TOMBSTONES_DIRNAME
-    tombstones.mkdir(parents=True)
-    (tombstones / "jobs.deleted").write_text("")
-
-    Runtime._install_bundled_skills(str(skills_dir))
-
-    assert not (skills_dir / "jobs").exists()
-    assert (skills_dir / "slack" / "SKILL.md").is_file()
-
-
-def test_bundled_skills_update_only_known_pristine_files(tmp_path, monkeypatch):
-    skills_dir = tmp_path / "skills"
-    skill_dir = skills_dir / "jobs"
-    skill_dir.mkdir(parents=True)
-    skill_file = skill_dir / "SKILL.md"
-    previous = "former pristine bundled jobs skill\n"
-    skill_file.write_text(previous)
-    monkeypatch.setattr(
-        core_module,
-        "_BUNDLED_SKILL_PRISTINE_HASHES",
-        {
-            ("jobs", "SKILL.md"): frozenset({
-                hashlib.sha256(previous.encode()).hexdigest()
-            })
-        },
-    )
-
-    Runtime._install_bundled_skills(str(skills_dir))
-
-    current = (
-        importlib.resources.files("enso")
-        .joinpath("skills", "jobs", "SKILL.md")
-        .read_text(encoding="utf-8")
-    )
-    assert skill_file.read_text() == current
-
-
-def test_bundled_skills_preserve_symlink_even_when_target_hash_is_known(
-    tmp_path, monkeypatch
-):
-    skills_dir = tmp_path / "skills"
-    skill_dir = skills_dir / "jobs"
-    skill_dir.mkdir(parents=True)
-    target = tmp_path / "custom-jobs-skill.md"
-    previous = "former pristine bundled jobs skill\n"
-    target.write_text(previous)
-    skill_file = skill_dir / "SKILL.md"
-    skill_file.symlink_to(target)
-    monkeypatch.setattr(
-        core_module,
-        "_BUNDLED_SKILL_PRISTINE_HASHES",
-        {
-            ("jobs", "SKILL.md"): frozenset({
-                hashlib.sha256(previous.encode()).hexdigest()
-            })
-        },
-    )
-
-    Runtime._install_bundled_skills(str(skills_dir))
-
-    assert skill_file.is_symlink()
-    assert target.read_text() == previous
-
-
-def test_retire_legacy_tasks_skill_only_when_pristine(tmp_path, monkeypatch):
-    skills_dir = tmp_path / "skills"
-    task_dir = skills_dir / "tasks"
-    task_dir.mkdir(parents=True)
-    pristine = "former bundled task skill\n"
-    monkeypatch.setattr(
-        core_module,
-        "_LEGACY_TASKS_SKILL_SHA256",
-        hashlib.sha256(pristine.encode()).hexdigest(),
-    )
-
-    (task_dir / "SKILL.md").write_text(pristine)
-    Runtime._retire_legacy_tasks_skill(str(skills_dir))
-    assert not task_dir.exists()
-
-    task_dir.mkdir()
-    (task_dir / "SKILL.md").write_text(pristine + "customized\n")
-    Runtime._retire_legacy_tasks_skill(str(skills_dir))
-    assert task_dir.is_dir()
-
-    (task_dir / "SKILL.md").write_text(pristine)
-    (task_dir / "notes.md").write_text("user-owned companion file\n")
-    Runtime._retire_legacy_tasks_skill(str(skills_dir))
-    assert task_dir.is_dir()
-
-
-def test_retire_legacy_tasks_skill_preserves_directory_symlink(tmp_path, caplog):
-    skills_dir = tmp_path / "skills"
-    skills_dir.mkdir()
-    target = tmp_path / "custom-task-skill"
-    target.mkdir()
-    skill_file = target / "SKILL.md"
-    skill_file.write_text("custom task skill\n")
-    task_link = skills_dir / "tasks"
-    task_link.symlink_to(target, target_is_directory=True)
-
-    Runtime._retire_legacy_tasks_skill(str(skills_dir))
-
-    assert task_link.is_symlink()
-    assert skill_file.read_text() == "custom task skill\n"
-    assert "Preserving customized retired tasks skill" in caplog.text
+def test_runtime_has_no_content_installer_api():
+    assert not hasattr(Runtime, "install_system_prompts")
+    assert not hasattr(Runtime, "install_workspaces")
+    assert not hasattr(Runtime, "_install_bundled_skills")
+    assert not hasattr(Runtime, "_install_skill_tools")
 
 
 # -- Runtime state --
@@ -361,8 +269,15 @@ def test_retire_legacy_tasks_skill_preserves_directory_symlink(tmp_path, caplog)
 
 def test_runtime_defaults(sample_config):
     rt = Runtime(sample_config)
-    assert rt.get_active_provider("1") == "claude"
-    assert rt.get_active_model("1", "claude") == "opus"
+    resolved = rt.resolve_route_settings(
+        "route-1",
+        _execution_context(sample_config).policy,
+    )
+    assert (resolved.provider, resolved.model, resolved.effort) == (
+        "claude",
+        "opus",
+        None,
+    )
     assert rt.agent_timeout == 30 * 60
     assert rt.debug_prompts is False
     assert rt.debug_events is False
@@ -381,22 +296,186 @@ def test_runtime_reads_debug_logging_flags(sample_config):
     assert rt.debug_events is True
 
 
-def test_runtime_provider_switch(sample_config):
+def test_route_preferences_use_one_durable_namespace(tmp_enso, sample_config):
+    """Provider, model, and effort choices persist together by route."""
     rt = Runtime(sample_config)
-    rt.active_provider_by_chat["1"] = "codex"
-    assert rt.get_active_provider("1") == "codex"
+    route_key = "slack:account-1:channel-C1"
+    model = sample_config["providers"]["codex"]["models"][0]
+
+    rt.set_route_provider(route_key, "codex")
+    rt.set_route_model(route_key, "codex", model)
+    rt.set_route_effort(route_key, "codex", model, "high")
+    rt.save_state()
+
+    persisted = json.loads(Path(tmp_enso, "state.json").read_text())
+    assert persisted["version"] == 3
+    assert persisted["route_preferences"] == {
+        route_key: {
+            "provider": "codex",
+            "models": {"codex": model},
+            "efforts": {"codex": {model: "high"}},
+        }
+    }
+    assert "active_provider_by_chat" not in persisted
+    assert "active_model_by_chat_provider" not in persisted
+    assert "effort_by_chat_provider_model" not in persisted
+
+    loaded = Runtime(sample_config)
+    loaded.load_state()
+    resolved = loaded.resolve_route_settings(
+        route_key,
+        _execution_context(sample_config).policy,
+    )
+    assert (resolved.provider, resolved.model, resolved.effort) == (
+        "codex",
+        model,
+        "high",
+    )
 
 
-def test_runtime_model_switch(sample_config):
+def test_resolve_route_settings_reports_default_provenance(sample_config):
     rt = Runtime(sample_config)
-    rt.active_model_by_chat_provider[("1", "claude")] = "sonnet"
-    assert rt.get_active_model("1", "claude") == "sonnet"
+
+    resolved = rt.resolve_route_settings(
+        "slack:account-1:channel-C1",
+        _execution_context(sample_config).policy,
+    )
+
+    assert (resolved.provider, resolved.provider_source) == (
+        "claude",
+        "policy_default",
+    )
+    assert (resolved.model, resolved.model_source) == (
+        "opus",
+        "provider_default",
+    )
+    assert (resolved.effort, resolved.effort_source) == (None, "cli_default")
+    assert rt.route_preferences == {}
+
+
+def test_resolve_route_settings_reports_selected_provenance(sample_config):
+    rt = Runtime(sample_config)
+    route_key = "slack:account-1:channel-C1"
+    model = sample_config["providers"]["codex"]["models"][0]
+    rt.set_route_provider(route_key, "codex")
+    rt.set_route_model(route_key, "codex", model)
+    rt.set_route_effort(route_key, "codex", model, "high")
+
+    resolved = rt.resolve_route_settings(
+        route_key,
+        _execution_context(sample_config).policy,
+    )
+
+    assert (resolved.provider, resolved.provider_source) == ("codex", "route")
+    assert (resolved.model, resolved.model_source) == (model, "route")
+    assert (resolved.effort, resolved.effort_source) == ("high", "route")
+
+
+def test_resolve_route_settings_falls_back_without_erasing_disallowed_choice(
+    sample_config,
+):
+    rt = Runtime(sample_config)
+    route_key = "slack:account-1:channel-C1"
+    rt.set_route_provider(route_key, "codex")
+    restricted = _execution_context(
+        sample_config,
+        providers=("claude",),
+    ).policy
+
+    resolved = rt.resolve_route_settings(route_key, restricted)
+
+    assert (resolved.provider, resolved.provider_source) == (
+        "claude",
+        "policy_default",
+    )
+    assert rt.route_preferences[route_key].provider == "codex"
+
+
+@pytest.mark.parametrize(
+    ("version", "model_state", "effort_state", "session_state"),
+    [
+        (
+            1,
+            {"conversation-1:claude": "sonnet"},
+            {"conversation-1:claude:sonnet": "high"},
+            {"conversation-1:claude": "session-1"},
+        ),
+        (
+            2,
+            [
+                {
+                    "chat": "conversation-1",
+                    "provider": "claude",
+                    "model": "sonnet",
+                }
+            ],
+            [
+                {
+                    "chat": "conversation-1",
+                    "provider": "claude",
+                    "model": "sonnet",
+                    "effort": "high",
+                }
+            ],
+            [
+                {
+                    "chat": "conversation-1",
+                    "provider": "claude",
+                    "session": "session-1",
+                }
+            ],
+        ),
+    ],
+)
+def test_load_legacy_state_drops_selections_but_preserves_conversation_and_job_state(
+    tmp_enso,
+    sample_config,
+    version,
+    model_state,
+    effort_state,
+    session_state,
+):
+    """The v3 boundary discards ambiguous conversation-scoped preferences only."""
+    timestamp = datetime.now().isoformat()
+    state_file = Path(tmp_enso, "state.json")
+    state_file.write_text(
+        json.dumps(
+            {
+                "version": version,
+                "active_provider_by_chat": {"conversation-1": "claude"},
+                "active_model_by_chat_provider": model_state,
+                "effort_by_chat_provider_model": effort_state,
+                "session_by_chat_provider": session_state,
+                "compact_seed_by_chat": {"conversation-1": "summary"},
+                "last_active": {"conversation-1": timestamp},
+                "job_last_run": {"daily": timestamp},
+                "job_failure_alerts": {"daily": {"failure_count": 2}},
+            }
+        )
+    )
+
+    rt = Runtime(sample_config)
+    rt.load_state()
+
+    assert rt.route_preferences == {}
+    assert rt.session_by_chat_provider[("conversation-1", "claude")] == "session-1"
+    assert rt.compact_seed_by_chat["conversation-1"] == "summary"
+    assert rt._last_active["conversation-1"] == datetime.fromisoformat(timestamp)
+    assert rt.conversation_is_active("conversation-1")
+    assert rt.jobs.last_run["daily"] == datetime.fromisoformat(timestamp)
+    assert rt.jobs.failure_alerts["daily"] == {"failure_count": 2}
+
+    migrated = json.loads(state_file.read_text())
+    assert migrated["version"] == 3
+    assert "active_provider_by_chat" not in migrated
+    assert "active_model_by_chat_provider" not in migrated
+    assert "effort_by_chat_provider_model" not in migrated
 
 
 def test_make_provider_uses_configured_path(sample_config):
     sample_config["providers"]["claude"]["path"] = "/custom/claude"
     rt = Runtime(sample_config)
-    provider = rt.make_provider("claude")
+    provider = rt.make_provider("claude", context=_execution_context(sample_config))
     assert isinstance(provider, ClaudeProvider)
     assert provider.path == "/custom/claude"
 
@@ -405,29 +484,26 @@ def test_make_provider_binds_working_dir(sample_config):
     """Providers see the directory their process will run in (agy needs it
     to pin conversations to the workspace project)."""
     rt = Runtime(sample_config)
-    provider = rt.make_provider("agy")
-    assert provider.working_dir == rt.working_dir
+    context = _execution_context(sample_config)
+    provider = rt.make_provider("agy", context=context)
+    assert provider.working_dir == context.path
     assert provider.timeout == rt.agent_timeout
 
 
 def test_make_provider_unknown_provider_raises(sample_config):
     rt = Runtime(sample_config)
     with pytest.raises(ValueError, match="Unknown provider"):
-        rt.make_provider("retired")
+        rt.make_provider("retired", context=_execution_context(sample_config))
 
 
-def test_runtime_state_persistence(tmp_enso, sample_config):
-    """State survives save/load roundtrip."""
-
-    sample_config["working_dir"] = os.path.join(tmp_enso, "workspace")
+def test_session_state_persistence(tmp_enso, sample_config):
+    """Conversation sessions survive a save/load roundtrip."""
     rt = Runtime(sample_config)
-    rt.active_provider_by_chat["42"] = "codex"
     rt.session_by_chat_provider[("42", "codex")] = "sess_123"
     rt.save_state()
 
     rt2 = Runtime(sample_config)
     rt2.load_state()
-    assert rt2.active_provider_by_chat["42"] == "codex"
     assert rt2.session_by_chat_provider[("42", "codex")] == "sess_123"
 
 
@@ -435,92 +511,25 @@ def test_runtime_state_roundtrip_preserves_opaque_team_keys(tmp_enso, sample_con
     key = "teams:0123456789abcdef"
     rt = Runtime(sample_config)
     model = rt.models["codex"][0]
-    rt.active_provider_by_chat[key] = "codex"
-    rt.active_model_by_chat_provider[(key, "codex")] = model
-    rt.effort_by_chat_provider_model[(key, "codex", model)] = "high"
+    rt.set_route_provider(key, "codex")
+    rt.set_route_model(key, "codex", model)
+    rt.set_route_effort(key, "codex", model, "high")
     rt.session_by_chat_provider[(key, "codex")] = "session-1"
     rt.save_state()
 
     loaded = Runtime(sample_config)
     loaded.load_state()
 
-    assert loaded.active_provider_by_chat[key] == "codex"
-    assert loaded.active_model_by_chat_provider[(key, "codex")] == model
-    assert loaded.effort_by_chat_provider_model[(key, "codex", model)] == "high"
+    resolved = loaded.resolve_route_settings(
+        key,
+        _execution_context(sample_config).policy,
+    )
+    assert (resolved.provider, resolved.model, resolved.effort) == (
+        "codex",
+        model,
+        "high",
+    )
     assert loaded.session_by_chat_provider[(key, "codex")] == "session-1"
-
-
-def test_load_state_removes_unsupported_provider_entries(tmp_enso, sample_config):
-    state_file = Path(tmp_enso) / "state.json"
-    state_file.write_text(json.dumps({
-        "active_provider_by_chat": {"42": "retired"},
-        "active_model_by_chat_provider": {"42:retired": "old-model"},
-        "effort_by_chat_provider_model": {"42:retired:old-model": "high"},
-        "session_by_chat_provider": {"42:retired": "old-session"},
-    }))
-
-    rt = Runtime(sample_config)
-    rt.load_state()
-
-    assert rt.get_active_provider("42") == "claude"
-    assert rt.active_provider_by_chat == {}
-    assert rt.active_model_by_chat_provider == {}
-    assert rt.effort_by_chat_provider_model == {}
-    assert rt.session_by_chat_provider == {}
-    persisted = json.loads(state_file.read_text())
-    assert persisted["active_provider_by_chat"] == {}
-    assert persisted["active_model_by_chat_provider"] == []
-    assert persisted["effort_by_chat_provider_model"] == []
-    assert persisted["session_by_chat_provider"] == []
-
-
-def test_load_state_removes_entries_for_unconfigured_models(tmp_enso, sample_config):
-    """Model and effort state for models no longer in config is pruned;
-    entries for configured models survive."""
-    state_file = Path(tmp_enso) / "state.json"
-    state_file.write_text(json.dumps({
-        "active_model_by_chat_provider": {
-            "42:claude": "removed-model",
-            "7:claude": "sonnet",
-        },
-        "effort_by_chat_provider_model": {
-            "42:claude:removed-model": "high",
-            "7:claude:sonnet": "low",
-        },
-    }))
-
-    rt = Runtime(sample_config)  # claude models: opus, sonnet
-    rt.load_state()
-
-    assert rt.active_model_by_chat_provider == {("7", "claude"): "sonnet"}
-    assert rt.effort_by_chat_provider_model == {("7", "claude", "sonnet"): "low"}
-    persisted = json.loads(state_file.read_text())
-    assert persisted["active_model_by_chat_provider"] == [
-        {"chat": "7", "provider": "claude", "model": "sonnet"}
-    ]
-    assert persisted["effort_by_chat_provider_model"] == [
-        {"chat": "7", "provider": "claude", "model": "sonnet", "effort": "low"}
-    ]
-
-
-def test_load_state_removes_effort_for_provider_without_effort_control(
-    tmp_enso, sample_config,
-):
-    sample_config["providers"]["agy"]["models"] = list(AgyProvider.default_models)
-    state_file = Path(tmp_enso) / "state.json"
-    model = AgyProvider.default_models[0]
-    state_file.write_text(json.dumps({
-        "active_provider_by_chat": {"7": "agy"},
-        "effort_by_chat_provider_model": {f"7:agy:{model}": "low"},
-    }))
-
-    rt = Runtime(sample_config)
-    rt.load_state()
-
-    assert rt.effort_by_chat_provider_model == {}
-    assert rt.get_active_effort("7", "agy", model) is None
-    persisted = json.loads(state_file.read_text())
-    assert persisted["effort_by_chat_provider_model"] == []
 
 
 def test_save_state_failure_preserves_existing_file_and_removes_temp(
@@ -566,7 +575,6 @@ def test_load_state_retires_legacy_task_runner_key(tmp_enso, sample_config):
 
 def test_compact_seed_persistence(tmp_enso, sample_config):
     """Compact seeds survive save/load roundtrip."""
-    sample_config["working_dir"] = os.path.join(tmp_enso, "workspace")
     rt = Runtime(sample_config)
     rt.compact_seed_by_chat["42"] = "summary text"
     rt.save_state()
@@ -596,9 +604,36 @@ def test_consume_compact_seed_noop_when_absent(sample_config):
     assert out == "user message"
 
 
+@pytest.mark.asyncio
+async def test_run_compaction_honors_context_effort_without_model_override(
+    sample_config,
+):
+    rt = Runtime(sample_config)
+    context = _execution_context(sample_config, "42", effort="high")
+    captured: dict[str, str | None] = {}
+
+    class _FakeProvider:
+        def format_response(self, parts):
+            return "".join(parts)
+
+    async def fake_run_provider(
+        _provider, _prompt, _chat_id, _model, *, effort, context
+    ):
+        captured["effort"] = effort
+        yield StreamEvent(kind="response", text="summary")
+
+    rt._prepare_execution_context = AsyncMock(return_value=context)
+    rt.make_provider = lambda _name, *, timeout, context: _FakeProvider()
+    rt.run_provider = fake_run_provider
+
+    summary = await rt.run_compaction("42", "claude", context=context)
+
+    assert summary == "summary"
+    assert captured["effort"] == "high"
+
+
 def test_prune_clears_compact_seed(tmp_enso, sample_config):
     """Stale chats lose their compact seed too."""
-    sample_config["working_dir"] = os.path.join(tmp_enso, "workspace")
     rt = Runtime(sample_config)
     rt.compact_seed_by_chat["42"] = "old summary"
     rt._last_active["42"] = datetime.now() - timedelta(days=999)
@@ -609,43 +644,57 @@ def test_prune_clears_compact_seed(tmp_enso, sample_config):
     assert "42" not in rt2.compact_seed_by_chat
 
 
-# -- Effort --
-
-
-def test_get_active_effort_none_by_default(sample_config):
+def test_session_ttl_pruning_leaves_route_preferences(
+    tmp_enso,
+    sample_config,
+):
     rt = Runtime(sample_config)
-    assert rt.get_active_effort("1", "claude", "opus") is None
+    route_key = "slack:account-1:channel-C1"
+    conversation_key = "slack:account-1:channel-C1:thread-T1"
+    model = sample_config["providers"]["codex"]["models"][0]
+    rt.set_route_provider(route_key, "codex")
+    rt.set_route_model(route_key, "codex", model)
+    rt.set_route_effort(route_key, "codex", model, "high")
+    rt.session_by_chat_provider[(conversation_key, "codex")] = "old-session"
+    rt.compact_seed_by_chat[conversation_key] = "old summary"
+    rt._last_active[conversation_key] = datetime.now() - timedelta(days=999)
+    rt.save_state()
+
+    loaded = Runtime(sample_config)
+    loaded.load_state()
+
+    assert route_key in loaded.route_preferences
+    assert (conversation_key, "codex") not in loaded.session_by_chat_provider
+    assert conversation_key not in loaded.compact_seed_by_chat
+    assert conversation_key not in loaded._last_active
 
 
-def test_get_active_effort_claude(sample_config):
-    rt = Runtime(sample_config)
-    rt.effort_by_chat_provider_model[("1", "claude", "opus")] = "xhigh"
-    assert rt.get_active_effort("1", "claude", "opus") == "xhigh"
+# -- Effort resolution --
 
 
-def test_get_active_effort_clamps_to_model_cap(sample_config):
+def test_resolve_route_effort_clamps_to_model_cap(sample_config):
     """Requesting max on a model that caps at high returns high."""
     sample_config["providers"]["claude"]["models"].append("haiku")
     rt = Runtime(sample_config)
-    rt.effort_by_chat_provider_model[("1", "claude", "haiku")] = "max"
-    assert rt.get_active_effort("1", "claude", "haiku") == "high"
+    policy = _execution_context(sample_config).policy
+    rt.set_route_model("route-1", "claude", "haiku")
+    rt.set_route_effort("route-1", "claude", "haiku", "max")
+
+    resolved = rt.resolve_route_settings("route-1", policy)
+
+    assert (resolved.effort, resolved.effort_source) == ("high", "route")
 
 
-def test_get_active_effort_codex_clamps_to_model_cap(sample_config):
+def test_resolve_route_effort_codex_clamps_to_model_cap(sample_config):
+    sample_config["providers"]["codex"]["models"] = ["luna"]
     rt = Runtime(sample_config)
-    rt.effort_by_chat_provider_model[("1", "codex", "luna")] = "ultra"
-    assert rt.get_active_effort("1", "codex", "luna") == "max"
+    policy = _execution_context(sample_config).policy
+    rt.set_route_provider("route-1", "codex")
+    rt.set_route_effort("route-1", "codex", "luna", "ultra")
 
+    resolved = rt.resolve_route_settings("route-1", policy)
 
-def test_effort_state_persistence(tmp_enso, sample_config):
-    sample_config["working_dir"] = os.path.join(tmp_enso, "workspace")
-    rt = Runtime(sample_config)
-    rt.effort_by_chat_provider_model[("42", "claude", "opus")] = "xhigh"
-    rt.save_state()
-
-    rt2 = Runtime(sample_config)
-    rt2.load_state()
-    assert rt2.effort_by_chat_provider_model[("42", "claude", "opus")] == "xhigh"
+    assert (resolved.effort, resolved.effort_source) == ("max", "route")
 
 
 class _EmptyAsyncStream:
@@ -676,24 +725,218 @@ class _FakePlainProcess:
         return b"First paragraph.\n\nSecond paragraph.\n", b""
 
 
+class _CapturingProvider(BaseProvider):
+    """Minimal provider that records the launch-boundary instruction revision."""
+
+    name = "agy"
+
+    def __init__(self):
+        super().__init__("fake")
+        self.instruction_contents: list[str] = []
+
+    def build_command(
+        self,
+        prompt,
+        model,
+        session_id=None,
+        *,
+        effort=None,
+        launch=None,
+        instructions=None,
+    ):
+        assert instructions is not None
+        self.instruction_contents.append(instructions.content)
+        return ["fake"]
+
+    def build_batch_command(
+        self, prompt, model, *, effort=None, launch=None, instructions=None
+    ):
+        raise AssertionError("interactive test must not build a batch command")
+
+    def parse_event(self, event):
+        return []
+
+
+class _RetryingCapturingProvider(_CapturingProvider):
+    def parse_event(self, event):
+        return [StreamEvent(kind="error", text="transient startup failure")]
+
+    def retryable_error(self, text):
+        return text == "transient startup failure"
+
+
+class _OneLineStream:
+    def __init__(self, line: bytes):
+        self._line = line
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._line:
+            raise StopAsyncIteration
+        line, self._line = self._line, b""
+        return line
+
+
+class _RetryProcess:
+    pid = 44
+    returncode = 1
+    stderr = None
+
+    def __init__(self):
+        self.stdout = _OneLineStream(b'{"error": true}\n')
+
+    async def wait(self):
+        return 1
+
+
+@pytest.mark.asyncio
+async def test_run_provider_rejects_unprepared_execution_context(sample_config):
+    rt = Runtime(sample_config)
+    context = _execution_context(sample_config)
+    provider = rt.make_provider("claude", context=context)
+    rt._spawn_process = AsyncMock(side_effect=AssertionError("must not spawn"))
+
+    with pytest.raises(RuntimeError, match="prepared"):
+        async for _event in rt.run_provider(
+            provider, "hi", "1", "opus", context=context
+        ):
+            pass
+
+    rt._spawn_process.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execution_preparation_does_not_cache_shared_instructions(sample_config):
+    rt = Runtime(sample_config)
+
+    prepared = await rt._prepare_execution_context("claude", _execution_context(sample_config))
+
+    assert prepared.launch is not None
+    assert not hasattr(prepared, "instructions")
+
+
+@pytest.mark.asyncio
+async def test_run_provider_revalidates_instructions_after_context_preparation(
+    tmp_enso, sample_config
+):
+    rt = Runtime(sample_config)
+    context = await _prepared_context(rt, sample_config, "agy")
+    provider = _CapturingProvider()
+    rt._spawn_process = AsyncMock(return_value=_FakeSpawnedProcess())
+
+    async for _event in rt.run_provider(provider, "first", "1", "model", context=context):
+        pass
+
+    Path(tmp_enso, "AGENTS.md").write_text(
+        "# Revised shared instructions\n", encoding="utf-8"
+    )
+    async for _event in rt.run_provider(provider, "second", "1", "model", context=context):
+        pass
+
+    assert provider.instruction_contents == [
+        "# Test shared instructions\n",
+        "# Revised shared instructions\n",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_provider_rejects_invalid_discovery_created_after_preparation(
+    tmp_enso, sample_config
+):
+    rt = Runtime(sample_config)
+    context = await _prepared_context(rt, sample_config, "agy")
+    Path(context.path, ".git").touch()
+    rt._spawn_process = AsyncMock(side_effect=AssertionError("must not spawn"))
+
+    with pytest.raises(InstructionError, match=r"forbidden \.git entry"):
+        async for _event in rt.run_provider(
+            _CapturingProvider(), "hi", "1", "model", context=context
+        ):
+            pass
+
+    rt._spawn_process.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_provider_rejects_deleted_instructions_after_preparation(
+    tmp_enso, sample_config
+):
+    rt = Runtime(sample_config)
+    context = await _prepared_context(rt, sample_config, "agy")
+    Path(tmp_enso, "AGENTS.md").unlink()
+    rt._spawn_process = AsyncMock(side_effect=AssertionError("must not spawn"))
+
+    with pytest.raises(InstructionError, match="instruction source is missing"):
+        async for _event in rt.run_provider(
+            _CapturingProvider(), "hi", "1", "model", context=context
+        ):
+            pass
+
+    rt._spawn_process.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_retry_revalidates_current_instructions_before_second_spawn(
+    tmp_enso, sample_config
+):
+    rt = Runtime(sample_config)
+    context = await _prepared_context(rt, sample_config, "agy")
+    provider = _RetryingCapturingProvider()
+    spawn_count = 0
+
+    async def fake_spawn(*_args, **_kwargs):
+        nonlocal spawn_count
+        spawn_count += 1
+        if spawn_count == 1:
+            Path(tmp_enso, "AGENTS.md").write_text(
+                "# Revised before retry\n", encoding="utf-8"
+            )
+        return _RetryProcess()
+
+    rt._spawn_process = fake_spawn
+
+    _parts, error, timed_out = await rt._collect_provider_output(
+        provider,
+        "hello",
+        "1",
+        "model",
+        effort=None,
+        origin_env={},
+        context=context,
+        state={},
+    )
+
+    assert not timed_out
+    assert error == "transient startup failure"
+    assert spawn_count == 2
+    assert provider.instruction_contents == [
+        "# Test shared instructions\n",
+        "# Revised before retry\n",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_run_provider_injects_extra_env(tmp_enso, sample_config, monkeypatch):
     """extra_env reaches create_subprocess_exec merged on top of os.environ."""
-    sample_config["working_dir"] = os.path.join(tmp_enso, "workspace")
     rt = Runtime(sample_config)
+    context = await _prepared_context(rt, sample_config, "claude")
 
     captured: dict = {}
 
     async def fake_spawn(*args, **kwargs):
+        captured["command"] = args
         captured["env"] = kwargs.get("env")
         captured["stdin"] = kwargs.get("stdin")
         return _FakeSpawnedProcess()
 
     monkeypatch.setattr("asyncio.create_subprocess_exec", fake_spawn)
 
-    provider = rt.make_provider("claude")
+    provider = rt.make_provider("claude", context=context)
     gen = rt.run_provider(
         provider, "hi", "1", "opus",
+        context=context,
         extra_env={"ENSO_ORIGIN_CHANNEL": "C012345"},
     )
     async for _ in gen:
@@ -705,13 +948,14 @@ async def test_run_provider_injects_extra_env(tmp_enso, sample_config, monkeypat
     # Parent env is preserved (PATH always exists on Unix / Windows).
     assert "PATH" in env
     assert captured["stdin"] == asyncio.subprocess.DEVNULL
+    assert "--append-system-prompt-file" not in captured["command"]
 
 
 @pytest.mark.asyncio
 async def test_run_provider_omits_env_when_not_requested(tmp_enso, sample_config, monkeypatch):
     """Without extra_env the child inherits the parent env implicitly."""
-    sample_config["working_dir"] = os.path.join(tmp_enso, "workspace")
     rt = Runtime(sample_config)
+    context = await _prepared_context(rt, sample_config, "claude")
 
     captured: dict = {}
 
@@ -722,8 +966,8 @@ async def test_run_provider_omits_env_when_not_requested(tmp_enso, sample_config
 
     monkeypatch.setattr("asyncio.create_subprocess_exec", fake_spawn)
 
-    provider = rt.make_provider("claude")
-    gen = rt.run_provider(provider, "hi", "1", "opus")
+    provider = rt.make_provider("claude", context=context)
+    gen = rt.run_provider(provider, "hi", "1", "opus", context=context)
     async for _ in gen:
         pass
 
@@ -735,8 +979,8 @@ async def test_run_provider_omits_env_when_not_requested(tmp_enso, sample_config
 async def test_run_provider_handles_agy_plain_output_and_captures_session(
     tmp_enso, sample_config, monkeypatch,
 ):
-    sample_config["working_dir"] = os.path.join(tmp_enso, "workspace")
     rt = Runtime(sample_config)
+    context = await _prepared_context(rt, sample_config, "agy")
     session_id = "44444444-4444-4444-8444-444444444444"
 
     async def fake_spawn(*args, **kwargs):
@@ -749,7 +993,11 @@ async def test_run_provider_handles_agy_plain_output_and_captures_session(
     events = [
         event
         async for event in rt.run_provider(
-            rt.make_provider("agy"), "hello", "1", "gemini-3.6-flash-high",
+            rt.make_provider("agy", context=context),
+            "hello",
+            "1",
+            "gemini-3.6-flash-high",
+            context=context,
         )
     ]
 
@@ -764,9 +1012,9 @@ async def test_run_provider_handles_agy_plain_output_and_captures_session(
 async def test_run_provider_cleans_agy_log_when_spawn_fails(
     tmp_enso, sample_config, monkeypatch,
 ):
-    sample_config["working_dir"] = os.path.join(tmp_enso, "workspace")
     rt = Runtime(sample_config)
-    provider = rt.make_provider("agy")
+    context = await _prepared_context(rt, sample_config, "agy")
+    provider = rt.make_provider("agy", context=context)
     captured: dict[str, str] = {}
 
     async def fake_spawn(*args, **kwargs):
@@ -777,26 +1025,12 @@ async def test_run_provider_cleans_agy_log_when_spawn_fails(
 
     with pytest.raises(OSError, match="spawn failed"):
         async for _event in rt.run_provider(
-            provider, "hello", "1", "gemini-3.6-flash-high",
+            provider, "hello", "1", "gemini-3.6-flash-high", context=context,
         ):
             pass
 
     assert not Path(captured["log_path"]).exists()
     assert provider._log_path is None
-
-
-def test_prune_clears_effort(tmp_enso, sample_config):
-    """Stale conversations drop their effort settings too."""
-    sample_config["working_dir"] = os.path.join(tmp_enso, "workspace")
-    rt = Runtime(sample_config)
-    rt.active_provider_by_chat["old_chat"] = "claude"
-    rt.effort_by_chat_provider_model[("old_chat", "claude", "opus")] = "xhigh"
-    rt._last_active["old_chat"] = datetime.now() - timedelta(days=60)
-    rt.save_state()
-
-    rt2 = Runtime(sample_config)
-    rt2.load_state()
-    assert ("old_chat", "claude", "opus") not in rt2.effort_by_chat_provider_model
 
 
 # -- Job scheduling --
@@ -829,7 +1063,7 @@ def test_should_run_job_first_time(sample_config):
     rt = Runtime(sample_config)
     job = Job(
         dir_name="test", name="Test", schedule="* * * * *",
-        provider="claude", model="sonnet", workspace="unused", access="unused",
+        provider="claude", model="sonnet", workspace="unused",
     )
     assert rt.jobs._should_run_job(job, datetime.now()) is False
     assert "test" in rt.jobs.last_run
@@ -840,7 +1074,7 @@ def test_should_run_job_due(sample_config):
     rt = Runtime(sample_config)
     job = Job(
         dir_name="test", name="Test", schedule="* * * * *",
-        provider="claude", model="sonnet", workspace="unused", access="unused",
+        provider="claude", model="sonnet", workspace="unused",
     )
     rt.jobs.last_run["test"] = datetime.now() - timedelta(minutes=2)
     assert rt.jobs._should_run_job(job, datetime.now()) is True
@@ -856,7 +1090,6 @@ def test_should_run_job_skips_stale_misfire(sample_config):
         provider="claude",
         model="opus",
         workspace="unused",
-        access="unused",
     )
     now = datetime(2026, 5, 14, 21, 0)
     rt.jobs.last_run["today"] = datetime(2026, 5, 13, 6, 30)
@@ -875,7 +1108,6 @@ def test_should_run_job_allows_explicit_catch_up(sample_config):
         provider="claude",
         model="opus",
         workspace="unused",
-        access="unused",
         catch_up=True,
     )
     now = datetime(2026, 5, 14, 21, 0)
@@ -889,7 +1121,7 @@ def test_should_run_job_not_due(sample_config):
     rt = Runtime(sample_config)
     job = Job(
         dir_name="test", name="Test", schedule="0 9 * * *",
-        provider="claude", model="sonnet", workspace="unused", access="unused",
+        provider="claude", model="sonnet", workspace="unused",
     )
     rt.jobs.last_run["test"] = datetime.now()
     assert rt.jobs._should_run_job(job, datetime.now()) is False
@@ -943,15 +1175,12 @@ async def test_communicate_timeout_kills_process_group(tmp_path, sample_config):
 
 def test_prune_stale_sessions(tmp_enso, sample_config):
     """Stale sessions are pruned on load_state."""
-    sample_config["working_dir"] = os.path.join(tmp_enso, "workspace")
     rt = Runtime(sample_config)
 
     # Create an old conversation and a fresh one
-    rt.active_provider_by_chat["old_chat"] = "claude"
     rt.session_by_chat_provider[("old_chat", "claude")] = "old_session"
     rt._last_active["old_chat"] = datetime.now() - timedelta(days=60)
 
-    rt.active_provider_by_chat["fresh_chat"] = "codex"
     rt.session_by_chat_provider[("fresh_chat", "codex")] = "fresh_session"
     rt._last_active["fresh_chat"] = datetime.now()
 
@@ -961,11 +1190,9 @@ def test_prune_stale_sessions(tmp_enso, sample_config):
     rt2 = Runtime(sample_config)
     rt2.load_state()
 
-    assert "old_chat" not in rt2.active_provider_by_chat
     assert ("old_chat", "claude") not in rt2.session_by_chat_provider
     assert "old_chat" not in rt2._last_active
     # Fresh one survives
-    assert rt2.active_provider_by_chat["fresh_chat"] == "codex"
     assert rt2.session_by_chat_provider[("fresh_chat", "codex")] == "fresh_session"
 
 
@@ -975,8 +1202,6 @@ def test_prune_stale_sessions(tmp_enso, sample_config):
 @pytest.mark.asyncio
 async def test_process_request_injects_messages(tmp_enso, sample_config):
     """Background messages are consumed and injected into the prompt."""
-    sample_config["working_dir"] = os.path.join(tmp_enso, "workspace")
-
     messages.send("background info", source="test")
     assert len(messages.pending()) == 1
 
@@ -1000,13 +1225,69 @@ async def test_process_request_injects_messages(tmp_enso, sample_config):
             yield  # make this an async generator
 
     rt.run_provider = fake_run
-    await rt.process_request("claude", "user message", "1", FakeCtx())
+    context = await _prepared_context(rt, sample_config, "claude", "1")
+    await rt.process_request(
+        "claude",
+        "user message",
+        "1",
+        FakeCtx(),
+        context=context,
+    )
 
     # Messages should have been consumed
     assert messages.pending() == []
     assert len(prompts_received) == 1
     assert "background info" in prompts_received[0]
     assert "user message" in prompts_received[0]
+
+
+@pytest.mark.asyncio
+async def test_invalid_discovery_preserves_messages_and_compact_seed_before_provider_work(
+    tmp_enso, sample_config
+):
+    chat_id = "conversation-1"
+    messages.send("global background", source="test")
+    messages.send("scoped background", source="test", conversation_id=chat_id)
+    runtime = Runtime(sample_config)
+    runtime.compact_seed_by_chat[chat_id] = "prior compacted context"
+    context = await _prepared_context(runtime, sample_config, "claude", chat_id)
+    Path(context.path, ".git").touch()
+    provider_factory = runtime.make_provider
+    runtime.make_provider = Mock(wraps=provider_factory)
+    runtime._spawn_process = AsyncMock(side_effect=AssertionError("must not spawn"))
+    transport = _OutcomeCtx()
+
+    result = await runtime.process_request(
+        "claude",
+        "user message",
+        chat_id,
+        transport,
+        context=context,
+    )
+
+    assert result == ("blocked", "execution_unavailable")
+    assert [message["text"] for message in messages.pending()] == [
+        "global background",
+        "scoped background",
+    ]
+    assert runtime.compact_seed_by_chat[chat_id] == "prior compacted context"
+    runtime.make_provider.assert_not_called()
+    runtime._spawn_process.assert_not_awaited()
+
+
+def test_prompt_assembly_does_not_consume_global_messages_without_opt_in(sample_config):
+    messages.send("global background", source="test")
+    rt = Runtime(sample_config)
+    context = _execution_context(
+        sample_config, "shared", include_global_messages=False
+    )
+
+    prompt, _, _ = rt._assemble_prompt(
+        "user message", "shared", "claude", _OutcomeCtx(), context
+    )
+
+    assert prompt == "user message"
+    assert [message["text"] for message in messages.pending()] == ["global background"]
 
 
 class _OutcomeCtx(TransportContext):
@@ -1020,9 +1301,75 @@ class _OutcomeCtx(TransportContext):
 
 
 @pytest.mark.asyncio
+async def test_dispatch_uses_selection_snapshotted_in_execution_context(sample_config):
+    """An intaken message cannot change provider when preferences change."""
+    rt = Runtime(sample_config)
+    model = sample_config["providers"]["codex"]["models"][0]
+    context = _execution_context(
+        sample_config,
+        "conversation-1",
+        settings_key="route-1",
+        provider="codex",
+        model=model,
+        effort="high",
+        provider_source="route",
+        model_source="route",
+        effort_source="route",
+    )
+    rt.resolve_route_settings = Mock(
+        side_effect=AssertionError("dispatch reread mutable route preferences")
+    )
+    rt._run_request = AsyncMock()
+    transport = _OutcomeCtx()
+
+    await rt.dispatch("C1:thread", "hello", transport, context=context)
+
+    rt._run_request.assert_awaited_once_with(
+        "codex",
+        "hello",
+        transport,
+        context,
+    )
+
+
+@pytest.mark.asyncio
+async def test_queued_dispatch_keeps_selection_snapshotted_at_intake(sample_config):
+    rt = Runtime(sample_config)
+    model = sample_config["providers"]["codex"]["models"][0]
+    context = _execution_context(
+        sample_config,
+        "conversation-1",
+        settings_key="route-1",
+        provider="codex",
+        model=model,
+        effort="high",
+        provider_source="route",
+        model_source="route",
+        effort_source="route",
+    )
+    transport = _OutcomeCtx()
+    lock = rt.get_chat_lock(context.chat_key)
+    await lock.acquire()
+    try:
+        await rt.dispatch("C1:thread", "queued", transport, context=context)
+    finally:
+        lock.release()
+
+    rt.set_route_provider("route-1", "claude")
+    rt._run_request = AsyncMock()
+    await rt._drain_queue(context.chat_key)
+
+    rt._run_request.assert_awaited_once_with(
+        "codex",
+        "queued",
+        transport,
+        context,
+    )
+
+
+@pytest.mark.asyncio
 async def test_workspace_semaphore_serializes_concurrent_runs(sample_config):
     """concurrency=1 caps a workspace to one active provider run across chats."""
-    from enso.core import ExecutionContext
     rt = Runtime(sample_config)
     active = 0
     peak = 0
@@ -1037,21 +1384,21 @@ async def test_workspace_semaphore_serializes_concurrent_runs(sample_config):
     rt.run_provider = slow_run
 
     def ctx_for(conv):
-        return ExecutionContext(
-            chat_key=conv, path=rt.working_dir, workspace_id="ws", concurrency=1,
-        )
+        return _execution_context(sample_config, conv, concurrency=1)
+    first_context = ctx_for("k1")
+    second_context = ctx_for("k2")
+    _ensure_launch_discovery_fixture(first_context)
     # Two distinct conversations, same workspace — must not overlap.
     await asyncio.gather(
-        rt._run_request("claude", "a", _OutcomeCtx(), ctx_for("k1")),
-        rt._run_request("claude", "b", _OutcomeCtx(), ctx_for("k2")),
+        rt._run_request("claude", "a", _OutcomeCtx(), first_context),
+        rt._run_request("claude", "b", _OutcomeCtx(), second_context),
     )
     assert peak == 1
 
 
 @pytest.mark.asyncio
-async def test_legacy_runs_are_not_workspace_bounded(sample_config):
-    """Legacy (no workspace) work keeps its unbounded concurrency."""
-    from enso.core import ExecutionContext
+async def test_personal_context_is_still_workspace_bounded(sample_config):
+    """Opting into global messages never bypasses workspace concurrency."""
     rt = Runtime(sample_config)
     active = 0
     peak = 0
@@ -1064,13 +1411,28 @@ async def test_legacy_runs_are_not_workspace_bounded(sample_config):
         active -= 1
         yield StreamEvent(kind="response", text="ok")
     rt.run_provider = slow_run
-    await asyncio.gather(
-        rt._run_request("claude", "a", _OutcomeCtx(),
-                        ExecutionContext(chat_key="k1", path=rt.working_dir)),
-        rt._run_request("claude", "b", _OutcomeCtx(),
-                        ExecutionContext(chat_key="k2", path=rt.working_dir)),
+    first_context = _execution_context(
+        sample_config, "k1", include_global_messages=True
     )
-    assert peak == 2
+    second_context = _execution_context(
+        sample_config, "k2", include_global_messages=True
+    )
+    _ensure_launch_discovery_fixture(first_context)
+    await asyncio.gather(
+        rt._run_request(
+            "claude",
+            "a",
+            _OutcomeCtx(),
+            first_context,
+        ),
+        rt._run_request(
+            "claude",
+            "b",
+            _OutcomeCtx(),
+            second_context,
+        ),
+    )
+    assert peak == 1
 
 
 @pytest.mark.asyncio
@@ -1080,28 +1442,34 @@ async def test_process_request_returns_terminal_outcome(sample_config):
     async def ok_run(*a, **k):
         yield StreamEvent(kind="response", text="hi")
     rt.run_provider = ok_run
-    assert await rt.process_request("claude", "x", "1", _OutcomeCtx()) == ("completed", None)
+    context = await _prepared_context(rt, sample_config, "claude")
+    assert await rt.process_request(
+        "claude", "x", "1", _OutcomeCtx(), context=context
+    ) == ("completed", None)
 
     async def err_run(*a, **k):
         yield StreamEvent(kind="error", text="boom")
     rt.run_provider = err_run
-    outcome, _reason = await rt.process_request("claude", "x", "1", _OutcomeCtx())
+    outcome, _reason = await rt.process_request(
+        "claude", "x", "1", _OutcomeCtx(), context=context
+    )
     assert outcome == "error"
 
 
 @pytest.mark.asyncio
 async def test_run_request_reports_outcome_to_on_complete(sample_config):
-    from enso.core import ExecutionContext
     rt = Runtime(sample_config)
     seen = []
 
     async def ok_run(*a, **k):
         yield StreamEvent(kind="response", text="hi")
     rt.run_provider = ok_run
-    ctx_obj = ExecutionContext(
-        chat_key="k", path=rt.working_dir,
+    ctx_obj = _execution_context(
+        sample_config,
+        "k",
         on_complete=lambda outcome, reason: seen.append((outcome, reason)),
     )
+    _ensure_launch_discovery_fixture(ctx_obj)
     await rt._run_request("claude", "x", _OutcomeCtx(), ctx_obj)
     assert seen == [("completed", None)]
 
@@ -1109,11 +1477,11 @@ async def test_run_request_reports_outcome_to_on_complete(sample_config):
 @pytest.mark.asyncio
 async def test_early_returns_finalize_teams_turn(sample_config):
     """Queue-full and update-in-progress must not leak an audited turn."""
-    from enso.core import ExecutionContext
     rt = Runtime(sample_config)
     finalized = []
-    ctx_obj = ExecutionContext(
-        chat_key="k", path=rt.working_dir, workspace_id="ws",
+    ctx_obj = _execution_context(
+        sample_config,
+        "k",
         on_complete=lambda outcome, reason: finalized.append((outcome, reason)),
     )
 
@@ -1140,7 +1508,6 @@ async def test_early_returns_finalize_teams_turn(sample_config):
 @pytest.mark.asyncio
 async def test_process_request_uses_normalized_status_and_plain_final_response(sample_config):
     rt = Runtime(sample_config)
-    rt.effort_by_chat_provider_model[("1", "claude", "opus")] = "high"
 
     class FakeCtx(TransportContext):
         def __init__(self):
@@ -1162,7 +1529,15 @@ async def test_process_request_uses_normalized_status_and_plain_final_response(s
 
     ctx = FakeCtx()
     rt.run_provider = fake_run
-    await rt.process_request("claude", "hello", "1", ctx)
+    await _process_request(
+        rt,
+        sample_config,
+        "claude",
+        "hello",
+        "1",
+        ctx,
+        effort="high",
+    )
 
     assert ctx.statuses == ["claude · opus · high · 0s\n↳ Processing"]
     assert ctx.deleted == ["handle"]
@@ -1195,7 +1570,7 @@ async def test_process_request_sends_rich_markdown_before_legacy_splitting(sampl
     ctx = FakeCtx()
     rt.run_provider = fake_run
 
-    await rt.process_request("claude", "hello", "1", ctx)
+    await _process_request(rt, sample_config, "claude", "hello", "1", ctx)
 
     assert len(response) > 40000
     assert ctx.rich_replies == [response]
@@ -1227,7 +1602,7 @@ async def test_process_request_keeps_provider_errors_on_plain_reply_path(sample_
     ctx = FakeCtx()
     rt.run_provider = fake_run
 
-    await rt.process_request("claude", "hello", "1", ctx)
+    await _process_request(rt, sample_config, "claude", "hello", "1", ctx)
 
     assert ctx.replies == ["Error: provider failed"]
     assert ctx.rich_replies == []
@@ -1270,7 +1645,7 @@ async def test_process_request_delivers_explicit_structured_response(sample_conf
     ctx = FakeCtx()
     rt.run_provider = fake_run
 
-    await rt.process_request("claude", "hello", "1", ctx)
+    await _process_request(rt, sample_config, "claude", "hello", "1", ctx)
 
     assert ctx.messages == [
         OutboundMessage(
@@ -1325,7 +1700,9 @@ async def test_process_request_offers_persistent_surface_draft_without_publishin
     ctx = FakeCtx()
     rt.run_provider = fake_run
 
-    await rt.process_request(
+    await _process_request(
+        rt,
+        sample_config,
         "claude",
         "Create a standalone Canvas for this quarterly report",
         "1",
@@ -1380,7 +1757,7 @@ async def test_process_request_surface_falls_back_for_legacy_context(sample_conf
     ctx = FakeCtx()
     rt.run_provider = fake_run
 
-    await rt.process_request("claude", "hello", "1", ctx)
+    await _process_request(rt, sample_config, "claude", "hello", "1", ctx)
 
     assert ctx.replies == ["Dashboard updated."]
 
@@ -1423,7 +1800,7 @@ async def test_process_request_preserves_surface_fence_without_surface_capabilit
     ctx = FakeCtx()
     rt.run_provider = fake_run
 
-    await rt.process_request("claude", "hello", "1", ctx)
+    await _process_request(rt, sample_config, "claude", "hello", "1", ctx)
 
     assert ctx.publications == []
     assert ctx.replies == []
@@ -1431,18 +1808,21 @@ async def test_process_request_preserves_surface_fence_without_surface_capabilit
 
 
 @pytest.mark.asyncio
-async def test_process_request_invalid_surface_stays_ordinary_text(sample_config):
+async def test_process_request_retries_invalid_surface_in_same_request(sample_config):
     rt = Runtime(sample_config)
-    response = "```enso-surface\n{not json}\n```"
+    rt.session_by_chat_provider[("1", "claude")] = "session-1"
+    invalid_response = "```enso-surface\n{not json}\n```"
+    responses = iter([invalid_response, "Recovered as ordinary Markdown."])
 
     class FakeCtx(TransportContext):
         rich_markdown_enabled = True
 
         def __init__(self):
+            self.replies = []
             self.rich_replies = []
             self.publications = []
 
-        async def reply(self, text): raise AssertionError("unexpected plain reply")
+        async def reply(self, text): self.replies.append(text)
         async def reply_markdown(self, text): self.rich_replies.append(text)
         async def offer_surface_draft(self, publication, source_text):
             self.publications.append((publication, source_text))
@@ -1454,16 +1834,30 @@ async def test_process_request_invalid_surface_stays_ordinary_text(sample_config
         def get_output_instructions(self): return ""
         def get_surface_instructions(self): return "Persistent surface instructions."
 
-    async def fake_run(*args, **kwargs):
-        yield StreamEvent(kind="response", text=response)
-
     ctx = FakeCtx()
+    calls = []
+
+    async def fake_run(provider, prompt, chat_id, *args, **kwargs):
+        calls.append((provider, prompt, chat_id, kwargs["context"]))
+        assert ctx.replies == []
+        assert ctx.rich_replies == []
+        assert ctx.publications == []
+        yield StreamEvent(kind="response", text=next(responses))
+
     rt.run_provider = fake_run
 
-    await rt.process_request("claude", "hello", "1", ctx)
+    outcome = await _process_request(rt, sample_config, "claude", "hello", "1", ctx)
 
+    assert outcome == ("completed", None)
+    assert len(calls) == 2
+    assert calls[0][0] is calls[1][0]
+    assert calls[0][2:] == calls[1][2:]
+    assert "enso-surface" in calls[1][1]
+    assert "did not deliver" in calls[1][1]
+    assert invalid_response not in calls[1][1]
     assert ctx.publications == []
-    assert ctx.rich_replies == [response]
+    assert ctx.replies == []
+    assert ctx.rich_replies == ["Recovered as ordinary Markdown."]
 
 
 @pytest.mark.asyncio
@@ -1498,14 +1892,19 @@ async def test_process_request_uses_safe_fallback_for_over_limit_app_home(sample
         def get_output_instructions(self): return ""
         def get_surface_instructions(self): return "Persistent surface instructions."
 
+    calls = 0
+
     async def fake_run(*args, **kwargs):
+        nonlocal calls
+        calls += 1
         yield StreamEvent(kind="response", text=response)
 
     ctx = FakeCtx()
     rt.run_provider = fake_run
 
-    await rt.process_request("claude", "hello", "1", ctx)
+    await _process_request(rt, sample_config, "claude", "hello", "1", ctx)
 
+    assert calls == 1
     assert ctx.replies == ["Compact complete dashboard fallback."]
     assert ctx.publications == []
 
@@ -1568,7 +1967,7 @@ async def test_process_request_delivers_explicit_chart_response(sample_config):
     ctx = FakeCtx()
     rt.run_provider = fake_run
 
-    await rt.process_request("claude", "hello", "1", ctx)
+    await _process_request(rt, sample_config, "claude", "hello", "1", ctx)
 
     assert ctx.messages == [
         OutboundMessage(
@@ -1627,7 +2026,7 @@ async def test_process_request_structured_response_falls_back_for_legacy_context
     ctx = FakeCtx()
     rt.run_provider = fake_run
 
-    await rt.process_request("claude", "hello", "1", ctx)
+    await _process_request(rt, sample_config, "claude", "hello", "1", ctx)
 
     assert ctx.replies == ["Accessible summary"]
 
@@ -1664,15 +2063,88 @@ async def test_process_request_preserves_structured_fence_without_capability(sam
     ctx = FakeCtx()
     rt.run_provider = fake_run
 
-    await rt.process_request("claude", "hello", "1", ctx)
+    await _process_request(rt, sample_config, "claude", "hello", "1", ctx)
 
     assert ctx.replies == [response]
     assert ctx.messages == []
 
 
 @pytest.mark.asyncio
-async def test_process_request_invalid_structured_response_stays_ordinary_text(sample_config):
+async def test_process_request_retries_invalid_structured_response(
+    sample_config, monkeypatch
+):
     rt = Runtime(sample_config)
+    rt.session_by_chat_provider[("1", "claude")] = "session-1"
+    invalid_response = "```enso-message\n{not json}\n```"
+    valid_response = (
+        "```enso-message\n"
+        '{"version":1,"fallback_text":"Recovered summary","blocks":'
+        '[{"type":"markdown","text":"# Recovered"}]}\n'
+        "```"
+    )
+    responses = iter([invalid_response, valid_response])
+
+    class FakeCtx(TransportContext):
+        rich_markdown_enabled = True
+
+        def __init__(self):
+            self.replies = []
+            self.rich_replies = []
+            self.messages = []
+
+        async def reply(self, text): self.replies.append(text)
+        async def reply_markdown(self, text): self.rich_replies.append(text)
+        async def reply_message(self, message): self.messages.append(message)
+        async def reply_status(self, text): return "handle"
+        async def edit_status(self, handle, text): pass
+        async def delete_status(self, handle): pass
+        async def send_typing(self): pass
+        def get_origin_env(self): return {}
+        def get_output_instructions(self): return "Structured output instructions."
+
+    ctx = FakeCtx()
+    prompts = []
+    wait_timeouts = []
+    real_wait = asyncio.wait
+
+    async def recording_wait(tasks, **kwargs):
+        wait_timeouts.append(kwargs.get("timeout"))
+        return await real_wait(tasks, **kwargs)
+
+    async def fake_run(provider, prompt, *args, **kwargs):
+        prompts.append(prompt)
+        assert ctx.replies == []
+        assert ctx.rich_replies == []
+        assert ctx.messages == []
+        yield StreamEvent(kind="response", text=next(responses))
+
+    rt.run_provider = fake_run
+    monkeypatch.setattr(asyncio, "wait", recording_wait)
+
+    outcome = await _process_request(rt, sample_config, "claude", "hello", "1", ctx)
+
+    assert outcome == ("completed", None)
+    assert len(prompts) == 2
+    assert prompts[0] == "hello\n\nStructured output instructions."
+    assert "enso-message" in prompts[1]
+    assert "did not deliver" in prompts[1]
+    assert invalid_response not in prompts[1]
+    assert len(wait_timeouts) == 2
+    assert wait_timeouts[1] < wait_timeouts[0]
+    assert ctx.messages == [
+        OutboundMessage(
+            fallback_text="Recovered summary",
+            blocks=(MarkdownBlock(text="# Recovered"),),
+        )
+    ]
+    assert ctx.replies == []
+    assert ctx.rich_replies == []
+
+
+@pytest.mark.asyncio
+async def test_process_request_stops_after_second_invalid_structured_response(sample_config):
+    rt = Runtime(sample_config)
+    rt.session_by_chat_provider[("1", "claude")] = "session-1"
     response = "```enso-message\n{not json}\n```"
 
     class FakeCtx(TransportContext):
@@ -1691,18 +2163,64 @@ async def test_process_request_invalid_structured_response_stays_ordinary_text(s
         async def delete_status(self, handle): pass
         async def send_typing(self): pass
         def get_origin_env(self): return {}
+        def get_output_instructions(self): return "Structured output instructions."
+
+    calls = 0
 
     async def fake_run(*args, **kwargs):
+        nonlocal calls
+        calls += 1
         yield StreamEvent(kind="response", text=response)
 
     ctx = FakeCtx()
     rt.run_provider = fake_run
 
-    await rt.process_request("claude", "hello", "1", ctx)
+    outcome = await _process_request(rt, sample_config, "claude", "hello", "1", ctx)
 
+    assert outcome == ("error", "invalid_structured_output")
+    assert calls == 2
+    assert ctx.replies == ["I couldn't format that response correctly. Please try again."]
+    assert ctx.rich_replies == []
     assert ctx.messages == []
-    assert ctx.replies == []
-    assert ctx.rich_replies == [response]
+
+
+@pytest.mark.asyncio
+async def test_process_request_does_not_retry_without_a_resumable_session(sample_config):
+    rt = Runtime(sample_config)
+    response = "```enso-message\n{not json}\n```"
+
+    class FakeCtx(TransportContext):
+        rich_markdown_enabled = True
+
+        def __init__(self):
+            self.replies = []
+            self.rich_replies = []
+
+        async def reply(self, text): self.replies.append(text)
+        async def reply_markdown(self, text): self.rich_replies.append(text)
+        async def reply_status(self, text): return "handle"
+        async def edit_status(self, handle, text): pass
+        async def delete_status(self, handle): pass
+        async def send_typing(self): pass
+        def get_origin_env(self): return {}
+        def get_output_instructions(self): return "Structured output instructions."
+
+    calls = 0
+
+    async def fake_run(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        yield StreamEvent(kind="response", text=response)
+
+    ctx = FakeCtx()
+    rt.run_provider = fake_run
+
+    outcome = await _process_request(rt, sample_config, "claude", "hello", "1", ctx)
+
+    assert outcome == ("error", "invalid_structured_output")
+    assert calls == 1
+    assert ctx.replies == ["I couldn't format that response correctly. Please try again."]
+    assert ctx.rich_replies == []
 
 
 @pytest.mark.asyncio
@@ -1749,14 +2267,19 @@ async def test_process_request_uses_safe_fallback_for_over_limit_native_table(
         def get_origin_env(self): return {}
         def get_output_instructions(self): return "Structured output instructions."
 
+    calls = 0
+
     async def fake_run(*args, **kwargs):
+        nonlocal calls
+        calls += 1
         yield StreamEvent(kind="response", text=response)
 
     ctx = FakeCtx()
     rt.run_provider = fake_run
 
-    await rt.process_request("claude", "hello", "1", ctx)
+    await _process_request(rt, sample_config, "claude", "hello", "1", ctx)
 
+    assert calls == 1
     assert ctx.replies == ["Compact complete fallback"]
     assert ctx.rich_replies == []
     assert ctx.messages == []
@@ -1792,7 +2315,7 @@ async def test_process_request_error_wins_over_structured_looking_response(sampl
     ctx = FakeCtx()
     rt.run_provider = fake_run
 
-    await rt.process_request("claude", "hello", "1", ctx)
+    await _process_request(rt, sample_config, "claude", "hello", "1", ctx)
 
     assert ctx.replies == ["Error: provider failed"]
     assert ctx.messages == []
@@ -1820,7 +2343,7 @@ async def test_process_request_terminal_error_wins_over_partial_response(sample_
     ctx = FakeCtx()
     rt.run_provider = failed_run
 
-    await rt.process_request("claude", "hello", "1", ctx)
+    await _process_request(rt, sample_config, "claude", "hello", "1", ctx)
 
     assert ctx.replies == ["Error: provider failed"]
 
@@ -1846,7 +2369,7 @@ async def test_process_request_collapses_repeated_case_insensitive_error_prefixe
     ctx = FakeCtx()
     rt.run_provider = failed_run
 
-    await rt.process_request("agy", "hello", "1", ctx)
+    await _process_request(rt, sample_config, "agy", "hello", "1", ctx)
 
     assert ctx.replies == ["Error: quota reached"]
 
@@ -1887,7 +2410,8 @@ async def test_process_request_timeout_stops_provider_and_queues_scoped_notice(
     ctx = FakeCtx()
 
     await asyncio.wait_for(
-        rt.process_request("claude", "hello", "chat-a", ctx), timeout=0.5,
+        _process_request(rt, sample_config, "claude", "hello", "chat-a", ctx),
+        timeout=0.5,
     )
 
     assert provider_cancelled.is_set()
@@ -1930,7 +2454,7 @@ async def test_provider_timeout_error_is_not_mislabeled_as_configured_timeout(
     rt.run_provider = failing_run
     ctx = FakeCtx()
 
-    await rt.process_request("claude", "hello", "chat-a", ctx)
+    await _process_request(rt, sample_config, "claude", "hello", "chat-a", ctx)
 
     assert ctx.deleted == ["handle"]
     assert ctx.replies == ["Error: provider read failed"]
@@ -1963,11 +2487,15 @@ async def test_timeout_notice_is_injected_once_after_provider_switch(
 
     rt.run_provider = fake_run
 
-    await rt.process_request("claude", "other chat", "chat-b", FakeCtx())
+    await _process_request(
+        rt, sample_config, "claude", "other chat", "chat-b", FakeCtx()
+    )
     assert "timed out" not in prompts_received[-1][1]
     assert len(messages.pending()) == 1
 
-    await rt.process_request("agy", "what happened?", "chat-a", FakeCtx())
+    await _process_request(
+        rt, sample_config, "agy", "what happened?", "chat-a", FakeCtx()
+    )
     assert "The previous agent turn timed out" in prompts_received[-1][1]
     assert prompts_received[-1][1].endswith("what happened?")
     assert messages.pending() == []
@@ -1997,8 +2525,12 @@ async def test_manual_cancellation_does_not_queue_timeout_notice(
 
     rt.run_provider = hanging_run
     ctx = FakeCtx()
+    execution = _execution_context(sample_config, "chat-a")
+    _ensure_launch_discovery_fixture(execution)
     request = asyncio.create_task(
-        rt._run_request("claude", "hello", ctx, rt.global_context("chat-a")),
+        rt._run_request(
+            "claude", "hello", ctx, execution
+        ),
     )
     await started.wait()
 
@@ -2016,7 +2548,9 @@ async def test_agy_timeout_captures_session_and_removes_private_log(
     tmp_enso, sample_config,
 ):
     rt = Runtime(sample_config)
-    rt.agent_timeout = 0.01
+    # Leave enough time for the launch-boundary filesystem validation to run
+    # before exercising cancellation of the already-spawned provider.
+    rt.agent_timeout = 0.1
     session_id = "55555555-5555-4555-8555-555555555555"
     captured: dict[str, str] = {}
 
@@ -2053,7 +2587,8 @@ async def test_agy_timeout_captures_session_and_removes_private_log(
     rt._terminate_process_tree = fake_terminate
 
     await asyncio.wait_for(
-        rt.process_request("agy", "hello", "chat-a", FakeCtx()), timeout=0.5,
+        _process_request(rt, sample_config, "agy", "hello", "chat-a", FakeCtx()),
+        timeout=1.0,
     )
 
     assert rt.session_by_chat_provider[("chat-a", "agy")] == session_id
@@ -2099,7 +2634,7 @@ async def test_timeout_notice_wins_over_in_flight_ticker_edit(
     rt._run_ticker = in_flight_ticker
     ctx = FakeCtx()
     task = asyncio.create_task(
-        rt.process_request("claude", "hello", "chat-a", ctx),
+        _process_request(rt, sample_config, "claude", "hello", "chat-a", ctx),
     )
     await edit_started.wait()
     await asyncio.sleep(0.03)
@@ -2140,7 +2675,7 @@ async def test_manual_cancellation_wins_race_with_timeout_cleanup(
     rt.run_provider = hanging_run
     ctx = FakeCtx()
     task = asyncio.create_task(
-        rt.process_request("claude", "hello", "chat-a", ctx),
+        _process_request(rt, sample_config, "claude", "hello", "chat-a", ctx),
     )
     await cleanup_started.wait()
     task.cancel()
@@ -2175,10 +2710,21 @@ async def test_run_provider_streams_progress_while_a_batch_provider_runs(sample_
         name = "agy"
         streaming_output = False
 
-        def build_command(self, prompt, model, session_id=None, *, effort=None, launch=None):
+        def build_command(
+            self,
+            prompt,
+            model,
+            session_id=None,
+            *,
+            effort=None,
+            launch=None,
+            instructions=None,
+        ):
             return ["fake"]
 
-        def build_batch_command(self, prompt, model, *, effort=None, launch=None):
+        def build_batch_command(
+            self, prompt, model, *, effort=None, launch=None, instructions=None
+        ):
             return ["fake"]
 
         def parse_event(self, event):
@@ -2195,9 +2741,12 @@ async def test_run_provider_streams_progress_while_a_batch_provider_runs(sample_
 
     rt._spawn_process = fake_spawn
     collected = []
+    context = await _prepared_context(rt, sample_config, "agy", "chat-a")
 
     async def drain():
-        async for event in rt.run_provider(BatchProvider("fake"), "hi", "chat-a", "m"):
+        async for event in rt.run_provider(
+            BatchProvider("fake"), "hi", "chat-a", "m", context=context
+        ):
             collected.append(event)
             if len(collected) == 2:
                 # Progress must arrive before the process has produced stdout.
@@ -2231,10 +2780,21 @@ async def test_run_provider_survives_a_failing_progress_poller(sample_config):
         name = "agy"
         streaming_output = False
 
-        def build_command(self, prompt, model, session_id=None, *, effort=None, launch=None):
+        def build_command(
+            self,
+            prompt,
+            model,
+            session_id=None,
+            *,
+            effort=None,
+            launch=None,
+            instructions=None,
+        ):
             return ["fake"]
 
-        def build_batch_command(self, prompt, model, *, effort=None, launch=None):
+        def build_batch_command(
+            self, prompt, model, *, effort=None, launch=None, instructions=None
+        ):
             return ["fake"]
 
         def parse_event(self, event):
@@ -2248,10 +2808,12 @@ async def test_run_provider_survives_a_failing_progress_poller(sample_config):
         return FakeProcess()
 
     rt._spawn_process = fake_spawn
+    context = await _prepared_context(rt, sample_config, "agy", "chat-a")
     collected = [
         event
         async for event in rt.run_provider(
             BrokenProgressProvider("fake"), "hi", "chat-a", "m",
+            context=context,
         )
     ]
 
@@ -2367,7 +2929,7 @@ def test_should_run_job_invalid_schedule_is_skipped(sample_config):
     rt = Runtime(sample_config)
     job = Job(
         dir_name="bad", name="Bad", schedule="0 9 * *",
-        provider="claude", model="sonnet", workspace="unused", access="unused",
+        provider="claude", model="sonnet", workspace="unused",
     )
     rt.jobs.last_run["bad"] = datetime.now() - timedelta(days=1)
     assert rt.jobs._should_run_job(job, datetime.now()) is False
@@ -2403,8 +2965,8 @@ async def test_run_provider_reverts_session_on_spawn_failure(
     tmp_enso, sample_config, monkeypatch,
 ):
     """A first turn that never spawns must not leave a --resume-able id behind."""
-    sample_config["working_dir"] = os.path.join(tmp_enso, "workspace")
     rt = Runtime(sample_config)
+    context = await _prepared_context(rt, sample_config, "claude")
 
     async def fake_spawn(*args, **kwargs):
         raise FileNotFoundError("no such binary")
@@ -2413,7 +2975,11 @@ async def test_run_provider_reverts_session_on_spawn_failure(
 
     with pytest.raises(FileNotFoundError):
         async for _event in rt.run_provider(
-            rt.make_provider("claude"), "hi", "1", "opus",
+            rt.make_provider("claude", context=context),
+            "hi",
+            "1",
+            "opus",
+            context=context,
         ):
             pass
 
@@ -2426,8 +2992,8 @@ async def test_run_provider_reverts_session_on_eventless_failure(
     tmp_enso, sample_config, monkeypatch,
 ):
     """An immediate nonzero exit with no events must not promote the session."""
-    sample_config["working_dir"] = os.path.join(tmp_enso, "workspace")
     rt = Runtime(sample_config)
+    context = await _prepared_context(rt, sample_config, "claude")
 
     async def fake_spawn(*args, **kwargs):
         return _ImmediateExitProcess()
@@ -2435,7 +3001,11 @@ async def test_run_provider_reverts_session_on_eventless_failure(
     monkeypatch.setattr("asyncio.create_subprocess_exec", fake_spawn)
 
     async for _event in rt.run_provider(
-        rt.make_provider("claude"), "hi", "1", "opus",
+        rt.make_provider("claude", context=context),
+        "hi",
+        "1",
+        "opus",
+        context=context,
     ):
         pass
 
@@ -2443,44 +3013,156 @@ async def test_run_provider_reverts_session_on_eventless_failure(
     assert stored.startswith("new:")
 
 
-def test_retire_legacy_skill_tools_removes_pristine_copies(
-    sample_config, tmp_enso, monkeypatch,
+# -- Grok sessions and auth retry --
+
+
+def _grok_result_line(text, session_id="77777777-7777-4777-8777-777777777777"):
+    """One grok streaming-messages-json result line (Claude wire format)."""
+    return (json.dumps({
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "result": text,
+        "session_id": session_id,
+        "total_cost_usd": 0.0421,
+        "usage": {"input_tokens": 12213, "output_tokens": 58},
+    }) + "\n").encode()
+
+
+class _ScriptedStream:
+    """Async stdout yielding scripted lines; read() serves stderr bytes."""
+
+    def __init__(self, lines=(), data=b""):
+        self._lines = list(lines)
+        self._data = data
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._lines:
+            raise StopAsyncIteration
+        return self._lines.pop(0)
+
+    async def read(self):
+        return self._data
+
+
+class _ScriptedProcess:
+    """A grok-shaped CLI run: scripted stream-json stdout, stderr, and exit."""
+
+    pid = 46
+
+    def __init__(self, returncode=0, stdout_lines=(), stderr=b""):
+        self.returncode = returncode
+        self.stdout = _ScriptedStream(lines=stdout_lines)
+        self.stderr = _ScriptedStream(data=stderr)
+
+    async def wait(self):
+        return self.returncode
+
+
+@pytest.mark.asyncio
+async def test_run_provider_grok_creates_session_then_resumes(
+    tmp_enso, sample_config, monkeypatch,
 ):
-    """Pristine retired tool scripts vanish from both the skill and tools dirs."""
-    skills_dir = os.path.join(tmp_enso, "skills")
-    skill_dir = os.path.join(skills_dir, "slack")
-    os.makedirs(skill_dir)
-    content = "print('legacy tool')\n"
-    pristine = hashlib.sha256(content.encode()).hexdigest()
-    Path(skill_dir, "slack_search.py").write_text(content)
-    tools_dir = os.path.join(sample_config["working_dir"], "tools")
-    os.makedirs(tools_dir)
-    Path(tools_dir, "slack_search.py").write_text(content)
-    monkeypatch.setattr(
-        core_module,
-        "_RETIRED_SKILL_TOOL_HASHES",
-        {("slack", "slack_search.py"): frozenset({pristine})},
-    )
+    """Grok sessions are Enso-owned: --session-id first, --resume after."""
+    rt = Runtime(sample_config)
+    context = await _prepared_context(rt, sample_config, "grok")
+    commands: list[tuple] = []
 
-    Runtime(sample_config)._retire_legacy_skill_tools(skills_dir)
+    async def fake_spawn(*args, **kwargs):
+        commands.append(args)
+        # The CLI reports back the session it was launched with.
+        sid = (
+            args[args.index("--session-id") + 1]
+            if "--session-id" in args
+            else args[args.index("--resume") + 1]
+        )
+        return _ScriptedProcess(stdout_lines=[_grok_result_line("ok", session_id=sid)])
 
-    assert not os.path.exists(os.path.join(skill_dir, "slack_search.py"))
-    assert not os.path.exists(os.path.join(tools_dir, "slack_search.py"))
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_spawn)
+
+    provider = rt.make_provider("grok", context=context)
+    async for _event in rt.run_provider(provider, "hi", "1", "grok-4.6", context=context):
+        pass
+    async for _event in rt.run_provider(provider, "again", "1", "grok-4.6", context=context):
+        pass
+
+    first, second = commands
+    session_id = first[first.index("--session-id") + 1]
+    assert "--resume" not in first
+    assert second[second.index("--resume") + 1] == session_id
+    assert "--session-id" not in second
 
 
-def test_retire_legacy_skill_tools_preserves_customized_copy(
-    sample_config, tmp_enso, monkeypatch,
+@pytest.mark.asyncio
+async def test_grok_retries_once_after_transient_auth_failure(
+    tmp_enso, sample_config, monkeypatch,
 ):
-    skills_dir = os.path.join(tmp_enso, "skills")
-    skill_dir = os.path.join(skills_dir, "slack")
-    os.makedirs(skill_dir)
-    Path(skill_dir, "slack_search.py").write_text("print('user changed this')\n")
-    monkeypatch.setattr(
-        core_module,
-        "_RETIRED_SKILL_TOOL_HASHES",
-        {("slack", "slack_search.py"): frozenset({"0" * 64})},
-    )
+    """A lapsed token fails the first headless call before the background
+    refresh lands; dispatch retries exactly once on that signature."""
+    rt = Runtime(sample_config)
+    spawned: list[tuple] = []
 
-    Runtime(sample_config)._retire_legacy_skill_tools(skills_dir)
+    async def fake_spawn(*args, **kwargs):
+        spawned.append(args)
+        if len(spawned) == 1:
+            return _ScriptedProcess(returncode=1, stderr=b"Error: Not signed in\n")
+        return _ScriptedProcess(stdout_lines=[_grok_result_line("Signed-in reply.")])
 
-    assert os.path.exists(os.path.join(skill_dir, "slack_search.py"))
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_spawn)
+
+    ctx = _OutcomeCtx()
+    outcome = await _process_request(rt, sample_config, "grok", "hello", "1", ctx)
+
+    assert outcome == ("completed", None)
+    assert len(spawned) == 2
+    assert ctx.replies == ["Signed-in reply."]
+    # The failed first spawn produced no events, so the session reverted;
+    # the retry must re-read session state and create the session again.
+    assert "--session-id" in spawned[1]
+    assert "--resume" not in spawned[1]
+
+
+@pytest.mark.asyncio
+async def test_grok_does_not_retry_an_ordinary_provider_error(
+    tmp_enso, sample_config, monkeypatch,
+):
+    rt = Runtime(sample_config)
+    spawned: list[tuple] = []
+
+    async def fake_spawn(*args, **kwargs):
+        spawned.append(args)
+        return _ScriptedProcess(returncode=1, stderr=b"Error: unknown model grok-9\n")
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_spawn)
+
+    ctx = _OutcomeCtx()
+    outcome = await _process_request(rt, sample_config, "grok", "hello", "1", ctx)
+
+    assert outcome == ("error", "provider_error")
+    assert len(spawned) == 1
+    assert any("unknown model" in reply for reply in ctx.replies)
+
+
+@pytest.mark.asyncio
+async def test_grok_surfaces_a_second_consecutive_auth_failure(
+    tmp_enso, sample_config, monkeypatch,
+):
+    """One retry only: a still-failing login is a real error, not a loop."""
+    rt = Runtime(sample_config)
+    spawned: list[tuple] = []
+
+    async def fake_spawn(*args, **kwargs):
+        spawned.append(args)
+        return _ScriptedProcess(returncode=1, stderr=b"Error: Not signed in\n")
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_spawn)
+
+    ctx = _OutcomeCtx()
+    outcome = await _process_request(rt, sample_config, "grok", "hello", "1", ctx)
+
+    assert outcome == ("error", "provider_error")
+    assert len(spawned) == 2
+    assert any("Not signed in" in reply for reply in ctx.replies)

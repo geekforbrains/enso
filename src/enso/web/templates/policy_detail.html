@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% from "macros.html" import back_link, problem_list, status_badge %}
+{% block title %}{{ policy.name }} · Policies · enso{% endblock %}
+
+{% block content %}
+<div class="mb-4">{{ back_link("/policies", "Policies") }}</div>
+
+<div class="mb-5 flex flex-wrap items-start justify-between gap-3">
+  <div class="min-w-0">
+    <h1 class="break-words text-2xl font-semibold tracking-tight">{{ policy.name }}</h1>
+    <p class="mt-1 text-sm text-muted">{{ policy.mode }}</p>
+    {% if policy.policy_dir %}
+      <p class="break-anywhere mt-2 font-mono text-xs text-faint">{{ policy.policy_dir }}</p>
+    {% endif %}
+  </div>
+  {{ status_badge(policy.status) }}
+</div>
+
+{% if catalog_errors %}
+  <div class="mb-5">{{ problem_list(catalog_errors, "Catalog configuration errors") }}</div>
+{% endif %}
+{% if policy.problems %}
+  <div class="mb-5">{{ problem_list(policy.problems, "Policy configuration errors") }}</div>
+{% endif %}
+
+<section aria-labelledby="policy-configuration" class="mb-6 rounded-xl border border-border bg-surface p-5">
+  <h2 id="policy-configuration" class="mb-4 text-lg font-semibold">Configuration</h2>
+  <dl class="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2 xl:grid-cols-3">
+    <div>
+      <dt class="text-xs font-medium uppercase tracking-wide text-faint">Mode</dt>
+      <dd class="mt-1 font-medium">{{ policy.mode }}</dd>
+    </div>
+    <div>
+      <dt class="text-xs font-medium uppercase tracking-wide text-faint">Providers</dt>
+      <dd class="break-anywhere mt-1">{{ policy.providers | join(", ") or "None" }}</dd>
+    </div>
+    <div>
+      <dt class="text-xs font-medium uppercase tracking-wide text-faint">Default provider</dt>
+      <dd class="break-anywhere mt-1 font-medium">{{ policy.default_provider or "None" }}</dd>
+    </div>
+    <div>
+      <dt class="text-xs font-medium uppercase tracking-wide text-faint">Chat commands</dt>
+      <dd class="break-anywhere mt-1">
+        {% if policy.chat_commands == "*" %}All commands{% else %}{{ policy.chat_commands | join(", ") or "None" }}{% endif %}
+      </dd>
+    </div>
+    <div class="sm:col-span-2">
+      <dt class="text-xs font-medium uppercase tracking-wide text-faint">Environment passthrough</dt>
+      <dd class="break-anywhere mt-1 font-mono text-xs">{{ policy.env_passthrough | join(", ") or "None" }}</dd>
+    </div>
+  </dl>
+</section>
+
+<section aria-labelledby="policy-consumers" class="mb-6 rounded-xl border border-border bg-surface p-5">
+  <h2 id="policy-consumers" class="text-lg font-semibold">Workspace consumers</h2>
+  {% if policy.workspace_names %}
+    <div class="mt-3 flex flex-wrap gap-2">
+      {% for name in policy.workspace_names %}
+        <a href="/workspaces/{{ name }}"
+           class="rounded-full bg-surface-muted px-3 py-1.5 text-sm font-medium text-ink
+                  hover:bg-surface-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-focus">
+          {{ name }}
+        </a>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="mt-2 text-sm text-muted">Unused. Native provider files are not execution-checked until a workspace selects this policy.</p>
+  {% endif %}
+</section>
+
+<section aria-labelledby="provider-checks">
+  <div class="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+    <h2 id="provider-checks" class="text-lg font-semibold">Provider checks</h2>
+    <span class="text-xs text-muted">Read-only native-policy diagnostics</span>
+  </div>
+
+  {% if policy.checks %}
+    <div class="space-y-3">
+      {% for check in policy.checks %}
+        {% set check_status = "error" if not check.ok else ("warning" if check.warnings else "ready") %}
+        <article class="rounded-xl border border-border bg-surface p-5">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div class="min-w-0">
+              <h3 class="font-semibold">{{ check.provider }}</h3>
+              <p class="mt-1 text-xs text-muted">Workspace <a class="font-medium text-ink hover:underline" href="/workspaces/{{ check.workspace_name }}">{{ check.workspace_name }}</a></p>
+            </div>
+            {{ status_badge(check_status) }}
+          </div>
+
+          <dl class="mt-4 grid grid-cols-1 gap-3 text-sm xl:grid-cols-2">
+            <div>
+              <dt class="text-xs font-medium uppercase tracking-wide text-faint">Native policy</dt>
+              <dd class="break-anywhere mt-1 font-mono text-xs">{{ check.policy_path or "Not applicable" }}</dd>
+            </div>
+            <div>
+              <dt class="text-xs font-medium uppercase tracking-wide text-faint">Revision</dt>
+              <dd class="break-anywhere mt-1 font-mono text-xs">{{ check.policy_revision or "Unavailable" }}</dd>
+            </div>
+            <div class="xl:col-span-2">
+              <dt class="text-xs font-medium uppercase tracking-wide text-faint">MCP servers</dt>
+              <dd class="break-anywhere mt-1">{{ check.mcp_servers | join(", ") or "None" }}</dd>
+            </div>
+          </dl>
+
+          {% if check.problems %}
+            <div class="mt-4">{{ problem_list(check.problems, "Cannot launch") }}</div>
+          {% endif %}
+          {% if check.warnings %}
+            <div class="mt-4">{{ problem_list(check.warnings, "Warnings", "warning") }}</div>
+          {% endif %}
+        </article>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="rounded-xl border border-dashed border-border-strong bg-surface px-4 py-8 text-center text-sm text-muted">
+      {% if policy.workspace_names %}
+        Native validation is blocked until the configuration errors are fixed.
+      {% else %}
+        No provider checks are available for an unused policy.
+      {% endif %}
+    </div>
+  {% endif %}
+</section>
+{% endblock %}

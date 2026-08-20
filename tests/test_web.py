@@ -14,6 +14,26 @@ pytest.importorskip("jinja2")
 from enso.web import app as web_app
 
 
+def _runtime_config(web: dict | None = None) -> dict:
+    return {
+        "web": web or {},
+        "workspaces": {
+            "default": {
+                "policy": "admin",
+                "concurrency": 1,
+            }
+        },
+        "policies": {
+            "admin": {
+                "unrestricted": True,
+                "providers": ["claude"],
+                "default_provider": "claude",
+                "chat_commands": "*",
+            }
+        },
+    }
+
+
 def _write_skill(root: Path, name: str, description: str = "") -> Path:
     skill_dir = root / name
     skill_dir.mkdir(parents=True)
@@ -38,12 +58,14 @@ def _skill_web_app(tmp_path, monkeypatch, *external_roots: Path):
     config_dir = tmp_path / "enso"
     skills_dir = config_dir / "skills"
     skills_dir.mkdir(parents=True)
-    working_dir = tmp_path / "workspace"
-    working_dir.mkdir()
+    workspace = config_dir / "workspaces" / "default"
+    workspace.mkdir(parents=True)
+    monkeypatch.setattr("enso.config.CONFIG_DIR", str(config_dir))
     monkeypatch.setattr(web_app, "CONFIG_DIR", str(config_dir))
     runtime = SimpleNamespace(
-        working_dir=str(working_dir),
-        config={"web": {"external_skill_roots": [str(root) for root in external_roots]}},
+        config=_runtime_config(
+            {"external_skill_roots": [str(root) for root in external_roots]}
+        ),
     )
     return skills_dir, TestClient(web_app.create_app(runtime), base_url="http://127.0.0.1")
 
@@ -100,7 +122,7 @@ def test_skill_delete_removes_owned_tree_and_reveals_external_copy(tmp_path, mon
     tool = enso_path.parent / "shared_tool.py"
     tool.write_text("print('tool')\n", encoding="utf-8")
     installed_tool = tmp_path / "workspace" / "tools" / tool.name
-    installed_tool.parent.mkdir()
+    installed_tool.parent.mkdir(parents=True)
     installed_tool.write_bytes(tool.read_bytes())
     outside = tmp_path / "outside-skill.txt"
     outside.write_text("keep me", encoding="utf-8")
@@ -127,7 +149,9 @@ def test_skill_delete_removes_owned_tree_and_reveals_external_copy(tmp_path, mon
     assert not enso_path.parent.exists()
     assert outside.read_text(encoding="utf-8") == "keep me"
     assert not (skills_dir / ".deleted" / "shared.deleted").exists()
-    assert not installed_tool.exists()
+    # Installed skill content is user-owned. Deleting its source does not
+    # guess that an older copied tool is safe to remove.
+    assert installed_tool.is_file()
     assert external_path.is_file()
 
     revealed = client.get("/skills/shared")
@@ -186,7 +210,7 @@ def test_skill_delete_preserves_modified_installed_tool(tmp_path, monkeypatch):
     tool = skill_path.parent / "custom_tool.py"
     tool.write_text("print('source')\n", encoding="utf-8")
     installed_tool = tmp_path / "workspace" / "tools" / tool.name
-    installed_tool.parent.mkdir()
+    installed_tool.parent.mkdir(parents=True)
     installed_tool.write_text("print('locally modified')\n", encoding="utf-8")
 
     response = client.post(
@@ -200,9 +224,55 @@ def test_skill_delete_preserves_modified_installed_tool(tmp_path, monkeypatch):
     assert installed_tool.read_text(encoding="utf-8") == "print('locally modified')\n"
 
 
-def test_skill_delete_tombstone_prevents_bundled_skill_reseed(tmp_path, monkeypatch):
-    from enso.core import Runtime
+def test_skill_delete_skips_tool_cleanup_without_usable_default_workspace(
+    tmp_path, monkeypatch
+):
+    from starlette.testclient import TestClient
 
+    config_dir = tmp_path / "enso"
+    skills_dir = config_dir / "skills"
+    skill_path = _write_skill(skills_dir, "custom")
+    tool = skill_path.parent / "custom_tool.py"
+    tool.write_text("print('source')\n", encoding="utf-8")
+    other_workspace = tmp_path / "other-workspace"
+    installed_tool = other_workspace / "tools" / tool.name
+    installed_tool.parent.mkdir(parents=True)
+    installed_tool.write_bytes(tool.read_bytes())
+    monkeypatch.setattr(web_app, "CONFIG_DIR", str(config_dir))
+    monkeypatch.setattr("enso.config.CONFIG_DIR", str(config_dir))
+    runtime = SimpleNamespace(
+        config={
+            "web": {},
+            "workspaces": {
+                "other": {
+                    "policy": "admin",
+                    "concurrency": 1,
+                }
+            },
+            "policies": {
+                "admin": {
+                    "unrestricted": True,
+                    "providers": ["claude"],
+                    "default_provider": "claude",
+                    "chat_commands": "*",
+                }
+            },
+        }
+    )
+    client = TestClient(web_app.create_app(runtime), base_url="http://127.0.0.1")
+
+    response = client.post(
+        "/skills/custom/delete",
+        data={"_csrf": client.app.state.csrf_token},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert not skill_path.parent.exists()
+    assert installed_tool.is_file()
+
+
+def test_bundled_skill_delete_needs_no_tombstone(tmp_path, monkeypatch):
     skills_dir, client = _skill_web_app(tmp_path, monkeypatch)
     skill_path = _write_skill(skills_dir, "jobs")
 
@@ -211,14 +281,12 @@ def test_skill_delete_tombstone_prevents_bundled_skill_reseed(tmp_path, monkeypa
         data={"_csrf": client.app.state.csrf_token},
         follow_redirects=False,
     )
-    Runtime._install_bundled_skills(str(skills_dir))
-
     assert response.status_code == 303
-    assert (skills_dir / ".deleted" / "jobs.deleted").is_file()
     assert not skill_path.parent.exists()
+    assert not (skills_dir / ".deleted").exists()
 
 
-def test_skill_delete_rejects_symlinked_tombstone_directory(tmp_path, monkeypatch):
+def test_skill_delete_ignores_obsolete_tombstone_path(tmp_path, monkeypatch):
     skills_dir, client = _skill_web_app(tmp_path, monkeypatch)
     skill_path = _write_skill(skills_dir, "jobs")
     outside = tmp_path / "outside-tombstones"
@@ -231,8 +299,9 @@ def test_skill_delete_rejects_symlinked_tombstone_directory(tmp_path, monkeypatc
         follow_redirects=False,
     )
 
-    assert response.status_code == 403
-    assert skill_path.is_file()
+    assert response.status_code == 303
+    assert not skill_path.exists()
+    assert (skills_dir / ".deleted").is_symlink()
     assert not (outside / "jobs.deleted").exists()
 
 
@@ -248,6 +317,7 @@ def test_dashboard_shows_visible_skill_total_and_tier_counts(tmp_path, monkeypat
     runtime = SimpleNamespace(config={"web": {"external_skill_roots": [str(external_root)]}})
     monkeypatch.setattr(web_app, "CONFIG_DIR", str(config_dir))
     monkeypatch.setattr(web_app, "load_jobs", lambda: [])
+    monkeypatch.setattr(web_app, "load_jobs_with_errors", lambda _config: ([], {}))
     monkeypatch.setattr(web_app.runs, "list_runs", lambda **_kwargs: [])
     client = TestClient(web_app.create_app(runtime), base_url="http://127.0.0.1")
 
@@ -266,7 +336,7 @@ def test_dashboard_shows_visible_skill_total_and_tier_counts(tmp_path, monkeypat
     favicon = '<link rel="icon" type="image/svg+xml" href="/static/enso-mark.svg?v=1">'
     assert favicon in response.text
     assert response.text.count('src="/static/enso-mark.svg?v=1"') == 3
-    assert response.text.count('<nav aria-label="Primary" class="space-y-1">') == 2
+    assert response.text.count('<nav aria-label="Primary" class="space-y-5">') == 2
     assert "hx-" not in response.text.lower()
     assert "htmx" not in response.text.lower()
     assert '<main id="main-content" tabindex="-1"' in response.text
@@ -292,7 +362,6 @@ def _write_job(
         "provider: claude\n"
         "model: opus\n"
         "workspace: default\n"
-        "access: admin\n"
         "enabled: false\n"
         f"{prerun_line}"
         f"---\n\n{body}\n",
@@ -710,8 +779,6 @@ def test_job_prompt_edit_round_trips_and_preserves_frontmatter(tmp_path, monkeyp
     assert "Original prompt body." in detail.text
     assert "Workspace" in detail.text
     assert "default" in detail.text
-    assert "Access" in detail.text
-    assert "admin" in detail.text
 
     # Saving swaps only the body and redirects back to the job.
     resp = client.post(
@@ -733,7 +800,6 @@ def test_job_prompt_edit_round_trips_and_preserves_frontmatter(tmp_path, monkeyp
         "provider": "claude",
         "model": "opus",
         "workspace": "default",
-        "access": "admin",
         "enabled": False,
     }
 
@@ -761,7 +827,6 @@ def test_job_prompt_edit_preserves_legacy_frontmatter_bytes(tmp_path, monkeypatc
         b"provider: claude\r\n"
         b"model: opus\r\n"
         b"workspace: default\r\n"
-        b"access: admin\r\n"
         b"notify:\r\n"
         b"enabled: false\r\n"
         b"---\r\n"
@@ -792,7 +857,6 @@ def test_job_prompt_edit_rejects_job_file_symlink_escape(tmp_path, monkeypatch):
         "provider: claude\n"
         "model: opus\n"
         "workspace: default\n"
-        "access: admin\n"
         "enabled: false\n"
         "---\n\n"
         "Prompt.\n",
@@ -829,7 +893,6 @@ def test_job_toggle_preserves_legacy_frontmatter_and_redirects(tmp_path, monkeyp
         "provider: claude\n"
         "model: opus\n"
         "workspace: default\n"
-        "access: admin\n"
         "notify:\n"
         "enabled : false  # keep this too\n"
         "---\n\n"
@@ -860,7 +923,6 @@ def test_job_toggle_rejects_job_file_symlink_escape(tmp_path, monkeypatch):
         "provider: claude\n"
         "model: opus\n"
         "workspace: default\n"
-        "access: admin\n"
         "enabled: false\n"
         "---\n\n"
         "Prompt.\n",

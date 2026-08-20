@@ -30,9 +30,9 @@ def _database_web_app(tmp_path: Path, monkeypatch):
 
     config_dir = tmp_path / "enso"
     jobs_dir = config_dir / "jobs"
-    workspace = tmp_path / "workspace"
+    workspace = config_dir / "workspaces" / "default"
     jobs_dir.mkdir(parents=True)
-    workspace.mkdir()
+    workspace.mkdir(parents=True)
     (jobs_dir / "demo").mkdir()
     (jobs_dir / "demo" / "JOB.md").write_text(
         "---\n"
@@ -41,7 +41,6 @@ def _database_web_app(tmp_path: Path, monkeypatch):
         "provider: codex\n"
         "model: gpt-test\n"
         "workspace: default\n"
-        "access: admin\n"
         "enabled: false\n"
         "---\n\n"
         "Original prompt.\n",
@@ -50,7 +49,25 @@ def _database_web_app(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(config_mod, "CONFIG_DIR", str(config_dir))
     for module in (config_mod, jobs_mod, web_app):
         monkeypatch.setattr(module, "JOBS_DIR", str(jobs_dir))
-    runtime = SimpleNamespace(working_dir=str(workspace), config={"web": {}})
+    runtime = SimpleNamespace(
+        config={
+            "web": {},
+            "workspaces": {
+                "default": {
+                    "policy": "admin",
+                    "concurrency": 1,
+                }
+            },
+            "policies": {
+                "admin": {
+                    "unrestricted": True,
+                    "providers": ["claude"],
+                    "default_provider": "claude",
+                    "chat_commands": "*",
+                }
+            },
+        }
+    )
     return config_dir, web_app.create_app(runtime)
 
 
@@ -207,6 +224,7 @@ def test_dashboard_keeps_other_sections_and_identifies_busy_run_history(
         _sqlite_error("database is locked sentinel", _SQLITE_BUSY, "SQLITE_BUSY"),
     )
     monkeypatch.setattr(web_app, "load_jobs", lambda: [])
+    monkeypatch.setattr(web_app, "load_jobs_with_errors", lambda _config: ([], {}))
     monkeypatch.setattr(web_app, "_skill_inventory", lambda _request: ([], []))
     monkeypatch.setattr(web_app.docs, "load_docs", lambda: SimpleNamespace(docs=[]))
     monkeypatch.setattr(
@@ -223,7 +241,7 @@ def test_dashboard_keeps_other_sections_and_identifies_busy_run_history(
     response = client.get("/")
 
     assert response.status_code == 200
-    assert "Dashboard" in response.text
+    assert "Overview" in response.text
     assert "data-runs-unavailable" in response.text
     assert "data-database-busy" in response.text
     assert "Database busy" in response.text

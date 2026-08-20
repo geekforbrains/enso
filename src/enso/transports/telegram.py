@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import json
 import logging
 import os
 import sys
@@ -27,7 +29,8 @@ except ImportError:
         "Install it with: pip install enso[telegram]"
     ) from None
 
-from ..auth import is_authorized, parse_telegram_allowed_users
+from .. import policy as native_policy
+from ..auth import is_authorized
 from ..commands import (
     cmd_clear,
     cmd_compact_async,
@@ -40,16 +43,24 @@ from ..commands import (
     cmd_update_async,
     cmd_use,
 )
+from ..core import ExecutionContext
 from ..formatting import md_to_html
 from ..secret_refs import resolve_config_secret
-from . import BaseTransport, TransportContext, safe_filename
+from ..teams import load_telegram
+from . import BaseTransport, SecureUploadDirectory, TransportContext, safe_filename
 
 if TYPE_CHECKING:
     from ..core import Runtime
+    from ..teams import Policy, Workspace
 
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB Telegram bot API limit
 
 log = logging.getLogger(__name__)
+
+CONFIG_ERROR_REPLY = (
+    "This conversation isn't fully configured for Enso — ask an admin to run "
+    "`enso config check`."
+)
 
 
 def _is_parse_error(exc: BadRequest) -> bool:
@@ -57,15 +68,39 @@ def _is_parse_error(exc: BadRequest) -> bool:
     return "parse entities" in str(exc).lower()
 
 
-def _allowed_users(config: dict[str, Any]) -> list[str]:
-    """Return valid, exact Telegram user IDs or fail closed."""
-    users = parse_telegram_allowed_users(config)
-    if not users:
-        log.error(
-            "Telegram allowed_users must be a non-empty list of unique positive "
-            "numeric strings; allowed_user_ids is not supported"
-        )
-    return users
+def _conversation_key(chat_id: object, workspace: Workspace, policy: Policy) -> str:
+    """Build a delimiter-safe state key bound to the exact Telegram execution policy."""
+    payload = json.dumps(
+        {
+            "v": 1,
+            "kind": "telegram",
+            "parts": [str(chat_id), workspace.name, policy.name],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return f"telegram:{hashlib.sha256(payload.encode()).hexdigest()[:32]}"
+
+
+def _settings_key(chat_id: object) -> str:
+    """Build a durable settings key for one Telegram chat."""
+    payload = json.dumps(
+        {
+            "v": 1,
+            "kind": "telegram-settings",
+            "parts": [str(chat_id)],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return f"telegram:settings:{hashlib.sha256(payload.encode()).hexdigest()[:32]}"
+
+
+def _context_settings_key(context: ExecutionContext) -> str:
+    """Return the route key guaranteed on interactive Telegram contexts."""
+    if context.settings_key is None:
+        raise ValueError("Telegram command context has no settings key")
+    return context.settings_key
 
 
 # Commands registered with Telegram's menu UI.
@@ -166,11 +201,126 @@ class TelegramTransport(BaseTransport):
 
     def __init__(self, runtime: Runtime):
         self.runtime = runtime
-        tg_cfg = runtime.config.get("transports", {}).get("telegram", {})
+        transports = runtime.config.get("transports", {})
+        tg_cfg = transports.get("telegram", {}) if isinstance(transports, dict) else {}
+        if not isinstance(tg_cfg, dict):
+            tg_cfg = {}
         self.bot_token = resolve_config_secret(tg_cfg, "bot_token")
-        self.allowed_users = _allowed_users(tg_cfg)
+        self.telegram = load_telegram(runtime.config)
+        self.allowed_users = self.telegram.allowed_users
         self.notify_channel = str(tg_cfg.get("notify_channel", "") or "")
         self._bot: Any = None
+        self._report_config_problems()
+
+    def _report_config_problems(self) -> None:
+        """Log every reason Telegram dispatch is disabled."""
+        for error in self.telegram.errors:
+            log.error("Telegram config error (dispatch disabled): %s", error)
+        workspace = self.telegram.workspace
+        execution_policy = self.telegram.policy
+        if not self.telegram.usable or workspace is None or execution_policy is None:
+            return
+        for provider in execution_policy.providers:
+            check = native_policy.check_provider(workspace, execution_policy, provider)
+            for problem in check.problems:
+                log.error(
+                    "Policy %s on Telegram workspace %s cannot launch %s: %s",
+                    execution_policy.name,
+                    workspace.name,
+                    provider,
+                    problem,
+                )
+
+    def _configured_commands(self) -> list[BotCommand]:
+        """Return only commands exposed by the bound workspace policy."""
+        execution_policy = self.telegram.policy
+        if not self.telegram.usable or execution_policy is None:
+            return []
+        return [command for command in COMMANDS if execution_policy.allows_command(command.command)]
+
+    def _usable_providers(self) -> list[str]:
+        """Return policy-selected providers whose native launch configuration is usable."""
+        workspace = self.telegram.workspace
+        execution_policy = self.telegram.policy
+        if not self.telegram.usable or workspace is None or execution_policy is None:
+            return []
+        return [
+            provider
+            for provider in execution_policy.providers
+            if native_policy.check_provider(workspace, execution_policy, provider).ok
+        ]
+
+    def _execution_context(self, chat_id: object) -> ExecutionContext | None:
+        """Resolve one private chat to its immutable workspace/policy binding."""
+        workspace = self.telegram.workspace
+        execution_policy = self.telegram.policy
+        if not self.telegram.usable or workspace is None or execution_policy is None:
+            return None
+
+        chat_key = _conversation_key(chat_id, workspace, execution_policy)
+        settings_key = _settings_key(chat_id)
+        resolved = self.runtime.resolve_route_settings(settings_key, execution_policy)
+        self.runtime.touch_conversation(chat_key)
+        return ExecutionContext(
+            chat_key=chat_key,
+            settings_key=settings_key,
+            path=workspace.path,
+            workspace_id=workspace.name,
+            workspace=workspace,
+            policy=execution_policy,
+            concurrency=workspace.concurrency,
+            include_global_messages=True,
+            provider=resolved.provider,
+            model=resolved.model,
+            effort=resolved.effort,
+            provider_source=resolved.provider_source,
+            model_source=resolved.model_source,
+            effort_source=resolved.effort_source,
+        )
+
+    def _provider_usable(self, context: ExecutionContext) -> bool:
+        """Revalidate the selected provider before work that can launch it."""
+        provider = context.provider
+        check = native_policy.check_provider(context.workspace, context.policy, provider)
+        if not check.ok:
+            for problem in check.problems:
+                log.error(
+                    "Telegram provider %s is unavailable in workspace %s: %s",
+                    provider,
+                    context.workspace_id,
+                    problem,
+                )
+        return check.ok
+
+    async def _command_context(
+        self,
+        update: Update,
+        command: str,
+    ) -> ExecutionContext | None:
+        """Authorize a direct command or callback against the current policy."""
+        if not self._is_authorized(update):
+            return None
+        context = self._execution_context(update.effective_chat.id)
+        if context is None:
+            await self._reply_to_command(update, CONFIG_ERROR_REPLY)
+            return None
+        execution_policy = self.telegram.policy
+        assert execution_policy is not None
+        if not execution_policy.allows_command(command):
+            await self._reply_to_command(
+                update,
+                f"/{command} is not available in this conversation.",
+            )
+            return None
+        return context
+
+    @staticmethod
+    async def _reply_to_command(update: Update, text: str) -> None:
+        """Reply through a slash-command message or edit an inline callback message."""
+        if update.callback_query is not None:
+            await update.callback_query.edit_message_text(text)
+        elif update.message is not None:
+            await update.message.reply_text(text)
 
     def _is_authorized(self, update: Update) -> bool:
         user = update.effective_user
@@ -189,7 +339,7 @@ class TelegramTransport(BaseTransport):
                 getattr(chat, "id", None),
             )
             return False
-        if not is_authorized(str(user.id), self.allowed_users):
+        if not is_authorized(str(user.id), list(self.allowed_users)):
             log.warning("Unauthorized user: %s", user.id)
             return False
         return True
@@ -239,7 +389,7 @@ class TelegramTransport(BaseTransport):
     async def _post_init(self, app: Application) -> None:
         """Register commands with Telegram and start background tasks."""
         self._bot = app.bot
-        await self._bot.set_my_commands(COMMANDS)
+        await self._bot.set_my_commands(self._configured_commands())
         self._start_background_tasks()
 
     async def _send_update_confirmation(self, pending: dict, text: str) -> bool:
@@ -283,6 +433,10 @@ class TelegramTransport(BaseTransport):
             return
         text = (update.message.text or "").strip()
         conv_id = str(update.effective_chat.id)
+        execution = self._execution_context(conv_id)
+        if execution is None or not self._provider_usable(execution):
+            await update.message.reply_text(CONFIG_ERROR_REPLY)
+            return
         log.info(
             "Incoming message: chat_id=%s msg_id=%s is_reply=%s len=%d",
             conv_id,
@@ -299,7 +453,13 @@ class TelegramTransport(BaseTransport):
 
         preview = text[:50].replace("\n", " ")
         ctx = TelegramContext(update, is_reply=is_reply)
-        await self.runtime.dispatch(conv_id, text, ctx, preview=preview)
+        await self.runtime.dispatch(
+            conv_id,
+            text,
+            ctx,
+            preview=preview,
+            context=execution,
+        )
 
     async def _handle_file_message(self, update: Update, _ctx: Any) -> None:
         if not self._is_authorized(update):
@@ -307,6 +467,10 @@ class TelegramTransport(BaseTransport):
 
         msg = update.message
         conv_id = str(update.effective_chat.id)
+        execution = self._execution_context(conv_id)
+        if execution is None or not self._provider_usable(execution):
+            await msg.reply_text(CONFIG_ERROR_REPLY)
+            return
         tg_file_obj, filename, desc = _resolve_file(msg)
         if tg_file_obj is None:
             return
@@ -320,14 +484,33 @@ class TelegramTransport(BaseTransport):
             )
             return
 
-        uploads_dir = os.path.join(self.runtime.working_dir, "uploads")
-        os.makedirs(uploads_dir, exist_ok=True)
-        dest_path = os.path.join(uploads_dir, filename)
+        try:
+            upload_directory = SecureUploadDirectory.create(
+                execution.path,
+                uuid.uuid4().hex,
+            )
+        except (OSError, ValueError):
+            log.exception("Failed to create Telegram upload directory in %s", execution.path)
+            await msg.reply_text("Failed to prepare file upload. Please try again.")
+            return
 
         try:
-            tg_file = await tg_file_obj.get_file()
-            await tg_file.download_to_drive(dest_path)
-            log.info("Downloaded %s to %s (%d bytes)", desc, dest_path, file_size)
+            with upload_directory:
+                tg_file = await tg_file_obj.get_file()
+                payload = await tg_file.download_as_bytearray()
+                if len(payload) > MAX_FILE_SIZE:
+                    size_mb = len(payload) / (1024 * 1024)
+                    await msg.reply_text(
+                        f"File too large ({size_mb:.1f}MB). "
+                        "Telegram bots can only download files up to 20MB."
+                    )
+                    return
+                with upload_directory.open_file(filename) as destination:
+                    destination.write(payload)
+                dest_path = upload_directory.verified_file_path(filename)
+                if dest_path is None:
+                    raise OSError("Telegram upload path changed after download")
+                log.info("Downloaded %s to %s (%d bytes)", desc, dest_path, len(payload))
         except Exception:
             log.exception("Failed to download %s", desc)
             await msg.reply_text("Failed to download file. Please try again.")
@@ -340,20 +523,27 @@ class TelegramTransport(BaseTransport):
 
         ctx = TelegramContext(update)
         preview = prompt[:50].replace("\n", " ")
-        await self.runtime.dispatch(conv_id, prompt, ctx, preview=preview)
+        await self.runtime.dispatch(
+            conv_id,
+            prompt,
+            ctx,
+            preview=preview,
+            context=execution,
+        )
 
     # -- Slash commands --
 
     async def _cmd_stop(self, update: Update, _ctx: Any) -> None:
-        if not self._is_authorized(update):
+        execution = await self._command_context(update, "stop")
+        if execution is None:
             return
-        conv_id = str(update.effective_chat.id)
-        await update.message.reply_text(await cmd_stop_async(self.runtime, conv_id))
+        await update.message.reply_text(await cmd_stop_async(self.runtime, execution.chat_key))
 
     async def _cmd_queue(self, update: Update, _ctx: Any) -> None:
-        if not self._is_authorized(update):
+        execution = await self._command_context(update, "queue")
+        if execution is None:
             return
-        conv_id = str(update.effective_chat.id)
+        conv_id = execution.chat_key
         args = (update.message.text or "").split()[1:]
 
         # Direct: /queue clear
@@ -412,13 +602,19 @@ class TelegramTransport(BaseTransport):
             )
 
     async def _cmd_use(self, update: Update, _ctx: Any) -> None:
-        if not self._is_authorized(update):
+        execution = await self._command_context(update, "use")
+        if execution is None:
             return
-        conv_id = str(update.effective_chat.id)
         args = (update.message.text or "").split()[1:]
         choice = args[0] if args else None
 
-        response, options = cmd_use(self.runtime, conv_id, choice)
+        response, options = cmd_use(
+            self.runtime,
+            _context_settings_key(execution),
+            choice,
+            policy=execution.policy,
+            providers=self._usable_providers(),
+        )
         if response:
             await update.message.reply_text(response)
             return
@@ -436,24 +632,34 @@ class TelegramTransport(BaseTransport):
         )
 
     async def _cmd_status(self, update: Update, _ctx: Any) -> None:
-        if not self._is_authorized(update):
+        execution = await self._command_context(update, "status")
+        if execution is None:
             return
-        conv_id = str(update.effective_chat.id)
-        await update.message.reply_text(cmd_status(self.runtime, conv_id))
+        await update.message.reply_text(
+            cmd_status(
+                self.runtime,
+                _context_settings_key(execution),
+                policy=execution.policy,
+            )
+        )
 
     async def _cmd_model(self, update: Update, _ctx: Any) -> None:
-        if not self._is_authorized(update):
+        execution = await self._command_context(update, "model")
+        if execution is None:
             return
-        conv_id = str(update.effective_chat.id)
         args = (update.message.text or "").split()[1:]
         choice = args[0] if args else None
 
-        response, options = cmd_model(self.runtime, conv_id, choice)
+        response, options = cmd_model(
+            self.runtime,
+            _context_settings_key(execution),
+            choice,
+            policy=execution.policy,
+        )
         if response:
             await update.message.reply_text(response)
             return
 
-        provider = self.runtime.get_active_provider(conv_id)
         buttons = [
             InlineKeyboardButton(
                 f"{'● ' if active else ''}{name}",
@@ -463,26 +669,27 @@ class TelegramTransport(BaseTransport):
         ]
         keyboard = [[b] for b in buttons]
         await update.message.reply_text(
-            f"Switch model ({provider}):",
+            f"Switch model ({execution.provider}):",
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
 
     async def _cmd_effort(self, update: Update, _ctx: Any) -> None:
-        if not self._is_authorized(update):
+        execution = await self._command_context(update, "effort")
+        if execution is None:
             return
-        conv_id = str(update.effective_chat.id)
         args = (update.message.text or "").split()[1:]
         choice = args[0] if args else None
 
-        response, options = cmd_effort(self.runtime, conv_id, choice)
+        response, options = cmd_effort(
+            self.runtime,
+            _context_settings_key(execution),
+            choice,
+            policy=execution.policy,
+        )
         if response:
             await update.message.reply_text(response)
             return
 
-        model = self.runtime.get_active_model(
-            conv_id,
-            self.runtime.get_active_provider(conv_id),
-        )
         buttons = [
             InlineKeyboardButton(
                 f"{'● ' if active else ''}{name}",
@@ -497,28 +704,31 @@ class TelegramTransport(BaseTransport):
             ]
         )
         await update.message.reply_text(
-            f"Set effort ({model}):",
+            f"Set effort ({execution.model}):",
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
 
     async def _cmd_clear(self, update: Update, _ctx: Any) -> None:
-        if not self._is_authorized(update):
+        execution = await self._command_context(update, "clear")
+        if execution is None:
             return
-        conv_id = str(update.effective_chat.id)
+        conv_id = execution.chat_key
         args = (update.message.text or "").split()[1:]
 
         # Direct usage: /clear all
         if args == ["all"]:
-            cmd_clear(self.runtime, conv_id, clear_all=True)
+            cmd_clear(self.runtime, conv_id, context=execution, clear_all=True)
             await update.message.reply_text("Cleared all providers.")
             return
 
         # No args → show options
-        active = self.runtime.get_active_provider(conv_id)
         keyboard = InlineKeyboardMarkup(
             [
                 [
-                    InlineKeyboardButton(f"Clear {active}", callback_data="clear:current"),
+                    InlineKeyboardButton(
+                        f"Clear {execution.provider}",
+                        callback_data="clear:current",
+                    ),
                     InlineKeyboardButton("Clear all", callback_data="clear:all"),
                 ],
             ]
@@ -526,18 +736,25 @@ class TelegramTransport(BaseTransport):
         await update.message.reply_text("Clear session:", reply_markup=keyboard)
 
     async def _cmd_compact(self, update: Update, _ctx: Any) -> None:
-        if not self._is_authorized(update):
+        execution = await self._command_context(update, "compact")
+        if execution is None:
             return
-        conv_id = str(update.effective_chat.id)
+        if not self._provider_usable(execution):
+            await update.message.reply_text(CONFIG_ERROR_REPLY)
+            return
         await update.message.reply_text(
             "Compacting context - this can take 10-30s while the agent summarises..."
         )
         await update.effective_chat.send_action(ChatAction.TYPING)
-        reply = await cmd_compact_async(self.runtime, conv_id)
+        reply = await cmd_compact_async(
+            self.runtime,
+            execution.chat_key,
+            context=execution,
+        )
         await update.message.reply_text(reply)
 
     async def _cmd_update(self, update: Update, _ctx: Any) -> None:
-        if not self._is_authorized(update):
+        if await self._command_context(update, "update") is None:
             return
         status = await update.message.reply_text("Checking the latest stable Enso release…")
         result = await cmd_update_async(self.runtime)
@@ -553,20 +770,20 @@ class TelegramTransport(BaseTransport):
             schedule_service_restart()
 
     async def _cmd_restart(self, update: Update, _ctx: Any) -> None:
-        if not self._is_authorized(update):
+        if await self._command_context(update, "restart") is None:
             return
         await update.message.reply_text("Restarting...")
         asyncio.get_event_loop().call_later(1, _restart)
 
     async def _cmd_logs(self, update: Update, _ctx: Any) -> None:
-        if not self._is_authorized(update):
+        if await self._command_context(update, "logs") is None:
             return
         await update.message.reply_text(cmd_logs()[-4000:])
 
     async def _cmd_help(self, update: Update, _ctx: Any) -> None:
-        if not self._is_authorized(update):
+        if await self._command_context(update, "help") is None:
             return
-        cmds = [(c.command, c.description) for c in COMMANDS]
+        cmds = [(c.command, c.description) for c in self._configured_commands()]
         await update.message.reply_text(cmd_help(cmds))
 
     # -- Inline keyboard callbacks --
@@ -579,43 +796,68 @@ class TelegramTransport(BaseTransport):
         await query.answer()  # Acknowledge the tap immediately
 
         data = query.data or ""
-        conv_id = str(update.effective_chat.id)
+        command, separator, choice = data.partition(":")
+        if not separator or command not in {"use", "model", "effort", "clear", "queue"}:
+            return
+        execution = await self._command_context(update, command)
+        if execution is None:
+            return
         rt = self.runtime
 
-        if data.startswith("use:"):
-            response, _ = cmd_use(rt, conv_id, data.split(":", 1)[1])
+        if command == "use":
+            response, _ = cmd_use(
+                rt,
+                _context_settings_key(execution),
+                choice,
+                policy=execution.policy,
+                providers=self._usable_providers(),
+            )
             if response:
                 await query.edit_message_text(response)
 
-        elif data.startswith("model:"):
-            response, _ = cmd_model(rt, conv_id, data.split(":", 1)[1])
+        elif command == "model":
+            response, _ = cmd_model(
+                rt,
+                _context_settings_key(execution),
+                choice,
+                policy=execution.policy,
+            )
             if response:
                 await query.edit_message_text(response)
 
-        elif data.startswith("effort:"):
-            choice = data.split(":", 1)[1]
-            response, _ = cmd_effort(rt, conv_id, choice)
+        elif command == "effort":
+            response, _ = cmd_effort(
+                rt,
+                _context_settings_key(execution),
+                choice,
+                policy=execution.policy,
+            )
             if response:
                 await query.edit_message_text(response)
 
-        elif data.startswith("clear:"):
-            scope = data.split(":", 1)[1]
-            is_all = scope == "all"
-            parts = cmd_clear(rt, conv_id, clear_all=is_all)
+        elif command == "clear":
+            if choice not in {"current", "all"}:
+                return
+            is_all = choice == "all"
+            parts = cmd_clear(
+                rt,
+                execution.chat_key,
+                context=execution,
+                clear_all=is_all,
+            )
             label = "all providers" if is_all else "current provider"
             await query.edit_message_text(f"Cleared {label}.\n" + "\n".join(parts))
 
-        elif data.startswith("queue:"):
-            action = data.split(":", 1)[1]
-            if action == "clear":
-                count = await rt.clear_queue(conv_id)
+        elif command == "queue":
+            if choice == "clear":
+                count = await rt.clear_queue(execution.chat_key)
                 await query.edit_message_text(
                     f"Cleared {count} queued message(s)." if count else "Queue already empty."
                 )
-            elif action.startswith("rm:"):
-                idx = int(action.split(":")[1])
-                await rt.remove_from_queue(conv_id, idx)
-                await self._show_queue(query, conv_id)
+            elif choice.startswith("rm:") and choice[3:].isdigit():
+                idx = int(choice[3:])
+                await rt.remove_from_queue(execution.chat_key, idx)
+                await self._show_queue(query, execution.chat_key)
 
 
 def _build_reply_context(msg: Any) -> str | None:

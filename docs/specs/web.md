@@ -10,16 +10,26 @@ A small **server-rendered** app (Starlette + Jinja2). There is no SPA, runtime b
 external CDN: compiled CSS is vendored under `web/static/`. Every navigable URL returns a
 complete document, and forms and links use ordinary browser requests and redirects.
 
-The whole UI is a thin skin over the file model and the shared DB: pages read `JOB.md` /
-`SKILL.md` / `AGENTS.md`, run history, and registered user tables. Writes go straight
-back to owned files (atomic replace) and the run store; user-table pages are read-only.
-There is no separate web database or cache (see [data-model.md](data-model.md)).
+The whole UI is a thin skin over the running process's active configuration, the file model,
+the shared DB, and the existing Slack directory cache. Pages read workspace and policy
+bindings, Slack routes, `JOB.md` / `SKILL.md` / `AGENTS.md`, reference docs, run history,
+and registered user tables. Writes go straight back to owned files (atomic replace) and the run store;
+configuration, policies, Slack routes, and user-table pages are read-only. There is no
+separate web database or cache (see [data-model.md](data-model.md)).
 
-**Write boundary.** Every write the UI makes lands inside `~/.enso/` (jobs,
-Enso-owned skills) or the working-dir `AGENTS.md`. It never writes outside that tree —
-external "parent" skills discovered from the CLIs' own roots (e.g. `~/.claude/skills/`)
-are strictly read-only. This is both the safety boundary and the ownership model: Enso
-manages what lives in its own dir and only observes the rest.
+The `enso web` command validates the local Git root and canonical scaffold before serving.
+That check is read-only: the web process never seeds prompts, skills, starter docs, or
+workspace knowledge, creates workspaces, repairs links, or changes setup state.
+
+**Write boundary.** Every write the UI makes lands inside `~/.enso/` (jobs, user-owned
+global skills and docs, the canonical shared `AGENTS.md`, and root `AGENTS.md` files under
+the canonical `~/.enso/workspaces/` tree). Alternate, external, nested, and symlinked
+workspace roots are invalid; their instruction content is never inspected or rendered.
+Nested workspace instruction files, native policy files, and external "parent" skills
+discovered from the CLIs' own roots (e.g. `~/.claude/skills/`) are strictly read-only.
+This is both the safety
+boundary and the scope model: Enso writes user-owned content only inside its canonical
+tree and observes only separately configured external skill roots.
 
 **Request protection.** Host headers must match loopback, the concrete bind host, or a
 name/IP in `web.allowed_hosts`; wildcard binds do not disable this check. All POST routes
@@ -35,11 +45,18 @@ fails app creation if it is malformed, unavailable, or empty. A configured liter
 
 ## Routes
 
-| Route                   | Method    | Status      | Purpose                                                              |
-| ----------------------- | --------- | ----------- | -------------------------------------------------------------------- |
-| `/`                     | GET       | Implemented | Dashboard — recent runs plus job, skill, doc, and table counts       |
-| `/health`               | GET       | Implemented | Unauthenticated process-health probe                                 |
-| `/jobs`                 | GET       | Implemented | Job list — schedule, provider/model, workspace/access, enabled state |
+| Route                                      | Method    | Status      | Purpose                                                              |
+| ------------------------------------------ | --------- | ----------- | -------------------------------------------------------------------- |
+| `/`                                        | GET       | Implemented | Dashboard — execution configuration plus recent operational activity |
+| `/workspaces`                              | GET       | Implemented | Active workspace catalog, policies, bindings, and status             |
+| `/workspaces/{name}`                       | GET       | Implemented | One workspace, root editor, child instructions, routes, and jobs     |
+| `/workspaces/{name}/agents/edit`           | POST      | Implemented | Revision-checked save of one valid canonical root `AGENTS.md`         |
+| `/workspaces/{name}/agents/{path:path}`    | GET       | Implemented | Read-only view of one existing nested `AGENTS.md`                    |
+| `/policies`                                | GET       | Implemented | Active reusable policy catalog and consuming workspaces              |
+| `/policies/{name}`                         | GET       | Implemented | Normalized policy configuration and provider validation status       |
+| `/slack`                                   | GET       | Implemented | Exact Slack routes with cached labels and derived policy bindings     |
+| `/health`                                  | GET       | Implemented | Unauthenticated process-health probe                                 |
+| `/jobs`                                    | GET       | Implemented | Job list — schedule, provider/model, workspace, enabled state        |
 | `/jobs/new`             | GET, POST | **Planned** | Create-job form and `JOB.md` scaffold                                |
 | `/jobs/{name}`          | GET       | Implemented | Job configuration, prompt, prerun state, and recent runs             |
 | `/jobs/{name}/edit`     | POST      | **Planned** | Edit job metadata and prerun configuration                           |
@@ -62,8 +79,8 @@ fails app creation if it is malformed, unavailable, or empty. A configured liter
 | `/docs/delete`          | POST      | Implemented | Delete a doc after confirmation                                      |
 | `/tables`               | GET       | Implemented | Registered data-table list with discovery metadata                   |
 | `/tables/{name}`        | GET       | Implemented | Schema summary and bounded, read-only row preview                    |
-| `/agents`               | GET       | Implemented | View the working-directory `AGENTS.md`                               |
-| `/agents/edit`          | POST      | Implemented | Save `AGENTS.md` atomically                                          |
+| `/agents`                                  | GET       | Implemented | View the canonical shared `~/.enso/AGENTS.md`                        |
+| `/agents/edit`                             | POST      | Implemented | Revision-checked save of the shared `AGENTS.md`                      |
 | `/static/*`             | GET       | Implemented | Vendored CSS and image assets                                        |
 
 Every page request returns a complete document. Successful writes use ordinary `303`
@@ -76,6 +93,11 @@ and GET forms, keeping filter and page state in shareable URLs.
 
 The dashboard shows:
 
+- **Execution configuration** — workspace, policy, and Slack-route totals plus one visible
+  configured/warning/error state derived from the active process configuration. Configured
+  means the binding is structurally valid, not that protected native policy files have been
+  checked; policy detail upgrades a successful native validation to ready. Links open the
+  corresponding configuration pages.
 - **Recent runs** — the last six rows from `runs`, newest first: kind, name,
   status pill (running/ok/error/timeout/prerun error/prerun timeout), trigger, duration,
   relative time; each links to `/runs/{id}`. A database read failure is shown explicitly
@@ -84,12 +106,84 @@ The dashboard shows:
 - **Jobs enabled** — the enabled and total job counts, linking to the job list.
 - **Skills** — deduplicated Enso-owned and visible system counts, linking to the skill
   list.
-- **Docs** — the reference-doc count, linking to the doc list.
+- **Docs** — a live count from the same dynamic scan as the doc list, linking to that list.
 - **Tables** — available registered user-table count, linking to the read-only table list. A database read failure is shown as **Database busy** or **Database unavailable**, never as a misleading zero.
+
+### Workspaces (`/workspaces`, `/workspaces/{name}`)
+
+Workspaces are the execution roots selected by Slack routes, Telegram, and jobs. The list
+and detail pages render the configuration held by the running dashboard process; they do
+not reload or modify `config.json`, and a disk edit takes effect only after the relevant
+service is restarted.
+
+- The list shows the canonical name-derived path, exactly one linked policy, concurrency, Slack-route
+  and job counts, Telegram binding, instruction-file count, and all structural problems.
+- Detail shows the same binding plus associated routes and jobs. Every lowercase
+  kebab-case name resolves exactly to `~/.enso/workspaces/<name>`; configuration cannot
+  provide another path. A symlinked container/root, a direct root `.git` entry, an
+  incorrect discovery link, or a duplicate global/workspace skill name is an error. The
+  invalid root is not scanned, classified as an external tier, or rendered through an
+  alternate read-only branch.
+- A bounded no-symlink scan discovers exact `AGENTS.md` names to a maximum depth of six,
+  100 files, 2,000 directories, and 20,000 directory entries. Dot directories and common
+  generated roots such as `node_modules`, `vendor`, `dist`, `build`, `target`, `uploads`,
+  and `runtime` are pruned. Reaching a bound is visible rather than silently implying the
+  inventory is complete.
+- Existing nested files have read-only detail pages. The root `AGENTS.md` of every valid
+  canonical workspace can be created or edited in the browser; `CLAUDE.md` is never
+  traversed or replaced.
+
+Shared and canonical workspace edits use the same validated file boundary. The workspace
+root and every ancestor directory must be existing physical, owner-protected directories
+with no symlink anywhere in the chain; files must be current-user-owned regular files with
+one link and no group/other write bit. Reads are bounded UTF-8 with no NUL. The form
+carries a SHA-256 revision; a save re-reads and re-validates the target, requires the
+matching revision, stages the new bytes beside it, and publishes with one atomic
+`os.replace` after a final target-identity check, so a conflicting revision or a detected
+race returns `409` and preserves the competing bytes. Detection of concurrent same-user
+writers is deliberately best-effort — Enso's durable content history is scoped Git, and no
+filesystem API can prevent another same-user process from changing the file after the save
+has completed. Unsafe paths/integrity return `403`, missing files `404`, oversized
+submissions `413`, invalid text `422`, and filesystem failures `503` without exposing raw
+exceptions.
+
+### Policies (`/policies`, `/policies/{name}`)
+
+A policy is a reusable authority selected by one or more workspaces. These pages are
+strictly read-only. They show unrestricted versus policy-controlled mode, allowed/default
+providers, chat commands, environment-variable names (never values), the protected policy
+directory, and consuming workspaces. Detail runs the same native provider validation used
+by configuration checks for each consuming workspace and displays safe problems, warnings,
+revision digests, policy paths, and MCP server names. It never renders native policy file
+contents, staged runtime credentials, transport secrets, or raw MCP configuration. An
+unused policy is shown explicitly and is not launched merely for a web request.
+
+Catalog lists label structurally valid bindings as **configured**, not ready. Native policy
+files are intentionally checked only on policy detail, where successful checks are labeled
+**ready** and failures or warnings replace that status. This avoids both filesystem scans on
+every dashboard request and a false claim that a protected launch was validated.
+
+Policy mutation remains outside the web boundary. Use `enso policy list` and `enso policy
+show <name>` for CLI inspection, `enso policy create <name>` with one explicit
+`--unrestricted` or existing `--policy-dir` authority source for registration, and
+`enso config check` as the complete validator. Restricted canonical sources are
+user-authored and owner-protected before registration; neither the dashboard nor the CLI
+generates, copies, changes permissions, rewrites, upgrades, or repairs them.
+
+### Slack routes (`/slack`)
+
+The Slack page shows each exact DM-user or channel ID, its workspace and derived policy,
+audit state, mention/thread triggers, and effective configuration errors. Friendly names
+come only from the existing `~/.enso/cache/slack.json` directory cache; a page request
+never resolves credentials or calls Slack. Missing names fall back to exact IDs, cached
+user emails are never rendered, and labels are accepted only when the cache's account ID
+exactly matches the configured account. The Slack transport binds that cache after
+`auth.test` and clears unbound or foreign directory entries before refreshing them; an
+unbound or mismatched cache is ignored by the web UI and shown as a warning.
 
 ### Jobs (`/jobs`, `/jobs/{name}`)
 
-- Read: schedule, provider/model, required workspace/access names, timeout, notify destination, prompt body, and whether
+- Read: schedule, provider/model, required workspace name, timeout, notify destination, prompt body, and whether
   the configured prerun script exists.
 - A dedicated **enable/disable** toggle flips `enabled:` for one-click pause, and
   **Run now** executes the job immediately.
@@ -105,7 +199,7 @@ The dashboard shows:
   Existing run history remains available.
 - Recent runs for this job, linking to `/runs/{id}`. If run history is busy or unavailable,
   the configuration and editors remain usable and the failure is shown only in the Runs card.
-- **Planned:** browser forms for create and full metadata editing, including choosing the workspace, access profile, and prerun path. Until then use `enso job create` or edit the job files directly.
+- **Planned:** browser forms for create and full metadata editing, including choosing the workspace and prerun path. The workspace's configured policy governs execution. Until then use `enso job create` or edit the job files directly.
 
 ### Run detail (`/runs/{id}`)
 
@@ -129,13 +223,12 @@ unavailable** state. Neither response includes the raw exception text.
 
 Two tiers, split by the `~/.enso/` write boundary:
 
-- **Enso skills** — everything under `~/.enso/skills/`, whether created here or seeded from
-  Enso's starter set at install. Listed with name + description (from SKILL.md
+- **Enso skills** — everything under `~/.enso/skills/`, whether created here or copied
+  once by fresh setup. Listed with name + description (from SKILL.md
   frontmatter). `/skills/{name}` offers whole-file `SKILL.md` editing and confirmed
-  directory deletion. Missing bundled files are seeded unless they have an explicit
-  deletion marker; known pristine prior versions may be upgraded, and customized files
-  or symlinks are preserved. Deletion also removes any unmodified, unshared tool copy
-  installed from that skill; modified or shared tool files are preserved.
+  directory deletion. Installed copies are user-owned: startup, upgrades, and setup repair
+  do not seed missing bundle entries, advance pristine copies, create deletion markers,
+  resurrect deleted skills, or remove guessed tool copies.
 - **External / "parent" skills** — auto-discovered from the underlying CLIs' own skill
   roots *outside* `~/.enso/` (e.g. `~/.claude/skills/`; the set of roots is configurable,
   see [data-model.md](data-model.md) § Config). Listed **read-only** with their absolute
@@ -148,16 +241,24 @@ Two tiers, split by the `~/.enso/` write boundary:
 
 ### Reference docs (`/docs`, `/docs/{path}`)
 
-Operator-authored reference material under `~/.enso/docs/`, nested to any depth. Unlike
-skills there is a single tier: docs are Enso-owned, always editable, never discovered from
-outside `~/.enso/`.
+User-owned reference material under `~/.enso/docs/`, with paths capped at eight segments
+including the filename. Unlike skills there is a single tier: docs inside this managed
+root are editable and never discovered from outside `~/.enso/`. A fresh setup copies
+`enso/content_model.md`, `enso/layout.md`, and `operator.md` only; no empty category docs
+are created.
 
+- The list is computed from the current filesystem and frontmatter on every request. It
+  contains starter and later user-created docs without a static inventory, and immediately
+  reflects an edit, creation, or deletion.
 - Rows show the frontmatter `name` and `description`, with the relative path as a small
   mono secondary line, grouped under their parent directory. Directory headings are
   derived from the path segment (`some_thing` → "Some Thing") because directories carry no
   frontmatter.
 - Detail reuses the same whole-file textarea as `/skills/{name}`, plus confirmed deletion
   that prunes emptied parent directories.
+- Installed starter docs are ordinary user-owned files. The UI may edit or delete them,
+  and completed setup, a pre-feature configuration, repair, service/dashboard startup,
+  and upgrades never restore them; the web process itself has no seeding path.
 - Docs are identified by **relative path**, so they need path-segment validation and a
   symlink-skipping walk rather than the single-segment `_safe_name` check. Mutations carry
   the path in the POST body.
@@ -197,18 +298,21 @@ for its bounded timeout therefore cannot delay health checks or unrelated web re
 
 ### AGENTS.md (`/agents`)
 
-- Renders the system prompt (`AGENTS.md` from the working dir).
-- **Editable**: a textarea + save, POST to `/agents/edit`, atomic write back to
-  `AGENTS.md`. The `CLAUDE.md` symlink to it is left intact (we write the target, not the
-  link). This is the one system-prompt surface the operator can tweak without opening an
-  editor.
+- Renders the canonical shared instructions at `~/.enso/AGENTS.md`. Claude and Codex
+  discover that live file natively from the canonical Git root; Grok and Agy receive one
+  explicit copy after Enso revalidates the launch boundary and current source.
+- **Editable**: a textarea + save, POST to `/agents/edit`, with the same owner/type/link,
+  stable-read, size, UTF-8/NUL, revision-conflict, and atomic-replace checks as canonical
+  workspace roots. The sibling `CLAUDE.md -> AGENTS.md` symlink is left intact because the
+  editor addresses only the canonical `AGENTS.md` regular file. Workspace-local focused
+  instructions have their own workspace pages.
 
 ## Run-now
 
 "Run now" executes through the dashboard process's `Runtime`:
 
 - It uses the same prerun/provider pipeline as `enso job run`. When that pipeline creates a run row, it records `trigger='manual'`; intentional prerun no-work creates no row.
-- The provider runs in the job's named workspace under its selected access profile. Invalid bindings fail closed before prerun or provider execution.
+- The provider runs in the job's named workspace under that workspace's configured policy. Invalid bindings fail closed before prerun or provider execution.
 - Manual runs suppress Enso's automatic job failure/recovery notifications. A provider explicitly invoking `enso message send` remains an ordinary provider action and is not suppressed.
 - The POST waits for the run to finish, then uses a `303` redirect to its run detail page when a run row exists. Intentional no-work redirects back to the job page with a status message. Live progress polling and output streaming are future work.
 
@@ -220,9 +324,12 @@ for its bounded timeout therefore cannot delay health checks or unrelated web re
   list still keeps separate card and table markup. The capped main column stays
   left-aligned beside the sidebar on wide screens, and long IDs, paths, upload controls,
   and metadata must never widen the document.
-- **Text editing**: Enso-owned `SKILL.md`, job prompts, `AGENTS.md`, and reference docs use
-  plain textareas; read-only external skills use escaped preformatted text. Rich Markdown
-  rendering is not implemented.
+- **Text editing**: Enso-owned `SKILL.md`, job prompts, shared and canonical-root `AGENTS.md`,
+  and reference docs use plain textareas; nested workspace instructions and
+  external skills use escaped preformatted text. Rich Markdown rendering is not
+  implemented. A successful edit is an atomic file mutation, not an automatic Git
+  commit; after a coherent set of edits, the operator or agent records one scoped
+  `git add`/`git commit` in `~/.enso` with the reviewed paths.
 - **Table grids**: schema and row values remain readable on narrow screens via
   bounded, horizontal overflow; long values cannot widen the whole document.
 - **Form controls**: native single-select dropdowns share consistent spacing, focus
@@ -243,6 +350,6 @@ for its bounded timeout therefore cannot delay health checks or unrelated web re
 
 ## Non-goals (recap)
 
-No chat, no login/accounts, no writes outside Enso-owned paths (`~/.enso/` plus the
-working-directory `AGENTS.md`), no table-row/schema editor, no arbitrary SQL, no live
+No chat, no login/accounts, no configuration or native-policy editor, no writes outside
+Enso-owned paths under `~/.enso/`, no table-row/schema editor, no arbitrary SQL, no live
 output streaming, and no public exposure. See [PRD.md](../PRD.md) § Non-goals.

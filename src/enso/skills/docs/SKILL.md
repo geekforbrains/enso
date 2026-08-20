@@ -1,72 +1,84 @@
 ---
 name: docs
-description: Consult and write operator reference docs under ~/.enso/docs/. Use when a task depends on how this machine, network, services, or accounts are wired, or when a durable fact about the setup should be recorded instead of just answered.
+description: Use this skill to find the authoritative home for information, consult or maintain operator reference docs under ~/.enso/docs, record durable setup facts, or decide whether material belongs in instructions, workspace knowledge, repository docs, a configured knowledge base, a skill, job, table, draft, or reply.
 ---
 
 # Docs
 
-Reference docs are the operator's standing notes about *this* setup — how a
-machine is wired, a deploy runbook, service topology, account conventions.
-They live as Markdown under `~/.enso/docs/`, nested to any depth. A doc's
-identity is its path relative to that root, e.g. `stuff/sub_stuff.md`.
+Operator reference docs are standing notes about this Enso installation: how a machine or service is configured, account-routing conventions, topology, and setup-specific runbooks. They live as Markdown below `~/.enso/docs/`, and their relative path is their identity.
 
-Nothing loads docs automatically. Finding and reading the right one is your
-job.
+Nothing loads every doc automatically. `enso doc list` is the dynamic index: its descriptions say what each doc contains and when to read it. Read only what the current task needs.
 
-## Check the docs before answering from memory
+## Search before creating
 
-Any time a task depends on how the operator's machines, network, services, or
-accounts are set up, **list the docs first**:
+Before writing durable material:
+
+1. Run `enso doc list` and search the relevant workspace knowledge, repository documentation, and configured knowledge base when the policy permits it.
+2. If an authoritative source already covers the subject, update the existing authoritative source instead of creating a competing note.
+3. If another source should remain authoritative, link to it instead of copying its content into an Enso doc.
+4. Create a narrowly scoped doc only when a durable operator or installation fact has no better home.
+
+Keep one responsibility per doc. A description must name the material it contains and the situation in which it is worth reading. Record explicit source or account routing when it matters, and do not infer missing operator facts.
+
+## Choose the owning source
+
+- Put always-loaded behavior and critical rules in the applicable `AGENTS.md`.
+- Put installation and operator facts, account routing, topology, and setup-specific
+  runbooks in global reference docs.
+- Put workspace-only durable material in the workspace's `knowledge/` tree and maintain `knowledge/README.md` as its path-and-reading index.
+- Put product and project facts in that product or project's repository docs.
+- Put human and business knowledge in the configured knowledge base.
+- Put reusable general procedures in skills. A runbook specific to this installation belongs in a doc; a repeatable method that applies across installations belongs in a skill.
+- Put work that runs on a schedule in jobs.
+- Put structured, queryable facts in tables.
+- Put ordinary editable output in `drafts/`.
+- Keep facts needed only for the current turn in the reply.
+
+A repository or configured knowledge base takes precedence over an Enso cache of the same material. Prefer the most direct, maintained source and preserve its ownership. Links and concise routing notes are better than duplicated bodies.
+
+## Protect secrets and freshness
+
+Record credential locations and the account or environment they apply to, but never secret values. Use the installation's approved secret store and avoid printing credentials while inspecting configuration.
+
+Mark volatile facts with their source and verification date, and require live verification before relying on current service state, addresses, versions, prices, schedules, permissions, or other changeable facts. Do not silently present stale notes as current.
+
+## Read and write operator docs
+
+List descriptions before reading:
 
 ```bash
-enso doc list                    # path, name, description for every doc
+enso doc list
 ```
 
-The descriptions are the index — they are written to be matched against.
-Read only the docs that match, with `cat ~/.enso/docs/<path>`. Do not answer
-from a guess or from a stale memory of an earlier turn when a doc covers the
-question.
-
-## Writing a doc
+Then read only the matching path below `~/.enso/docs/`. To create a new doc after the placement checks:
 
 ```bash
-enso doc create stuff/sub_stuff.md              # parents created, frontmatter scaffolded
-enso doc create homelab.md --name "Home Lab"    # explicit display name
+enso doc create stuff/sub_stuff.md
+enso doc create homelab.md --name "Home Lab"
 ```
 
-`create` writes the file with frontmatter in place; fill it in:
+Fill the scaffold with valid frontmatter:
 
 ```markdown
 ---
 name: Home Lab
-description: Hosts, addresses, and services on the home network, and how they are reached.
+description: Hosts and services on the home network; read before changing local routing or deployment targets.
 ---
 
 Body prose.
 ```
 
-- `name` is display only. It never moves the file — the path is identity, and
-  renaming a doc is a plain `mv`.
-- `description` is what `enso doc list` prints and what you match against
-  later. Make it specific enough to pick out of a list of twenty: what the doc
-  holds and when it is worth opening. "Notes" is useless.
-- Keep filenames lowercase with `_` or `-`.
+The `name` is display text; the relative path remains the doc's identity. Use lowercase filenames with `_` or `-`. Make the description discovery-oriented rather than generic.
 
-## What belongs in a doc
+Fresh setup may provide `enso/content_model.md`, `enso/layout.md`, and `operator.md`. Treat them like all seeded content: after creation they are user-owned, may be edited or deleted, and must not be recreated by ordinary startup or repair.
 
-Standing truths about the operator's setup, recorded once and consulted many
-times:
+## Record content changes safely
 
-- infrastructure and topology — hosts, addresses, ports, what runs where
-- account and naming conventions, where credentials live (never the secrets)
-- runbooks and gotchas that outlive the task that surfaced them
+`~/.enso` is a local-only Git repository. Record one scoped commit after each coherent change to Enso content:
 
-What does not:
+```bash
+git -C ~/.enso add <changed-path> [<changed-path>...]
+git -C ~/.enso commit -m "<summary>"
+```
 
-- **How to do something generally** — that is a skill.
-- **Work that runs on a schedule** — that is a job (`enso job create`).
-- Anything true only for the current turn — just say it in the reply.
-
-When you learn a durable fact about the setup during a task, write it into a
-doc rather than only reporting it. Enso ships no docs; the tree starts empty
-and grows from what you and the operator put in it.
+Stage explicit paths for only the docs, workspace knowledge, instruction files, or related canonical content changed together. Never use broad staging such as `git add -A`, and never `--force`-add a path Git ignores: the managed `.gitignore` keeps configuration, credentials, databases, uploads, drafts, and runtime state out of history. History is local only — never add a remote, push, pull, fetch, or run destructive history or worktree commands (`reset --hard`, `checkout`/`restore` over uncommitted files, `clean`, rebase). If the active policy denies a Git operation, report that boundary; never widen or rewrite the policy.

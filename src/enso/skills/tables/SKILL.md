@@ -1,6 +1,6 @@
 ---
 name: tables
-description: Create, inspect, query, and maintain durable user data tables in ~/.enso/enso.db. Use when the user wants to track structured facts, measurements, metrics, history, or any persistent data that should be filtered, joined, or aggregated later.
+description: Use this skill to create, inspect, query, or maintain durable user data tables in ~/.enso/enso.db when the user wants to track structured facts, measurements, metrics, history, or other persistent data that should later be filtered, joined, or aggregated.
 ---
 
 # Tables
@@ -8,6 +8,8 @@ description: Create, inspect, query, and maintain durable user data tables in ~/
 Enso Tables are ordinary SQLite tables in `~/.enso/enso.db`, explicitly
 registered so agents and the dashboard can discover them. The database also
 contains Enso's internal run history, so keep the boundary below exact.
+
+`~/.enso/enso.db` and its sidecars are protected runtime state, not versionable Enso content; the managed `.gitignore` excludes them, and they must never be committed to Enso's local content history. History is for human-authored files, not database rows.
 
 ## Discover before writing
 

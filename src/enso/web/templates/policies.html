@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% from "macros.html" import problem_list, status_badge %}
+{% block title %}Policies · enso{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+  <h1 class="text-2xl font-semibold tracking-tight">Policies</h1>
+  <p class="mt-1 text-sm text-muted">Reusable provider and command boundaries shared by one or more workspaces. Open a policy to run its native provider checks.</p>
+</div>
+
+{% if catalog_errors %}
+  <div class="mb-5">{{ problem_list(catalog_errors, "Catalog configuration errors") }}</div>
+{% endif %}
+
+{% if policies %}
+  <div class="grid gap-3 xl:grid-cols-2">
+    {% for policy in policies %}
+      <a href="/policies/{{ policy.name }}"
+         class="block min-w-0 rounded-xl border border-border bg-surface p-5 transition-colors
+                hover:border-border-strong hover:bg-surface-hover focus:outline-none
+                focus-visible:ring-2 focus-visible:ring-focus">
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <h2 class="break-words font-semibold text-ink">{{ policy.name }}</h2>
+            <p class="mt-1 text-sm text-muted">{{ policy.mode }}</p>
+          </div>
+          {{ status_badge(policy.status) }}
+        </div>
+
+        <dl class="mt-4 grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
+          <div>
+            <dt class="text-xs font-medium uppercase tracking-wide text-faint">Providers</dt>
+            <dd class="break-anywhere mt-1">{{ policy.providers | join(", ") or "None" }}</dd>
+          </div>
+          <div>
+            <dt class="text-xs font-medium uppercase tracking-wide text-faint">Default</dt>
+            <dd class="break-anywhere mt-1">{{ policy.default_provider or "None" }}</dd>
+          </div>
+        </dl>
+
+        {% set consumer_count = policy.workspace_names | length %}
+        <p class="mt-4 text-xs text-muted">
+          {{ consumer_count }} workspace consumer{% if consumer_count != 1 %}s{% endif %}
+        </p>
+        {% if policy.problems %}
+          <ul class="mt-3 list-disc space-y-1 pl-5 text-xs
+                     {% if policy.status == 'warning' %}text-amber-700 dark:text-amber-300
+                     {% else %}text-red-700 dark:text-red-300{% endif %}">
+            {% for problem in policy.problems %}<li class="break-anywhere">{{ problem }}</li>{% endfor %}
+          </ul>
+        {% endif %}
+      </a>
+    {% endfor %}
+  </div>
+{% else %}
+  <div class="rounded-xl border border-dashed border-border-strong bg-surface px-4 py-8 text-center">
+    <p class="font-medium">No policies configured</p>
+    <p class="mt-1 text-sm text-muted">Every workspace needs one reusable policy.</p>
+  </div>
+{% endif %}
+{% endblock %}
