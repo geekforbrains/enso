@@ -6,14 +6,14 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-GUIDE = ROOT / "docs" / "migrations" / "v1.3-managed-workspaces.md"
+GUIDE = ROOT / "docs" / "migrations" / "v2.0-managed-workspaces.md"
 
 
 def _read(relative: str) -> str:
     return ROOT.joinpath(relative).read_text(encoding="utf-8")
 
 
-def test_v13_guide_is_manual_complete_and_ordered() -> None:
+def test_v20_guide_is_manual_complete_and_ordered() -> None:
     text = GUIDE.read_text(encoding="utf-8")
     flat_text = " ".join(text.split())
 
@@ -22,8 +22,8 @@ def test_v13_guide_is_manual_complete_and_ordered() -> None:
         "its configured path as a compatibility fallback."
     ) in text
     for contract in (
-        "if [ -e ~/.enso-backup-before-v1.3 ] || [ -L ~/.enso-backup-before-v1.3 ]",
-        "cp -a ~/.enso ~/.enso-backup-before-v1.3",
+        "if [ -e ~/.enso-backup-before-v2.0 ] || [ -L ~/.enso-backup-before-v2.0 ]",
+        "cp -a ~/.enso ~/.enso-backup-before-v2.0",
         "Refuse any existing backup destination and choose a new path",
         "lowercase letters and numbers",
         "If the destination already contains content, stop",
@@ -83,7 +83,7 @@ def test_packaged_workspace_guidance_links_the_canonical_migration_guide() -> No
 
     assert (
         "https://github.com/geekforbrains/enso/blob/main/docs/migrations/"
-        "v1.3-managed-workspaces.md"
+        "v2.0-managed-workspaces.md"
     ) in skill
 
 
@@ -91,7 +91,7 @@ def test_older_unified_policy_guide_remains_an_identified_historical_record() ->
     historical = _read("docs/migrations/unified-workspace-policies.md")
 
     assert "Historical record" in historical
-    assert "[v1.3 managed-workspace guide](v1.3-managed-workspaces.md)" in historical
+    assert "[v2.0 managed-workspace guide](v2.0-managed-workspaces.md)" in historical
     assert '"path": "~/.enso/workspaces/default"' in historical
     assert "are injected into every provider launch" in historical
     assert "seeds missing shared and local templates on setup or service start" in historical
@@ -104,21 +104,26 @@ def test_older_unified_policy_guide_remains_an_identified_historical_record() ->
 
 
 def test_rollout_docs_describe_nonfresh_setup_as_structural_only() -> None:
-    readme = " ".join(_read("README.md").split())
+    getting_started = " ".join(_read("docs/getting-started.md").split())
     changelog = " ".join(_read("CHANGELOG.md").split())
     architecture = " ".join(_read("docs/specs/architecture.md").split())
     data_model = " ".join(_read("docs/specs/data-model.md").split())
     docs_spec = " ".join(_read("docs/specs/docs.md").split())
     product_requirements = " ".join(_read("docs/PRD.md").split())
 
-    for document in (readme, changelog):
-        assert "pre-feature or completed installation" in document
-        assert "structural-only" in document
-        assert (
-            "does not reconfigure providers, workspaces, transports, messaging, or the "
-            "background service"
-        ) in document
-        assert "does not rewrite `config.json` or synthesize a `setup` marker" in document
+    assert "A completed setup rerun is structural-only" in getting_started
+    assert (
+        "does not reconfigure providers, transports, routes, messaging, the service, "
+        "or `config.json`"
+    ) in getting_started
+
+    assert "pre-feature or completed installation" in changelog
+    assert "structural-only" in changelog
+    assert (
+        "does not reconfigure providers, workspaces, transports, messaging, or the "
+        "background service"
+    ) in changelog
+    assert "does not rewrite `config.json` or synthesize a `setup` marker" in changelog
 
     for specification in (architecture, data_model, docs_spec, product_requirements):
         assert "structural-only" in specification
@@ -126,7 +131,7 @@ def test_rollout_docs_describe_nonfresh_setup_as_structural_only() -> None:
 
 
 def test_nonfresh_setup_guidance_does_not_promise_slack_manifest_refresh() -> None:
-    readme = " ".join(_read("README.md").split())
+    slack_guide = " ".join(_read("docs/slack.md").split())
     slack_output = " ".join(_read("docs/specs/slack-output.md").split())
     data_model = " ".join(_read("docs/specs/data-model.md").split())
 
@@ -134,14 +139,16 @@ def test_nonfresh_setup_guidance_does_not_promise_slack_manifest_refresh() -> No
         "`enso setup` refreshes `~/.enso/slack-app-manifest.yaml` even when Slack "
         "credentials are left unchanged"
     )
+    assert stale_claim not in slack_guide
     assert stale_claim not in slack_output
-    assert "even when you keep existing credentials" not in readme
 
-    for document in (readme, slack_output):
-        assert "fresh or incomplete setup" in document
-        assert "does not refresh `~/.enso/slack-app-manifest.yaml`" in document
-
-    assert "When the fresh or incomplete setup wizard reconfigures a transport" in readme
+    assert "Run fresh/incomplete `enso setup`" in slack_guide
+    assert (
+        "A completed or pre-feature `enso setup` is structural-only; it does not "
+        "refresh the manifest or reconfigure Slack"
+    ) in slack_guide
+    assert "fresh or incomplete setup" in slack_output
+    assert "does not refresh `~/.enso/slack-app-manifest.yaml`" in slack_output
     assert "copied only by fresh or incomplete Slack setup" in data_model
 
 
@@ -158,7 +165,7 @@ def test_changelog_covers_fresh_content_and_exactly_once_discovery() -> None:
         "Grok receives the freshly validated shared content once through `--rules`",
         "unrestricted Agy receives it once through Enso's prompt envelope",
         "[unified-policy guide](docs/migrations/unified-workspace-policies.md)",
-        "[v1.3 workspace guide](docs/migrations/v1.3-managed-workspaces.md)",
+        "[v2.0 managed-workspace guide](docs/migrations/v2.0-managed-workspaces.md)",
     ):
         assert contract in changelog
 

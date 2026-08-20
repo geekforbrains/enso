@@ -131,7 +131,7 @@ def test_workspace_show_reports_legacy_path_without_mutating_config(tmp_enso: st
 
     assert result.exit_code == 1
     assert "path is no longer supported" in _flat(result)
-    assert "v1.3-managed-workspaces.md" in result.output
+    assert "v2.0-managed-workspaces.md" in result.output
     assert config_file.read_bytes() == original
     assert not Path(f"{config_file}.lock").exists()
 

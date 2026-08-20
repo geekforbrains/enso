@@ -19,7 +19,7 @@ Workspace configuration has no `path` field. Do not accept an external directory
 
 These are current-layout requirements, not conventions to relax for an older install.
 Direct users with an old configurable path or hand-made discovery links to the
-[v1.3 managed-workspace migration guide](https://github.com/geekforbrains/enso/blob/main/docs/migrations/v1.3-managed-workspaces.md).
+[v2.0 managed-workspace migration guide](https://github.com/geekforbrains/enso/blob/main/docs/migrations/v2.0-managed-workspaces.md).
 Do not implement compatibility links or move their content implicitly.
 
 ## Inspect before changing

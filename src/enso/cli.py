@@ -3311,7 +3311,11 @@ def slack_thread(
     thread_ts: Annotated[str, typer.Argument(help="Thread timestamp (parent ts)")],
     count: Annotated[
         int,
-        typer.Option("--count", "-n", help="Keep the root plus this many recent messages"),
+        typer.Option(
+            "--count",
+            "-n",
+            help="Total messages to keep (root + N-1 recent replies); N <= 0 keeps all",
+        ),
     ] = 100,
     show_all: Annotated[
         bool,
@@ -3320,11 +3324,12 @@ def slack_thread(
 ) -> None:
     """Fetch every message in a thread, oldest first.
 
-    A long thread can be more text than a caller wants at once, so ``-n``
-    keeps the most recent messages. The root always survives the trim \u2014 it
-    is what the thread is about \u2014 and anything dropped is reported rather
-    than silently cut, so a truncated read is never mistaken for the whole
-    thread.
+    A long thread can be more text than a caller wants at once, so ``-n`` sets
+    the total retained messages: the root plus up to ``N - 1`` recent replies.
+    Values at or below zero keep the full thread. The root always survives a
+    trim \u2014 it is what the thread is about \u2014 and anything dropped is
+    reported rather than silently cut, so a truncated read is never mistaken
+    for the whole thread.
     """
     token = _slack_token_or_exit()
     data = slack_cache.api_get(

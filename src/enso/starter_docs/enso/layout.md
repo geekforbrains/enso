@@ -149,5 +149,5 @@ messages, state, audits, runs, caches, logs, native policy homes, job locks, job
 
 This reference is seeded only during a genuinely fresh setup and is user-owned afterward.
 Upgrades do not replace it. An existing installation adopts newer guidance through the
-[v1.3 managed-workspace migration guide](https://github.com/geekforbrains/enso/blob/main/docs/migrations/v1.3-managed-workspaces.md),
+[v2.0 managed-workspace migration guide](https://github.com/geekforbrains/enso/blob/main/docs/migrations/v2.0-managed-workspaces.md),
 never through automatic content replacement.

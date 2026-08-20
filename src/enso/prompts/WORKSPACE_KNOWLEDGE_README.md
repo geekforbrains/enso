@@ -6,4 +6,3 @@ copying them here.
 
 Keep a short path-and-"when to read" entry in this file for each knowledge file.
 Update the index whenever a knowledge file is added, moved, or removed.
-

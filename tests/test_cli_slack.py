@@ -218,6 +218,36 @@ def test_thread_says_nothing_about_trimming_when_nothing_was_trimmed(slack_cli):
     assert "not shown" not in out
 
 
+@pytest.mark.parametrize("count", ["0", "-1"])
+def test_thread_nonpositive_count_keeps_the_full_thread(slack_cli, count):
+    box, _calls = slack_cli
+    box["response"] = {
+        "ok": True,
+        "messages": [
+            {"user": "U02DEV", "ts": "100.1", "text": "the root question"},
+            {"user": "UBOT", "ts": "100.2", "text": "first reply"},
+            {"user": "UBOT", "ts": "100.3", "text": "second reply"},
+        ],
+    }
+
+    out = _flat(runner.invoke(app, ["slack", "thread", "C0OPS", "100.1", "-n", count]))
+
+    assert "the root question" in out
+    assert "first reply" in out
+    assert "second reply" in out
+    assert "not shown" not in out
+
+
+def test_thread_count_help_describes_total_and_unbounded_values():
+    result = runner.invoke(app, ["slack", "thread", "--help"])
+
+    assert result.exit_code == 0
+    out = _flat(result)
+    assert "Total messages to keep" in out
+    assert "root + N-1 recent replies" in out
+    assert "N <= 0 keeps all" in out
+
+
 def test_history_reports_a_slack_error_without_a_traceback(slack_cli):
     box, _calls = slack_cli
     box["response"] = {"ok": False, "error": "channel_not_found"}

@@ -323,8 +323,10 @@ State schema v3 stores route settings separately. Loading v1 or v2 deliberately 
 The bot, dashboard, CLI, agent subprocesses, and operator can all touch the file layer.
 At personal scale the model is deliberately simple:
 
-- **Dashboard writes are atomic** — a temp file in the same directory plus `os.replace`.
-  A reader never sees a half-written `JOB.md`, `SKILL.md`, or shared `~/.enso/AGENTS.md` from a web edit.
+- **Dashboard file saves are atomic** — a temp file in the same directory plus
+  `os.replace`. A reader never sees a half-written job prompt or prerun script,
+  `SKILL.md`, reference doc, shared `~/.enso/AGENTS.md`, or canonical workspace-root
+  `AGENTS.md` from a web edit.
 - **Config mutations are serialized and atomic** — workspace and policy creation hold the
   owner-only cross-process config lock from a strict reread through candidate validation
   and atomic replacement. A malformed file aborts without defaults or overwrite. The
@@ -340,8 +342,10 @@ At personal scale the model is deliberately simple:
   `enso config check` reports any tracked file the protective rules would exclude. Enso
   never creates or contacts a remote and exposes no snapshot, restore, reset, or delete
   commands.
-- **Last write wins.** Optimistic locking and conflict resolution are out of scope for
-  this single-operator tool.
+- **Last write generally wins.** Shared and canonical workspace-root instruction saves
+  are the exception: they carry a content revision and reject a conflicting edit. Broader
+  optimistic locking and conflict resolution are out of scope for this single-operator
+  tool.
 - **SQLite in WAL mode** allows the bot, dashboard, CLI, and agent subprocesses to share
   run history and registered data while readers normally continue during writes. Every
   Enso operation owns a short-lived connection; reads wait at most 500 ms and writes have
@@ -378,16 +382,21 @@ internet and the PRD makes that a non-goal.
   tokens fail before the handler runs.
 - **Browser hardening:** responses deny framing, disable MIME sniffing, use a
   no-referrer policy, and mark HTML as `no-store`.
-- The web app can trigger real work (run-now, edit a job's prompt, edit shared `~/.enso/AGENTS.md`). That
-  is acceptable precisely because access is already restricted to the operator; it is
-  *not* a capability to expose broadly.
-- **Write boundary:** job prompts, Enso-owned skills, and the canonical shared
-  `AGENTS.md` are edited under `~/.enso/`; the shared file's fixed path is
-  `~/.enso/AGENTS.md`.
-  External/"parent" skills discovered from other CLI roots are read-only. User-selected
-  job and skill paths are resolved and checked against their owning root before writes.
-  The Tables web surface is read-only; agents may write only validated, non-reserved user
-  tables through standard SQLite tooling.
+- The web app can trigger real work and mutate content: run, enable, disable, edit, or
+  delete jobs; edit or delete Enso-owned skills; create, edit, or delete reference docs;
+  and edit shared or canonical workspace-root instructions. That is acceptable precisely
+  because access is already restricted to the operator; it is *not* a capability to
+  expose broadly.
+- **Write boundary:** every direct file mutation made by the web UI stays under
+  `~/.enso/`: jobs and their
+  configured in-directory prerun scripts, Enso-owned global skills, reference docs, the
+  canonical shared `~/.enso/AGENTS.md`, and root `AGENTS.md` files under the canonical
+  workspace tree. Job, skill, doc, and instruction targets are resolved and checked
+  against their owning roots before writes. External/"parent" skills and nested workspace
+  instructions are read-only. Run-now may write local run history and logs through the
+  normal job pipeline; configuration, policies, Slack routes, and the Tables web surface
+  remain read-only. Agents may write only validated, non-reserved user tables through
+  standard SQLite tooling.
 
 ## Implementation map
 

@@ -5,7 +5,7 @@ This is a manual, breaking migration for installations created before every exec
 > **Historical record:** the schema examples and setup behavior below describe the
 > release that introduced unified policies. For current Enso, use this guide only for
 > the older policy and route rewrite, then follow the
-> [v1.3 managed-workspace guide](v1.3-managed-workspaces.md). It supersedes the path,
+> [v2.0 managed-workspace guide](v2.0-managed-workspaces.md). It supersedes the path,
 > layout, linking, instruction-delivery, and automatic-seeding instructions below:
 > current Enso uses native ancestor discovery instead of launch injection, no longer
 > reads `~/.enso/runtime/instructions/`, and seeds content only during a genuinely

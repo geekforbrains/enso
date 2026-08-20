@@ -243,7 +243,7 @@ def test_config_check_reports_legacy_path_once_without_provider_inspection(
     assert plain.count("workspaces.grok-client.path is no longer supported") == 1
     assert plain.count(
         "https://github.com/geekforbrains/enso/blob/main/"
-        "docs/migrations/v1.3-managed-workspaces.md"
+        "docs/migrations/v2.0-managed-workspaces.md"
     ) == 1
     assert "/legacy/grok-client" not in plain
 

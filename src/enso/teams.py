@@ -64,7 +64,7 @@ _POLICY_NAME_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}"
 _POLICY_NAME_RE = re.compile(_POLICY_NAME_PATTERN)
 MANAGED_WORKSPACES_MIGRATION_URL = (
     "https://github.com/geekforbrains/enso/blob/main/"
-    "docs/migrations/v1.3-managed-workspaces.md"
+    "docs/migrations/v2.0-managed-workspaces.md"
 )
 _SLACK_TRANSPORT_KEYS = {
     "account_id",

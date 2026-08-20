@@ -313,7 +313,7 @@ def test_setup_rejects_legacy_workspace_path_before_repository_changes(
     assert "workspaces.default.path is no longer supported" in output
     assert output.count(
         "https://github.com/geekforbrains/enso/blob/main/"
-        "docs/migrations/v1.3-managed-workspaces.md"
+        "docs/migrations/v2.0-managed-workspaces.md"
     ) == 1
 
 

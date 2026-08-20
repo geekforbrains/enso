@@ -183,7 +183,7 @@ def test_layout_links_the_manual_upgrade_procedure() -> None:
 
     assert (
         "https://github.com/geekforbrains/enso/blob/main/docs/migrations/"
-        "v1.3-managed-workspaces.md"
+        "v2.0-managed-workspaces.md"
     ) in text
 
 
