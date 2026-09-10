@@ -1,0 +1,184 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Today{% endblock %}
+{% block content %}
+{% call m.phead(now) %}Today{% endcall %}
+
+{{ m.subtabs([
+  ('Schedule', '/today' ~ chart_query, none, none),
+  ('Activity', '/today/activity' ~ chart_query, window_notable or none, none),
+  ('Reliability', '/today/reliability' ~ chart_query, job_failed|length or none, 'error'),
+], ('/today' if section == 'schedule' else '/today/' ~ section) ~ chart_query) }}
+
+{{ m.error(error, "Jobs could not be read") }}
+{{ m.error(runs_error, "Run history could not be read") }}
+{{ m.error(beats_error, "Heartbeats could not be read") }}
+
+{# The numbers you opened the page for, before any list. Each tile links to the page
+   that explains it. The chart below is hidden on a phone, so here this is the page.
+   Schedule only: Activity and Reliability are the detail behind these tiles, and
+   repeating the strip above them just pushed their own lists off the screen. #}
+{% if section == 'schedule' %}
+<div class="kpis">
+  {{ m.kpi('Runs, last ' ~ back_hours ~ ' hours', window_notable, (window_total - window_notable) ~ ' gated', '/today/activity' ~ chart_query) }}
+  {{ m.kpi('Failed', failed|length, 'more details', '/runs?view=failed', 'bad' if failed else none) }}
+  {% if upcoming %}
+  {{ m.kpi('Next', upcoming[0].next_run|clock, upcoming[0].title ~ ' · ' ~ upcoming[0].next_run|until, upcoming[0].href) }}
+  {% else %}
+  {{ m.kpi('Next', '–', 'nothing is scheduled') }}
+  {% endif %}
+  {{ m.kpi('Heartbeats', beat_attention_count, 'need your attention', '/heartbeats?attention=1', 'warn' if beat_attention_count else none) }}
+</div>
+
+{% if failed %}
+{{ m.verdict('error', '!',
+   failed|length ~ ' failure' ~ ('s' if failed|length != 1) ~ ' in the last ' ~ back_hours ~ ' hours',
+   '',
+   '/runs?view=failed', 'See them') }}
+{% endif %}
+{% endif %}
+
+{% if beat_attention_count %}
+<section aria-labelledby="heartbeat-attention-head">
+  <div class="shead"><h2 id="heartbeat-attention-head">Heartbeats needing attention</h2><a class="right" href="/heartbeats?attention=1">{{ beat_attention_count }} open &rarr;</a></div>
+  <div class="panel rows">{% for beat in beat_attention %}{{ m.beat_row(beat) }}{% endfor %}</div>
+</section>
+{% endif %}
+
+{# -- Schedule ------------------------------------------------------------- #}
+{% if section == 'schedule' %}
+<section class="wide-only" aria-labelledby="chart-head">
+  <div class="shead">
+    <h2 id="chart-head">Job schedule</h2>
+    <span class="right">{{ chart.lanes|length }} lane{{ 's' if chart.lanes|length != 1 }} · {{ chart_back_hours }} hours back</span>
+    <nav class="chart-range wide-only" aria-label="Schedule range">
+      {% for hours in chart_ranges %}
+      <a href="/today?range={{ hours }}"{% if hours == chart_back_hours %} aria-current="page"{% endif %}>{{ hours }}h</a>
+      {% endfor %}
+    </nav>
+  </div>
+  {% if chart.lanes %}
+  <div class="panel">
+    <div class="chart">
+      <div class="axis"></div>
+      <div class="axis ticks">
+        {% for label in chart.columns %}<span>{{ label }}</span>{% endfor %}
+      </div>
+      {% for lane in chart.lanes %}
+      <a class="lane-name" href="/jobs/{{ lane.job|urlencode }}" title="{{ lane.schedule }}">{{ lane.title }}</a>
+      {# Right of now is scheduled, not observed: the ground is tinted before any mark
+         is drawn. Gridlines keep a constant width however wide the track renders. #}
+      <svg class="track" viewBox="0 0 {{ chart.width }} 24" preserveAspectRatio="none"
+           role="img" aria-label="{{ lane.title }}: {{ lane.events|length }} run{{ 's' if lane.events|length != 1 }} in the window">
+        <rect class="f-future" x="{{ chart.now_x }}" y="0" width="{{ chart.width - chart.now_x }}" height="24"></rect>
+        {% for x in chart.gridlines %}
+        <line class="gridline" x1="{{ x }}" y1="0" x2="{{ x }}" y2="24" vector-effect="non-scaling-stroke"></line>
+        {% endfor %}
+        {% for event in lane.events %}
+        <rect class="f-{{ event.tone }}" x="{{ event.x }}" y="6" width="{{ event.width }}" height="12" rx="2">
+          <title>{{ event.label }}</title>
+        </rect>
+        {% endfor %}
+        {% for x in lane.ghosts %}
+        <rect class="f-ghost" x="{{ x }}" y="8" width="5" height="8" rx="1.5">
+          <title>scheduled slot</title>
+        </rect>
+        {% endfor %}
+        <line class="now" x1="{{ chart.now_x }}" y1="0" x2="{{ chart.now_x }}" y2="24"></line>
+      </svg>
+      {% endfor %}
+    </div>
+    <p class="legend">
+      <span><i class="f-ok"></i>ok</span>
+      <span><i class="f-muted"></i>no work</span>
+      <span><i class="f-error"></i>failed</span>
+      <span><i class="f-warning"></i>timeout</span>
+      <span><i class="f-running"></i>running</span>
+      <span><i class="f-ghost"></i>scheduled</span>
+    </p>
+  </div>
+  {% else %}
+  {{ m.empty("Nothing has run in this window and nothing is scheduled inside it.") }}
+  {% endif %}
+</section>
+
+<section aria-labelledby="next-head">
+  <div class="shead"><h2 id="next-head">Up next</h2></div>
+  {% if upcoming %}
+  <div class="panel rows">
+    {% for row in upcoming %}
+    <a class="row quiet" href="{{ row.href }}">
+      <span class="at">{{ m.time(row.next_run) }}</span>
+      <span class="pin ghost"></span>
+      <span class="body">
+        <span class="title">{{ row.title }}</span>
+        <span class="detail">
+          <span>{{ row.source }}</span><span class="mono">{{ row.timing }}</span>
+          <span>{{ row.workspace }}</span>
+        </span>
+      </span>
+      <span class="trail">{{ row.next_run|heartbeat_next('active') if row.source == 'heartbeat' else row.next_run|until }}</span>
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  {{ m.empty("No enabled jobs or heartbeats have a scheduled check.") }}
+  {% endif %}
+</section>
+
+{# -- Activity ------------------------------------------------------------- #}
+{% elif section == 'activity' %}
+<section aria-labelledby="activity-head">
+  <div class="shead">
+    <h2 id="activity-head">What happened</h2>
+    <span class="right">{{ window_notable }} of {{ window_total }} run{{ 's' if window_total != 1 }} did work · last {{ back_hours }} hours</span>
+  </div>
+  {% if feed %}
+  <div class="panel">
+    {% for group in feed %}
+    <div class="hourhead">
+      <b>{{ group.label }}</b>
+      <span>{{ group.total }} run{{ 's' if group.total != 1 }}{% if group.failed %} · {{ group.failed }} failed{% endif %}</span>
+    </div>
+    {% for item in group.items %}{% include "_feed_item.html" %}{% endfor %}
+    {% endfor %}
+  </div>
+  {% else %}
+  {{ m.empty("Nothing has run in the last " ~ back_hours ~ " hours.") }}
+  {% endif %}
+</section>
+
+{# -- Reliability ---------------------------------------------------------- #}
+{% else %}
+<section aria-labelledby="reliability-head">
+  <div class="shead">
+    <h2 id="reliability-head">Up to {{ reliability_limit }} latest runs per job</h2>
+    <span class="right wide-only">bar height is duration</span>
+  </div>
+  <p class="range">Bars, counts, and averages use each job's latest runs found among the newest {{ scan_limit }} runs across all jobs, including runs older than the schedule window.</p>
+  {% if reliability %}
+  <div class="panel rows">
+    {% for entry in reliability %}
+    <a class="row entity" href="/jobs/{{ entry.row.dir_name|urlencode }}">
+      <span class="pin {{ 'error' if entry.failed else 'ok' }}"></span>
+      <span class="body">
+        <span class="title">{{ entry.row.dir_name }}</span>
+        <span class="detail">
+          {% if entry.row.job and not entry.row.job.schedule %}<span>when work is ready</span>{% else %}<span class="mono">{{ entry.row.job.schedule if entry.row.job else '-' }}</span>{% endif %}
+          <span>{{ entry.row.job.workspace if entry.row.job else '-' }}</span>
+        </span>
+      </span>
+      {{ m.bars(bar_series(entry.runs), entry.runs|length ~ ' recent runs') }}
+      <span class="trail">
+        {% if entry.failed %}<b class="err">{{ entry.failed }} failed</b>{% else %}<b>{{ entry.runs|length }} run{{ 's' if entry.runs|length != 1 }}</b>{% endif %}
+        {% if entry.average %}avg {{ entry.average|duration }}{% endif %}
+      </span>
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  {{ m.empty("No job has run yet.") }}
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

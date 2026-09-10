@@ -1,0 +1,11 @@
+{"event": {"type": "thread.started", "thread_id": "t_123"}, "expect": [["session", "t_123"]]}
+{"event": {"type": "item.started", "item": {"type": "command_execution", "command": "/bin/zsh -lc \"sed -n '1,240p' notes.txt\""}}, "expect": [["status", "Running sed -n '1,240p' notes.txt"]]}
+{"event": {"type": "item.started", "item": {"type": "file_change", "changes": [{"path": "/repo/report.md", "kind": "add"}, {"path": "/repo/other.md", "kind": "update"}]}}, "expect": [["status", "Writing report.md (+1 more)"]]}
+{"event": {"type": "item.started", "item": {"type": "reasoning"}}, "expect": [["status", "Thinking"]]}
+{"event": {"type": "item.started", "item": {"type": "web_search", "query": "enso"}}, "expect": [["status", "Searching: enso"]]}
+{"event": {"type": "item.started", "item": {"type": "mcp_tool_call", "tool": "fetch"}}, "expect": [["status", "Using fetch"]]}
+{"event": {"type": "item.started", "item": {"type": "agent_message"}}, "expect": []}
+{"event": {"type": "item.completed", "item": {"type": "agent_message", "text": "Done!"}}, "expect": [["response", "Done!"]]}
+{"event": {"type": "turn.failed", "error": {"message": "Model is unavailable."}}, "expect": [["error", "Model is unavailable."]]}
+{"event": {"type": "turn.failed", "message": "Turn failed."}, "expect": [["error", "Turn failed."]]}
+{"event": {"type": "error", "message": "boom"}, "expect": [["error", "boom"]]}

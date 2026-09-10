@@ -1,0 +1,12 @@
+ARG BASE_IMAGE=enso-upgrade-base:latest
+FROM ${BASE_IMAGE}
+USER root
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends systemd systemd-sysv dbus dbus-user-session libpam-systemd && \
+    rm -rf /var/lib/apt/lists/* && \
+    useradd --create-home --uid 1000 --shell /bin/bash enso && \
+    mkdir -p /var/lib/systemd/linger && touch /var/lib/systemd/linger/enso && \
+    chown -R enso:enso /opt/uv-cache
+ENV container=docker
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

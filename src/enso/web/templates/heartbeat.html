@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}{{ beat.ref if beat else 'Heartbeat' }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/heartbeats">Heartbeats</a> / <span aria-current="page">{{ beat.ref if beat else 'unavailable' }}</span></p>
+{{ m.error(error, 'The heartbeat could not be read') }}
+{% if beat %}
+{% call m.phead(now) %}{{ beat.title }} {{ m.tag(beat.state) }}{% endcall %}
+{{ m.subtabs([('Overview', '/heartbeats/' ~ beat.ref, none, none), ('History', '/heartbeats/' ~ beat.ref ~ '/history', history_count, none), ('Runs', '/heartbeats/' ~ beat.ref ~ '/runs', runs_count, none)], '/heartbeats/' ~ beat.ref ~ ('/' ~ section if section != 'overview' else '')) }}
+{% if heartbeat_enabled is sameas false %}{{ m.verdict('muted', 'Ⅱ', 'Heartbeat is turned off', 'Saved instructions and history are preserved.') }}{% endif %}
+{% if beat.attention %}{{ m.verdict('warning', '!', 'Needs attention', beat.last_check_error or 'Review the latest events for an unresolved issue or action.') }}{% endif %}
+{% if section == 'history' %}
+<div class="shead"><h2>History and receipts</h2><span class="right">{{ total }} event{{ 's' if total != 1 }}</span></div>
+<p class="range">Recorded time is when Enso saved the event. Source time appears separately when known. Quiet checks do not add history.</p>
+{% if events %}<div class="panel rows">{% for event in events %}{{ m.beat_event(event, beat.handled_event_id) }}{% endfor %}</div>{% else %}{{ m.empty('No events are retained.') }}{% endif %}
+{{ m.pager(page, pages, start, end, total, prev_link, next_link) }}
+{% elif section == 'runs' %}
+<div class="shead"><h2>Agent assessments</h2><span class="right">{{ total }} run{{ 's' if total != 1 }}</span></div>
+{% if recent %}<div class="panel rows">{% for run in recent %}{{ m.run_row(run) }}{% endfor %}</div>{% else %}{{ m.empty('No agent assessment has run.') }}{% endif %}
+{{ m.pager(page, pages, start, end, total, prev_link, next_link) }}
+{% else %}
+<div class="panel"><dl class="kv">
+  <dt>Reference</dt><dd><code>{{ beat.ref }}</code></dd>
+  <dt>State</dt><dd>{{ beat.state }}{% if beat.closed_at %} · {{ beat.closed_at|when }}{% endif %}</dd>
+  <dt>Created</dt><dd>{{ beat.created_at|when }}</dd>
+  <dt>Next check</dt><dd>{% if beat.state == 'active' and beat.next_check_at %}{{ beat.next_check_at|when }}{% else %}None scheduled{% endif %}</dd>
+  <dt>Last check</dt><dd>{{ beat.last_check_at|when }}{% if beat.last_check_status %} · {{ beat.last_check_status|status_word }}{% endif %}</dd>
+  <dt>Last successful check</dt><dd>{{ beat.last_success_at|when }}</dd>
+  {% if beat.at %}<dt>First assessment attempted</dt><dd>{{ 'yes' if beat.at_consumed else 'no' }}</dd>{% endif %}
+  <dt>Instructions revision</dt><dd>{{ beat.revision }}</dd>
+  <dt>Handled through event</dt><dd>{{ beat.handled_event_id }}</dd>
+  {% if beat.claim_run_id %}<dt>Running assessment</dt><dd><a href="/heartbeats/runs/{{ beat.claim_run_id|urlencode }}">{{ beat.claim_run_id }}</a></dd>{% endif %}
+</dl></div>
+<div class="shead"><h2>Current instructions and timing</h2></div>
+{{ m.beat_definition(beat) }}
+{% if latest_event %}<div class="shead"><h2>Latest event</h2><a class="right" href="/heartbeats/{{ beat.ref }}/history">All history &rarr;</a></div><div class="panel rows">{{ m.beat_event(latest_event, beat.handled_event_id) }}</div>{% endif %}
+{% if beat.checkpoint %}<details class="panel checkpoint-panel"><summary>Source checkpoint</summary><pre class="output bare" tabindex="0">{{ checkpoint_text }}</pre></details>{% endif %}
+{% endif %}
+{% endif %}
+{% endblock %}

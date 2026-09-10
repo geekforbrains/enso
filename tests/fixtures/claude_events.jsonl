@@ -1,0 +1,12 @@
+{"event": {"type": "system", "subtype": "init", "session_id": "abc"}, "expect": []}
+{"event": {"type": "assistant", "message": {"content": [{"type": "thinking", "thinking": ""}]}}, "expect": [["status", "Thinking"]]}
+{"event": {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Read", "input": {"file_path": "/tmp/foo.py"}}]}}, "expect": [["status", "Reading foo.py"]]}
+{"event": {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {"command": "ls -la | rg foo", "description": "List files in current directory"}}]}}, "expect": [["status", "List files in current directory"]]}
+{"event": {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Grep", "input": {"pattern": "TODO"}}]}}, "expect": [["status", "Searching for TODO"]]}
+{"event": {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Mystery", "input": {}}]}}, "expect": [["status", "Using Mystery"]]}
+{"event": {"type": "assistant", "message": {"content": [{"type": "text", "text": "Partial answer."}]}}, "expect": [["response", "Partial answer."]]}
+{"event": {"type": "assistant", "error": "model_not_found", "is_api_error_message": true, "message": {"model": "<synthetic>", "content": [{"type": "text", "text": "Model is unavailable."}]}}, "expect": [["error", "Model is unavailable."]]}
+{"event": {"type": "result", "result": "Hello!", "session_id": "db30a1b2-0000-4000-8000-000000000000"}, "expect": [["response", "Hello!"], ["session", "db30a1b2-0000-4000-8000-000000000000"]]}
+{"event": {"type": "result", "is_error": true, "terminal_reason": "api_error", "result": "Model is unavailable.", "session_id": "s1"}, "expect": [["error", "Model is unavailable."], ["session", "s1"]]}
+{"event": {"type": "result", "is_error": true, "terminal_reason": "api_error"}, "expect": [["error", "api_error"]]}
+{"event": {"type": "result", "is_error": true, "stop_reason": "cancelled"}, "expect": [["error", "unknown error"]]}

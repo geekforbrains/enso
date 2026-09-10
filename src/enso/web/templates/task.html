@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}{{ ref }}{% if task %} · {{ task.title }}{% endif %}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/tasks">Tasks</a> / <span aria-current="page">{{ ref }}</span></p>
+{{ m.error(error, "The task could not be read") }}
+{% if task %}
+{% call m.phead(now) %}<span class="mono">{{ task.ref }}</span> {{ task.title }}{% if task.attention %} {{ m.tag('warning', 'needs attention') }}{% endif %}{% endcall %}
+
+{% if recovery %}
+{{ m.verdict('warning', '!', 'Run ' ~ recovery.run_id ~ ' ended without a handoff', recovery.message ~ ('' if recovery_link else ' (the run has been pruned)'), recovery_link, 'Open the run') }}
+{% endif %}
+
+<div class="panel">
+  <dl class="kv">
+    <dt>Project</dt><dd>{{ project_name }} <span class="muted">({{ task.project }})</span></dd>
+    <dt>Stage</dt>
+    <dd>
+      {% if stages %}
+      <span class="pipeline">
+        {% for name in stages %}<span class="chip{{ ' current' if name == task.stage }}">{{ name }}</span>{% endfor %}
+      </span>
+      {% if task.stage not in stages %}<span class="chip current">{{ task.stage }}</span>{% endif %}
+      {% else %}{{ task.stage }}{% endif %}
+      {% if task.previous_stage %}<span class="muted">from {{ task.previous_stage }}</span>{% endif %}
+    </dd>
+    <dt>Priority</dt><dd>{{ task.priority }}</dd>
+    <dt>Attention</dt><dd>{{ 'yes' if task.attention else 'no' }}</dd>
+    <dt>Claim</dt>
+    <dd>{% if task.claim_run_id %}run <a href="/runs/{{ task.claim_run_id|urlencode }}"><code>{{ task.claim_run_id }}</code></a> by {{ task.claim_actor }} <span class="muted">({{ task.claim_at|ago }})</span>{% else %}-{% endif %}</dd>
+    {% if task.after_ref %}<dt>Waiting on</dt><dd><a href="/tasks/{{ task.after_ref|urlencode }}">{{ task.after_ref }}</a></dd>{% endif %}
+    {% if task.from_ref %}<dt>Created from</dt><dd><a href="/tasks/{{ task.from_ref|urlencode }}">{{ task.from_ref }}</a></dd>{% endif %}
+    <dt>In stage since</dt><dd><time datetime="{{ task.entered_stage_at|iso }}">{{ task.entered_stage_at|when }}</time> <span class="muted">({{ task.entered_stage_at|since }})</span></dd>
+    <dt>Created</dt><dd><time datetime="{{ task.created_at|iso }}">{{ task.created_at|when }}</time></dd>
+    <dt>Updated</dt><dd><time datetime="{{ task.updated_at|iso }}">{{ task.updated_at|when }}</time></dd>
+  </dl>
+</div>
+
+{% if worktree %}
+<div class="shead"><h2>Worktree</h2></div>
+<div class="panel">
+  <dl class="kv">
+    <dt>Branch</dt><dd><code>{{ worktree.branch }}</code></dd>
+    <dt>Path</dt><dd><code>{{ worktree.path }}</code></dd>
+    <dt>Base</dt><dd>{% if worktree.base %}<code>{{ worktree.base }}</code>{% else %}<span class="muted">unknown; the main checkout could not be read</span>{% endif %}</dd>
+    <dt>Commits ahead</dt><dd>{% if worktree.ahead is not none %}{{ worktree.ahead }} commit{{ 's' if worktree.ahead != 1 }} ahead of {{ worktree.base }}{% else %}<span class="muted">unknown; git could not count them</span>{% endif %}</dd>
+  </dl>
+</div>
+{% endif %}
+
+<div class="shead"><h2>Spec</h2></div>
+<div class="panel">
+  {% if spec %}
+  <div class="markdown">{{ spec }}</div>
+  {% else %}
+  <p class="empty">The task has no body; the title is the whole spec.</p>
+  {% endif %}
+</div>
+
+{% if handoff %}
+<div class="shead"><h2>Handoff</h2><span class="right">{{ handoff.from_stage }} → {{ handoff.to_stage }} by {{ handoff.actor }} · {{ handoff.at|ago }}</span></div>
+<div class="panel"><pre class="output bare" tabindex="0">{{ handoff.message }}</pre></div>
+{% endif %}
+
+<div class="shead"><h2>Refs</h2></div>
+<div class="panel">
+  {% if refs %}
+  <dl class="kv">
+    {% for ref in refs %}
+    <dt>{{ ref.kind }}</dt><dd><code>{{ ref.value }}</code> <span class="muted">by {{ ref.actor }}, {{ ref.created_at|ago }}</span></dd>
+    {% endfor %}
+  </dl>
+  {% else %}
+  <p class="empty">No refs attached yet.</p>
+  {% endif %}
+</div>
+
+<div class="shead"><h2>Timeline</h2><span class="right">{{ timeline|length }} event{{ 's' if timeline|length != 1 }}, newest first</span></div>
+{% if timeline %}
+<div class="panel rows">
+  {% for entry in timeline %}
+  {% set event = entry.event %}
+  {% if entry.run == 'live' %}<a class="row" href="/runs/{{ event.run_id|urlencode }}">{% else %}<div class="row still">{% endif %}
+    <span class="at">{{ m.time(event.created_at) }}</span>
+    <span class="pin {{ entry.tone }}"></span>
+    <span class="body">
+      <span class="title">{{ entry.label }} <span class="muted">by {{ event.actor }}{% if entry.run == 'live' %} · run <span class="mono">{{ event.run_id }}</span>{% elif entry.run == 'pruned' %} · run pruned{% endif %}</span></span>
+      {% if event.message %}<span class="message">{{ event.message }}</span>{% endif %}
+    </span>
+    <span class="trail">{{ event.created_at|ago }}</span>
+  {% if entry.run == 'live' %}</a>{% else %}</div>{% endif %}
+  {% endfor %}
+</div>
+{% else %}
+{{ m.empty("No events yet.") }}
+{% endif %}
+{% endif %}
+{% endblock %}

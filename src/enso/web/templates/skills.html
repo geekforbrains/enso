@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Skills{% if selected %} · {{ selected }}{% endif %}{% endblock %}
+{% block content %}
+{% call m.phead(now) %}Skills{% endcall %}
+
+{{ m.subtabs([
+  ('Workspaces', '/workspaces', none, none),
+  ('Skills', '/skills', rows|length or none, none),
+], '/skills') }}
+
+{{ m.error(error, "Skills could not be resolved") }}
+
+<div data-filterable>
+  <form class="toolbar" method="get" action="/skills" data-autosubmit>
+    {% call m.select('Workspace', name='workspace') %}
+      <option value=""{% if not selected %} selected{% endif %}>Every workspace</option>
+      {% for name in workspaces %}<option value="{{ name }}"{% if name == selected %} selected{% endif %}>{{ name }}</option>{% endfor %}
+    {% endcall %}
+    {% call m.select('Status', filter='status') %}
+      <option value="">Any status</option>
+      <option value="active">Active</option>
+      <option value="warning">Warning</option>
+      <option value="error">Error</option>
+    {% endcall %}
+    {{ m.filter_button('Show') }}
+    {{ m.search("Search skills: name, description, path, scope") }}
+    <span class="visually-hidden" data-count aria-live="polite"></span>
+  </form>
+
+  {% if groups %}
+  {# One list, so one count line: what the page covers and how much of it needs attention.
+     The old section heading said the workspace and the count; both are here now. #}
+  <p class="range" aria-live="polite">
+    {{ rows|length }} skill{{ 's' if rows|length != 1 }}
+    {%- if selected %} reaching the {{ selected }} workspace{% else %} across every workspace{% endif %},
+    grouped by where they come from.
+    {% if errors %} {{ m.tag('error', errors ~ ' error' ~ ('s' if errors != 1)) }}{% endif %}
+    {% if warnings %} {{ m.tag('warning', warnings ~ ' warning' ~ ('s' if warnings != 1)) }}{% endif %}
+  </p>
+  <div class="panel">
+    {% for group in groups %}
+    {# The heading owns the rows under it: the script hides it and recounts it when the
+       filter empties it, so a heading never stands over nothing. #}
+    <div class="hourhead" data-group>
+      <b>{% if group.prefix %}<span class="muted">{{ group.prefix }}</span> {% endif %}{{ group.label }}</b>
+      <span data-group-count data-singular="skill" data-plural="skills">{{ group.rows|length }} skill{{ 's' if group.rows|length != 1 }}</span>
+    </div>
+    {% for row in group.rows %}
+    {# The heading carries the scope, so the row spends its detail line on the description
+       instead. The path, the reach and any collision are on the skill's own page, which is
+       where the row points. #}
+    <a class="row entity" href="/skills/{{ row.name|urlencode }}{{ '?workspace=' ~ selected|urlencode if selected }}"
+       data-row data-status="{{ row.status }}"
+       data-text="{{ (row.name ~ ' ' ~ row.scope ~ ' ' ~ row.description ~ ' ' ~ row.path)|lower }}">
+      <span class="pin {{ row.status|status_class }}" role="img" aria-label="{{ row.status|status_word }}" title="{{ row.status|status_word }}"></span>
+      <span class="body">
+        <span class="title"><code>{{ row.name }}</code></span>
+        {% if row.description %}<span class="detail"><span>{{ row.description }}</span></span>{% endif %}
+      </span>
+    </a>
+    {% endfor %}
+    {% endfor %}
+  </div>
+  <p class="state empty" data-empty hidden>No skill matches.</p>
+  {% elif not error %}
+  {{ m.empty("No skills reach this workspace.") }}
+  {% endif %}
+</div>
+{% endblock %}

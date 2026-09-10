@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Health{% endblock %}
+{% block content %}
+{% call m.phead(now) %}Health{% endcall %}
+
+{{ m.subtabs([
+  ('Doctor', '/health', findings or none, 'error' if findings else none),
+  ('Log', '/health/log', none, none),
+], '/health/log' if section == 'log' else '/health') }}
+
+{{ m.error(report_error, "The doctor could not run") }}
+
+{% if section == 'log' %}
+<section aria-labelledby="log-head">
+  <div class="shead"><h2 id="log-head">Log tail</h2>
+    <span class="right wide-only">The latest {{ log.lines|length }} line{{ 's' if log.lines|length != 1 }} of <code>{{ log.path }}</code></span></div>
+  {{ m.error(log.error, "The log could not be read") }}
+  {% if not log.exists %}
+  {{ m.empty("No log yet; enso serve writes it.") }}
+  {% elif log.lines %}
+  <div class="panel"><pre class="output bare log" tabindex="0">{% for line in log.lines %}{{ line }}
+{% endfor %}</pre></div>
+  {% else %}
+  {{ m.empty("The log is empty.") }}
+  {% endif %}
+</section>
+
+{% else %}
+{% if report %}
+{% set failing = report.sections|rejectattr('status', 'equalto', 'ok')|list %}
+{% set passing = report.sections|selectattr('status', 'equalto', 'ok')|list %}
+
+{% if not failing %}
+{{ m.verdict('ok', '✓', 'Every check passes', 'config, home, workspaces, providers, transports, service, and jobs') }}
+{% endif %}
+
+{# Every section gets the same block, problems first: a heading with its verdict and a
+   panel of what it found. A clean section says so on a green row rather than vanishing,
+   so it is obvious it was checked. Its inventory -- which providers, which workspaces --
+   is the detail line on that row, never a loose paragraph above the panel. What the check
+   actually read folds shut at the foot of the same panel, beside the verdict it explains
+   rather than in one heap of unrelated facts at the bottom of the page. #}
+{% for entry in failing + passing %}
+<section aria-labelledby="section-{{ entry.name }}">
+  {% set found = (entry.problems|length) + (entry.warnings|length) %}
+  <div class="shead">
+    <h2 id="section-{{ entry.name }}">{{ entry.name|capitalize }}</h2>
+    <span class="right{{ ' bad' if entry.status == 'error' }}{{ ' warn' if entry.status == 'warning' }}">
+      {% if found %}{{ found }} {{ entry.status }}{{ 's' if found != 1 }}{% else %}ok{% endif %}
+    </span>
+  </div>
+  <div class="panel rows">
+    {% if found %}
+    {% for problem in entry.problems %}{{ m.finding_row('error', problem) }}{% endfor %}
+    {% for warning in entry.warnings %}{{ m.finding_row('warning', warning) }}{% endfor %}
+    {% elif entry.skipped %}
+    {{ m.finding_row('warning', 'Skipped until config.json is valid.') }}
+    {% else %}
+    <div class="row entity">
+      <span class="pin ok"></span>
+      <span class="body">
+        <span class="title">No issues found</span>
+        {% if entry.note %}<span class="detail"><span>{{ entry.note }}</span></span>{% endif %}
+      </span>
+    </div>
+    {% endif %}
+    {% if entry.details %}{{ m.facts(entry.details) }}{% endif %}
+  </div>
+</section>
+{% endfor %}
+{% endif %}
+
+<section aria-labelledby="db-head">
+  <div class="shead"><h2 id="db-head">Database</h2>
+    <span class="right{{ ' bad' if database.state == 'error' }}">{{ {'ok': 'readable', 'missing': 'missing', 'error': 'unreadable'}[database.state] }}</span></div>
+  <div class="panel">
+    <dl class="kv">
+      <dt>Path</dt><dd><code>{{ database.path }}</code></dd>
+      <dt>Footprint</dt>
+      <dd>{{ database.total|bytes }}{% if database.files %} <span class="muted">({% for name, size in database.files %}{{ name }} {{ size|bytes }}{{ ', ' if not loop.last }}{% endfor %})</span>{% endif %}</dd>
+      {% if database.schema is not none %}<dt>Schema</dt><dd>version {{ database.schema }}</dd>{% endif %}
+      {% if database.runs is defined %}<dt>Runs</dt><dd>{{ database.runs }} retained</dd>{% endif %}
+    </dl>
+    {% if database.state == 'missing' %}
+    <p class="empty">{{ database.error or 'enso.db does not exist yet; enso serve creates it on first start.' }}</p>
+    {% endif %}
+  </div>
+  {{ m.error(database.error if database.state == 'error' else none, "The database cannot be read") }}
+</section>
+
+<section aria-labelledby="viewer-head">
+  <div class="shead"><h2 id="viewer-head">This viewer</h2></div>
+  <div class="panel">
+    <dl class="kv">
+      <dt>Version</dt><dd>enso {{ version }}</dd>
+      <dt>Home</dt><dd><code>{{ viewer.home }}</code></dd>
+      <dt>Listening</dt><dd>{% if viewer.url %}<code>{{ viewer.url }}</code>{% else %}-{% endif %} <span class="muted">(pid {{ viewer.pid }})</span></dd>
+      <dt>Access</dt>
+      <dd>{% if viewer.loopback %}loopback only{% else %}{{ m.tag('warning', 'exposed') }} bound to <code>{{ viewer.host }}</code>, which other machines may reach; the viewer has no authentication{% endif %}</dd>
+      <dt>Mode</dt><dd>read-only; every page reads current state when it loads and changes nothing</dd>
+    </dl>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

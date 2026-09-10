@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>{% block title %}Enso{% endblock %} · Enso</title>
+{# Add to Home Screen on a phone installs the viewer as an app named Enso: the manifest
+   names it and says it opens full screen, the touch icon is the one iOS shows, and the
+   theme colours are the page's own light and dark grounds so the status bar matches. The
+   Apple tags keep the app full screen when an authenticating proxy refuses the manifest,
+   and the manifest is fetched with credentials so that such a proxy usually will not. #}
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#f8fafc">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f172a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Enso">
+<link rel="manifest" href="/static/manifest.webmanifest" crossorigin="use-credentials">
+<link rel="icon" href="/static/icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+{% from "_icons.html" import icon %}
+{# Every destination is a plain link in the sidebar. Names are the view keys, so the
+   icon macro takes the path without its slash. #}
+{% macro nav_link(label, href, size=16) -%}
+<a href="{{ href }}"{% if href == active %} aria-current="page"{% endif %}>{{ icon(href[1:], size) }}<span>{{ label }}</span>{% if href == '/health' and alarm is defined and alarm %}<span class="nav-alert"><span class="visually-hidden">Needs attention</span></span>{% endif %}</a>
+{%- endmacro %}
+<a class="skip" href="#main">Skip to content</a>
+
+<aside class="sidebar">
+  <nav class="side-nav" aria-label="Sections">
+    <ul>
+      {% for label, href in nav %}
+      <li>{{ nav_link(label, href) }}</li>
+      {% endfor %}
+    </ul>
+  </nav>
+</aside>
+
+<div class="workspace-view">
+<main id="main" tabindex="-1">
+  {% if config_problems and active != '/health' %}
+  <div class="banner" role="status">
+    <strong>config.json is unusable</strong> ({{ config_problems|length }} problem{{ 's' if config_problems|length != 1 }}).
+    Some of this page needs it. <a href="/health">See Health</a> for the details.
+  </div>
+  {% endif %}
+  {% block content %}{% endblock %}
+</main>
+</div>
+
+{# The phone: four frequent destinations and More. More is a native <details>, so every
+   view stays reachable without the script; the script only manages focus. #}
+<nav class="tabs" aria-label="Primary sections">
+  <ul>
+    {% for label, href in nav_primary %}
+    <li><a href="{{ href }}"{% if href == active %} aria-current="page"{% endif %}>{{ icon(href[1:], 20) }}{{ label }}</a></li>
+    {% endfor %}
+    <li>
+      <details class="more-menu{% if active in nav_more|map(attribute=1)|list %} is-current{% endif %}" data-more-menu>
+        <summary aria-controls="more-sections">{{ icon('more', 20) }}More{% if alarm is defined and alarm %}<span class="pip"><span class="visually-hidden">Health needs attention</span></span>{% endif %}</summary>
+        <div class="more-panel" id="more-sections">
+          <h2>More views</h2>
+          <ul>
+            {% for label, href in nav_more %}
+            <li>{{ nav_link(label, href) }}</li>
+            {% endfor %}
+          </ul>
+        </div>
+      </details>
+    </li>
+  </ul>
+</nav>
+</body>
+</html>

@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Job {{ name }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/jobs">Jobs</a> / <span aria-current="page">{{ name }}</span></p>
+{% call m.phead(now) %}{{ name }}
+  {% if problems %}{{ m.tag('error', 'problems') }}
+  {% elif job and not job.enabled %}{{ m.tag('muted', 'disabled') }}{% endif %}{% endcall %}
+
+{{ m.subtabs([
+  ('Overview', '/jobs/' ~ name|urlencode, none, none),
+  ('History', '/jobs/' ~ name|urlencode ~ '/history', recent|length or none, none),
+], '/jobs/' ~ name|urlencode ~ ('/history' if section == 'history' else '')) }}
+
+{{ m.error(error, "Jobs could not be read") }}
+{{ m.error(runs_error, "Run history could not be read") }}
+{% if not job and not error %}{{ m.error("This job's JOB.md could not be read.", "Unreadable job") }}{% endif %}
+
+{% if problems %}
+<section aria-labelledby="problems-head">
+  <div class="shead"><h2 id="problems-head">Problems</h2>
+    <span class="right bad">{{ problems|length }} keeping it from running</span></div>
+  <div class="panel rows">
+    {% for problem in problems %}{{ m.finding_row('error', problem) }}{% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if section == 'history' %}
+<section aria-labelledby="history-head">
+  <div class="shead"><h2 id="history-head">Every retained run</h2>
+    <span class="right{{ ' bad' if failed }}">{{ recent|length }} kept{% if failed %} · {{ failed }} failed{% endif %}</span></div>
+  {% if recent %}
+  <div class="panel">
+    {% for group in groups %}{% for item in group.items %}{% include "_feed_item.html" %}{% endfor %}{% endfor %}
+  </div>
+  {% elif not runs_error %}
+  {{ m.empty("This job has never run.") }}
+  {% endif %}
+</section>
+
+{% else %}
+{% if not recent and not runs_error %}
+<section aria-labelledby="recent-head">
+  <div class="shead"><h2 id="recent-head">Runs</h2></div>
+  {{ m.empty("This job has never run.") }}
+</section>
+{% endif %}
+{% if recent %}
+<section aria-labelledby="outcomes-head">
+  <div class="shead"><h2 id="outcomes-head">Recent outcomes</h2>
+    <span class="right wide-only">bar height is duration</span></div>
+  <div class="panel rows">
+    <div class="row entity">
+      <span class="pin {{ 'error' if failed else 'ok' }}"></span>
+      <span class="body">
+        <span class="title">{{ recent|length }} retained run{{ 's' if recent|length != 1 }}</span>
+        <span class="detail">
+          <span>{{ recent|selectattr('status', 'in', ['no_work', 'skipped'])|list|length }} idle or skipped</span>
+          {% if average %}<span>average {{ average|duration }}</span>{% endif %}
+        </span>
+      </span>
+      {{ m.bars(bar_series(recent), recent|length ~ ' recent runs') }}
+      <span class="trail">
+        {% if failed %}<b class="err">{{ failed }} failed</b>{% else %}<b>none failed</b>{% endif %}
+        {% if job %}of {{ job.timeout }}s{% endif %}
+      </span>
+    </div>
+  </div>
+</section>
+
+<section aria-labelledby="recent-head">
+  <div class="shead"><h2 id="recent-head">Recent runs</h2>
+    <a class="right" href="/runs?job={{ name|urlencode }}&amp;view=all">All runs of this job &rarr;</a></div>
+  <div class="panel">
+    {% for group in groups %}{% for item in group.items %}{% include "_feed_item.html" %}{% endfor %}{% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if job %}
+<section aria-labelledby="config-head">
+  <div class="shead"><h2 id="config-head">Configuration</h2><span class="right wide-only">as read from JOB.md; the viewer changes nothing</span></div>
+  <div class="panel">
+    <dl class="kv">
+      <dt>Name</dt><dd>{{ job.name }}</dd>
+      <dt>Directory</dt><dd><code>{{ name }}</code></dd>
+      <dt>File</dt><dd><code>{{ job.path }}</code></dd>
+      <dt>Schedule</dt><dd>{% if job.schedule %}<code>{{ job.schedule }}</code> <span class="muted">cron, local time</span>{% else %}<span class="muted">none; it fires when work is ready</span>{% endif %}</dd>
+      {% if job.stage %}<dt>Stage</dt><dd><a href="/tasks?project={{ job.project|urlencode }}&amp;stage={{ job.stage|urlencode }}"><code>{{ job.project }}</code> / <code>{{ job.stage }}</code></a> <span class="muted">a stage job: it claims a ready task there</span></dd>{% endif %}
+      <dt>Agent</dt><dd><span class="chip">{{ job.provider }}</span> <span class="chip">{{ job.model }}</span> <span class="chip">{{ job.effort }}</span></dd>
+      <dt>Workspace</dt><dd><a href="/workspaces/{{ job.workspace|urlencode }}">{{ job.workspace }}</a></dd>
+      <dt>Concurrency group</dt><dd>{% if job.group %}<code>{{ job.group }}</code>{% if not job.concurrency_group %} <span class="muted">(the stage job default)</span>{% endif %}{% else %}<span class="muted">none</span>{% endif %}</dd>
+      <dt>Enabled</dt><dd>{{ 'yes' if job.enabled else 'no' }}</dd>
+      <dt>Timeout</dt><dd>{{ job.timeout }}s</dd>
+      <dt>Prerun</dt><dd>{% if job.prerun %}<code>{{ job.prerun }}</code> ({{ job.prerun_timeout }}s timeout){% else %}<span class="muted">none</span>{% endif %}</dd>
+      <dt>Follow-up limit</dt><dd>{{ job.max_followups }}</dd>
+      <dt>Postrun</dt><dd>{% if job.postrun %}<code>{{ job.postrun }}</code> ({{ job.postrun_timeout }}s timeout){% else %}<span class="muted">none</span>{% endif %}</dd>
+      <dt>Notify</dt><dd>{% if job.notify %}<code>{{ job.notify }}</code>{% else %}<span class="muted">transport default</span>{% endif %}</dd>
+      <dt>Catch up</dt><dd>{{ 'yes' if job.catch_up else 'no' }} <span class="muted">(misfire grace {{ job.misfire_grace_seconds }}s)</span></dd>
+      <dt>Next run</dt><dd>{% if next_run %}{{ next_run|when }} <span class="muted">({{ next_run|until }})</span>{% else %}<span class="muted">{{ 'not while it has problems' if problems else 'disabled' if not job.enabled else 'when a task is ready' if not job.schedule else '-' }}</span>{% endif %}</dd>
+      <dt>Last run</dt><dd>{% if last %}{{ m.tag(last.status) }} <a href="/runs/{{ last.id|urlencode }}"><code>{{ last.id }}</code></a> <span class="muted">{{ last.started_at|ago }}, {{ last.duration_ms|duration }}</span>{% else %}<span class="muted">never</span>{% endif %}</dd>
+    </dl>
+  </div>
+</section>
+
+<section aria-labelledby="prompt-head">
+  <div class="shead"><h2 id="prompt-head">Prompt</h2>
+    <span class="right wide-only">rendered from JOB.md</span></div>
+  <div class="panel">
+    {# An empty body makes JOB.md unparseable, so the else is a guard, not a state reached today. #}
+    {% if prompt %}<div class="markdown">{{ prompt }}</div>
+    {% else %}<p class="empty">This job's JOB.md has no prompt body.</p>{% endif %}
+  </div>
+</section>
+{% endif %}
+{% endif %}
+{% endblock %}

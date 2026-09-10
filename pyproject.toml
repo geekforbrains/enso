@@ -1,0 +1,90 @@
+[project]
+name = "enso"
+version = "0.1.0"
+description = "A personal AI assistant that runs on your machine, connects to your chat, and keeps work moving."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.14"
+authors = [{ name = "Gavin Vickery", email = "gavin@geekforbrains.com" }]
+keywords = ["ai", "agent", "telegram", "slack", "claude", "codex", "cli", "enso"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Communications :: Chat",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.0",
+    "croniter>=1.0",
+    "pyyaml>=6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/geekforbrains/enso"
+Repository = "https://github.com/geekforbrains/enso"
+Changelog = "https://github.com/geekforbrains/enso/blob/main/CHANGELOG.md"
+Issues = "https://github.com/geekforbrains/enso/issues"
+
+[project.optional-dependencies]
+slack = ["slack-bolt>=1.28", "aiohttp>=3.9"]
+telegram = ["python-telegram-bot>=22.6"]
+web = ["aiohttp>=3.9", "jinja2>=3.1", "markdown-it-py>=4.0"]
+
+[project.scripts]
+enso = "enso.cli:main"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.0",
+    "mypy>=1.11",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "types-croniter>=6.0",
+    "types-pyyaml>=6.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.8,<0.13"]
+build-backend = "uv_build"
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "F",     # pyflakes
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "I",     # isort
+    "N",     # pep8-naming
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "SIM",   # flake8-simplify
+    "RUF",   # ruff-specific rules
+    "C90",   # mccabe complexity
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.ruff.lint.isort]
+known-first-party = ["enso"]
+
+[tool.mypy]
+python_version = "3.14"
+files = ["src/enso"]
+disallow_incomplete_defs = true
+disallow_untyped_defs = true
+strict_equality = true
+warn_redundant_casts = true
+warn_unreachable = true
+warn_unused_configs = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

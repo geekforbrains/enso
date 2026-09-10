@@ -1,0 +1,15 @@
+{# One entry in a run feed: a run worth reading, or a fold of consecutive no-work polls.
+   The fold is a <details>, so collapsing works with JavaScript off. #}
+{% import "_macros.html" as m %}
+{% from "_icons.html" import icon %}
+{% if item.folded %}
+<details class="fold">
+  <summary>
+    {{ icon('chevron-right', 14) }}
+    <span class="what"><span>{{ item.runs|length }} found no work</span><span class="who">{{ item.jobs|join(' ') }}</span></span>
+  </summary>
+  {% for run in item.runs %}{{ m.run_row(run) }}{% endfor %}
+</details>
+{% else %}
+{{ m.run_row(item.runs[0]) }}
+{% endif %}

@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Runs{% if job %} · {{ job }}{% endif %}{% endblock %}
+{% block content %}
+{% call m.phead(now) %}Runs{% endcall %}
+{{ m.error(error, "Run history could not be read") }}
+
+{{ m.subtabs(view_tabs, view_current) }}
+
+<div data-filterable>
+  <form class="toolbar" method="get" action="/runs" data-autosubmit>
+    {% if view != 'signal' %}<input type="hidden" name="view" value="{{ view }}">{% endif %}
+    {% call m.select('Source', name='source') %}<option value="any"{% if source == 'any' %} selected{% endif %}>Any source</option><option value="jobs"{% if source == 'jobs' %} selected{% endif %}>Jobs</option><option value="heartbeat"{% if source == 'heartbeat' %} selected{% endif %}>Heartbeats</option>{% endcall %}
+    {% call m.select('Job', name='job', disabled=(source == 'heartbeat')) %}
+      <option value=""{% if not job %} selected{% endif %}>Any job</option>
+      {% for name in job_names %}<option value="{{ name }}"{% if name == job %} selected{% endif %}>{{ name }}</option>{% endfor %}
+    {% endcall %}
+    {% call m.select('Status', name='status') %}
+      <option value=""{% if not status %} selected{% endif %}>Any status</option>
+      {% for value in statuses %}<option value="{{ value }}"{% if value == status %} selected{% endif %}>{{ value|status_word }}</option>{% endfor %}
+    {% endcall %}
+    {{ m.filter_button() }}
+    {{ m.search("Search this page: title, id, workspace, agent, error", label="Search this page") }}
+    <span class="visually-hidden" data-count aria-live="polite"></span>
+  </form>
+
+  {# What the view includes rides on the count line, one clause, instead of a paragraph. #}
+  <p class="range" aria-live="polite">
+    {% if total %}Showing {{ start }}–{{ end }} of {{ total }} run{{ 's' if total != 1 }}{% if job or status %} matching the filter{% endif %}.{% else %}No runs{% if job or status %} match the filter{% endif %}.{% endif %}
+    {% if status %} Runs with status {{ status|status_word }}; the status filter overrides the view and folds consecutive quiet runs.
+    {% elif view == 'signal' %} No-work polls and skipped runs are left out; the All view keeps them, folded.
+    {% elif view == 'failed' %} Errors, timeouts, prerun failures, and cancelled assessments.
+    {% else %} Consecutive no-work and skipped runs are folded.{% endif %}
+    {% if pages > 1 %} Page {{ page }} of {{ pages }} ({{ page_size }} per page).{% endif %}
+  </p>
+
+  {% if rows %}
+  <div class="panel">
+    {% for group in groups %}
+    {% if group.label %}
+    <div class="hourhead">
+      <b>{{ group.label }}</b>
+      <span>{{ group.total }} run{{ 's' if group.total != 1 }}{% if group.failed %} · {{ group.failed }} failed{% endif %}</span>
+    </div>
+    {% endif %}
+    {% for item in group.items %}{% include "_feed_item.html" %}{% endfor %}
+    {% endfor %}
+  </div>
+  <p class="state empty" data-empty hidden>No run on this page matches the search.</p>
+  {% elif not error %}
+  {{ m.empty("Nothing has run yet." if not (job or status) else "No run matches the filter.") }}
+  {% endif %}
+
+  {{ m.pager(page, pages, start, end, total, prev_link, next_link) }}
+</div>
+{% endblock %}

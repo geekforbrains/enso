@@ -1,0 +1,244 @@
+{# Shared pieces. Nothing here emits an inline style: the CSP forbids them, so every
+   data-driven geometry is an SVG attribute instead. #}
+{% from "_icons.html" import icon %}
+
+{# The page title line: the name, anything that qualifies it, and when the page was read.
+   Pages do not refresh themselves, so the clock says how stale what you are looking at is. #}
+{% macro phead(now) -%}
+<div class="phead"><h1>{{ caller() }}</h1><span class="clock">{{ now|when }}</span></div>
+{%- endmacro %}
+
+{% macro tag(status, label=None) -%}
+<span class="tag tag-{{ status|status_class }}">{{ label if label is not none else status|status_word }}</span>
+{%- endmacro %}
+
+{% macro time(stamp) -%}
+{% if stamp %}<time datetime="{{ stamp|iso }}" title="{{ stamp|when }}">{{ stamp|clock }}</time>{% else %}-{% endif %}
+{%- endmacro %}
+
+{# An empty state is one quiet sentence where the list would have been, not a box. #}
+{% macro empty(text) -%}
+<p class="state empty">{{ text }}</p>
+{%- endmacro %}
+
+{% macro error(text, title="Could not read this") -%}
+{% if text %}<div class="state error" role="alert"><strong>{{ title }}.</strong> {{ text }}</div>{% endif %}
+{%- endmacro %}
+
+{# The section switcher. `items` is a list of (label, href, count, tone). #}
+{% macro subtabs(items, current) -%}
+<nav class="subtabs" aria-label="Views">
+  {% for label, href, count, tone in items %}
+  <a href="{{ href }}"{% if href == current %} aria-current="page"{% endif %}>{{ label }}{% if count %}<span class="count{{ ' bad' if tone == 'error' }}">{{ count }}</span>{% endif %}</a>
+  {% endfor %}
+</nav>
+{%- endmacro %}
+
+{% macro verdict(tone, mark, headline, why, link=None, link_label=None) -%}
+<div class="verdict {{ tone }}">
+  <span class="lamp" aria-hidden="true">{{ mark }}</span>
+  <span><b>{{ headline }}</b>{% if why %}<span class="why">{{ why }}</span>{% endif %}</span>
+  {% if link %}<a class="go" href="{{ link }}">{{ link_label }} &rarr;</a>{% endif %}
+</div>
+{%- endmacro %}
+
+{# One summary tile: a label, the number, and a line that qualifies it. Linked when
+   there is a page that explains the number. #}
+{% macro kpi(label, value, sub, href=None, tone=None) -%}
+{% if href %}<a class="kpi" href="{{ href }}">{% else %}<div class="kpi">{% endif %}
+  <span class="label">{{ label }}</span>
+  <span class="value{{ ' ' ~ tone if tone }}">{{ value }}</span>
+  <span class="sub">{{ sub }}</span>
+{% if href %}</a>{% else %}</div>{% endif %}
+{%- endmacro %}
+
+{# -- Toolbar controls ------------------------------------------------------------
+   A control's first option says what it filters ("Any job"), so no label sits above it
+   and three filters and a search fit on one row. The accessible name is the label. #}
+
+{% macro select(label, name=None, filter=None, disabled=False) -%}
+<span class="control select"><select aria-label="{{ label }}"{% if name %} name="{{ name }}"{% endif %}{% if filter %} data-filter="{{ filter }}"{% endif %}{% if disabled %} disabled{% endif %}>{{ caller() }}</select></span>
+{%- endmacro %}
+
+{# `name` makes it a GET parameter; without one it filters the rendered page in place. #}
+{% macro search(placeholder, name=None, value='', label='Search') -%}
+<span class="control search">{{ icon('search') }}<input type="search" aria-label="{{ label }}"{% if name %} name="{{ name }}" value="{{ value }}"{% else %} data-search{% endif %} placeholder="{{ placeholder }}" autocomplete="off"><kbd class="kbd" aria-hidden="true">/</kbd></span>
+{%- endmacro %}
+
+{# The submit for a GET form; hidden once the script submits on change. #}
+{% macro filter_button(label='Filter', hide=True) -%}
+<button class="button" type="submit"{% if hide %} data-hide-when-enhanced{% endif %}>{{ label }}</button>
+{%- endmacro %}
+
+{# An event row: when it happened, how it went, what it was, how long it took.
+   The dot is the whole outcome, so no status tag repeats it, and the error text
+   belongs on the run's own page rather than in a list. #}
+{% macro run_row(run, title=None) -%}
+<a class="row{{ ' quiet' if run.status in ('no_work', 'skipped') }}" href="{{ run.href if run.href is defined else '/runs/' ~ run.id|urlencode }}" data-row
+   data-text="{{ (run.id ~ ' ' ~ run.job ~ ' ' ~ (run.title|default('')) ~ ' ' ~ (run.source|default('jobs')) ~ ' ' ~ run.workspace ~ ' ' ~ run.provider ~ ' ' ~ run.model ~ ' ' ~ run.effort ~ ' ' ~ run.status ~ ' ' ~ run.trigger ~ ' ' ~ (run.error_preview or ''))|lower }}">
+  <span class="at">{{ time(run.started_at) }}</span>
+  <span class="pin {{ run.status|status_class }}" role="img" aria-label="{{ run.status|status_word }}" title="{{ run.status|status_word }}"></span>
+  <span class="body">
+    <span class="title">{{ title if title is not none else (run.title if run.title is defined else run.job) }}</span>
+    <span class="detail">
+      {% if run.source is defined and run.source == 'heartbeat' %}<span>heartbeat · {{ run.job }}</span>{% endif %}
+      <span class="mono">{{ run.provider }}/{{ run.model }}</span>
+      <span>{{ run.workspace }}</span>
+    </span>
+  </span>
+  <span class="trail">{{ run.duration_ms|duration }}</span>
+</a>
+{%- endmacro %}
+
+{% macro beat_row(beat) -%}
+<a class="row entity" href="/heartbeats/{{ beat.ref }}" data-row
+   data-text="{{ (beat.ref ~ ' ' ~ beat.title ~ ' ' ~ beat.workspace ~ ' ' ~ beat.state)|lower }}">
+  <span class="pin {{ 'warning' if beat.attention else beat.state|status_class }}" role="img" aria-label="{{ beat.state }}{% if beat.attention %}; needs attention{% endif %}" title="{{ beat.state }}{% if beat.attention %}; needs attention{% endif %}"></span>
+  <span class="body">
+    <span class="title">{{ beat.title }}</span>
+    <span class="detail"><span class="mono">{{ beat.ref }}</span><span>{{ beat.workspace }}</span><span>{% if beat.schedule %}<span class="mono">{{ beat.schedule }}</span> · {{ beat.timezone }}{% elif beat.at %}one time · {{ beat.at|when }}{% endif %}</span></span>
+  </span>
+  <span class="trail">{% if beat.closed_at %}{{ beat.closed_at|ago }}{% else %}{{ beat.next_check_at|heartbeat_next(beat.state) }}{% endif %}</span>
+</a>
+{%- endmacro %}
+
+{% macro pager(page, pages, start, end, total, prev_link, next_link) -%}
+{% if pages > 1 %}
+<nav class="pager" aria-label="Pages">
+  {% if prev_link %}<a href="{{ prev_link }}">&larr; Newer</a>{% else %}<span>&larr; Newer</span>{% endif %}
+  <span>Page {{ page }} of {{ pages }} · {{ start }}–{{ end }} of {{ total }}</span>
+  {% if next_link %}<a href="{{ next_link }}">Older &rarr;</a>{% else %}<span>Older &rarr;</span>{% endif %}
+</nav>
+{% endif %}
+{%- endmacro %}
+
+{% macro beat_definition(definition) -%}
+<div class="panel"><dl class="kv">
+  <dt>Workspace</dt><dd><a href="/workspaces/{{ definition.workspace|urlencode }}">{{ definition.workspace }}</a></dd>
+  <dt>Saved agent</dt><dd>{{ definition.agent.provider }} / {{ definition.agent.model }} · {{ definition.agent.effort }}</dd>
+  {% if definition.at %}<dt>First assessment</dt><dd><time datetime="{{ definition.at|iso }}">{{ definition.at|when }}</time></dd>{% endif %}
+  {% if definition.schedule %}<dt>Check schedule</dt><dd><code>{{ definition.schedule }}</code> · {{ definition.timezone }}</dd>{% endif %}
+  {% if definition.followup_at %}<dt>Follow-up</dt><dd>{{ definition.followup_at|when }}</dd>{% endif %}
+  {% if definition.expires_at %}<dt>Expires</dt><dd>{{ definition.expires_at|when }}</dd>{% endif %}
+  <dt>Gate</dt><dd>{% if definition.gate %}<code>{{ definition.gate }}</code>{% else %}No script; an agent assesses each due check{% endif %}</dd>
+  <dt>Time limits</dt><dd>{{ definition.timeout }}s for the agent{% if definition.gate %} · {{ definition.gate_timeout }}s for the gate{% endif %}</dd>
+  <dt>Notifications</dt><dd>{{ definition.notify or 'No destination saved' }}{% if definition.notify_thread %} · thread {{ definition.notify_thread }}{% endif %}</dd>
+</dl></div>
+{% for label, text in [('Instructions', definition.instructions), ('Completion condition', definition.completion), ('Allowed actions', definition.allowed_actions)] %}
+<div class="shead"><h2>{{ label }}</h2></div><div class="panel"><pre class="output bare" tabindex="0">{{ text }}</pre></div>
+{% endfor %}
+{%- endmacro %}
+
+{# One history event: a row that opens, like a fold in the activity feed, so a page of
+   them is a single panel of hairline-separated rows. The chevron trails the event number
+   instead of taking the fold's usual column, because a beat event's status dot is real
+   information and that column is the dot's. The summary names the actor as a reader can
+   use it; the raw recorded value stays in the body below. #}
+{% macro beat_event(event, handled_event_id) -%}
+<details class="fold beat-event" id="event-{{ event.id }}">
+  <summary class="row">
+    <span class="at">{{ time(event.created_at) }}</span>
+    <span class="pin {{ 'error' if event.kind in ('check_failed', 'run_failed') else ('warning' if event.action_status == 'uncertain' else 'muted') }}" title="{{ event.kind|heartbeat_event_word }}{% if event.requires_handling and event.id > handled_event_id %}; pending{% endif %}"></span>
+    <span class="body"><span class="title">{{ event.kind|heartbeat_event_word }}</span><span class="detail"><span>{{ event.actor|heartbeat_actor }}</span></span></span>
+    <span class="trail">#{{ event.id }}{{ icon('chevron-right', 14) }}</span>
+  </summary>
+  <div class="beat-event-body">
+  <dl class="kv"><dt>Event</dt><dd>{{ event.id }}</dd><dt>Recorded</dt><dd>{{ event.created_at|when }}</dd>{% if event.occurred_at %}<dt>Source time</dt><dd>{{ event.occurred_at|when }}</dd>{% endif %}<dt>Actor</dt><dd>{{ event.actor }}</dd>{% if event.run_id %}<dt>Run</dt><dd><a href="/heartbeats/runs/{{ event.run_id|urlencode }}">{{ event.run_id }}</a></dd>{% endif %}{% if event.action_key %}<dt>Action</dt><dd>{{ event.action_key }} · {{ event.action_status }}</dd>{% endif %}</dl>
+  <pre class="output bare" tabindex="0">{{ event.message }}</pre>
+  {% if event.message_clipped %}<p class="range">Message shortened after {{ event.message|length }} characters.</p>{% endif %}
+  {% if event.receipt %}<h3>Receipt</h3><pre class="output bare" tabindex="0">{{ event.receipt }}</pre>{% if event.receipt_clipped %}<p class="range">Receipt shortened for this view.</p>{% endif %}{% endif %}
+  {% if event.payload_text and event.payload_text != '{}' %}<h3>Recorded details</h3><pre class="output bare" tabindex="0">{{ event.payload_text }}</pre>{% if event.payload_clipped %}<p class="range">Details shortened for this view.</p>{% endif %}{% endif %}
+  {% if event.message_clipped or event.receipt_clipped or event.payload_clipped %}<p class="range">Full event: <code>enso heartbeat history {{ event.ref }} --after {{ event.id - 1 }} --limit 1 --json</code></p>{% endif %}
+  </div>
+</details>
+{%- endmacro %}
+
+{# A finding row: severity and the message, which is the whole content. One line.
+   The repair command is the same string for every fixable finding, so the section
+   says it once instead of every row repeating it. #}
+{% macro finding_row(severity, message) -%}
+<div class="row finding">
+  <span class="pin {{ severity|status_class }}" role="img" aria-label="{{ severity|status_word }}" title="{{ severity|status_word }}"></span>
+  <span class="body"><span class="title wrap">{{ message }}</span></span>
+</div>
+{%- endmacro %}
+
+{# The facts behind a doctor check, folded shut at the foot of the check's own panel so
+   they sit under the verdict they explain. The doctor reports whatever a check knows, so
+   the shape of each value picks its rendering: a path is code, a flag is a word, a list
+   of names is one line of them, and a per-item map (a provider, a transport) gets a
+   labelled line with its flags quiet underneath, rather than a list nested in a list. #}
+{% macro facts(details) -%}
+<details class="fold facts">
+  <summary>
+    {{ icon('chevron-right', 14) }}
+    <span class="what"><span>Details</span><span class="count">{{ details|length }} fact{{ 's' if details|length != 1 }}</span></span>
+  </summary>
+  <dl class="kv">
+    {% for key, value in details.items() %}{% set lead, quiet = value|fact(key) %}
+    <dt>{{ key|fact_label }}</dt>
+    <dd>{{ fact_line(lead) }}{% if quiet %}<span class="sub">{{ fact_line(quiet) }}</span>{% endif %}</dd>
+    {% endfor %}
+  </dl>
+</details>
+{%- endmacro %}
+
+{# One line of fact pieces, each drawn as what it is. #}
+{% macro fact_line(pieces) -%}
+{% for kind, text in pieces %}
+{%- if kind == 'path' %}<code>{{ text }}</code>
+{%- elif kind == 'names' %}<span class="mono">{{ text }}</span>
+{%- elif kind == 'quiet' %}<span class="muted">{{ text }}</span>
+{%- else %}{{ text }}
+{%- endif %}{{ ' · ' if not loop.last }}
+{%- endfor %}
+{%- endmacro %}
+
+{% macro findings(items) -%}
+{% for finding in items %}
+{{ finding_row(finding.severity, finding.message) }}
+{% endfor %}
+{%- endmacro %}
+
+{# Said once under a heading when any finding below it is repairable. #}
+{% macro repair_hint(items) -%}
+{% if items|selectattr('fixable')|list %}
+<span class="right">repairable with <code>enso workspace audit --fix</code></span>
+{% endif %}
+{%- endmacro %}
+
+{# Provider output, rendered as Markdown. Too large to render, it stays preformatted. #}
+{% macro output(text) -%}
+{% set rendered = text|output_markdown %}
+{% if rendered %}<div class="markdown output-md">{{ rendered }}</div>
+{% else %}<pre class="output bare" tabindex="0">{{ text }}</pre>{% endif %}
+{%- endmacro %}
+
+{# Recent outcomes as bars, height proportional to duration. `series` is the list of
+   (status_class, height_fraction) the view model already worked out. #}
+{% macro bars(series, label) -%}
+<svg class="bars" viewBox="0 0 {{ series|length * 7 }} 22" preserveAspectRatio="xMinYMax meet" role="img" aria-label="{{ label }}">
+  {% for tone, height in series %}
+  <rect class="f-{{ tone }}" x="{{ loop.index0 * 7 }}" y="{{ 22 - height }}" width="5" height="{{ height }}" rx="1.5"></rect>
+  {% endfor %}
+</svg>
+{%- endmacro %}
+
+{# The same, flat: status only, for a dense list. The box is a fixed width and the marks
+   never scale, so a short history has to sit somewhere in it: anchor it to the right, where
+   the newest run lands on the same axis in every row, next to the value it explains. #}
+{% macro spark(tones, label) -%}
+<svg class="spark" viewBox="0 0 {{ tones|length * 4 }} 14" preserveAspectRatio="xMaxYMid meet" role="img" aria-label="{{ label }}">
+  {% for tone in tones %}
+  <rect class="f-{{ tone }}" x="{{ loop.index0 * 4 }}" y="{{ 4 if tone == 'muted' else 0 }}" width="3" height="{{ 6 if tone == 'muted' else 14 }}" rx="1"></rect>
+  {% endfor %}
+</svg>
+{%- endmacro %}
+
+{# A proportion, 0-100, as a bar. Used for elapsed against the timeout. #}
+{% macro meter(percent, tone, label) -%}
+<svg class="meter" viewBox="0 0 100 5" preserveAspectRatio="none" role="img" aria-label="{{ label }}">
+  <rect class="f-track" x="0" y="0" width="100" height="5" rx="2.5"></rect>
+  <rect class="f-{{ tone }}" x="0" y="0" width="{{ percent }}" height="5" rx="2.5"></rect>
+</svg>
+{%- endmacro %}

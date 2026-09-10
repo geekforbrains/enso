@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Workspaces{% endblock %}
+{% block content %}
+{% call m.phead(now) %}Workspaces{% endcall %}
+
+{{ m.subtabs([
+  ('Workspaces', '/workspaces', workspaces|length or none, none),
+  ('Skills', '/skills', none, none),
+], '/workspaces') }}
+
+{{ m.error(error, "The audit could not run") }}
+
+{% if home and home.findings %}
+<section aria-labelledby="home-head">
+  <div class="shead"><h2 id="home-head">Home</h2>
+    {{ m.repair_hint(home.findings) }}
+    <span class="right {{ 'bad' if not home.ok else '' }}">{{ home.summary }}</span></div>
+  <div class="panel rows">{{ m.findings(home.findings) }}</div>
+</section>
+{% endif %}
+
+{% if workspaces %}
+<section aria-labelledby="list-head" data-filterable>
+  <div class="toolbar">
+    {% call m.select('Audit', filter='status') %}
+      <option value="">Any audit result</option>
+      <option value="ok">Ok</option>
+      <option value="warning">Warning</option>
+      <option value="error">Error</option>
+    {% endcall %}
+    {{ m.search("Search workspaces: name, binding, job") }}
+    <span class="visually-hidden" data-count aria-live="polite">{{ workspaces|length }} of {{ workspaces|length }}</span>
+  </div>
+  <div class="shead"><h2 id="list-head">Workspaces</h2></div>
+  <div class="panel rows">
+    {% for workspace in workspaces %}
+    <a class="row entity" href="/workspaces/{{ workspace.name|urlencode }}" data-row
+       data-status="{{ workspace.status }}"
+       data-text="{{ (workspace.name ~ ' ' ~ workspace.bindings|join(' ') ~ ' ' ~ workspace.jobs|join(' '))|lower }}">
+      <span class="pin {{ workspace.status|status_class }}"></span>
+      {# Name and verdict only. Bindings, jobs, uploads and the findings themselves are
+         one tap away on the workspace's own page, and listing them here made the busiest
+         rows the least readable. `data-text` still carries them, so search finds a
+         workspace by a binding or a job it does not show. #}
+      <span class="body">
+        <span class="title">{{ workspace.name }}</span>
+      </span>
+      <span class="trail">
+{{ m.tag(workspace.status, workspace.summary) }}
+      </span>
+    </a>
+    {% endfor %}
+  </div>
+  <p class="state empty" data-empty hidden>No workspace matches.</p>
+</section>
+{% else %}
+{{ m.empty("No workspaces yet; `enso workspace create NAME` scaffolds one.") }}
+{% endif %}
+{% endblock %}

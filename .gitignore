@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# OS and editors
+.DS_Store
+._*
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+
+# Local files
+.env
+.codex-tmp/
+/TASKS.md
+uploads/
+
+# Local agent configuration
+/.agents/
+/.claude/
+/.codex/

@@ -1,0 +1,269 @@
+# Workspaces
+
+A workspace is where an agent works. It is the provider's working directory, the context it
+starts with, and the default home for files that belong to that workspace. It is not a
+sandbox: an explicit task or workspace rule may name another destination.
+
+Enso is opinionated about this. The layout below is fixed, Enso creates it, `enso
+workspace audit` proves it is still intact, and `--fix` repairs it. The point is that every
+path the agent is told about in `AGENTS.md` actually exists, and that skills are wired up
+rather than assembled by hand.
+
+## Layout
+
+```text
+~/.enso/workspaces/<name>/
+├── AGENTS.md          # purpose, scope, terms, approval rules for this workspace
+├── CLAUDE.md          # symlink -> AGENTS.md
+├── skills/            # skills unique to this workspace
+├── knowledge/         # durable reference material the agent should keep
+├── drafts/            # generated or editable output
+├── uploads/           # chat attachments, one directory per turn
+├── .claude/skills     # symlink -> ../skills, read by Claude Code and Grok
+├── .agents/skills     # symlink -> ../skills, read by Codex, Grok, Antigravity, and OpenCode
+└── .claude/settings.json, .codex/config.toml, .grok/config.toml, opencode.json
+                       # optional: each CLI's own policy file; required when restricted
+```
+
+| Directory | What belongs there |
+| --- | --- |
+| `knowledge/` | Things that stay true. Reference notes, extracted facts, research the agent should be able to find next week. |
+| `drafts/` | Ordinary work product. Posts, reports, scratch analysis. Safe to delete. |
+| `uploads/` | Chat attachments. Enso writes here; nothing else should. |
+| `skills/` | Skills only this workspace needs. |
+| Policy files | Each CLI's own project-level permission file, in its own format. Optional, unless the workspace is [restricted](configuration.md#restricted-workspaces). |
+
+Names are lowercase kebab-case (`meteor`, `blog-research`), at most 64 characters. The name
+is the directory name, and there is no other valid location.
+
+`AGENTS.md` is the file you write; `CLAUDE.md` is always a symlink to it so both CLI
+families read one document. Skills follow the same rule: `skills/` is the directory you
+write, and the two dot-directories are symlinks to it that the provider CLIs discover. One
+source of truth, generated links everywhere else. Keep `AGENTS.md` short — what the
+workspace is for, what ambiguous terms mean, and any rule that must be visible on every
+single turn. Detail belongs in `knowledge/`, referenced by path. See
+[Customizing](customizing.md).
+
+`enso init` prepares this layout for `default`, filling missing instructions and links
+without changing existing files. It reports conflicting files, directories, and links
+instead of replacing them. This also makes an interrupted initial scaffold safe to rerun;
+see [Non-interactive setup](install.md#non-interactive-setup). The ordinary workspace audit
+retains its separately documented repair behavior.
+
+## Uploads
+
+Chat attachments download into `<workspace>/uploads/<id>/`, one directory per turn, for
+both Slack and Telegram. The agent is given the local paths in its prompt.
+
+A Slack attachment is named by Enso: an opaque token, then a short readable tail taken from
+the original name, so nothing a sender chooses decides a path. Slack file metadata is
+otherwise untrusted too, so a file is fetched only from Slack's own file-download endpoint
+and one that names anywhere else is skipped without a request. A Telegram attachment keeps
+its own filename, sanitized.
+
+These are retained on purpose — an agent may need to come back to a file the next day — and
+Enso never deletes them. `enso workspace audit` reports the total size so you can decide
+when to clear it out.
+
+## Skills
+
+Skills resolve across three scopes.
+
+| Scope | Location | Who owns it |
+| --- | --- | --- |
+| **Workspace** | `<workspace>/skills/<name>/SKILL.md` | You, for this workspace only |
+| **Enso** | `~/.enso/skills/<name>/SKILL.md` | You, bundled skills, and installed official optional skills |
+| **User** | Your CLI's own user directory, see below | You, entirely outside Enso |
+
+Enso ships its core skills into `~/.enso/skills/`; see the
+[bundled skill list](customizing.md#the-bundled-skills). `enso init` and `enso setup` write a
+missing bundled skill and preserve existing copies. Managed upgrades refresh only bundled
+files that match their recorded baseline; edits and tracked deletions are preserved.
+`enso` and the `enso-` prefix are reserved for what Enso installs, skills and jobs alike,
+so the audit warns about a name in that namespace it did not put there. See
+[Customizing](customizing.md#the-bundled-skills) for the owning rules.
+
+Skill names must be unique across the workspace and enso scopes. A workspace does not
+override an enso-wide skill by reusing its name; the audit reports that as an error, because
+the provider CLIs disagree about which copy would win (see the table below). A name that
+collides with one of your user-level skills is a warning.
+
+### How they reach the agent
+
+Every provider CLI discovers project skills by walking from its working directory up to the
+nearest Git root, following symlinks on the way. The working directory is the workspace and
+the Git root is the Enso home (`enso init` and `enso setup` prepare it), so two symlinks
+in each place put both Enso scopes in reach:
+
+```text
+~/.enso/.claude/skills                    -> ../skills
+~/.enso/.agents/skills                    -> ../skills
+~/.enso/workspaces/<name>/.claude/skills  -> ../skills
+~/.enso/workspaces/<name>/.agents/skills  -> ../skills
+```
+
+These links are static. Add a skill directory to `<workspace>/skills/` or `~/.enso/skills/`
+and the next turn sees it; nothing needs regenerating. `enso workspace audit --fix` creates
+a missing link and repairs one that points elsewhere.
+
+The home-level `AGENTS.md` reaches the agent the same way: Codex, Grok, Antigravity, and
+OpenCode walk up to the Git root for `AGENTS.md`, and Claude Code walks up for `CLAUDE.md`.
+That is why the home must be a Git root, and the audit checks that it still is.
+
+What each CLI does, verified on a fresh home on 2026-09-02:
+
+| CLI | Version | Reads from a workspace | On a name collision | Lists skills without a model call |
+| --- | --- | --- | --- | --- |
+| Claude Code | 2.1.258 | `.claude/skills/` here and in every parent up to the Git root; `~/.claude/skills/` | Your user-level copy wins. Between workspace and enso: undocumented, one is shown | No. The `skills` field of the `init` event under `--output-format stream-json` costs one model turn |
+| Codex | 0.152.1 | `.agents/skills/` from the Git root down to here; `~/.agents/skills/`, `~/.codex/skills/` | Both are shown, no override | `codex debug prompt-input` |
+| Grok | 1.0.13 | `.grok/`, `.agents/`, and `.claude/` skill directories at every level up to the Git root; `~/.grok/skills/`, `~/.agents/skills/`, `~/.claude/skills/` | Nearest wins: workspace, then enso, then user | `grok inspect --json` |
+| Antigravity | 1.1.24 | `.agents/skills/` from the project folder up to the Git root; `~/.gemini/config/skills/` | The project walk beats your user-level copy. Between workspace and enso: undocumented, one is shown | `agy -p /skills --output-format json`, only inside a registered project |
+| OpenCode | 1.18.26 | `.agents/skills/` and `.claude/skills/` here and in each parent up to the Git root; `skill/` and `skills/` below each of the configuration roots described under the table; `~/.agents/skills/`, `~/.claude/skills/` | Undocumented; one copy is shown | `opencode debug skill` |
+
+Antigravity is the odd one out: its working directory is the folder registered for a
+project in `~/.gemini/config/projects/`, not the shell's cwd. Started without a project it
+discovers nothing — not the skills above, not any `AGENTS.md`. So on the first turn Enso
+launches `agy` with `--new-project`, which registers the workspace, and pins every later
+launch to that project id. Nothing is asked of you, and nothing in the workspace changes; see
+[Configuration](configuration.md#antigravity).
+
+OpenCode needs no registration and no extra workspace link: it reads the existing
+`.agents/skills` links directly. Its native user-level skills are the `skill/` and `skills/`
+directories below each of its configuration roots, and both names below both roots are
+scanned by Enso, alongside the Claude-compatible user directories OpenCode also loads:
+
+| Root | Where it is |
+| --- | --- |
+| Global configuration | `$XDG_CONFIG_HOME/opencode` when that variable is set and non-empty, otherwise `~/.config/opencode` |
+| Additional configuration | The directory `OPENCODE_CONFIG_DIR` names, when it is set and non-empty |
+
+`OPENCODE_CONFIG_DIR` adds a root rather than moving the global one, and it does not move
+OpenCode's global `AGENTS.md`, which stays at the global root. Two roots that resolve to the
+same directory are scanned once.
+
+User-level skills are found by each CLI on its own, and so are your user-level
+instructions (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.gemini/AGENTS.md`, and
+`AGENTS.md` at OpenCode's global root above, so `~/.config/opencode/AGENTS.md` by
+default). They apply inside Enso too. Enso scans the user-level
+skill directories so the audit and the [web viewer](web.md) can show the full skill picture,
+but it does not read user-level instruction files or write either kind of file. If another
+tool manages them, Enso stays out of its way. In a listing a user-level directory counts as
+a skill when it has a `SKILL.md`; Enso does not validate its contents, and a name present in
+more than one of those directories is shown once.
+
+None of the CLIs require the frontmatter `name` to match the directory name; all of them
+use the directory name as the skill's identity. Enso requires the match anyway, so that
+what you see in a listing is the directory you edit.
+
+## Auditing
+
+```bash
+enso workspace audit                 # the home and every workspace
+enso workspace audit meteor          # the home and one workspace
+enso workspace audit --fix           # repair what can be repaired, then report the rest
+enso workspace audit --json          # machine-readable, for scripts and the viewer
+```
+
+The audit checks, each finding carrying the check id shown:
+
+| Check | Id | Severity | `--fix` behaviour |
+| --- | --- | --- | --- |
+| Required directories exist inside an existing workspace | `directory` | error | Creates them |
+| `CLAUDE.md` is a symlink to `AGENTS.md` | `link` | error | Creates or repoints the link |
+| `.claude/skills` and `.agents/skills` are symlinks to `../skills` | `link` | error | Creates or repoints the link |
+| The home is a Git root, and no workspace is one | `git-root` | error | Runs `git init` in the home |
+| The home has `AGENTS.md`, `skills/`, and the same three links | `agents-md`, `directory`, `link` | error | Creates `skills/` and the links |
+| `AGENTS.md` exists | `agents-md` | error | Reports only |
+| `AGENTS.md` is not still the untouched template | `agents-md` | warning | Reports only |
+| Every skill directory has a `SKILL.md` whose `name` matches the directory | `skill` | error | Reports only |
+| No skill name appears in both the workspace and enso scope | `skill-collision` | error | Reports only |
+| No skill name collides with a user-level skill | `skill-collision` | warning | Reports only |
+| No `enso-*` skill or job exists that Enso did not install | `reserved` | warning | Reports only |
+| The workspace is bound, or named by a job | `orphan` | warning | Reports only |
+| A restricted workspace holds its chat provider's policy file, no flag that discards it, and, for Codex and Grok, a home the CLI trusts | `policy` | error | Reports only |
+| Unexpected entries at a workspace's top level, or under `workspaces/` | `unexpected` | warning | Reports only |
+| `uploads/` size | — | — | Reported as a number |
+
+`--fix` only ever creates and repairs. It never deletes a file, never edits `AGENTS.md`, and
+never touches anything under `knowledge/`, `drafts/`, or `uploads/`. A real file or
+directory sitting where a link belongs is reported and left for you to move aside. Fixes
+run first and the report shows what remains, so a second `--fix` finds nothing to do.
+
+The command exits 1 while any error remains and 0 otherwise; warnings never fail an
+audit. An orphan workspace — one nothing is bound to and no job names — is a warning, not
+an error. So is an unexpected top-level entry: Enso tells you it is there and leaves it
+alone. Files the CLIs themselves drop inside `.claude/`, such as Claude Code's
+`.cc-writes/`, are expected and not reported, and neither is `.DS_Store`.
+
+`--fix` repairs directories inside an existing workspace; it does not recreate an entire
+missing workspace. Use `enso workspace create NAME` to scaffold one.
+
+A workspace with its own `.git` is an error that `--fix` does not touch. The CLIs stop
+their walk at the nearest Git root, so a repository inside a workspace hides the home's
+`AGENTS.md` and skills from the agent. Keep the repository elsewhere.
+
+`--json` prints one object: `ok`, the `home`, and one entry per workspace.
+
+```json
+{
+  "ok": false,
+  "home": {"path": "/Users/you/.enso", "status": "ok", "findings": [], "fixed": []},
+  "workspaces": [
+    {
+      "name": "meteor",
+      "path": "/Users/you/.enso/workspaces/meteor",
+      "status": "error",
+      "bindings": ["slack:C0BP5BQF6UF"],
+      "jobs": ["meteor-forum-watch"],
+      "uploads_bytes": 1048576,
+      "findings": [
+        {"check": "directory", "severity": "error", "message": "drafts/ is missing", "fixable": true}
+      ],
+      "fixed": []
+    }
+  ]
+}
+```
+
+`status` is the worst severity present (`error`, `warning`, or `ok`), `fixed` lists what
+`--fix` did on this run, and `fixable` says whether `--fix` would repair a finding. The
+same report backs `enso workspace list`'s audit column, the warning `enso serve` logs at
+start, and the [web viewer](web.md).
+
+`enso doctor` runs the workspace audit alongside a config check, the provider paths, and
+the service status, for one strict answer to "is this machine healthy". It exits 1 on an
+audit error even when `serve` can continue as described below; see [CLI](cli.md#operating).
+
+## Creating and retiring
+
+```bash
+enso workspace create meteor
+```
+
+Scaffolds the full layout, seeds `AGENTS.md` from the template, and creates the skill
+links. Then bind a conversation to it in `config.json`; the next message in that
+conversation lands in the new workspace, with no restart. See
+[Configuration](configuration.md).
+
+To retire one: remove its bindings, remove or repoint any job that names it, confirm with
+`enso config check`, and only then archive or delete the directory. There is no restart
+step, so the order is what protects you. Enso will not delete a workspace for you —
+`config check` refuses a binding pointing at a directory that is gone, which is the
+failure you want if you get the order wrong.
+
+## When a workspace is malformed
+
+A bound workspace that fails its audit is a warning at service start, not a fatal error. It
+is logged, the viewer shows it, and turns still run. A missing `drafts/` should not take
+your chat bridge down. The same goes for a workspace a job names, and for the home itself:
+`enso serve` logs one line per failing root, naming the errors, and points at
+`enso workspace audit`.
+
+The exception is a bound workspace directory that does not exist at all: `config check`
+treats that as a problem and `enso serve` refuses to start. If a bound directory disappears
+while the service is running, the next read of `config.json` fails the same check: the
+service logs that once and keeps the last valid configuration, a turn bound to the missing
+directory fails when its provider cannot start there, and other conversations and jobs
+continue. A missing directory named only
+by a job is a job validation problem: that job cannot run, while the service and other jobs
+can continue.

@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Jobs{% endblock %}
+{% block content %}
+{% call m.phead(now) %}Jobs{% endcall %}
+{{ m.error(error, "Jobs could not be read") }}
+{{ m.error(runs_error, "Run history could not be read") }}
+{% if config_problems %}<p class="range">Config-dependent checks are skipped while config.json is unusable.</p>{% endif %}
+
+{% if rows %}
+<div data-filterable>
+  <div class="toolbar">
+    {% call m.select('Enabled', filter='enabled') %}
+      <option value="">Enabled or not</option>
+      <option value="yes">Enabled</option>
+      <option value="no">Disabled</option>
+    {% endcall %}
+    {% call m.select('State', filter='status') %}
+      <option value="">Any state</option>
+      <option value="ok">Healthy</option>
+      <option value="error">Failing or broken</option>
+    {% endcall %}
+    {{ m.search("Search jobs: name, workspace, agent") }}
+    <span class="visually-hidden" data-count aria-live="polite">{{ rows|length }} of {{ rows|length }}</span>
+  </div>
+
+  <div class="panel rows">
+    {% for row in rows %}
+    {% set job = row.job %}
+    {% set history = recent.get(row.dir_name, []) %}
+    {% set failed = history|selectattr('status', 'in', ['error', 'timeout', 'prerun_error'])|list %}
+    {% set state = 'error' if row.problems or failed else ('muted' if job and not job.enabled else 'ok') %}
+    <a class="row entity" href="/jobs/{{ row.dir_name|urlencode }}" data-row
+       data-enabled="{{ 'yes' if job and job.enabled else 'no' }}"
+       data-status="{{ 'error' if state == 'error' else 'ok' }}"
+       data-text="{{ (row.dir_name ~ ' ' ~ (job.name if job else '') ~ ' ' ~ (job.workspace if job else '') ~ ' ' ~ (job.provider ~ ' ' ~ job.model ~ ' ' ~ job.effort if job else ''))|lower }}">
+      {% set state_label = 'failing or broken' if state == 'error' else ('disabled' if state == 'muted' else 'healthy') %}
+      <span class="pin {{ state }}" role="img" aria-label="{{ state_label }}" title="{{ state_label }}"></span>
+      <span class="body">
+        <span class="title">{{ row.dir_name }}</span>
+        {# Equal columns, so timing, workspace and agent each keep one axis down the list.
+           That only holds while every row spends the same three slots, so a job whose file
+           will not parse dashes the two it cannot answer rather than dropping them. #}
+        <span class="detail columns">
+          {% if not job %}<span class="err">unreadable</span>{% elif job.schedule %}<code>{{ job.schedule }}</code>{% else %}<span>when work is ready</span>{% endif %}
+          <span>{{ job.workspace if job else '-' }}</span>
+          <span>{% if job %}<code>{{ job.provider }}</code> / <code>{{ job.model }}</code> / <code>{{ job.effort }}</code>{% else %}-{% endif %}</span>
+        </span>
+      </span>
+      {% if history %}{{ m.spark(spark_tones(history), history|length ~ ' recent runs') }}{% endif %}
+      <span class="trail">
+        {% if row.next_run %}<b>{{ row.next_run|until }}</b>{{ m.time(row.next_run) }}
+        {% else %}<b>{{ 'problems' if row.problems else 'disabled' if job and not job.enabled else '-' }}</b>
+        {% endif %}
+      </span>
+    </a>
+    {% endfor %}
+  </div>
+  <p class="state empty" data-empty hidden>No job matches.</p>
+</div>
+{% elif not error %}
+{{ m.empty("No jobs yet; `enso job create` scaffolds one.") }}
+{% endif %}
+{% endblock %}

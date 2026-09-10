@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Heartbeats{% endblock %}
+{% block content %}
+{% call m.phead(now) %}Heartbeats{% endcall %}
+{{ m.subtabs([('Current', '/heartbeats', none, none), ('Previous', '/heartbeats?view=previous', none, none)], '/heartbeats?view=previous' if view == 'previous' else '/heartbeats') }}
+{% if heartbeat_enabled is sameas false %}{{ m.verdict('muted', 'Ⅱ', 'Heartbeat is turned off', 'Saved instructions and history are preserved. Checks will resume when it is enabled.') }}{% endif %}
+{{ m.error(error, 'Heartbeats could not be read') }}
+<div data-filterable>
+  <form class="toolbar" method="get" action="/heartbeats" data-autosubmit>
+    {% if view == 'previous' %}<input type="hidden" name="view" value="previous">{% endif %}
+    {% call m.select('State', name='state') %}<option value="">Any state</option>{% for value in states %}<option value="{{ value }}"{% if value == state %} selected{% endif %}>{{ value }}</option>{% endfor %}{% endcall %}
+    {% call m.select('Attention', name='attention') %}<option value="">Attention or not</option><option value="1"{% if attention %} selected{% endif %}>Needs attention</option>{% endcall %}
+    {{ m.filter_button() }}
+    {{ m.search("Search this page: title, reference, workspace", label="Search this page") }}
+    <span class="visually-hidden" data-count aria-live="polite"></span>
+  </form>
+  <p class="range">{% if total %}Showing {{ start }}–{{ end }} of {{ total }} heartbeat{{ 's' if total != 1 }}.{% else %}No {{ 'previous' if view == 'previous' else 'current' }} heartbeats{% if state or attention %} match the filter{% endif %}.{% endif %}{% if view == 'previous' and retention_days is not none %} Closed heartbeats are kept for {{ retention_days }} days.{% endif %}</p>
+  {% if rows %}<div class="panel rows">{% for beat in rows %}{{ m.beat_row(beat) }}{% endfor %}</div><p class="state empty" data-empty hidden>No heartbeat on this page matches the search.</p>{% elif not error %}{{ m.empty('Nothing here yet.') }}{% endif %}
+  {{ m.pager(page, pages, start, end, total, prev_link, next_link) }}
+</div>
+{% endblock %}

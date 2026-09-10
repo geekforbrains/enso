@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Skill {{ name }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/skills">Skills</a> / <span aria-current="page">{{ name }}</span></p>
+{% call m.phead(now) %}<code>{{ name }}</code>{% if status != 'active' %} {{ m.tag(status) }}{% endif %}{% if selected %} <span class="muted">for <a href="/workspaces/{{ selected|urlencode }}">{{ selected }}</a></span>{% endif %}{% endcall %}
+
+{{ m.error(error, "Skills could not be resolved") }}
+
+{% for row in rows %}
+<section aria-labelledby="scope-{{ loop.index }}">
+  <div class="shead">
+    <h2 id="scope-{{ loop.index }}">{{ row.scope }} scope</h2>
+    <span class="right{{ ' bad' if row.status == 'error' }}{{ ' warn' if row.status == 'warning' }}">
+      {{ row.status }}{% if row.scope == 'user' %} · not managed by Enso{% endif %}</span>
+  </div>
+  <div class="panel">
+    <dl class="kv">
+      <dt>Path</dt><dd><code>{{ row.path }}</code></dd>
+      <dt>Description</dt><dd>{{ row.description or 'None. A skill without one is hard for the agent to choose.' }}</dd>
+      <dt>Reaches</dt>
+      <dd>{% if row.workspaces %}{% for workspace in row.workspaces %}<a href="/workspaces/{{ workspace|urlencode }}">{{ workspace }}</a>{{ ', ' if not loop.last }}{% endfor %}
+        <span class="muted">({{ row.workspaces|length }} of {{ reach }})</span>
+        {% else %}<span class="muted">no workspace</span>{% endif %}</dd>
+    </dl>
+  </div>
+  {% if row.notes %}
+  <div class="panel rows">
+    {% for note in row.notes %}{{ m.finding_row(row.status, note) }}{% endfor %}
+  </div>
+  {% endif %}
+</section>
+{% endfor %}
+{% endblock %}

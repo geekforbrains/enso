@@ -1,0 +1,65 @@
+{
+    "display_information": {
+        "name": "Enso",
+        "description": "Chat with the agent CLIs on your machine from Slack.",
+        "background_color": "#000000"
+    },
+    "features": {
+        "app_home": {
+            "home_tab_enabled": false,
+            "messages_tab_enabled": true,
+            "messages_tab_read_only_enabled": false
+        },
+        "bot_user": {
+            "display_name": "Enso",
+            "always_online": true
+        }
+    },
+    "oauth_config": {
+        "scopes": {
+            "bot": [
+                "app_mentions:read",
+                "channels:history",
+                "channels:read",
+                "chat:write",
+                "chat:write.public",
+                "files:read",
+                "files:write",
+                "groups:history",
+                "groups:read",
+                "im:history",
+                "im:read",
+                "im:write",
+                "mpim:history",
+                "mpim:read",
+                "reactions:write",
+                "users:read",
+                "users:read.email"
+            ]
+        }
+    },
+    "settings": {
+        "event_subscriptions": {
+            "bot_events": [
+                "app_mention",
+                "channel_archive",
+                "channel_created",
+                "channel_deleted",
+                "channel_rename",
+                "channel_unarchive",
+                "message.channels",
+                "message.groups",
+                "message.im",
+                "message.mpim",
+                "team_join",
+                "user_change"
+            ]
+        },
+        "interactivity": {
+            "is_enabled": false
+        },
+        "org_deploy_enabled": false,
+        "socket_mode_enabled": true,
+        "token_rotation_enabled": false
+    }
+}

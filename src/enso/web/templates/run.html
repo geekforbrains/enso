@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Run {{ run.id if run else '' }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/runs">Runs</a> / <span aria-current="page">{{ run.id if run else 'unavailable' }}</span></p>
+{{ m.error(error, "The run could not be read") }}
+{% if run %}
+{% call m.phead(now) %}{{ run.job }} {{ m.tag(run.status) }}{% endcall %}
+
+{% if run.error %}
+{{ m.verdict('error', '!', run.error|truncate(160),
+   'exit code ' ~ (run.exit_code if run.exit_code is not none else '-') ~ ' · ' ~ (run.started_at|ago)) }}
+{% endif %}
+
+<div class="panel">
+  <dl class="kv">
+    <dt>Run</dt><dd><code>{{ run.id }}</code></dd>
+    <dt>Job</dt><dd><a href="/jobs/{{ run.job|urlencode }}">{{ run.job }}</a></dd>
+    <dt>Workspace</dt><dd><a href="/workspaces/{{ run.workspace|urlencode }}">{{ run.workspace }}</a></dd>
+    <dt>Agent</dt><dd><span class="chip">{{ run.provider }}</span> <span class="chip">{{ run.model }}</span> <span class="chip">{{ run.effort }}</span></dd>
+    <dt>Trigger</dt><dd>{{ run.trigger }}</dd>
+    {% if tasks %}
+    <dt>Task</dt>
+    <dd>{% for ref, title in tasks %}<a href="/tasks/{{ ref|urlencode }}"><code>{{ ref }}</code> {{ title }}</a>{% if not loop.last %}<br>{% endif %}{% endfor %}</dd>
+    {% endif %}
+    <dt>Started</dt><dd><time datetime="{{ run.started_at|iso }}">{{ run.started_at|when }}</time> <span class="muted">({{ run.started_at|ago }})</span></dd>
+    <dt>Ended</dt><dd>{% if run.ended_at %}<time datetime="{{ run.ended_at|iso }}">{{ run.ended_at|when }}</time>{% else %}-{% endif %}</dd>
+    <dt>Duration</dt>
+    <dd>{{ run.duration_ms|duration }} <span class="muted">including hooks</span></dd>
+    {% if timeout %}<dt>Provider time budget</dt><dd>{{ timeout }}s across all turns</dd>{% endif %}
+    <dt>Exit code</dt><dd>{{ run.exit_code if run.exit_code is not none else '-' }}</dd>
+    <dt>Session</dt><dd>{% if run.session_id %}<code>{{ run.session_id }}</code>{% else %}-{% endif %}</dd>
+  </dl>
+</div>
+
+{% if run.error and run.error != run.postrun_error %}
+<div class="shead"><h2>Error</h2></div>
+<div class="panel"><pre class="output bare error-text" tabindex="0">{{ run.error }}</pre></div>
+{% endif %}
+
+{% if run.postrun_error %}
+<div class="shead"><h2>Postrun error</h2></div>
+<div class="panel"><pre class="output bare error-text" tabindex="0">{{ run.postrun_error }}</pre></div>
+{% endif %}
+
+<div class="shead">
+  <h2>Output</h2>
+  {% if run.output %}<span class="right wide-only">{{ run.output|length }} characters · the final 1 MiB the provider printed</span>{% endif %}
+</div>
+<div class="panel">
+  {% if run.output %}
+  {{ m.output(run.output) }}
+  {% else %}
+  <p class="empty">{{ 'No output yet; still running.' if run.status == 'running' else 'No output was captured.' }}</p>
+  {% endif %}
+</div>
+{% if attempts %}
+<div class="shead"><h2>Attempts</h2><span class="right">Completed turns and postrun checks</span></div>
+{% for attempt in attempts %}
+<details class="panel">
+  <summary>{% if attempt.number %}Attempt {{ attempt.number }}{% else %}Postrun without a provider turn{% endif %} · {{ attempt.status }}</summary>
+  <dl class="kv">
+    <dt>Exit code</dt><dd>{{ attempt.exit_code if attempt.exit_code is not none else '-' }}</dd>
+    <dt>Duration</dt><dd>{{ attempt.duration_ms|duration }}</dd>
+    <dt>Session</dt><dd>{% if attempt.session_id %}<code>{{ attempt.session_id }}</code>{% else %}-{% endif %}</dd>
+    <dt>Postrun exit code</dt><dd>{{ attempt.postrun_exit_code if attempt.postrun_exit_code is not none else '-' }}</dd>
+  </dl>
+  {% if attempt.output %}<h3>Output</h3>{{ m.output(attempt.output) }}{% endif %}
+  {% if attempt.error %}<h3>Error</h3><pre class="output bare error-text" tabindex="0">{{ attempt.error }}</pre>{% endif %}
+  {% if attempt.postrun_output %}<h3>{{ 'Follow-up feedback' if attempt.postrun_exit_code == 10 else 'Postrun output' }}</h3>{{ m.output(attempt.postrun_output) }}{% endif %}
+  {% if attempt.postrun_error %}<h3>Postrun error</h3><pre class="output bare error-text" tabindex="0">{{ attempt.postrun_error }}</pre>{% endif %}
+</details>
+{% endfor %}
+{% endif %}
+{% endif %}
+{% endblock %}

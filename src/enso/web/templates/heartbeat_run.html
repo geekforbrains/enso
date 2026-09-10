@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Heartbeat run {{ run.id if run else '' }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/heartbeats">Heartbeats</a>{% if run %} / <a href="/heartbeats/{{ run.ref }}">{{ run.ref }}</a>{% endif %} / <span aria-current="page">{{ run.id if run else 'unavailable' }}</span></p>
+{{ m.error(error, 'The heartbeat run could not be read') }}
+{% if run %}
+{% call m.phead(now) %}{{ run.definition.title }} {{ m.tag(run.status) }}{% endcall %}
+<div class="panel"><dl class="kv">
+  <dt>Run</dt><dd><code>{{ run.id }}</code></dd><dt>Heartbeat</dt><dd><a href="/heartbeats/{{ run.ref }}">{{ run.ref }}</a></dd>
+  <dt>Wake reason</dt><dd>{{ run.trigger|status_word }}</dd><dt>Settlement</dt><dd>{{ run.settlement or 'None recorded' }}</dd>
+  <dt>Instructions revision</dt><dd>{{ run.definition_revision }}</dd><dt>Input cutoff</dt><dd>Event {{ run.input_cutoff }}</dd>
+  <dt>Started</dt><dd>{{ run.started_at|when }} <span class="muted">({{ run.started_at|ago }})</span></dd><dt>Ended</dt><dd>{{ run.ended_at|when }}</dd><dt>Duration</dt><dd>{{ run.duration_ms|duration }}</dd>
+  <dt>Exit code</dt><dd>{{ run.exit_code if run.exit_code is not none else '-' }}</dd><dt>Session</dt><dd><code>{{ run.session_id or '-' }}</code></dd>
+</dl></div>
+{% if run.error %}<div class="shead"><h2>Error</h2></div><div class="panel"><pre class="output bare error-text" tabindex="0">{{ run.error }}</pre></div>{% endif %}
+<div class="shead"><h2>Output</h2></div><div class="panel">{% if run.output %}{{ m.output(run.output) }}{% else %}<p class="empty">{{ 'Still running; no output recorded yet.' if run.status == 'running' else 'No output was captured.' }}</p>{% endif %}</div>
+<div class="shead"><h2>Instructions saved for this assessment</h2><span class="right wide-only">what the agent was given; the beat's current instructions may differ</span></div>
+{{ m.beat_definition(run.definition) }}
+{% endif %}
+{% endblock %}

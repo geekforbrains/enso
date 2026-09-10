@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% set base = '/workspaces/' ~ workspace|urlencode ~ '/files/' ~ root %}
+{% block title %}{{ workspace }} · {{ root }}/{{ relative }}{% endblock %}
+{% block content %}
+<p class="crumbs">
+  <a href="/workspaces">Workspaces</a> /
+  <a href="/workspaces/{{ workspace|urlencode }}">{{ workspace }}</a> /
+  {% if crumbs %}<a href="{{ base }}/">{{ root }}</a>{% else %}<span aria-current="page">{{ root }}</span>{% endif %}
+  {% for label, path in crumbs %}
+  / {% if loop.last %}<span aria-current="page">{{ label }}</span>{% else %}<a href="{{ base }}/{{ path|urlencode }}/">{{ label }}</a>{% endif %}
+  {% endfor %}
+</p>
+{% call m.phead(now) %}<span class="mono">{{ root }}/{{ relative }}{% if listing and relative %}/{% endif %}</span>{% endcall %}
+{{ m.error(error) }}
+
+{% if listing %}
+{% if listing.entries %}
+<div class="panel table-wrap" tabindex="0">
+  <table data-sortable>
+    <thead>
+      <tr>
+        <th scope="col" aria-sort="none"><button type="button" data-sort>Name</button></th>
+        <th scope="col">Kind</th>
+        <th scope="col" aria-sort="none"><button type="button" data-sort>Size</button></th>
+        <th scope="col" aria-sort="none"><button type="button" data-sort>Modified</button></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for entry in listing.entries %}
+      <tr>
+        <td data-value="{{ ('0' if entry.kind == 'dir' else '1') ~ entry.name }}">
+          {% if entry.kind == 'dir' %}<a href="{{ base }}/{{ entry.relative|urlencode }}/">{{ entry.name }}/</a>
+          {% elif entry.kind in ('file', 'link') %}<a href="{{ base }}/{{ entry.relative|urlencode }}">{{ entry.name }}</a>
+          {% else %}{{ entry.name }}{% endif %}
+          {% if entry.kind == 'link' %}<span class="muted">→ {{ entry.target if entry.target is not none else '?' }}</span>{% endif %}
+        </td>
+        <td>{{ {'dir': 'directory', 'file': 'file', 'link': 'symlink', 'other': 'other'}[entry.kind] }}</td>
+        <td data-value="{{ entry.size if entry.size is not none else -1 }}">{{ entry.size|bytes if entry.size is not none else '-' }}</td>
+        <td data-value="{{ entry.modified or '' }}">{{ m.time(entry.modified) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+{{ m.empty("This directory is empty.") }}
+{% endif %}
+{% endif %}
+
+{% if file %}
+<div class="panel"><dl class="kv">
+  <dt>Size</dt><dd>{{ file.size|bytes }}</dd>
+  <dt>Modified</dt><dd>{{ m.time(file.modified) }}</dd>
+  <dt>Shown as</dt>
+  <dd>{{ {'text': 'text', 'markdown': 'rendered Markdown', 'binary': 'binary', 'large': 'too large to preview', 'unreadable': 'unreadable', 'other': 'not a regular file'}[file.kind] }}
+    {% if file.kind == 'markdown' %}(<a href="{{ base }}/{{ file.relative|urlencode }}?raw=1">view source</a>){% elif raw and file.kind == 'text' %}(<a href="{{ base }}/{{ file.relative|urlencode }}">render</a>){% endif %}</dd>
+</dl></div>
+{% if file.kind == 'markdown' %}
+<div class="panel"><article class="markdown">{{ file.html }}</article></div>
+{% elif file.kind == 'text' %}
+{% if file.text %}<div class="panel"><pre class="output bare" tabindex="0">{{ file.text }}</pre></div>{% else %}{{ m.empty("The file is empty.") }}{% endif %}
+{% else %}
+{{ m.empty(file.note ~ ".") }}
+{% endif %}
+{% endif %}
+{% endblock %}

@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Workspace {{ name }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/workspaces">Workspaces</a> / <span aria-current="page">{{ name }}</span></p>
+{% call m.phead(now) %}{{ name }}{% if workspace and not workspace.ok %} {{ m.tag(workspace.status, workspace.summary) }}{% endif %}{% endcall %}
+{{ m.error(error, "The audit could not run") }}
+
+{% if workspace %}
+<section aria-labelledby="uses-head">
+  <div class="shead"><h2 id="uses-head">Used by</h2></div>
+  <div class="panel">
+    <dl class="kv">
+      <dt>Path</dt><dd><code>{{ path }}</code></dd>
+      <dt>Bindings</dt>
+      <dd>{% if workspace.bindings %}{% for binding in workspace.bindings %}<code class="chip">{{ binding }}</code> {% endfor %}{% else %}<span class="muted">none{% if config_problems %} known (config.json is unusable){% endif %}</span>{% endif %}</dd>
+      <dt>Jobs</dt>
+      <dd>{% if workspace.jobs %}{% for job in workspace.jobs %}<a href="/jobs/{{ job|urlencode }}">{{ job }}</a>{{ ', ' if not loop.last }}{% endfor %}{% else %}<span class="muted">none</span>{% endif %}</dd>
+      <dt>Uploads</dt><dd>{{ workspace.uploads_bytes|bytes }}</dd>
+      <dt>Skills</dt><dd><a href="/skills?workspace={{ name|urlencode }}">Resolved for this workspace</a></dd>
+    </dl>
+  </div>
+</section>
+
+<section aria-labelledby="audit-head">
+  <div class="shead"><h2 id="audit-head">Audit</h2>
+    {{ m.repair_hint(workspace.findings) }}
+    <span class="right{{ ' bad' if workspace.findings }}">{{ workspace.summary }}</span></div>
+  {% if workspace.findings %}
+  <div class="panel rows">{{ m.findings(workspace.findings) }}</div>
+  {% else %}
+  {{ m.empty("The layout is intact and nothing collides.") }}
+  {% endif %}
+  {% if home and not home.ok %}
+  <p class="state warning">The home itself fails its audit ({{ home.summary }}); every workspace depends on it. <a href="/workspaces">See the home findings</a>.</p>
+  {% endif %}
+</section>
+{% endif %}
+
+<section aria-labelledby="files-head">
+  <div class="shead"><h2 id="files-head">Files</h2>
+    <span class="right wide-only">what is on disk in the directories the agent is told to use</span></div>
+  <div class="cards">
+    {% for root in roots %}
+    <article class="card">
+      <h3>{% if root.is_dir %}<a href="/workspaces/{{ name|urlencode }}/files/{{ root.name }}/">{{ root.name }}/</a>{% else %}{{ root.name }}/ {{ m.tag('error', 'missing') }}{% endif %}</h3>
+      <p>{% if root.is_dir %}{{ root.entries }} file{{ 's' if root.entries != 1 }} · {{ root.bytes|bytes }}{% else %}not a directory{% endif %}</p>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

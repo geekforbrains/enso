@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}{{ status }} {{ title }}{% endblock %}
+{% block content %}
+{% call m.phead(now) %}{{ status }} · {{ title }}{% endcall %}
+<p class="note">{{ detail }}</p>
+<div class="shead"><h2>Somewhere to go</h2></div>
+<div class="panel rows">
+  {% for label, href in nav %}
+  <a class="row finding" href="{{ href }}">
+    <span class="pin muted"></span>
+    <span class="body"><span class="title">{{ label }}</span></span>
+  </a>
+  {% endfor %}
+</div>
+{% endblock %}

@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Tasks{% if project %} · {{ project }}{% endif %}{% endblock %}
+
+{# An entity row: the dot is the task's whole state, the reference leads the facts (with the
+   claim whenever a run holds it, whatever the dot says), and the trail is how long it has sat
+   in its stage. A blocked task's reason lives on its page, never on the row. The row is the link. #}
+{% macro task_row(row) -%}
+<a class="row entity" href="/tasks/{{ row.task.ref|urlencode }}">
+  <span class="pin {{ row.state|task_tone }}" role="img" aria-label="{{ row.state|replace('-', ' ') }}" title="{{ row.state|replace('-', ' ') }}"></span>
+  <span class="body">
+    <span class="title">{{ row.task.title }}</span>
+    <span class="detail">
+      <span class="mono">{{ row.task.ref }}</span>
+      <span>{{ row.task.stage }}</span>
+      <span>{{ row.project_name }}</span>
+      {% if row.task.claim_run_id %}<span>claimed by run <span class="mono">{{ row.task.claim_run_id }}</span></span>{% endif %}
+    </span>
+  </span>
+  <span class="trail">{{ row.task.entered_stage_at|since }}</span>
+</a>
+{%- endmacro %}
+
+{% block content %}
+{% call m.phead(now) %}Tasks{% endcall %}
+{{ m.error(error, "Tasks could not be read") }}
+
+<form class="toolbar" method="get" action="/tasks" data-autosubmit>
+  {% call m.select('Project', name='project') %}
+    <option value=""{% if not project %} selected{% endif %}>Any project</option>
+    {% for key, name in projects %}<option value="{{ key }}"{% if key == project %} selected{% endif %}>{{ key }} · {{ name }}</option>{% endfor %}
+  {% endcall %}
+  {% call m.select('Stage', name='stage') %}
+    <option value=""{% if not stage %} selected{% endif %}>Any stage</option>
+    {% for name in stages %}<option value="{{ name }}"{% if name == stage %} selected{% endif %}>{{ name }}</option>{% endfor %}
+  {% endcall %}
+  {{ m.search("Search tasks: reference, title, or body", name="q", value=q) }}
+  {{ m.filter_button() }}
+</form>
+
+{% if groups %}
+{# One board, so the count line covers all of it: what matched, how much of that is on the
+   page, and how the Done group is bounded. #}
+<p class="range" aria-live="polite">
+  {{ total }} task{{ 's' if total != 1 }}{% if project or stage or q %} matching the filter{% endif %}{% if listed != total %}, {{ listed }} listed{% endif %}.
+  {{ done_count }} completed in the last {{ done_days }} days; Done lists up to {{ done_limit }} finished and cancelled tasks.
+</p>
+<div class="panel">
+  {% for group in groups %}
+  <div class="hourhead">
+    <b>{{ group.label }}</b>
+    <span>{{ group.rows|length }} task{{ 's' if group.rows|length != 1 }}{% if group.note %} · {{ group.note }}{% endif %}</span>
+  </div>
+  {% for row in group.rows %}{{ task_row(row) }}{% endfor %}
+  {% endfor %}
+</div>
+{% elif not error %}
+{{ m.empty(empty) }}
+{% endif %}
+{% endblock %}

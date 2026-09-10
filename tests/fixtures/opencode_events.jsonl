@@ -1,0 +1,18 @@
+{"event": {"type": "step_start", "sessionID": "ses_123", "part": {"type": "step-start"}}, "expect": [["session", "ses_123"], ["status", "Thinking"]]}
+{"event": {"type": "tool_use", "sessionID": "ses_123", "part": {"type": "tool", "tool": "bash", "state": {"status": "completed", "input": {"command": "pwd"}, "output": "/workspace\n"}}}, "expect": [["session", "ses_123"], ["status", "Running pwd"]]}
+{"event": {"type": "tool_use", "sessionID": "ses_123", "part": {"type": "tool", "tool": "read", "state": {"input": {"filePath": "/workspace/AGENTS.md"}}}}, "expect": [["session", "ses_123"], ["status", "Reading AGENTS.md"]]}
+{"event": {"type": "tool_use", "part": {"tool": "write", "state": {"input": {"filePath": "/workspace/drafts/post.md"}}}}, "expect": [["status", "Writing post.md"]]}
+{"event": {"type": "tool_use", "part": {"tool": "edit", "state": {"input": {"filePath": "/workspace/drafts/post.md"}}}}, "expect": [["status", "Editing post.md"]]}
+{"event": {"type": "tool_use", "part": {"tool": "grep", "state": {"input": {"pattern": "codeword"}}}}, "expect": [["status", "Searching for codeword"]]}
+{"event": {"type": "tool_use", "part": {"tool": "glob", "state": {"input": {"pattern": "**/*.md"}}}}, "expect": [["status", "Finding **/*.md"]]}
+{"event": {"type": "tool_use", "part": {"tool": "webfetch", "state": {"input": {"url": "https://example.com"}}}}, "expect": [["status", "Fetching https://example.com"]]}
+{"event": {"type": "tool_use", "part": {"tool": "task", "state": {"input": {"description": "Research the adapter"}}}}, "expect": [["status", "Research the adapter"]]}
+{"event": {"type": "tool_use", "part": {"tool": "mystery"}}, "expect": [["status", "Using mystery"]]}
+{"event": {"type": "text", "sessionID": "ses_123", "part": {"type": "text", "text": "Ready."}}, "expect": [["session", "ses_123"], ["response", "Ready."]]}
+{"event": {"type": "step_finish", "sessionID": "ses_123", "part": {"type": "step-finish", "tokens": {"input": 10, "output": 2}, "cost": 0.001}}, "expect": [["session", "ses_123"]]}
+{"event": {"type": "error", "sessionID": "ses_123", "error": {"name": "ProviderError", "data": {"message": "Model is unavailable."}}}, "expect": [["session", "ses_123"], ["error", "Model is unavailable."]]}
+{"event": {"type": "error", "error": {"name": "UnknownError", "message": "Connection failed."}}, "expect": [["error", "Connection failed."]]}
+{"event": {"type": "error", "error": {"name": "NamedError"}}, "expect": [["error", "NamedError"]]}
+{"event": {"type": "error", "error": {}}, "expect": [["error", "unknown error"]]}
+{"event": {"type": "text", "part": "bad shape"}, "expect": []}
+{"event": {"type": "error", "sessionID": "", "error": {"message": "No credentials."}}, "expect": [["error", "No credentials."]]}

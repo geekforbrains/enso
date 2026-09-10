@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Make a fresh checkout of this repository runnable.
+#
+# Run inside the detached checkout a review builds, before any check. A checkout has
+# only tracked files, so there is no .venv, and `uv run`
+# on its own would build one without the optional extras — which fails collection in
+# tests/test_slack.py and friends and reports a dozen mypy errors that do not exist.
+# uv's global cache makes this about a second.
+set -euo pipefail
+uv sync --all-extras --locked --quiet

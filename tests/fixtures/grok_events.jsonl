@@ -1,0 +1,9 @@
+{"event": {"type": "assistant", "message": {"content": [{"type": "thinking", "thinking": "Weighing the options"}, {"type": "text", "text": "Here is the answer."}]}}, "expect": [["status", "Weighing the options"], ["response", "Here is the answer."]]}
+{"event": {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "list_dir", "input": {"target_directory": "/repo/src"}}]}}, "expect": [["status", "Listing src"]]}
+{"event": {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "read_file", "input": {"target_file": "/repo/notes.txt"}}]}}, "expect": [["status", "Reading notes.txt"]]}
+{"event": {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "search_replace", "input": {"file_path": "/repo/core.py"}}]}}, "expect": [["status", "Editing core.py"]]}
+{"event": {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "run_terminal_command", "input": {"command": "rg -n TODO src"}}]}}, "expect": [["status", "Running rg -n TODO src"]]}
+{"event": {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "mystery_tool", "input": {"x": 1}}]}}, "expect": [["status", "Using mystery_tool"]]}
+{"event": {"type": "result", "is_error": true, "stop_reason": "cancelled"}, "expect": [["error", "cancelled — a denied tool call or an interrupted run"]]}
+{"event": {"type": "result", "is_error": true, "errors": ["Not signed in"]}, "expect": [["error", "Not signed in"]]}
+{"event": {"type": "result", "result": "ok", "session_id": "g1"}, "expect": [["response", "ok"], ["session", "g1"]]}
