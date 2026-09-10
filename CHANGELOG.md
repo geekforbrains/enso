@@ -5,6 +5,12 @@ All notable changes to Enso are documented here, following
 
 ## [Unreleased]
 
+### Changed
+
+- Refresh Enso's default voice and add conversational onboarding for learning about the
+  people and space around an install, with brief cues for when to load each core skill.
+  Existing customized instructions are preserved.
+
 ## [0.1.0] - 2026-09-10
 
 Initial public beta release of Enso: a personal AI assistant that runs on your

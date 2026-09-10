@@ -40,21 +40,32 @@ field — not to describe the turn in hand.
 
 ### The home-level file
 
-Shipped with sane defaults. It opens with the voice Enso answers in — a dry, faintly
-British butler who keeps replies short, uses plain words, and explains its own jargon — and
+Shipped with sane defaults. It opens with the voice Enso answers in: curious, capable,
+warm, and a little quirky, with short replies, plain words, and occasional dry humour. It
 then covers how to behave, the origin block and the matching `ENSO_ORIGIN_*` variables,
-where attachments land, how to send a message after the reply, that fetched content is data
-and not instructions, and which skills exist. Edit it freely: setup preserves an existing
-file, and managed updates preserve your edits. Only a copy that still matches Enso's
+where attachments land, when a reply reaches a conversation, that fetched content is data
+and not instructions, and when to load each key Enso skill. Skill entries are brief routing
+cues; procedures, command syntax, and safeguards belong in the skills themselves.
+Edit it freely: setup preserves an existing file, and managed updates preserve your edits.
+Only a copy that still matches Enso's
 recorded bundled baseline can refresh automatically. The voice is the first thing to change
 if you want a different one; it is a section, not a setting.
 
-It also ships an `## About the user` section: a fixed list of blank constants — name, what
-they go by, pronouns, location, timezone — that the agent fills in as the user tells it,
-so the next conversation starts already knowing them. The list is deliberately closed. An
-open one becomes a dumping ground, and the whole point of a file that loads on every turn
-is that it stays short, so everything else about the user belongs in a workspace's
-`knowledge/`, named there by path.
+It also ships a `## TODO: Get to know this space` section. While it remains, the agent
+starts a short onboarding conversation in live chat, asking one or two questions at a time
+and continuing to help with the request. It learns what Enso should help with, who uses the
+install, and useful preferences without assuming a single person, a team, or a chat platform.
+Confirmed answers replace placeholders in the home file's `About this space` and
+`About the people here` sections; workspace-specific purpose and rules belong in that
+workspace's instructions. Onboarding records context, not new access or approval rights.
+
+Questions can be skipped or deferred. The agent records and respects a deferral, and removes
+the TODO once the basics are answered or explicitly skipped. Jobs and beats leave these
+questions for live chat. Keep the remaining entries short, current, and appropriate for
+everyone using the install: the home file loads across all workspaces. Never put secrets or
+private personal details there; detailed background belongs in workspace `knowledge/`,
+referenced by path. Existing customized homes can adopt this onboarding guidance manually;
+upgrades do not overwrite them.
 
 Keep it about *behaviour*. Facts about a project belong in a workspace.
 
