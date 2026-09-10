@@ -5,6 +5,8 @@ All notable changes to Enso are documented here, following
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-10
+
 ### Changed
 
 - Refresh Enso's default voice and add conversational onboarding for learning about the
