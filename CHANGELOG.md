@@ -5,6 +5,8 @@ All notable changes to Enso are documented here, following
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-09-10
+
 ### Fixed
 
 - Start browser profiles only when a browser tool needs Chrome or the user opens one,
