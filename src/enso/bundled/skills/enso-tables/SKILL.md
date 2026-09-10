@@ -1,20 +1,21 @@
 ---
 name: enso-tables
-description: Create, inspect, query, or maintain durable user data tables in ~/.enso/enso.db. Use when the user wants to track structured facts, measurements, metrics, or history that should later be filtered, joined, or aggregated.
+description: Create, inspect, query, or maintain durable user data tables in the Enso home's database. Use when the user wants to track structured facts, measurements, metrics, or history that should later be filtered, joined, or aggregated.
 ---
 
 # Tables
 
 ## How Enso sets it up
 
-`~/.enso/enso.db` is one SQLite file that Enso creates and migrates. It holds Enso's own state (`runs`, `messages`, `sessions`, `job_state`, and every `_enso_*` table) and a registry of user tables, so an agent in any workspace, turn, or job can find data another one wrote. A user table is an ordinary SQLite table you create and then register with `enso table register`, which puts its name and description in `enso table list`. Never alter, drop, or register Enso's own tables.
+`$ENSO_HOME/enso.db` is one SQLite file that Enso creates and migrates; the home defaults to `~/.enso`. Resolve the home from `ENSO_HOME` so direct SQL and `enso table` commands use the same database. It holds Enso's own state (`runs`, `messages`, `sessions`, `job_state`, and every `_enso_*` table) and a registry of user tables, so an agent in any workspace, turn, or job can find data another one wrote. A user table is an ordinary SQLite table you create and then register with `enso table register`, which puts its name and description in `enso table list`. Never alter, drop, or register Enso's own tables.
 
 ## Discover before writing
 
 ```bash
 enso table list
 enso table schema <table>       # columns, constraints, indexes, CREATE SQL; --json available
-sqlite3 ~/.enso/enso.db         # rows and general SQL
+enso_home="${ENSO_HOME:-$HOME/.enso}"
+sqlite3 "$enso_home/enso.db"    # rows and general SQL
 ```
 
 Descriptions are the index. Reuse a table when its meaning and grain match; inspect its schema before querying or changing it.
@@ -24,7 +25,8 @@ Descriptions are the index. Reuse a table when its meaning and grain match; insp
 Prefer raw facts at a clear grain over precomputed summaries. Use lowercase `snake_case` names (at most 63 characters), a primary key, `NOT NULL`, `UNIQUE`, `CHECK`, and foreign-key constraints where the domain warrants them, ISO-8601 UTC `TEXT` timestamps, explicit units in column names (`weight_kg`), and indexes for recurring lookups.
 
 ```bash
-sqlite3 ~/.enso/enso.db <<'SQL'
+enso_home="${ENSO_HOME:-$HOME/.enso}"
+sqlite3 "$enso_home/enso.db" <<'SQL'
 .bail on
 PRAGMA foreign_keys = ON;
 BEGIN IMMEDIATE;

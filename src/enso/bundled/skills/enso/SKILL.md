@@ -56,6 +56,8 @@ Three scopes:
 
 `enso` and names beginning `enso-` are reserved for what Enso installs. Setup writes missing bundled skills and preserves existing copies. Managed upgrades refresh only files that still match their recorded baseline; edits, disabled jobs, and tracked deletions survive. Historical bundles without baselines stay user-owned. Workspace instructions never refresh automatically. The audit warns about a `enso-*` skill or job Enso did not install. A name must not appear in both the workspace and enso scope.
 
+Adding or editing a skill needs no Enso restart. The provider discovers skills through the existing directory links when the next turn starts; nothing needs regenerating. Read a changed skill again when it is needed instead of relying on an earlier copy in the conversation.
+
 | Skill | Use it for |
 | --- | --- |
 | `enso-workspace` | The workspace layout, where files and skills go, bindings, the audit |
@@ -87,7 +89,7 @@ enso project list|add
 enso workspace list|create|audit     # see enso-workspace
 enso skill list [--available]        # installed home skills, or the official catalog
 enso skill show|install <name>       # see enso-skills; only geekforbrains/enso-skills
-enso config show|check|set|unset     # set PATH VALUE or unset PATH edits one key, no restart; see enso-security
+enso config show|check|set|unset     # set PATH VALUE or unset PATH edits one key; see reload rules below
 enso models [--all] [--json]         # copy-ready OpenRouter model ids for OpenCode
 enso doctor                          # config, home, workspaces, providers, transports, service, jobs
 enso update check|apply|status|recover [--json]  # see enso-update before requesting an upgrade
@@ -95,6 +97,10 @@ enso logs [-f] [--turn ID] [--job NAME]
 ```
 
 `enso setup`, `enso serve`, and `enso service …` are the operator's; do not run them from a turn.
+
+Change configuration with `enso config set PATH VALUE` or `enso config unset PATH`; use `enso config apply --file FILE` for a complete document. Bindings, agents, providers, workspaces, projects, run retention, and heartbeat settings take effect on the next turn or scheduler tick without restarting Enso. A running turn or job keeps the configuration it started with.
+
+The exceptions are `transports` and `logging`, which need a service restart, and `web`, which needs a viewer restart. Apply, set, and unset report `restart_required` in JSON and explain the needed restart in text output. Report the specific restart indicated by the result; adding a skill or changing a model does not need one. See [Configuration](https://github.com/geekforbrains/enso/blob/main/docs/configuration.md#while-the-service-runs) for the restart commands and separate service environment requirements, such as adding a provider directory to the service's `PATH`.
 
 Every turn and job gets `ENSO_HOME` and `ENSO_WORKSPACE`. A chat turn opens with the `[Chat origin …]` block naming the platform, sender, location, and thread, and carries the same values as `ENSO_ORIGIN_*` for the commands you run; jobs add `ENSO_JOB` and `ENSO_RUN_ID`, and a stage job adds `ENSO_TASK` (with `ENSO_TASK_DIR` for a repo project). The home-level `AGENTS.md` says how to use them.
 

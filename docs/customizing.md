@@ -159,7 +159,8 @@ Names must be unique across the workspace and enso scopes. A workspace cannot ov
 enso-wide skill by reusing its name; `enso workspace audit` reports that as an error,
 because the provider CLIs disagree about which copy would win.
 
-A new skill is visible on the next turn; nothing needs regenerating. Run
+Adding or editing a skill needs no Enso restart; the next turn can load the changed files
+through the existing links. Run
 `enso workspace audit` after adding one to confirm its `SKILL.md` is valid and its name
 is free. See [Workspaces](workspaces.md).
 

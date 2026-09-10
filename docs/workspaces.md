@@ -102,9 +102,10 @@ in each place put both Enso scopes in reach:
 ~/.enso/workspaces/<name>/.agents/skills  -> ../skills
 ```
 
-These links are static. Add a skill directory to `<workspace>/skills/` or `~/.enso/skills/`
-and the next turn sees it; nothing needs regenerating. `enso workspace audit --fix` creates
-a missing link and repairs one that points elsewhere.
+These links are static. Add or edit a skill in `<workspace>/skills/` or `~/.enso/skills/`
+and the next turn can load it; no Enso restart or link regeneration is needed. The provider
+CLI discovers the files when Enso launches it for a turn. `enso workspace audit --fix`
+creates a missing link and repairs one that points elsewhere.
 
 The home-level `AGENTS.md` reaches the agent the same way: Codex, Grok, Antigravity, and
 OpenCode walk up to the Git root for `AGENTS.md`, and Claude Code walks up for `CLAUDE.md`.
@@ -245,11 +246,18 @@ links. Then bind a conversation to it in `config.json`; the next message in that
 conversation lands in the new workspace, with no restart. See
 [Configuration](configuration.md).
 
-To retire one: remove its bindings, remove or repoint any job that names it, confirm with
-`enso config check`, and only then archive or delete the directory. There is no restart
-step, so the order is what protects you. Enso will not delete a workspace for you —
-`config check` refuses a binding pointing at a directory that is gone, which is the
-failure you want if you get the order wrong.
+To retire one, remove or repoint its bindings and jobs, and repoint any projects that name
+it while preserving their tasks. Inspect active and paused beats with
+`enso heartbeat list --workspace NAME`, paging through results if needed; move ongoing beats
+to another workspace or explicitly close work that is ending. Pausing a beat keeps its
+workspace reference. Keep the directory while any of those dependents still needs it.
+
+Let running turns, jobs, and beats finish before moving files, and remove the retired
+workspace's configuration override when present. Run `enso config check` before and after
+archiving or deleting the directory; deletion needs the user's authorization. These changes
+need no Enso restart. Configuration validation catches missing binding and project
+directories, but it does not inspect heartbeat state, so the beat review is a separate step.
+Enso does not delete a workspace for you.
 
 ## When a workspace is malformed
 

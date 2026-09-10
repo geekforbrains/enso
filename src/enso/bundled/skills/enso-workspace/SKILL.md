@@ -9,6 +9,8 @@ description: Inspect, create, bind, or retire an Enso workspace; write focused w
 
 A workspace is a directory under `~/.enso/workspaces/<name>`: the provider's working directory and the context it starts with. It is a content root, not a security boundary. Names are lowercase kebab-case, and the name is the only valid location. `enso workspace create` makes the whole layout, and `enso workspace audit --fix` repairs it without ever deleting.
 
+Paths below show the default home; use `ENSO_HOME` instead of `~/.enso` when it is set.
+
 ```text
 ~/.enso/
 ├── AGENTS.md                 # shared instructions for every turn and job
@@ -72,4 +74,6 @@ the profile itself is private data under the home, not content to put in `skills
 
 ## Retiring a workspace
 
-Remove its bindings (`enso config unset bindings.slack:C…`) and any job that names it, confirm with `enso config check`, and only then delete or archive the directory. There is no restart step, so the order is what protects you. Confirm before deleting content.
+Remove or repoint its bindings and jobs, repoint any projects that name it while preserving their tasks, and review all active and paused beats with `enso heartbeat list --workspace NAME` (page through results if needed). Use `enso-heartbeat` to move ongoing beats to another workspace or close them when the retirement request includes ending that work; pausing alone leaves the workspace reference in place. Keep the directory while any of that work still needs it.
+
+Let running turns, jobs, and beats finish before moving their files. Remove the retired workspace's entry under `workspaces` in configuration, if present, once its dependents have moved. Confirm with `enso config check`, then archive the directory or delete it with the user's authorization, and check configuration again. These changes need no Enso restart. See [Workspaces](https://github.com/geekforbrains/enso/blob/main/docs/workspaces.md#creating-and-retiring) for the lifecycle.

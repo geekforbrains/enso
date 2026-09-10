@@ -115,14 +115,19 @@ value is the thing being rejected, as an unusable schedule is.
 enso job create --name "Meteor Forum Watch" --provider claude --model sonnet \
   --effort high --schedule "0 14 * * *" --workspace meteor
 $EDITOR ~/.enso/jobs/meteor-forum-watch/JOB.md
-enso job run meteor-forum-watch          # manual run: prints the result, never alerts
 enso job show meteor-forum-watch         # fields, problems, next and last run, prompt
+enso job run meteor-forum-watch          # execute now, only when its effects are intended
 ```
 
-`job create` writes a disabled scaffold under a slug of the name. `job run` can execute it
-while disabled and uses both job and group locks; the runner sends no alerts, but the
-prompt and scripts can still send messages themselves. Set `enabled: true` when the manual
-run succeeds; the scheduler picks it up on its next tick. `job create` refuses
+`job create` writes a disabled scaffold under a slug of the name. Inspect it with `job show`,
+check shell syntax with `bash -n`, and test scripts with fixtures or stub services when real
+effects would be premature. `job run` executes immediately even while disabled and uses both
+job and group locks; it is not a dry run. The runner sends no alerts, but the prompt and
+scripts can send messages or perform other actions. A request for scheduled work does not
+by itself authorize performing those actions during setup. Use a manual run when its
+immediate effects are safe and authorized; otherwise report the live execution left untested.
+Set `enabled: true` after validation and appropriate testing pass; the scheduler picks it up
+on its next tick. `job create` refuses
 an invalid schedule before it writes job files. A `JOB.md` with problems is logged once and
 skipped until fixed, and `job show`, `job list`, `enso doctor` and the
 [web viewer](web.md) all report the same problem; doctor names the file to open. Nothing

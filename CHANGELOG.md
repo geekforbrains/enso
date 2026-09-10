@@ -11,6 +11,11 @@ All notable changes to Enso are documented here, following
   people and space around an install, with brief cues for when to load each core skill.
   Existing customized instructions are preserved.
 
+### Fixed
+
+- Correct bundled skill guidance for live changes and restart exceptions, custom home
+  database paths, workspace retirement, safe job testing, and task handoffs.
+
 ## [0.1.0] - 2026-09-10
 
 Initial public beta release of Enso: a personal AI assistant that runs on your

@@ -29,7 +29,7 @@ Do only this task, then stop. `enso task show REF --json` returns the same packe
 
 ## Handing off
 
-A move is how a run ends. Every move clears your claim, and a run acts only on the task it holds, so a second move on the same task is refused: make it last and stop afterwards. A run that ends without one has its claim released by Enso, which the next run sees as recovery and, twice in a row, blocks the task for a person.
+A move hands off the task and clears your claim. It does not stop the provider or skip the job's postrun checks. A run acts only on the task it holds, so a second move on the same task is refused, including in a postrun follow-up: make the move last and finish your turn. A run that ends without one has its claim released by Enso, which the next run sees as recovery and, twice in a row, blocks the task for a person.
 
 ```bash
 enso task advance REF --message "what changed, the evidence, what the next stage should check"
