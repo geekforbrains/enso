@@ -19,10 +19,12 @@ import sys
 import tempfile
 import time
 import uuid
-from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import asdict, dataclass, replace
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from types import FrameType
 from urllib.parse import quote, urlsplit
 
 from enso.config import Paths
@@ -276,8 +278,14 @@ def validate_url(url: str) -> str:
     return url
 
 
-def start(profile: Profile) -> State:
+def _check_cancelled(cancelled: Callable[[], bool] | None) -> None:
+    if cancelled is not None and cancelled():
+        raise BrowserError("browser startup cancelled")
+
+
+def start(profile: Profile, *, cancelled: Callable[[], bool] | None = None) -> State:
     """Reuse verified Chrome or start it detached, preserving all existing tabs."""
+    _check_cancelled(cancelled)
     state = read_state(profile)
     if state and owned(profile, state):
         return endpoint(profile, state)
@@ -299,6 +307,7 @@ def start(profile: Profile) -> State:
     ]
     args.append("--use-mock-keychain" if sys.platform == "darwin" else "--password-store=basic")
     args.append("about:blank")
+    _check_cancelled(cancelled)
     process = subprocess.Popen(
         args,
         cwd=profile.home,
@@ -311,6 +320,7 @@ def start(profile: Profile) -> State:
     state = None
     try:
         while time.monotonic() < deadline:
+            _check_cancelled(cancelled)
             if process.poll() is not None:
                 raise BrowserError(
                     "Chrome exited; check profile locks and that a desktop is available"
@@ -326,6 +336,7 @@ def start(profile: Profile) -> State:
                     except BrowserError:
                         pass
                     else:
+                        _check_cancelled(cancelled)
                         write_state(profile, state)
                         return state
             time.sleep(0.1)
@@ -377,7 +388,7 @@ def status(profile: Profile) -> dict[str, object]:
     return result
 
 
-def mcp_command(profile: Profile, state: State) -> list[str]:
+def mcp_command(profile: Profile, address: str) -> list[str]:
     package = profile.tooling / "node_modules/@playwright/mcp"
     _check_path(profile.home, package / "cli.js")
     try:
@@ -393,7 +404,7 @@ def mcp_command(profile: Profile, state: State) -> list[str]:
         node,
         str(package / "cli.js"),
         "--cdp-endpoint",
-        f"http://127.0.0.1:{state.port}",
+        address,
         "--caps",
         "vision,pdf",
         "--output-dir",
@@ -401,6 +412,109 @@ def mcp_command(profile: Profile, state: State) -> list[str]:
         "--output-max-size",
         "52428800",
     ]
+
+
+class _DiscoveryServer(HTTPServer):
+    """Publish verified CDP metadata on demand; browser traffic goes directly to Chrome."""
+
+    def __init__(self, profile: Profile, cancelled: Callable[[], bool]) -> None:
+        self.profile = profile
+        self.cancelled = cancelled
+        self.token = uuid.uuid4().hex
+        super().__init__(("127.0.0.1", 0), _DiscoveryHandler)
+        # Poll child exit and signals even when no browser tools are requested.
+        self.timeout = 0.1
+        self.host = f"127.0.0.1:{self.server_port}"
+        self.address = f"http://{self.host}/{self.token}"
+        self.route = f"/{self.token}/json/version/"
+
+
+class _DiscoveryHandler(BaseHTTPRequestHandler):
+    server: _DiscoveryServer
+
+    def setup(self) -> None:
+        # A partial local request must not prevent MCP shutdown indefinitely.
+        self.request.settimeout(1)
+        super().setup()
+
+    def log_message(self, format: str, *args: object) -> None:
+        pass
+
+    def _respond(self, code: int, data: dict[str, str]) -> None:
+        body = json.dumps(data).encode("utf-8")
+        with suppress(BrokenPipeError, ConnectionResetError, TimeoutError):
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+    def do_GET(self) -> None:
+        server = self.server
+        if self.path != server.route or self.headers.get_all("Host", []) != [server.host]:
+            self._respond(404, {"error": "not found"})
+            return
+        try:
+            with profile_lock(server.profile):
+                state = start(server.profile, cancelled=server.cancelled)
+        except (BrowserError, OSError, subprocess.SubprocessError) as exc:
+            print(f"enso-browser: {exc}", file=sys.stderr)
+            self._respond(503, {"error": str(exc)})
+            return
+        self._respond(
+            200, {"webSocketDebuggerUrl": f"ws://127.0.0.1:{state.port}{state.websocket}"}
+        )
+
+
+def _stop_mcp(process: subprocess.Popen[bytes]) -> None:
+    """Reap the controller without signaling the detached persistent Chrome."""
+    if process.poll() is not None:
+        return
+    with suppress(ProcessLookupError):
+        process.terminate()
+    try:
+        process.wait(timeout=STOP_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        with suppress(ProcessLookupError):
+            process.kill()
+        process.wait(timeout=STOP_TIMEOUT)
+
+
+def run_mcp(profile: Profile) -> int:
+    """Keep stdio with Playwright while starting Chrome only for endpoint discovery."""
+    # Check optional dependencies before opening a listener or taking the controller lock.
+    mcp_command(profile, "http://127.0.0.1")
+    process: subprocess.Popen[bytes] | None = None
+    stopped = 0
+
+    def on_signal(signum: int, frame: FrameType | None) -> None:
+        nonlocal stopped
+        stopped = signum
+
+    def cancelled() -> bool:
+        return bool(stopped) or (process is not None and process.poll() is not None)
+
+    with profile_lock(profile, "mcp") as fd, ExitStack() as stack:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous = signal.signal(signum, on_signal)
+            stack.callback(signal.signal, signum, previous)
+        server = stack.enter_context(_DiscoveryServer(profile, cancelled))
+        process = subprocess.Popen(
+            mcp_command(profile, server.address),
+            cwd=profile.output,
+            pass_fds=(fd,),
+            start_new_session=True,
+        )
+        try:
+            while not cancelled():
+                server.handle_request()
+        finally:
+            _stop_mcp(process)
+    if stopped:
+        return 128 + stopped
+    assert process.returncode is not None
+    return process.returncode if process.returncode >= 0 else 128 - process.returncode
 
 
 def registration(profile: Profile) -> dict[str, object]:
@@ -457,16 +571,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         profile.create()
         if args.action == "mcp":
-            # Resolve dependencies before opening Chrome. The lock survives exec and is
-            # released by the OS when MCP ends, preventing two agents sharing its tabs.
-            mcp_command(profile, State(2, "", "", ""))
-            with profile_lock(profile, "mcp") as fd:
-                with profile_lock(profile):
-                    state = start(profile)
-                command = mcp_command(profile, state)
-                os.set_inheritable(fd, True)
-                os.chdir(profile.output)
-                os.execv(command[0], command)
+            return run_mcp(profile)
         with profile_lock(profile):
             if args.action == "stop":
                 print(json.dumps({"profile": profile.name, "status": stop(profile)}))

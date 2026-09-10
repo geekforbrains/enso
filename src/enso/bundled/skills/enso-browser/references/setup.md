@@ -4,6 +4,9 @@ This setup is needed only when the user wants browser automation. It installs a 
 Microsoft Playwright MCP server into the Enso home, uses an existing Google Chrome,
 and connects one profile to the selected agent provider. Keep provider configuration
 outside this helper: `mcp --print-config` prints a proposal and never writes it.
+Start after `enso init` or `enso setup` has prepared the home and installed this skill.
+For a custom home, export `ENSO_HOME` before running these commands; all profiles,
+dependencies, and printed registrations will use that home.
 
 ## Dependencies
 
@@ -37,6 +40,9 @@ its result, and stop on failure. The helper itself never downloads anything and 
 exactly this version. Keep the generated package manifest and lockfile in `tooling/`;
 updates to this pin should review upstream changes and verify attachment against Chrome.
 No Playwright browser download or Python Playwright package is needed.
+This dependency installation is shared by every profile in the same Enso home. Repeat
+it for another home, not for each new profile. `create` prepares a profile without
+opening Chrome or requiring the optional dependencies to be installed already.
 
 Version 0.0.80 and its `--cdp-endpoint`, `--caps`, `--output-dir`, and
 `--output-max-size` flags were checked against the
@@ -45,7 +51,7 @@ and [package metadata](https://github.com/microsoft/playwright-mcp/blob/v0.0.80/
 Chrome requires a nondefault user-data directory for remote debugging; this helper always
 uses one. See [Chrome's remote debugging guidance](https://developer.chrome.com/blog/remote-debugging-port).
 
-## Connect a profile
+## Connect the default profile
 
 Choose the Python that runs Enso and this installed skill's path. For managed installs:
 
@@ -54,18 +60,19 @@ enso_home="${ENSO_HOME:-$HOME/.enso}"
 enso_python="$enso_home/runtime/current/bin/python"
 enso_browser="$enso_home/skills/enso-browser/scripts/browser.py"
 "$enso_python" "$enso_browser" mcp --print-config
-"$enso_python" "$enso_browser" mcp work --print-config
 ```
 
-The first prints a standard MCP JSON registration named `enso-browser-default`; the
-second prints `enso-browser-work`. Both contain an absolute Python command, helper path,
-profile argument, and `ENSO_HOME`. For an unmanaged/source install, invoke the helper
-with its environment's Python; the proposal uses that Python when no managed runtime exists.
+This prints a standard MCP JSON registration named `enso-browser-default` with an
+absolute Python command, helper path, profile argument, and `ENSO_HOME`. For an
+unmanaged/source install, invoke the helper with its environment's Python; the proposal
+uses that Python when no managed runtime exists. Printing the proposal starts no Chrome
+and does not create a profile or change any files.
 
 Add only the intended profile to the provider/workspace used for this browser work,
 preserving its existing MCP servers. Providers can eagerly start every registered MCP
-server on every turn. Registering several profiles globally can launch and lock them all,
-even on turns that do not browse. Prefer a workspace-scoped single-profile registration,
+server on every turn. Registering several profiles globally can reserve all their
+controller locks, even on turns that do not browse; Chrome starts only when needed.
+Prefer a workspace-scoped single-profile registration,
 or the provider's documented per-launch server selection. If the provider cannot isolate
 registrations, serialize browser work rather than promising concurrent profile use.
 Different clients use different wrappers around the same `command`, `args`,
@@ -89,13 +96,58 @@ The registered command is equivalent to:
 ```
 
 That command speaks MCP over stdin/stdout. Do not run it as a normal diagnostic and
-wait for human-readable output. It starts or reuses that profile's persistent Chrome,
-then replaces itself with the installed MCP server attached to Chrome. It downloads
-nothing. `mcp --print-config` is the inspectable alternative and starts no browser.
+wait for human-readable output. It runs the installed MCP server and holds the profile's
+controller lock without starting Chrome. Initialization and tool discovery need no
+browser window. The first browser tool that needs a connection starts or reuses that
+profile's verified persistent Chrome. If that startup fails, the tool's connection fails
+with a diagnostic on stderr; MCP remains available for a later retry after resolving
+the cause. When the MCP connection ends, the helper stops and waits for its MCP child,
+releases the controller lock, and exits. Ready Chrome and its tabs remain available;
+an incomplete Chrome startup is cleaned up if cancelled. The helper downloads nothing
+and requires no port configuration.
 
-Reconnect/restart the provider client to load the registration. Discover its actual tool
-namespace and schemas, open a harmless page, read a snapshot, and verify its content.
-Only after tools work, open the intended site's login page for the person. Each extra
-profile needs its own selected registration. Concurrent agents need different profiles
-and different workspace/provider server selections; merely giving profiles different names
-does not isolate MCP clients. Serialize browser tasks within one shared selection.
+Reconnect/restart the provider client to load the registration, then verify the setup:
+
+1. Discover the actual tool namespace and schemas. For a newly created profile, `status`
+   should still report that Chrome is stopped and no window should have opened.
+2. Use a browser tool to open a harmless page, read a snapshot, and verify its content.
+   This first browser connection starts Chrome automatically.
+3. Open the intended site's login page for the person, either through the browser tools
+   or `open --url`. Let them sign in in the window, then verify authenticated content
+   and the intended account. `status` does not verify a site's login.
+4. End the provider turn and reconnect. Browser work should reuse the same profile,
+   logins, and tabs. Keep Chrome open for pending human work; use `stop` when the entire
+   session is finished and safe to close.
+
+## Add a named profile
+
+Choose a separate profile for a different account or concurrent work. Reuse the installed
+dependencies and the same helper:
+
+```bash
+"$enso_python" "$enso_browser" create work
+"$enso_python" "$enso_browser" mcp work --print-config
+```
+
+This prints the `enso-browser-work` registration. Add it only to the provider/workspace
+selection intended to use that profile, then repeat discovery and the first-use check
+above. Creation and registration do not open Chrome. To open it explicitly for human
+login before an agent browses:
+
+```bash
+"$enso_python" "$enso_browser" open work --url https://example.com
+```
+
+Record the intended profile in that workspace's `AGENTS.md` when useful; the profile
+name is a routing choice, not proof of the signed-in account. Each extra profile needs
+its own selected registration. Concurrent agents need different profiles and different
+workspace/provider server selections; merely giving profiles different names does not
+isolate MCP clients. Serialize browser tasks within one shared selection.
+
+## Existing installations
+
+The registered `mcp [profile]` command is unchanged. Existing registrations, saved
+profiles, and logins remain usable after updating Enso; do not recreate profiles to get
+lazy startup. Managed updates refresh unchanged bundled skill files while preserving
+edited or historical copies. If a customized helper or instruction file was preserved,
+review and merge the updated bundled version before expecting the new behaviour.

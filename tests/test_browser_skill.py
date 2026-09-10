@@ -7,6 +7,8 @@ import signal
 import subprocess
 import sys
 import types
+from concurrent.futures import ThreadPoolExecutor
+from http.client import HTTPConnection
 from pathlib import Path
 
 import pytest
@@ -436,38 +438,206 @@ def test_mcp_refuses_missing_or_wrong_version_without_download_or_browser(
     assert browser.main(["mcp"]) == 1
 
 
-def test_mcp_exec_uses_local_dependency_loopback_output_and_holds_exclusive_lock(
-    browser, profile, monkeypatch, capsys
+@pytest.mark.parametrize("end", ["exit", "signal", "error"])
+def test_mcp_supervises_local_dependency_with_direct_stdio_and_exclusive_lock(
+    browser, profile, monkeypatch, capsys, end
 ):
     install_fake_mcp(browser, profile)
-    state = running_state(browser, profile)
     monkeypatch.setenv("ENSO_HOME", str(profile.home))
     monkeypatch.setattr(browser.shutil, "which", lambda name: "/usr/bin/node")
-    monkeypatch.setattr(browser, "start", lambda p: state)
-    monkeypatch.chdir(profile.home)
+    monkeypatch.setattr(browser, "start", lambda *a, **k: pytest.fail("eager Chrome launch"))
+    previous_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    calls = []
+    servers = []
+
+    class FakeProcess:
+        returncode = None
+
+        def __init__(self, args, **kwargs):
+            calls.append((args, kwargs))
+            with (
+                pytest.raises(browser.BrowserError, match="another mcp"),
+                browser.profile_lock(profile, "mcp"),
+            ):
+                pytest.fail("MCP lock lost")
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            calls.append("terminate")
+            self.returncode = -signal.SIGTERM
+
+        def wait(self, timeout):
+            calls.append(("wait", timeout))
+            return self.returncode
+
+    process = FakeProcess.__new__(FakeProcess)
+
+    def popen(args, **kwargs):
+        process.__init__(args, **kwargs)
+        return process
+
+    def handle(server):
+        servers.append(server)
+        assert not profile.state.exists()
+        if end == "error":
+            raise OSError("discovery failed")
+        if end == "signal":
+            signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+        else:
+            process.returncode = 0
+
+    monkeypatch.setattr(browser.subprocess, "Popen", popen)
+    monkeypatch.setattr(browser._DiscoveryServer, "handle_request", handle)
+    assert browser.main(["mcp"]) == {"exit": 0, "signal": 143, "error": 1}[end]
+    args, kwargs = calls[0]
+    assert args[0] == "/usr/bin/node"
+    assert args[1] == str(profile.root / "tooling/node_modules/@playwright/mcp/cli.js")
+    assert args[args.index("--cdp-endpoint") + 1] == servers[0].address
+    assert args[args.index("--output-dir") + 1] == str(profile.output)
+    assert kwargs["cwd"] == profile.output and kwargs["start_new_session"]
+    assert len(kwargs["pass_fds"]) == 1
+    assert not any(key in kwargs for key in ("stdin", "stdout", "stderr"))
+    assert servers[0].socket.fileno() == -1
+    assert {sig: signal.getsignal(sig) for sig in previous_handlers} == previous_handlers
+    with browser.profile_lock(profile, "mcp"):
+        pass
+    captured = capsys.readouterr()
+    assert not captured.out
+    if end == "exit":
+        assert calls[1:] == []
+        assert not captured.err
+    else:
+        assert calls[1:] == ["terminate", ("wait", browser.STOP_TIMEOUT)]
+        if end == "error":
+            assert captured.err == "enso-browser: discovery failed\n"
+
+
+def discovery_request(server, *, path=None, host=None):
+    def request():
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+        try:
+            connection.request("GET", path or server.route, headers={"Host": host or server.host})
+            response = connection.getresponse()
+            return response.status, json.loads(response.read()), response.getheader("Cache-Control")
+        finally:
+            connection.close()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(request)
+        while not future.done():
+            server.handle_request()
+        return future.result()
+
+
+def test_discovery_starts_under_lifecycle_lock_and_returns_verified_websocket(
+    browser, profile, monkeypatch
+):
+    state = running_state(browser, profile)
     calls = []
 
-    class ExecReplacedError(Exception):
-        pass
-
-    def fake_exec(executable, args):
-        calls.append((executable, args, Path.cwd()))
+    def start(selected, *, cancelled):
+        assert selected == profile and not cancelled()
         with (
-            pytest.raises(browser.BrowserError, match="another mcp"),
-            browser.profile_lock(profile, "mcp"),
+            pytest.raises(browser.BrowserError, match="another lifecycle"),
+            browser.profile_lock(profile),
         ):
-            pytest.fail("MCP lock lost")
-        raise ExecReplacedError
+            pytest.fail("lifecycle lock missing")
+        calls.append("start")
+        return state
 
-    monkeypatch.setattr(browser.os, "execv", fake_exec)
-    with pytest.raises(ExecReplacedError):
-        browser.main(["mcp"])
-    executable, args, cwd = calls[0]
-    assert executable == "/usr/bin/node"
-    assert args[1] == str(profile.root / "tooling/node_modules/@playwright/mcp/cli.js")
-    assert args[args.index("--cdp-endpoint") + 1] == f"http://127.0.0.1:{state.port}"
-    assert args[args.index("--output-dir") + 1] == str(profile.output)
-    assert cwd == profile.output and not capsys.readouterr().out
+    monkeypatch.setattr(browser, "start", start)
+    with browser._DiscoveryServer(profile, lambda: False) as server:
+        code, body, cache = discovery_request(server)
+        assert code == 200 and cache == "no-store"
+        assert body == {"webSocketDebuggerUrl": f"ws://127.0.0.1:{state.port}{state.websocket}"}
+    assert calls == ["start"]
+
+
+@pytest.mark.parametrize("overrides", [{"path": "/json/version/"}, {"host": "foreign.invalid"}])
+def test_discovery_rejects_unexpected_path_or_host_without_start(
+    browser, profile, monkeypatch, overrides
+):
+    monkeypatch.setattr(browser, "start", lambda *a, **k: pytest.fail("unexpected browser start"))
+    with browser._DiscoveryServer(profile, lambda: False) as server:
+        code, body, _ = discovery_request(server, **overrides)
+        assert code == 404 and body == {"error": "not found"}
+
+
+def test_discovery_failure_is_retryable_and_never_publishes_an_unverified_endpoint(
+    browser, profile, monkeypatch, capsys
+):
+    state = running_state(browser, profile)
+    attempts = []
+
+    def start(*args, **kwargs):
+        attempts.append(True)
+        if len(attempts) == 1:
+            raise browser.BrowserError("Chrome process identity changed")
+        return state
+
+    monkeypatch.setattr(browser, "start", start)
+    with browser._DiscoveryServer(profile, lambda: False) as server:
+        code, body, _ = discovery_request(server)
+        assert code == 503 and body == {"error": "Chrome process identity changed"}
+        assert discovery_request(server)[0] == 200
+    captured = capsys.readouterr()
+    assert not captured.out
+    assert captured.err == "enso-browser: Chrome process identity changed\n"
+
+
+def test_cancelled_discovery_start_reaps_only_the_chrome_child(browser, profile, monkeypatch):
+    calls = []
+
+    class FakeProcess:
+        pid = 123
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            calls.append("terminate")
+
+        def wait(self, timeout):
+            calls.append(("wait", timeout))
+
+    def launch(*args, **kwargs):
+        calls.append("launch")
+        return FakeProcess()
+
+    monkeypatch.setattr(browser, "chrome_binary", lambda: "/fake/chrome")
+    monkeypatch.setattr(browser.subprocess, "Popen", launch)
+    with pytest.raises(browser.BrowserError, match="startup cancelled"):
+        browser.start(profile, cancelled=lambda: bool(calls))
+    assert calls == ["launch", "terminate", ("wait", browser.STOP_TIMEOUT)]
+
+
+def test_controller_cleanup_escalates_only_the_owned_mcp_process(browser):
+    calls = []
+
+    class FakeProcess:
+        def poll(self):
+            return None
+
+        def terminate(self):
+            calls.append("terminate")
+
+        def kill(self):
+            calls.append("kill")
+
+        def wait(self, timeout):
+            calls.append(("wait", timeout))
+            if "kill" not in calls:
+                raise subprocess.TimeoutExpired("MCP", timeout)
+
+    browser._stop_mcp(FakeProcess())
+    assert calls == [
+        "terminate",
+        ("wait", browser.STOP_TIMEOUT),
+        "kill",
+        ("wait", browser.STOP_TIMEOUT),
+    ]
 
 
 def test_open_preserves_tabs_and_encodes_url_in_single_loopback_request(

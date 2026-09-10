@@ -5,6 +5,12 @@ All notable changes to Enso are documented here, following
 
 ## [Unreleased]
 
+### Fixed
+
+- Start browser profiles only when a browser tool needs Chrome or the user opens one,
+  so MCP startup and tool discovery no longer open unused browsers; fresh installs and
+  new profiles use the same behaviour while existing registrations and sessions remain usable.
+
 ## [0.1.1] - 2026-09-10
 
 ### Changed

@@ -11,6 +11,7 @@ metadata:
 Use a separate Chrome profile for Enso. Its logins and tabs survive agent turns, so a
 person can sign in, inspect a page, or continue a form between messages. The default
 profile is `default`; use additional names to separate accounts or concurrent work.
+Chrome starts only when a browser tool needs it or you explicitly use `open`.
 
 Read [references/setup.md](references/setup.md) when dependencies or browser tools are
 missing, or when connecting an additional profile. Enso bundles these instructions and
@@ -40,12 +41,16 @@ commands on `PATH`.
 
 Names start with a lowercase letter, then use lowercase letters, digits and single
 hyphens, up to 48 characters. Omitting a name means `default`. `create` is idempotent;
-`open` and `mcp` create the chosen profile on first use. `list`, `status`, and
-`mcp --print-config` do not start Chrome. Successful helper commands print JSON;
-expected failures print one diagnostic to stderr and exit 1.
+`open` and `mcp` create the chosen profile on first use. `create`, `list`, `status`,
+`mcp --print-config`, MCP initialization, and tool discovery do not start Chrome.
+Standalone helper commands print JSON. Expected command or MCP startup failures print
+one diagnostic to stderr and exit 1. If Chrome cannot start during a browser tool, that
+tool's connection fails with a stderr diagnostic; MCP stays available for a later retry.
 
-`open` reuses that profile's browser, keeping existing tabs. `--url` opens a new tab;
-without it, existing tabs stay untouched. There is no implicit fresh/reset operation.
+`open` starts or reuses that profile's browser immediately, keeping existing tabs.
+`mcp` starts or reuses it when a browser tool first needs a connection. `open --url`
+opens a new tab; without the URL, existing tabs stay untouched. There is no implicit
+fresh/reset operation.
 Close only tabs your task owns, using the available browser tools; an existing form may
 belong to a person or another task.
 
@@ -60,8 +65,9 @@ mean the check is incomplete.
 
 Use the tools actually exposed by the chosen profile's MCP registration. Discover their
 current names and argument schemas first; the provider may prefix tool names differently,
-and enabled capabilities vary. If the registration is absent, explain the setup step;
-do not invent calls or claim the browser was inspected.
+and enabled capabilities vary. Tool discovery alone does not start Chrome; a browser
+tool starts or attaches to the selected profile automatically. If the registration is
+absent, explain the setup step; do not invent calls or claim the browser was inspected.
 
 Navigate, read an accessibility snapshot, act using a current element reference, then
 verify the effect. Prefer role/text references to generated CSS classes; refresh stale
@@ -87,13 +93,17 @@ seen and register views even when no write button is clicked.
 
 ## Lifecycle and storage
 
-One Chrome owns each profile. One MCP process may control it at a time. Concurrent jobs
+One Chrome owns each profile. One MCP process may control it at a time; it takes the
+controller lock at MCP startup, even while Chrome is stopped. Concurrent jobs
 need separate profiles and provider/workspace registrations that each load only their
 chosen profile. Providers may eagerly launch every registered MCP server on every turn;
-registering all profiles globally can lock them all at once. See setup for scope choices,
-and serialize browser work when the provider cannot isolate its MCP selection.
-The helper attaches MCP to a detached Chrome, so ending a turn
-does not close the browser. Reuse it for a pending human review. Use `stop [profile]`
+this does not open Chrome, but registering all profiles globally can lock them all at once.
+See setup for scope choices, and serialize browser work when the provider cannot isolate
+its MCP selection.
+The helper attaches MCP to a detached Chrome. When MCP ends, the helper stops and waits
+for its MCP child, then exits. Ready Chrome and its tabs remain open; an incomplete
+Chrome startup is cleaned up if cancelled. Reuse a ready browser for a pending human
+review. Use `stop [profile]`
 when the user requests it, or when the entire browser session belongs to the finished
 task. Leave an already-running browser open when other tabs or forms may belong to the
 person or another task. `stop` gracefully stops only the recorded Chrome
@@ -117,7 +127,8 @@ Locations below the Enso home:
 Chrome's debugging port is assigned by the OS and bound to loopback. Keep it private:
 it provides access to signed-in sessions. Do not expose it through a proxy or tunnel.
 Status checks process and endpoint health, not site authentication. A reboot or manually
-quitting Chrome ends the served process; the next `open` starts it again using saved logins.
+quitting Chrome ends the served process; a later `open` or browser connection starts it
+again using saved logins.
 
 If a profile lock or ownership check fails, inspect `status` and quit that profile's
 window manually. Never delete Chrome's lock or state files to override an active browser.
