@@ -42,9 +42,13 @@ These are local, manual checks; no GitHub Actions workflow or Git hook runs them
 `uv lock`, review `uv.lock`, then run the checks. Run relevant targeted tests while working,
 then the complete suite before finishing the change.
 
-Manual application checks use a new scratch home, never the real `~/.enso`. Answer **no**
-when `setup` offers to install the background service: its service unit lives outside
-`ENSO_HOME`, so changing the home alone does not isolate it.
+Manual application checks use a new scratch home by default. Answer **no** when `setup`
+offers to install the background service: its service unit lives outside `ENSO_HOME`, so
+changing the home alone does not isolate it. The viewer's `web install` has the same
+constraint. An explicit operator request to install and validate code in the active home
+authorizes that scoped live operation; preserve a rollback, check for active work, and
+record the exact installed code and service results. Ordinary development or a release
+request alone does not authorize using the active home for tests.
 
 ```bash
 ENSO_DEV_HOME=$(mktemp -d /tmp/enso-dev.XXXXXX)
@@ -55,6 +59,31 @@ ENSO_HOME="$ENSO_DEV_HOME" uv run enso serve
 Use fake systems for automated tests. For managed-install upgrades and failure recovery,
 see the [isolated upgrade checks](upgrade-testing.md). Building and validating a publishable
 bundle belongs to [Releases](releasing.md).
+
+### Installing an unreleased snapshot locally
+
+When the operator explicitly requests unreleased code on their active home, prefer a
+pinned development installation over editing a managed release environment in place.
+Build a wheel from a clean, recorded commit, install it with the locked dependencies in
+a separate persistent environment, and record the source commit and wheel checksum.
+A development version may be assigned in the build's private source copy; keep the
+repository's release version unchanged. Test the installed wheel in a scratch home first.
+
+Keep the prior runtime intact and back up the launcher, service units, configuration,
+and database before switching. Drain active work and serialize the switch against the
+updater. As part of this explicit conversion, archive the original managed install
+receipt intact; do not rewrite it to describe different code. Point the launcher at the
+pinned development environment, then verify services and data before admitting work.
+Record the backup and recovery instructions outside the repository. A failed switch
+restores the previous launcher and receipt; do not restore an old database over newer
+accepted work.
+
+This installation is deliberately unmanaged: release checks report development mode,
+and later code updates are manual. Returning to managed releases uses
+[the adoption procedure](install.md#adopt-an-existing-installation) with stopped services
+and the intended release manifest. Do not reuse a published version for different code,
+alter an existing immutable environment, or assign a future public version just to bypass
+the managed updater's version checks.
 
 ## Design and code
 
@@ -121,6 +150,15 @@ broader checks only when their demonstrated value warrants the cost.
 
 ## Agent and maintainer work
 
+Follow [Contributing § Branches](../CONTRIBUTING.md#branches) for the `main`/`develop`
+workflow. Confirm the base before starting: normal development targets `develop`, while
+production patches target `main` in a separate worktree. The regular checkout stays on
+`develop` because Enso reads its current branch when creating and landing task worktrees;
+it does not pin a task's base permanently at creation. Do not switch that checkout for a
+patch or release while stage jobs can run. A user-authorized direct feature branch there
+is appropriate only while the project's stage jobs are disabled; return it to `develop`
+before resuming them.
+
 Preserve unrelated work in the checkout and make the smallest coherent change. For work
 that needs planning or design, maintainers with access to Enso's project board use project
 `EN` (`EN-001` and up); tiny, obvious edits may skip a task. Public contributors use their
@@ -138,6 +176,11 @@ Every planned change names its owning docs and includes a documentation sweep. U
 affected pages and examples together, or record why no docs change is needed. Keep lasting
 rationale in the owning docs, a focused code comment or module docstring, or the commit
 body; do not add an architecture-decision system without a demonstrated need.
+
+A task marked `done` records completed implementation and validation, with its branch or
+commit attached. Its outcome must say whether it has landed in `develop` or remains on a
+feature branch. The changelog and published release tag record when it ships; `done`
+alone is not a claim that the code is installed or released.
 
 Commit completed work using the [contribution conventions](../CONTRIBUTING.md), keeping
 related code, tests, and docs together. Agents must not create branches, rewrite history,

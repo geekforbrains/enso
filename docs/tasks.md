@@ -189,7 +189,7 @@ is the agent's authoritative answer to what it is doing and where, the way the
 Task: EN-041 — Fix labelled Slack code fences
 Project: EN (Enso) · Stage: todo (2 of 3: triage, todo, review) · Priority: 0
 Moves: advance to review (message required) · return to triage (message required) · block (reason required)
-Working directory: /Users/x/.enso/worktrees/EN/EN-041 (branch enso/EN-041, base main)
+Working directory: /Users/x/.enso/worktrees/EN/EN-041 (branch enso/EN-041, base develop)
 Main checkout: /Users/x/Projects/enso — do not edit, commit, or switch branches there
 Recovery: run 8f2c1a3b ended without a handoff; uncommitted changes in src/enso/slack_text.py
 Refs: commit abc123 · path drafts/notes.md
@@ -245,6 +245,12 @@ A repo project keeps its tasks out of each other's way with one Git worktree per
 | Location | `~/.enso/worktrees/<KEY>/<REF>/`, an Enso-owned path the layout audit knows |
 | Branch | `enso/<REF>` |
 | Base | The main checkout's current branch, read with `git symbolic-ref`; a detached main checkout is an error |
+
+Here, **main checkout** means the regular repository directory, not the Git branch named
+`main`. For Enso development it stays on `develop`, following
+[the branch workflow](../CONTRIBUTING.md#branches). The base is read again when a task
+lands, so switching that checkout while stage jobs run can change their merge destination.
+Use a separate worktree for a production patch or release.
 
 Before the provider starts, Enso prunes stale worktree registrations, reuses the task's
 worktree when it exists, and otherwise adds one on a new `enso/<REF>` branch (or attaches
