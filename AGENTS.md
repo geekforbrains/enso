@@ -5,7 +5,8 @@ This is the entrypoint for people and CLI agents changing Enso's source. Files u
 
 ## Read before changing files
 
-- [Contributing](CONTRIBUTING.md) owns the issue, branch, PR, and commit conventions.
+- [Contributing](CONTRIBUTING.md#branches) owns the `main`/`develop` workflow, branch
+  targets, PRs, and commits. Read it before choosing a base or merging work.
 - [Development](docs/development.md) owns source layout, setup/check commands, coding,
   testing, safety, task-board use, parallel work, and completion requirements. Read it
   before implementation; follow its Git authorization limits.

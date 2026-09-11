@@ -1,7 +1,9 @@
 # Releases
 
-Releases are manual, from `main`; there are no release branches, release bots, GitHub Actions,
-or required Git hooks. [Contributing](../CONTRIBUTING.md) owns the everyday change flow and
+Releases are manual, from `main`, with upcoming features assembled on `develop`. We support
+one stable release line and do not maintain additional release branches. There are no
+release bots, GitHub Actions, or required Git hooks.
+[Contributing](../CONTRIBUTING.md#branches) owns the everyday change flow and
 [Development](development.md) owns local setup and checks. Creating or pushing a tag, pushing
 commits, and publishing artifacts each require an explicit user request; this checklist alone
 does not authorize them.
@@ -23,6 +25,33 @@ omit empty groups, internal chores, and commit dumps. At release time move those
 first public release needs only a concise initial-release entry. Reuse the dated section in the
 GitHub Release, crediting contributors there when relevant. Published code and artifacts are
 immutable: fix a faulty release with a new version, never by moving its tag or replacing assets.
+
+## Choosing the release contents
+
+Use a separate worktree for `main`; keep the regular checkout on `develop` so task jobs
+continue to target development. Fetch first and bring both local branches up to date
+without discarding local commits. A merge or push to either branch does not publish code.
+
+- **Production patch** (`0.1.2` → `0.1.3`): branch the fix from current `main`, validate it,
+  and merge it into `main`. Prepare and publish the patch there using the checklist below.
+  Merge the resulting `main`, including its release commit, into `develop`, resolve
+  changelog/lockfile conflicts, and run the checks before pushing the synchronized branch.
+- **Feature release** (`0.1.x` → `0.2.0`): stop adding features to `develop` while preparing
+  the release. Merge current `main` into it and validate the combined tree. With merge
+  authorization, promote `develop` to `main`, preferably by fast-forward, and complete
+  the checklist on `main`. Merge the release preparation commit back into `develop`
+  before starting the next batch of features.
+
+Preserve history when merging between `main` and `develop`; do not squash those merges.
+If publication fails, leave the tested release work available and finish or repair that
+release before promoting another feature batch. Keep production patches free of unrelated
+features. Older version support needs an explicit decision to extend this workflow.
+
+`Unreleased` on `develop` holds the next feature release. A production patch on `main`
+gets its own dated changelog section. When merging the patch back, retain both that dated
+section and the still-unreleased feature entries. Version metadata is bumped as part of
+release preparation, not for every feature merge. Installing unreleased code on a machine
+does not publish it or authorize a tag; record the commit and installation mode separately.
 
 ## Maintainer checklist
 
@@ -46,6 +75,10 @@ immutable: fix a faulty release with a new version, never by moving its tag or r
    artifact downloads. Test the README's one-line download with explicit scratch `--home` and
    `--bin-dir` options, and confirm `enso update check` reads the embedded moving feed.
    Record the released tag, checks, and any remaining limitations in the task outcome.
+6. Merge the release commit from `main` into `develop`, preserving any newer unreleased
+   entries. Validate the result and push `develop` when that push is authorized. Clean up
+   merged short-lived branches/worktrees within the authorized scope; retain both `main`
+   and `develop` and leave the regular checkout on `develop`.
 
 When using GitHub's `releases/latest/download/release.json` as the feed, publish an ordinary
 release, **not** a GitHub prerelease: [GitHub's latest release](https://docs.github.com/en/rest/releases/releases#get-the-latest-release)

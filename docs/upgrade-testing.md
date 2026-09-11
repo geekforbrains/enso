@@ -71,7 +71,10 @@ count.
 Before a release, also exercise real transport authentication and macOS service
 replacement on disposable accounts. The automated suite mocks launchd; a scoped
 native helper probe can verify launch, retry and cleanup without using Enso's
-normal service label. Never run service checks against the operator's active home.
+normal service label. These acceptance checks use disposable homes. A separate explicit
+operator request to install and validate code in the active home follows
+[Development's live-operation rules](development.md#setup-and-checks); it does not change
+the isolation required for the automated suite.
 
 Normal unit and integration tests remain in the default suite; this slower,
 installed-wheel lane runs only when explicitly requested. [Installation](install.md)
