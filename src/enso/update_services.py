@@ -161,9 +161,12 @@ def cleanup_finished(paths: Paths, operation_id: str) -> None:
 
 def _unit_pid(paths: Paths, name: str) -> int | None:
     if sys.platform.startswith("linux"):
-        value = run_command(
-            ["systemctl", "--user", "show", "-p", "MainPID", "--value", name], cwd=paths.home
-        )
+        try:
+            value = run_command(
+                ["systemctl", "--user", "show", "-p", "MainPID", "--value", name], cwd=paths.home
+            )
+        except UpdateError:
+            return None
         return int(value) if value.isdigit() and int(value) > 0 else None
     try:
         value = run_command(["launchctl", "print", f"gui/{os.getuid()}/{name}"], cwd=paths.home)
@@ -184,6 +187,27 @@ def discover(paths: Paths, viewer_service: str = "") -> dict[str, Any]:
     viewer = web.status(paths)
     if viewer_service and not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", viewer_service):
         raise UpdateError("viewer service must be a user service name")
+    if viewer.running and not viewer_service:
+        # The built-in viewer service needs no saved installer override. A matching
+        # PID proves it owns this home's viewer, including older handwritten units.
+        platform = "systemd" if sys.platform.startswith("linux") else "launchd"
+        standard = service.VIEWER.name(platform)
+        if viewer.pid is not None and _unit_pid(paths, standard) == viewer.pid:
+            viewer_service = standard
+        else:
+            unit = service.unit_path(platform, definition=service.VIEWER)
+            if unit.exists() or unit.is_symlink():
+                from .web.service import unit_home
+
+                try:
+                    home = unit_home(service.Status(platform, unit, True, False, None))
+                except service.ServiceError as exc:
+                    raise UpdateError(str(exc)) from exc
+                if home == paths.home.resolve():
+                    raise UpdateError(
+                        "cannot confirm the standard viewer service owns this home's viewer; "
+                        "check its service state before updating"
+                    )
     if viewer.running and viewer_service and _unit_pid(paths, viewer_service) != viewer.pid:
         raise UpdateError("the configured viewer service does not own this home's viewer")
     return {

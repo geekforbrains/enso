@@ -5,7 +5,7 @@ import plistlib
 
 import pytest
 
-from enso import update_services
+from enso import service, update_services, web
 from enso.maintenance import UpdateError
 
 OPERATION = "a" * 32
@@ -119,3 +119,109 @@ def test_verified_service_can_be_recovered_before_candidate_writes_heartbeat(
             update_services._check_ownership(enso_home, previous)
     else:
         update_services._check_ownership(enso_home, previous)
+
+
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+@pytest.mark.parametrize("custom", [False, True])
+def test_viewer_supervisor_is_discovered_stopped_and_restored(
+    enso_home, monkeypatch, platform, custom
+):
+    monkeypatch.setattr(update_services.sys, "platform", platform)
+    manager = "launchd" if platform == "darwin" else "systemd"
+    name = (
+        ("cloud-viewer.service" if custom else service.VIEWER.unit)
+        if manager == "systemd"
+        else ("com.cloud.viewer" if custom else service.VIEWER.label)
+    )
+    unit = service.unit_path(manager, definition=service.VIEWER)
+    unit = unit.with_name(name if manager == "systemd" else f"{name}.plist")
+    unit.parent.mkdir(parents=True)
+    unit.write_text("unchanged viewer service definition")
+    state = {"pid": 4242}
+    commands = []
+
+    def command(args, **kwargs):
+        commands.append(args)
+        if "show" in args or "print" in args:
+            return f"pid = {state['pid']}" if manager == "launchd" else str(state["pid"] or 0)
+        if "stop" in args or "bootout" in args:
+            state["pid"] = None
+        elif "start" in args or "bootstrap" in args:
+            state["pid"] = 4242
+        return ""
+
+    monkeypatch.setattr(update_services, "run_command", command)
+    monkeypatch.setattr(update_services, "daemon", lambda paths: {})
+    monkeypatch.setattr(update_services, "receiver_active", lambda paths: False)
+    monkeypatch.setattr(
+        web,
+        "status",
+        lambda paths: web.Status(state["pid"] is not None, state["pid"], "127.0.0.1", 9000),
+    )
+    previous = update_services.discover(enso_home, name if custom else "")
+    assert previous["viewer_service"] == name and previous["viewer"] is True
+    assert previous["viewer_definition"] == update_services._definition_digest(name)
+    update_services.stop(enso_home, previous)
+    assert state["pid"] is None
+    update_services.start(enso_home, previous, enso_home.home / "bin/enso")
+    assert state["pid"] == 4242
+    assert commands[-1] == (
+        ["systemctl", "--user", "start", name]
+        if manager == "systemd"
+        else ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(unit)]
+    )
+    # Recovery after a failed candidate uses the same verified supervisor even when
+    # its process has exited; a changed definition must never be restarted.
+    state["pid"] = None
+    update_services.start(enso_home, previous, enso_home.home / "old/bin/enso")
+    assert state["pid"] == 4242
+    unit.write_text("changed while update pending")
+    with pytest.raises(UpdateError, match="definition changed"):
+        update_services.start(enso_home, previous, enso_home.home / "old/bin/enso")
+
+
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+def test_unproven_standard_viewer_is_not_treated_as_unsupervised(enso_home, monkeypatch, platform):
+    monkeypatch.setattr(update_services.sys, "platform", platform)
+    manager = "launchd" if platform == "darwin" else "systemd"
+    unit = service.unit_path(manager, definition=service.VIEWER)
+    unit.parent.mkdir(parents=True)
+    render = service.render_plist if manager == "launchd" else service.render_unit
+    unit.write_text(
+        render(
+            "/enso",
+            {"ENSO_HOME": str(enso_home.home)},
+            enso_home.web_log,
+            definition=service.VIEWER,
+        )
+    )
+    monkeypatch.setattr(update_services, "daemon", lambda paths: {})
+    monkeypatch.setattr(update_services, "receiver_active", lambda paths: False)
+    monkeypatch.setattr(web, "status", lambda paths: web.Status(True, 123, "127.0.0.1", 8787))
+
+    def unavailable(*args, **kwargs):
+        raise UpdateError("service query failed")
+
+    monkeypatch.setattr(update_services, "run_command", unavailable)
+    with pytest.raises(UpdateError, match="cannot confirm"):
+        update_services.discover(enso_home)
+    # Without a supervisor definition, the existing standalone path remains valid.
+    unit.unlink()
+    previous = update_services.discover(enso_home)
+    assert previous["viewer"] and previous["viewer_service"] == ""
+    with pytest.raises(UpdateError, match="does not own"):
+        update_services.discover(enso_home, service.VIEWER.name(manager))
+
+
+def test_update_leaves_stopped_viewer_stopped(enso_home, monkeypatch):
+    monkeypatch.setattr(update_services, "daemon", lambda paths: {})
+    monkeypatch.setattr(update_services, "receiver_active", lambda paths: False)
+    monkeypatch.setattr(web, "status", lambda paths: web.Status(False))
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("a stopped viewer must not query, stop, or start its supervisor")
+
+    monkeypatch.setattr(update_services, "run_command", unexpected)
+    previous = update_services.discover(enso_home)
+    update_services.stop(enso_home, previous)
+    update_services.start(enso_home, previous, enso_home.home / "bin/enso")

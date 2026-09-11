@@ -146,7 +146,7 @@ def _scratch_install(monkeypatch: pytest.MonkeyPatch, unit: Path) -> list[list[s
         commands.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    monkeypatch.setattr(service, "unit_path", lambda platform=None: unit)
+    monkeypatch.setattr(service, "unit_path", lambda platform=None, **kwargs: unit)
     monkeypatch.setattr(service, "enso_binary", lambda: "/opt/enso/bin/enso")
     monkeypatch.setattr(service, "_run", run)
     monkeypatch.setattr(service, "_query", lambda cmd: "")  # bootout stops waiting at once

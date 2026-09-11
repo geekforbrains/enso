@@ -5,7 +5,8 @@ defines accepted command and option syntax: `enso --help` for the root and
 `enso <command> --help` for a command. A disagreement between them is a bug.
 
 Commands that operate on Enso's runtime data honour `ENSO_HOME` (default `~/.enso`). A
-custom home does not relocate the fixed operating-system unit managed by `service`.
+custom home does not relocate the fixed operating-system units managed by `service`
+and `web install`.
 
 The CLI has two audiences. You use it to operate Enso. The agent uses it, from inside a
 turn or a job, to send messages, read Slack, work with tables, and move tasks. Commands
@@ -36,7 +37,7 @@ enso providers [--json]             bundled provider, model, and effort choices
 enso slack manifest                 packaged app manifest, JSON on stdout
 enso connect start|status|cancel|finish  private owner pairing; see Connections for arguments
 enso models [--all] [--json]       look up OpenRouter models OpenCode can run
-enso doctor [--json]                config, home, workspaces, providers, transports, service, jobs, heartbeat
+enso doctor [--json]                config, home, workspaces, providers, transports, service, viewer_service, jobs, heartbeat
 enso update check|apply|status|recover  managed release checks and recovery; see Updates
 ```
 
@@ -44,8 +45,12 @@ enso update check|apply|status|recover  managed release checks and recovery; see
 for the home and every workspace, whether each provider path is still an executable,
 whether each configured transport's extra is installed, the service state (installed,
 loaded, running, and its pid, plus a warning when the unit runs a different `enso` than
-the one on `PATH`), every `JOB.md`, and current heartbeat health. The heartbeat check reads
-saved state without running gates or migrating the database. An error-level finding is a health problem and makes
+the one on `PATH`), the optional viewer service, every `JOB.md`, and current heartbeat
+health. `viewer_service` reports its unit, home, and process ownership; an uninstalled
+viewer service is healthy, while one installed for this home but not serving it is an
+error. A unit for another home is reported separately without a health error.
+The heartbeat check reads saved state without running gates or migrating the database.
+An error-level finding is a health problem and makes
 `doctor` exit 1; warnings alone exit 0. That strict health result does not mean every Enso
 operation is blocked: for example, a workspace layout error fails `doctor`, while `serve`
 logs it and continues when the workspace directory itself still exists. Sections that need
@@ -398,17 +403,25 @@ outside one; and a run may move, release, edit, or land only the task it holds. 
 ```text
 enso web start [--port N] [--host H] [--foreground]
 enso web stop|status
+enso web install|uninstall
 ```
 
-Read-only, and a separate process from `serve`. `start` runs the viewer in the background
+Read-only, and a separate process from `serve`. Without its user service, `start` runs
+the viewer in the background
 (its output goes to `~/.enso/web.log`, its lock to `~/.enso/web.pid`), prints the URL
 once it answers, and exits 0 saying `already running` when the same viewer is live;
-`--foreground` runs it in the terminal instead. `stop` signals the live viewer and waits
+`--foreground` runs it directly in the terminal. `stop` signals the live viewer and waits
 for it; it says `not running` when there is nothing to stop. `status` prints one line and
-exits 0 only while the viewer runs. Flags win over `web.host` and `web.port`; a missing or
-invalid `config.json` falls back to `127.0.0.1:8787` so the Health page can report it.
-Needs the `web` extra, without which `start` prints the install command. See
-[Web viewer](web.md).
+exits 0 only while the viewer runs. For standalone and foreground starts, flags win over
+`web.host` and `web.port`; a missing or invalid `config.json` falls back to
+`127.0.0.1:8787` so the Health page can report it.
+`install` writes and starts the optional viewer user service; `uninstall` stops it and
+removes its unit while preserving the home and logs. With the service installed for
+this home, `start` and `stop` control supervision, and bind flags require `--foreground`;
+edit config and stop/start to change a supervised bind. Start/install need the `web`
+extra; status/stop/uninstall work without it. Viewer lifecycle changes are refused while
+a managed update is pending; retry afterward. See
+[Web viewer](web.md) and [service installation](install.md#the-viewer).
 
 ## Messages
 

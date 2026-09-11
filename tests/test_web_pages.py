@@ -28,7 +28,7 @@ def no_service_manager(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         service,
         "status",
-        lambda platform=None: service.Status(
+        lambda platform=None, **kwargs: service.Status(
             "launchd", Path("/nowhere/x.plist"), False, False, None
         ),
     )
@@ -210,8 +210,9 @@ async def test_health_reports_every_section_database_and_log(
 ) -> None:
     home.paths.log.write_text("".join(f"line {i}\n" for i in range(250)))
     body = await page(client, "/health")
-    for name in ("config", "home", "workspaces", "providers", "transports", "service", "jobs"):
+    for name in doctor.SECTIONS:
         assert f'id="section-{name}"' in body
+    assert ">Viewer service</h2>" in body
     job_file = home.paths.jobs / "broken" / "JOB.md"
     assert f"broken ({job_file}): JOB.md.model &#39;gpt&#39; is not in providers" in body
     assert "the service is not installed" in body

@@ -45,7 +45,7 @@
 <section aria-labelledby="section-{{ entry.name }}">
   {% set found = (entry.problems|length) + (entry.warnings|length) %}
   <div class="shead">
-    <h2 id="section-{{ entry.name }}">{{ entry.name|capitalize }}</h2>
+    <h2 id="section-{{ entry.name }}">{{ entry.name|replace('_', ' ')|capitalize }}</h2>
     <span class="right{{ ' bad' if entry.status == 'error' }}{{ ' warn' if entry.status == 'warning' }}">
       {% if found %}{{ found }} {{ entry.status }}{{ 's' if found != 1 }}{% else %}ok{% endif %}
     </span>

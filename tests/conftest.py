@@ -182,7 +182,10 @@ def chat_prompt(text: str, thread: str | None = None, *, transport: str = "slack
 
 @pytest.fixture
 def enso_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Paths:
-    """A scratch home with a ``default`` workspace, exported as ``ENSO_HOME``."""
+    """Scratch Enso and user homes; user-service units live outside ``ENSO_HOME``."""
+    user_home = tmp_path / "isolated-user-home"
+    user_home.mkdir()
+    monkeypatch.setenv("HOME", str(user_home))
     home = tmp_path / "enso"
     (home / "workspaces" / "default").mkdir(parents=True)
     for key in [key for key in os.environ if key.startswith("ENSO_")]:

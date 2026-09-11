@@ -54,6 +54,7 @@ Enso's normal runtime state lives under one directory:
 ├── enso.db             # runs, messages, sessions, jobs, tasks, beats, registered tables
 ├── enso.log            # rotating log
 ├── web.log, web.pid     # the web viewer's output and lock, while it runs
+├── launchd-web.log      # stdout/stderr when the optional viewer service runs
 ├── runtime/
 │   ├── releases/<version>-<hash>/  # immutable managed Python environments
 │   ├── current -> releases/...    # selected release behind the stable launcher
@@ -73,8 +74,8 @@ Enso's normal runtime state lives under one directory:
 paired chat, valid configuration, and a successful provider reply are separate milestones.
 
 Enso keeps its runtime state inside its home. The release installer writes a stable
-launcher in the selected bin directory; `enso service install` writes the operating
-system's user service unit, and a first
+launcher in the selected bin directory; `enso service install` and `enso web install`
+write their operating-system user service units, and a first
 Antigravity turn can ask `agy` to register the workspace in its own project catalog. The
 `enso models` lookup may reuse OpenCode's `$XDG_CACHE_HOME/opencode/models.json` (or
 `~/.cache/opencode/models.json` when that variable is unset or empty), but treats that

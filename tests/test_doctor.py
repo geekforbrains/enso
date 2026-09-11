@@ -28,7 +28,11 @@ def unit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(
         service,
         "status",
-        lambda platform=None: service.Status("launchd", path, True, True, 42),
+        lambda platform=None, *, definition=service.AGENT: (
+            service.Status("launchd", path, True, True, 42)
+            if definition == service.AGENT
+            else service.Status("launchd", path.with_name("com.enso.web.plist"), False, False, None)
+        ),
     )
     return path
 
@@ -55,6 +59,7 @@ def test_a_healthy_home_is_ok_everywhere(enso_home: Paths, raw_config: dict, uni
         "claude, codex, grok",
         "slack",
         "launchd, running pid 42",
+        "not installed (optional)",
         "1 job, 1 enabled",
         "0 active, 0 paused",
     ]
@@ -82,7 +87,7 @@ def test_a_healthy_home_is_ok_everywhere(enso_home: Paths, raw_config: dict, uni
     assert payload["sections"][5]["details"] == {
         "platform": "launchd", "unit": str(unit), "installed": True, "loaded": True, "pid": 42,
     }  # fmt: skip
-    assert payload["sections"][6]["details"] == {"jobs": ["nightly"], "enabled": ["nightly"]}
+    assert payload["sections"][7]["details"] == {"jobs": ["nightly"], "enabled": ["nightly"]}
 
 
 def test_codex_astra_is_available_with_ultra_effort(
@@ -140,7 +145,7 @@ def test_a_fresh_home_reports_and_skips(enso_home: Paths, monkeypatch: pytest.Mo
     monkeypatch.setattr(
         service,
         "status",
-        lambda platform=None: service.Status(
+        lambda platform=None, **kwargs: service.Status(
             "systemd", Path("/nowhere/enso.service"), False, False, None
         ),
     )
@@ -156,6 +161,7 @@ def test_a_fresh_home_reports_and_skips(enso_home: Paths, monkeypatch: pytest.Mo
         "providers": "skipped",
         "transports": "skipped",
         "service": "warning",
+        "viewer_service": "ok",
         "jobs": "skipped",
         "heartbeat": "skipped",
     }
@@ -210,7 +216,9 @@ def test_a_degraded_home_names_each_problem(
     assert report.section("jobs").note == "1 job, 1 enabled"
 
     monkeypatch.setattr(
-        service, "status", lambda platform=None: service.Status("launchd", unit, True, True, None)
+        service,
+        "status",
+        lambda platform=None, **kwargs: service.Status("launchd", unit, True, True, None),
     )
     stopped = doctor.run(enso_home).section("service")
     assert stopped.note == "launchd, loaded but stopped" and stopped.status == "error"
@@ -236,12 +244,12 @@ def test_a_bad_schedule_names_its_file_and_changes_nothing(
     ]
     # The nightly enso-audit agent reads exactly this JSON, so the path must survive it.
     payload = json.loads(json.dumps(doctor.run(enso_home).as_dict()))
-    assert payload["sections"][6]["problems"] == section.problems
+    assert payload["sections"][7]["problems"] == section.problems
     assert path.read_bytes() == before
 
 
 def test_no_service_manager_is_a_warning(enso_home: Paths, monkeypatch: pytest.MonkeyPatch) -> None:
-    def unsupported(platform: str | None = None) -> service.Status:
+    def unsupported(platform: str | None = None, **kwargs) -> service.Status:
         raise service.ServiceError("no service manager on win32; run `enso serve` yourself")
 
     monkeypatch.setattr(service, "status", unsupported)
@@ -263,6 +271,7 @@ def test_doctor_command(enso_home: Paths, raw_config: dict, unit: Path) -> None:
         "providers: ok (claude, codex, grok)",
         "transports: ok (slack)",
         "service: ok (launchd, running pid 42)",
+        "viewer_service: ok (not installed (optional))",
         "jobs: ok (none yet)",
         "heartbeat: ok (0 active, 0 paused)",
     ]
@@ -284,6 +293,7 @@ def test_doctor_command(enso_home: Paths, raw_config: dict, unit: Path) -> None:
         "ok",
         "ok",
         "error",
+        "ok",
         "ok",
         "ok",
         "ok",

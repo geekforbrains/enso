@@ -17,28 +17,41 @@ uv tool install -e '.[web]'          # or install with [slack,telegram,web]
 
 enso web start                     # background, on 127.0.0.1:8787
 enso web start --port 9000 --foreground
+enso web install                   # optional user service, starts again after login/reboot
 enso web status
 enso web stop
+enso web uninstall                 # stop and remove automatic startup
 ```
 
-The `web` extra brings `aiohttp`, `jinja2`, and `markdown-it-py`. Without it, `status` and
-`stop` still work and `start` prints the install command instead of a traceback.
+The `web` extra brings `aiohttp`, `jinja2`, and `markdown-it-py`. Without it, `status`,
+`stop`, and `uninstall` still work; `start` and `install` print the install command
+instead of a traceback.
 
 It is a separate process from `enso serve`, deliberately: the viewer can be restarted,
 crashed, or left uninstalled without touching the bridge. It reads `enso.db` and the files
 under `ENSO_HOME` directly, so it shows the truth even when the service is stopped.
 
-`start` runs the viewer in the background by default, in its own session with its output
-in `~/.enso/web.log`, and prints the URL once the viewer answers. It does not install a
-launchd or systemd unit, so it does not survive a reboot; run it again. `--foreground`
-runs the same process in your terminal until Ctrl-C. The viewer holds a lock on
+Without an installed viewer service, `start` runs the viewer in the background in its
+own session with its output in `~/.enso/web.log`, and prints the URL once it answers.
+That process lasts until shutdown. `install` adds an optional launchd/systemd user
+service, with output in `~/.enso/launchd-web.log`, that restarts after crashes and at
+future user logins. See [Install](install.md#the-viewer) for unit paths, reboot/login
+requirements, environment capture, and adoption of existing units.
+
+Once installed for this home, ordinary `start` and `stop` control the viewer's supervisor.
+`stop` keeps it stopped until the next start or user session; `uninstall` also removes
+automatic startup. Both leave the agent service alone. For a supervised viewer, change
+`web.host` or `web.port` in config, then run `stop` and `start`; command-line bind overrides
+are rejected. `--foreground` runs the same viewer directly in your terminal until Ctrl-C,
+and is also the unit's entrypoint. The viewer holds a lock on
 `~/.enso/web.pid` for as long as it lives, which is how `status` tells a live viewer from
 a stale file and how `stop` knows the pid it signals is really the viewer. `start` is a
 no-op while the same viewer is running, `stop` is a no-op while it is not, and `status`
 exits 0 only while it runs, so all three are safe in scripts.
 
-`--host` and `--port` win over `web.host` and `web.port` in `config.json`. A missing or
-invalid `config.json` does not stop the viewer: it falls back to `127.0.0.1:8787` (flags
+For standalone and foreground starts, `--host` and `--port` win over `web.host` and
+`web.port` in `config.json`. A missing or invalid `config.json` does not stop the viewer:
+it falls back to `127.0.0.1:8787` (flags
 still win) so the Health page can show you the problem. It writes nothing but the pidfile
 and its log, and it opens `enso.db` read-only, so nothing a page does can change Enso's
 state or block the service.
@@ -394,8 +407,9 @@ miserable to read in a chat message and fine to read in a browser.
 ### Health
 
 Every section of [`enso doctor`](cli.md): config validity, the home and workspace audits,
-provider paths and whether they resolve, transport extras, service state, every `JOB.md`,
-and current Heartbeat health. Heartbeat checks inspect saved state; they do not execute gates
+provider paths and whether they resolve, transport extras, agent and optional viewer
+service state, every `JOB.md`, and current Heartbeat health. Heartbeat checks inspect
+saved state; they do not execute gates
 or start an assessment.
 
 Every section gets the same block, problems first: a heading with its verdict, and a panel of

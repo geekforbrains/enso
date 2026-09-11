@@ -15,9 +15,10 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import audit, db, heartbeat, service
+from . import audit, db, heartbeat, service, web
 from .config import TRANSPORT_NAMES, Config, Paths, check_config
 from .jobs import load_jobs
+from .web import service as viewer_service
 
 # The module each transport's extra installs; absent means `serve` skips that transport.
 EXTRAS = {"slack": "slack_bolt", "telegram": "telegram"}
@@ -28,6 +29,7 @@ SECTIONS = (
     "providers",
     "transports",
     "service",
+    "viewer_service",
     "jobs",
     "heartbeat",
 )
@@ -106,6 +108,7 @@ def run(paths: Paths) -> Report:
         _providers(config),
         _transports(config),
         _service(),
+        _viewer_service(paths),
         _jobs(paths, config),
         _heartbeat(paths, config),
     ]
@@ -270,6 +273,39 @@ def _binary() -> str | None:
         return service.enso_binary()
     except service.ServiceError:
         return None
+
+
+def _viewer_service(paths: Paths) -> Section:
+    section = Section("viewer_service")
+    try:
+        state = service.status(definition=service.VIEWER)
+        section.details = {
+            "platform": state.platform,
+            "unit": str(state.unit),
+            "installed": state.installed,
+            "loaded": state.loaded,
+            "pid": state.pid,
+        }
+        if not state.installed:
+            section.note = "not installed (optional)"
+            return section
+        home = viewer_service.unit_home(state)
+        section.details["home"] = str(home)
+        if home != paths.home.resolve():
+            section.note = "installed for another home"
+            return section
+        current = web.status(paths)
+        if state.running and current.running and current.pid == state.pid:
+            section.note = f"{state.platform}, running pid {state.pid}"
+        else:
+            section.note = f"{state.platform}, stopped or not serving this home"
+            section.problems.append(
+                f"the viewer service is installed but not serving this home; "
+                f"run `enso web start`, then check {paths.web_service_log}"
+            )
+    except service.ServiceError as exc:
+        section.warnings.append(str(exc))
+    return section
 
 
 def _read(path: Path) -> str:

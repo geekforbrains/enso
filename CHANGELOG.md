@@ -5,6 +5,12 @@ All notable changes to Enso are documented here, following
 
 ## [Unreleased]
 
+### Added
+
+- `enso web install` and `uninstall` manage an optional viewer user service on macOS
+  and Linux. It starts at login, restarts after crashes, reports its health in `doctor`,
+  and cooperates with viewer start/stop and managed release updates.
+
 ## [0.1.2] - 2026-09-10
 
 ### Fixed

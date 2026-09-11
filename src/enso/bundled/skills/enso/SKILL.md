@@ -38,7 +38,7 @@ Enso's normal runtime state lives under one directory, `~/.enso` (or `$ENSO_HOME
     └── slack.json       # Slack directory cache for name lookups
 ```
 
-The release installer writes a stable command into its selected bin directory. `enso service install` writes the operating system's user service unit, and Antigravity may register a workspace in its own project catalog. `enso models` may reuse `$XDG_CACHE_HOME/opencode/models.json` (or `~/.cache/opencode/models.json` when that variable is unset or empty), but it only reads that external OpenCode cache and writes refreshes to Enso's own `cache/models.json`. Enso never modifies user-level instruction or skill files.
+The release installer writes a stable command into its selected bin directory. `enso service install` and `enso web install` write the operating system's user service units, and Antigravity may register a workspace in its own project catalog. `enso models` may reuse `$XDG_CACHE_HOME/opencode/models.json` (or `~/.cache/opencode/models.json` when that variable is unset or empty), but it only reads that external OpenCode cache and writes refreshes to Enso's own `cache/models.json`. Enso never modifies user-level instruction or skill files.
 
 The installed Enso release version is package metadata, also recorded in `runtime/install.json` for managed installs. It is separate from config and database schema versions. `runtime/current` selects the managed release; `runtime/update.json`, `runtime/operations/`, and the maintenance gate belong to the updater and must not be edited by hand.
 
@@ -91,12 +91,12 @@ enso skill list [--available]        # installed home skills, or the official ca
 enso skill show|install <name>       # see enso-skills; only geekforbrains/enso-skills
 enso config show|check|set|unset     # set PATH VALUE or unset PATH edits one key; see reload rules below
 enso models [--all] [--json]         # copy-ready OpenRouter model ids for OpenCode
-enso doctor                          # config, home, workspaces, providers, transports, service, jobs
+enso doctor                          # config, home, workspaces, providers, transports, services, jobs, heartbeat
 enso update check|apply|status|recover [--json]  # see enso-update before requesting an upgrade
 enso logs [-f] [--turn ID] [--job NAME]
 ```
 
-`enso setup`, `enso serve`, and `enso service …` are the operator's; do not run them from a turn.
+`enso setup`, `enso serve`, `enso service …`, and viewer lifecycle commands (`enso web install|uninstall|start|stop`) are the operator's; do not run them from a turn. `enso web status` is read-only. The viewer has an optional user service, independent of the agent; see [Viewer installation](https://github.com/geekforbrains/enso/blob/main/docs/install.md#the-viewer).
 
 Change configuration with `enso config set PATH VALUE` or `enso config unset PATH`; use `enso config apply --file FILE` for a complete document. Bindings, agents, providers, workspaces, projects, run retention, and heartbeat settings take effect on the next turn or scheduler tick without restarting Enso. A running turn or job keeps the configuration it started with.
 

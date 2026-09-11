@@ -106,6 +106,10 @@ class Paths:
         return self.home / "web.log"
 
     @property
+    def web_service_log(self) -> Path:
+        return self.home / "launchd-web.log"
+
+    @property
     def workspaces(self) -> Path:
         return self.home / "workspaces"
 

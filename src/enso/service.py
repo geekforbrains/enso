@@ -1,4 +1,4 @@
-"""The background service: one launchd agent (macOS) or systemd user unit (Linux)."""
+"""Shared launchd and systemd user-service lifecycle for the agent and viewer."""
 
 from __future__ import annotations
 
@@ -14,11 +14,36 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 
 from .config import Config, Paths
+from .maintenance import UpdateError, write_bytes
 
 LAUNCHD_LABEL = "com.enso.agent"
 SYSTEMD_UNIT = "enso.service"
 BOOTOUT_WAIT_SECONDS = 20.0
 _STANDARD_DIRS = ("/usr/local/bin", "/usr/bin", "/bin")
+
+
+@dataclass(frozen=True)
+class Definition:
+    label: str
+    unit: str
+    arguments: tuple[str, ...]
+    description: str
+    cli_group: str
+
+    def name(self, platform: str) -> str:
+        return self.label if platform == "launchd" else self.unit
+
+
+AGENT = Definition(
+    LAUNCHD_LABEL, SYSTEMD_UNIT, ("serve",), "Enso - chat with agent CLIs", "service"
+)
+VIEWER = Definition(
+    "com.enso.web",
+    "enso-web.service",
+    ("web", "start", "--foreground"),
+    "Enso - read-only web viewer",
+    "web",
+)
 
 
 class ServiceError(Exception):
@@ -47,11 +72,11 @@ def platform_name(platform: str = sys.platform) -> str:
     raise ServiceError(f"no service manager on {platform}; run `enso serve` yourself")
 
 
-def unit_path(platform: str | None = None) -> Path:
+def unit_path(platform: str | None = None, *, definition: Definition = AGENT) -> Path:
     platform = platform or platform_name()
     if platform == "launchd":
-        return Path("~/Library/LaunchAgents").expanduser() / f"{LAUNCHD_LABEL}.plist"
-    return Path("~/.config/systemd/user").expanduser() / SYSTEMD_UNIT
+        return Path("~/Library/LaunchAgents").expanduser() / f"{definition.label}.plist"
+    return Path("~/.config/systemd/user").expanduser() / definition.unit
 
 
 def _domain() -> str:
@@ -78,7 +103,11 @@ def _run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[s
 
 
 def restart_command(
-    pid: int, *, query: Callable[[list[str]], str] = _query, platform: str = sys.platform
+    pid: int,
+    *,
+    query: Callable[[list[str]], str] = _query,
+    platform: str = sys.platform,
+    definition: Definition = AGENT,
 ) -> list[str] | None:
     """The launchd/systemd restart for the unit that runs ``pid``; None when nothing does.
 
@@ -86,16 +115,16 @@ def restart_command(
     install, would restart the wrong process and leave this one running.
     """
     if platform == "darwin":
-        target = f"{_domain()}/{LAUNCHD_LABEL}"
+        target = f"{_domain()}/{definition.label}"
         match = re.search(r"^\s*pid = (\d+)", query(["launchctl", "print", target]), re.MULTILINE)
         if match and int(match.group(1)) == pid:
             return ["launchctl", "kickstart", "-k", target]
     elif platform.startswith("linux") and shutil.which("systemctl"):
         main_pid = query(
-            ["systemctl", "--user", "show", "-p", "MainPID", "--value", SYSTEMD_UNIT]
+            ["systemctl", "--user", "show", "-p", "MainPID", "--value", definition.unit]
         ).strip()
         if main_pid.isdigit() and int(main_pid) == pid:
-            return ["systemctl", "--user", "restart", SYSTEMD_UNIT]
+            return ["systemctl", "--user", "restart", definition.unit]
     return None
 
 
@@ -125,7 +154,7 @@ def _provider_directory(path: str) -> str | None:
     return str(directory)
 
 
-def environment(paths: Paths, config: Config, binary: str) -> dict[str, str]:
+def environment(paths: Paths, config: Config | None, binary: str) -> dict[str, str]:
     """PATH covering enso, every provider CLI, and the installing shell; the home when not default.
 
     The shell's PATH comes along because prerun scripts and provider tools resolve
@@ -135,7 +164,7 @@ def environment(paths: Paths, config: Config, binary: str) -> dict[str, str]:
     directories = [str(Path(binary).parent)]
     directories += [
         directory
-        for provider in config.providers.values()
+        for provider in (config.providers.values() if config is not None else ())
         if (directory := _provider_directory(provider.path)) is not None
     ]
     directories += [str(Path(node).parent) for node in (shutil.which("node"),) if node]
@@ -151,22 +180,24 @@ def environment(paths: Paths, config: Config, binary: str) -> dict[str, str]:
     return env
 
 
-def render_plist(binary: str, env: dict[str, str], log: Path) -> str:
+def render_plist(
+    binary: str, env: dict[str, str], log: Path, *, definition: Definition = AGENT
+) -> str:
     variables = "".join(
         f"        <key>{escape(key)}</key>\n        <string>{escape(value)}</string>\n"
         for key, value in env.items()
     )
+    arguments = "".join(f"        <string>{escape(arg)}</string>\n" for arg in definition.arguments)
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>{LAUNCHD_LABEL}</string>
+    <string>{escape(definition.label)}</string>
     <key>ProgramArguments</key>
     <array>
         <string>{escape(binary)}</string>
-        <string>serve</string>
-    </array>
+{arguments}    </array>
     <key>EnvironmentVariables</key>
     <dict>
 {variables}    </dict>
@@ -204,15 +235,17 @@ def _quoted(value: str) -> str:
     return f'"{escaped}"'
 
 
-def render_unit(binary: str, env: dict[str, str], log: Path) -> str:
+def render_unit(
+    binary: str, env: dict[str, str], log: Path, *, definition: Definition = AGENT
+) -> str:
     variables = "".join(f"Environment={_quoted(f'{key}={value}')}\n" for key, value in env.items())
     return f"""[Unit]
-Description=Enso - chat with agent CLIs
+Description={definition.description}
 After=network-online.target
 
 [Service]
 Type=simple
-ExecStart={_quoted(binary)} serve
+ExecStart={_quoted(binary)} {" ".join(definition.arguments)}
 Restart=always
 RestartSec=5
 StandardOutput=append:{_percent_escaped(str(log))}
@@ -226,107 +259,129 @@ WantedBy=default.target
 # -- Lifecycle ------------------------------------------------------------------
 
 
-def install(paths: Paths, config: Config, platform: str | None = None) -> list[str]:
+def install(
+    paths: Paths,
+    config: Config | None,
+    platform: str | None = None,
+    *,
+    definition: Definition = AGENT,
+    log: Path | None = None,
+    binary: str | None = None,
+) -> list[str]:
     """Write the unit for the current ``enso`` and (re)load it; returns what was done."""
     platform = platform or platform_name()
-    binary = enso_binary()
+    binary = binary or enso_binary()
     env = environment(paths, config, binary)
-    unit = unit_path(platform)
+    if definition == VIEWER:
+        env["ENSO_HOME"] = str(paths.home.resolve())
+    log = log or paths.launchd_log
+    unit = unit_path(platform, definition=definition)
     unit.parent.mkdir(parents=True, exist_ok=True)
     if platform == "launchd":
-        _bootout()
-        unit.write_text(render_plist(binary, env, paths.launchd_log), "utf-8")
-        _bootstrap(unit)
+        _bootout(definition=definition)
+        _write_unit(unit, render_plist(binary, env, log, definition=definition))
+        _bootstrap(unit, definition=definition)
     else:
-        unit.write_text(render_unit(binary, env, paths.launchd_log), "utf-8")
+        _write_unit(unit, render_unit(binary, env, log, definition=definition))
         _run(["systemctl", "--user", "daemon-reload"])
-        _run(["systemctl", "--user", "enable", "--now", SYSTEMD_UNIT])
-        _run(["systemctl", "--user", "restart", SYSTEMD_UNIT])
+        _run(["systemctl", "--user", "enable", "--now", definition.unit])
+        _run(["systemctl", "--user", "restart", definition.unit])
     return [
-        f"wrote {unit} running {binary} serve",
-        f"started {LAUNCHD_LABEL if platform == 'launchd' else SYSTEMD_UNIT}",
+        f"wrote {unit} running {binary} {' '.join(definition.arguments)}",
+        f"started {definition.name(platform)}",
     ]
 
 
-def uninstall(platform: str | None = None) -> list[str]:
+def _write_unit(unit: Path, text: str) -> None:
+    try:
+        write_bytes(unit, text.encode(), mode=0o644)
+    except (OSError, UpdateError) as exc:
+        raise ServiceError(f"could not write {unit}: {exc}") from exc
+
+
+def uninstall(platform: str | None = None, *, definition: Definition = AGENT) -> list[str]:
     platform = platform or platform_name()
-    unit = unit_path(platform)
+    unit = unit_path(platform, definition=definition)
     if not unit.exists():
         return ["service is not installed"]
     if platform == "launchd":
-        _bootout()
+        _bootout(definition=definition)
     else:
-        _run(["systemctl", "--user", "disable", "--now", SYSTEMD_UNIT], check=False)
+        _run(["systemctl", "--user", "disable", "--now", definition.unit])
     unit.unlink()
     if platform == "systemd":
         _run(["systemctl", "--user", "daemon-reload"], check=False)
     return [f"stopped and removed {unit}"]
 
 
-def _bootout() -> None:
+def _bootout(*, definition: Definition = AGENT) -> None:
     """Unload the agent and wait for launchd to let go of it.
 
     bootout returns while the old process is still shutting down (Enso closes its
     transports first), and a bootstrap in that window fails with "Input/output error".
     """
-    target = f"{_domain()}/{LAUNCHD_LABEL}"
+    target = f"{_domain()}/{definition.label}"
     _run(["launchctl", "bootout", target], check=False)
     deadline = time.monotonic() + BOOTOUT_WAIT_SECONDS
-    while _query(["launchctl", "print", target]).strip() and time.monotonic() < deadline:
+    while _query(["launchctl", "print", target]).strip():
+        if time.monotonic() >= deadline:
+            raise ServiceError(f"{definition.label} did not unload; its unit was left unchanged")
         time.sleep(0.2)
 
 
-def _bootstrap(unit: Path) -> None:
+def _bootstrap(unit: Path, *, definition: Definition = AGENT) -> None:
     # A label left disabled by `launchctl unload -w` makes bootstrap fail with "Input/output
     # error"; enabling it first is harmless otherwise.
-    _run(["launchctl", "enable", f"{_domain()}/{LAUNCHD_LABEL}"], check=False)
+    _run(["launchctl", "enable", f"{_domain()}/{definition.label}"], check=False)
     _run(["launchctl", "bootstrap", _domain(), str(unit)])
 
 
-def start(platform: str | None = None) -> None:
+def start(platform: str | None = None, *, definition: Definition = AGENT) -> None:
     platform = platform or platform_name()
-    unit = unit_path(platform)
+    unit = unit_path(platform, definition=definition)
     if not unit.exists():
-        raise ServiceError("service is not installed; run `enso service install`")
+        raise ServiceError(f"service is not installed; run `enso {definition.cli_group} install`")
     if platform == "launchd":
-        if status(platform).loaded:
-            _run(["launchctl", "kickstart", f"{_domain()}/{LAUNCHD_LABEL}"])
+        if status(platform, definition=definition).loaded:
+            _run(["launchctl", "kickstart", f"{_domain()}/{definition.label}"])
         else:
-            _bootstrap(unit)
+            _bootstrap(unit, definition=definition)
     else:
-        _run(["systemctl", "--user", "start", SYSTEMD_UNIT])
+        _run(["systemctl", "--user", "start", definition.unit])
 
 
-def stop(platform: str | None = None) -> None:
+def stop(platform: str | None = None, *, definition: Definition = AGENT) -> None:
     platform = platform or platform_name()
     # KeepAlive would restart a stopped launchd job, so stopping means unloading it.
     if platform == "launchd":
-        _run(["launchctl", "bootout", f"{_domain()}/{LAUNCHD_LABEL}"])
+        _bootout(definition=definition)
     else:
-        _run(["systemctl", "--user", "stop", SYSTEMD_UNIT])
+        _run(["systemctl", "--user", "stop", definition.unit])
 
 
-def restart(platform: str | None = None) -> None:
+def restart(platform: str | None = None, *, definition: Definition = AGENT) -> None:
     platform = platform or platform_name()
-    if platform == "launchd" and status(platform).loaded:
-        _run(["launchctl", "kickstart", "-k", f"{_domain()}/{LAUNCHD_LABEL}"])
+    if platform == "launchd" and status(platform, definition=definition).loaded:
+        _run(["launchctl", "kickstart", "-k", f"{_domain()}/{definition.label}"])
     elif platform == "launchd":
-        start(platform)
+        start(platform, definition=definition)
     else:
-        _run(["systemctl", "--user", "restart", SYSTEMD_UNIT])
+        _run(["systemctl", "--user", "restart", definition.unit])
 
 
-def status(platform: str | None = None) -> Status:
+def status(platform: str | None = None, *, definition: Definition = AGENT) -> Status:
     platform = platform or platform_name()
-    unit = unit_path(platform)
+    unit = unit_path(platform, definition=definition)
     if platform == "launchd":
-        output = _query(["launchctl", "print", f"{_domain()}/{LAUNCHD_LABEL}"])
+        output = _query(["launchctl", "print", f"{_domain()}/{definition.label}"])
         match = re.search(r"^\s*pid = (\d+)", output, re.MULTILINE)
         loaded = bool(output.strip())
     else:
-        output = _query(["systemctl", "--user", "show", "-p", "MainPID", "--value", SYSTEMD_UNIT])
+        output = _query(
+            ["systemctl", "--user", "show", "-p", "MainPID", "--value", definition.unit]
+        )
         match = re.search(r"^([1-9]\d*)$", output.strip())
-        loaded = _query(["systemctl", "--user", "is-enabled", SYSTEMD_UNIT]).strip() == "enabled"
+        loaded = _query(["systemctl", "--user", "is-enabled", definition.unit]).strip() == "enabled"
     return Status(
         platform=platform,
         unit=unit,
