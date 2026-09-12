@@ -87,6 +87,32 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def inject_migration(original: str, *, fail: bool = False) -> str:
+    """Insert a synthetic next migration without assuming the current schema's symbol."""
+    version = re.search(r"^SCHEMA_VERSION = (\d+)$", original, re.MULTILINE)
+    if version is None:
+        raise AssertionError("Smoke fixture cannot locate SCHEMA_VERSION")
+    current = int(version.group(1))
+    target = current + 1
+    anchor = re.compile(rf"^([ \t]+)\({current}, [A-Za-z_][A-Za-z_0-9]*\),$", re.MULTILINE)
+    if len(list(anchor.finditer(original))) != 1:
+        raise AssertionError(
+            f"Smoke fixture must find exactly one schema {current} migration tuple"
+        )
+    statement = f"CREATE TABLE smoke_migrated_v{target} (value TEXT);"
+    if fail:
+        statement += "\nTHIS IS INVALID SQL;"
+    replacement = f'_SCHEMA_V{target} = """\n{statement}\nPRAGMA user_version = {target};\n"""\n\n'
+    updated = original.replace(version.group(0), f"SCHEMA_VERSION = {target}\n\n{replacement}", 1)
+    updated, count = anchor.subn(
+        lambda match: f"{match.group(0)}\n{match.group(1)}({target}, _SCHEMA_V{target}),",
+        updated,
+        count=1,
+    )
+    assert count == 1, "Smoke fixture failed to insert its synthetic migration"
+    return updated
+
+
 def build_release(
     name, version, *, migration="none", startup_failure=False, dependency=False, source_root=SOURCE
 ):
@@ -117,25 +143,7 @@ def build_release(
     (source / "src/enso/transports/slack.py").write_text(transport)
     if migration != "none":
         database = source / "src/enso/db.py"
-        original = database.read_text()
-        current = int(re.search(r"SCHEMA_VERSION = (\d+)", original).group(1))
-        target = current + 1
-        statement = f"CREATE TABLE smoke_migrated_v{target} (value TEXT);"
-        if migration == "fail":
-            statement += "\nTHIS IS INVALID SQL;"
-        replacement = (
-            f'_SCHEMA_V{target} = """\n{statement}\nPRAGMA user_version = {target};\n"""\n\n'
-        )
-        original = original.replace(
-            f"SCHEMA_VERSION = {current}", f"SCHEMA_VERSION = {target}\n\n{replacement}", 1
-        )
-        original = original.replace(
-            f"            ({current}, _SCHEMA_V{current}),",
-            f"            ({current}, _SCHEMA_V{current}),\n"
-            f"            ({target}, _SCHEMA_V{target}),",
-            1,
-        )
-        database.write_text(original)
+        database.write_text(inject_migration(database.read_text(), fail=migration == "fail"))
     output = ROOT / "feed" / name
     output.mkdir(parents=True)
     run(["uv", "build", "--wheel", "--project", str(source), "--out-dir", str(output)], timeout=120)
