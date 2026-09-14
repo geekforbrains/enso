@@ -1,7 +1,10 @@
-"""Updater service retries never reload or kill the normal Enso service."""
+"""Updater service handoffs go through service.py and never touch the agent's unit."""
 
+import hashlib
 import os
 import plistlib
+import subprocess
+import sys
 
 import pytest
 
@@ -9,29 +12,78 @@ from enso import service, update_services, web
 from enso.maintenance import UpdateError
 
 OPERATION = "a" * 32
+LABEL = f"com.enso.update.{OPERATION}"
+HELPER = f"gui/{os.getuid()}/{LABEL}"
 
 
-@pytest.mark.parametrize("loaded", [None, "state = not running\nlast exit code = 0\n"])
-def test_launchd_retry_reuses_an_idle_definition(enso_home, monkeypatch, loaded):
-    monkeypatch.setattr(update_services.sys, "platform", "darwin")
-    calls = []
+class Manager:
+    """A fake launchd or systemd holding one unit: loaded or not, running a pid or not."""
 
-    def command(args, **kwargs):
-        calls.append(args)
-        if args[1] == "print":
-            if loaded is None:
-                raise UpdateError("service absent")
-            return loaded
+    def __init__(self, platform, *, loaded=False, pid=None):
+        self.platform = platform
+        self.loaded = loaded
+        self.pid = pid
+        self.queries = []
+        self.commands = []
+
+    def query(self, args):
+        self.queries.append(args)
+        if "is-enabled" in args:
+            return "enabled" if self.loaded else "disabled"
+        if args[0] == "systemctl":
+            return f"{self.pid or 0}\n"
+        if not self.loaded:
+            return ""
+        return f"state = running\n\tpid = {self.pid}\n" if self.pid else "state = not running\n"
+
+    def run(self, args, *, check=True):
+        self.commands.append(args)
+        action = args[1] if args[0] == "launchctl" else args[2]
+        if action in {"bootout", "stop"}:
+            self.pid = None
+            self.loaded = action == "stop"  # systemd keeps a stopped unit enabled
+        elif action in {"bootstrap", "kickstart", "start"}:
+            self.loaded, self.pid = True, 4242
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    def command(self, args, **kwargs):
+        self.run(args)
         return ""
 
-    monkeypatch.setattr(update_services, "run_command", command)
+
+def fake_manager(monkeypatch, platform, **state):
+    fake = Manager(platform, **state)
+    monkeypatch.setattr(sys, "platform", {"launchd": "darwin", "systemd": "linux"}[platform])
+    monkeypatch.setattr(service, "_query", fake.query)
+    monkeypatch.setattr(service, "_run", fake.run)
+    monkeypatch.setattr(update_services, "run_command", fake.command)
+    return fake
+
+
+@pytest.fixture(params=["launchd", "systemd"])
+def manager(monkeypatch, request):
+    return fake_manager(monkeypatch, request.param)
+
+
+def no_daemon(monkeypatch):
+    """A home whose agent is stopped, so only the viewer's supervisor is in play."""
+    monkeypatch.setattr(update_services, "daemon", lambda paths: {})
+    monkeypatch.setattr(update_services, "receiver_active", lambda paths: False)
+
+
+@pytest.mark.parametrize("loaded", [False, True])
+def test_launchd_retry_reuses_an_idle_definition(enso_home, monkeypatch, loaded):
+    fake = fake_manager(monkeypatch, "launchd", loaded=loaded)
     python = enso_home.runtime_dir / "releases/old/bin/python"
     update_services.launch(enso_home, OPERATION, python)
-    target = f"gui/{os.getuid()}/com.enso.update.{OPERATION}"
-    if loaded is None:
-        unit = enso_home.runtime_dir / "operations" / OPERATION / "updater.plist"
-        assert calls[-1] == ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(unit)]
+    unit = enso_home.runtime_dir / "operations" / OPERATION / "updater.plist"
+    if loaded:
+        assert fake.commands == [["launchctl", "kickstart", HELPER]]
+        assert not unit.exists()
+    else:
+        assert fake.commands == [["launchctl", "bootstrap", f"gui/{os.getuid()}", str(unit)]]
         definition = plistlib.loads(unit.read_bytes())
+        assert definition["Label"] == LABEL
         assert definition["ProgramArguments"] == [
             str(python),
             "-m",
@@ -41,152 +93,115 @@ def test_launchd_retry_reuses_an_idle_definition(enso_home, monkeypatch, loaded)
             OPERATION,
         ]
         assert definition["KeepAlive"] == {"SuccessfulExit": False}
-    else:
-        assert calls[-1] == ["launchctl", "kickstart", target]
-        assert not (enso_home.runtime_dir / "operations").exists()
-    assert all("com.enso.agent" not in arg for call in calls for arg in call)
+    assert all(service.LAUNCHD_LABEL not in arg for call in fake.commands for arg in call)
 
 
-def test_launchd_recovery_never_kills_a_live_helper(enso_home, monkeypatch):
-    monkeypatch.setattr(update_services.sys, "platform", "darwin")
-    calls = []
-
-    def command(args, **kwargs):
-        calls.append(args)
-        return "state = running\n\tpid = 123\n"
-
-    monkeypatch.setattr(update_services, "run_command", command)
+def test_launch_never_kickstarts_a_live_helper(enso_home, monkeypatch):
+    fake = fake_manager(monkeypatch, "launchd", loaded=True, pid=123)
     with pytest.raises(UpdateError, match="still running"):
         update_services.launch(enso_home, OPERATION, enso_home.home / "python")
-    assert [call[1] for call in calls] == ["print"]
+    assert fake.commands == []
 
 
-@pytest.mark.parametrize("running", [False, True])
-def test_completed_helper_cleanup_is_scoped_and_skips_live_processes(
-    enso_home,
-    monkeypatch,
-    running,
-):
-    monkeypatch.setattr(update_services.sys, "platform", "darwin")
-    calls = []
-
-    def command(args, **kwargs):
-        calls.append(args)
-        return "pid = 123\n" if running else "state = not running\n"
-
-    monkeypatch.setattr(update_services, "run_command", command)
+@pytest.mark.parametrize("pid", [None, 123])
+def test_completed_helper_cleanup_skips_live_processes(enso_home, monkeypatch, pid):
+    fake = fake_manager(monkeypatch, "launchd", loaded=True, pid=pid)
     update_services.cleanup_finished(enso_home, OPERATION)
-    assert [call[1] for call in calls] == (["print"] if running else ["print", "bootout"])
-    assert all(call[-1] == f"gui/{os.getuid()}/com.enso.update.{OPERATION}" for call in calls)
+    assert fake.commands == ([] if pid else [["launchctl", "bootout", HELPER]])
+
+
+def test_unsupported_platform_is_reported_before_any_service_work(enso_home, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    for attempt in (
+        lambda: update_services.discover(enso_home),
+        lambda: update_services.launch(enso_home, OPERATION, enso_home.home / "python"),
+    ):
+        with pytest.raises(UpdateError, match="no service manager on win32"):
+            attempt()
 
 
 @pytest.mark.parametrize("action", ["stop", "start"])
-def test_service_ownership_is_rechecked_after_staging(enso_home, monkeypatch, action):
+def test_service_ownership_is_rechecked_after_staging(enso_home, monkeypatch, manager, action):
+    manager.loaded, manager.pid = True, 456
     monkeypatch.setattr(update_services, "daemon", lambda paths: {"pid": 123})
-    monkeypatch.setattr(update_services, "_unit_pid", lambda paths, name: 456)
-    commands = []
-    monkeypatch.setattr(update_services.service, "stop", lambda: commands.append("stop"))
-    monkeypatch.setattr(update_services.service, "start", lambda: commands.append("start"))
     previous = {"daemon": True, "viewer": False}
-    args = (enso_home, previous)
-    if action == "start":
-        args += (enso_home.home / "bin/enso",)
+    args = (enso_home, previous) + ((enso_home.home / "bin/enso",) if action == "start" else ())
     with pytest.raises(UpdateError, match="no longer owns"):
         getattr(update_services, action)(*args)
-    assert commands == []
+    assert manager.commands == []
 
 
 @pytest.mark.parametrize("changed", [False, True])
 def test_verified_service_can_be_recovered_before_candidate_writes_heartbeat(
-    enso_home, monkeypatch, tmp_path, changed
+    enso_home, monkeypatch, manager, changed
 ):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setattr(update_services.sys, "platform", "linux")
-    directory = tmp_path / ".config/systemd/user"
-    directory.mkdir(parents=True)
-    definition = directory / "enso.service"
-    definition.write_text("[Service]\nExecStart=/test/enso serve\n")
+    manager.loaded, manager.pid = True, 456
+    unit = service.unit_path(manager.platform)
+    unit.parent.mkdir(parents=True)
+    unit.write_text("verified agent definition")
     previous = {
         "daemon": True,
         "viewer": False,
-        "daemon_definition": update_services._definition_digest("enso.service"),
+        "daemon_definition": hashlib.sha256(unit.read_bytes()).hexdigest(),
     }
-    monkeypatch.setattr(update_services, "daemon", lambda paths: {})
-    monkeypatch.setattr(update_services, "_unit_pid", lambda paths, name: 456)
+    no_daemon(monkeypatch)
     if changed:
-        definition.write_text("[Service]\nExecStart=/another/home/enso serve\n")
+        unit.write_text("changed while update pending")
         with pytest.raises(UpdateError, match="definition changed"):
-            update_services._check_ownership(enso_home, previous)
+            update_services.stop(enso_home, previous)
+        assert manager.commands == []
     else:
-        update_services._check_ownership(enso_home, previous)
+        update_services.stop(enso_home, previous)
+        assert manager.pid is None and len(manager.commands) == 1
 
 
-@pytest.mark.parametrize("platform", ["darwin", "linux"])
 @pytest.mark.parametrize("custom", [False, True])
 def test_viewer_supervisor_is_discovered_stopped_and_restored(
-    enso_home, monkeypatch, platform, custom
+    enso_home, monkeypatch, manager, custom
 ):
-    monkeypatch.setattr(update_services.sys, "platform", platform)
-    manager = "launchd" if platform == "darwin" else "systemd"
+    platform = manager.platform
     name = (
-        ("cloud-viewer.service" if custom else service.VIEWER.unit)
-        if manager == "systemd"
-        else ("com.cloud.viewer" if custom else service.VIEWER.label)
+        {"launchd": "com.cloud.viewer", "systemd": "cloud-viewer.service"}[platform]
+        if custom
+        else service.VIEWER.name(platform)
     )
-    unit = service.unit_path(manager, definition=service.VIEWER)
-    unit = unit.with_name(name if manager == "systemd" else f"{name}.plist")
+    unit = service.unit_path(platform, definition=service.VIEWER.named(name))
     unit.parent.mkdir(parents=True)
     unit.write_text("unchanged viewer service definition")
-    state = {"pid": 4242}
-    commands = []
-
-    def command(args, **kwargs):
-        commands.append(args)
-        if "show" in args or "print" in args:
-            return f"pid = {state['pid']}" if manager == "launchd" else str(state["pid"] or 0)
-        if "stop" in args or "bootout" in args:
-            state["pid"] = None
-        elif "start" in args or "bootstrap" in args:
-            state["pid"] = 4242
-        return ""
-
-    monkeypatch.setattr(update_services, "run_command", command)
-    monkeypatch.setattr(update_services, "daemon", lambda paths: {})
-    monkeypatch.setattr(update_services, "receiver_active", lambda paths: False)
+    manager.loaded, manager.pid = True, 4242
+    no_daemon(monkeypatch)
     monkeypatch.setattr(
         web,
         "status",
-        lambda paths: web.Status(state["pid"] is not None, state["pid"], "127.0.0.1", 9000),
+        lambda paths: web.Status(manager.pid is not None, manager.pid, "127.0.0.1", 9000),
     )
+
     previous = update_services.discover(enso_home, name if custom else "")
     assert previous["viewer_service"] == name and previous["viewer"] is True
-    assert previous["viewer_definition"] == update_services._definition_digest(name)
+    assert previous["viewer_definition"] == hashlib.sha256(unit.read_bytes()).hexdigest()
     update_services.stop(enso_home, previous)
-    assert state["pid"] is None
+    assert manager.pid is None
     update_services.start(enso_home, previous, enso_home.home / "bin/enso")
-    assert state["pid"] == 4242
-    assert commands[-1] == (
+    assert manager.pid == 4242
+    assert manager.commands[-1] == (
         ["systemctl", "--user", "start", name]
-        if manager == "systemd"
+        if platform == "systemd"
         else ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(unit)]
     )
     # Recovery after a failed candidate uses the same verified supervisor even when
     # its process has exited; a changed definition must never be restarted.
-    state["pid"] = None
+    manager.pid = None
     update_services.start(enso_home, previous, enso_home.home / "old/bin/enso")
-    assert state["pid"] == 4242
+    assert manager.pid == 4242
     unit.write_text("changed while update pending")
     with pytest.raises(UpdateError, match="definition changed"):
         update_services.start(enso_home, previous, enso_home.home / "old/bin/enso")
 
 
-@pytest.mark.parametrize("platform", ["darwin", "linux"])
-def test_unproven_standard_viewer_is_not_treated_as_unsupervised(enso_home, monkeypatch, platform):
-    monkeypatch.setattr(update_services.sys, "platform", platform)
-    manager = "launchd" if platform == "darwin" else "systemd"
-    unit = service.unit_path(manager, definition=service.VIEWER)
+def test_unproven_standard_viewer_is_not_treated_as_unsupervised(enso_home, monkeypatch, manager):
+    unit = service.unit_path(manager.platform, definition=service.VIEWER)
     unit.parent.mkdir(parents=True)
-    render = service.render_plist if manager == "launchd" else service.render_unit
+    render = service.render_plist if manager.platform == "launchd" else service.render_unit
     unit.write_text(
         render(
             "/enso",
@@ -195,14 +210,8 @@ def test_unproven_standard_viewer_is_not_treated_as_unsupervised(enso_home, monk
             definition=service.VIEWER,
         )
     )
-    monkeypatch.setattr(update_services, "daemon", lambda paths: {})
-    monkeypatch.setattr(update_services, "receiver_active", lambda paths: False)
+    no_daemon(monkeypatch)
     monkeypatch.setattr(web, "status", lambda paths: web.Status(True, 123, "127.0.0.1", 8787))
-
-    def unavailable(*args, **kwargs):
-        raise UpdateError("service query failed")
-
-    monkeypatch.setattr(update_services, "run_command", unavailable)
     with pytest.raises(UpdateError, match="cannot confirm"):
         update_services.discover(enso_home)
     # Without a supervisor definition, the existing standalone path remains valid.
@@ -210,18 +219,13 @@ def test_unproven_standard_viewer_is_not_treated_as_unsupervised(enso_home, monk
     previous = update_services.discover(enso_home)
     assert previous["viewer"] and previous["viewer_service"] == ""
     with pytest.raises(UpdateError, match="does not own"):
-        update_services.discover(enso_home, service.VIEWER.name(manager))
+        update_services.discover(enso_home, service.VIEWER.name(manager.platform))
 
 
-def test_update_leaves_stopped_viewer_stopped(enso_home, monkeypatch):
-    monkeypatch.setattr(update_services, "daemon", lambda paths: {})
-    monkeypatch.setattr(update_services, "receiver_active", lambda paths: False)
+def test_update_leaves_stopped_viewer_stopped(enso_home, monkeypatch, manager):
+    no_daemon(monkeypatch)
     monkeypatch.setattr(web, "status", lambda paths: web.Status(False))
-
-    def unexpected(*args, **kwargs):
-        pytest.fail("a stopped viewer must not query, stop, or start its supervisor")
-
-    monkeypatch.setattr(update_services, "run_command", unexpected)
     previous = update_services.discover(enso_home)
     update_services.stop(enso_home, previous)
     update_services.start(enso_home, previous, enso_home.home / "bin/enso")
+    assert manager.queries == [] and manager.commands == []

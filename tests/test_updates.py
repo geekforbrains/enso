@@ -423,19 +423,6 @@ def test_corrupt_operation_metadata_returns_one_json_error(managed):
     assert "Traceback" not in result.output
 
 
-def test_service_discovery_refuses_unowned_viewer(enso_home, monkeypatch):
-    monkeypatch.setattr(update_services, "daemon", lambda paths: {})
-    monkeypatch.setattr(update_services, "receiver_active", lambda paths: False)
-    monkeypatch.setattr(
-        update_services.web,
-        "status",
-        lambda paths: SimpleNamespace(running=True, pid=123, host="127.0.0.1", port=8787),
-    )
-    monkeypatch.setattr(update_services, "_unit_pid", lambda *args: 456)
-    with pytest.raises(UpdateError, match="does not own"):
-        update_services.discover(enso_home, "viewer.service")
-
-
 def test_service_command_cleans_descendants_even_when_parent_exits(tmp_path):
     pid_file = tmp_path / "child.pid"
     child = f"import os,time; open({str(pid_file)!r}, 'w').write(str(os.getpid())); time.sleep(60)"
