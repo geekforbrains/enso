@@ -343,10 +343,10 @@ def _like(text: str) -> str:
 
 def _filters(
     *, project: str | None, stage: str | None, query: str | None
-) -> tuple[list[str], list[str | None]]:
+) -> tuple[list[str], list[str]]:
     """The filters common to ordinary lists and finished history."""
     clauses: list[str] = []
-    params: list[str | None] = []
+    params: list[str] = []
     if project:
         clauses.append("project = ?")
         params.append(project.strip().upper())
@@ -357,7 +357,8 @@ def _filters(
         try:
             ref = parse_ref(query)
         except TaskError:
-            ref = None  # nothing else can equal a reference, and NULL never matches
+            # Unicode input outside the grammar can still uppercase to a stored ASCII ref.
+            ref = query.strip().upper()
         clauses.append(r"(title LIKE ? ESCAPE '\' OR body LIKE ? ESCAPE '\' OR ref = ?)")
         params.extend([_like(query), _like(query), ref])
     return clauses, params

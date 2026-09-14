@@ -844,6 +844,35 @@ async def test_board_filters(
         assert board_groups(page) == [] and "No tasks " in page
 
 
+@pytest.mark.parametrize("finished", [False, True])
+async def test_task_search_keeps_unicode_uppercase_reference_matches(
+    client: TestClient, enso_home: Paths, raw_config_projects: dict, finished: bool
+) -> None:
+    raw_config_projects["projects"]["ID"] = {
+        "name": "Support",
+        "workspace": "default",
+        "stages": ["triage"],
+    }
+    config, problems, _ = parse_config(raw_config_projects, enso_home)
+    assert config is not None, problems
+    write_config(enso_home, raw_config_projects)
+    db.migrate(enso_home)
+    task = tasks.create(enso_home, config, "ID", "Handle ticket", actor=USER)
+    if finished:
+        tasks.move(
+            enso_home, config, task.ref, "advance", actor=USER, run_id=None, message="resolved"
+        )
+
+    # Dotless i is outside the reference grammar, but uppercases to the stored ASCII ID.
+    assert [task.ref for task in tasks.list_tasks(enso_home, all=True, query="\u0131d-001")] == [
+        "ID-001"
+    ]
+    body = await html(client, "/tasks?q=%C4%B1d-001")
+    assert task_links(body) == ["ID-001"]
+    assert "1 task matching the filter." in body
+    assert f"{int(finished)} completed in the last 7 days" in body
+
+
 async def test_empty_board_says_so(client: TestClient, project_config: Config) -> None:
     page = await html(client, "/tasks")
     assert task_links(page) == [] and board_groups(page) == []
