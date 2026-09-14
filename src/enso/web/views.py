@@ -12,11 +12,9 @@ from __future__ import annotations
 
 import json
 import os
-import re
-import subprocess
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from functools import partial
 from math import ceil
 from typing import Any
@@ -25,18 +23,10 @@ from urllib.parse import quote, urlencode
 from .. import audit, db, doctor, runs, skills, tasks, workspaces
 from .. import heartbeat as beats
 from .. import log as logsetup
-from ..config import (
-    BUILTIN_STAGES,
-    TRANSPORT_NAMES,
-    Config,
-    Paths,
-    ProjectConfig,
-    check_config,
-    valid_workspace_name,
-)
+from ..config import Config, Paths, valid_workspace_name
 from ..jobs import Job, load_jobs
 from ..scheduling import cron_slots
-from . import Bind, files
+from . import Bind, common, files, filters
 from . import heartbeat as beatviews
 
 LOG_TAIL_LINES = 200
@@ -44,304 +34,13 @@ RECENT_RUNS = 20  # on a job's page
 DB_COMPANIONS = ("", "-wal", "-shm")
 
 
-# -- Shared helpers (registered as template filters) --------------------------
-
-
-def human_bytes(size: int | None) -> str:
-    """``0 B``, ``12 KB``, ``1.2 MB``: enough precision to decide whether to clean up."""
-    if size is None:
-        return "-"
-    value = float(size)
-    for unit in ("B", "KB", "MB", "GB"):
-        if value < 1024 or unit == "GB":
-            break
-        value /= 1024
-    return f"{int(value)} {unit}" if unit == "B" or value >= 10 else f"{value:.1f} {unit}"
-
-
-def elapsed(seconds: int) -> str:
-    """45s, 2m 05s, 1h 12m."""
-    if seconds < 60:
-        return f"{seconds}s"
-    minutes, secs = divmod(seconds, 60)
-    if minutes < 60:
-        return f"{minutes}m {secs:02d}s"
-    hours, minutes = divmod(minutes, 60)
-    return f"{hours}h {minutes:02d}m"
-
-
-def duration(duration_ms: int | None) -> str:
-    return elapsed(duration_ms // 1000) if duration_ms is not None else "-"
-
-
-def when(stamp: str | datetime | None) -> str:
-    """A stored UTC timestamp (or a datetime) as local wall-clock time, to the second."""
-    moment = _moment(stamp)
-    return moment.astimezone().strftime("%Y-%m-%d %H:%M:%S") if moment else "-"
-
-
-def clock(stamp: str | datetime | None) -> str:
-    """Just the wall-clock time; every row that shows it also shows a relative time,
-    and a feed's hour heading carries the day, so the column stays one word wide."""
-    moment = _moment(stamp)
-    return moment.astimezone().strftime("%H:%M") if moment else "-"
-
-
-def iso(stamp: str | datetime | None) -> str:
-    """The same instant for ``<time datetime>``: ISO 8601 with its offset."""
-    moment = _moment(stamp)
-    return moment.astimezone().isoformat(timespec="seconds") if moment else ""
-
-
-def ago(stamp: str | datetime | None) -> str:
-    moment = _moment(stamp)
-    if moment is None:
-        return "-"
-    return since(stamp) + " ago"
-
-
-def since(stamp: str | datetime | None) -> str:
-    """How long ago, without the word: the time a task has spent in its stage."""
-    moment = _moment(stamp)
-    if moment is None:
-        return "-"
-    seconds = int((datetime.now(UTC) - moment.astimezone(UTC)).total_seconds())
-    return elapsed(max(0, seconds))
-
-
-def until(stamp: str | datetime | None) -> str:
-    moment = _moment(stamp)
-    if moment is None:
-        return "-"
-    seconds = int((moment.astimezone(UTC) - datetime.now(UTC)).total_seconds())
-    return "in " + elapsed(max(0, seconds))
-
-
-def heartbeat_next(stamp: str | datetime | None, state: str) -> str:
-    moment = _moment(stamp)
-    if state != "active" or moment is None:
-        return "-"
-    return "due" if moment <= datetime.now(UTC) else until(stamp)
-
-
-def _moment(stamp: str | datetime | None) -> datetime | None:
-    if stamp is None or stamp == "":
-        return None
-    if isinstance(stamp, datetime):
-        moment = stamp
-    else:
-        try:
-            moment = datetime.fromisoformat(stamp)
-        except ValueError:
-            return None
-    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
-
-
-def status_class(status: str | None) -> str:
-    """The tone for any status word the pages show; never the only signal.
-
-    ``timeout`` is amber rather than red: the run did not fail, it ran out of time,
-    and the schedule chart is much easier to read when the two are distinguishable.
-    Both still count as failures wherever failures are counted.
-    """
-    return {
-        "ok": "ok",
-        "active": "ok",
-        "fulfilled": "ok",
-        "expired": "warning",
-        "cancelled": "warning",
-        "paused": "muted",
-        "ready": "ok",
-        "quiet": "muted",
-        "running": "running",
-        "error": "error",
-        "timeout": "warning",
-        "prerun_error": "error",
-        "warning": "warning",
-        "no_work": "muted",
-        "skipped": "muted",
-    }.get(status or "", "muted")
-
-
-def status_word(status: str | None) -> str:
-    """The status as prose: ``no_work`` is a database value, ``no work`` is a label."""
-    return (status or "").replace("_", " ") or "-"
-
-
-def heartbeat_event_word(kind: str) -> str:
-    return {
-        "observed": "Source update",
-        "noted": "Note",
-        "waited": "Waiting",
-        "fulfilled": "Completed",
-        "resumed": "Checks resumed",
-        "run_failed": "Assessment failed",
-        "run_recovered": "Assessments recovered",
-        "notice_delivered": "Notification delivered",
-    }.get(kind, status_word(kind).capitalize())
-
-
-def heartbeat_actor(actor: str | None) -> str:
-    """Who acted, as a reader can use it.
-
-    Actors are recorded as their origin: ``slack:U0AETSSDDEF`` or ``telegram:8140``
-    for a person in chat, ``job:nightly`` for a job run, ``beat:HB-002`` for the beat
-    acting under its own authority, ``user:gavin`` for this machine's CLI, and plain
-    ``heartbeat`` for Enso itself. Only the chat forms need help: the member ID says
-    nothing on a page, and what a reader wants is that a person did this from Slack.
-    Every other form already reads, so it is left exactly as it was recorded, and the
-    expanded event keeps the raw value either way.
-    """
-    transport, _, identity = (actor or "").partition(":")
-    if identity and transport in TRANSPORT_NAMES:
-        return f"via {transport.capitalize()}"
-    return actor or "-"
-
-
-# A string that starts this way is a filesystem path and reads as code rather than as
-# prose; so does one under a key that names a file, because a provider may be configured
-# as a bare command that `shutil.which` resolves rather than as a path with slashes.
-PATH_STARTS = ("/", "~")
-FILE_KEYS = ("path", "unit")
-Piece = tuple[str, str]  # how to draw it, and what it says
-
-
-def fact(value: object, key: str = "") -> tuple[list[Piece], list[Piece]]:
-    """One of the doctor's facts as the pieces the Health page draws.
-
-    ``doctor`` hands the viewer whatever a check happens to know -- a path, a flag, a
-    list of names, or a map of those per provider -- so the shape of the value picks its
-    rendering and no section has to know its own keys. The answer is the line you read
-    first and the quiet line under it: a per-item map splits across both, anything else
-    is a single piece.
-    """
-    if isinstance(value, Mapping):
-        return _item(value)
-    return [_piece(value, key)], []
-
-
-def _item(item: Mapping) -> tuple[list[Piece], list[Piece]]:
-    """A map of one thing's facts: what it is, then what is true of it.
-
-    A flag reads as its own key, because ``executable`` says more under a provider's
-    path than ``yes`` does. With nothing to lead on, as a transport has, the flags
-    become the line themselves rather than leaving an empty one above them.
-    """
-    lead: list[Piece] = []
-    quiet: list[Piece] = []
-    for key, value in item.items():
-        label = fact_label(key)
-        if isinstance(value, bool):
-            quiet.append(("word", label if value else f"not {label}"))
-        elif isinstance(value, str) or not isinstance(value, Sequence):
-            lead.append(_piece(value, key))
-        else:
-            names = _names(value)
-            quiet.append(("names", names) if names else ("quiet", f"no {label}"))
-    return (lead, quiet) if lead else (quiet, [])
-
-
-def _piece(value: object, key: str = "") -> Piece:
-    if value is None:
-        return "quiet", "none"
-    if isinstance(value, bool):
-        return "word", "yes" if value else "no"
-    if isinstance(value, str):
-        path = key in FILE_KEYS or value.startswith(PATH_STARTS)
-        return ("path", value) if path else ("word", value)
-    if isinstance(value, Sequence):
-        names = _names(value)
-        return ("names", names) if names else ("quiet", "none")
-    return "word", str(value)
-
-
-def _names(values: Sequence) -> str:
-    return ", ".join(str(value) for value in values)
-
-
-def fact_label(key: str) -> str:
-    """A doctor's key as a label: its own name, minus the underscores."""
-    return key.replace("_", " ")
-
-
-FILTERS: dict[str, Callable] = {
-    "bytes": human_bytes,
-    "duration": duration,
-    "when": when,
-    "clock": clock,
-    "iso": iso,
-    "ago": ago,
-    "since": since,
-    "until": until,
-    "heartbeat_next": heartbeat_next,
-    "status_class": status_class,
-    "status_word": status_word,
-    "heartbeat_event_word": heartbeat_event_word,
-    "heartbeat_actor": heartbeat_actor,
-    "task_tone": lambda state: task_tone(state),
-    "fact": fact,
-    "fact_label": fact_label,
-    # The only filter that emits markup: it wraps nothing but the safe renderer's output.
-    "output_markdown": files.render_output,
-}
-
-
-def task_tone(state: str) -> str:
-    """The dot tone for a task state (``needs-you``, ``blocked``, ``active``, ...)."""
-    return TASK_TONES.get(state, "muted")
-
-
-def _attempt[T](work: Callable[[], T]) -> tuple[T | None, str | None]:
-    """``(result, None)`` or ``(None, message)``: one source's failure stays local."""
-    try:
-        return work(), None
-    except Exception as exc:
-        return None, f"{type(exc).__name__}: {exc}"
-
-
-def _config(paths: Paths) -> tuple[Config | None, list[str]]:
-    config, problems, _warnings = check_config(paths)
-    return config, problems
-
-
-# -- Run series (bars, sparklines, and the schedule chart) ----------------------
-
-FAILED = ("error", "timeout", "prerun_error", "cancelled")
-BAR_RUNS = 30  # outcomes behind a reliability bar chart
-BAR_HEIGHT = 22  # SVG user units, matching svg.bars in app.css
-SPARK_RUNS = 18  # outcomes behind a list-row sparkline
-QUIET_BAR = 5  # a no-work poll is a stub, not a full bar
-
-
-def bar_series(summaries: list[runs.RunSummary]) -> list[tuple[str, int]]:
-    """``(tone, height)`` per run, oldest first, height proportional to duration."""
-    recent = list(reversed(summaries[:BAR_RUNS]))
-    longest = max((summary.duration_ms or 0 for summary in recent), default=0)
-    series = []
-    for summary in recent:
-        if summary.status in ("no_work", "skipped"):
-            height = QUIET_BAR
-        elif longest:
-            height = max(6, round((summary.duration_ms or 0) / longest * BAR_HEIGHT))
-        else:
-            height = BAR_HEIGHT
-        series.append((status_class(summary.status), height))
-    return series
-
-
-def spark_tones(summaries: list[runs.RunSummary]) -> list[str]:
-    """Just the tones, oldest first: the same history at list-row size."""
-    return [status_class(summary.status) for summary in reversed(summaries[:SPARK_RUNS])]
-
-
 def failures(summaries: Sequence[runs.RunSummary]) -> list[runs.RunSummary]:
-    return [summary for summary in summaries if summary.status in FAILED]
+    return [summary for summary in summaries if summary.status in common.FAILED]
 
 
 # -- Today ----------------------------------------------------------------------
 
 TODAY_SECTIONS = ("schedule", "activity", "reliability")
-TODAY_BACK_HOURS = 24
 TODAY_AHEAD_HOURS = 2
 CHART_RANGES = (6, 12, 24)
 CHART_BACK_HOURS = 6
@@ -416,7 +115,7 @@ def _feed(summaries: Sequence[runs.RunSummary], *, by_hour: bool) -> list[FeedGr
             FeedGroup(
                 label,
                 len(bucket),
-                sum(1 for summary in bucket if summary.status in FAILED),
+                sum(1 for summary in bucket if summary.status in common.FAILED),
                 items,
             )
         )
@@ -431,7 +130,7 @@ def _buckets(
     today = datetime.now().astimezone().date()
     out: list[tuple[str | None, list[runs.RunSummary]]] = []
     for summary in summaries:
-        moment = _moment(summary.started_at)
+        moment = filters.parse_time(summary.started_at)
         if moment is None:
             label = "?"
         else:
@@ -451,31 +150,32 @@ def today_model(
     section = section if section in TODAY_SECTIONS else "schedule"
     if chart_back_hours not in CHART_RANGES:
         chart_back_hours = CHART_BACK_HOURS
-    config, problems = _config(paths)
+    config, problems = common.read_config(paths)
     now = datetime.now().astimezone()
     rows, jobs_error = _job_rows(paths, config, now)
-    scanned, runs_error = _attempt(partial(runs.list_summaries, paths, limit=TODAY_SCAN))
+    scanned, runs_error = common.attempt(partial(runs.list_summaries, paths, limit=TODAY_SCAN))
     history = scanned or []
-    activity, activity_error = _attempt(partial(beatviews.activity, paths, limit=TODAY_SCAN))
-    beat_attention, beats_error = _attempt(
+    activity, activity_error = common.attempt(partial(beatviews.activity, paths, limit=TODAY_SCAN))
+    beat_attention, beats_error = common.attempt(
         partial(beatviews.beat_rows, paths, attention=True, limit=UP_NEXT)
     )
-    attention_count, _attention_error = _attempt(
+    attention_count, _attention_error = common.attempt(
         partial(beatviews.beat_count, paths, attention=True)
     )
-    beat_upcoming, upcoming_error = _attempt(
+    beat_upcoming, upcoming_error = common.attempt(
         partial(beatviews.beat_rows, paths, upcoming=True, limit=UP_NEXT)
     )
 
     top_of_hour = now.replace(minute=0, second=0, microsecond=0)
-    start = top_of_hour - timedelta(hours=TODAY_BACK_HOURS)
+    start = top_of_hour - timedelta(hours=common.ACTIVITY_HOURS)
     # Pin to the next hour so the real lookahead never shrinks below two hours.
     end = top_of_hour + timedelta(hours=TODAY_AHEAD_HOURS + 1)
     chart_start = end - timedelta(hours=chart_back_hours + TODAY_AHEAD_HOURS)
     window = [
         summary
         for summary in (activity or [])
-        if (moment := _moment(summary.started_at)) is not None and moment.astimezone() >= start
+        if (moment := filters.parse_time(summary.started_at)) is not None
+        and moment.astimezone() >= start
     ]
     recent = _by_job(history)
     upcoming: list[dict[str, Any]] = [
@@ -495,7 +195,7 @@ def today_model(
             {
                 "title": row.title,
                 "href": "/heartbeats/" + row.ref,
-                "next_run": _moment(row.next_check_at),
+                "next_run": filters.parse_time(row.next_check_at),
                 "timing": row.ref,
                 "workspace": row.workspace,
                 "source": "heartbeat",
@@ -505,15 +205,15 @@ def today_model(
     upcoming.sort(key=lambda row: row["next_run"] or now)
     return {
         "config_problems": problems,
-        "alarm": _alarm(paths),
+        "alarm": common.alarm(paths),
         "section": section,
         "now": now,
-        "back_hours": TODAY_BACK_HOURS,
+        "back_hours": common.ACTIVITY_HOURS,
         "ahead_hours": TODAY_AHEAD_HOURS,
         "chart_back_hours": chart_back_hours,
         "chart_ranges": CHART_RANGES,
         "chart_query": f"?range={chart_back_hours}" if chart_back_hours != CHART_BACK_HOURS else "",
-        "reliability_limit": BAR_RUNS,
+        "reliability_limit": filters.BAR_RUNS,
         "scan_limit": TODAY_SCAN,
         "failed": failures(window),
         "job_failed": failures([summary for summary in window if summary.source == "jobs"]),
@@ -531,7 +231,7 @@ def today_model(
                 "average": _average(summaries),
             }
             for row in rows
-            if (summaries := recent.get(row.dir_name, [])[:BAR_RUNS])
+            if (summaries := recent.get(row.dir_name, [])[: filters.BAR_RUNS])
         ],
         "upcoming": upcoming[:UP_NEXT],
         "beat_attention": beat_attention or [],
@@ -576,7 +276,7 @@ def _chart(
     for row in rows:
         events = []
         for summary in recent.get(row.dir_name, []):
-            moment = _moment(summary.started_at)
+            moment = filters.parse_time(summary.started_at)
             if moment is None or moment.astimezone() < start:
                 continue
             seconds = (summary.duration_ms or 0) / 1000
@@ -585,9 +285,9 @@ def _chart(
                 ChartEvent(
                     round(place(moment.astimezone()), 2),
                     round(width, 2),
-                    status_class(summary.status),
-                    f"{status_word(summary.status)} at {clock(summary.started_at)}"
-                    f", {duration(summary.duration_ms)}",
+                    filters.status_class(summary.status),
+                    f"{filters.status_word(summary.status)} at {filters.clock(summary.started_at)}"
+                    f", {filters.duration(summary.duration_ms)}",
                     summary.id,
                 )
             )
@@ -633,23 +333,6 @@ def _schedule_note(job: Job | None) -> str:
     return job.schedule or "when work is ready"  # a stage job may carry no cron line
 
 
-def _alarm(paths: Paths) -> bool:
-    """Whether anything failed in the last day: the one signal every page carries.
-
-    One indexed row, so the shell can show it without every page running the doctor.
-    """
-    attention, _error = _attempt(partial(beatviews.beat_count, paths, attention=True))
-    if attention:
-        return True
-    recent, _error = _attempt(partial(beatviews.activity, paths, statuses=FAILED, limit=1))
-    if not recent:
-        return False
-    moment = _moment(recent[0].started_at)
-    return moment is not None and (
-        datetime.now(UTC) - moment.astimezone(UTC) < timedelta(hours=TODAY_BACK_HOURS)
-    )
-
-
 # -- Health ---------------------------------------------------------------------
 
 
@@ -657,14 +340,14 @@ HEALTH_SECTIONS = ("doctor", "log")
 
 
 def health_model(paths: Paths, bind: Bind | None, section: str = "doctor") -> dict[str, Any]:
-    report, error = _attempt(partial(doctor.run, paths))
-    problems = report.section("config").problems if report else _config(paths)[1]
+    report, error = common.attempt(partial(doctor.run, paths))
+    problems = report.section("config").problems if report else common.read_config(paths)[1]
     findings = (
         sum(len(entry.problems) + len(entry.warnings) for entry in report.sections) if report else 0
     )
     return {
         "config_problems": problems,
-        "alarm": _alarm(paths),
+        "alarm": common.alarm(paths),
         "section": section if section in HEALTH_SECTIONS else "doctor",
         "findings": findings,
         "report": report,
@@ -717,7 +400,7 @@ def _database(paths: Paths) -> dict[str, Any]:
 def _log_tail(paths: Paths) -> dict[str, Any]:
     if not paths.log.exists():
         return {"path": str(paths.log), "exists": False, "lines": [], "error": None}
-    lines, error = _attempt(partial(logsetup.tail, paths, LOG_TAIL_LINES))
+    lines, error = common.attempt(partial(logsetup.tail, paths, LOG_TAIL_LINES))
     return {"path": str(paths.log), "exists": True, "lines": lines or [], "error": error}
 
 
@@ -725,11 +408,11 @@ def _log_tail(paths: Paths) -> dict[str, Any]:
 
 
 def workspaces_model(paths: Paths) -> dict[str, Any]:
-    config, problems = _config(paths)
-    report, error = _attempt(partial(audit.audit, paths, config=config))
+    config, problems = common.read_config(paths)
+    report, error = common.attempt(partial(audit.audit, paths, config=config))
     return {
         "config_problems": problems,
-        "alarm": _alarm(paths),
+        "alarm": common.alarm(paths),
         "home": report.home if report else None,
         "workspaces": report.workspaces if report else [],
         "error": error,
@@ -739,8 +422,8 @@ def workspaces_model(paths: Paths) -> dict[str, Any]:
 def workspace_model(paths: Paths, name: str) -> dict[str, Any] | None:
     if not valid_workspace_name(name) or not paths.workspace(name).is_dir():
         return None
-    config, problems = _config(paths)
-    report, error = _attempt(partial(audit.audit, paths, [name], config=config))
+    config, problems = common.read_config(paths)
+    report, error = common.attempt(partial(audit.audit, paths, [name], config=config))
     roots = []
     for root in files.ROOTS:
         directory = paths.workspace(name) / root
@@ -750,7 +433,7 @@ def workspace_model(paths: Paths, name: str) -> dict[str, Any] | None:
         )
     return {
         "config_problems": problems,
-        "alarm": _alarm(paths),
+        "alarm": common.alarm(paths),
         "name": name,
         "path": str(paths.workspace(name)),
         "workspace": report.workspaces[0] if report else None,
@@ -769,8 +452,8 @@ def files_model(
     except files.PathRejectedError, FileNotFoundError, OSError:
         return None
     model: dict[str, Any] = {
-        "config_problems": _config(paths)[1],
-        "alarm": _alarm(paths),
+        "config_problems": common.read_config(paths)[1],
+        "alarm": common.alarm(paths),
         "workspace": name,
         "root": root,
         "relative": "/".join(files.split_relative(relative)),
@@ -784,11 +467,11 @@ def files_model(
     if not target.exists():
         return None
     if target.is_dir():
-        model["listing"], model["error"] = _attempt(
+        model["listing"], model["error"] = common.attempt(
             partial(files.listing, resolved, root, relative)
         )
     else:
-        model["file"], model["error"] = _attempt(
+        model["file"], model["error"] = common.attempt(
             partial(files.view, resolved, root, relative, raw=raw)
         )
     return model
@@ -836,7 +519,7 @@ def skills_model(paths: Paths, selected: str | None) -> dict[str, Any] | None:
     grouped: dict[tuple[str, str, str], SkillRow] = {}
     error: str | None = None
     for workspace in shown:
-        resolved, failure = _attempt(partial(skills.resolve, paths, workspace))
+        resolved, failure = common.attempt(partial(skills.resolve, paths, workspace))
         error = error or failure
         for skill in resolved or []:
             key = (skill.name, skill.scope, str(skill.path))
@@ -856,8 +539,8 @@ def skills_model(paths: Paths, selected: str | None) -> dict[str, Any] | None:
                 row.workspaces.append(workspace)
     rows = sorted(grouped.values(), key=lambda row: (_scope_order(row.scope), row.name))
     return {
-        "config_problems": _config(paths)[1],
-        "alarm": _alarm(paths),
+        "config_problems": common.read_config(paths)[1],
+        "alarm": common.alarm(paths),
         "workspaces": names,
         "selected": selected,
         "rows": rows,
@@ -970,9 +653,9 @@ def _job_rows(
     paths: Paths, config: Config | None, now: datetime
 ) -> tuple[list[JobRow], str | None]:
     """Every job directory as a row, parsed or not. Shared by Jobs and Today."""
-    loaded, error = _attempt(partial(load_jobs, paths, config))
+    loaded, error = common.attempt(partial(load_jobs, paths, config))
     found, job_problems = loaded if loaded is not None else ([], {})
-    summaries, _runs_error = _attempt(partial(runs.latest_summaries, paths))
+    summaries, _runs_error = common.attempt(partial(runs.latest_summaries, paths))
     latest = summaries or {}
     rows = [
         JobRow(
@@ -994,14 +677,14 @@ def _job_rows(
 
 
 def jobs_model(paths: Paths) -> dict[str, Any]:
-    config, problems = _config(paths)
+    config, problems = common.read_config(paths)
     now = datetime.now().astimezone()
     rows, error = _job_rows(paths, config, now)
-    scanned, runs_error = _attempt(partial(runs.list_summaries, paths, limit=TODAY_SCAN))
+    scanned, runs_error = common.attempt(partial(runs.list_summaries, paths, limit=TODAY_SCAN))
     recent = _by_job(scanned or [])
     return {
         "config_problems": problems,
-        "alarm": _alarm(paths),
+        "alarm": common.alarm(paths),
         "rows": rows,
         "recent": recent,
         "error": error,
@@ -1014,18 +697,20 @@ JOB_SECTIONS = ("overview", "history")
 
 
 def job_model(paths: Paths, name: str, section: str = "overview") -> dict[str, Any] | None:
-    config, problems = _config(paths)
-    loaded, error = _attempt(partial(load_jobs, paths, config))
+    config, problems = common.read_config(paths)
+    loaded, error = common.attempt(partial(load_jobs, paths, config))
     found, job_problems = loaded if loaded is not None else ([], {})
     job = next((candidate for candidate in found if candidate.dir_name == name), None)
     if job is None and name not in job_problems:
         return None
     limit = runs.PAGE_SIZE if section == "history" else RECENT_RUNS
-    summaries, runs_error = _attempt(partial(runs.list_summaries, paths, job=name, limit=limit))
+    summaries, runs_error = common.attempt(
+        partial(runs.list_summaries, paths, job=name, limit=limit)
+    )
     recent = summaries or []
     return {
         "config_problems": problems,
-        "alarm": _alarm(paths),
+        "alarm": common.alarm(paths),
         "section": section if section in JOB_SECTIONS else "overview",
         "groups": _feed(recent, by_hour=False),
         "failed": len(failures(recent)),
@@ -1084,13 +769,13 @@ def _beat_page(
 
 def heartbeats_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any]:
     """A bounded current/previous list; every row is a report of saved beat state."""
-    config, problems = _config(paths)
+    config, problems = common.read_config(paths)
     view = "previous" if query.get("view") == "previous" else "current"
     state = query.get("state") or None
     if state not in beatviews.state_choices(view):
         state = None
     attention = query.get("attention") == "1"
-    total, error = _attempt(
+    total, error = common.attempt(
         partial(beatviews.beat_count, paths, view=view, state=state, attention=attention)
     )
     pagination = _beat_page(
@@ -1101,7 +786,7 @@ def heartbeats_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any]:
         state=state,
         attention="1" if attention else None,
     )
-    rows, rows_error = _attempt(
+    rows, rows_error = common.attempt(
         partial(
             beatviews.beat_rows,
             paths,
@@ -1114,7 +799,7 @@ def heartbeats_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any]:
     )
     return {
         "config_problems": problems,
-        "alarm": _alarm(paths),
+        "alarm": common.alarm(paths),
         "view": view,
         "state": state,
         "attention": attention,
@@ -1132,15 +817,15 @@ def heartbeat_model(
 ) -> dict[str, Any] | None:
     """Current instructions with a paginated meaningful history and separate run summaries."""
     try:
-        beat, error = _attempt(partial(beats.get, paths, ref))
+        beat, error = common.attempt(partial(beats.get, paths, ref))
     except beats.HeartbeatError:
         return None
     if beat is None and (error is None or error.startswith("HeartbeatError:")):
         return None
-    config, problems = _config(paths)
+    config, problems = common.read_config(paths)
     model = {
         "config_problems": problems,
-        "alarm": _alarm(paths),
+        "alarm": common.alarm(paths),
         "beat": beat,
         "error": error,
         "section": section,
@@ -1153,9 +838,11 @@ def heartbeat_model(
     }
     if beat is None:
         return model
-    history, history_error = _attempt(partial(beatviews.events, paths, beat.id, limit=1))
+    history, history_error = common.attempt(partial(beatviews.events, paths, beat.id, limit=1))
     history_count, latest = history or (0, [])
-    runs_count, runs_error = _attempt(partial(beatviews.activity_count, paths, beat_ref=beat.ref))
+    runs_count, runs_error = common.attempt(
+        partial(beatviews.activity_count, paths, beat_ref=beat.ref)
+    )
     model.update(
         history_count=history_count,
         runs_count=runs_count or 0,
@@ -1168,7 +855,7 @@ def heartbeat_model(
     pagination = _beat_page(query or {}, total, base + "/" + section)
     model.update(pagination)
     if section == "history":
-        result, error = _attempt(
+        result, error = common.attempt(
             partial(
                 beatviews.events,
                 paths,
@@ -1180,7 +867,7 @@ def heartbeat_model(
         model["events"] = result[1] if result else []
         model["error"] = model["error"] or error
     elif section == "runs":
-        recent, error = _attempt(
+        recent, error = common.attempt(
             partial(
                 beatviews.activity,
                 paths,
@@ -1196,12 +883,12 @@ def heartbeat_model(
 
 def heartbeat_run_model(paths: Paths, run_id: str) -> dict[str, Any] | None:
     """A single saved assessment, including the definition and input boundary it saw."""
-    run, error = _attempt(partial(beats.get_run, paths, run_id))
+    run, error = common.attempt(partial(beats.get_run, paths, run_id))
     if run is None and error is None:
         return None
     return {
-        "config_problems": _config(paths)[1],
-        "alarm": _alarm(paths),
+        "config_problems": common.read_config(paths)[1],
+        "alarm": common.alarm(paths),
         "run": run,
         "error": error,
     }
@@ -1235,7 +922,7 @@ def runs_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any]:
         view = "all"
     page = _requested_page(query)
     wanted = _view_statuses(view)
-    counted, error = _attempt(
+    counted, error = common.attempt(
         partial(
             beatviews.activity_count, paths, source=source, job=job, status=status, statuses=wanted
         )
@@ -1245,7 +932,7 @@ def runs_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any]:
     page = min(page, pages)
     rows: list[beatviews.ActivityRun] = []
     if error is None:
-        listed, error = _attempt(
+        listed, error = common.attempt(
             partial(
                 beatviews.activity,
                 paths,
@@ -1258,7 +945,7 @@ def runs_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any]:
             )
         )
         rows = listed or []
-    known, _names_error = _attempt(partial(runs.job_names, paths))
+    known, _names_error = common.attempt(partial(runs.job_names, paths))
     names = known or []
     if job and job not in names:
         names = sorted([*names, job])
@@ -1283,8 +970,8 @@ def runs_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any]:
     counts = _view_counts(paths, job, source)
     start = (page - 1) * runs.PAGE_SIZE + 1 if rows else 0
     return {
-        "config_problems": _config(paths)[1],
-        "alarm": _alarm(paths),
+        "config_problems": common.read_config(paths)[1],
+        "alarm": common.alarm(paths),
         "rows": rows,
         "groups": _feed(rows, by_hour=view == "all"),
         "total": total,
@@ -1317,7 +1004,7 @@ def runs_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any]:
 
 def _view_statuses(view: str) -> tuple[str, ...] | None:
     if view == "failed":
-        return FAILED
+        return common.FAILED
     if view == "signal":
         return tuple(
             status for status in beatviews.RUN_STATUSES if status not in ("no_work", "skipped")
@@ -1329,7 +1016,7 @@ def _view_counts(paths: Paths, job: str | None, source: str = "any") -> dict[str
     """The tab counts, under the job filter but not the view being counted."""
     counts: dict[str, int | None] = {}
     for name in RUN_VIEWS:
-        counted, _error = _attempt(
+        counted, _error = common.attempt(
             partial(
                 beatviews.activity_count,
                 paths,
@@ -1343,18 +1030,20 @@ def _view_counts(paths: Paths, job: str | None, source: str = "any") -> dict[str
 
 
 def run_model(paths: Paths, run_id: str) -> dict[str, Any] | None:
-    run, error = _attempt(partial(runs.get, paths, run_id))
+    run, error = common.attempt(partial(runs.get, paths, run_id))
     if run is None and error is None:
         return None
-    attempts, attempt_error = _attempt(partial(runs.attempts, paths, run.id)) if run else ([], None)
-    config, problems = _config(paths)
+    attempts, attempt_error = (
+        common.attempt(partial(runs.attempts, paths, run.id)) if run else ([], None)
+    )
+    config, problems = common.read_config(paths)
     timeout = _job_timeout(paths, config, run.job) if run else None
     related, _tasks_error = (
-        _attempt(partial(tasks.tasks_for_run, paths, run.id)) if run else ([], None)
+        common.attempt(partial(tasks.tasks_for_run, paths, run.id)) if run else ([], None)
     )
     return {
         "config_problems": problems,
-        "alarm": _alarm(paths),
+        "alarm": common.alarm(paths),
         "run": run,
         "attempts": attempts or [],
         "timeout": timeout,
@@ -1365,345 +1054,7 @@ def run_model(paths: Paths, run_id: str) -> dict[str, Any] | None:
 
 def _job_timeout(paths: Paths, config: Config | None, name: str) -> int | None:
     """The job's allowed seconds, when its JOB.md is still there and readable."""
-    loaded, _error = _attempt(partial(load_jobs, paths, config))
+    loaded, _error = common.attempt(partial(load_jobs, paths, config))
     found, _problems = loaded if loaded is not None else ([], {})
     job = next((candidate for candidate in found if candidate.dir_name == name), None)
     return job.timeout if job else None
-
-
-# -- Tasks ----------------------------------------------------------------------
-
-
-# The board reads top to bottom: what needs a person first, then what the agents hold,
-# then what is waiting, then what is finished. Each entry is a group's key, its heading,
-# and the qualifier the heading adds after the count.
-BOARD_GROUPS = (
-    ("blocked", "Blocked", "needs you"),
-    ("active", "Active", ""),
-    ("ready", "Ready", ""),
-    ("backlog", "Backlog", ""),
-    ("done", "Done", ""),
-)
-# Which group lists a task, by the state ``_task_state`` gives it. Every state maps to
-# exactly one group, so a task is on the board once and never in two places.
-TASK_GROUP_OF = {
-    "blocked": "blocked",
-    "needs-you": "blocked",
-    "active": "active",
-    "ready": "ready",
-    "backlog": "backlog",
-    "done": "done",
-    "cancelled": "done",
-}
-# The dot is the row's whole state; these are the tones it takes.
-TASK_TONES = {
-    "needs-you": "warning",
-    "blocked": "error",
-    "active": "running",
-    "ready": "ok",
-    "backlog": "muted",
-    "done": "ok",
-    "cancelled": "muted",
-}
-DONE_WINDOW = timedelta(days=7)  # the count line says this week's finishes; the list shows more
-DONE_LIMIT = 200
-GIT_TIMEOUT = 5.0
-_STAGE_NAME = re.compile(r"[a-z][a-z0-9-]{0,23}")
-
-
-@dataclass(frozen=True)
-class TaskRow:
-    """One task as listed: its state for the dot, and the project's name for the detail line."""
-
-    task: tasks.Task
-    state: str
-    project_name: str
-
-
-@dataclass(frozen=True)
-class TaskGroup:
-    label: str
-    rows: list[TaskRow]
-    note: str = ""  # a qualifier the heading adds after the count
-
-
-@dataclass(frozen=True)
-class TimelineEntry:
-    """One event as a row: a label for what happened, and whether its run can be opened."""
-
-    event: tasks.TaskEvent
-    label: str
-    tone: str
-    run: str | None  # ``live`` when the run row exists, ``pruned`` when it is gone
-
-
-def _project_of(config: Config | None, task: tasks.Task) -> ProjectConfig | None:
-    return config.projects.get(task.project) if config else None
-
-
-def _task_state(task: tasks.Task, project: ProjectConfig | None) -> str:
-    if task.finished:
-        return task.stage
-    if task.stage == "blocked":
-        return "blocked"
-    stage = project.stage(task.stage) if project else None
-    if (stage and stage.human) or task.attention:
-        return "needs-you"
-    if task.claim_run_id:
-        return "active"
-    if task.stage == "backlog":
-        return "backlog"
-    return "ready" if stage else "needs-you"
-
-
-def _task_row(config: Config | None, task: tasks.Task) -> TaskRow:
-    project = _project_of(config, task)
-    return TaskRow(task, _task_state(task, project), project.name if project else task.project)
-
-
-def _ready_order(config: Config | None, row: TaskRow) -> tuple[str, int, str]:
-    """Ready reads down the pipeline: by project, then the project's stage order."""
-    project = _project_of(config, row.task)
-    index = project.index(row.task.stage) if project and project.stage(row.task.stage) else 999
-    return (row.task.project, index, row.task.stage)
-
-
-def _board_groups(
-    config: Config | None, live: list[TaskRow], finished: list[TaskRow]
-) -> list[TaskGroup]:
-    """The five groups in reading order, each sorted its own way; an empty group is dropped.
-
-    Every task lands in one group, chosen by its state, so the board never lists the same
-    task twice. The finished rows arrive newest first from the query and keep that order.
-    """
-    held: dict[str, list[TaskRow]] = {key: [] for key, _label, _note in BOARD_GROUPS}
-    for row in live:
-        held[TASK_GROUP_OF[row.state]].append(row)
-    held["blocked"].sort(key=lambda row: row.task.entered_stage_at)  # longest wait on top
-    held["active"].sort(key=lambda row: row.task.claim_at or "", reverse=True)
-    held["ready"].sort(key=partial(_ready_order, config))
-    held["backlog"].sort(key=lambda row: row.task.entered_stage_at)
-    held["done"] = finished
-    return [TaskGroup(label, held[key], note) for key, label, note in BOARD_GROUPS if held[key]]
-
-
-def tasks_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any]:
-    """One board under the ``project``, ``stage`` and ``q`` filters.
-
-    Every matching task is on the page, in five groups the filters narrow together. The
-    whole history is counted in SQL; at most ``DONE_LIMIT`` finished tasks are listed.
-    """
-    config, problems = _config(paths)
-    projects = config.projects if config else {}
-    project = query.get("project", "").strip().upper() or None
-    stage = query.get("stage", "").strip().lower() or None
-    if stage is not None and not _STAGE_NAME.fullmatch(stage):
-        stage = None
-    q = tasks.clean_text(query.get("q", ""), single_line=True)[:200]
-    # The four live groups share one read of the unfinished tasks, which is the working set;
-    # the finished history is counted and capped separately so it never sets the page's cost.
-    live: list[tasks.Task] = []
-    error: str | None = None
-    if stage not in tasks.FINISHED:
-        listed, error = _attempt(
-            partial(
-                tasks.list_tasks,
-                paths,
-                project=project,
-                stage=stage,
-                query=q or None,
-                config=config,
-            )
-        )
-        live = listed or []
-    finished, finished_error = _attempt(
-        partial(
-            tasks.finished_tasks,
-            paths,
-            since=datetime.now(UTC) - DONE_WINDOW,
-            limit=DONE_LIMIT,
-            project=project,
-            stage=stage,
-            query=q or None,
-        )
-    )
-    history = finished or tasks.FinishedTasks(rows=[], total=0, done_count=0)
-    done_tasks = history.rows
-    error = error or finished_error
-    groups = _board_groups(
-        config,
-        [_task_row(config, task) for task in live],
-        [_task_row(config, task) for task in done_tasks],
-    )
-    stages = list(BUILTIN_STAGES)
-    for key, entry in projects.items():
-        if project in (None, key):
-            stages.extend(name for name in entry.stage_names if name not in stages)
-    if stage and stage not in stages:
-        stages.append(stage)
-    project_keys = sorted({*projects, *(task.project for task in (*live, *done_tasks))})
-    if project and project not in project_keys:
-        project_keys.append(project)
-    return {
-        "config_problems": problems,
-        "alarm": _alarm(paths),
-        "groups": groups,
-        "listed": sum(len(group.rows) for group in groups),
-        "total": len(live) + history.total,
-        "done_count": history.done_count,
-        "done_days": DONE_WINDOW.days,
-        "done_limit": DONE_LIMIT,
-        "project": project,
-        "stage": stage,
-        "q": q,
-        "projects": [(key, projects[key].name if key in projects else key) for key in project_keys],
-        "stages": stages,
-        "empty": _tasks_empty(project, stage, q),
-        "error": error,
-    }
-
-
-def _tasks_empty(project: str | None, stage: str | None, q: str) -> str:
-    """Say which filter emptied the board, so a blank page is not mistaken for a quiet one."""
-    narrowed = [
-        text
-        for text, value in (
-            (f"in project {project}", project),
-            (f"in stage {stage}", stage),
-            (f"matching “{q}”", q),
-        )
-        if value
-    ]
-    return f"No tasks {' '.join(narrowed)}." if narrowed else "No tasks yet."
-
-
-def _existing_runs(paths: Paths, ids: list[str]) -> set[str]:
-    """Which of these run ids still have a row; task events outlive pruned runs."""
-    if not ids:
-        return set()
-    with db.reader(paths) as con:
-        rows = con.execute(
-            f"SELECT id FROM runs WHERE id IN ({', '.join('?' for _ in ids)})", ids
-        ).fetchall()
-    return {row["id"] for row in rows}
-
-
-def _timeline(history: list[tasks.TaskEvent], live: set[str]) -> list[TimelineEntry]:
-    entries = []
-    for event in history:
-        label, tone = _event_label(event)
-        run = None if event.run_id is None else "live" if event.run_id in live else "pruned"
-        entries.append(TimelineEntry(event, label, tone, run))
-    return entries
-
-
-def _event_label(event: tasks.TaskEvent) -> tuple[str, str]:
-    payload = event.payload
-    match event.kind:
-        case "moved":
-            move = str(payload.get("move") or "moved")
-            tone = {"blocked": "warning", "cancelled": "muted"}.get(event.to_stage or "", "ok")
-            return f"{move}: {event.from_stage} → {event.to_stage}", tone
-        case "taken":
-            return "taken", "running"
-        case "released":
-            reason = str(payload.get("reason") or "").replace("_", " ")
-            return (f"released ({reason})" if reason else "released"), (
-                "warning" if reason == "run ended" else "muted"
-            )
-        case "created":
-            return (f"created in {event.to_stage}" if event.to_stage else "created"), "muted"
-        case "noted":
-            return ("note, needs attention" if payload.get("attention") else "note"), (
-                "warning" if payload.get("attention") else "muted"
-            )
-        case "ref":
-            return f"ref {payload.get('kind', '')} {payload.get('value', '')}".strip(), "muted"
-        case _:
-            return event.kind, "muted"
-
-
-def _git(cwd: Any, *args: str) -> str | None:
-    """One read-only Git query; None on any failure, because the page must always render."""
-    try:
-        done = subprocess.run(
-            ["git", *args],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=GIT_TIMEOUT,
-            check=False,
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
-        )
-    except OSError, subprocess.SubprocessError, ValueError:
-        return None
-    return done.stdout.strip()[:200] if done.returncode == 0 else None
-
-
-def _worktree(paths: Paths, project: ProjectConfig | None, ref: str) -> dict[str, Any] | None:
-    """The task's worktree panel, or None when the project has no repo or no worktree yet."""
-    if project is None or project.repo is None:
-        return None
-    path = paths.worktrees / project.key / ref
-    if not path.is_dir():
-        return None
-    branch = f"enso/{ref}"
-    base = _git(project.repo, "symbolic-ref", "--short", "HEAD")
-    counted = _git(path, "rev-list", "--count", f"{base}..{branch}", "--") if base else None
-    return {
-        "path": str(path),
-        "branch": branch,
-        "base": base,
-        "ahead": int(counted) if counted is not None and counted.isdigit() else None,
-    }
-
-
-def task_model(paths: Paths, ref_text: str) -> dict[str, Any] | None:
-    """One task: header, spec, refs, worktree, and the timeline."""
-    try:
-        ref = tasks.parse_ref(ref_text)
-        task = tasks.get(paths, ref)
-    except tasks.TaskError:
-        return None
-    except Exception as exc:  # the database is missing or unreadable: say so on the page
-        return {
-            "config_problems": _config(paths)[1],
-            "alarm": _alarm(paths),
-            "ref": ref_text,
-            "task": None,
-            "error": f"{type(exc).__name__}: {exc}",
-        }
-    config, problems = _config(paths)
-    project = _project_of(config, task)
-    ctx: dict[str, Any] | None = None
-    ctx_error: str | None = None
-    if config is not None and project is not None:
-        ctx, ctx_error = _attempt(partial(tasks.context, paths, config, ref, env={}))
-    history, events_error = _attempt(partial(tasks.events, paths, ref))
-    attached, refs_error = _attempt(partial(tasks.refs, paths, ref))
-    ids = sorted({event.run_id for event in history or [] if event.run_id})
-    live, _runs_error = _attempt(partial(_existing_runs, paths, ids))
-    return {
-        "config_problems": problems,
-        "alarm": _alarm(paths),
-        "ref": ref,
-        "task": task,
-        "project": project,
-        "project_name": project.name if project else task.project,
-        "stages": list(project.stage_names) if project else [],
-        "spec": files.render_markdown(task.body) if task.body else None,
-        "refs": attached or [],
-        "worktree": _worktree(paths, project, ref),
-        "handoff": ctx["handoff"] if ctx else None,
-        "recovery": ctx["recovery"] if ctx else None,
-        # The verdict offers the run only while its row exists; pruned runs are named, not linked.
-        "recovery_link": (
-            f"/runs/{ctx['recovery']['run_id']}"
-            if ctx and ctx["recovery"] and ctx["recovery"]["run_id"] in (live or set())
-            else None
-        ),
-        "timeline": _timeline(history or [], live or set()),
-        # The context read only feeds the handoff and the recovery notice, so it reports last;
-        # without this it would fail silently and the page would simply omit both.
-        "error": events_error or refs_error or ctx_error,
-    }

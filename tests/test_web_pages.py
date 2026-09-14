@@ -185,21 +185,22 @@ async def test_no_link_nests_inside_another_link(client: TestClient, home: Home)
 
 
 async def test_empty_home_renders_every_page(client: TestClient, enso_home: Paths) -> None:
+    pages = {}
     for path in ("/today", "/tasks", "/workspaces", "/skills", "/jobs", "/runs", "/health"):
-        body = await page(client, path)
-        assert "config.json is unusable" in body or path == "/health"
-    health = await page(client, "/health")
+        pages[path] = await page(client, path)
+        assert "config.json is unusable" in pages[path] or path == "/health"
+    health = pages["/health"]
     assert "is missing; run `enso setup` first" in health
     assert "enso.db does not exist yet" in health
     assert "No log yet" in await page(client, "/health/log")
-    jobs = await page(client, "/jobs")
-    assert "No jobs yet" in jobs
-    runs_page = await page(client, "/runs")
+    assert "No jobs yet" in pages["/jobs"]
+    runs_page = pages["/runs"]
     assert "Nothing has run yet" in runs_page and "No runs" in runs_page
-    assert "Up next" in await page(client, "/today")
-    assert "No workspace (enso and user scopes only)" in await page(
-        client, "/skills"
-    ) or "default" in await page(client, "/skills")
+    assert "Up next" in pages["/today"]
+    assert (
+        "No workspace (enso and user scopes only)" in pages["/skills"]
+        or "default" in pages["/skills"]
+    )
 
 
 # -- Health ---------------------------------------------------------------------
@@ -221,7 +222,7 @@ async def test_health_reports_every_section_database_and_log(
     assert "2 retained" in body
     log = await page(client, "/health/log")
     assert "line 249" in log and "line 50" in log and "line 49" not in log
-    assert "The latest 200 lines" in await page(client, "/health/log")
+    assert "The latest 200 lines" in log
     assert "http://127.0.0.1:8787" in body and "loopback only" in body
 
     # A section with nothing to report says so on a green row rather than vanishing,
@@ -246,32 +247,6 @@ async def test_health_reports_every_section_database_and_log(
     installed = section(body, "service")
     assert "<dd>no</dd>" in installed and '<dd><span class="muted">none</span></dd>' in installed
     assert "True" not in body and "False" not in body
-
-
-def test_doctor_facts_are_drawn_as_what_they_are() -> None:
-    """Every shape ``doctor`` reports, and what the Health page makes of it."""
-    assert views.fact("/Users/x/.enso", "path") == ([("path", "/Users/x/.enso")], [])
-    assert views.fact("claude", "path") == ([("path", "claude")], [])  # resolved on PATH
-    assert views.fact("launchd") == ([("word", "launchd")], [])
-    assert views.fact(True) == ([("word", "yes")], [])
-    assert views.fact(None) == ([("quiet", "none")], [])
-    assert views.fact(["a", "b"]) == ([("names", "a, b")], [])
-    assert views.fact([]) == ([("quiet", "none")], [])
-    # A per-item map leads on what the item is and keeps its flags and names under it.
-    assert views.fact({"path": "/bin/x", "executable": True, "models": ["opus"]}) == (
-        [("path", "/bin/x")],
-        [("word", "executable"), ("names", "opus")],
-    )
-    assert views.fact({"path": "/bin/x", "executable": False, "models": []}) == (
-        [("path", "/bin/x")],
-        [("word", "not executable"), ("quiet", "no models")],
-    )
-    # A transport has nothing to lead on, so its flags are the line themselves.
-    assert views.fact({"configured": True, "installed": False}) == (
-        [("word", "configured"), ("word", "not installed")],
-        [],
-    )
-    assert views.fact_label("git_root") == "git root"
 
 
 async def test_health_diagnoses_a_broken_config_and_database(
