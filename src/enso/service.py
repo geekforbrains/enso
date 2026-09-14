@@ -8,8 +8,7 @@ import shutil
 import subprocess
 import sys
 import time
-from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -32,6 +31,10 @@ class Definition:
 
     def name(self, platform: str) -> str:
         return self.label if platform == "launchd" else self.unit
+
+    def named(self, name: str) -> Definition:
+        """This unit under an installer-chosen name, whichever service manager runs it."""
+        return replace(self, label=name, unit=name)
 
 
 AGENT = Definition(
@@ -63,8 +66,9 @@ class Status:
         return self.pid is not None
 
 
-def platform_name(platform: str = sys.platform) -> str:
+def platform_name(platform: str | None = None) -> str:
     """``launchd`` or ``systemd``; anything else cannot run the service."""
+    platform = platform or sys.platform
     if platform == "darwin":
         return "launchd"
     if platform.startswith("linux"):
@@ -79,8 +83,13 @@ def unit_path(platform: str | None = None, *, definition: Definition = AGENT) ->
     return Path("~/.config/systemd/user").expanduser() / definition.unit
 
 
-def _domain() -> str:
+def domain() -> str:
+    """The launchd domain holding this user's agents."""
     return f"gui/{os.getuid()}"
+
+
+def _target(definition: Definition) -> str:
+    return f"{domain()}/{definition.label}"
 
 
 def _query(cmd: list[str]) -> str:
@@ -102,30 +111,42 @@ def _run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[s
     return result
 
 
+def unit_loaded(platform: str | None = None, *, definition: Definition = AGENT) -> bool:
+    """Whether launchd has the job bootstrapped, or systemd has the unit enabled."""
+    platform = platform or platform_name()
+    if platform == "launchd":
+        return bool(_query(["launchctl", "print", _target(definition)]).strip())
+    return _query(["systemctl", "--user", "is-enabled", definition.unit]).strip() == "enabled"
+
+
+def unit_pid(platform: str | None = None, *, definition: Definition = AGENT) -> int | None:
+    """The pid the service manager runs for the unit, or None while it is not running."""
+    platform = platform or platform_name()
+    if platform == "launchd":
+        output = _query(["launchctl", "print", _target(definition)])
+        match = re.search(r"^\s*pid = (\d+)", output, re.MULTILINE)
+    else:
+        output = _query(
+            ["systemctl", "--user", "show", "-p", "MainPID", "--value", definition.unit]
+        )
+        match = re.search(r"^([1-9]\d*)$", output.strip())
+    return int(match.group(1)) if match else None
+
+
 def restart_command(
-    pid: int,
-    *,
-    query: Callable[[list[str]], str] = _query,
-    platform: str = sys.platform,
-    definition: Definition = AGENT,
+    pid: int, *, platform: str | None = None, definition: Definition = AGENT
 ) -> list[str] | None:
     """The launchd/systemd restart for the unit that runs ``pid``; None when nothing does.
 
     A unit file on disk is not enough: a stale plist, or a unit running a different
     install, would restart the wrong process and leave this one running.
     """
-    if platform == "darwin":
-        target = f"{_domain()}/{definition.label}"
-        match = re.search(r"^\s*pid = (\d+)", query(["launchctl", "print", target]), re.MULTILINE)
-        if match and int(match.group(1)) == pid:
-            return ["launchctl", "kickstart", "-k", target]
-    elif platform.startswith("linux") and shutil.which("systemctl"):
-        main_pid = query(
-            ["systemctl", "--user", "show", "-p", "MainPID", "--value", definition.unit]
-        ).strip()
-        if main_pid.isdigit() and int(main_pid) == pid:
-            return ["systemctl", "--user", "restart", definition.unit]
-    return None
+    platform = platform or platform_name()
+    if unit_pid(platform, definition=definition) != pid:
+        return None
+    if platform == "launchd":
+        return ["launchctl", "kickstart", "-k", _target(definition)]
+    return ["systemctl", "--user", "restart", definition.unit]
 
 
 # -- Unit files -----------------------------------------------------------------
@@ -315,15 +336,14 @@ def uninstall(platform: str | None = None, *, definition: Definition = AGENT) ->
 
 
 def _bootout(*, definition: Definition = AGENT) -> None:
-    """Unload the agent and wait for launchd to let go of it.
+    """Unload the job and wait for launchd to let go of it.
 
     bootout returns while the old process is still shutting down (Enso closes its
     transports first), and a bootstrap in that window fails with "Input/output error".
     """
-    target = f"{_domain()}/{definition.label}"
-    _run(["launchctl", "bootout", target], check=False)
+    _run(["launchctl", "bootout", _target(definition)], check=False)
     deadline = time.monotonic() + BOOTOUT_WAIT_SECONDS
-    while _query(["launchctl", "print", target]).strip():
+    while unit_loaded("launchd", definition=definition):
         if time.monotonic() >= deadline:
             raise ServiceError(f"{definition.label} did not unload; its unit was left unchanged")
         time.sleep(0.2)
@@ -332,8 +352,8 @@ def _bootout(*, definition: Definition = AGENT) -> None:
 def _bootstrap(unit: Path, *, definition: Definition = AGENT) -> None:
     # A label left disabled by `launchctl unload -w` makes bootstrap fail with "Input/output
     # error"; enabling it first is harmless otherwise.
-    _run(["launchctl", "enable", f"{_domain()}/{definition.label}"], check=False)
-    _run(["launchctl", "bootstrap", _domain(), str(unit)])
+    _run(["launchctl", "enable", _target(definition)], check=False)
+    _run(["launchctl", "bootstrap", domain(), str(unit)])
 
 
 def start(platform: str | None = None, *, definition: Definition = AGENT) -> None:
@@ -342,8 +362,8 @@ def start(platform: str | None = None, *, definition: Definition = AGENT) -> Non
     if not unit.exists():
         raise ServiceError(f"service is not installed; run `enso {definition.cli_group} install`")
     if platform == "launchd":
-        if status(platform, definition=definition).loaded:
-            _run(["launchctl", "kickstart", f"{_domain()}/{definition.label}"])
+        if unit_loaded(platform, definition=definition):
+            _run(["launchctl", "kickstart", _target(definition)])
         else:
             _bootstrap(unit, definition=definition)
     else:
@@ -361,8 +381,8 @@ def stop(platform: str | None = None, *, definition: Definition = AGENT) -> None
 
 def restart(platform: str | None = None, *, definition: Definition = AGENT) -> None:
     platform = platform or platform_name()
-    if platform == "launchd" and status(platform, definition=definition).loaded:
-        _run(["launchctl", "kickstart", "-k", f"{_domain()}/{definition.label}"])
+    if platform == "launchd" and unit_loaded(platform, definition=definition):
+        _run(["launchctl", "kickstart", "-k", _target(definition)])
     elif platform == "launchd":
         start(platform, definition=definition)
     else:
@@ -372,20 +392,10 @@ def restart(platform: str | None = None, *, definition: Definition = AGENT) -> N
 def status(platform: str | None = None, *, definition: Definition = AGENT) -> Status:
     platform = platform or platform_name()
     unit = unit_path(platform, definition=definition)
-    if platform == "launchd":
-        output = _query(["launchctl", "print", f"{_domain()}/{definition.label}"])
-        match = re.search(r"^\s*pid = (\d+)", output, re.MULTILINE)
-        loaded = bool(output.strip())
-    else:
-        output = _query(
-            ["systemctl", "--user", "show", "-p", "MainPID", "--value", definition.unit]
-        )
-        match = re.search(r"^([1-9]\d*)$", output.strip())
-        loaded = _query(["systemctl", "--user", "is-enabled", definition.unit]).strip() == "enabled"
     return Status(
         platform=platform,
         unit=unit,
         installed=unit.exists(),
-        loaded=loaded,
-        pid=int(match.group(1)) if match else None,
+        loaded=unit_loaded(platform, definition=definition),
+        pid=unit_pid(platform, definition=definition),
     )

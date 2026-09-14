@@ -5,6 +5,12 @@ All notable changes to Enso are documented here, following
 
 ## [Unreleased]
 
+### Changed
+
+- The managed updater stops and restarts the agent and viewer through the same
+  service-manager code as `enso service` and `enso web`, so an unsupported platform or
+  a failing launchd/systemd command reports the same way in every command.
+
 ### Added
 
 - `enso web install` and `uninstall` manage an optional viewer user service on macOS

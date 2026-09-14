@@ -17,20 +17,20 @@ from enso.config import Config, Paths, parse_config
 @pytest.mark.parametrize(
     ("platform", "output", "expected"),
     [
-        ("darwin", "\tpid = 4242\n", ["launchctl", "kickstart", "-k", "gui/UID/com.enso.agent"]),
-        ("darwin", "", None),  # unit not loaded, even though a stale plist may exist
-        ("darwin", "\tpid = 1\n", None),  # loaded, but it runs some other process
-        ("linux", "4242\n", ["systemctl", "--user", "restart", "enso.service"]),
-        ("linux", "0\n", None),
+        ("launchd", "\tpid = 4242\n", ["launchctl", "kickstart", "-k", "gui/UID/com.enso.agent"]),
+        ("launchd", "", None),  # unit not loaded, even though a stale plist may exist
+        ("launchd", "\tpid = 1\n", None),  # loaded, but it runs some other process
+        ("systemd", "4242\n", ["systemctl", "--user", "restart", "enso.service"]),
+        ("systemd", "0\n", None),
     ],
 )
 def test_restart_command_targets_only_the_unit_running_this_process(
     platform: str, output: str, expected: list[str] | None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(service.shutil, "which", lambda name: "/bin/systemctl")
+    monkeypatch.setattr(service, "_query", lambda cmd: output)
     if expected is not None:
         expected = [part.replace("UID", str(os.getuid())) for part in expected]
-    assert service.restart_command(4242, query=lambda cmd: output, platform=platform) == expected
+    assert service.restart_command(4242, platform=platform) == expected
 
 
 def test_units_carry_the_binary_provider_paths_and_home(

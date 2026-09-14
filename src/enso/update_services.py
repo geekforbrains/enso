@@ -14,9 +14,9 @@ import plistlib
 import re
 import signal
 import subprocess
-import sys
 import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -77,16 +77,45 @@ def run_command(
     return output.decode("utf-8", errors="replace").strip()
 
 
+@contextlib.contextmanager
+def _service_errors() -> Iterator[None]:
+    """Report a service-manager failure the way every other update step fails."""
+    try:
+        yield
+    except service.ServiceError as exc:
+        raise UpdateError(str(exc)) from exc
+
+
+def _platform() -> str:
+    with _service_errors():
+        return service.platform_name()
+
+
+def _helper(operation_id: str) -> service.Definition:
+    """The per-operation updater unit: a launchd job, or a transient systemd unit."""
+    if not re.fullmatch(r"[0-9a-f]{32}", operation_id):
+        raise UpdateError("invalid update helper id")
+    return service.Definition(
+        f"com.enso.update.{operation_id}",
+        f"enso-update-{operation_id}",
+        ("-m", "enso.cli", "update", "_run", operation_id),
+        "Enso updater",
+        "update",
+    )
+
+
 def launch(paths: Paths, operation_id: str, python: Path) -> None:
     """Ask the OS to run the updater independently of the requesting chat process."""
-    command = [str(python), "-m", "enso.cli", "update", "_run", operation_id]
+    helper = _helper(operation_id)
+    platform = _platform()
+    command = [str(python), *helper.arguments]
     env = {"ENSO_HOME": str(paths.home), "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
-    if sys.platform.startswith("linux"):
+    if platform == "systemd":
         run_command(
             [
                 "systemd-run",
                 "--user",
-                f"--unit=enso-update-{operation_id}",
+                f"--unit={helper.unit}",
                 "--collect",
                 "--property=Restart=on-failure",
                 "--property=RestartSec=2",
@@ -95,52 +124,33 @@ def launch(paths: Paths, operation_id: str, python: Path) -> None:
             ],
             cwd=paths.home,
         )
-    elif sys.platform == "darwin":
-        label = _helper_label(operation_id)
-        target = f"gui/{os.getuid()}/{label}"
-        loaded = _launchd_definition(paths, target)
-        if loaded is not None:
-            if re.search(r"^\s*pid = [1-9]\d*", loaded, re.MULTILINE):
-                raise UpdateError(
-                    "the updater helper is still running; retry recovery after it exits"
-                )
-            # SuccessfulExit=False stops retrying after an orderly failure report,
-            # but launchd keeps its definition loaded. Bootstrapping it again fails.
-            run_command(["launchctl", "kickstart", target], cwd=paths.home)
-            return
-        unit = paths.runtime_dir / "operations" / operation_id / "updater.plist"
-        write_bytes(
-            unit,
-            plistlib.dumps(
-                {
-                    "Label": label,
-                    "ProgramArguments": command,
-                    "EnvironmentVariables": env,
-                    "WorkingDirectory": str(paths.home),
-                    "RunAtLoad": True,
-                    "KeepAlive": {"SuccessfulExit": False},
-                    "ThrottleInterval": 2,
-                    "StandardOutPath": str(unit.parent / "worker.log"),
-                    "StandardErrorPath": str(unit.parent / "worker.log"),
-                }
-            ),
-        )
-        run_command(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(unit)], cwd=paths.home)
-    else:
-        raise UpdateError("self-updates require macOS launchd or Linux user systemd")
-
-
-def _helper_label(operation_id: str) -> str:
-    if not re.fullmatch(r"[0-9a-f]{32}", operation_id):
-        raise UpdateError("invalid update helper id")
-    return f"com.enso.update.{operation_id}"
-
-
-def _launchd_definition(paths: Paths, target: str) -> str | None:
-    try:
-        return run_command(["launchctl", "print", target], cwd=paths.home)
-    except UpdateError:
-        return None
+        return
+    if service.unit_pid(platform, definition=helper):
+        raise UpdateError("the updater helper is still running; retry recovery after it exits")
+    if service.unit_loaded(platform, definition=helper):
+        # SuccessfulExit=False stops retrying after an orderly failure report,
+        # but launchd keeps its definition loaded. Bootstrapping it again fails.
+        target = f"{service.domain()}/{helper.label}"
+        run_command(["launchctl", "kickstart", target], cwd=paths.home)
+        return
+    unit = paths.runtime_dir / "operations" / operation_id / "updater.plist"
+    write_bytes(
+        unit,
+        plistlib.dumps(
+            {
+                "Label": helper.label,
+                "ProgramArguments": command,
+                "EnvironmentVariables": env,
+                "WorkingDirectory": str(paths.home),
+                "RunAtLoad": True,
+                "KeepAlive": {"SuccessfulExit": False},
+                "ThrottleInterval": 2,
+                "StandardOutPath": str(unit.parent / "worker.log"),
+                "StandardErrorPath": str(unit.parent / "worker.log"),
+            }
+        ),
+    )
+    run_command(["launchctl", "bootstrap", service.domain(), str(unit)], cwd=paths.home)
 
 
 def cleanup_finished(paths: Paths, operation_id: str) -> None:
@@ -149,151 +159,140 @@ def cleanup_finished(paths: Paths, operation_id: str) -> None:
     Linux transient units already use --collect. Keep the operation's private
     plist and log as recovery evidence, and never stop a helper that is running.
     """
-    if sys.platform != "darwin":
+    platform = _platform()
+    if platform != "launchd":
         return
-    target = f"gui/{os.getuid()}/{_helper_label(operation_id)}"
-    loaded = _launchd_definition(paths, target)
-    if loaded is None or re.search(r"^\s*pid = [1-9]\d*", loaded, re.MULTILINE):
+    helper = _helper(operation_id)
+    if not service.unit_loaded(platform, definition=helper):
         return
-    with contextlib.suppress(UpdateError):
-        run_command(["launchctl", "bootout", target], cwd=paths.home)
+    if service.unit_pid(platform, definition=helper):
+        return
+    with contextlib.suppress(service.ServiceError):
+        service.stop(platform, definition=helper)
 
 
-def _unit_pid(paths: Paths, name: str) -> int | None:
-    if sys.platform.startswith("linux"):
-        try:
-            value = run_command(
-                ["systemctl", "--user", "show", "-p", "MainPID", "--value", name], cwd=paths.home
+def _viewer(name: str) -> service.Definition:
+    """The viewer unit an installer named, validated before it names any path."""
+    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", name):
+        raise UpdateError("viewer service must be a user service name")
+    return service.VIEWER.named(name)
+
+
+def _standard_viewer(paths: Paths, platform: str, viewer: web.Status) -> service.Definition | None:
+    """The built-in viewer unit when it provably runs this home's viewer, else None.
+
+    A matching PID proves ownership, including for older handwritten units, so the
+    built-in service needs no saved installer override.
+    """
+    if (
+        viewer.pid is not None
+        and service.unit_pid(platform, definition=service.VIEWER) == viewer.pid
+    ):
+        return service.VIEWER
+    unit = service.unit_path(platform, definition=service.VIEWER)
+    if unit.exists() or unit.is_symlink():
+        from .web.service import unit_home
+
+        with _service_errors():
+            home = unit_home(service.Status(platform, unit, True, False, None))
+        if home == paths.home.resolve():
+            raise UpdateError(
+                "cannot confirm the standard viewer service owns this home's viewer; "
+                "check its service state before updating"
             )
-        except UpdateError:
-            return None
-        return int(value) if value.isdigit() and int(value) > 0 else None
-    try:
-        value = run_command(["launchctl", "print", f"gui/{os.getuid()}/{name}"], cwd=paths.home)
-    except UpdateError:
-        return None
-    match = re.search(r"^\s*pid = (\d+)", value, re.MULTILINE)
-    return int(match[1]) if match else None
+    return None
 
 
 def discover(paths: Paths, viewer_service: str = "") -> dict[str, Any]:
+    platform = _platform()
     state = daemon(paths)
     if receiver_active(paths) and not state:
         raise UpdateError("a legacy or unresponsive Enso is running; stop it before migrating")
-    if state and service.restart_command(state["pid"]) is None:
+    if state and service.restart_command(state["pid"], platform=platform) is None:
         raise UpdateError(
             "running Enso is not managed by its user service; install the service first"
         )
     viewer = web.status(paths)
-    if viewer_service and not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", viewer_service):
-        raise UpdateError("viewer service must be a user service name")
-    if viewer.running and not viewer_service:
-        # The built-in viewer service needs no saved installer override. A matching
-        # PID proves it owns this home's viewer, including older handwritten units.
-        platform = "systemd" if sys.platform.startswith("linux") else "launchd"
-        standard = service.VIEWER.name(platform)
-        if viewer.pid is not None and _unit_pid(paths, standard) == viewer.pid:
-            viewer_service = standard
-        else:
-            unit = service.unit_path(platform, definition=service.VIEWER)
-            if unit.exists() or unit.is_symlink():
-                from .web.service import unit_home
-
-                try:
-                    home = unit_home(service.Status(platform, unit, True, False, None))
-                except service.ServiceError as exc:
-                    raise UpdateError(str(exc)) from exc
-                if home == paths.home.resolve():
-                    raise UpdateError(
-                        "cannot confirm the standard viewer service owns this home's viewer; "
-                        "check its service state before updating"
-                    )
-    if viewer.running and viewer_service and _unit_pid(paths, viewer_service) != viewer.pid:
-        raise UpdateError("the configured viewer service does not own this home's viewer")
+    viewer_unit = _viewer(viewer_service) if viewer_service else None
+    if viewer.running:
+        if viewer_unit is None:
+            viewer_unit = _standard_viewer(paths, platform, viewer)
+        elif service.unit_pid(platform, definition=viewer_unit) != viewer.pid:
+            raise UpdateError("the configured viewer service does not own this home's viewer")
     return {
         "daemon": bool(state),
         "daemon_pid": state.get("pid"),
         "viewer": viewer.running,
-        "viewer_service": viewer_service,
+        "viewer_service": viewer_unit.name(platform) if viewer_unit else "",
         "viewer_host": viewer.host,
         "viewer_port": viewer.port,
-        "daemon_definition": _definition_digest(
-            service.SYSTEMD_UNIT if sys.platform.startswith("linux") else service.LAUNCHD_LABEL
-        )
-        if state
-        else None,
-        "viewer_definition": _definition_digest(viewer_service)
-        if viewer.running and viewer_service
+        "daemon_definition": _definition_digest(platform, service.AGENT) if state else None,
+        "viewer_definition": _definition_digest(platform, viewer_unit)
+        if viewer.running and viewer_unit
         else None,
     }
 
 
-def _definition_digest(name: str) -> str:
-    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", name):
-        raise UpdateError("invalid user service name")
-    if sys.platform.startswith("linux"):
-        unit = Path.home() / ".config/systemd/user" / name
-    else:
-        unit = Path.home() / "Library/LaunchAgents" / f"{name}.plist"
+def _definition_digest(platform: str, definition: service.Definition) -> str:
+    unit = service.unit_path(platform, definition=definition)
     try:
         with unit.open("rb") as file:
-            definition = file.read(65537)
-        if not definition or len(definition) > 65536:
+            content = file.read(65537)
+        if not content or len(content) > 65536:
             raise UpdateError("the user service definition is empty or too large")
-        return hashlib.sha256(definition).hexdigest()
+        return hashlib.sha256(content).hexdigest()
     except OSError as exc:
         raise UpdateError(
             "cannot verify the user service definition; reinstall its service"
         ) from exc
 
 
-def _unchanged_definition(previous: dict[str, Any], key: str, name: str) -> bool:
+def _unchanged_definition(
+    previous: dict[str, Any], key: str, platform: str, definition: service.Definition
+) -> bool:
     expected = previous.get(key)
     if not expected:
         return False
     if (
         not isinstance(expected, str)
         or not re.fullmatch(r"[a-f0-9]{64}", expected)
-        or _definition_digest(name) != expected
+        or _definition_digest(platform, definition) != expected
     ):
         raise UpdateError("the user service definition changed during this update")
     return True
 
 
-def _check_ownership(paths: Paths, previous: dict[str, Any]) -> None:
+def _check_ownership(platform: str, paths: Paths, previous: dict[str, Any]) -> None:
     """Recheck the verified generated unit before stopping or starting its processes."""
-    if previous["daemon"]:
-        name = service.SYSTEMD_UNIT if sys.platform.startswith("linux") else service.LAUNCHD_LABEL
+    if previous["daemon"] and not _unchanged_definition(
+        previous, "daemon_definition", platform, service.AGENT
+    ):
         # A candidate may fail or be interrupted before its first heartbeat. The
         # original verified unit still owns that launch, including its recovery.
-        if not _unchanged_definition(previous, "daemon_definition", name):
-            pid = _unit_pid(paths, name)
-            if pid is not None and pid != daemon(paths).get("pid"):
-                raise UpdateError("the Enso service no longer owns this home's daemon")
-    viewer_name = previous.get("viewer_service")
-    if (
-        previous["viewer"]
-        and viewer_name
-        and not _unchanged_definition(previous, "viewer_definition", viewer_name)
-    ):
-        pid = _unit_pid(paths, viewer_name)
-        viewer = web.status(paths)
-        if pid is not None and (not viewer.running or pid != viewer.pid):
-            raise UpdateError("the viewer service no longer owns this home's viewer")
+        pid = service.unit_pid(platform)
+        if pid is not None and pid != daemon(paths).get("pid"):
+            raise UpdateError("the Enso service no longer owns this home's daemon")
+    name = previous.get("viewer_service")
+    if previous["viewer"] and name:
+        viewer_unit = _viewer(name)
+        if not _unchanged_definition(previous, "viewer_definition", platform, viewer_unit):
+            pid = service.unit_pid(platform, definition=viewer_unit)
+            viewer = web.status(paths)
+            if pid is not None and (not viewer.running or pid != viewer.pid):
+                raise UpdateError("the viewer service no longer owns this home's viewer")
 
 
 def stop(paths: Paths, previous: dict[str, Any]) -> None:
-    _check_ownership(paths, previous)
-    if previous["daemon"]:
-        service.stop()
-    if previous["viewer"]:
-        name = previous.get("viewer_service")
-        if name and sys.platform.startswith("linux"):
-            run_command(["systemctl", "--user", "stop", name], cwd=paths.home)
-        elif name:
-            run_command(["launchctl", "bootout", f"gui/{os.getuid()}/{name}"], cwd=paths.home)
-        else:
-            web.stop(paths)
+    platform = _platform()
+    _check_ownership(platform, paths, previous)
+    name = previous.get("viewer_service")
+    with _service_errors():
+        if previous["daemon"]:
+            service.stop(platform)
+        if previous["viewer"] and name:
+            service.stop(platform, definition=_viewer(name))
+    if previous["viewer"] and not name:
+        web.stop(paths)
     deadline = time.monotonic() + 30
     while receiver_active(paths) or web.status(paths).running:
         if time.monotonic() >= deadline:
@@ -302,32 +301,30 @@ def stop(paths: Paths, previous: dict[str, Any]) -> None:
 
 
 def start(paths: Paths, previous: dict[str, Any], binary: Path) -> None:
-    _check_ownership(paths, previous)
-    if previous["daemon"]:
-        service.start()
-    if not previous["viewer"]:
-        return
+    platform = _platform()
+    _check_ownership(platform, paths, previous)
     name = previous.get("viewer_service")
-    if name and sys.platform.startswith("linux"):
-        run_command(["systemctl", "--user", "start", name], cwd=paths.home)
-    elif name:
-        unit = Path.home() / "Library" / "LaunchAgents" / f"{name}.plist"
-        run_command(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(unit)], cwd=paths.home)
-    else:
-        args = [str(binary), "web", "start"]
-        if previous.get("viewer_host"):
-            args.extend(["--host", str(previous["viewer_host"])])
-        if previous.get("viewer_port"):
-            args.extend(["--port", str(previous["viewer_port"])])
-        run_command(
-            args,
-            cwd=paths.home,
-            env={
-                **os.environ,
-                "ENSO_HOME": str(paths.home),
-                "ENSO_UPDATE_INTERNAL": read_json(paths.update_state).get("id", ""),
-            },
-        )
+    with _service_errors():
+        if previous["daemon"]:
+            service.start(platform)
+        if previous["viewer"] and name:
+            service.start(platform, definition=_viewer(name))
+    if not previous["viewer"] or name:
+        return
+    args = [str(binary), "web", "start"]
+    if previous.get("viewer_host"):
+        args.extend(["--host", str(previous["viewer_host"])])
+    if previous.get("viewer_port"):
+        args.extend(["--port", str(previous["viewer_port"])])
+    run_command(
+        args,
+        cwd=paths.home,
+        env={
+            **os.environ,
+            "ENSO_HOME": str(paths.home),
+            "ENSO_UPDATE_INTERNAL": read_json(paths.update_state).get("id", ""),
+        },
+    )
 
 
 def healthy(paths: Paths, previous: dict[str, Any], version: str, timeout: float) -> None:
