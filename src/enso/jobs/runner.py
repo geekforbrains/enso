@@ -16,7 +16,8 @@ from .. import db, execution, messages, policy, routing, runs, scheduling, tasks
 from .. import log as logctx
 from ..config import Config, LiveConfig, Paths
 from ..execution import NOTIFY_LIMIT as NOTIFY_LIMIT
-from ..execution import acquire_file_lock, alert_text, enso_error
+from ..execution import alert_text, enso_error
+from ..locks import LockPathError, acquire_file_lock
 from ..providers import make_provider
 from ..transports import Transport
 from . import Job, load_jobs, taskflow
@@ -102,6 +103,8 @@ def acquire_group_lock(paths: Paths, group: str) -> IO[str] | None:
     user-authored group name can never escape Enso's private runtime directory.
     """
     directory = paths.jobs / GROUP_LOCK_DIRNAME
+    if directory.is_symlink():
+        raise LockPathError(f"group lock directory must not be a symbolic link: {directory}")
     directory.mkdir(mode=0o700, exist_ok=True)
     name = hashlib.sha256(group.encode()).hexdigest()
     return acquire_file_lock(directory / f"{name}.lock")

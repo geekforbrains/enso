@@ -359,6 +359,17 @@ def test_pidfile_lock_decides_running_versus_stale(enso_home: Paths) -> None:
     assert web.status(paths) == web.Status(running=False, stale=True)
 
 
+def test_pidfile_refuses_a_symbolic_link(enso_home: Paths, tmp_path: Path) -> None:
+    paths = enso_home
+    paths.home.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "outside.pid"
+    outside.write_text('{"pid": 4242}\n')
+    paths.web_pid.symlink_to(outside)
+    with pytest.raises(web.WebError, match="symbolic link"):
+        web.PidFile(paths.web_pid).acquire()
+    assert outside.read_text() == '{"pid": 4242}\n'
+
+
 # -- The process ----------------------------------------------------------------
 
 

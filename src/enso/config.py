@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import logging
@@ -17,6 +16,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
+from . import locks
 from .providers import PROVIDER_CLASSES
 
 log = logging.getLogger(__name__)
@@ -1077,19 +1077,19 @@ class LiveConfig:
 def config_lock(paths: Paths) -> Iterator[None]:
     """Take the shared writer lock without waiting; never delete this stable lock file."""
     paths.home.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(paths.config_lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(descriptor, "a", encoding="utf-8") as lock:
-        os.fchmod(lock.fileno(), 0o600)
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise ConfigConflictError(
-                ["configuration is busy; retry after the current change"]
-            ) from None
-        try:
-            yield
-        finally:
-            fcntl.flock(lock, fcntl.LOCK_UN)
+    try:
+        fd = locks.acquire(paths.config_lock)
+    except locks.LockPathError as exc:
+        raise ConfigError([str(exc)]) from None
+    except BlockingIOError:
+        raise ConfigConflictError(
+            ["configuration is busy; retry after the current change"]
+        ) from None
+    try:
+        os.fchmod(fd, 0o600)
+        yield
+    finally:
+        os.close(fd)
 
 
 def write_config_locked(paths: Paths, raw: dict[str, Any]) -> None:

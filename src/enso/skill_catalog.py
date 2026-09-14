@@ -6,7 +6,6 @@ belong to the operator; installing a skill never updates or repairs one in place
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import http.client
 import json
@@ -23,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from . import frontmatter, skills, workspaces
+from . import frontmatter, locks, skills, workspaces
 from .config import Paths
 from .maintenance import sync_directory
 
@@ -423,14 +422,13 @@ def _no_links(path: Path) -> None:
 def _install_lock(paths: Paths) -> Iterator[None]:
     _no_links(paths.skills)
     paths.skills.mkdir(parents=True, exist_ok=True)
-    fd = os.open(paths.skill_lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise SkillError("the skill installation lock must be a regular file")
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise SkillError("another skill installation is in progress") from None
+        fd = locks.acquire(paths.skill_lock)
+    except locks.LockPathError as exc:
+        raise SkillError(f"the skill installation {exc}") from None
+    except BlockingIOError:
+        raise SkillError("another skill installation is in progress") from None
+    try:
         yield
     finally:
         os.close(fd)

@@ -29,6 +29,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from . import locks
 from .config import (
     ConfigConflictError,
     ConfigError,
@@ -105,8 +106,13 @@ def _write(path: Path, value: dict[str, Any]) -> None:
             temporary.unlink(missing_ok=True)
 
 
-def _open_lock(path: Path) -> int:
-    return os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+def _open_lock(path: Path, *, create: bool = True) -> int:
+    try:
+        return locks.open_lock(path, create=create)
+    except locks.LockPathError:
+        raise PairingError(
+            "storage_error", "The connection lock must be a regular file, not a link."
+        ) from None
 
 
 @contextlib.contextmanager
@@ -126,7 +132,7 @@ def _control(paths: Paths) -> Iterator[None]:
 def _held(path: Path) -> bool:
     """Whether someone holds this advisory lock; a file nobody created is nobody's lock."""
     try:
-        fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
+        fd = _open_lock(path, create=False)
     except FileNotFoundError:
         return False
     try:

@@ -23,6 +23,12 @@ All notable changes to Enso are documented here, following
   preventing resumed chats from silently switching conversations. Unrecognized provider
   output now reports an error instead of establishing a chat session.
 
+### Security
+
+- Every lock file under the home, including the per-job locks under `jobs/` and the
+  viewer pidfile, is opened without following symbolic links and refused unless it is a
+  regular file.
+
 ## [0.1.2] - 2026-09-10
 
 ### Fixed
