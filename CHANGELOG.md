@@ -27,7 +27,7 @@ All notable changes to Enso are documented here, following
 
 - Every lock file under the home, including the per-job locks under `jobs/` and the
   viewer pidfile, is opened without following symbolic links and refused unless it is a
-  regular file.
+  regular file. This also applies when checking viewer status or stopping the viewer.
 
 ## [0.1.2] - 2026-09-10
 
