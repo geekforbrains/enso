@@ -10,6 +10,10 @@ task it holds; any move clears the claim, and a run that ends without a move get
 released by the runner. Events are append-only and never pruned: a finished task is a
 labelled trace of how it got there.
 
+Task reads also live here: listing and finished-history queries share filters and row
+conversion, so consumers do not need task SQL. Callers own display grouping and history
+limits; project stages remain defined by configuration.
+
 Titles and bodies arrive from chat and from agents, so they are data: control characters are
 stripped, and the text is only ever bound as a SQL parameter or printed inside a framed block.
 See ``docs/tasks.md``.
@@ -83,6 +87,15 @@ class Task:
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class FinishedTasks:
+    """A bounded history page, its uncapped total, and done count since the given cutoff."""
+
+    rows: list[Task]
+    total: int
+    done_count: int
 
 
 @dataclass(frozen=True)
@@ -328,6 +341,27 @@ def _like(text: str) -> str:
     return f"%{escaped}%"
 
 
+def _filters(
+    *, project: str | None, stage: str | None, query: str | None
+) -> tuple[list[str], list[str]]:
+    """The filters common to ordinary lists and finished history."""
+    clauses, params = [], []
+    if project:
+        clauses.append("project = ?")
+        params.append(project.strip().upper())
+    if stage:
+        clauses.append("stage = ?")
+        params.append(stage)
+    if query:
+        try:
+            exact = parse_ref(query)
+        except TaskError:
+            exact = query.strip().upper()
+        clauses.append(r"(title LIKE ? ESCAPE '\' OR body LIKE ? ESCAPE '\' OR ref = ?)")
+        params.extend([_like(query), _like(query), exact])
+    return clauses, params
+
+
 def list_tasks(
     paths: Paths,
     *,
@@ -348,14 +382,8 @@ def list_tasks(
     """
     if ready and config is None:
         raise TaskError("listing ready tasks needs the config")
-    clauses, params = [], []
-    if project:
-        clauses.append("project = ?")
-        params.append(project.strip().upper())
-    if stage:
-        clauses.append("stage = ?")
-        params.append(stage)
-    elif not all:
+    clauses, params = _filters(project=project, stage=stage, query=query)
+    if not stage and not all:
         clauses.append("stage NOT IN (?, ?)")
         params.extend(FINISHED)
     if ready:
@@ -368,13 +396,6 @@ def list_tasks(
     if idle_for is not None:
         clauses.append("entered_stage_at <= ?")
         params.append((datetime.now(UTC) - idle_for).isoformat(timespec="microseconds"))
-    if query:
-        try:
-            exact = parse_ref(query)
-        except TaskError:
-            exact = query.strip().upper()
-        clauses.append(r"(title LIKE ? ESCAPE '\' OR body LIKE ? ESCAPE '\' OR ref = ?)")
-        params.extend([_like(query), _like(query), exact])
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     with db.reader(paths) as con:
         rows = con.execute(
@@ -391,6 +412,62 @@ def list_tasks(
             and task.stage in config.projects[task.project].agent_stages
         ]
     return tasks
+
+
+def finished_tasks(
+    paths: Paths,
+    *,
+    since: datetime,
+    limit: int,
+    project: str | None = None,
+    stage: str | None = None,
+    query: str | None = None,
+) -> FinishedTasks:
+    """Finished tasks, newest in stage first, with filtered counts before the row limit.
+
+    Filters match ``list_tasks``. Both done and cancelled tasks are listed and counted in
+    ``total``; ``done_count`` includes only done tasks entering that stage at or after
+    ``since`` (an aware datetime). A non-finished stage returns an empty result.
+    ``limit`` must be nonnegative; zero returns counts without materialising any tasks.
+    """
+    if limit < 0:
+        raise TaskError("finished task limit must be nonnegative")
+    if since.utcoffset() is None:
+        raise TaskError("finished task cutoff needs a timezone")
+    if stage and stage not in FINISHED:
+        return FinishedTasks(rows=[], total=0, done_count=0)
+    clauses, params = _filters(project=project, stage=stage, query=query)
+    if not stage:
+        clauses.append("stage IN (?, ?)")
+        params.extend(FINISHED)
+    where = " AND ".join(clauses)
+    cutoff = since.astimezone(UTC).isoformat(timespec="microseconds")
+    with db.reader(paths) as con:
+        done_count, total = con.execute(
+            "SELECT count(CASE WHEN stage = 'done' AND entered_stage_at >= ? THEN 1 END), "
+            f"count(*) FROM _enso_tasks WHERE {where}",
+            [cutoff, *params],
+        ).fetchone()
+        rows = con.execute(
+            f"SELECT * FROM _enso_tasks WHERE {where} "
+            "ORDER BY entered_stage_at DESC, id DESC LIMIT ?",
+            [*params, limit],
+        ).fetchall()
+    return FinishedTasks(
+        rows=[_task(row) for row in rows], total=int(total), done_count=int(done_count)
+    )
+
+
+def run_tasks(paths: Paths, run_id: str) -> list[tuple[str, str]]:
+    """References and titles of tasks whose timeline mentions this run, ordered by reference."""
+    with db.reader(paths) as con:
+        rows = con.execute(
+            """SELECT DISTINCT t.ref, t.title FROM _enso_task_events e
+                 JOIN _enso_tasks t ON t.id = e.task_id
+                WHERE e.run_id = ? ORDER BY t.ref""",
+            (run_id,),
+        ).fetchall()
+    return [(row["ref"], row["title"]) for row in rows]
 
 
 def events(paths: Paths, ref: str, *, limit: int | None = None) -> list[TaskEvent]:
