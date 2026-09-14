@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import sqlite3
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -1350,7 +1349,9 @@ def run_model(paths: Paths, run_id: str) -> dict[str, Any] | None:
     attempts, attempt_error = _attempt(partial(runs.attempts, paths, run.id)) if run else ([], None)
     config, problems = _config(paths)
     timeout = _job_timeout(paths, config, run.job) if run else None
-    related, _tasks_error = _attempt(partial(_run_tasks, paths, run.id)) if run else ([], None)
+    related, _tasks_error = (
+        _attempt(partial(tasks.tasks_for_run, paths, run.id)) if run else ([], None)
+    )
     return {
         "config_problems": problems,
         "alarm": _alarm(paths),
@@ -1486,52 +1487,6 @@ def _board_groups(
     return [TaskGroup(label, held[key], note) for key, label, note in BOARD_GROUPS if held[key]]
 
 
-def _task_from_row(row: sqlite3.Row) -> tasks.Task:
-    fields = {key: row[key] for key in tasks.Task.__dataclass_fields__}
-    return tasks.Task(**{**fields, "attention": bool(fields["attention"])})
-
-
-def _finished(
-    paths: Paths, *, project: str | None, stage: str | None, q: str
-) -> tuple[int, int, list[tasks.Task]]:
-    """Filtered finishes: this week's done count, the full total, and the newest rows.
-
-    Finished tasks are never pruned, so the board counts them in SQL and lists at most
-    ``DONE_LIMIT`` rather than materialising the whole history on every request. The filters
-    mean the same as in ``tasks.list_tasks``.
-    """
-    if stage is not None and stage not in tasks.FINISHED:
-        return 0, 0, []
-    clauses, params = ["stage IN (?, ?)"], list(tasks.FINISHED)
-    if stage is not None:
-        clauses, params = ["stage = ?"], [stage]
-    if project:
-        clauses.append("project = ?")
-        params.append(project)
-    if q:
-        try:
-            exact = tasks.parse_ref(q)
-        except tasks.TaskError:
-            exact = q.upper()
-        like = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-        clauses.append(r"(title LIKE ? ESCAPE '\' OR body LIKE ? ESCAPE '\' OR ref = ?)")
-        params.extend([like, like, exact])
-    where = " AND ".join(clauses)
-    since = (datetime.now(UTC) - DONE_WINDOW).isoformat(timespec="microseconds")
-    with db.reader(paths) as con:
-        done_count, total = con.execute(
-            "SELECT count(CASE WHEN stage = 'done' AND entered_stage_at >= ? THEN 1 END), "
-            f"count(*) FROM _enso_tasks WHERE {where}",
-            [since, *params],
-        ).fetchone()
-        rows = con.execute(
-            f"SELECT * FROM _enso_tasks WHERE {where} "
-            "ORDER BY entered_stage_at DESC, id DESC LIMIT ?",
-            [*params, DONE_LIMIT],
-        ).fetchall()
-    return int(done_count), int(total), [_task_from_row(row) for row in rows]
-
-
 def tasks_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any]:
     """One board under the ``project``, ``stage`` and ``q`` filters.
 
@@ -1562,9 +1517,18 @@ def tasks_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any]:
         )
         live = listed or []
     finished, finished_error = _attempt(
-        partial(_finished, paths, project=project, stage=stage, q=q)
+        partial(
+            tasks.finished_tasks,
+            paths,
+            since=datetime.now(UTC) - DONE_WINDOW,
+            limit=DONE_LIMIT,
+            project=project,
+            stage=stage,
+            query=q or None,
+        )
     )
-    done_count, finished_count, done_tasks = finished or (0, 0, [])
+    history = finished or tasks.FinishedTasks(rows=[], total=0, done_count=0)
+    done_tasks = history.rows
     error = error or finished_error
     groups = _board_groups(
         config,
@@ -1585,8 +1549,8 @@ def tasks_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any]:
         "alarm": _alarm(paths),
         "groups": groups,
         "listed": sum(len(group.rows) for group in groups),
-        "total": len(live) + finished_count,
-        "done_count": done_count,
+        "total": len(live) + history.total,
+        "done_count": history.done_count,
         "done_days": DONE_WINDOW.days,
         "done_limit": DONE_LIMIT,
         "project": project,
@@ -1743,15 +1707,3 @@ def task_model(paths: Paths, ref_text: str) -> dict[str, Any] | None:
         # without this it would fail silently and the page would simply omit both.
         "error": events_error or refs_error or ctx_error,
     }
-
-
-def _run_tasks(paths: Paths, run_id: str) -> list[tuple[str, str]]:
-    """The tasks whose timeline mentions this run: what the run was working on."""
-    with db.reader(paths) as con:
-        rows = con.execute(
-            """SELECT DISTINCT t.ref, t.title FROM _enso_task_events e
-                 JOIN _enso_tasks t ON t.id = e.task_id
-                WHERE e.run_id = ? ORDER BY t.ref""",
-            (run_id,),
-        ).fetchall()
-    return [(row["ref"], row["title"]) for row in rows]
