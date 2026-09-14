@@ -36,16 +36,16 @@ BODY_FILE = typer.Option(None, "--body-file", help="The spec from a file, or - f
 REFS = typer.Option([], "--ref", help="Evidence as KIND:VALUE; repeatable.")
 
 
-def _read(source: str | Path, *, as_json: bool) -> str:
+def _read(source: str | Path, *, as_json: bool, literal: bool = False) -> str:
     try:
-        return read_input(source)
+        return read_input(source, literal=literal)
     except InputError as exc:
         fail([str(exc)], as_json=as_json)
 
 
 def _text(value: str | None, *, as_json: bool) -> str | None:
     """A message flag: the text, stdin for ``-``, or None when the flag was not given."""
-    return _read("-", as_json=as_json) if value == "-" else value
+    return _read(value, as_json=as_json, literal=value != "-") if value is not None else None
 
 
 def _file_text(path: Path | None, *, as_json: bool) -> str | None:
@@ -139,7 +139,11 @@ def task_add(
             config,
             project,
             title,
-            body=body if body is not None else _file_text(body_file, as_json=as_json) or "",
+            body=(
+                _read(body, as_json=as_json, literal=True)
+                if body is not None
+                else _file_text(body_file, as_json=as_json) or ""
+            ),
             priority=priority,
             backlog=backlog,
             after=after,

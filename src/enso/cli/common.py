@@ -28,7 +28,7 @@ ACTION_KEY = typer.Option(
     None, "--action-key", help="Stable purpose key; required for sends inside a heartbeat run."
 )
 INPUT_LIMIT = 256 * 1024
-"""Bytes of message, note, task body, or heartbeat text one command reads from a file or stdin."""
+"""UTF-8 bytes accepted per message, note, task body, or heartbeat input."""
 log = logging.getLogger(__name__)
 _DURATION_RE = re.compile(r"(\d+)([smhd])")
 _DURATION_UNITS = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}
@@ -227,21 +227,25 @@ def error_text(exc: Exception) -> str:
 
 
 class InputError(Exception):
-    """File or stdin input that is unreadable, not UTF-8, or over its size limit."""
+    """CLI input that is unreadable, not UTF-8, or over its size limit."""
 
 
-def read_input(source: str | Path, *, limit: int = INPUT_LIMIT) -> str:
-    """The UTF-8 text of a file path, or of stdin for ``-``, at most ``limit`` bytes.
+def read_input(source: str | Path, *, limit: int = INPUT_LIMIT, literal: bool = False) -> str:
+    """Read a UTF-8 file or stdin (``-``), or validate literal text, up to ``limit`` bytes.
 
-    Every command that reads a file or stdin comes through here so no reader is unbounded
-    and the error wording is the same; the caller reports the InputError at its boundary.
+    ``literal=True`` treats the source as text even when it is ``-`` or names a file.
+    Callers report InputError through their command's error output.
     """
     try:
-        if str(source) == "-":
+        if literal:
+            data = str(source).encode("utf-8")
+        elif str(source) == "-":
             data = sys.stdin.buffer.read(limit + 1)
         else:
             with Path(source).open("rb") as stream:
                 data = stream.read(limit + 1)
+    except UnicodeEncodeError as exc:
+        raise InputError("input is not UTF-8") from exc
     except OSError as exc:
         raise InputError(f"could not read {source}: {exc}") from exc
     if len(data) > limit:
@@ -259,10 +263,8 @@ def body(text: str | None, file: Path | None, *, as_json: bool = False) -> str:
     try:
         if file is not None:
             result = read_input(file)
-        elif text == "-":
-            result = read_input("-")
         elif text is not None:
-            result = text
+            result = read_input(text, literal=text != "-")
         else:
             fail(["give TEXT, --file FILE, or - to read stdin"], as_json=as_json)
     except InputError as exc:

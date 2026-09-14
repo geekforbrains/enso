@@ -67,11 +67,11 @@ def _definition(file: Path) -> dict[str, object]:
 
 
 def _message(text: str) -> str:
-    return read_input("-") if text == "-" else text
+    return read_input(text, literal=text != "-")
 
 
 def _checkpoint(text: str | None) -> dict[str, object] | None:
-    return _object(text) if text is not None else None
+    return _object(read_input(text, literal=True)) if text is not None else None
 
 
 def _actor() -> str:

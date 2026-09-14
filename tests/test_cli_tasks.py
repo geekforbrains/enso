@@ -306,14 +306,20 @@ def test_land_inside_a_run_is_for_the_holding_run_in_the_last_agent_stage(
     assert code == 0 and out == f"landed EN-001: main is now at {head}\n"
 
 
-def test_stdin_input_is_bounded(enso_home: Paths, project_config: Config) -> None:
-    """``--body-file -`` and ``-`` messages stop at INPUT_LIMIT bytes in both output forms."""
-    big = "x" * (INPUT_LIMIT + 1)
-    code, out, err = run("add", "Big", "--project", "en", "--body-file", "-", "--json", input=big)
+@pytest.mark.parametrize("stdin", [False, True])
+def test_text_input_is_bounded(enso_home: Paths, project_config: Config, stdin: bool) -> None:
+    """Bodies and notes count UTF-8 bytes equally in arguments and stdin."""
+    exact = "é" * (INPUT_LIMIT // 2)
+    big = exact + "x"
+    body_args = ["--body-file", "-"] if stdin else ["--body", big]
+    code, out, err = run(
+        "add", "Big", "--project", "en", *body_args, "--json", input=big if stdin else None
+    )
     assert code == 1 and err == ""
     assert json.loads(out) == {"ok": False, "error": f"input exceeds {INPUT_LIMIT} bytes"}
-    add()
-    code, out, err = run("note", "EN-1", "-", input=big)
+    task = add("Exact", "--body", exact)
+    assert task["ref"] == "EN-001" and task["body"] == exact
+    code, out, err = run("note", "EN-1", "-" if stdin else big, input=big if stdin else None)
     assert code == 1 and out == "" and err == f"error: input exceeds {INPUT_LIMIT} bytes\n"
-    code, out, _ = run("note", "EN-1", "-", input="x" * INPUT_LIMIT)
+    code, out, _ = run("note", "EN-1", "-" if stdin else exact, input=exact if stdin else None)
     assert code == 0 and out == "noted EN-001\n"

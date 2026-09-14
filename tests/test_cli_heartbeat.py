@@ -153,6 +153,34 @@ def test_file_failures_and_core_validation_are_reported(tmp_path):
     assert "title" in error and "unexpected" in error
 
 
+@pytest.mark.parametrize("field", ["message", "checkpoint"])
+def test_literal_input_limit_preserves_state_on_failure(cli_home, field):
+    beat = create()
+    if field == "checkpoint":
+        overhead = len(json.dumps({"cursor": ""}).encode("utf-8"))
+        cursor = "é" * ((INPUT_LIMIT - overhead) // 2)
+        exact = json.dumps({"cursor": cursor}, ensure_ascii=False)
+        big = json.dumps({"cursor": cursor + "x"}, ensure_ascii=False)
+    else:
+        exact = "é" * (INPUT_LIMIT // 2)
+        big = exact + "x"
+    args = ["complete", beat["ref"]]
+    if field == "checkpoint":
+        args.extend(["--message", "Done"])
+    result = invoke(*args, f"--{field}", big, "--json")
+    assert result.exit_code == 1 and result.stderr == ""
+    assert json.loads(result.stdout) == {"ok": False, "error": f"input exceeds {INPUT_LIMIT} bytes"}
+    unchanged = heartbeat.get(cli_home, beat["ref"])
+    assert unchanged.state == "paused" and unchanged.checkpoint == {}
+    assert len(packet("history", beat["ref"])) == 1
+    completed = packet(*args, f"--{field}", exact)
+    assert completed["state"] == "fulfilled"
+    if field == "checkpoint":
+        assert completed["checkpoint"] == {"cursor": cursor}
+    else:
+        assert packet("history", beat["ref"])[0]["message"] == exact
+
+
 def test_database_errors_have_no_traceback(monkeypatch):
     def broken(*args, **kwargs):
         raise sqlite3.OperationalError("database is locked")

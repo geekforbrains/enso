@@ -18,12 +18,14 @@ from ..outbound import FENCE, EnvelopeError, OutboundMessage, parse_outbound_mes
 from .common import (
     ACTION_KEY,
     JSON_FLAG,
+    InputError,
     body,
     deliver,
     echo_json,
     fail,
     load,
     parse_duration,
+    read_input,
     report,
     run,
     written,
@@ -97,8 +99,10 @@ def slack_send(
         if text is not None or file is not None:
             fail(["--rich replaces TEXT and --file"], as_json=as_json)
         try:
-            envelope = _envelope(rich.read_text(encoding="utf-8"))
-        except (OSError, EnvelopeError) as exc:
+            envelope = _envelope(read_input(rich))
+        except InputError as exc:
+            fail([str(exc)], as_json=as_json)
+        except EnvelopeError as exc:
             fail([f"{rich}: {exc}"], as_json=as_json)
         content = envelope.fallback_text
     else:
