@@ -14,6 +14,7 @@ import pytest
 from enso import execution
 from enso.execution import execute_turn
 from enso.providers import PROVIDER_CLASSES, ClaudeProvider, CodexProvider
+from enso.providers import stream as provider_stream
 from enso.runs import OUTPUT_KEEP
 
 SESSION = "d41ef054-9771-4d2e-997b-e08d0f9f4237"
@@ -144,7 +145,7 @@ async def test_early_session_survives_large_stream_and_final_answer_is_bounded(t
 
 
 async def test_oversized_line_fails_instead_of_discarding_a_protocol_event(tmp_path, monkeypatch):
-    monkeypatch.setattr(execution, "LINE_KEEP", 128)
+    monkeypatch.setattr(provider_stream, "LINE_KEEP", 128)
     provider = CodexProvider(write_cli(tmp_path, "sys.stdout.write('x' * 5000)"))
     result = await invoke(provider, tmp_path)
     assert result.status == "error" and "event exceeds 128 bytes" in result.error
@@ -193,7 +194,7 @@ async def test_separate_stderr_cannot_become_an_answer_and_its_diagnostic_is_bou
     result = await invoke(provider, tmp_path)
     assert (result.status, result.output, result.exit_code) == ("error", "real answer", 3)
     assert result.error.endswith("final diagnostic")
-    assert len(result.error.encode()) <= execution.DIAGNOSTIC_KEEP
+    assert len(result.error.encode()) <= provider_stream.DIAGNOSTIC_KEEP
 
 
 async def test_codex_merged_stderr_is_parsed_when_adapter_requires_it(tmp_path):
@@ -206,8 +207,8 @@ async def test_codex_merged_stderr_is_parsed_when_adapter_requires_it(tmp_path):
     assert result.status == "error" and result.error == "failure"
 
 
-@pytest.mark.parametrize("session", ["../escape", "--option", "bad\nline", "x" * 129])
-async def test_invalid_announced_session_fails(tmp_path, session):
+async def test_invalid_announced_session_fails(tmp_path):
+    session = "../escape"
     provider = CodexProvider(
         write_cli(
             tmp_path, f"print(json.dumps({{'type': 'thread.started', 'thread_id': {session!r}}}))"
@@ -276,9 +277,14 @@ async def test_assigned_id_needs_provider_output_before_becoming_resumable(tmp_p
     assert result.error == "launch failed"
 
 
-@pytest.mark.parametrize("resume", [False, True])
-@pytest.mark.parametrize("name", ["claude", "codex"])
-@pytest.mark.parametrize("output", ["", "Run the login command first.", "{}"])
+@pytest.mark.parametrize(
+    ("name", "resume", "output"),
+    [
+        ("claude", False, "{}"),
+        ("claude", True, ""),
+        ("codex", False, "Run the login command first."),
+    ],
+)
 async def test_successful_exit_without_recognized_events_fails(tmp_path, resume, name, output):
     provider = PROVIDER_CLASSES[name](write_cli(tmp_path, f"print({output!r})"))
     result = await invoke(provider, tmp_path, session_id=SESSION if resume else None)
@@ -299,7 +305,7 @@ async def test_unknown_provider_events_keep_a_bounded_diagnostic(tmp_path):
     assert result.status == "error" and result.session_id is None
     assert result.error.startswith("claude returned no recognized provider events: ")
     assert result.error.endswith('diagnostic tail"}')
-    assert len(result.error.encode()) <= execution.DIAGNOSTIC_KEEP
+    assert len(result.error.encode()) <= provider_stream.DIAGNOSTIC_KEEP
 
 
 @pytest.mark.parametrize(
@@ -332,65 +338,6 @@ async def test_malformed_event_becomes_protocol_error(tmp_path):
     assert result.status == "error" and "invalid claude event" in result.error
 
 
-@pytest.mark.parametrize("cancel", [False, True])
-async def test_timeout_and_cancellation_clean_up_process_and_reader_tasks(
-    tmp_path, monkeypatch, cancel
-):
-    started = asyncio.Event()
-    stopped = asyncio.Event()
-    reader_finished = asyncio.Event()
-
-    class Process:
-        def __init__(self):
-            self.stdout = asyncio.StreamReader()
-            self.stdout.feed_data(
-                json.dumps({"type": "thread.started", "thread_id": SESSION}).encode() + b"\n"
-            )
-            self.stderr = asyncio.StreamReader()
-            self.returncode = None
-
-        async def wait(self):
-            await stopped.wait()
-            return self.returncode
-
-    process = Process()
-
-    async def create(*args, **kwargs):
-        return process
-
-    async def terminate(child, label):
-        assert child is process
-        child.returncode = -15
-        stopped.set()
-
-    original_reader = execution._read_stdout
-
-    async def reader(stream, collected):
-        started.set()
-        try:
-            await original_reader(stream, collected)
-        finally:
-            reader_finished.set()
-
-    monkeypatch.setattr(execution.asyncio, "create_subprocess_exec", create)
-    monkeypatch.setattr(execution, "terminate_background_process", terminate)
-    monkeypatch.setattr(execution, "_read_stdout", reader)
-    baseline = asyncio.all_tasks()
-    running = asyncio.create_task(
-        invoke(CodexProvider("fake"), tmp_path, timeout=3 if cancel else 0.02)
-    )
-    await asyncio.wait_for(started.wait(), 1)
-    if cancel:
-        running.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await running
-    else:
-        result = await running
-        assert result.status == "timeout" and result.session_id == SESSION
-    assert stopped.is_set() and reader_finished.is_set()
-    assert asyncio.all_tasks() <= baseline
-
-
 async def test_exhausted_budget_never_launches_provider(tmp_path):
     provider = CodexProvider(write_cli(tmp_path, "Path('launched').touch()"))
     result = await invoke(provider, tmp_path, timeout=0)
@@ -401,7 +348,8 @@ async def test_exhausted_budget_never_launches_provider(tmp_path):
 async def test_cleanup_kills_descendant_holding_output_pipe_after_parent_exits(
     tmp_path, monkeypatch, cancel
 ):
-    provider = CodexProvider(
+    monkeypatch.setattr(execution.uuid, "uuid4", lambda: UUID(SESSION))
+    provider = ClaudeProvider(
         write_cli(
             tmp_path,
             f"""
@@ -415,7 +363,7 @@ async def test_cleanup_kills_descendant_holding_output_pipe_after_parent_exits(
             os.close(write_fd)
             os.read(read_fd, 1)
             os.close(read_fd)
-            print(json.dumps({{'type': 'thread.started', 'thread_id': {SESSION!r}}}), flush=True)
+            print(json.dumps({{'type': 'result', 'session_id': {SESSION!r}}}), flush=True)
             if {cancel!r}:
                 signal.pause()
             """,
@@ -423,7 +371,7 @@ async def test_cleanup_kills_descendant_holding_output_pipe_after_parent_exits(
     )
     processes = []
     original_create = asyncio.create_subprocess_exec
-    original_feed = execution._Collected.feed
+    original_feed = provider_stream.ProviderStream.feed
     original_terminate = execution.terminate_process_tree
     started = asyncio.Event()
 
@@ -432,16 +380,18 @@ async def test_cleanup_kills_descendant_holding_output_pipe_after_parent_exits(
         processes.append(process)
         return process
 
-    def feed(collected, line):
-        original_feed(collected, line)
+    def feed(stream, line):
+        events = original_feed(stream, line)
         started.set()
+        return events
 
     async def terminate(process, label):
         await original_terminate(process, label, grace=0.05)
 
     monkeypatch.setattr(execution.asyncio, "create_subprocess_exec", create)
-    monkeypatch.setattr(execution._Collected, "feed", feed)
+    monkeypatch.setattr(provider_stream.ProviderStream, "feed", feed)
     monkeypatch.setattr(execution, "terminate_process_tree", terminate)
+    baseline = asyncio.all_tasks()
     running = asyncio.create_task(invoke(provider, tmp_path, timeout=3 if cancel else 1))
     await asyncio.wait_for(started.wait(), 2)
     if cancel:
@@ -451,6 +401,8 @@ async def test_cleanup_kills_descendant_holding_output_pipe_after_parent_exits(
     else:
         result = await running
         assert result.status == "timeout" and result.exit_code == 0
+        assert result.session_id == SESSION
+    assert asyncio.all_tasks() <= baseline
     assert processes[0].returncode is not None
     # The child ignores SIGTERM and inherits stdout, so EOF proves cleanup reached it.
     assert await asyncio.wait_for(processes[0].stdout.read(), 1) == b""

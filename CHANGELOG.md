@@ -11,6 +11,12 @@ All notable changes to Enso are documented here, following
   and Linux. It starts at login, restarts after crashes, reports its health in `doctor`,
   and cooperates with viewer start/stop and managed release updates.
 
+### Fixed
+
+- Reject conflicting provider session IDs consistently in chat and background turns,
+  preventing resumed chats from silently switching conversations. Unrecognized provider
+  output now reports an error instead of establishing a chat session.
+
 ## [0.1.2] - 2026-09-10
 
 ### Fixed

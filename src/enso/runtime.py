@@ -7,7 +7,6 @@ import contextlib
 import logging
 import os
 import re
-import signal
 import time
 import uuid
 from asyncio.subprocess import Process
@@ -18,10 +17,12 @@ from typing import Any
 
 from . import connection_setup, db, messages, outbound, policy, routing
 from . import log as logctx
-from .config import Config, LiveConfig, Paths
+from .config import Config, LiveConfig
+from .execution import terminate_process_tree
 from .formatting import model_label, split_markdown
 from .outbound import OutboundMessage
 from .providers import BaseProvider, StreamEvent, make_provider, stored_session_id_ok
+from .providers.stream import ProtocolError, ProviderStream
 from .routing import ResolvedAgent
 from .transports import Reply, Turn
 
@@ -32,10 +33,7 @@ STATUS_FAST_SECONDS = 30
 STATUS_SLOW_SECONDS = 5
 STATUS_MAX_EDIT_FAILURES = 3
 STATUS_INITIAL_ACTION = "Processing"
-TERMINATE_GRACE_SECONDS = 1.0
 STOP_UNWIND_SECONDS = 5.0
-STDOUT_LIMIT = 10 * 1024 * 1024
-UNPARSED_KEEP = 2000
 
 _LEADING_ERROR_RE = re.compile(r"^(?:error\s*:\s*)+", re.IGNORECASE)
 
@@ -180,54 +178,6 @@ async def _cancel_and_wait(task: asyncio.Task[Any]) -> BaseException | None:
     return result if isinstance(result, BaseException) else None
 
 
-async def terminate_process_tree(
-    process: Process, label: str, *, grace: float = TERMINATE_GRACE_SECONDS
-) -> None:
-    """SIGTERM the process group, wait ``grace`` seconds, then SIGKILL it."""
-    if process.returncode is not None:
-        return
-    try:
-        pgid: int | None = os.getpgid(process.pid)
-    except ProcessLookupError:
-        pgid = None
-    if pgid is not None and (pgid <= 0 or pgid == os.getpgrp()):
-        pgid = None
-
-    async def send(sig: signal.Signals) -> None:
-        try:
-            if pgid is not None:
-                os.killpg(pgid, sig)
-            else:
-                process.send_signal(sig)
-        except ProcessLookupError:
-            pass
-        except PermissionError as exc:
-            if pgid is None:
-                raise
-            # macOS can report EPERM for a group containing only an unreaped
-            # zombie. Let asyncio reap our child, but hide the error only when
-            # the group has disappeared; a live permission failure must surface.
-            try:
-                await asyncio.wait_for(process.wait(), timeout=grace)
-            except TimeoutError:
-                raise exc from None
-            try:
-                os.killpg(pgid, 0)
-            except ProcessLookupError:
-                return
-            raise
-
-    log.info("terminating %s pid=%s pgid=%s", label, process.pid, pgid)
-    await send(signal.SIGTERM)
-    with contextlib.suppress(asyncio.TimeoutError):
-        await asyncio.wait_for(process.wait(), timeout=grace)
-        return
-    log.info("%s did not exit after %.1fs; killing", label, grace)
-    await send(signal.SIGKILL)
-    with contextlib.suppress(asyncio.TimeoutError):
-        await asyncio.wait_for(process.wait(), timeout=grace)
-
-
 @dataclass
 class Running:
     """What a conversation is doing right now, for status and stop.
@@ -270,102 +220,9 @@ class _IngressState:
 
 
 @dataclass
-class _Collected:
+class _Response:
     parts: list[str] = field(default_factory=list)
     error: str = ""
-
-
-class _Stream:
-    """Parses provider stdout and records the session once the CLI proves it exists."""
-
-    def __init__(
-        self,
-        paths: Paths,
-        conversation: str,
-        provider: BaseProvider,
-        *,
-        workspace: str,
-        stored: str | None,
-        pending_session: str | None,
-    ):
-        self.paths = paths
-        self.conversation = conversation
-        self.provider = provider
-        self.workspace = workspace
-        # The id already on this conversation's row, so an id the CLI repeats is recognised
-        # as the one already recorded rather than written again.
-        self.stored = stored
-        self.pending_session = pending_session
-        self.events = 0
-        self.emitted_error = False
-        self.unparsed: list[str] = []
-        self.unparsed_chars = 0
-
-    async def _store(self, session_id: str) -> None:
-        # The one place a session id is written, so the contract is checked once, here, for
-        # ids Enso minted and ids the CLI announced alike.
-        self.provider.check_session_id(session_id)
-        await asyncio.to_thread(
-            db.set_session,
-            self.paths,
-            self.conversation,
-            self.provider.name,
-            session_id,
-            self.workspace,
-        )
-        self.stored = session_id
-
-    async def _announced(self, emitted: str) -> None:
-        """Record an id the CLI announced, unless Enso already named this session.
-
-        When Enso assigned the id, that one is authoritative and the CLI may only confirm
-        it: an id that disagrees is reported and ignored, never allowed to replace the
-        session Enso launched and would otherwise resume.
-        """
-        if self.pending_session:
-            if emitted != self.pending_session:
-                log.warning(
-                    "%s announced session %r for a turn started as %s; keeping ours",
-                    self.provider.name,
-                    emitted[:60],
-                    self.pending_session[:8],
-                )
-            return
-        if emitted == self.stored:
-            # A CLI that stamps its session on every event repeats the same id all turn;
-            # the row already says so, so only a change is worth a write.
-            return
-        await self._store(emitted)
-
-    async def feed(self, raw_line: bytes, *, debug: bool) -> list[StreamEvent]:
-        line = raw_line.decode(errors="replace").strip()
-        if not line:
-            return []
-        raw = self.provider.parse_line(line)
-        if raw is None:
-            if self.unparsed_chars < UNPARSED_KEEP:
-                kept = line[: UNPARSED_KEEP - self.unparsed_chars]
-                self.unparsed.append(kept)
-                self.unparsed_chars += len(kept)
-            return []
-        self.events += 1
-        if debug:
-            log.debug("event %d %s", self.events, line[:2000])
-        # Stored only once the CLI has produced output, so a launch that dies
-        # before creating the session never leaves an id the next turn would resume.
-        if not self.stored and self.pending_session:
-            await self._store(self.pending_session)
-        events = self.provider.parse_event(raw)
-        for event in events:
-            if event.kind == "session" and event.session_id:
-                await self._announced(event.session_id)
-            elif event.kind == "error":
-                self.emitted_error = True
-        return events
-
-    def exit_error(self, rc: int, stderr: str) -> str:
-        text = stderr.strip()[:2000] or "\n".join(self.unparsed).strip()[:2000]
-        return text or f"{self.provider.name} exited with status {rc}"
 
 
 class Runtime:
@@ -886,7 +743,7 @@ class Runtime:
         ticker = asyncio.create_task(self._ticker(reply, status_id, running, stop))
         deadline = time.monotonic() + config.agent_timeout if config.agent_timeout else None
 
-        async def collect(prompt: str) -> tuple[_Collected, bool]:
+        async def collect(prompt: str) -> tuple[_Response, bool]:
             return await self._collect(
                 provider, prompt, conversation, workspace, turn, reply, running, deadline
             )
@@ -952,7 +809,7 @@ class Runtime:
     @staticmethod
     async def _rich_response(
         text: str,
-        collect: Callable[[str], Awaitable[tuple[_Collected, bool]]],
+        collect: Callable[[str], Awaitable[tuple[_Response, bool]]],
         provider: BaseProvider,
         running: Running,
     ) -> tuple[OutboundMessage | None, str, bool, bool]:
@@ -999,9 +856,9 @@ class Runtime:
         reply: Reply,
         running: Running,
         deadline: float | None,
-    ) -> tuple[_Collected, bool]:
+    ) -> tuple[_Response, bool]:
         """Stream the provider to completion under the deadline, retrying once if transient."""
-        collected = _Collected()
+        collected = _Response()
         config = running.config  # the check and the launch must read one revision
         try:
             policy.check(config, workspace, provider.name)
@@ -1027,7 +884,7 @@ class Runtime:
         timed_out = await self._run_until(consume(), deadline)
         if not timed_out and collected.error and provider.retryable_error(collected.error):
             log.info("retrying once after transient error: %s", collected.error[:200])
-            collected = _Collected()
+            collected = _Response()
             timed_out = await self._run_until(consume(), deadline)
         return collected, timed_out
 
@@ -1069,6 +926,7 @@ class Runtime:
         new_session = session is None and provider.assigns_session_id
         if new_session:
             session_id = str(uuid.uuid4())
+        stream = ProviderStream(provider, session_id, new_session=new_session)
         cmd = provider.command(
             prompt,
             agent.model,
@@ -1098,40 +956,49 @@ class Runtime:
             cwd=cwd,
             env=env,
             start_new_session=True,
-            limit=STDOUT_LIMIT,
         )
         running.process = process
-        stderr_task = (
-            asyncio.create_task(process.stderr.read()) if process.stderr is not None else None
-        )
-        stream = _Stream(
-            self.paths,
-            conversation,
-            provider,
-            workspace=workspace,
-            stored=session.session_id if session else None,
-            pending_session=session_id if new_session else None,
-        )
+        stored_id = session.session_id if session else None
+
+        async def persist_session() -> None:
+            nonlocal stored_id
+            if stream.session_id is not None and stream.session_id != stored_id:
+                await asyncio.to_thread(
+                    db.set_session,
+                    self.paths,
+                    conversation,
+                    provider.name,
+                    stream.session_id,
+                    workspace,
+                )
+                stored_id = stream.session_id
+
         try:
-            assert process.stdout is not None
-            async for raw_line in process.stdout:
-                for event in await stream.feed(raw_line, debug=self.debug):
+            async with contextlib.aclosing(stream.read(process, debug=self.debug)) as events:
+                async for event in events:
+                    await persist_session()
+                    if event.kind == "error":
+                        if running.stopping:
+                            continue
+                        log.error("provider error: %s", event.text)
                     yield event
-            await process.wait()
-            if process.returncode and not stream.emitted_error and not running.stopping:
-                stderr = (await stderr_task).decode(errors="replace") if stderr_task else ""
-                text = stream.exit_error(process.returncode, stderr)
-                log.error("provider error: %s", text)
-                yield StreamEvent(kind="error", text=text)
+        except ProtocolError as exc:
+            log.error("provider error: %s", exc)
+            yield StreamEvent(kind="error", text=str(exc))
         finally:
-            if process.returncode is None:
-                await terminate_process_tree(process, f"{provider.name} {conversation}")
-            if stderr_task is not None and not stderr_task.done():
-                stderr_task.cancel()
-            if session is not None:
-                await asyncio.to_thread(db.touch_session, self.paths, conversation, provider.name)
-            log.info("exit=%s events=%d", process.returncode, stream.events)
-            running.process = None
+            try:
+                if process.returncode is None:
+                    await terminate_process_tree(process, f"{provider.name} {conversation}")
+            finally:
+                # A conflicting announcement can fail before an event is delivered;
+                # retain the original identity even on that path.
+                await persist_session()
+                if session is not None:
+                    await asyncio.to_thread(
+                        db.touch_session, self.paths, conversation, provider.name
+                    )
+                log.info("exit=%s events=%d", process.returncode, stream.events)
+                running.process = None
 
     # -- Status message --
 

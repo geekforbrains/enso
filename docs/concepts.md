@@ -270,10 +270,10 @@ schemas are always read back from SQLite itself.
     its first line; an unlabelled fence stays a plain code block, and a block Slack refuses
     falls back to the translated text. The Slack prompt asks the agent to name local files with
     workspace-relative inline-code paths such as `drafts/report.md`.
-12. The session id is stored against the conversation and workspace, once it matches the
-    identifier contract of the provider that produced it. An id that does not is a
-    provider protocol error: nothing is stored and the turn reports it. Where Enso
-    assigned the id, that one is authoritative and a CLI may only confirm it.
+12. The validated session ID is stored against the conversation and workspace once a
+    recognized provider event establishes it. Invalid or conflicting IDs fail the turn
+    without replacing its original session. Chat, jobs with postrun, and Heartbeat share the
+    [session identity rules](configuration.md#session-identity).
 
 ## Chat origin
 

@@ -2,7 +2,8 @@
 """Stand-in for ``claude -p`` used by runtime and job tests.
 
 Streams ``stream-json`` events, or plain text with ``--output-format text`` (jobs).
-Prompt directives: ``sleep N`` waits N seconds before answering; ``fail [TEXT]`` prints
+Prompt directives: ``unrecognized`` emits only an unknown JSON event;
+``sleep N`` waits N seconds before answering; ``fail [TEXT]`` prints
 TEXT (batch mode) then exits 1.
 Environment: ``FAKE_FAIL=1`` exits 2 without printing anything (a launch that never
 created its session); ``FAKE_RESPONSES=<dir>`` answers with the directory's files in
@@ -58,6 +59,10 @@ if batch:
             f"workspace={env.get('ENSO_WORKSPACE', '')} prompt={prompt}"
         )
     )
+    sys.exit(0)
+
+if directive == "unrecognized":
+    print("{}")
     sys.exit(0)
 
 print(json.dumps({"type": "system", "subtype": "init", "session_id": session_id}), flush=True)
