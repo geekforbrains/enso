@@ -376,15 +376,19 @@ def test_first_reply_requires_same_selected_provider_owner_and_config(enso_home,
     assert setup.snapshot(enso_home)["first_reply"] is None
 
 
-def test_json_boundary_returns_one_safe_failure_for_malformed_input(enso_home):
+@pytest.mark.parametrize(
+    "content", ['{"bot_token":"private-token",broken}', '{"bot_token":"private-token' + "x" * 16384]
+)
+def test_json_boundary_returns_one_safe_failure_for_bad_input(enso_home, content):
     result = CliRunner().invoke(
         app,
         ["connect", "start", "--transport", "telegram", "--file", "-", "--json"],
-        input='{"bot_token":"private-token",broken}',
+        input=content,
     )
     report = json.loads(result.stdout)
     assert result.exit_code == 1 and result.stderr == ""
     assert report["version"] == 1 and not report["ok"] and "private-token" not in result.stdout
+    assert report["error_code"] == "invalid_input"
 
 
 def test_paired_result_stays_hidden_until_receiver_lock_is_released(enso_home, child_process):

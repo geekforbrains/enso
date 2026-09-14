@@ -11,6 +11,7 @@ from typer.testing import CliRunner
 
 from enso import db, tasks, worktrees
 from enso.cli import app
+from enso.cli.common import INPUT_LIMIT
 from enso.config import Config, Paths, load_config
 
 runner = CliRunner()
@@ -303,3 +304,16 @@ def test_land_inside_a_run_is_for_the_holding_run_in_the_last_agent_stage(
     assert tasks.take(enso_home, repo_config, "EN", "review", run_id="r1", actor="job:t")
     code, out, _ = run("land", "EN-1")
     assert code == 0 and out == f"landed EN-001: main is now at {head}\n"
+
+
+def test_stdin_input_is_bounded(enso_home: Paths, project_config: Config) -> None:
+    """``--body-file -`` and ``-`` messages stop at INPUT_LIMIT bytes in both output forms."""
+    big = "x" * (INPUT_LIMIT + 1)
+    code, out, err = run("add", "Big", "--project", "en", "--body-file", "-", "--json", input=big)
+    assert code == 1 and err == ""
+    assert json.loads(out) == {"ok": False, "error": f"input exceeds {INPUT_LIMIT} bytes"}
+    add()
+    code, out, err = run("note", "EN-1", "-", input=big)
+    assert code == 1 and out == "" and err == f"error: input exceeds {INPUT_LIMIT} bytes\n"
+    code, out, _ = run("note", "EN-1", "-", input="x" * INPUT_LIMIT)
+    assert code == 0 and out == "noted EN-001\n"

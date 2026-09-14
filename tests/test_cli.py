@@ -20,6 +20,7 @@ from typer.testing import CliRunner
 
 from enso import db, runs, workspaces
 from enso.cli import _serve, app, build_transports
+from enso.cli.common import INPUT_LIMIT, InputError, read_input
 from enso.config import Config, Paths
 from enso.heartbeat.runner import HeartbeatRunner
 from enso.jobs.runner import JobRunner, acquire_group_lock
@@ -619,6 +620,34 @@ class FakeBot:
     async def send_document(self, chat_id: int | str, handle: Any, caption: str | None) -> Any:
         self.documents.append((chat_id, os.path.basename(handle.name), caption))
         return SimpleNamespace(message_id=len(self.documents))
+
+
+def test_read_input_bounds_files_and_requires_utf8(tmp_path: Path) -> None:
+    path = tmp_path / "in.txt"
+    path.write_bytes(b"a" * 8)
+    assert read_input(path, limit=8) == "aaaaaaaa"
+    path.write_bytes(b"a" * 9)
+    with pytest.raises(InputError, match=r"^input exceeds 8 bytes$"):
+        read_input(path, limit=8)
+    path.write_bytes(b"\xff")
+    with pytest.raises(InputError, match="is not UTF-8"):
+        read_input(path, limit=8)
+    with pytest.raises(InputError, match=r"^could not read "):
+        read_input(tmp_path / "missing", limit=8)
+
+
+def test_message_input_over_the_limit_is_refused_before_sending(
+    slack: FakeSlack, tmp_path: Path
+) -> None:
+    runner = CliRunner()
+    body_file = tmp_path / "body.md"
+    body_file.write_bytes(b"x" * (INPUT_LIMIT + 1))
+    result = runner.invoke(app, ["slack", "send", "-c", "C1", "--file", str(body_file), "--json"])
+    assert result.exit_code == 1 and result.stderr == ""
+    assert json.loads(result.stdout) == {"ok": False, "error": f"input exceeds {INPUT_LIMIT} bytes"}
+    result = runner.invoke(app, ["message", "send", "-"], input="x" * (INPUT_LIMIT + 1))
+    assert result.exit_code == 1 and result.stderr == f"error: input exceeds {INPUT_LIMIT} bytes\n"
+    assert slack.sent("chat_postMessage") == []
 
 
 def test_slack_writes_follow_the_json_contract_and_fill_the_outbox(

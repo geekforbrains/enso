@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import contextlib
 import os
-import sys
 from datetime import timedelta
 from pathlib import Path
 
@@ -16,7 +15,18 @@ import typer
 
 from .. import tasks, worktrees
 from ..config import Paths
-from .common import JSON_FLAG, ago, columns, echo_json, fail, load, parse_duration, seconds
+from .common import (
+    JSON_FLAG,
+    InputError,
+    ago,
+    columns,
+    echo_json,
+    fail,
+    load,
+    parse_duration,
+    read_input,
+    seconds,
+)
 
 task_app = typer.Typer(no_args_is_help=True, help="Tasks: the board stage jobs work from.")
 
@@ -26,23 +36,21 @@ BODY_FILE = typer.Option(None, "--body-file", help="The spec from a file, or - f
 REFS = typer.Option([], "--ref", help="Evidence as KIND:VALUE; repeatable.")
 
 
-def _text(value: str | None) -> str | None:
+def _read(source: str | Path, *, as_json: bool) -> str:
+    try:
+        return read_input(source)
+    except InputError as exc:
+        fail([str(exc)], as_json=as_json)
+
+
+def _text(value: str | None, *, as_json: bool) -> str | None:
     """A message flag: the text, stdin for ``-``, or None when the flag was not given."""
-    if value == "-":
-        return sys.stdin.read()
-    return value
+    return _read("-", as_json=as_json) if value == "-" else value
 
 
 def _file_text(path: Path | None, *, as_json: bool) -> str | None:
     """``--body-file PATH`` or ``-`` for stdin."""
-    if path is None:
-        return None
-    if str(path) == "-":
-        return sys.stdin.read()
-    try:
-        return path.read_text(encoding="utf-8")
-    except OSError as exc:
-        fail([f"could not read {path}: {exc}"], as_json=as_json)
+    return _read(path, as_json=as_json) if path is not None else None
 
 
 def _duration(value: str | None, *, as_json: bool) -> timedelta | None:
@@ -92,7 +100,7 @@ def _move(
             move_id,
             actor=tasks.actor_from_env(os.environ),
             run_id=tasks.in_run(os.environ),
-            message=_text(message) or "",
+            message=_text(message, as_json=as_json) or "",
             to=to,
             after=after,
             force=force,
@@ -305,7 +313,7 @@ def task_release(
             ref,
             actor=tasks.actor_from_env(os.environ),
             run_id=tasks.in_run(os.environ),
-            message=_text(message) or "",
+            message=_text(message, as_json=as_json) or "",
             reason="manual",  # only the runner's finalise records run_ended
             force=force,
         )
@@ -362,7 +370,7 @@ def task_note(
             ref,
             actor=tasks.actor_from_env(os.environ),
             run_id=tasks.in_run(os.environ),
-            message=_text(text) or "",
+            message=_text(text, as_json=as_json) or "",
             attention=attention,
         )
     except tasks.TaskError as exc:

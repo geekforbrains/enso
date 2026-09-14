@@ -11,7 +11,8 @@ from conftest import write_config
 from typer.testing import CliRunner
 
 from enso import heartbeat
-from enso.cli.heartbeat import INPUT_LIMIT, heartbeat_app
+from enso.cli.common import INPUT_LIMIT
+from enso.cli.heartbeat import heartbeat_app
 from enso.config import load_config
 
 app = typer.Typer()
