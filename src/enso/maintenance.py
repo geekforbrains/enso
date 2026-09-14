@@ -6,7 +6,6 @@ it without accepting work until its updater commits the release or restores stat
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import tempfile
@@ -16,6 +15,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from . import locks
 from .config import Paths
 
 
@@ -87,12 +87,13 @@ def write_bytes(path: Path, data: bytes, mode: int = 0o600) -> None:
 @contextmanager
 def lock(paths: Paths, name: str = "control") -> Iterator[None]:
     prepare(paths)
-    fd = os.open(paths.runtime_dir / f"{name}.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise UpdateError("another update operation is in progress") from None
+        fd = locks.acquire(paths.runtime_dir / f"{name}.lock")
+    except locks.LockPathError as exc:
+        raise UpdateError(str(exc)) from None
+    except BlockingIOError:
+        raise UpdateError("another update operation is in progress") from None
+    try:
         yield
     finally:
         os.close(fd)
@@ -106,15 +107,15 @@ def paused(paths: Paths) -> bool:
 def acquire_access(paths: Paths, *, exclusive: bool = False, timeout: float = 0) -> int:
     """Hold home access through blocking input/execution, or wait to begin an update."""
     prepare(paths)
-    fd = os.open(paths.runtime_dir / "access.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    path = paths.runtime_dir / "access.lock"
     deadline = time.monotonic() + timeout
     while True:
         try:
-            fcntl.flock(fd, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
-            return fd
+            return locks.acquire(path, shared=not exclusive)
+        except locks.LockPathError as exc:
+            raise UpdateError(str(exc)) from None
         except BlockingIOError:
             if time.monotonic() >= deadline:
-                os.close(fd)
                 raise UpdateError("another command is using this home; update deferred") from None
             time.sleep(0.1)
 

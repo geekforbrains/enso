@@ -18,6 +18,7 @@ from typing import IO, Any
 
 from .. import db
 from ..config import Agent, Config, Paths
+from ..locks import acquire_file_lock
 from .models import CLOSED_STATES, STATES, Beat, BeatEvent, BeatRun, Definition, HeartbeatError
 from .validation import (
     DEFINITION_KEYS,
@@ -216,18 +217,13 @@ def _no_uncertain_actions(con: sqlite3.Connection, beat: Beat) -> None:
 
 def acquire_lock(paths: Paths, ref: str) -> IO[str] | None:
     """Take a stable per-beat lock kept outside the prunable gate directory."""
-    from ..execution import acquire_file_lock
-
     canonical = f"HB-{parse_ref(ref):03d}"
     directory = paths.heartbeat / ".locks"
-    lockfile = directory / f"{canonical}.lock"
-    if paths.heartbeat.is_symlink() or directory.is_symlink() or lockfile.is_symlink():
+    if paths.heartbeat.is_symlink() or directory.is_symlink():
         raise HeartbeatError("heartbeat lock paths must not be symlinks")
-    if lockfile.exists() and not lockfile.is_file():
-        raise HeartbeatError("heartbeat lock must be a regular file")
     try:
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        return acquire_file_lock(lockfile)
+        return acquire_file_lock(directory / f"{canonical}.lock")
     except OSError as exc:
         raise HeartbeatError(f"could not lock {canonical}: {exc}") from exc
 

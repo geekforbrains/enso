@@ -19,6 +19,8 @@ Product behaviour belongs in its owning page under `docs/`, starting with
   bounded pipe reads, and failure diagnostics for chat and background turns. Callers own
   process lifetimes, response presentation, and persistence; `execution.py` owns shared
   process cleanup and background execution without importing the chat runtime.
+- `src/enso/locks.py` — the hardened advisory lock open every lock site uses; it imports no
+  other Enso module.
 - `src/enso/web/` — `server.py` owns routes and template wiring; `filters.py` owns
   presentation helpers, Jinja filters, and chart series. `tasks.py` builds task board and
   detail models; `views.py` builds the other pages. Both use `common.py` for configuration,
@@ -141,6 +143,9 @@ matching docs and tests, and never silently lose user data. See
   durable state, never silently overwrite user-authored content, keep database transactions
   short, and make migrations safe to retry. A destructive reset requires an explicit task,
   documentation, and a user-visible warning.
+- Take advisory file locks through `locks.acquire`, or `locks.open_lock` when the `flock`
+  must happen later. The open never follows a symbolic link, refuses anything but a regular
+  file, and never waits; the caller decides what contention means and closes the descriptor.
 - Launch subprocesses with argument arrays, explicit working directories, bounded output,
   timeouts, and cancellation cleanup. Do not block the event loop. Keep lock ownership
   narrow and use explicit synchronization instead of timing sleeps where practical.

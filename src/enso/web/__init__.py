@@ -30,6 +30,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .. import locks
 from ..config import Paths, WebConfig, check_config
 
 EXTRA_MODULES = ("aiohttp", "jinja2", "markdown_it")
@@ -134,13 +135,11 @@ class PidFile:
         """Take the exclusive lock, or raise ``WebError`` when another viewer holds it."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         for _attempt in range(LOCK_RETRIES):
-            fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o644)
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError as exc:
-                os.close(fd)
-                if exc.errno not in (errno.EWOULDBLOCK, errno.EAGAIN):
-                    raise
+                fd = locks.acquire(self.path)
+            except locks.LockPathError as exc:
+                raise WebError(str(exc)) from None
+            except BlockingIOError:
                 time.sleep(0.05)
                 continue
             # An orderly exit unlinks the file before releasing its lock, so the inode we

@@ -40,6 +40,7 @@ from enso.jobs.runner import (
     acquire_lock,
     decide,
 )
+from enso.locks import LockPathError
 from enso.runtime import ORIGIN_HEADER, Runtime
 
 
@@ -1040,3 +1041,20 @@ async def test_a_restricted_workspace_refuses_the_job_without_a_policy_file(
     run = runs.get(enso_home, result.run_id)
     assert run is not None and run.status == "error" and run.error == result.error
     assert transport.sent == [("C1", f"⚠️ [Nightly (error)]\n{result.error}")]
+
+
+def test_job_locks_refuse_symbolic_links(
+    enso_home: Paths, fake_config: Config, tmp_path: Path
+) -> None:
+    nightly = job(enso_home, fake_config)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "run.lock").touch()
+    (nightly.job_dir / runner_module.LOCK_FILENAME).symlink_to(outside / "run.lock")
+    with pytest.raises(LockPathError, match="symbolic link"):
+        acquire_lock(nightly.job_dir)
+    groups = enso_home.jobs / runner_module.GROUP_LOCK_DIRNAME
+    groups.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(LockPathError, match="symbolic link"):
+        acquire_group_lock(enso_home, "shared")
+    assert sorted(entry.name for entry in outside.iterdir()) == ["run.lock"]

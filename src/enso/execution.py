@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import fcntl
 import logging
 import os
 import signal
@@ -13,7 +12,7 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Literal
+from typing import Literal
 
 from . import log as logctx
 from .providers import BaseProvider
@@ -228,17 +227,6 @@ async def execute_batch(
         log.warning(error)
         return ProviderTurn("error", output=output, error=error, exit_code=rc)
     return ProviderTurn("ok", output=output, exit_code=0)
-
-
-def acquire_file_lock(path: Path) -> IO[str] | None:
-    """Take ``path``'s advisory lock, or None when another process holds it."""
-    handle = open(path, "a")  # noqa: SIM115 - released by the caller
-    try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        handle.close()
-        return None
-    return handle
 
 
 async def read_tail(stream: asyncio.StreamReader, keep: int, label: str) -> bytes:
