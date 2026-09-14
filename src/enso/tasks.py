@@ -343,9 +343,10 @@ def _like(text: str) -> str:
 
 def _filters(
     *, project: str | None, stage: str | None, query: str | None
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], list[str | None]]:
     """The filters common to ordinary lists and finished history."""
-    clauses, params = [], []
+    clauses: list[str] = []
+    params: list[str | None] = []
     if project:
         clauses.append("project = ?")
         params.append(project.strip().upper())
@@ -354,11 +355,11 @@ def _filters(
         params.append(stage)
     if query:
         try:
-            exact = parse_ref(query)
+            ref = parse_ref(query)
         except TaskError:
-            exact = query.strip().upper()
+            ref = None  # nothing else can equal a reference, and NULL never matches
         clauses.append(r"(title LIKE ? ESCAPE '\' OR body LIKE ? ESCAPE '\' OR ref = ?)")
-        params.extend([_like(query), _like(query), exact])
+        params.extend([_like(query), _like(query), ref])
     return clauses, params
 
 
@@ -458,7 +459,7 @@ def finished_tasks(
     )
 
 
-def run_tasks(paths: Paths, run_id: str) -> list[tuple[str, str]]:
+def tasks_for_run(paths: Paths, run_id: str) -> list[tuple[str, str]]:
     """References and titles of tasks whose timeline mentions this run, ordered by reference."""
     with db.reader(paths) as con:
         rows = con.execute(

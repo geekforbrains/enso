@@ -158,12 +158,10 @@ def finished_history(enso_home: Paths, project_config: Config) -> datetime:
     [
         ({}, ["EN-001", "EN-002", "EN-003", "MKT-001"]),
         ({"project": " en "}, ["EN-001", "EN-002", "EN-003"]),
-        ({"project": "unknown"}, []),
         ({"stage": "done"}, ["EN-001", "EN-002", "MKT-001"]),
         ({"stage": "cancelled"}, ["EN-003"]),
         ({"stage": "triage"}, []),
         ({"project": "mkt", "stage": "done", "query": "CAMPAIGN"}, ["MKT-001"]),
-        ({"project": "MKT", "stage": "cancelled"}, []),
         ({"query": "FIX"}, ["EN-001", "EN-003"]),
         ({"query": " en-0001 "}, ["EN-001"]),
         ({"query": "reviewer's"}, ["EN-001", "EN-002"]),

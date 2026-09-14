@@ -1349,7 +1349,9 @@ def run_model(paths: Paths, run_id: str) -> dict[str, Any] | None:
     attempts, attempt_error = _attempt(partial(runs.attempts, paths, run.id)) if run else ([], None)
     config, problems = _config(paths)
     timeout = _job_timeout(paths, config, run.job) if run else None
-    related, _tasks_error = _attempt(partial(tasks.run_tasks, paths, run.id)) if run else ([], None)
+    related, _tasks_error = (
+        _attempt(partial(tasks.tasks_for_run, paths, run.id)) if run else ([], None)
+    )
     return {
         "config_problems": problems,
         "alarm": _alarm(paths),
