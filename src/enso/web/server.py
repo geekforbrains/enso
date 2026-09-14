@@ -1,7 +1,7 @@
 """The aiohttp application: GET-only routes, security headers, templates, and the process.
 
 One event loop, no workers, no scheduler, no sockets other than the listener. Every page
-model is built in a worker thread by ``views`` and rendered here. The middleware answers
+model is built in a worker thread by its page module and rendered here. The middleware answers
 anything but ``GET`` with 405 before routing, stamps every response with the security
 headers, and turns failures into the shared error page without a traceback.
 """
@@ -24,7 +24,8 @@ from aiohttp import web
 
 from .. import __version__
 from ..config import Paths
-from . import Bind, PidFile, WebError, views
+from . import Bind, PidFile, WebError, filters, views
+from . import tasks as taskviews
 
 log = logging.getLogger("enso.web")
 
@@ -100,13 +101,13 @@ def environment() -> jinja2.Environment:
         trim_blocks=True,
         lstrip_blocks=True,
     )
-    env.filters.update(views.FILTERS)
+    env.filters.update(filters.FILTERS)
     env.globals.update(
         nav=NAV,
         nav_primary=NAV_PRIMARY,
         nav_more=NAV_MORE,
-        bar_series=views.bar_series,
-        spark_tones=views.spark_tones,
+        bar_series=filters.bar_series,
+        spark_tones=filters.spark_tones,
         version=__version__,
     )
     return env
@@ -312,13 +313,13 @@ async def run(request: web.Request) -> web.StreamResponse:
 async def tasks(request: web.Request) -> web.StreamResponse:
     paths = request.app[PATHS]
     query = {key: request.query.get(key, "") for key in ("view", "project", "stage", "q")}
-    model = await _model(lambda: views.tasks_model(paths, query))
+    model = await _model(lambda: taskviews.tasks_model(paths, query))
     return render(request, "tasks.html", model)
 
 
 async def task(request: web.Request) -> web.StreamResponse:
     paths, ref = request.app[PATHS], request.match_info["ref"]
-    model = await _model(lambda: views.task_model(paths, ref))
+    model = await _model(lambda: taskviews.task_model(paths, ref))
     if model is None:
         return not_found(request, "No task has that reference.")
     return render(request, "task.html", model)

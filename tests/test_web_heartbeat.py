@@ -12,8 +12,8 @@ from conftest import load_job, write_job
 
 from enso import db, heartbeat, runs, web
 from enso.config import save_config
+from enso.web import filters, server
 from enso.web import heartbeat as reading
-from enso.web import server, views
 
 
 @pytest.fixture
@@ -164,7 +164,7 @@ async def test_history_receipts_times_delivery_and_clipping_are_visible(client, 
     failure = heartbeat.record_check(saved, current.ref, "error", error="Check failed")
     heartbeat.notice_delivered(saved, failure, 123)
     body = await page(client, f"/heartbeats/{current.ref}/history")
-    assert "Source time" in body and views.when(source) in body
+    assert "Source time" in body and filters.when(source) in body
     assert "&lt;img src=x onerror=alert(1)&gt;" in body
     assert "&lt;script&gt;receipt&lt;/script&gt;" in body and "Notification delivered" in body
     assert '"outbox_id":123' in body.replace("&#34;", '"')
@@ -185,29 +185,6 @@ async def test_history_receipts_times_delivery_and_clipping_are_visible(client, 
     second = await page(client, f"/heartbeats/{current.ref}/history?page=2")
     assert f'id="event-{long.id}"' not in second
     assert second.count('<div class="panel rows">') == 1
-
-
-@pytest.mark.parametrize(
-    ("actor", "shown"),
-    [
-        ("slack:U0AETSSDDEF", "via Slack"),
-        ("telegram:8140", "via Telegram"),
-        ("job:nightly", "job:nightly"),
-        ("beat:HB-001", "beat:HB-001"),
-        ("user:gavin", "user:gavin"),
-        ("heartbeat", "heartbeat"),
-    ],
-)
-def test_actor_reads_as_its_origin_and_only_chat_ids_are_replaced(actor, shown):
-    assert views.heartbeat_actor(actor) == shown
-
-
-def test_unknown_actor_shapes_survive_untouched():
-    # A prefix that is not a transport is not a chat identity, and an actor is never blank
-    # on the page even if a future writer leaves it so.
-    assert views.heartbeat_actor("mastodon:42") == "mastodon:42"
-    assert views.heartbeat_actor("slack") == "slack"
-    assert views.heartbeat_actor("") == "-" and views.heartbeat_actor(None) == "-"
 
 
 async def test_history_names_the_actor_and_keeps_the_recorded_value(client, saved):

@@ -12,6 +12,12 @@ Product behaviour belongs in its owning page under `docs/`, starting with
   behaviour in `transports/`, command presentation in `cli/`, and persistence in the
   database modules. `tasks.py` owns task queries, shared filters, and row conversion for
   CLI, jobs, and web consumers; the viewer owns display grouping and history limits.
+- `src/enso/web/` — `server.py` owns routes and template wiring; `filters.py` owns
+  presentation helpers, Jinja filters, and chart series. `tasks.py` builds task board and
+  detail models; `views.py` builds the other pages. Both use `common.py` for configuration,
+  source errors, and the shared attention indicator. `heartbeat.py` owns bounded heartbeat
+  and mixed-run reads; `files.py` owns safe file browsing and Markdown rendering. Shared
+  helpers do not import page models.
 - `src/enso/bundled/` — content shipped to an Enso home, not development instructions.
   Files are laid out as they land and listed in
   [`src/enso/workspaces.py`](../src/enso/workspaces.py). Add new shipped files in both places;
