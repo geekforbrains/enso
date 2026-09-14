@@ -3,29 +3,22 @@
 from __future__ import annotations
 
 import json
-import sys
-from pathlib import Path
 from typing import Any
 
 import typer
 
 from .. import connection_setup
 from ..config import Paths
-from .common import JSON_FLAG, echo_json
+from .common import JSON_FLAG, InputError, echo_json, read_input
 
 connect_app = typer.Typer(no_args_is_help=True, help="Pair a new Slack or Telegram account.")
 
 
 def _input(file: str) -> Any:
-    if file == "-":
-        text = sys.stdin.read(connection_setup.MAX_INPUT + 1)
-    else:
-        with Path(file).open(encoding="utf-8") as stream:
-            text = stream.read(connection_setup.MAX_INPUT + 1)
-    if len(text) > connection_setup.MAX_INPUT:
-        raise connection_setup.PairingError("invalid_input", "Setup input is too large.")
     try:
-        return json.loads(text)
+        return json.loads(read_input(file, limit=connection_setup.MAX_INPUT))
+    except InputError as exc:
+        raise connection_setup.PairingError("invalid_input", str(exc)) from None
     except ValueError:
         raise connection_setup.PairingError("invalid_input", "Supply one JSON object.") from None
 

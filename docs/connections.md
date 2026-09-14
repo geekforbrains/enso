@@ -39,7 +39,7 @@ enso connect finish --file FILE|- [--json]
 ```
 
 `start` initializes the home if needed; a new attempt requires an absent active config.
-Its input is one JSON object, at most 16,384 characters, containing `request_id`, `bot_token`,
+Its input is one JSON object, at most 16 KiB (16,384 bytes), containing `request_id`, `bot_token`,
 and for Slack `app_token`. The request ID is 16–128 letters, digits, underscores, or hyphens. Supply secrets
 through stdin or a private file, never command arguments. Retrying the latest request ID
 with the same transport and credentials returns its existing attempt, even after apply;

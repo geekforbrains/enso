@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,10 +13,9 @@ import typer
 
 from .. import heartbeat, tasks
 from ..config import Config, Paths
-from .common import JSON_FLAG, columns, echo_json, fail, load
+from .common import JSON_FLAG, InputError, columns, echo_json, fail, load, read_input
 
 heartbeat_app = typer.Typer(no_args_is_help=True, help="Finite actions and temporary watches.")
-INPUT_LIMIT = 256 * 1024
 DEFINITION = typer.Option(..., "--file", help="JSON definition or update; - reads stdin.")
 MESSAGE = typer.Option(..., "--message", help="What happened and the evidence; - reads stdin.")
 CHECKPOINT = typer.Option(None, "--checkpoint", help="Saved gate checkpoint as a JSON object.")
@@ -30,7 +28,7 @@ def _using(*, as_json: bool) -> Iterator[Config]:
         yield load(Paths.from_env(), as_json=as_json)
     except heartbeat.HeartbeatError as exc:
         fail(exc.problems, as_json=as_json)
-    except (OSError, UnicodeError, sqlite3.Error) as exc:
+    except (InputError, OSError, UnicodeError, sqlite3.Error) as exc:
         fail([str(exc)], as_json=as_json)
 
 
@@ -48,9 +46,7 @@ def _constant(value: str) -> object:
 
 
 def _object(text: str) -> dict[str, object]:
-    """Parse one bounded JSON object without silently replacing repeated fields."""
-    if len(text.encode()) > INPUT_LIMIT:
-        raise heartbeat.HeartbeatError([f"JSON input exceeds {INPUT_LIMIT} bytes"])
+    """Parse one JSON object without silently replacing repeated fields."""
     try:
         value = json.loads(text, object_pairs_hook=_pairs, parse_constant=_constant)
     except json.JSONDecodeError as exc:
@@ -66,25 +62,12 @@ def _object(text: str) -> dict[str, object]:
     return value
 
 
-def _stdin() -> str:
-    text = sys.stdin.read(INPUT_LIMIT + 1)
-    if len(text.encode()) > INPUT_LIMIT:
-        raise heartbeat.HeartbeatError([f"input exceeds {INPUT_LIMIT} bytes"])
-    return text
-
-
 def _definition(file: Path) -> dict[str, object]:
-    if str(file) == "-":
-        return _object(_stdin())
-    with file.open("rb") as source:
-        text = source.read(INPUT_LIMIT + 1)
-    if len(text) > INPUT_LIMIT:
-        raise heartbeat.HeartbeatError([f"JSON input exceeds {INPUT_LIMIT} bytes"])
-    return _object(text.decode("utf-8"))
+    return _object(read_input(file))
 
 
 def _message(text: str) -> str:
-    return _stdin() if text == "-" else text
+    return read_input("-") if text == "-" else text
 
 
 def _checkpoint(text: str | None) -> dict[str, object] | None:

@@ -9,7 +9,6 @@ import os
 import signal
 import sys
 import time
-from pathlib import Path
 from typing import Any
 
 import typer
@@ -33,7 +32,7 @@ from ..heartbeat.runner import HeartbeatRunner
 from ..jobs.runner import JobRunner
 from ..runtime import Runtime
 from ..transports import Transport
-from .common import JSON_FLAG, columns, echo_json, fail, human_bytes
+from .common import JSON_FLAG, InputError, columns, echo_json, fail, human_bytes, read_input
 from .connect import connect_app
 from .heartbeat import heartbeat_app
 from .jobs import job_app, runs_app
@@ -357,6 +356,7 @@ def providers_catalog(as_json: bool = JSON_FLAG) -> None:
             typer.echo(f"  {model['id']}: {efforts}")
 
 
+CONFIG_INPUT_LIMIT = 1024 * 1024
 EXPECTED_HASH = typer.Option(
     None, "--expected-hash", help="Require this config SHA256, or missing for a fresh home."
 )
@@ -393,15 +393,9 @@ def config_apply(
 ) -> None:
     """Validate and atomically replace config.json; no prompts, message, or service start."""
     try:
-        if file == "-":
-            text = sys.stdin.read(1024 * 1024 + 1)
-        else:
-            with Path(file).open(encoding="utf-8") as source:
-                text = source.read(1024 * 1024 + 1)
-        if len(text.encode("utf-8")) > 1024 * 1024:
-            raise ValueError("configuration input exceeds 1 MiB")
-        raw = json.loads(text)
-    except OSError, UnicodeError, ValueError, RecursionError:
+        raw = json.loads(read_input(file, limit=CONFIG_INPUT_LIMIT))
+    except (InputError, ValueError, RecursionError) as exc:
+        problem = str(exc) if isinstance(exc, InputError) else "--file is not a JSON document"
         result: dict[str, Any] = {
             "version": 1,
             "ok": False,
@@ -411,7 +405,7 @@ def config_apply(
             "restart_required": False,
             "changes": [],
             "warnings": [],
-            "problems": ["could not read a JSON document of at most 1 MiB from --file"],
+            "problems": [problem],
         }
     else:
         result = initialization.apply_config(Paths.from_env(), raw, expected_hash=expected_hash)

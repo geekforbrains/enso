@@ -20,6 +20,12 @@ syntax, such as a missing required argument or an unknown option, still uses CLI
 errors on stderr and exits 2. Commands that report health or validation findings, such as
 `doctor`, `workspace audit`, and the onboarding commands below, keep their documented report objects.
 
+Every command that reads text from `--file FILE` or stdin (`-`) reads through one bounded
+reader: input must be UTF-8 and is refused, with `input exceeds N bytes` in the command's
+usual error output, once it passes the command's limit. Messages, notes, task bodies, and
+heartbeat definitions and messages accept 256 KiB (262,144 bytes); `config apply` accepts
+1 MiB; `connect` accepts 16 KiB. No command reads unbounded input.
+
 ## Operating
 
 ```text
