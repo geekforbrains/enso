@@ -16,9 +16,9 @@ from pathlib import Path
 from typing import IO, Literal
 
 from . import log as logctx
-from .providers import BaseProvider, SessionIdError
+from .providers import BaseProvider
+from .providers.stream import DIAGNOSTIC_KEEP, ProtocolError, ProviderStream, text_tail
 from .runs import OUTPUT_KEEP
-from .runtime import terminate_process_tree
 
 log = logging.getLogger(__name__)
 
@@ -27,8 +27,7 @@ DIAGNOSTIC_LIMIT = 500
 NOTIFY_LIMIT = 4000
 
 READ_CHUNK = 64 * 1024
-LINE_KEEP = 10 * 1024 * 1024
-DIAGNOSTIC_KEEP = 2000
+TERMINATE_GRACE_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
@@ -42,87 +41,52 @@ class ProviderTurn:
     session_id: str | None = None
 
 
-def _tail(text: str, keep: int) -> str:
-    """Keep a UTF-8 tail without exceeding the byte limit or splitting a character."""
-    return text[-keep:].encode()[-keep:].decode(errors="ignore")
+async def terminate_process_tree(
+    process: asyncio.subprocess.Process, label: str, *, grace: float = TERMINATE_GRACE_SECONDS
+) -> None:
+    """SIGTERM the process group, wait ``grace`` seconds, then SIGKILL it."""
+    if process.returncode is not None:
+        return
+    try:
+        pgid: int | None = os.getpgid(process.pid)
+    except ProcessLookupError:
+        pgid = None
+    if pgid is not None and (pgid <= 0 or pgid == os.getpgrp()):
+        pgid = None
 
-
-class _ProtocolError(ValueError):
-    """A provider's stream cannot safely be interpreted as the requested turn."""
-
-
-class _Collected:
-    """Keep the final answer separately from early session events and diagnostics."""
-
-    def __init__(self, provider: BaseProvider, expected_id: str | None, *, new_session: bool):
-        self.provider = provider
-        self.expected_id = expected_id
-        # An assigned id becomes resumable only after the adapter recognizes a CLI event.
-        self.session_id = None if new_session else expected_id
-        self.events = 0
-        self.output = ""
-        self.error = ""
-        self.unparsed = ""
-        self.stderr = b""
-
-    def feed(self, line: bytes) -> None:
-        text = line.decode(errors="replace").strip()
-        if not text:
-            return
+    async def send(sig: signal.Signals) -> None:
         try:
-            raw = self.provider.parse_line(text)
-            events = self.provider.parse_event(raw) if raw is not None else []
-            if not events:
-                self.unparsed = _tail(self.unparsed + text + "\n", DIAGNOSTIC_KEEP)
-                return
-            self.events += len(events)
-            if self.expected_id and not self.session_id:
-                self.session_id = self.expected_id
-            for event in events:
-                if event.kind == "session" and event.session_id is not None:
-                    announced = self.provider.check_session_id(event.session_id)
-                    if self.expected_id is not None and announced != self.expected_id:
-                        raise _ProtocolError(
-                            f"{self.provider.name} announced a different session from the "
-                            "one requested; refusing to change sessions"
-                        )
-                    self.expected_id = self.session_id = announced
-                elif event.kind == "response":
-                    # Adapters emit complete answers; format_response keeps the last one.
-                    # Retaining every event would let a long job grow memory indefinitely.
-                    self.output = _tail(self.provider.format_response([event.text]), OUTPUT_KEEP)
-                elif event.kind == "error":
-                    self.error = _tail(event.text, DIAGNOSTIC_KEEP) or "provider reported an error"
-        except SessionIdError as exc:
-            raise _ProtocolError(str(exc)) from exc
-        except (AttributeError, KeyError, TypeError, ValueError) as exc:
-            if isinstance(exc, _ProtocolError):
+            if pgid is not None:
+                os.killpg(pgid, sig)
+            else:
+                process.send_signal(sig)
+        except ProcessLookupError:
+            pass
+        except PermissionError as exc:
+            if pgid is None:
                 raise
-            raise _ProtocolError(f"invalid {self.provider.name} event: {exc}") from exc
+            # macOS can report EPERM for a group containing only an unreaped
+            # zombie. Let asyncio reap our child, but hide the error only when
+            # the group has disappeared; a live permission failure must surface.
+            try:
+                await asyncio.wait_for(process.wait(), timeout=grace)
+            except TimeoutError:
+                raise exc from None
+            try:
+                os.killpg(pgid, 0)
+            except ProcessLookupError:
+                return
+            raise
 
-
-async def _read_stdout(stream: asyncio.StreamReader, collected: _Collected) -> None:
-    """Parse complete lines while bounding even a provider that never emits a newline."""
-    buffer = bytearray()
-    while chunk := await stream.read(READ_CHUNK):
-        buffer.extend(chunk)
-        start = 0
-        while (end := buffer.find(b"\n", start)) >= 0:
-            if end - start > LINE_KEEP:
-                raise _ProtocolError(f"provider event exceeds {LINE_KEEP} bytes")
-            collected.feed(bytes(buffer[start:end]))
-            start = end + 1
-        if start:
-            del buffer[:start]
-        if len(buffer) > LINE_KEEP:
-            raise _ProtocolError(f"provider event exceeds {LINE_KEEP} bytes")
-    if buffer:
-        collected.feed(bytes(buffer))
-
-
-async def _read_stderr(stream: asyncio.StreamReader, collected: _Collected) -> None:
-    while chunk := await stream.read(READ_CHUNK):
-        collected.stderr = (collected.stderr + chunk)[-DIAGNOSTIC_KEEP:]
+    log.info("terminating %s pid=%s pgid=%s", label, process.pid, pgid)
+    await send(signal.SIGTERM)
+    with contextlib.suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(process.wait(), timeout=grace)
+        return
+    log.info("%s did not exit after %.1fs; killing", label, grace)
+    await send(signal.SIGKILL)
+    with contextlib.suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(process.wait(), timeout=grace)
 
 
 async def terminate_background_process(process: asyncio.subprocess.Process, label: str) -> None:
@@ -161,8 +125,7 @@ async def execute_turn(
     try:
         if new_session:
             session_id = str(uuid.uuid4())
-        if session_id is not None:
-            provider.check_session_id(session_id)
+        stream = ProviderStream(provider, session_id, new_session=new_session)
         cmd = provider.command(
             prompt,
             model,
@@ -185,58 +148,42 @@ async def execute_turn(
             start_new_session=True,
         )
     except (OSError, ValueError) as exc:
-        return ProviderTurn("error", error=_tail(str(exc), DIAGNOSTIC_KEEP))
+        return ProviderTurn("error", error=text_tail(str(exc), DIAGNOSTIC_KEEP))
 
-    collected = _Collected(provider, session_id, new_session=new_session)
-    assert process.stdout is not None
-    readers = [asyncio.create_task(_read_stdout(process.stdout, collected))]
-    if process.stderr is not None:
-        readers.append(asyncio.create_task(_read_stderr(process.stderr, collected)))
-    waiting = asyncio.create_task(process.wait())
+    output = ""
+
+    async def collect() -> None:
+        nonlocal output
+        async with contextlib.aclosing(stream.read(process)) as events:
+            async for event in events:
+                if event.kind == "response":
+                    # Adapters emit complete answers; keep only the last one, bounded.
+                    output = text_tail(provider.format_response([event.text]), OUTPUT_KEEP)
+
     status: Literal["ok", "error", "timeout"] = "ok"
     error = ""
     completed = False
     try:
-        await asyncio.wait_for(
-            asyncio.gather(*readers, waiting), max(0, timeout - (time.monotonic() - started))
-        )
+        await asyncio.wait_for(collect(), max(0, timeout - (time.monotonic() - started)))
         completed = True
-        if collected.error or process.returncode:
+        if stream.error:
             status = "error"
-            error = (
-                collected.error
-                or collected.stderr.decode(errors="replace").strip()
-                or collected.unparsed.strip()
-                or f"{provider.name} exited with status {process.returncode}"
-            )
-        elif not collected.events:
-            status = "error"
-            error = f"{provider.name} returned no recognized provider events"
-            diagnostic = (
-                collected.stderr.decode(errors="replace").strip() or collected.unparsed.strip()
-            )
-            if diagnostic:
-                error += ": " + _tail(diagnostic, DIAGNOSTIC_KEEP - len(error.encode()) - 2)
+            error = stream.error
     except TimeoutError:
         status = "timeout"
         error = "provider time budget exhausted"
-    except (_ProtocolError, OSError) as exc:
+    except (ProtocolError, OSError) as exc:
         status = "error"
         error = str(exc)
     finally:
-        try:
-            if not completed:
-                await terminate_background_process(process, f"{provider.name} background turn")
-        finally:
-            for task in [*readers, waiting]:
-                task.cancel()
-            await asyncio.gather(*readers, waiting, return_exceptions=True)
+        if not completed:
+            await terminate_background_process(process, f"{provider.name} background turn")
     return ProviderTurn(
         status,
-        output=collected.output,
-        error=_tail(error, DIAGNOSTIC_KEEP),
+        output=output,
+        error=text_tail(error, DIAGNOSTIC_KEEP),
         exit_code=process.returncode,
-        session_id=collected.session_id,
+        session_id=stream.session_id,
     )
 
 

@@ -257,6 +257,21 @@ removes really is inside that provider's own session store. A stored row that no
 matches is not resumed and not deleted from: it is dropped, and the next message starts a
 fresh session.
 
+### Session identity
+
+Chat turns, jobs with postrun, and Heartbeat assessments use the same structured-output
+rules. The requested session ID is authoritative, whether Enso just assigned it or is
+resuming it. When the provider chooses the ID, its first valid announcement establishes
+the session. A later announcement must match. An invalid or conflicting ID fails the turn
+with a protocol error; the original ID is retained and the conflicting ID is never saved
+or used for a follow-up. Enso does not retry a session conflict or silently start over.
+
+A newly assigned ID becomes resumable only after the adapter recognizes a provider event.
+An empty stream, plain diagnostic text, or unknown JSON such as `{}` cannot establish a
+session. A successful process exit with no recognized events still fails the turn, with
+the available diagnostic. A session established before an error remains available to
+resume or clear. Jobs without postrun use plain batch execution and capture no session.
+
 ### OpenCode
 
 OpenCode models use their full `<provider>/<model>` ids. For example, the copy-ready id for

@@ -129,6 +129,7 @@ Enso messages, and source checkpoints change only after explicit agent settlemen
 
 Each assessment starts a fresh provider session with current instructions, timing and wake
 reason, bounded gate evidence, the latest event, history counts, and CLI lookup commands.
+Its structured output follows the shared [session identity rules](configuration.md#session-identity).
 The agent retrieves other history as needed. Due follow-ups can wake it after a quiet gate;
 gate failures never silently start a provider. New evidence arriving after the last run's
 input cutoff can prompt another assessment without waiting for the ordinary schedule.

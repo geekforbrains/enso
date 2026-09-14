@@ -302,6 +302,7 @@ prompt, prerun data and previous turns. Prerun is not repeated. The next schedul
 trigger starts a fresh session. Enso never silently falls back to a fresh session if it
 cannot resume the current one. Jobs with postrun use structured provider output from their
 first turn to capture and validate the session ID; jobs without postrun keep batch execution.
+Structured turns follow the shared [session identity rules](configuration.md#session-identity).
 
 Postrun also runs once for `no_work`, `prerun_error`, group `skipped`, and provider failure
 or timeout, so a script can react to those outcomes. Those calls cannot start a follow-up:

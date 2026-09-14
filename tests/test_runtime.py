@@ -691,24 +691,34 @@ async def test_a_stored_session_id_outside_the_contract_is_dropped(
     assert victim.read_text() == "mine"
 
 
-async def test_the_assigned_session_id_outranks_the_one_announced(
-    runtime: Runtime,
-    enso_home: Paths,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
+@pytest.mark.parametrize("resume", [False, True])
+async def test_conflicting_session_fails_without_replacing_the_original(
+    runtime: Runtime, enso_home: Paths, monkeypatch: pytest.MonkeyPatch, resume: bool
 ) -> None:
-    """Enso named this session on the command line; the CLI may only confirm that name."""
-    monkeypatch.setenv("FAKE_SESSION_ID", "11111111-2222-4333-8444-555555555555")
+    if resume:
+        await runtime.handle(make_turn("hello"), FakeReply())
+    original = db.get_session(enso_home, "slack:D1", "claude")
+    announced = "11111111-2222-4333-8444-555555555555"
+    monkeypatch.setenv("FAKE_SESSION_ID", announced)
     reply = FakeReply()
-    with caplog.at_level(logging.WARNING):
-        await runtime.handle(make_turn("hello"), reply)
+    await runtime.handle(make_turn("again"), reply)
     session = db.get_session(enso_home, "slack:D1", "claude")
-    assert session is not None and session.session_id != "11111111-2222-4333-8444-555555555555"
-    # The answer still arrives; only the id Enso already knows is kept.
+    assert session is not None and session.session_id != announced
+    if original is not None:
+        assert session.session_id == original.session_id
     assert reply.sent == [
-        f"new {session.session_id} workspace=default prompt={chat_prompt('hello')}"
+        "Error: claude announced a different session from the one requested; "
+        "refusing to change sessions"
     ]
-    assert "keeping ours" in caplog.text
+
+
+async def test_unrecognized_output_fails_without_establishing_a_chat_session(
+    runtime: Runtime, enso_home: Paths
+) -> None:
+    reply = FakeReply()
+    await runtime.handle(make_turn("unrecognized"), reply)
+    assert db.get_sessions(enso_home, "slack:D1") == []
+    assert reply.sent == ["Error: claude returned no recognized provider events: {}"]
 
 
 async def test_an_announced_session_id_outside_the_contract_is_never_stored(

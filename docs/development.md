@@ -12,6 +12,10 @@ Product behaviour belongs in its owning page under `docs/`, starting with
   behaviour in `transports/`, command presentation in `cli/`, and persistence in the
   database modules. `tasks.py` owns task queries, shared filters, and row conversion for
   CLI, jobs, and web consumers; the viewer owns display grouping and history limits.
+- `src/enso/providers/stream.py` — shared structured-output parsing, session identity,
+  bounded pipe reads, and failure diagnostics for chat and background turns. Callers own
+  process lifetimes, response presentation, and persistence; `execution.py` owns shared
+  process cleanup and background execution without importing the chat runtime.
 - `src/enso/web/` — `server.py` owns routes and template wiring; `filters.py` owns
   presentation helpers, Jinja filters, and chart series. `tasks.py` builds task board and
   detail models; `views.py` builds the other pages. Both use `common.py` for configuration,
