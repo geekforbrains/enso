@@ -775,20 +775,11 @@ async def test_tasks_board_reads_a_bounded_amount(
     assert group_rows(aged)["Done"] == ["EN-006", "EN-005"]
     assert "8 tasks." in aged and "0 completed in the last 7 days" in aged
 
-    materialized: list[str] = []
-    task_from_row = views._task_from_row
-
-    def record_row(row: sqlite3.Row) -> tasks.Task:
-        materialized.append(row["ref"])
-        return task_from_row(row)
-
     monkeypatch.setattr(views, "DONE_LIMIT", 1)
-    monkeypatch.setattr(views, "_task_from_row", record_row)
     capped = await html(client, "/tasks")
     assert task_links(capped) == [
         "EN-002", "MKT-001", "EN-007", "EN-001", "EN-004", "EN-003", "EN-006"
     ]  # fmt: skip
-    assert materialized == ["EN-006"]  # the cap applies before finished rows become tasks
     # The count still includes the old finish beyond the cap, and the line says so.
     assert "8 tasks, 7 listed." in capped
     assert "Done lists up to 1 finished and cancelled tasks." in capped
@@ -835,6 +826,8 @@ async def test_tasks_filters_and_empty_states(client: TestClient, board: Board) 
         ("stage=done", ["EN-005"]),
         ("stage=cancelled", ["EN-006"]),
         ("q=keep+the+fence+label", ["EN-001"]),  # body search
+        ("q=++en-0005++", ["EN-005"]),  # the same reference normalization for finished work
+        ("q=++en-0003++", ["EN-003"]),
         ("project=EN&stage=done&q=shipped", ["EN-005"]),
         ("project=MKT&stage=done&q=shipped", []),
     ],
@@ -849,6 +842,35 @@ async def test_board_filters(
         assert f"{len(expected)} task{plural} matching the filter." in page
     else:
         assert board_groups(page) == [] and "No tasks " in page
+
+
+@pytest.mark.parametrize("finished", [False, True])
+async def test_task_search_keeps_unicode_uppercase_reference_matches(
+    client: TestClient, enso_home: Paths, raw_config_projects: dict, finished: bool
+) -> None:
+    raw_config_projects["projects"]["ID"] = {
+        "name": "Support",
+        "workspace": "default",
+        "stages": ["triage"],
+    }
+    config, problems, _ = parse_config(raw_config_projects, enso_home)
+    assert config is not None, problems
+    write_config(enso_home, raw_config_projects)
+    db.migrate(enso_home)
+    task = tasks.create(enso_home, config, "ID", "Handle ticket", actor=USER)
+    if finished:
+        tasks.move(
+            enso_home, config, task.ref, "advance", actor=USER, run_id=None, message="resolved"
+        )
+
+    # Dotless i is outside the reference grammar, but uppercases to the stored ASCII ID.
+    assert [task.ref for task in tasks.list_tasks(enso_home, all=True, query="\u0131d-001")] == [
+        "ID-001"
+    ]
+    body = await html(client, "/tasks?q=%C4%B1d-001")
+    assert task_links(body) == ["ID-001"]
+    assert "1 task matching the filter." in body
+    assert f"{int(finished)} completed in the last 7 days" in body
 
 
 async def test_empty_board_says_so(client: TestClient, project_config: Config) -> None:

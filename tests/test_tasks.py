@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import threading
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -118,6 +118,109 @@ def test_list_filters(enso_home: Paths, project_config: Config) -> None:
     ]
     tasks.note(enso_home, "EN-003", actor=USER, run_id=None, message="look", attention=True)
     assert refs(attention=True) == ["EN-003"]
+
+
+@pytest.fixture
+def finished_history(enso_home: Paths, project_config: Config) -> datetime:
+    """Live, done, and cancelled work across two pipelines, with fixed finish times."""
+    first = add(enso_home, project_config, r"Fix 50% of _draft\notes", body="reviewer's copy")
+    older = add(enso_home, project_config, "Older work", body="reviewer's copy", priority=10)
+    for task in (first, older):
+        for _ in project_config.projects["EN"].stages:
+            advance(enso_home, project_config, task.ref)
+    cancelled = add(enso_home, project_config, "Cancelled fix")
+    tasks.move(
+        enso_home, project_config, cancelled.ref, "drop", actor=USER, run_id=None, message="no"
+    )
+    campaign = tasks.create(enso_home, project_config, "MKT", "Campaign approved", actor=USER)
+    for _ in project_config.projects["MKT"].stages:
+        advance(enso_home, project_config, campaign.ref)
+    add(enso_home, project_config, "Fix in triage")
+    tasks.note(enso_home, first.ref, actor=USER, run_id=None, message="check", attention=True)
+
+    since = datetime(2026, 9, 1, tzinfo=UTC)
+    with db.transaction(enso_home) as con:
+        for ref, stamp in (
+            (first.ref, since),
+            (older.ref, since - timedelta(microseconds=1)),
+            (cancelled.ref, since + timedelta(days=1)),
+            (campaign.ref, since + timedelta(days=1)),
+        ):
+            con.execute(
+                "UPDATE _enso_tasks SET entered_stage_at = ? WHERE ref = ?",
+                (stamp.isoformat(timespec="microseconds"), ref),
+            )
+    return since
+
+
+@pytest.mark.parametrize(
+    ("filters", "expected"),
+    [
+        ({}, ["EN-001", "EN-002", "EN-003", "MKT-001"]),
+        ({"project": " en "}, ["EN-001", "EN-002", "EN-003"]),
+        ({"stage": "done"}, ["EN-001", "EN-002", "MKT-001"]),
+        ({"stage": "cancelled"}, ["EN-003"]),
+        ({"stage": "triage"}, []),
+        ({"project": "mkt", "stage": "done", "query": "CAMPAIGN"}, ["MKT-001"]),
+        ({"query": "FIX"}, ["EN-001", "EN-003"]),
+        ({"query": " en-0001 "}, ["EN-001"]),
+        ({"query": "reviewer's"}, ["EN-001", "EN-002"]),
+        ({"query": "%"}, ["EN-001"]),
+        ({"query": "_"}, ["EN-001"]),
+        ({"query": "\\"}, ["EN-001"]),
+        ({"query": "%' OR 1=1 --"}, []),
+        ({"query": " Fix "}, []),  # title/body search retains literal surrounding whitespace
+    ],
+)
+def test_finished_history_shares_list_filters(
+    enso_home: Paths, finished_history: datetime, filters: dict, expected: list[str]
+) -> None:
+    history = tasks.finished_tasks(enso_home, since=finished_history, limit=20, **filters)
+    listed = [task for task in tasks.list_tasks(enso_home, all=True, **filters) if task.finished]
+    assert sorted(task.ref for task in history.rows) == expected
+    assert sorted(task.ref for task in listed) == expected
+    assert history.total == len(expected)
+    assert history.done_count == len(set(expected) & {"EN-001", "MKT-001"})
+    assert {task.ref: task for task in history.rows} == {task.ref: task for task in listed}
+    assert all(type(task.attention) is bool for task in history.rows)
+
+
+def test_finished_history_counts_before_materialising_its_page(
+    enso_home: Paths, finished_history: datetime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    materialized: list[str] = []
+    task_from_row = tasks._task
+
+    def record_row(row):
+        materialized.append(row["ref"])
+        return task_from_row(row)
+
+    monkeypatch.setattr(tasks, "_task", record_row)
+    history = tasks.finished_tasks(enso_home, since=finished_history, limit=2)
+    # Newest stage entry first, ties broken by id; not the ordinary list's priority order.
+    assert [task.ref for task in history.rows] == ["MKT-001", "EN-003"]
+    assert materialized == ["MKT-001", "EN-003"]
+    # Cancelled is included in total, and the done task exactly at the cutoff counts even
+    # though it is outside the page. The done task one microsecond earlier does not count.
+    assert (history.total, history.done_count) == (4, 2)
+
+    materialized.clear()
+    counts = tasks.finished_tasks(
+        enso_home,
+        since=finished_history.astimezone(timezone(timedelta(hours=-7))),
+        limit=0,
+    )
+    assert (counts.total, counts.done_count, counts.rows) == (4, 2, [])
+    assert materialized == []
+
+
+def test_finished_history_rejects_unbounded_limits_and_naive_cutoffs(
+    enso_home: Paths, finished_history: datetime
+) -> None:
+    with pytest.raises(TaskError, match="limit must be nonnegative"):
+        tasks.finished_tasks(enso_home, since=finished_history, limit=-1)
+    with pytest.raises(TaskError, match="cutoff needs a timezone"):
+        tasks.finished_tasks(enso_home, since=finished_history.replace(tzinfo=None), limit=1)
 
 
 def test_take_is_one_compare_and_set_under_a_race(enso_home: Paths, project_config: Config) -> None:
