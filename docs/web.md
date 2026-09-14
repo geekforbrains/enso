@@ -49,6 +49,10 @@ a stale file and how `stop` knows the pid it signals is really the viewer. `star
 no-op while the same viewer is running, `stop` is a no-op while it is not, and `status`
 exits 0 only while it runs, so all three are safe in scripts.
 
+Every command that opens `web.pid` refuses symbolic links and special files, including
+named pipes, with an error instead of following the link or waiting for the pipe.
+`status` and `stop` leave an absent pidfile absent.
+
 For standalone and foreground starts, `--host` and `--port` win over `web.host` and
 `web.port` in `config.json`. A missing or invalid `config.json` does not stop the viewer:
 it falls back to `127.0.0.1:8787` (flags

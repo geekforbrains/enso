@@ -337,6 +337,8 @@ async def test_failures_render_the_error_page_without_a_traceback(
 def test_pidfile_lock_decides_running_versus_stale(enso_home: Paths) -> None:
     paths = enso_home
     assert web.status(paths) == web.Status(running=False)
+    assert web.stop(paths) == "not running"
+    assert not paths.web_pid.exists()
     paths.home.mkdir(parents=True, exist_ok=True)
     paths.web_pid.write_text('{"pid": 4242, "host": "127.0.0.1", "port": 8787}\n')
     stale = web.status(paths)
@@ -368,6 +370,54 @@ def test_pidfile_refuses_a_symbolic_link(enso_home: Paths, tmp_path: Path) -> No
     with pytest.raises(web.WebError, match="symbolic link"):
         web.PidFile(paths.web_pid).acquire()
     assert outside.read_text() == '{"pid": 4242}\n'
+
+
+@pytest.mark.parametrize("command", ["status", "stop"])
+def test_pidfile_readers_refuse_a_locked_symbolic_link(
+    enso_home: Paths, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    outside = tmp_path / "outside.pid"
+    holder = web.PidFile(outside)
+    holder.acquire()
+    try:
+        holder.write(4242, web.Bind("127.0.0.1", 8787))
+        original = outside.read_bytes()
+        enso_home.web_pid.symlink_to(outside)
+
+        def refuse_signal(pid: int, signum: signal.Signals) -> None:
+            pytest.fail(f"signalled unrelated pid {pid} with {signum}")
+
+        monkeypatch.setattr(web, "_signal", refuse_signal)
+        with pytest.raises(web.WebError, match="symbolic link"):
+            getattr(web, command)(enso_home)
+        result = CliRunner().invoke(app, ["web", command])
+        assert result.exit_code == 1 and isinstance(result.exception, SystemExit)
+        assert "error: lock must not be a symbolic link" in result.stderr
+        assert outside.read_bytes() == original
+    finally:
+        holder.release()
+
+
+def test_pidfile_readers_refuse_a_fifo_without_blocking(enso_home: Paths) -> None:
+    os.mkfifo(enso_home.web_pid)
+    script = textwrap.dedent(
+        """
+        from enso import web
+        from enso.config import Paths
+        for operation in (web.status, web.stop):
+            try:
+                operation(Paths.from_env())
+            except web.WebError as exc:
+                assert "regular file" in str(exc), str(exc)
+            else:
+                raise AssertionError(f"{operation.__name__} accepted a FIFO")
+        """
+    )
+    # A blocking open must fail the test instead of hanging the suite.
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
+    )
+    assert result.returncode == 0, result.stderr
 
 
 # -- The process ----------------------------------------------------------------

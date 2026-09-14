@@ -139,7 +139,10 @@ def web_stop() -> None:
 @web_app.command("status")
 def web_status() -> None:
     """Whether the viewer is running, with its pid and URL; exit 1 when it is not."""
-    status = web.status(Paths.from_env())
+    try:
+        status = web.status(Paths.from_env())
+    except (web.WebError, OSError) as exc:
+        fail([str(exc)])
     if status.running:
         typer.echo(f"running pid={status.pid} at {status.url or '?'}")
         return

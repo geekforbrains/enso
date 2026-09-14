@@ -225,9 +225,11 @@ def _status_from(fd: int) -> Status:
 def status(paths: Paths) -> Status:
     """Running (the file is locked), stale (it is not), or absent."""
     try:
-        fd = os.open(paths.web_pid, os.O_RDONLY)
+        fd = locks.open_lock(paths.web_pid, create=False)
     except FileNotFoundError:
         return Status(running=False)
+    except locks.LockPathError as exc:
+        raise WebError(str(exc)) from None
     try:
         return _status_from(fd)
     finally:
@@ -296,9 +298,11 @@ def _reachable(bind: Bind) -> bool:
 def stop(paths: Paths, timeout: float = STOP_TIMEOUT) -> str:
     """SIGTERM the live viewer and wait for it to let go of the pidfile; idempotent."""
     try:
-        fd = os.open(paths.web_pid, os.O_RDONLY)
+        fd = locks.open_lock(paths.web_pid, create=False)
     except FileNotFoundError:
         return "not running"
+    except locks.LockPathError as exc:
+        raise WebError(str(exc)) from None
     try:
         current = _status_from(fd)
         if not current.running:
