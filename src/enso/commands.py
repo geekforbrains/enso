@@ -13,8 +13,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from . import routing
-from .formatting import model_label
-from .runtime import Runtime, format_elapsed, usable
+from .formatting import format_elapsed, model_label
+from .runtime import Runtime, usable
 from .service import restart_command
 from .transports import Reply, Turn
 

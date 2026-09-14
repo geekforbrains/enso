@@ -1,10 +1,16 @@
-"""Chat-facing model labels and transport-specific Markdown rendering."""
+"""Shared text formatting, message chunking, and transport-specific Markdown rendering."""
 
 from __future__ import annotations
 
 import re
 from html import escape
+from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
+
+if TYPE_CHECKING:
+    from .routing import ResolvedAgent
+
+_LEADING_ERROR_RE = re.compile(r"^(?:error\s*:\s*)+", re.IGNORECASE)
 
 # Pre-escape patterns (matched before HTML escaping)
 _CODE_BLOCK = re.compile(r"```(\w*)\n(.*?)```", re.DOTALL)
@@ -35,6 +41,36 @@ def model_label(model: str) -> str:
         return label
     prefix = MODEL_LABEL_LIMIT - MODEL_LABEL_SUFFIX - 1
     return f"{label[:prefix]}…{label[-MODEL_LABEL_SUFFIX:]}"
+
+
+def format_error(text: str) -> str:
+    """An error message with exactly one leading ``Error:`` label."""
+    body = _LEADING_ERROR_RE.sub("", text.strip()).strip()
+    return f"Error: {body}" if body else "Error:"
+
+
+def format_elapsed(seconds: int) -> str:
+    """45s, 2m 05s, 1h 12m."""
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, secs = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m {secs:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes:02d}m"
+
+
+def status_text(agent: ResolvedAgent, elapsed: int, action: str) -> str:
+    header = (
+        f"{agent.provider} · {model_label(agent.model)} · {agent.effort} · "
+        f"{format_elapsed(elapsed)}"
+    )
+    return f"{header}\n↳ {action}"
+
+
+def preview(text: str, width: int = 50) -> str:
+    flat = " ".join(text.split())
+    return flat if len(flat) <= width else flat[: width - 1] + "…"
 
 
 def md_to_html(text: str) -> str:
@@ -503,3 +539,30 @@ def split_markdown(text: str, *, limit: int = 12000) -> list[str] | None:
 
     flush()
     return chunks
+
+
+def split_text(text: str, limit: int) -> list[str]:
+    """Split at line boundaries, hard-cutting any single line longer than ``limit``."""
+    if len(text) <= limit:
+        return [text]
+    chunks: list[str] = []
+    current = ""
+    for line in text.split("\n"):
+        if len(current) + len(line) + 1 > limit:
+            if current:
+                chunks.append(current)
+            while len(line) > limit:
+                chunks.append(line[:limit])
+                line = line[limit:]
+            current = line
+        else:
+            current = f"{current}\n{line}" if current else line
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def chunk_text(text: str, limit: int) -> list[str]:
+    """Prefer fence- and table-aware splitting; fall back to plain lines."""
+    chunks = split_markdown(text, limit=limit)
+    return chunks if chunks is not None else split_text(text, limit)

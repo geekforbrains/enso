@@ -10,8 +10,8 @@ import typer
 from .. import jobs, runs
 from .. import log as logsetup
 from ..config import Paths
+from ..formatting import format_elapsed
 from ..jobs.runner import JobRunner, RunResult
-from ..runtime import format_elapsed
 from .common import JSON_FLAG, ago, columns, echo_json, fail, load, seconds
 
 job_app = typer.Typer(no_args_is_help=True, help="Scheduled jobs under $ENSO_HOME/jobs.")

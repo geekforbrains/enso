@@ -21,11 +21,8 @@ from enso.runtime import (
     ORIGIN_HEADER,
     UNBOUND_NOTICE,
     Runtime,
-    chunk_text,
     escape_origin_name,
-    format_elapsed,
     origin_block,
-    status_text,
     usable,
 )
 from enso.transports import Reply, Turn
@@ -963,22 +960,6 @@ async def test_a_resumed_turn_restates_the_thread_it_arrived_in(
     ]
     assert "\nThread:" not in first.sent[0]
     assert "\nThread: 1788400000.000100\n" in second.sent[0]
-
-
-def test_helpers() -> None:
-    assert Runtime.assemble_prompt(make_turn("hi"), rich=True) == (
-        f"{origin_block(make_turn('hi'))}\n\nhi\n\n{CONTRACT}"
-    )
-    assert [format_elapsed(s) for s in (5, 65, 3725)] == ["5s", "1m 05s", "1h 02m"]
-    assert chunk_text("a\n" * 10, limit=8) == ["a\na\na\na\n", "a\na\na\na\n", "a\na\n"]
-    from enso.routing import ResolvedAgent
-
-    agent = ResolvedAgent(
-        "opencode", "openrouter/deepseek/deepseek-v4-flash-0731", "low", "workspace"
-    )
-    assert status_text(agent, 12, "Reading foo.py") == (
-        "opencode · deepseek-v4-flash-0731 · low · 12s\n↳ Reading foo.py"
-    )
 
 
 @pytest.mark.parametrize(

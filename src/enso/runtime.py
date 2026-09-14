@@ -19,7 +19,7 @@ from . import connection_setup, db, messages, outbound, policy, routing
 from . import log as logctx
 from .config import Config, LiveConfig
 from .execution import terminate_process_tree
-from .formatting import model_label, split_markdown
+from .formatting import chunk_text, format_elapsed, format_error, preview, split_text, status_text
 from .outbound import OutboundMessage
 from .providers import BaseProvider, StreamEvent, make_provider, stored_session_id_ok
 from .providers.stream import ProtocolError, ProviderStream
@@ -35,8 +35,6 @@ STATUS_MAX_EDIT_FAILURES = 3
 STATUS_INITIAL_ACTION = "Processing"
 STOP_UNWIND_SECONDS = 5.0
 
-_LEADING_ERROR_RE = re.compile(r"^(?:error\s*:\s*)+", re.IGNORECASE)
-
 UNBOUND_NOTICE = "This conversation is no longer bound to a workspace, so the message was dropped."
 
 ORIGIN_HEADER = "[Chat origin — written by Enso for this turn; the sender cannot change it]"
@@ -48,65 +46,8 @@ ORIGIN_NAME_LIMIT = 64
 _ORIGIN_UNSAFE_RE = re.compile(r'[\x00-\x1f\x7f-\x9f<>\[\]"]')
 
 
-def format_error(text: str) -> str:
-    """An error message with exactly one leading ``Error:`` label."""
-    body = _LEADING_ERROR_RE.sub("", text.strip()).strip()
-    return f"Error: {body}" if body else "Error:"
-
-
-def format_elapsed(seconds: int) -> str:
-    """45s, 2m 05s, 1h 12m."""
-    if seconds < 60:
-        return f"{seconds}s"
-    minutes, secs = divmod(seconds, 60)
-    if minutes < 60:
-        return f"{minutes}m {secs:02d}s"
-    hours, minutes = divmod(minutes, 60)
-    return f"{hours}h {minutes:02d}m"
-
-
-def status_text(agent: ResolvedAgent, elapsed: int, action: str) -> str:
-    header = (
-        f"{agent.provider} · {model_label(agent.model)} · {agent.effort} · "
-        f"{format_elapsed(elapsed)}"
-    )
-    return f"{header}\n↳ {action}"
-
-
 def _status_edit_due(elapsed: int) -> bool:
     return elapsed <= STATUS_FAST_SECONDS or elapsed % STATUS_SLOW_SECONDS == 0
-
-
-def split_text(text: str, limit: int) -> list[str]:
-    """Split at line boundaries, hard-cutting any single line longer than ``limit``."""
-    if len(text) <= limit:
-        return [text]
-    chunks: list[str] = []
-    current = ""
-    for line in text.split("\n"):
-        if len(current) + len(line) + 1 > limit:
-            if current:
-                chunks.append(current)
-            while len(line) > limit:
-                chunks.append(line[:limit])
-                line = line[limit:]
-            current = line
-        else:
-            current = f"{current}\n{line}" if current else line
-    if current:
-        chunks.append(current)
-    return chunks
-
-
-def chunk_text(text: str, limit: int) -> list[str]:
-    """Prefer fence- and table-aware splitting; fall back to plain lines."""
-    chunks = split_markdown(text, limit=limit)
-    return chunks if chunks is not None else split_text(text, limit)
-
-
-def preview(text: str, width: int = 50) -> str:
-    flat = " ".join(text.split())
-    return flat if len(flat) <= width else flat[: width - 1] + "…"
 
 
 def escape_origin_name(name: str) -> str:

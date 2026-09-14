@@ -19,8 +19,8 @@ import typer
 
 from .. import db, heartbeat, messages
 from ..config import Config, ConfigError, Paths, load_config
+from ..formatting import format_elapsed
 from ..outbound import OutboundMessage
-from ..runtime import format_elapsed
 from ..transports import Transport
 
 JSON_FLAG = typer.Option(False, "--json", help="Print JSON instead of text.")
