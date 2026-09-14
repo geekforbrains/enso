@@ -11,7 +11,7 @@ import typer
 
 from .. import heartbeat, messages
 from ..config import Config, Paths
-from ..runtime import preview
+from ..formatting import preview
 from ..transports import Transport
 from . import slack as slack_cli
 from .common import (

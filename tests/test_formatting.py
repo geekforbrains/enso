@@ -1,16 +1,30 @@
-"""Markdown → mrkdwn / HTML goldens and chunking."""
+"""Text labels, Markdown → mrkdwn / HTML goldens, and message chunking."""
 
 from __future__ import annotations
 
 import pytest
 
 from enso.formatting import (
+    chunk_text,
+    format_elapsed,
     has_slack_code_language,
     md_to_html,
     md_to_mrkdwn,
     model_label,
     split_markdown,
+    status_text,
 )
+from enso.routing import ResolvedAgent
+
+
+def test_status_text_formats_agent_and_elapsed() -> None:
+    assert [format_elapsed(s) for s in (5, 65, 3725)] == ["5s", "1m 05s", "1h 02m"]
+    agent = ResolvedAgent(
+        "opencode", "openrouter/deepseek/deepseek-v4-flash-0731", "low", "workspace"
+    )
+    assert status_text(agent, 12, "Reading foo.py") == (
+        "opencode · deepseek-v4-flash-0731 · low · 12s\n↳ Reading foo.py"
+    )
 
 
 @pytest.mark.parametrize(
@@ -64,16 +78,26 @@ def test_md_to_html(markdown: str, html: str) -> None:
     assert md_to_html(markdown) == html
 
 
-def test_split_markdown_keeps_fences_and_tables_intact() -> None:
+def test_chunk_text_keeps_markdown_or_falls_back_to_lines() -> None:
     fence = "```\n" + "\n".join(f"line {i}" for i in range(6)) + "\n```\n"
-    chunks = split_markdown(fence, limit=30)
-    assert chunks is not None and len(chunks) > 1
-    assert all(c.startswith("```\n") and c.rstrip("\n").endswith("```") for c in chunks)
+    chunks = chunk_text(fence, limit=30)
+    assert len(chunks) > 1
+    assert all(
+        len(c) <= 30 and c.startswith("```\n") and c.rstrip("\n").endswith("```") for c in chunks
+    )
     table = "| a | b |\n| --- | --- |\n" + "".join(f"| {i} | {i} |\n" for i in range(8))
-    chunks = split_markdown(table, limit=50)
-    assert chunks is not None and all(c.startswith("| a | b |\n| --- | --- |\n") for c in chunks)
-    assert split_markdown("x" * 10, limit=5) == ["xxxxx", "xxxxx"]
-    assert split_markdown("```\n" + "y" * 40 + "\n```", limit=10) is None
+    chunks = chunk_text(table, limit=50)
+    assert len(chunks) > 1
+    assert all(len(c) <= 50 and c.startswith("| a | b |\n| --- | --- |\n") for c in chunks)
+    assert chunk_text("x" * 10, limit=5) == ["xxxxx", "xxxxx"]
+    assert chunk_text("a\n" * 10, limit=8) == ["a\na\na\na\n", "a\na\na\na\n", "a\na\n"]
+
+    oversized_fence = "```\n" + "y" * 40 + "\n```"
+    assert split_markdown(oversized_fence, limit=10) is None
+    assert chunk_text(oversized_fence, limit=10) == ["```", *["y" * 10] * 4, "```"]
+    oversized_table = "| a |\n| --- |\n| abcdefghijk |"
+    assert split_markdown(oversized_table, limit=12) is None
+    assert chunk_text(oversized_table, limit=12) == ["| a |", "| --- |", "| abcdefghij", "k |"]
 
 
 @pytest.mark.parametrize(

@@ -12,6 +12,9 @@ Product behaviour belongs in its owning page under `docs/`, starting with
   behaviour in `transports/`, command presentation in `cli/`, and persistence in the
   database modules. `tasks.py` owns task queries, shared filters, and row conversion for
   CLI, jobs, and web consumers; the viewer owns display grouping and history limits.
+- `src/enso/formatting.py` — shared text labels, durations, errors, previews, message
+  chunking, and transport-specific Markdown rendering. Chat and CLI callers import text
+  helpers here; this module does not load runtime, routing, or database code.
 - `src/enso/providers/stream.py` — shared structured-output parsing, session identity,
   bounded pipe reads, and failure diagnostics for chat and background turns. Callers own
   process lifetimes, response presentation, and persistence; `execution.py` owns shared
