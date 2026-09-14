@@ -634,6 +634,12 @@ def test_read_input_bounds_files_and_requires_utf8(tmp_path: Path) -> None:
         read_input(path, limit=8)
     with pytest.raises(InputError, match=r"^could not read "):
         read_input(tmp_path / "missing", limit=8)
+    assert read_input("-", literal=True) == "-"
+    assert read_input("é" * 4, literal=True, limit=8) == "é" * 4
+    with pytest.raises(InputError, match=r"^input exceeds 8 bytes$"):
+        read_input("é" * 4 + "x", literal=True, limit=8)
+    with pytest.raises(InputError, match=r"^input is not UTF-8$"):
+        read_input("\udcff", literal=True)
 
 
 def test_message_input_over_the_limit_is_refused_before_sending(
@@ -647,6 +653,29 @@ def test_message_input_over_the_limit_is_refused_before_sending(
     assert json.loads(result.stdout) == {"ok": False, "error": f"input exceeds {INPUT_LIMIT} bytes"}
     result = runner.invoke(app, ["message", "send", "-"], input="x" * (INPUT_LIMIT + 1))
     assert result.exit_code == 1 and result.stderr == f"error: input exceeds {INPUT_LIMIT} bytes\n"
+    result = runner.invoke(app, ["message", "send", "é" * (INPUT_LIMIT // 2) + "x", "--json"])
+    assert result.exit_code == 1 and result.stderr == ""
+    assert json.loads(result.stdout) == {"ok": False, "error": f"input exceeds {INPUT_LIMIT} bytes"}
+    assert slack.sent("chat_postMessage") == []
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+@pytest.mark.parametrize("invalid_utf8", [False, True])
+def test_rich_input_is_bounded_and_requires_utf8(
+    slack: FakeSlack, tmp_path: Path, as_json: bool, invalid_utf8: bool
+) -> None:
+    envelope = tmp_path / "rich.json"
+    content = b'{"version":1,"fallback_text":"A: 1","blocks":[{"type":"table","rows":[["A",1]]}]}'
+    envelope.write_bytes(b"\xff" if invalid_utf8 else content.ljust(INPUT_LIMIT + 1, b" "))
+    error = f"{envelope} is not UTF-8" if invalid_utf8 else f"input exceeds {INPUT_LIMIT} bytes"
+    args = ["slack", "send", "-c", "C1", "--rich", str(envelope)]
+    result = CliRunner().invoke(app, [*args, *(["--json"] if as_json else [])])
+    assert result.exit_code == 1
+    if as_json:
+        assert result.stderr == ""
+        assert json.loads(result.stdout) == {"ok": False, "error": error}
+    else:
+        assert result.stdout == "" and result.stderr == f"error: {error}\n"
     assert slack.sent("chat_postMessage") == []
 
 
@@ -685,7 +714,9 @@ def test_slack_writes_follow_the_json_contract_and_fill_the_outbox(
 
     envelope = tmp_path / "rich.json"
     envelope.write_text(
-        '{"version":1,"fallback_text":"A: 1","blocks":[{"type":"table","rows":[["A",1]]}]}'
+        '{"version":1,"fallback_text":"A: 1","blocks":[{"type":"table","rows":[["A",1]]}]}'.ljust(
+            INPUT_LIMIT
+        )
     )
     rich = runner.invoke(app, ["slack", "send", "-c", "C1", "--rich", str(envelope), "--json"])
     assert json.loads(rich.stdout)["ok"]

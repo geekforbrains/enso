@@ -323,9 +323,10 @@ enso project add KEY --name NAME --workspace WS [--repo PATH] (--stages a,b,c:hu
 
 Every command takes `--json` and follows the [JSON error contract](cli.md): a refused move or
 edit prints `{"ok": false, "error": "<reason>"}` and exits 1, and so does an unknown
-reference or project. A message or body of `-` reads stdin, so a handoff longer than a line
-needs no shell quoting. `--idle-for` takes `30m`, `2h`, or `1d`, and keeps tasks that entered
-their stage at least that long ago.
+reference or project. A message of `-` or `--body-file -` reads stdin, so a handoff longer
+than a line needs no shell quoting; `--body` is literal text. Bodies and messages follow
+the [CLI input limits](cli.md). `--idle-for` takes `30m`, `2h`, or `1d`, and keeps tasks
+that entered their stage at least that long ago.
 
 `list` hides `done` and `cancelled` unless `--all` is given or `--stage` names one of them,
 and orders by project, then priority descending, then creation. `--ready` keeps unclaimed

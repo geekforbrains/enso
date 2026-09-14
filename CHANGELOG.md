@@ -7,11 +7,11 @@ All notable changes to Enso are documented here, following
 
 ### Changed
 
-- Every command that reads text from `--file` or stdin uses one bounded reader with a
-  documented limit: messages, notes, task bodies, and heartbeat input accept 256 KiB,
-  `config apply` 1 MiB, and `connect` 16 KiB. `task add --body-file`, `task edit`,
-  `message send`, `slack send`, and `telegram send` previously read unbounded input; the
-  over-limit error now reads the same everywhere.
+- CLI text inputs use one bounded reader: messages, notes, task bodies, heartbeat input
+  (including checkpoints), and Slack rich-message envelopes accept 256 KiB, `config apply`
+  1 MiB, and `connect` 16 KiB. Limits apply equally to text arguments, files, and stdin,
+  counting UTF-8 bytes. Previously unbounded inputs are refused with consistent errors,
+  including invalid UTF-8 in rich-message files.
 - The managed updater stops and restarts the agent and viewer through the same
   service-manager code as `enso service` and `enso web`, so an unsupported platform or
   a failing launchd/systemd command reports the same way in every command.

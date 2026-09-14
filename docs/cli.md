@@ -20,11 +20,13 @@ syntax, such as a missing required argument or an unknown option, still uses CLI
 errors on stderr and exits 2. Commands that report health or validation findings, such as
 `doctor`, `workspace audit`, and the onboarding commands below, keep their documented report objects.
 
-Every command that reads text from `--file FILE` or stdin (`-`) reads through one bounded
-reader: input must be UTF-8 and is refused, with `input exceeds N bytes` in the command's
-usual error output, once it passes the command's limit. Messages, notes, task bodies, and
-heartbeat definitions and messages accept 256 KiB (262,144 bytes); `config apply` accepts
-1 MiB; `connect` accepts 16 KiB. No command reads unbounded input.
+Messages, notes, task bodies, and heartbeat definitions, messages, and checkpoints accept
+at most 256 KiB (262,144 bytes) of UTF-8 per input, whether supplied as a text argument,
+a file, or stdin (`-`). Slack `--rich` envelope files have the same limit, including JSON
+syntax and whitespace. `config apply` accepts 1 MiB; `connect` accepts 16 KiB. These inputs
+use one bounded reader and are refused with `input exceeds N bytes` in the command's usual
+error output when they pass the limit. Limits count encoded bytes, not characters; input
+that is not UTF-8 is refused too.
 
 ## Operating
 
