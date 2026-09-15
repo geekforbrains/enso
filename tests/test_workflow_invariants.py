@@ -89,6 +89,51 @@ async def test_adding_a_check_harness_input_requires_rule_review(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "name",
+    [
+        "backend/internal/store/store_test.go",
+        "test_health.py",
+        "pkg/test_health.py",
+        "pkg/health_test.py",
+    ],
+)
+@pytest.mark.parametrize("change", ["modify", "delete", "add"])
+async def test_conventional_go_and_python_tests_preserve_existing_acceptance_inputs(
+    enso_home: Paths,
+    project_config: Config,
+    repo: Path,
+    name: str,
+    change: str,
+) -> None:
+    if change != "add":
+        commit_file(repo, name, "original acceptance assertion\n", "test: acceptance input")
+    config = configured(
+        enso_home,
+        project_config,
+        [{"name": "work", "checks": [{"name": "test", "command": "true"}]}],
+        repo=repo,
+    )
+    task = tasks.create(enso_home, config, "EN", "Preserve existing tests", actor="user:test")
+    claim(enso_home, config, task.ref, "r1")
+    cwd = worktrees.worktree_path(enso_home, config.projects["EN"], task.ref)
+    if change == "delete":
+        git(cwd, "rm", name)
+        git(cwd, "commit", "-qm", "test: remove assertion")
+    else:
+        commit_file(cwd, name, "new assertion\n", "test: change assertion")
+    submission(enso_home, config, task.ref, "r1")
+    result = await workflows.evaluate(enso_home, config, task.ref, "r1", dict(os.environ))
+    transaction = workflows.history(enso_home, task.ref)[0]
+    if change == "add":
+        assert result.status == "accepted"
+        assert len(transaction["checks"]) == 1
+    else:
+        assert result.status == "failed" and name in result.feedback
+        assert transaction["checks"] == []
+
+
+@pytest.mark.asyncio
 async def test_replacing_a_check_input_with_a_symlink_requires_rule_review(
     enso_home: Paths,
     project_config: Config,

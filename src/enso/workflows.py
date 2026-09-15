@@ -28,7 +28,19 @@ from .config import Config, Paths, ProjectConfig, Stage, load_config, stage_dict
 
 ACTIVE = ("working", "submitted", "checking", "repairing")
 PENDING_EVENTS = ("pending", "running", "failed")
-TEST_PATTERNS = ("tests/*", "test/*", "*/tests/*", "*/test/*", "*.test.*", "*.tests.*", "*.spec.*")
+TEST_PATTERNS = (
+    "tests/*",
+    "test/*",
+    "*/tests/*",
+    "*/test/*",
+    "*.test.*",
+    "*.tests.*",
+    "*.spec.*",
+    "*_test.go",
+    "test_*.py",
+    "*/test_*.py",
+    "*_test.py",
+)
 RULE_PATTERNS = (
     "package.json",
     "package-lock.json",
