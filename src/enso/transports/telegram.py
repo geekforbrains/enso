@@ -350,8 +350,6 @@ class TelegramTransport(Transport):
         turn = build_turn(
             message, text, files=files, context=reply_context(message), workspace=workspace
         )
-        if await commands.dispatch(self.runtime, turn, reply):
-            return None
         return turn, reply
 
     async def download(self, message: Message, workspace: str, reply: Reply) -> list[str] | None:

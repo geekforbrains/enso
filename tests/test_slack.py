@@ -8,7 +8,7 @@ from dataclasses import replace
 
 import pytest
 
-from enso import db
+from enso import commands, db
 from enso.config import Agent, Config
 from enso.outbound import parse_outbound_message
 from enso.runtime import ORIGIN_HEADER, Runtime, origin_block
@@ -435,6 +435,55 @@ async def test_attachment_and_followup_reach_runtime_in_arrival_order(
 
     await asyncio.wait_for(both_handled.wait(), timeout=1)
     assert handled == ["first", "second"]
+
+
+async def test_commands_run_once_before_the_queue(
+    config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A command is answered from the handler and never becomes a turn; prose skips dispatch."""
+    db.migrate(config.paths)
+    runtime = Runtime(config)
+    assert config.slack is not None
+    transport = SlackTransport(config.slack, config.paths)
+    transport.runtime = runtime
+    transport.bot_user_id = "UBOT"
+    transport._users["U1"] = "gavin"
+    posts: list[str] = []
+    dispatched: list[str] = []
+    handled: list[str] = []
+    turn_ran = asyncio.Event()
+    original_dispatch = commands.dispatch
+
+    class FakeClient:
+        async def chat_postMessage(self, **kwargs: str) -> dict[str, str]:  # noqa: N802
+            posts.append(kwargs["text"])
+            return {"ts": str(len(posts))}
+
+    async def counting_dispatch(rt: Runtime, turn: Turn, reply: Reply) -> bool:
+        dispatched.append(turn.text)
+        return await original_dispatch(rt, turn, reply)
+
+    async def run_turn(conversation: str, turn: Turn, reply: Reply) -> None:
+        handled.append(turn.text)
+        turn_ran.set()
+
+    transport._client = FakeClient()  # type: ignore[assignment]
+    monkeypatch.setattr(commands, "dispatch", counting_dispatch)
+    monkeypatch.setattr(runtime, "_run_turn", run_turn)
+
+    async def dm(ts: str, text: str) -> None:
+        await transport._handle_event(
+            {"channel": "D1", "channel_type": "im", "ts": ts, "user": "U1", "text": text},
+            mentioned=False,
+        )
+
+    await dm("600.001", "<@UBOT> !help")
+    assert len(posts) == 1 and "!stop" in posts[0]
+    assert not runtime.busy("slack:D1")
+    await dm("600.002", "hello")
+    await asyncio.wait_for(turn_ran.wait(), timeout=1)
+    assert dispatched == ["!help"]
+    assert handled == ["hello"]
 
 
 async def test_stop_cancels_blocked_preparation_and_flushes_followups(

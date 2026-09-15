@@ -17,7 +17,7 @@ pytest.importorskip("telegram")
 from telegram import Chat, Document, Message, TextQuote, User
 from telegram.error import BadRequest
 
-from enso import db
+from enso import commands, db
 from enso.config import Config
 from enso.runtime import MAX_QUEUE, ORIGIN_HEADER, Runtime, origin_block
 from enso.transports import Reply, Turn
@@ -350,6 +350,39 @@ async def test_preparation_queue_applies_runtime_cap(
     await asyncio.wait_for(all_handled.wait(), timeout=1)
     assert handled == ["first", *(f"follow-up {index}" for index in range(1, MAX_QUEUE + 1))]
     assert runtime.queued("telegram:123") == 0
+
+
+async def test_commands_run_once_before_the_queue(
+    transport: TelegramTransport, config_both: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A command is answered from the handler and never becomes a turn; prose skips dispatch."""
+    db.migrate(config_both.paths)
+    runtime = Runtime(config_both)
+    transport.runtime = runtime
+    dispatched: list[str] = []
+    handled: list[str] = []
+    turn_ran = asyncio.Event()
+    original_dispatch = commands.dispatch
+
+    async def counting_dispatch(rt: Runtime, turn: Turn, reply: Reply) -> bool:
+        dispatched.append(turn.text)
+        return await original_dispatch(rt, turn, reply)
+
+    async def run_turn(conversation: str, turn: Turn, reply: Reply) -> None:
+        handled.append(turn.text)
+        turn_ran.set()
+
+    monkeypatch.setattr(commands, "dispatch", counting_dispatch)
+    monkeypatch.setattr(runtime, "_run_turn", run_turn)
+
+    await transport.handle_message(message(message_id=20, text="/help@ensobot"))
+    sent = _bot(transport).sent
+    assert len(sent) == 1 and "/stop" in sent[0]["text"]
+    assert not runtime.busy("telegram:123")
+    await transport.handle_message(message(message_id=21, text="hello"))
+    await asyncio.wait_for(turn_ran.wait(), timeout=1)
+    assert dispatched == ["/help@ensobot"]
+    assert handled == ["hello"]
 
 
 async def test_stop_cancels_blocked_preparation_and_flushes_followups(
