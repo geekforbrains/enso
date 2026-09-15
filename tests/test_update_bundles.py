@@ -198,3 +198,41 @@ def test_new_skill_helper_added_to_tracked_but_not_historical_bundle(bundle_home
     (home.paths.home / ".bundles.json").unlink()
     workspaces.reconcile_bundles(home.paths, home.agent)
     assert not target.exists()
+
+
+def test_upgrade_creates_shared_knowledge_without_changing_existing_notes(bundle_home):
+    home = bundle_home
+    seed(home)
+    home.paths.knowledge.rmdir()
+    changed = workspaces.reconcile_bundles(home.paths, home.agent)
+    assert changed == ["knowledge/"] and home.paths.knowledge.is_dir()
+    note = home.paths.knowledge / "Keep.md"
+    note.write_text("existing personal note\n")
+    assert workspaces.reconcile_bundles(home.paths, home.agent) == []
+    assert note.read_text() == "existing personal note\n"
+
+
+@pytest.mark.parametrize("kind", ["file", "symlink", "dangling-symlink"])
+def test_upgrade_preserves_shared_knowledge_path_conflicts(bundle_home, tmp_path, kind):
+    home = bundle_home
+    seed(home)
+    home.paths.knowledge.rmdir()
+    outside = tmp_path / "outside"
+    if kind == "file":
+        home.paths.knowledge.write_text("keep this file\n")
+    else:
+        if kind == "symlink":
+            outside.mkdir()
+            (outside / "Keep.md").write_text("keep this note\n")
+        home.paths.knowledge.symlink_to(outside, target_is_directory=True)
+
+    assert workspaces.reconcile_bundles(home.paths, home.agent) == []
+
+    if kind == "file":
+        assert home.paths.knowledge.read_text() == "keep this file\n"
+    else:
+        assert home.paths.knowledge.is_symlink() and home.paths.knowledge.readlink() == outside
+        if kind == "symlink":
+            assert (outside / "Keep.md").read_text() == "keep this note\n"
+        else:
+            assert not outside.exists()

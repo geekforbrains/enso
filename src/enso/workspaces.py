@@ -30,6 +30,7 @@ BUNDLED_SKILLS = (
     "enso-browser",
     "enso-heartbeat",
     "enso-jobs",
+    "enso-knowledge",
     "enso-security",
     "enso-skills",
     "enso-slack",
@@ -42,6 +43,7 @@ BUNDLED_SKILLS = (
 # Explicitly list support files too: a local __pycache__ must never become a bundle.
 BUNDLED_SKILL_SUPPORT = {
     "enso-browser": ("scripts/browser.py", "references/setup.md"),
+    "enso-knowledge": ("references/formatting.md", "scripts/lint.py"),
 }
 BUNDLED_JOBS: tuple[str, ...] = ("enso-audit", "enso-update")
 BUNDLED_FILES = ("slack/manifest.json",)
@@ -284,20 +286,23 @@ def reconcile_bundles(paths: Paths, agent: Agent) -> list[str]:
         known[relative] = digest
         changed.append(relative)
     write_json(paths.home / ".bundles.json", {"files": known})
+    if not paths.knowledge.exists() and not paths.knowledge.is_symlink():
+        paths.knowledge.mkdir()
+        changed.append("knowledge/")
     return changed
 
 
 def ensure_home(home: Path) -> list[str]:
-    """Create what the home layout is missing: ``skills/``, the links, and a Git root.
+    """Create missing ``skills/``, ``knowledge/``, the links, and a Git root.
 
     Never writes content: ``AGENTS.md`` and the skills are ``seed_home``'s. The CLIs find
     them by walking up from a workspace to the Git root, and Enso never commits there.
     """
     done: list[str] = []
-    skills = home / "skills"
-    if not skills.exists():
-        skills.mkdir(parents=True)
-        done.append(f"created {skills}")
+    for directory in (Paths(home).skills, Paths(home).knowledge):
+        if not directory.exists() and not directory.is_symlink():
+            directory.mkdir(parents=True)
+            done.append(f"created {directory}")
     done.extend(ensure_links(home))
     if not (home / ".git").exists() and shutil.which("git"):
         subprocess.run(["git", "init", "-q"], cwd=home, check=True, capture_output=True, timeout=15)
@@ -342,7 +347,7 @@ def ensure_layout(root: Path) -> list[str]:
     done: list[str] = []
     for name in WORKSPACE_DIRS:
         directory = root / name
-        if not directory.exists():
+        if not directory.exists() and not directory.is_symlink():
             directory.mkdir(parents=True)
             done.append(f"created {directory}")
     done.extend(ensure_links(root))

@@ -286,7 +286,7 @@ async def test_workspaces_list_and_detail(client: TestClient, home: Home) -> Non
 
     detail = await page(client, "/workspaces/lonely")
     assert title(detail) == "Workspace lonely · Enso"
-    assert 'href="/workspaces/lonely/files/knowledge/"' in detail
+    assert 'href="/knowledge?scope=workspace%3Alonely"' in detail
     assert 'href="/workspaces/lonely/files/drafts/"' in detail
     assert 'href="/workspaces/lonely/files/uploads/"' in detail
     assert "untouched template" in detail and 'href="/skills?workspace=lonely"' in detail

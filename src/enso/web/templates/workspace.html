@@ -43,7 +43,7 @@
   <div class="cards">
     {% for root in roots %}
     <article class="card">
-      <h3>{% if root.is_dir %}<a href="/workspaces/{{ name|urlencode }}/files/{{ root.name }}/">{{ root.name }}/</a>{% else %}{{ root.name }}/ {{ m.tag('error', 'missing') }}{% endif %}</h3>
+      <h3>{% if root.is_dir %}<a href="{% if root.name == 'knowledge' %}/knowledge?scope=workspace%3A{{ name|urlencode }}{% else %}/workspaces/{{ name|urlencode }}/files/{{ root.name }}/{% endif %}">{{ root.name }}/</a>{% else %}{{ root.name }}/ {{ m.tag('error', 'missing') }}{% endif %}</h3>
       <p>{% if root.is_dir %}{{ root.entries }} file{{ 's' if root.entries != 1 }} · {{ root.bytes|bytes }}{% else %}not a directory{% endif %}</p>
     </article>
     {% endfor %}

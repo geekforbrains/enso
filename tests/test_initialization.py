@@ -74,7 +74,9 @@ def test_init_rerun_preserves_active_config_instructions_jobs_and_skills(enso_ho
     assert all(path.read_text() == "personal content\n" for path in personal)
 
 
-@pytest.mark.parametrize("relative", ["CLAUDE.md", ".claude", "workspaces/default/.agents/skills"])
+@pytest.mark.parametrize(
+    "relative", ["CLAUDE.md", ".claude", "knowledge", "workspaces/default/.agents/skills"]
+)
 def test_init_reports_and_preserves_path_conflicts(enso_home, relative):
     conflict = enso_home.home / relative
     conflict.parent.mkdir(parents=True, exist_ok=True)
@@ -86,10 +88,11 @@ def test_init_reports_and_preserves_path_conflicts(enso_home, relative):
     assert not enso_home.config_example.exists()
 
 
-def test_init_rejects_symlink_escape_without_writing_outside_home(enso_home, tmp_path):
+@pytest.mark.parametrize("directory", ["skills", "knowledge"])
+def test_init_rejects_symlink_escape_without_writing_outside_home(enso_home, tmp_path, directory):
     outside = tmp_path / "outside"
     outside.mkdir()
-    (enso_home.home / "skills").symlink_to(outside, target_is_directory=True)
+    (enso_home.home / directory).symlink_to(outside, target_is_directory=True)
     assert not initialization.initialize_home(enso_home)["ok"]
     assert list(outside.iterdir()) == []
 

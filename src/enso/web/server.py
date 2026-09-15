@@ -18,13 +18,14 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime
 from importlib import resources
 from typing import Any
+from urllib.parse import quote
 
 import jinja2
 from aiohttp import web
 
 from .. import __version__
 from ..config import Paths
-from . import Bind, PidFile, WebError, filters, views
+from . import Bind, PidFile, WebError, filters, knowledge, views
 from . import tasks as taskviews
 
 log = logging.getLogger("enso.web")
@@ -54,6 +55,7 @@ NAV = (
     ("Tasks", "/tasks"),
     ("Heartbeats", "/heartbeats"),
     ("Runs", "/runs"),
+    ("Knowledge", "/knowledge"),
     ("Jobs", "/jobs"),
     ("Workspaces", "/workspaces"),
     ("Health", "/health"),
@@ -260,6 +262,51 @@ async def workspace_files(request: web.Request) -> web.StreamResponse:
     return render(request, "files.html", model)
 
 
+async def knowledge_list(request: web.Request) -> web.StreamResponse:
+    query = {
+        key: request.query.get(key, "")
+        for key in ("scope", "folder", "view", "q", "across", "page")
+    }
+    model = await _model(lambda: knowledge.listing_model(request.app[PATHS], query))
+    if model is None:
+        return not_found(request, "No such knowledge scope or folder.")
+    return render(request, "knowledge.html", model)
+
+
+async def knowledge_note(request: web.Request) -> web.StreamResponse:
+    model = await _model(
+        lambda: knowledge.note_model(
+            request.app[PATHS],
+            note_id=request.match_info.get("id", ""),
+            scope=request.query.get("scope", ""),
+            path=request.query.get("path", ""),
+            raw=request.query.get("raw") == "1",
+        )
+    )
+    if model is None:
+        return not_found(request, "No unique knowledge note matches this location.")
+    return render(request, "knowledge_note.html", model)
+
+
+async def knowledge_asset(request: web.Request) -> web.StreamResponse:
+    asset = await _model(
+        lambda: knowledge.read_asset(
+            request.app[PATHS],
+            request.query.get("scope", ""),
+            request.query.get("path", ""),
+        )
+    )
+    if asset is None:
+        return not_found(
+            request, "No readable attachment under this knowledge root (20 MiB limit)."
+        )
+    body, content_type, name = asset
+    headers = {}
+    if content_type == "application/octet-stream":
+        headers["Content-Disposition"] = "attachment; filename*=UTF-8''" + quote(name, safe="")
+    return web.Response(body=body, content_type=content_type, headers=headers)
+
+
 async def skills(request: web.Request) -> web.StreamResponse:
     paths = request.app[PATHS]
     selected = request.query.get("workspace") or None
@@ -363,6 +410,10 @@ ROUTES: tuple[tuple[str, Handler], ...] = (
     ("/workspaces/{name}", workspace),
     ("/workspaces/{name}/files/{root}", workspace_files),
     ("/workspaces/{name}/files/{root}/{path:.*}", workspace_files),
+    ("/knowledge", knowledge_list),
+    ("/knowledge/notes/{id}", knowledge_note),
+    ("/knowledge/file", knowledge_note),
+    ("/knowledge/asset", knowledge_asset),
     ("/skills", skills),
     ("/skills/{name}", skill),
     ("/jobs", jobs),
