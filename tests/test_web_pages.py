@@ -949,6 +949,21 @@ async def test_runs_list_filters_and_pages_without_loading_output(
     assert "Run history could not be read" in broken and 'href="/health"' in broken
 
 
+async def test_runs_list_failure_reads_no_range(
+    client: TestClient, home: Home, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A counted total whose listing fails reads 0-0 beside the error, never a range."""
+
+    def locked(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("runs table is locked")
+
+    monkeypatch.setattr(views.beatviews, "activity", locked)
+    body = await page(client, "/runs")
+    assert "Showing 0\u20130 of 2 runs." in body
+    assert "Run history could not be read" in body and "runs table is locked" in body
+    assert "data-row" not in body
+
+
 async def test_run_detail_shows_everything_including_a_megabyte(
     client: TestClient, home: Home
 ) -> None:

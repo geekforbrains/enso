@@ -34,6 +34,9 @@ All notable changes to Enso are documented here, following
 
 ### Fixed
 
+- Every paginated viewer page derives its shown range from the listed rows and lists
+  nothing when counting fails; the Heartbeats list no longer claims a row range it did not
+  render when its listing fails.
 - Clarify bundled security guidance: policy checks cover provider prerequisites, audits
   cover the chat provider only, and scripts and direct file writes have separate limits.
 - Reject conflicting provider session IDs consistently in chat and background turns,

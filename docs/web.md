@@ -383,7 +383,7 @@ origin, so a chat identity such as `slack:U0AETSSDDEF` reads as the platform a p
 and the recorded value stays in the opened event. Quiet checks stay out of the timeline.
 Runs links to each agent assessment, including its saved instructions, input cutoff,
 outcome, and output.
-Lists and history use pages of 50. Long event content is visibly clipped with a CLI lookup
+Lists and history use pages of 50 under the [Runs](#runs) range rule. Long event content is visibly clipped with a CLI lookup
 for the full record; opening a run shows its retained provider output.
 
 The viewer cannot pause, edit, fulfill, or otherwise run a beat; those changes happen through
@@ -401,7 +401,9 @@ Run history, newest first. Three views:
 
 The source filter selects all work, jobs, or heartbeats. `job` and `status` narrow any view
 and still apply to the whole history; an explicit `status` overrides the view. `page` pages
-at 500 (the default job retention). The list never reads a run's output. Heartbeat checks
+at 500 (the default job retention). Every paginated list counts first and then lists one
+page: the shown range comes from the rows actually listed, so a failed listing reads `0–0`
+of the counted total beside its error, and a failed count lists nothing. The list never reads a run's output. Heartbeat checks
 that did not involve an agent are absent; the beat's Overview holds its latest check.
 
 Each job run opens to its full record: status, exit code, duration,

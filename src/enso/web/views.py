@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import partial
@@ -746,30 +746,52 @@ def _requested_page(query: Mapping[str, str]) -> int:
     return max(1, int(raw)) if len(raw) < 9 and raw.isascii() and raw.isdecimal() else 1
 
 
-def _beat_page(
-    query: Mapping[str, str], total: int, base: str, **filters: str | None
+def _listing_link(base: str, filters: Mapping[str, str | None], page: int = 1) -> str:
+    """``base`` under its set filters, naming the page only past the first."""
+    values = {key: value for key, value in filters.items() if value}
+    if page > 1:
+        values["page"] = str(page)
+    return base + ("?" + urlencode(values) if values else "")
+
+
+def _listing(
+    query: Mapping[str, str],
+    base: str,
+    page_size: int,
+    counted: int | None,
+    rows: Callable[..., Sequence[Any]],
+    **filters: str | None,
 ) -> dict[str, Any]:
-    number = _requested_page(query)
-    pages = max(1, ceil(total / beatviews.PAGE_SIZE))
-    page = min(max(1, number), pages)
+    """One page of a listing: its rows, the pager context, and the listing's own error.
 
-    def link(number: int) -> str | None:
-        if not 1 <= number <= pages:
-            return None
-        values = {key: value for key, value in filters.items() if value}
-        if number > 1:
-            values["page"] = str(number)
-        return base + ("?" + urlencode(values) if values else "")
-
+    ``counted`` is the filtered total, or ``None`` when counting failed, which skips the
+    listing: without a total there is no page to ask for. ``rows`` is called with the
+    page's ``limit`` and ``offset``. The count fixes the page and its links; the rows fix
+    the shown range, so an empty listing reads ``0-0 of N`` rather than a range it did
+    not render.
+    """
+    total = counted or 0
+    pages = max(1, ceil(total / page_size))
+    page = min(_requested_page(query), pages)
+    listed: Sequence[Any] = []
+    error = None
+    if counted is not None:
+        fetched, error = common.attempt(
+            partial(rows, limit=page_size, offset=(page - 1) * page_size)
+        )
+        listed = fetched or []
+    start = (page - 1) * page_size + 1 if listed else 0
     return {
+        "rows": list(listed),
+        "error": error,
         "total": total,
         "page": page,
         "pages": pages,
-        "page_size": beatviews.PAGE_SIZE,
-        "start": (page - 1) * beatviews.PAGE_SIZE + 1 if total else 0,
-        "end": min(page * beatviews.PAGE_SIZE, total),
-        "prev_link": link(page - 1),
-        "next_link": link(page + 1),
+        "page_size": page_size,
+        "start": start,
+        "end": start + len(listed) - 1 if listed else 0,
+        "prev_link": _listing_link(base, filters, page - 1) if page > 1 else None,
+        "next_link": _listing_link(base, filters, page + 1) if page < pages else None,
     }
 
 
@@ -781,27 +803,18 @@ def heartbeats_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any]:
     if state not in beatviews.state_choices(view):
         state = None
     attention = query.get("attention") == "1"
-    total, error = common.attempt(
+    counted, error = common.attempt(
         partial(beatviews.beat_count, paths, view=view, state=state, attention=attention)
     )
-    pagination = _beat_page(
+    listing = _listing(
         query,
-        total or 0,
         "/heartbeats",
+        beatviews.PAGE_SIZE,
+        counted,
+        partial(beatviews.beat_rows, paths, view=view, state=state, attention=attention),
         view=view if view == "previous" else None,
         state=state,
         attention="1" if attention else None,
-    )
-    rows, rows_error = common.attempt(
-        partial(
-            beatviews.beat_rows,
-            paths,
-            view=view,
-            state=state,
-            attention=attention,
-            limit=beatviews.PAGE_SIZE,
-            offset=(pagination["page"] - 1) * beatviews.PAGE_SIZE,
-        )
     )
     return {
         "config_problems": problems,
@@ -810,11 +823,10 @@ def heartbeats_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any]:
         "state": state,
         "attention": attention,
         "states": beatviews.state_choices(view),
-        "rows": rows or [],
         "heartbeat_enabled": config.heartbeat.enabled if config else None,
         "retention_days": config.heartbeat.retention_days if config else None,
-        "error": error or rows_error,
-        **pagination,
+        **listing,
+        "error": error or listing["error"],
     }
 
 
@@ -856,34 +868,30 @@ def heartbeat_model(
         error=error or history_error or runs_error,
         checkpoint_text=json.dumps(beat.checkpoint, ensure_ascii=False, indent=2),
     )
-    base = "/heartbeats/" + beat.ref
-    total = (runs_count or 0) if section == "runs" else history_count
-    pagination = _beat_page(query or {}, total, base + "/" + section)
-    model.update(pagination)
+    base = "/heartbeats/" + beat.ref + "/" + section
     if section == "history":
-        result, error = common.attempt(
-            partial(
-                beatviews.events,
-                paths,
-                beat.id,
-                limit=beatviews.PAGE_SIZE,
-                offset=(pagination["page"] - 1) * beatviews.PAGE_SIZE,
-            )
+        history_page = partial(beatviews.events, paths, beat.id)
+        listing = _listing(
+            query or {},
+            base,
+            beatviews.PAGE_SIZE,
+            None if history is None else history_count,
+            lambda **page: history_page(**page)[1],
         )
-        model["events"] = result[1] if result else []
-        model["error"] = model["error"] or error
+        model["events"] = listing.pop("rows")
     elif section == "runs":
-        recent, error = common.attempt(
-            partial(
-                beatviews.activity,
-                paths,
-                beat_ref=beat.ref,
-                limit=beatviews.PAGE_SIZE,
-                offset=(pagination["page"] - 1) * beatviews.PAGE_SIZE,
-            )
+        listing = _listing(
+            query or {},
+            base,
+            beatviews.PAGE_SIZE,
+            runs_count,
+            partial(beatviews.activity, paths, beat_ref=beat.ref),
         )
-        model["recent"] = recent or []
-        model["error"] = model["error"] or error
+        model["recent"] = listing.pop("rows")
+    else:
+        return model
+    model["error"] = model["error"] or listing.pop("error")
+    model.update(listing)
     return model
 
 
@@ -926,85 +934,54 @@ def runs_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any]:
         status = None
     if status is not None:  # an explicit status is more specific than the view
         view = "all"
-    page = _requested_page(query)
     wanted = _view_statuses(view)
     counted, error = common.attempt(
         partial(
             beatviews.activity_count, paths, source=source, job=job, status=status, statuses=wanted
         )
     )
-    total = counted or 0
-    pages = max(1, ceil(total / runs.PAGE_SIZE))
-    page = min(page, pages)
-    rows: list[beatviews.ActivityRun] = []
-    if error is None:
-        listed, error = common.attempt(
-            partial(
-                beatviews.activity,
-                paths,
-                source=source,
-                job=job,
-                status=status,
-                statuses=wanted,
-                limit=runs.PAGE_SIZE,
-                offset=(page - 1) * runs.PAGE_SIZE,
-            )
-        )
-        rows = listed or []
+    filters = {
+        "view": view if view != "signal" else None,
+        "source": source if source != "any" else None,
+        "job": job,
+        "status": status,
+    }
+    listing = _listing(
+        query,
+        "/runs",
+        runs.PAGE_SIZE,
+        counted,
+        partial(beatviews.activity, paths, source=source, job=job, status=status, statuses=wanted),
+        **filters,
+    )
+    rows: list[beatviews.ActivityRun] = listing["rows"]
     known, _names_error = common.attempt(partial(runs.job_names, paths))
     names = known or []
     if job and job not in names:
         names = sorted([*names, job])
-
-    def link(number: int, for_view: str = view) -> str | None:
-        if number < 1 or number > pages:
-            return None
-        params = {
-            key: value
-            for key, value in (
-                ("view", for_view if for_view != "signal" else None),
-                ("source", source if source != "any" else None),
-                ("job", job),
-                ("status", status),
-            )
-            if value
-        }
-        if number > 1:
-            params["page"] = str(number)
-        return f"/runs?{urlencode(params)}" if params else "/runs"
-
     counts = _view_counts(paths, job, source)
-    start = (page - 1) * runs.PAGE_SIZE + 1 if rows else 0
     return {
         "config_problems": common.read_config(paths)[1],
         "alarm": common.alarm(paths),
-        "rows": rows,
         "groups": _feed(rows, by_hour=view == "all"),
-        "total": total,
-        "page": page,
-        "pages": pages,
-        "start": start,
-        "end": start + len(rows) - 1 if rows else 0,
-        "page_size": runs.PAGE_SIZE,
         "view": view,
         "view_tabs": [
             (
                 RUN_VIEW_LABELS[name],
-                link(1, name) or "/runs",
+                _listing_link("/runs", {**filters, "view": name if name != "signal" else None}),
                 counts.get(name),
                 "error" if name == "failed" else None,
             )
             for name in RUN_VIEWS
         ],
-        "view_current": link(1, view) or "/runs",
+        "view_current": _listing_link("/runs", filters),
         "job": job,
         "source": source,
         "status": status,
         "job_names": names,
         "statuses": beatviews.RUN_STATUSES,
-        "prev_link": link(page - 1),
-        "next_link": link(page + 1),
-        "error": error,
+        **listing,
+        "error": error or listing["error"],
     }
 
 
