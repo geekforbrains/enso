@@ -295,7 +295,8 @@ and retention or cleanup status. It works for locations outside the Enso home an
 infer the target from whatever branch the main checkout happens to have open. A failed
 cleanup stays visible with its diagnostic. A bounded read-only Git query counts commits
 ahead of the recorded target; if Git or the worktree is unavailable, the metadata still
-renders and the count says unknown. No worktree record means no panel.
+renders and the count says unknown. After recorded cleanup, the panel preserves ownership
+history and omits the live commit count. No worktree record means no panel.
 
 The rest of the page holds the spec rendered with the same safe Markdown renderer as
 workspace files, refs, accepted handoff, and timeline. Timeline rows show the actor, message,

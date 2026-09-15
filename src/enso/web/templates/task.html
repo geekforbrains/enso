@@ -51,7 +51,7 @@
     {% if worktree.start_revision %}<dt>Starting revision</dt><dd><code>{{ worktree.start_revision }}</code></dd>{% endif %}
     {% if worktree.status %}<dt>Status</dt><dd>{{ worktree.status|replace('_', ' ') }}</dd>{% endif %}
     {% if worktree.error %}<dt>Needs attention</dt><dd class="error-text">{{ worktree.error }}</dd>{% endif %}
-    <dt>Commits ahead</dt><dd>{% if worktree.ahead is not none %}{{ worktree.ahead }} commit{{ 's' if worktree.ahead != 1 }} ahead of {{ worktree.base }}{% else %}<span class="muted">unknown; git could not count them</span>{% endif %}</dd>
+    {% if worktree.status != 'removed' %}<dt>Commits ahead</dt><dd>{% if worktree.ahead is not none %}{{ worktree.ahead }} commit{{ 's' if worktree.ahead != 1 }} ahead of {{ worktree.base }}{% else %}<span class="muted">unknown; git could not count them</span>{% endif %}</dd>{% endif %}
   </dl>
 </div>
 {% endif %}

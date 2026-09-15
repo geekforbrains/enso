@@ -409,6 +409,12 @@ async def test_task_page_worktree_panel(
     broken = await html(client, f"/tasks/{task.ref}")
     assert "Worktree" in broken and "unknown; git could not count them" in broken
 
+    # Completed cleanup keeps the audit record without presenting missing Git as a failure.
+    record.update(status="removed", error="")
+    removed = await html(client, f"/tasks/{task.ref}")
+    assert "removed" in removed and f"<code>{worktree}</code>" in removed
+    assert "Commits ahead" not in removed and "git could not count" not in removed
+
 
 @pytest.fixture
 def transaction(board: Board) -> dict:
