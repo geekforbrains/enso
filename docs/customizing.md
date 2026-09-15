@@ -278,7 +278,7 @@ Everything that is not instructions or skills is configuration:
 | --- | --- |
 | Which chat locations use which workspace | `bindings` in [`config.json`](configuration.md) |
 | Which agent a workspace or job uses | `defaults`, `workspaces.<name>.agent`, `JOB.md` |
-| What permissions the provider runs with | `providers.<name>.args` |
+| Provider permissions and workspace policy prerequisites | [Restricted workspaces](configuration.md#restricted-workspaces) and `providers.<name>.args` |
 | Environment for providers and scripts | `~/.enso/secrets/*.env` |
 | Scheduled work | [`JOB.md`](jobs.md) plus its prerun and postrun scripts |
 | Projects and their stages | `enso workflow init` and `projects` in [`config.json`](configuration.md#projects); acceptance checks in stage definitions, agent instructions in the bound job's `JOB.md` |

@@ -7,7 +7,9 @@ description: "Make an Enso workspace restricted: write the provider CLI's own po
 
 ## How Enso sets it up
 
-A workspace with `"restricted": true` in `~/.enso/config.json` refuses every launch there — chat turns, jobs, and heartbeat assessments — until the provider CLI's own project-level policy file is in place. Enso has no permission language of its own and never reads the file. At each launch it checks three things: the file exists, as a regular file, where that CLI reads it from the working directory; the workspace's arguments for that provider carry no flag that makes the CLI discard the file; and, for Codex and Grok, which read a project file only below a trusted root, that the CLI's own user config trusts the home (`$CODEX_HOME/config.toml` `[projects."<home>"]` `trust_level = "trusted"`; `$GROK_HOME/trusted_folders.toml` `[folders."<home>"]` `trusted = true`, or `--trust` in the workspace's Grok args). When any is missing, the request gets a one-line error naming what to add, the run is recorded as failed, and no CLI starts. The rules are the CLI's, in the CLI's own format, and the CLI enforces them.
+A workspace with `"restricted": true` in `~/.enso/config.json` requires provider-policy prerequisites before chat execution, the job provider-turn sequence, and heartbeat assessments. Enso checks that the provider's expected policy path is a file, its effective arguments contain no recognized bypass flag, and Codex/Grok have the required trust for the resolved Enso home. Only Codex's exact `--dangerously-bypass-approvals-and-sandbox` and `--yolo` arguments are currently rejected. On failure, Enso reports the missing prerequisite and does not start that provider. It never parses policy contents or verifies enforcement.
+
+Job prerun/postrun scripts, heartbeat gates, command/integration stages, workflow checks, and lifecycle scripts run outside provider policies with the service account's access. A prerun or gate may run before a provider is refused. Follow-ups and repairs do not make the initial policy check continuous enforcement. The [technical contract](https://github.com/geekforbrains/enso/blob/develop/docs/configuration.md#restricted-workspaces) owns these checks; the [public guide](https://ensobot.ai/docs/security/) provides readable examples and limitations.
 
 | Provider | Policy file, inside the workspace | Provider args the workspace needs |
 | --- | --- | --- |
@@ -19,15 +21,15 @@ A workspace with `"restricted": true` in `~/.enso/config.json` refuses every lau
 
 ## Restricting a workspace
 
-Do the steps in this order and report the audit at the end.
+Do the steps in this order and report the audit and enforcement evidence at the end.
 
 1. `enso workspace create NAME` if the workspace does not exist yet.
-2. Find the provider the workspace runs with: `enso config show`, the workspace's `agent` block, else `defaults`. Write that provider's policy file from the template below into `~/.enso/workspaces/NAME/`.
+2. Find the chat provider from `enso config show`: the workspace's `agent`, else `defaults`. Also inspect jobs and beats that use the workspace; each saved provider needs its own file and settings. Use the templates below under `<ENSO_HOME>/workspaces/NAME/` (normally `~/.enso/workspaces/NAME/`).
 3. When the template names provider args, put them under `workspaces.NAME.providers.<provider>.args` in `~/.enso/config.json`. An override replaces the global list, so it must be complete.
 4. `enso config set workspaces.NAME.restricted true`
-5. `enso workspace audit NAME`, and report what it says. A `policy` error names what is still missing; fix that and audit again.
+5. `enso workspace audit NAME` checks the chat provider's prerequisites only. Fix its `policy` findings, then test intended allowed and denied operations for every provider used. Report the audit separately from actual enforcement evidence and anything untested.
 
-Copy the template exactly, then add the person's own rules to it. Every template denies `enso config`, because a restricted agent that can run `enso config set workspaces.NAME.restricted false` could lift its own restriction in one command.
+Use these as starting policies and add the person's intended rules. Merge with existing provider settings instead of overwriting unrelated configuration. The command-deny examples help prevent accidental `enso config` changes; they do not block every equivalent operation or direct file write. Complete changes from the operator's terminal when the workspace is already restricted; never clear environment markers to evade the config-write guard.
 
 ### Claude Code: `.claude/settings.json`
 
@@ -105,16 +107,17 @@ Antigravity has no workspace policy: its permissions live in `~/.gemini/antigrav
 Run each from inside the workspace directory.
 
 - Claude Code: `claude --dangerously-skip-permissions -p "Run enso config show"` must report the command as denied rather than print the config.
-- Codex: `codex exec "Print ok"` opens with a header; its `sandbox:` line must show the mode the file sets — `workspace-write` for the template. `read-only` while the file says `workspace-write` means the file was not loaded (the home is not trusted); `danger-full-access` means a flag outranks it. A file that sets `read-only` cannot be told from the default by the header alone; the audit below is the check.
-- Grok: `grok inspect --json` must show `permissions.loaded` above `0` and `projectTrusted` true; `0` means the folder is not trusted yet.
+- Codex: `codex exec "Print ok"` opens with a header; its `sandbox:` line must show the mode the file sets — `workspace-write` for the template. If the reported mode differs, check root trust and higher-priority provider configuration or arguments; the header alone does not identify the cause. A `read-only` header cannot prove the project file loaded because that can be a default. Test an intended read and a harmless denied write against disposable files; the audit alone cannot prove enforcement.
+- Grok: `grok inspect --json` must show `permissions.loaded` above `0` and `projectTrusted` true; `0` means no permission rules loaded; check both trust and policy contents.
 - OpenCode: `opencode run --auto "Run enso config show"` must report the command as denied.
-- Every provider: `enso workspace audit NAME` passes without a `policy` error.
+- Audit: `enso workspace audit NAME` should have no `policy` error for the chat provider. It does not test rules or providers used only by jobs or beats. A model's assurance or exit code alone is not evidence of a denied action; inspect tool results and file effects. Recheck after provider upgrades or settings changes.
 
 ## What restricted guarantees
 
 Say this plainly when asked, and do not oversell it.
 
-- Enso proves the file is there, no bypass flag is set, and, for Codex and Grok, that the home is trusted — nothing more. What the rules permit is the CLI's decision, and a rule the CLI does not honour is not made stronger by the flag.
-- Deny rules are text matches on the command: they stop the plain form of a command, not every way of reaching the same effect. Only Codex's sandbox is an operating-system boundary; its `workspace-write` also keeps `~/.enso/config.json` out of reach, because the file is outside the workspace.
-- The agent works inside the workspace, so it can edit the policy file during a turn. The `enso config` deny is what keeps the restriction from being lifted from within. Never loosen a policy file or set `restricted` back to false unless the person asks for exactly that.
-- The check runs at every launch and looks at the provider that launch uses, so a job or heartbeat in the workspace that runs a different provider needs that provider's file too.
+- Enso verifies file presence, recognized argument exclusions, and required trust settings. An empty or malformed policy can pass. Other arguments, provider/user configuration, plugins, and tools can change the effective access.
+- Command deny rules match commands, not every way to achieve the same effect. They do not create an OS sandbox. Configure and verify the provider's sandbox or separately enforced OS isolation when the task needs that boundary.
+- Enso does not protect policy files or `config.json` from direct writes by a process with access. The `enso config` guard depends on caller-controlled `ENSO_WORKSPACE`; it helps prevent accidents, not hostile changes. Never loosen policy or disable `restricted` without the person's explicit request.
+- Workspaces share the service account and inherited secrets. A filesystem sandbox does not automatically limit remote tools or connected-account actions. Instructions and skills do not grant new authorization or guarantee resistance to prompt injection.
+- Policy prerequisites use the provider of the actual execution. A chat-provider audit is insufficient for a job or heartbeat that uses another provider; scripts remain outside the policy gate.
