@@ -1,12 +1,15 @@
 """Read trusted release manifests and prepare isolated, verified uv installations.
 
-This module uses only the standard library so the published shell installer can embed it.
-It never selects a release or changes a running Enso home; the updater owns that transition.
+This module uses only the standard library so the published shell installer can embed it,
+and it imports nothing from the package. `fetch` is the one bounded, redirect-refusing HTTP
+read; the skill catalog imports it rather than keeping a copy. The module never selects a
+release or changes a running Enso home; the updater owns that transition.
 """
 
 from __future__ import annotations
 
 import hashlib
+import http.client
 import ipaddress
 import json
 import os
@@ -175,11 +178,56 @@ def _read_token(token_file: Path | str | None) -> str | None:
     return token
 
 
+class FetchError(Exception):
+    """A bounded fetch did not complete.
+
+    `redirect` is the absolute target of a redirect that was not followed, so a caller with
+    a redirect policy can decide whether to continue; every other failure leaves it `None`.
+    """
+
+    def __init__(self, message: str, *, redirect: str | None = None) -> None:
+        super().__init__(message)
+        self.redirect = redirect
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(
         self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str
     ) -> None:
         return None
+
+
+def fetch(url: str, limit: int, deadline: float, *, headers: dict[str, str]) -> bytes:
+    """Read at most `limit` bytes from one URL before the monotonic `deadline`.
+
+    Redirects are never followed; the `FetchError` names the target instead. The response
+    is read uncompressed in bounded chunks so the limit and the deadline apply to bytes on
+    the wire, and each socket wait is capped at 20 seconds so a silent peer overshoots the
+    deadline by at most that much.
+    """
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise FetchError("timed out")
+    request = urllib.request.Request(url, headers={**headers, "Accept-Encoding": "identity"})
+    opener = urllib.request.build_opener(_NoRedirect)
+    try:
+        with opener.open(request, timeout=min(20.0, remaining)) as response:
+            result = bytearray()
+            while True:
+                if time.monotonic() >= deadline:
+                    raise FetchError("timed out")
+                chunk = response.read1(min(65536, limit + 1 - len(result)))
+                if not chunk:
+                    return bytes(result)
+                result.extend(chunk)
+                if len(result) > limit:
+                    raise FetchError("exceeds its size limit")
+    except urllib.error.HTTPError as exc:
+        location = exc.headers.get("Location") if exc.code in {301, 302, 303, 307, 308} else None
+        redirect = urllib.parse.urljoin(url, location) if location else None
+        raise FetchError(f"failed (HTTP {exc.code})", redirect=redirect) from None
+    except urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException:
+        raise FetchError("failed or timed out") from None
 
 
 def _read_bytes(source: str, limit: int, *, token: str | None, auth_source: str) -> bytes:
@@ -196,39 +244,23 @@ def _read_bytes(source: str, limit: int, *, token: str | None, auth_source: str)
 
 
 def _download(source: str, limit: int, *, token: str | None, auth_source: str) -> bytes:
-    opener = urllib.request.build_opener(_NoRedirect)
+    """Follow a bounded redirect chain, sending the bearer token only to the feed's origin."""
     deadline = time.monotonic() + DOWNLOAD_TIMEOUT
     authorized = bool(token and _remote(auth_source) and _origin(source) == _origin(auth_source))
     for _ in range(6):
         _validate_url(source)
-        headers = {"User-Agent": "enso-release/1", "Accept-Encoding": "identity"}
+        headers = {"User-Agent": "enso-release/1"}
         if authorized:
             headers["Authorization"] = f"Bearer {token}"
-        request = urllib.request.Request(source, headers=headers)
         try:
-            with opener.open(
-                request, timeout=min(20, max(1, deadline - time.monotonic()))
-            ) as response:
-                result = bytearray()
-                while True:
-                    if time.monotonic() >= deadline:
-                        raise ReleaseError("Release download timed out.")
-                    chunk = response.read(min(64 * 1024, limit + 1 - len(result)))
-                    if not chunk:
-                        return bytes(result)
-                    result.extend(chunk)
-                    if len(result) > limit:
-                        raise ReleaseError("Release artifact exceeds its download size limit.")
-        except urllib.error.HTTPError as exc:
-            if exc.code in {301, 302, 303, 307, 308} and exc.headers.get("Location"):
-                target = urllib.parse.urljoin(source, exc.headers["Location"])
-                _validate_url(target)
-                authorized = authorized and _origin(target) == _origin(source)
-                source = target
-                continue
-            raise ReleaseError(f"Release download failed (HTTP {exc.code}).") from None
-        except urllib.error.URLError, TimeoutError, OSError:
-            raise ReleaseError("Release download failed or timed out.") from None
+            return fetch(source, limit, deadline, headers=headers)
+        except FetchError as exc:
+            if exc.redirect is None:
+                raise ReleaseError(f"Release download {exc}.") from None
+            target = exc.redirect
+        _validate_url(target)
+        authorized = authorized and _origin(target) == _origin(source)
+        source = target
     raise ReleaseError("Release download exceeded the redirect limit.")
 
 

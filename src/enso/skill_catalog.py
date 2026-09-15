@@ -7,15 +7,12 @@ belong to the operator; installing a skill never updates or repairs one in place
 from __future__ import annotations
 
 import hashlib
-import http.client
 import json
 import os
 import re
 import stat
 import tempfile
 import time
-import urllib.error
-import urllib.request
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -25,6 +22,7 @@ from typing import Any
 from . import frontmatter, locks, skills, workspaces
 from .config import Paths
 from .maintenance import sync_directory
+from .releases import FetchError, fetch
 
 SOURCE = "geekforbrains/enso-skills"
 API = f"https://api.github.com/repos/{SOURCE}"
@@ -104,39 +102,12 @@ def _json(raw: bytes, label: str) -> dict[str, Any]:
     return value
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(
-        self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str
-    ) -> None:
-        return None
-
-
 def _download(url: str, limit: int, deadline: float) -> bytes:
-    """Read a bounded HTTPS response; fixed-source requests never follow redirects."""
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        raise SkillError("official skill download timed out")
-    request = urllib.request.Request(
-        url,
-        headers={"User-Agent": "enso-skills/1", "Accept-Encoding": "identity"},
-    )
-    opener = urllib.request.build_opener(_NoRedirect)
+    """Read one fixed-source response; a redirect is a failure, never a new source."""
     try:
-        with opener.open(request, timeout=min(20.0, remaining)) as response:
-            result = bytearray()
-            while True:
-                if time.monotonic() >= deadline:
-                    raise SkillError("official skill download timed out")
-                chunk = response.read1(min(65536, limit + 1 - len(result)))
-                if not chunk:
-                    return bytes(result)
-                result.extend(chunk)
-                if len(result) > limit:
-                    raise SkillError("official skill download exceeds its size limit")
-    except urllib.error.HTTPError as exc:
-        raise SkillError(f"official skill download failed (HTTP {exc.code})") from None
-    except urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException:
-        raise SkillError("official skill download failed or timed out") from None
+        return fetch(url, limit, deadline, headers={"User-Agent": "enso-skills/1"})
+    except FetchError as exc:
+        raise SkillError(f"official skill download {exc}") from None
 
 
 def _entry(raw: object, index: int) -> Entry:

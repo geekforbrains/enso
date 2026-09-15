@@ -29,6 +29,11 @@ Product behaviour belongs in its owning page under `docs/`, starting with
   process cleanup and background execution without importing the chat runtime.
 - `src/enso/locks.py` — the hardened advisory lock open every lock site uses; it imports no
   other Enso module.
+- `src/enso/releases.py` — release manifests, artifact downloads, and isolated release
+  environments. `scripts/build-release.py` embeds its exact text in the published installer,
+  so it uses only the standard library and imports nothing from the package. It also owns
+  `fetch`, the one bounded, redirect-refusing HTTP read; the skill catalog imports it and
+  keeps its own redirect policy, headers, and error type.
 - `src/enso/web/` — `server.py` owns routes and template wiring; `filters.py` owns
   presentation helpers, Jinja filters, and chart series. `tasks.py` builds task board and
   detail models; `views.py` builds the other pages. Both use `common.py` for configuration,
