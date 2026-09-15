@@ -29,6 +29,8 @@ def test_import_preserves_sources_assets_and_legacy_metadata(tmp_path, importer)
     note.write_bytes(original)
     asset = note.with_suffix(".png")
     asset.write_bytes(b"\x89PNG\x00example")
+    legacy = source / "Legacy.markdown"  # not a note to Enso: copied byte for byte
+    legacy.write_bytes(b"---\ntags: [old]\n---\nlegacy\n")
     (source / "Empty folder").mkdir()
     (source / ".obsidian").mkdir()
     (source / ".obsidian" / "workspace.json").write_text("{}")
@@ -45,12 +47,13 @@ def test_import_preserves_sources_assets_and_legacy_metadata(tmp_path, importer)
     assert "tags: [places]" in parsed.body and "https://example.com" in parsed.body
     assert "[[Overview]]" in parsed.body
     assert imported.with_suffix(".png").read_bytes() == asset.read_bytes()
+    assert (destination / "Legacy.markdown").read_bytes() == legacy.read_bytes()
     assert (destination / "Empty folder").is_dir()
     assert not (destination / ".obsidian").exists()
     assert not (destination / "escape.md").exists()
     assert json.loads(receipt.read_text())["state"] == "complete"
-    assert len(report["files"]) == 2
-    entry = next(item for item in report["files"] if item["markdown"])
+    assert len(report["files"]) == 3
+    (entry,) = [item for item in report["files"] if item["markdown"]]
     assert entry["source_sha256"] == hashlib.sha256(original).hexdigest()
     assert entry["imported_sha256"] == hashlib.sha256(imported.read_bytes()).hexdigest()
 

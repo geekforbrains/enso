@@ -238,8 +238,9 @@ unchanged until the update or recovery finishes; concurrent service reconfigurat
 unsupported. Viewer lifecycle commands refuse changes while a managed update is pending.
 
 The snapshot covers `config.json`, `enso.db` and its WAL/SHM files, `skills/`, `jobs/`,
-home-level `AGENTS.md`, `.bundles.json`, and `slack/`. It leaves workspace files, project
-repositories, provider sessions, browser profiles, and the `secrets/` directory outside the rollback.
+home-level `AGENTS.md`, `.bundles.json`, and `slack/`. It leaves shared `knowledge/`,
+workspace files, project repositories, provider sessions, browser profiles, and the
+`secrets/` directory outside the rollback; an update never changes their contents.
 Customized bundles survive according to [Customizing](customizing.md#the-bundled-skills).
 
 If migration or startup fails before work is admitted, the helper restores the previous code

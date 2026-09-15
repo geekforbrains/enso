@@ -370,6 +370,70 @@ def test_move_preserves_identity_and_repairs_incoming_outgoing_and_asset_links(t
     assert not list(paths.home.glob(".knowledge-move-*"))
 
 
+def test_same_folder_rename_rewrites_only_links_it_breaks(tmp_path):
+    paths = Paths(tmp_path)
+    kept = (
+        "## Overview\n\n[top](#overview) [Beta](Beta.md) [[Beta]] [[general:F/Beta]] ![[image.png]]"
+    )
+    put(paths, "F/Alpha.md", f"{kept} [self](Alpha.md)")
+    put(paths, "F/Beta.md", "[[Alpha]] [alpha](Alpha.md) [alpha](../F/Alpha.md#overview)")
+    put(paths, "Other.md", "[[Beta]] [alpha](F/Alpha.md)")
+    (paths.knowledge / "F/image.png").write_bytes(b"asset")
+    result = knowledge.move_note(paths, "general", "F/Alpha", "F/Alpha2.md")
+    catalog = knowledge.scan(paths)
+    assert catalog.get("F/Alpha2").body == f"{kept} [self](general:F/Alpha2.md)"
+    assert catalog.get("F/Beta").body == (
+        "[[general:F/Alpha2]] [alpha](general:F/Alpha2.md) [alpha](general:F/Alpha2.md#overview)"
+    )
+    assert catalog.get("Other").body == "[[Beta]] [alpha](general:F/Alpha2.md)"
+    assert result["links_updated"] == 2
+    assert not catalog.audit()
+
+
+def test_folder_move_keeps_scope_wide_names_and_qualifies_relative_paths(tmp_path):
+    paths = Paths(tmp_path)
+    put(paths, "A/Page.md", "[[Sibling]] [sib](Sibling.md) ![[image.png]] ![img](image.png)")
+    put(paths, "A/Sibling.md", "[[Page]] [page](Page.md)")
+    (paths.knowledge / "A/image.png").write_bytes(b"asset")
+    result = knowledge.move_note(paths, "general", "A/Page", "B/Page.md")
+    catalog = knowledge.scan(paths)
+    assert catalog.get("B/Page").body == (
+        "[[Sibling]] [sib](general:A/Sibling.md) ![[image.png]] ![img](general:A/image.png)"
+    )
+    assert catalog.get("A/Sibling").body == "[[Page]] [page](general:B/Page.md)"
+    assert result["links_updated"] == 1
+    assert not catalog.audit()
+
+
+def test_move_qualifies_bare_links_the_new_name_would_make_ambiguous(tmp_path):
+    paths = Paths(tmp_path)
+    put(paths, "A/Plan.md", "A")
+    put(paths, "B/Roadmap.md", "[[Plan]]")
+    put(paths, "Index.md", "[[Plan]] [[Roadmap]]")
+    put(paths, "Plan.md", "[[Plan]]", "dev")  # another scope is never involved
+    result = knowledge.move_note(paths, "general", "B/Roadmap", "B/Plan.md")
+    catalog = knowledge.scan(paths)
+    assert catalog.get("Index").body == "[[general:A/Plan]] [[general:B/Plan]]"
+    assert catalog.get("B/Plan").body == "[[general:A/Plan]]"
+    assert catalog.get("Plan", "workspace:dev").body == "[[Plan]]"
+    assert result["links_updated"] == 1
+    assert not catalog.audit()
+
+
+@pytest.mark.parametrize("kind", ["file", "symlink"])
+def test_occupied_shared_root_is_reported_by_kind(tmp_path, kind):
+    paths = Paths(tmp_path / "home")
+    paths.home.mkdir()
+    if kind == "file":
+        paths.knowledge.write_text("in the way")
+    else:
+        paths.knowledge.symlink_to(tmp_path, target_is_directory=True)
+    catalog = knowledge.scan(paths)
+    assert catalog.roots == ()
+    described = "symbolic link" if kind == "symlink" else "file"
+    assert catalog.problems == (f"general knowledge root must be a directory, not a {described}",)
+
+
 def test_move_refuses_ambiguous_incoming_and_existing_targets(tmp_path):
     paths = Paths(tmp_path)
     put(paths, "A/Page.md", "A")

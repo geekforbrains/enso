@@ -8,8 +8,9 @@ import re
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
+from dataclasses import replace
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -20,6 +21,7 @@ from .catalog import (
     SCHEMA,
     Catalog,
     Note,
+    Resolution,
     metadata_problems,
     scan,
     valid_id,
@@ -220,27 +222,45 @@ def update_note(paths: Paths, scope: str, ref: str, body: str, *, expected_hash:
         return _note_after(paths, note.scope, note.path)
 
 
+def _after_move(
+    catalog: Catalog, moved: Note, target_root: Root, destination: str
+) -> tuple[Catalog, Note]:
+    """The catalog as the move would leave it, so every link resolves from both sides."""
+    moved_after = replace(
+        moved, root=target_root, path=destination, title=PurePosixPath(destination).stem
+    )
+    notes = tuple(moved_after if note is moved else note for note in catalog.notes)
+    return Catalog(catalog.roots, notes, catalog.problems, catalog.assets), moved_after
+
+
 def _relinked_body(
-    catalog: Catalog, note: Note, moved: Note, destination_scope: str, destination: str
+    before: Catalog, after: Catalog, note: Note, moved: Note, moved_after: Note
 ) -> str:
-    """Qualify rewritten links so moving a source or destination cannot change their meaning."""
+    """Qualify only the resolved links whose destination the move would change or break.
+
+    Links that still reach the same note or attachment afterwards, such as bare wiki names
+    within one scope or a fragment-only link, stay as written so the file remains portable.
+    """
+    source_after = moved_after if note is moved else note
     replacements: list[tuple[int, int, str]] = []
     for link in note.links:
-        result = catalog.resolve(note, link.target, wiki=link.wiki)
-        if not result.note and not (note == moved and result.asset):
+        result = before.resolve(note, link.target, wiki=link.wiki)
+        if result.status not in {"note", "asset"}:
             continue
-        if note != moved and result.note != moved:
+        outcome = after.resolve(source_after, link.target, wiki=link.wiki)
+        if _same_destination(result, outcome, moved, moved_after):
             continue
         if result.note:
-            scope = destination_scope if result.note == moved else result.note.scope
-            path = destination if result.note == moved else result.note.path
+            target_note = moved_after if result.note is moved else result.note
+            scope, path = target_note.scope, target_note.path
+            if link.wiki:
+                path = path.removesuffix(".md")
         else:
             assert result.asset is not None
             asset_root = next(
-                root for root in catalog.roots if result.asset.is_relative_to(root.path)
+                root for root in before.roots if result.asset.is_relative_to(root.path)
             )
             scope, path = asset_root.scope, result.asset.relative_to(asset_root.path).as_posix()
-        path = path.removesuffix(".md") if link.wiki and result.note else path
         target = f"{scope}:{quote(path, safe='/-._~')}"
         if result.fragment:
             target += f"#{quote(result.fragment, safe='-._~')}"
@@ -249,6 +269,22 @@ def _relinked_body(
     for start, end, value in reversed(replacements):
         body = body[:start] + value + body[end:]
     return body
+
+
+def _same_destination(
+    before: Resolution, after: Resolution, moved: Note, moved_after: Note
+) -> bool:
+    if before.status != after.status:
+        return False
+    if before.note is None or after.note is None:
+        return before.asset == after.asset
+    return _identity(before.note, moved, moved_after) == _identity(after.note, moved, moved_after)
+
+
+def _identity(note: Note, moved: Note, moved_after: Note) -> tuple[str, str]:
+    if note is moved_after:
+        note = moved
+    return note.scope, note.path
 
 
 def _body_only(body: str) -> None:
@@ -311,10 +347,11 @@ def move_note(
             raise KnowledgeError(
                 "ambiguous inbound links must be qualified before moving this note"
             )
+        after, moved_after = _after_move(catalog, moved, target_root, destination)
         changes: list[tuple[Note, str, str]] = []
         for note in catalog.notes:
-            body = _relinked_body(catalog, note, moved, target_root.scope, destination)
-            if note == moved or body != note.body:
+            body = _relinked_body(catalog, after, note, moved, moved_after)
+            if note is moved or body != note.body:
                 raw = read_bytes(note.root, note.path).decode("utf-8")
                 if hashlib.sha256(raw.encode()).hexdigest() != note.sha256:
                     raise KnowledgeError("a linked note changed; retry the move")

@@ -208,16 +208,8 @@ def audit_home(
                 fixable=git,
             )
         )
-    if not paths.skills.exists():
-        findings.append(Finding(DIRECTORY, ERROR, "skills/ is missing", fixable=True))
-    elif not paths.skills.is_dir():
-        findings.append(Finding(DIRECTORY, ERROR, "skills/ is a file, not a directory"))
-    if paths.knowledge.is_symlink():
-        findings.append(Finding(DIRECTORY, ERROR, "knowledge/ is a symbolic link; move it aside"))
-    elif not paths.knowledge.exists():
-        findings.append(Finding(DIRECTORY, ERROR, "knowledge/ is missing", fixable=True))
-    elif not paths.knowledge.is_dir():
-        findings.append(Finding(DIRECTORY, ERROR, "knowledge/ is a file, not a directory"))
+    findings.extend(_check_dir(paths.skills, "skills", allow_link=True))
+    findings.extend(_check_dir(paths.knowledge, "knowledge", allow_link=False))
     findings.extend(_check_links(home))
     if not paths.agents_md.is_file():
         findings.append(Finding(AGENTS_MD, ERROR, "AGENTS.md is missing"))
@@ -303,13 +295,19 @@ def tree_size(path: Path) -> int:
 
 def _check_dirs(root: Path) -> Iterator[Finding]:
     for name in workspaces.WORKSPACE_DIRS:
-        path = root / name
-        if name == "knowledge" and path.is_symlink():
-            yield Finding(DIRECTORY, ERROR, "knowledge/ is a symbolic link; move it aside")
-        elif not path.exists():
-            yield Finding(DIRECTORY, ERROR, f"{name}/ is missing", fixable=True)
-        elif not path.is_dir():
-            yield Finding(DIRECTORY, ERROR, f"{name}/ is a file, not a directory")
+        yield from _check_dir(root / name, name, allow_link=name != "knowledge")
+
+
+def _check_dir(path: Path, name: str, *, allow_link: bool) -> Iterator[Finding]:
+    """One required directory. A link is only ever reported: ``--fix`` neither creates nor
+    removes one, so a dangling link must not be reported as a repairable absence."""
+    if path.is_symlink() and not (allow_link and path.is_dir()):
+        kind = "a symbolic link" if path.exists() else "a dangling symbolic link"
+        yield Finding(DIRECTORY, ERROR, f"{name}/ is {kind}; move it aside")
+    elif not path.exists():
+        yield Finding(DIRECTORY, ERROR, f"{name}/ is missing", fixable=True)
+    elif not path.is_dir():
+        yield Finding(DIRECTORY, ERROR, f"{name}/ is a file, not a directory")
 
 
 def _check_links(root: Path) -> Iterator[Finding]:

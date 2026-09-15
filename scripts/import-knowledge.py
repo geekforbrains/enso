@@ -19,8 +19,6 @@ from enso import locks
 from enso.knowledge import normalize_text
 from enso.maintenance import write_json
 
-MARKDOWN_SUFFIXES = {".md", ".markdown"}
-
 
 def _validate_destination(source: Path, destination: Path, receipt: Path) -> None:
     if not source.is_dir():
@@ -90,7 +88,8 @@ def _copy_file(source: Path, relative: Path, stage: Path) -> dict[str, Any]:
     destination = stage / relative
     source_hash = hashlib.sha256()
     target_hash = hashlib.sha256()
-    markdown = relative.suffix.lower() in MARKDOWN_SUFFIXES
+    # Only .md files are notes to Enso; anything else is copied byte for byte.
+    markdown = relative.suffix.lower() == ".md"
     with _open_source(source, relative) as original, destination.open("xb") as target:
         before = os.fstat(original.fileno())
         if markdown:

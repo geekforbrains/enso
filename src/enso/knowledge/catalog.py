@@ -154,7 +154,8 @@ def scan(paths: Paths) -> Catalog:
     assets: dict[str, tuple[str, ...]] = {}
     problems: list[str] = []
     if not any(root.scope == "general" for root in roots):
-        problems.append("general knowledge root must be a directory, not a symbolic link")
+        kind = "symbolic link" if Paths(paths.home.resolve()).knowledge.is_symlink() else "file"
+        problems.append(f"general knowledge root must be a directory, not a {kind}")
     for root in roots:
         root_assets: list[str] = []
         if not root.path.exists():
