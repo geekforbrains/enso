@@ -15,6 +15,7 @@ from enso import doctor, heartbeat, service, workspaces
 from enso.cli import app
 from enso.config import Paths, load_config
 from enso.providers.codex import CodexProvider
+from enso.transport_registry import TRANSPORTS
 
 BINARY = "/opt/enso/bin/enso"
 
@@ -189,7 +190,7 @@ def test_a_degraded_home_names_each_problem(
     raw_config_both["providers"]["grok"]["path"] = "/nowhere/grok"
     healthy(enso_home, raw_config_both)
     write_job(enso_home, "broken", model="gpt")
-    monkeypatch.setattr(doctor, "EXTRAS", {"slack": "slack_bolt", "telegram": "no_such_module"})
+    monkeypatch.setattr(TRANSPORTS["telegram"], "module", "no_such_module")
     unit.write_text("<string>/somewhere/else/enso</string>")
 
     report = doctor.run(enso_home)

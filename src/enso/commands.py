@@ -16,11 +16,11 @@ from . import routing
 from .formatting import format_elapsed, model_label
 from .runtime import Runtime, usable
 from .service import restart_command
+from .transport_registry import TRANSPORTS
 from .transports import Reply, Turn
 
 log = logging.getLogger(__name__)
 
-PREFIXES = {"slack": "!", "telegram": "/"}
 COMMANDS: tuple[tuple[str, str], ...] = (
     ("stop", "Stop the running process and drop queued messages"),
     ("clear", "Forget this conversation's session; the next message starts fresh"),
@@ -47,9 +47,9 @@ class Result:
 
 def parse(text: str, transport: str) -> Command | None:
     """``!stop`` / ``/status@bot`` → ``Command``; anything else is a prompt."""
-    prefix = PREFIXES.get(transport)
+    prefix = TRANSPORTS[transport].prefix
     stripped = text.strip()
-    if not prefix or not stripped.startswith(prefix):
+    if not stripped.startswith(prefix):
         return None
     body = stripped[len(prefix) :]
     # "!!!" or "! wow" are prose, not commands.
@@ -131,7 +131,7 @@ async def run(
     runtime: Runtime, command: Command, *, conversation: str, workspace: str, transport: str
 ) -> Result:
     """Execute one parsed command for a bound conversation."""
-    prefix = PREFIXES[transport]
+    prefix = TRANSPORTS[transport].prefix
     if command.name == "stop":
         return Result(await runtime.stop(conversation))
     if command.name == "clear":
@@ -164,7 +164,7 @@ async def dispatch(runtime: Runtime, turn: Turn, reply: Reply) -> bool:
     )
     log.info(
         "command %s%s from %s in %s",
-        PREFIXES[turn.transport],
+        TRANSPORTS[turn.transport].prefix,
         command.name,
         turn.user_name or turn.user_id,
         conversation,

@@ -65,19 +65,6 @@ def load(paths: Paths, *, as_json: bool = False) -> Config:
     return config
 
 
-async def written(
-    transport: Transport, target: str, message_id: str | None, thread: str | None, *, file: bool
-) -> dict:
-    """The JSON contract for one write on ``transport``."""
-    if transport.name == "telegram":
-        return {"ok": True, "transport": "telegram", "chat_id": target, "message_id": message_id}
-    result: dict[str, Any] = {"ok": True, "transport": "slack", "channel": target}
-    if file:  # an upload has a file id, not a message ts
-        return {**result, "ts": None, "thread_ts": thread, "file": message_id, "permalink": None}
-    permalink = await transport.permalink(target, message_id) if message_id else None
-    return {**result, "ts": message_id, "thread_ts": thread, "permalink": permalink}
-
-
 @dataclass(frozen=True)
 class _BeatAction:
     config: Config
@@ -194,8 +181,8 @@ async def deliver(
                 text=text,
                 source=source,
             )
-            result = await written(
-                transport, target, message.message_id, thread, file=file is not None
+            result = await transport.receipt(
+                target, message.message_id, thread, file=file is not None
             )
     except BaseException as exc:
         if action is not None:

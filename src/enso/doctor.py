@@ -9,19 +9,17 @@ that every Enso operation is blocked; warnings alone exit 0. ``--json`` is
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import audit, db, heartbeat, service, web
-from .config import TRANSPORT_NAMES, Config, Paths, check_config
+from .config import Config, Paths, check_config
 from .jobs import load_jobs
+from .transport_registry import TRANSPORTS
 from .web import service as viewer_service
 
-# The module each transport's extra installs; absent means `serve` skips that transport.
-EXTRAS = {"slack": "slack_bolt", "telegram": "telegram"}
 SECTIONS = (
     "config",
     "home",
@@ -222,9 +220,9 @@ def _transports(config: Config | None) -> Section:
     if config is None:
         return _skipped("transports")
     section = Section("transports", note=", ".join(config.transports) or "none configured")
-    for name in TRANSPORT_NAMES:
+    for name, spec in TRANSPORTS.items():
         configured = name in config.transports
-        installed = importlib.util.find_spec(EXTRAS[name]) is not None
+        installed = spec.installed()  # absent means `serve` skips that transport
         section.details[name] = {"configured": configured, "installed": installed}
         if configured and not installed:
             section.problems.append(

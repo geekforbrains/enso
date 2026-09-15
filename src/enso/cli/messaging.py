@@ -5,15 +5,14 @@ from __future__ import annotations
 import os
 import sqlite3
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import typer
 
 from .. import heartbeat, messages
 from ..config import Config, Paths
 from ..formatting import preview
+from ..transport_registry import TRANSPORTS
 from ..transports import Transport
-from . import slack as slack_cli
 from .common import (
     ACTION_KEY,
     JSON_FLAG,
@@ -27,9 +26,6 @@ from .common import (
     run,
     seconds,
 )
-
-if TYPE_CHECKING:
-    from ..transports.telegram import TelegramTransport
 
 message_app = typer.Typer(
     no_args_is_help=True,
@@ -45,14 +41,14 @@ FILE = typer.Option(None, "--file", help="Read the text from this file.")
 ATTACHMENT = typer.Argument(..., help="The file to send.")
 
 
-def _telegram(config: Config, *, as_json: bool) -> TelegramTransport:
-    if config.telegram is None:
-        fail(["transports.telegram is not configured"], as_json=as_json)
+def _sender(config: Config, name: str, *, as_json: bool) -> Transport:
+    """An unconnected transport for one send; a missing extra is the command's error."""
+    if name not in config.transports:
+        fail([f"transports.{name} is not configured"], as_json=as_json)
     try:
-        from ..transports.telegram import TelegramTransport
+        return TRANSPORTS[name].build(config)
     except ImportError as exc:
         fail([str(exc)], as_json=as_json)
-    return TelegramTransport(config.telegram, config.paths)
 
 
 def destination(
@@ -97,12 +93,7 @@ def _resolve(
         name, target, thread = destination(config, to, transport=transport)
     except (ValueError, heartbeat.HeartbeatError, OSError, sqlite3.Error) as exc:
         fail([str(exc)], as_json=as_json)
-    sender = (
-        slack_cli.transport(config, as_json=as_json)
-        if name == "slack"
-        else _telegram(config, as_json=as_json)
-    )
-    return sender, target, thread
+    return _sender(config, name, as_json=as_json), target, thread
 
 
 def _check_file(file: Path, *, as_json: bool) -> None:

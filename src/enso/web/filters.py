@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from ..config import TRANSPORT_NAMES
+from ..transport_registry import TRANSPORTS
 from . import files
 
 if TYPE_CHECKING:
@@ -160,7 +160,7 @@ def heartbeat_actor(actor: str | None) -> str:
     expanded event keeps the raw value either way.
     """
     transport, _, identity = (actor or "").partition(":")
-    if identity and transport in TRANSPORT_NAMES:
+    if identity and transport in TRANSPORTS:
         return f"via {transport.capitalize()}"
     return actor or "-"
 

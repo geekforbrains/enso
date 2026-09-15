@@ -249,6 +249,11 @@ class TelegramTransport(Transport):
             message = await self.bot.send_document(_chat(target), handle, caption=caption or None)
         return str(message.message_id)
 
+    async def receipt(
+        self, target: str, message_id: str | None, thread: str | None, *, file: bool
+    ) -> dict:
+        return {"ok": True, "transport": self.name, "chat_id": target, "message_id": message_id}
+
     async def edit(self, target: str, message_id: str, text: str) -> None:
         chat_id, mid = _chat(target), int(message_id)
         try:

@@ -100,9 +100,11 @@ class Transport(ABC):
         self, target: str, path: str, *, caption: str = "", thread: str | None = None
     ) -> str: ...
 
-    async def permalink(self, target: str, message_id: str) -> str | None:
-        """A link to a sent message, for platforms that have one."""
-        return None
+    @abstractmethod
+    async def receipt(
+        self, target: str, message_id: str | None, thread: str | None, *, file: bool
+    ) -> dict:
+        """The ``--json`` result of one CLI write; the shape is documented in docs/cli.md."""
 
     @abstractmethod
     async def edit(self, target: str, message_id: str, text: str) -> None: ...
