@@ -84,7 +84,8 @@ The viewer follows ordinary Markdown links and wikilinks:
 Unqualified names resolve in the note's own scope; duplicate filenames need a folder path.
 Use explicit cross-scope targets when linking another root. Stable IDs keep viewer URLs
 valid across moves. Use `enso knowledge move REF DEST --scope S [--to-scope S]` for a rename
-or move so incoming Markdown links are updated too; reread its report and audit afterward.
+or move so every link the move would break is rewritten too; reread its report and audit
+afterward.
 Confirm the user's intended reorganization before broad tree changes or deletion, unless
 already authorized. Preserve unrelated files and attachments.
 

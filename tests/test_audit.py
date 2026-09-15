@@ -296,6 +296,27 @@ def test_knowledge_roots_preserve_conflicts_and_never_follow_links(
             assert not outside.exists()
 
 
+@pytest.mark.parametrize("scope, name", [("home", "skills"), ("workspace", "drafts")])
+def test_dangling_links_where_directories_belong_are_reported_not_fixed(
+    enso_home: Paths, tmp_path: Path, scope: str, name: str
+) -> None:
+    workspaces.seed_home(enso_home)
+    root = enso_home.workspace("default")
+    finish(root)
+    directory = (enso_home.home if scope == "home" else root) / name
+    shutil.rmtree(directory)
+    directory.symlink_to(tmp_path / "gone", target_is_directory=True)
+
+    for _ in range(2):  # the second fixing run must find the same non-repairable state
+        report = audit.audit(enso_home, ["default"], fix=True, user_dirs=USER_DIRS)
+        assert report.home.fixed == [] and report.workspaces[0].fixed == []
+        findings = report.home.findings if scope == "home" else report.workspaces[0].findings
+        assert [(f.message, f.fixable) for f in findings if f.check == "directory"] == [
+            (f"{name}/ is a dangling symbolic link; move it aside", False)
+        ]
+    assert directory.is_symlink() and not directory.exists()
+
+
 def test_missing_shared_knowledge_is_created_without_changing_existing_notes(enso_home: Paths):
     workspaces.seed_home(enso_home)
     enso_home.knowledge.rmdir()

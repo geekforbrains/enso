@@ -111,10 +111,14 @@ served. Embedded notes are links rather than recursive note transclusion.
 Root reads and note publication traverse all directory ancestors without following symbolic
 links, so replacing a workspace parent with a link cannot redirect a previously captured root.
 
-Use `enso knowledge move` to rename or relocate a note. It keeps its ID and repairs resolved
-incoming links, as well as outgoing links whose meaning would change when the source moves.
-Rewritten links include the explicit scope and path, preserving labels and heading targets.
-An ambiguous incoming link involving the note must be qualified before moving it. Notes whose
+Use `enso knowledge move` to rename or relocate a note. It keeps its ID and rewrites only
+the resolved links the move would otherwise change or break: incoming links to the note,
+its own outgoing note and attachment links when its folder or scope changes, and another
+note's bare name link that the new filename would make ambiguous. Links that still reach
+the same destination afterwards, such as a bare wiki name within one scope or a
+fragment-only link, stay exactly as written. Rewritten links include the explicit scope
+and path, preserving labels and heading targets. An ambiguous incoming link involving the
+note must be qualified before moving it. Notes whose
 bodies need link repair must have valid managed metadata; adopt those notes first. Direct
 filesystem moves preserve the ID URL but do not repair Markdown paths.
 

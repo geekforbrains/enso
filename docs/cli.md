@@ -312,8 +312,9 @@ frontmatter themselves. `update` requires the `sha256` from the last read. `adop
 unfamiliar original metadata in the note body and leaves unknown dates absent. Successful
 create/adopt/update return `{ok: true, ...note}`. `move` returns
 `{ok: true, id, scope, path, links_updated}`, where `links_updated` counts other notes rewritten.
-Moves preserve note identity and repair resolved incoming/outgoing paths; they refuse
-ambiguous inbound targets, stale contents, and existing destinations.
+Moves preserve note identity and rewrite only the resolved links the move would change or
+break, in the moved note and in others; they refuse ambiguous inbound targets, stale
+contents, and existing destinations.
 
 ## Skills
 

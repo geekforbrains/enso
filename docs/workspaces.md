@@ -198,8 +198,9 @@ No policy finding therefore means the prerequisites passed, not that access is c
 
 `--fix` only ever creates and repairs. It never deletes a file, never edits `AGENTS.md`, and
 never touches anything under `knowledge/`, `drafts/`, or `uploads/`. A real file or
-directory sitting where a link belongs is reported and left for you to move aside. Fixes
-run first and the report shows what remains, so a second `--fix` finds nothing to do.
+directory sitting where a link belongs, or a dangling symbolic link sitting where a
+directory belongs, is reported and left for you to move aside. Fixes run first and the
+report shows what remains, so a second `--fix` finds nothing to do.
 
 The shared `knowledge/` directory is created when missing, by setup, managed upgrades, or
 the fixing audit, without changing its contents.
