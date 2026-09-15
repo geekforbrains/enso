@@ -20,13 +20,13 @@ from .. import (
     doctor,
     initialization,
     maintenance,
-    memory,
     models,
     scheduling,
     service,
     workspaces,
 )
 from .. import log as logsetup
+from .. import memory as core_memory
 from ..config import Config, ConfigError, Paths, check_config, load_config
 from ..connection_setup import PairingError, service_receiver
 from ..heartbeat.runner import HeartbeatRunner
@@ -259,7 +259,7 @@ def _serve_home(paths: Paths, debug: bool) -> None:
         log.info("loaded %s from %s", ", ".join(loaded), paths.secrets)
     try:
         db.migrate(paths)
-        memory.recover_interrupted(paths)
+        core_memory.recover_interrupted(paths)
         pruned = db.prune_sessions(paths)
     except db.UnsupportedDatabaseError as exc:
         fail([str(exc)])  # nothing has started yet, so nothing has to be unwound

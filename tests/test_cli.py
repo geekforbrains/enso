@@ -532,7 +532,7 @@ def test_runs_show_includes_attempts_without_loading_them_in_lists(
 # -- transport tools, outbox, logs ---------------------------------------------
 
 
-def test_message_help_describes_destination_priority() -> None:
+def test_message_help_describes_destination_priority(enso_home: Paths) -> None:
     result = CliRunner().invoke(app, ["message", "--help"])
     assert result.exit_code == 0
     assert (

@@ -198,3 +198,51 @@ def test_show_sources_text_preserves_failure_context_and_truncation(
     ):
         assert detail in shown.output
     assert "Response truncated" not in shown.output
+
+
+def test_serve_startup_recovers_memory_before_admitting_conversations(
+    enso_home, raw_config, monkeypatch
+):
+    from conftest import FakeTransport
+
+    import enso.cli as cli
+
+    write_config(enso_home, raw_config)
+    db.migrate(enso_home)
+    ident = memory.start_turn(
+        enso_home,
+        conversation="slack:D1",
+        workspace="default",
+        provider="claude",
+        model="opus",
+        effort="high",
+        transport="slack",
+        channel="D1",
+        channel_name="dm",
+        thread=None,
+        message_id="interrupted-message",
+        user_id="U1",
+        user_name="Gavin",
+        request="Continue this work after restart.",
+        files=(),
+        received_at="2026-09-14T10:00:00-07:00",
+    )
+    assert ident is not None
+    monkeypatch.setattr(cli.logsetup, "setup", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli.audit, "startup_warnings", lambda *args: [])
+    monkeypatch.setattr(cli, "build_transports", lambda config: [FakeTransport()])
+    entered = []
+
+    async def fake_serve(runtime, transports, runner, heartbeat_runner):
+        # The ordinary CLI package also imports its memory command submodule. Startup must
+        # call the core recovery API, then admit transports only after it has finished.
+        batch = memory.prepare_batch(enso_home, batch_id="startup-proof")
+        assert batch is not None and batch.turns[0].id == ident
+        assert batch.turns[0].status == "stopped"
+        assert batch.turns[0].completed_at is not None
+        assert "stopped before" in batch.turns[0].error
+        entered.append(True)
+
+    monkeypatch.setattr(cli, "_serve", fake_serve)
+    cli._serve_home(enso_home, debug=False)
+    assert entered == [True]
