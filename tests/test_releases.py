@@ -1,10 +1,13 @@
 """Release integrity, scoped download authentication, and failed preparation boundaries."""
 
 import hashlib
+import io
 import json
 import subprocess
 import sys
 import threading
+import time
+import urllib.error
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
@@ -224,6 +227,40 @@ def test_dependency_verification_rejects_missing_or_changed_transitive_pin():
     for incorrect in (set(), {("foo-bar", "1.2.4")}):
         with pytest.raises(releases.ReleaseError, match="not fully pinned"):
             releases._validate_installed(json.dumps(installed), incorrect, "0.2.0")
+
+
+def test_fetch_bounds_size_and_deadline_and_reports_unfollowed_redirects(monkeypatch):
+    opener = SimpleNamespace(open=lambda request, timeout: io.BytesIO(b"too many bytes"))
+    monkeypatch.setattr(releases.urllib.request, "build_opener", lambda *handlers: opener)
+    with pytest.raises(releases.FetchError, match="size limit"):
+        releases.fetch("https://example.test/a", 3, time.monotonic() + 10, headers={})
+    with pytest.raises(releases.FetchError, match="timed out"):
+        releases.fetch("https://example.test/a", 3, 0, headers={})
+
+    def redirect(request, timeout):
+        raise urllib.error.HTTPError(
+            request.full_url, 302, "redirect", {"Location": "/moved"}, None
+        )
+
+    opener.open = redirect
+    with pytest.raises(releases.FetchError, match="HTTP 302") as error:
+        releases.fetch("https://example.test/a", 100, time.monotonic() + 10, headers={})
+    assert error.value.redirect == "https://example.test/moved"
+
+
+def test_remote_download_stops_after_the_redirect_limit(monkeypatch):
+    hops = []
+
+    def redirect(request, timeout):
+        hops.append(request.full_url)
+        raise urllib.error.HTTPError(request.full_url, 302, "redirect", {"Location": "next"}, None)
+
+    monkeypatch.setattr(
+        releases.urllib.request, "build_opener", lambda *handlers: SimpleNamespace(open=redirect)
+    )
+    with pytest.raises(releases.ReleaseError, match="redirect limit"):
+        releases.load_release("https://example.test/release.json")
+    assert len(hops) == 6
 
 
 def test_download_never_forwards_bearer_token_cross_origin(tmp_path):

@@ -1,15 +1,16 @@
 """Pinned official skill downloads, add-only publication, and offline provenance."""
 
 import hashlib
-import io
 import json
 import os
+import time
 import urllib.error
 from pathlib import PurePosixPath
 from types import SimpleNamespace
 
 import pytest
 
+from enso import releases
 from enso import skill_catalog as catalog
 from enso.config import Paths
 
@@ -317,21 +318,18 @@ def test_installed_listing_is_offline_and_does_not_scan_user_skills(enso_home, r
     assert remote.requests == [] and not enso_home.db.exists()
 
 
-def test_http_reader_rejects_redirects_size_overflow_and_expired_deadline(monkeypatch):
-    response = io.BytesIO(b"too many bytes")
-    opener = SimpleNamespace(open=lambda request, timeout: response)
-    monkeypatch.setattr(catalog.urllib.request, "build_opener", lambda *handlers: opener)
-    with pytest.raises(catalog.SkillError, match="size limit"):
-        catalog._download(f"{catalog.API}/commits/main", 3, catalog.time.monotonic() + 10)
-    with pytest.raises(catalog.SkillError, match="timed out"):
-        catalog._download(f"{catalog.API}/commits/main", 3, 0)
+def test_download_refuses_redirects_and_reports_skill_errors(monkeypatch):
+    opened = []
 
     def redirect(request, timeout):
-        raise urllib.error.HTTPError(request.full_url, 302, "redirect", {}, None)
+        opened.append(request.full_url)
+        raise urllib.error.HTTPError(
+            request.full_url, 302, "redirect", {"Location": "https://elsewhere.test/"}, None
+        )
 
-    opener.open = redirect
-    with pytest.raises(catalog.SkillError, match="HTTP 302"):
-        catalog._download(f"{catalog.API}/commits/main", 100, catalog.time.monotonic() + 10)
-    assert (
-        catalog._NoRedirect().redirect_request(None, None, 302, "", {}, "https://elsewhere") is None
+    monkeypatch.setattr(
+        releases.urllib.request, "build_opener", lambda *handlers: SimpleNamespace(open=redirect)
     )
+    with pytest.raises(catalog.SkillError, match=r"skill download failed \(HTTP 302\)"):
+        catalog._download(f"{catalog.API}/commits/main", 100, time.monotonic() + 10)
+    assert opened == [f"{catalog.API}/commits/main"]
