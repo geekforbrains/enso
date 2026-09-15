@@ -525,16 +525,61 @@ def _finish_integration(
     _update(paths, tx)
 
 
-async def evaluate(
-    paths: Paths, config: Config, ref: str, run_id: str, env: dict[str, str]
-) -> Evaluation:
-    with db.reader(paths) as con:
+def _finish_blocked_handoff(con: sqlite3.Connection, tx: dict[str, Any]) -> str | None:
+    """Keep this writer's explicit block reason without accepting its stage or checks."""
+    task = tasks._load(con, tx["task_ref"])
+    if (
+        task.stage != "blocked"
+        or task.previous_stage != tx["stage"]
+        or task.claim_run_id != tx["run_id"]
+    ):
+        return None
+    event = con.execute(
+        "SELECT * FROM _enso_task_events WHERE task_id=? AND kind='moved' ORDER BY id DESC LIMIT 1",
+        (task.id,),
+    ).fetchone()
+    if (
+        event is None
+        or event["run_id"] != tx["run_id"]
+        or event["from_stage"] != tx["stage"]
+        or event["to_stage"] != "blocked"
+        or json.loads(event["payload"]).get("move") != "block"
+    ):
+        return None
+    reason = event["message"]
+    tx.update(
+        status="blocked",
+        move="block",
+        to_stage="blocked",
+        actor=event["actor"],
+        message=reason,
+        error=reason,
+        ended_at=db.now(),
+    )
+    _save(con, tx)
+    return reason
+
+
+def _evaluation_input(paths: Paths, ref: str, run_id: str) -> dict[str, Any] | Evaluation:
+    with db.transaction(paths) as con:
         tx = _read(con, ref, run_id)
+        blocked = _finish_blocked_handoff(con, tx) if tx else None
+    if blocked is not None:
+        return Evaluation("failed", blocked)
     if tx is None or tx["status"] != "submitted":
         return Evaluation(
             "no_submission",
             "The run ended without submitting a handoff with enso task advance/return.",
         )
+    return tx
+
+
+async def evaluate(
+    paths: Paths, config: Config, ref: str, run_id: str, env: dict[str, str]
+) -> Evaluation:
+    tx = _evaluation_input(paths, ref, run_id)
+    if isinstance(tx, Evaluation):
+        return tx
     lease = None
     candidate: str | None = None
     try:
@@ -731,6 +776,7 @@ def interrupt(paths: Paths, config: Config, ref: str, run_id: str, reason: str) 
             return
         task = tasks._load(con, ref)
         if tx:
+            _finish_blocked_handoff(con, tx)
             for result in tx["checks"]:
                 if result["status"] == "running":
                     result.update(status="interrupted", error=reason)

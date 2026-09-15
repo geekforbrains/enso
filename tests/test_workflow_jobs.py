@@ -171,6 +171,67 @@ async def test_provider_error_after_submission_never_accepts(
     assert workflows.history(enso_home, task.ref)[0]["status"] == "blocked"
 
 
+@pytest.mark.parametrize("provider_status", ["ok", "error"])
+@pytest.mark.parametrize("submitted", [False, True])
+async def test_explicit_block_keeps_reason_and_writer_until_provider_stops(
+    enso_home: Paths,
+    raw_config: dict,
+    monkeypatch: pytest.MonkeyPatch,
+    provider_status: str,
+    submitted: bool,
+) -> None:
+    config = workflow_config(
+        enso_home,
+        raw_config,
+        [{"name": "work", "checks": [{"name": "tests", "command": "touch check-ran"}]}],
+    )
+    task = tasks.create(enso_home, config, "EN", "Needs an operator", actor="user:test")
+    reason = "Setup rule needs operator review; test wrapper inherited watch mode."
+
+    async def turn(*args: object, **kwargs: object) -> ProviderTurn:
+        env = kwargs["env"]
+        assert isinstance(env, dict)
+        if submitted:
+            submit(enso_home, config, env)
+        blocked = tasks.move(
+            enso_home,
+            config,
+            task.ref,
+            "block",
+            actor="job:work",
+            run_id=env["ENSO_RUN_ID"],
+            message=reason,
+        )
+        assert blocked.stage == "blocked" and blocked.claim_run_id == env["ENSO_RUN_ID"]
+        assert workflows.history(enso_home, task.ref)[0]["status"] in ("working", "submitted")
+        with pytest.raises(tasks.TaskError, match="claimed"):
+            tasks.move(enso_home, config, task.ref, "resume", actor="user:test", run_id=None)
+        return ProviderTurn(
+            provider_status,
+            output="Work stopped for operator review",
+            error="provider crashed" if provider_status == "error" else "",
+            exit_code=1 if provider_status == "error" else 0,
+        )
+
+    monkeypatch.setattr(runner_module.execution, "execute_turn", turn)
+    result = await JobRunner(config).run(stage_job(enso_home, config), trigger="manual")
+    assert result.status == "error"
+    assert result.error == (reason if provider_status == "ok" else "provider crashed")
+    blocked = tasks.get(enso_home, task.ref)
+    assert blocked.stage == "blocked" and blocked.claim_run_id is None
+    transaction = workflows.history(enso_home, task.ref)[0]
+    assert transaction["status"] == "blocked"
+    assert transaction["error"] == transaction["message"] == reason
+    assert transaction["move"] == "block" and transaction["to_stage"] == "blocked"
+    assert transaction["checks"] == [] and transaction["attempts"] == 0
+    assert not (enso_home.workspace("default") / "check-ran").exists()
+    assert not any(event.kind == "accepted" for event in tasks.events(enso_home, task.ref))
+    assert result.run_id is not None
+    attempts = runs.attempts(enso_home, result.run_id)
+    assert len(attempts) == 1 and attempts[0].status == provider_status
+    assert attempts[0].exit_code == (0 if provider_status == "ok" else 1)
+
+
 def test_project_slots_enforce_capacity_without_serializing_every_stage(enso_home: Paths) -> None:
     first = acquire_project_slot(enso_home, "EN", 2)
     second = acquire_project_slot(enso_home, "EN", 2)

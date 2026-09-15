@@ -264,6 +264,12 @@ contract: once configured, all must pass before a forward handoff is accepted.
 5. Enso records acceptance, moves the task, and enqueues lifecycle events atomically.
    No database write transaction remains open while commands or models execute.
 
+An agent may instead `block` with a concrete reason. The task becomes blocked while its
+execution claim remains held until the provider stops. Enso retains that reason as the
+transaction's blocked handoff; it does not accept the stage or run additional checks.
+Earlier check evidence stays intact. The provider attempt keeps its own outcome even
+when the overall run ends in error because its stage was not accepted.
+
 A check is a named command plus a timeout. Exit 0 passes; nonzero, missing/failed execution,
 timeout, interruption, or a missing required result cannot pass. Commands may be shell,
 Python, package scripts, or existing test tools; no report format or eval framework is
@@ -373,6 +379,13 @@ review, repairs, blocking, and human checkpoints.
 For example, `"worktree_root": "../task-worktrees"` puts task directories beside the
 repository. Enso adds a nested root to Git's local `info/exclude`; it does not edit the
 tracked `.gitignore`. Git's administrative directory cannot contain a worktree root.
+
+Git exclusion does not configure every development server, file watcher, or source scanner.
+A nested worktree can trigger rebuilds in the main checkout even when its dependencies
+are independent. For repositories with that behavior, choose a sibling root such as
+`"worktree_root": "../.worktrees/my-project"` and verify the running app remains healthy.
+Change the configuration between active runs; already-created tasks keep their recorded
+path, while new tasks use the new root.
 
 Changing the project configuration does not move, forget, or retarget an existing task's
 worktree. Registered legacy directories under `~/.enso/worktrees/<KEY>/<REF>` are adopted

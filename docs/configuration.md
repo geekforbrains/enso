@@ -180,8 +180,10 @@ missing directory as a problem.
 ## Defaults, workspaces, and agents
 
 `defaults` names the provider, model, and effort every conversation uses unless the
-workspace overrides it, and all three keys are required. Every job supplies its own triple
-in `JOB.md`; changing chat defaults or a workspace's `agent` does not change an existing job.
+workspace overrides it, and all three keys are required. Each provider-backed job supplies
+its own triple in `JOB.md`; changing chat defaults or a workspace's `agent` does not change
+an existing job. Command and integration stages omit the triple because they do not invoke
+a provider.
 
 A workspace may replace the whole triple with an `agent` block (also all three keys), or
 replace one provider's flags with `providers.<name>.args`. Providers with an ordered

@@ -86,6 +86,62 @@ async def test_real_failure_repairs_and_records_each_candidate(enso_home, repo_c
 
 
 @pytest.mark.asyncio
+async def test_explicit_block_during_repair_preserves_failed_check_evidence(
+    enso_home, project_config
+):
+    config = configure(
+        enso_home, project_config, checks=[{"name": "unit", "command": "echo failed; exit 1"}]
+    )
+    task = held(enso_home, config)
+    submit(enso_home, config, task.ref)
+    assert (await workflows.evaluate(enso_home, config, task.ref, "r1", {})).status == "repair"
+    before = workflows.history(enso_home, task.ref)[0]
+    reason = "The failing test needs a product decision before another repair."
+    tasks.move(
+        enso_home,
+        config,
+        task.ref,
+        "block",
+        actor="job:test",
+        run_id="r1",
+        message=reason,
+    )
+    result = await workflows.evaluate(enso_home, config, task.ref, "r1", {})
+    assert result.status == "failed" and result.feedback == reason
+    transaction = workflows.history(enso_home, task.ref)[0]
+    assert transaction["status"] == "blocked" and transaction["message"] == reason
+    assert transaction["checks"] == before["checks"]
+    assert transaction["attempts"] == before["attempts"] == 1
+    assert transaction["repairs"] == before["repairs"] == 1
+
+
+@pytest.mark.asyncio
+async def test_previous_block_is_not_a_handoff_for_a_new_run(enso_home, project_config):
+    config = configure(enso_home, project_config)
+    task = held(enso_home, config)
+    tasks.move(
+        enso_home,
+        config,
+        task.ref,
+        "block",
+        actor="job:test",
+        run_id="r1",
+        message="Original decision",
+    )
+    workflows.interrupt(enso_home, config, task.ref, "r1", "stopped")
+    tasks.release(
+        enso_home, task.ref, actor="enso", run_id="r1", message="ended", reason="run_ended"
+    )
+    tasks.move(enso_home, config, task.ref, "resume", actor="user:test", run_id=None)
+    tasks.take(enso_home, config, "EN", "work", run_id="r2", actor="job:test")
+    workflows.start(enso_home, config, task.ref, "r2")
+    result = await workflows.evaluate(enso_home, config, task.ref, "r2", {})
+    assert result.status == "no_submission"
+    assert "Original decision" not in result.feedback
+    assert workflows.history(enso_home, task.ref)[0]["status"] == "working"
+
+
+@pytest.mark.asyncio
 async def test_failed_budget_survives_run_restart_and_manual_resume(enso_home, project_config):
     config = configure(
         enso_home, project_config, checks=[{"name": "unit", "command": "exit 1"}], max_repairs=0

@@ -36,6 +36,10 @@ The basic preset has no required checks and also supports non-Git work.
 `--worktree-root PATH` selects the root. The default is `<repo>/.worktrees`; relative paths
 are repository-relative, and absolute, `~`, or sibling locations are allowed. A task keeps
 its recorded path and target across config changes. Choose the target explicitly for dev.
+Check whether development tools watch nested directories: Git exclusion alone may not
+prevent rebuilds. Prefer a sibling root for those repositories, and verify both independent
+dependency paths and the running application's health. Change roots between active runs;
+do not relocate an existing task checkout as part of a configuration edit.
 
 For an existing pipeline, use `--migrate` after inspecting its current jobs and tasks.
 The migration preserves old job files/scripts as disabled definitions and remaps familiar
