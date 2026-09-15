@@ -7,6 +7,7 @@ import contextlib
 import logging
 import os
 import signal
+import subprocess
 import time
 import uuid
 from collections.abc import Sequence
@@ -40,6 +41,50 @@ class ProviderTurn:
     session_id: str | None = None
 
 
+def _group_exists(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    return True
+
+
+def kill_process_group(process: subprocess.Popen[bytes]) -> None:
+    """Kill a group created with ``start_new_session`` and reap its owned leader."""
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except PermissionError as exc:
+        # macOS can report EPERM for an exiting group. Confirm its disappearance
+        # after reaping our child; an existing group's permission failure is real.
+        try:
+            process.wait(timeout=TERMINATE_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            raise exc from None
+        if _group_exists(process.pid):
+            raise
+    process.wait()
+
+
+async def _signal_process_group(
+    process: asyncio.subprocess.Process, pgid: int, sig: signal.Signals, grace: float
+) -> None:
+    try:
+        os.killpg(pgid, sig)
+    except ProcessLookupError:
+        pass
+    except PermissionError as exc:
+        try:
+            await asyncio.wait_for(process.wait(), timeout=grace)
+        except TimeoutError:
+            raise exc from None
+        if _group_exists(pgid):
+            raise
+
+
 async def terminate_process_tree(
     process: asyncio.subprocess.Process, label: str, *, grace: float = TERMINATE_GRACE_SECONDS
 ) -> None:
@@ -54,28 +99,11 @@ async def terminate_process_tree(
         pgid = None
 
     async def send(sig: signal.Signals) -> None:
-        try:
-            if pgid is not None:
-                os.killpg(pgid, sig)
-            else:
+        if pgid is not None:
+            await _signal_process_group(process, pgid, sig, grace)
+        else:
+            with contextlib.suppress(ProcessLookupError):
                 process.send_signal(sig)
-        except ProcessLookupError:
-            pass
-        except PermissionError as exc:
-            if pgid is None:
-                raise
-            # macOS can report EPERM for a group containing only an unreaped
-            # zombie. Let asyncio reap our child, but hide the error only when
-            # the group has disappeared; a live permission failure must surface.
-            try:
-                await asyncio.wait_for(process.wait(), timeout=grace)
-            except TimeoutError:
-                raise exc from None
-            try:
-                os.killpg(pgid, 0)
-            except ProcessLookupError:
-                return
-            raise
 
     log.info("terminating %s pid=%s pgid=%s", label, process.pid, pgid)
     await send(signal.SIGTERM)
@@ -93,8 +121,7 @@ async def terminate_background_process(process: asyncio.subprocess.Process, labe
     await terminate_process_tree(process, label)
     # The group leader can exit before a descendant closes an inherited output pipe.
     # Kill any survivors too, including when the leader had already exited at timeout.
-    with contextlib.suppress(ProcessLookupError):
-        os.killpg(process.pid, signal.SIGKILL)
+    await _signal_process_group(process, process.pid, signal.SIGKILL, TERMINATE_GRACE_SECONDS)
 
 
 async def execute_turn(
