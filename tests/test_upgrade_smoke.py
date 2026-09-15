@@ -1,4 +1,4 @@
-"""The installed-wheel smoke fixture must actually execute its synthetic migrations."""
+"""Installed-wheel smoke fixtures must support the current runtime contracts."""
 
 import runpy
 import sqlite3
@@ -6,7 +6,42 @@ from pathlib import Path
 
 import pytest
 
+from enso import db
+from enso.cli.common import deliver
+
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize("upload", [False, True])
+async def test_smoke_transport_supports_cli_delivery(config, tmp_path, upload):
+    transport_class = runpy.run_path(str(ROOT / "scripts/upgrade-smoke/fake_transport.py"))[
+        "SlackTransport"
+    ]
+    transport = transport_class(config.slack, config.paths)
+    db.migrate(config.paths)
+    attachment = tmp_path / "report.txt"
+    attachment.write_text("Report")
+
+    result = await deliver(
+        config.paths,
+        transport,
+        "C1",
+        "100.1",
+        text="Report",
+        file=attachment if upload else None,
+    )
+
+    expected = {
+        "ok": True,
+        "transport": "slack",
+        "channel": "C1",
+        "ts": None if upload else "1.0",
+        "thread_ts": "100.1",
+        "permalink": None,
+    }
+    if upload:
+        expected["file"] = "file"
+    assert result == expected
 
 
 @pytest.mark.parametrize("schema_symbol", ["_SCHEMA_V6", "NATIVE_SCHEMA"])
