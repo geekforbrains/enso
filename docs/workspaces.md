@@ -57,6 +57,10 @@ instead of replacing them. This also makes an interrupted initial scaffold safe 
 see [Non-interactive setup](install.md#non-interactive-setup). The ordinary workspace audit
 retains its separately documented repair behavior.
 
+[Memory](memory.md) keeps dated conversation history in the home database with each exchange's
+workspace and transport origin. It has no workspace folder. `enso memory list` and `search`
+default to `ENSO_WORKSPACE`; use `--all-workspaces` to explicitly broaden recall.
+
 ## Uploads
 
 Chat attachments download into `<workspace>/uploads/<id>/`, one directory per turn, for

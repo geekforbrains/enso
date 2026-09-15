@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% from "_icons.html" import icon %}
+{% macro event_time(stamp) -%}<time datetime="{{ stamp.iso }}">{{ stamp.full }}</time>{%- endmacro %}
+{% block title %}{{ entry.ref if entry else 'Memory' }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/memory">Memory</a> / <span aria-current="page">{{ entry.ref if entry else 'unavailable' }}</span></p>
+{% call m.phead(now) %}{{ entry.ref if entry else 'Memory' }}{% endcall %}
+{{ m.error(error, "Memory could not be read") }}
+{% if entry %}
+<div class="panel"><dl class="kv">
+  <dt>Workspace</dt><dd><a href="{{ workspace_url }}">{{ entry.workspace }}</a></dd>
+  <dt>Where</dt><dd>{{ entry.transport }}{% if entry.channel_name or entry.channel %} · {{ entry.channel_name or entry.channel }}{% endif %}</dd>
+  <dt>Event started</dt><dd>{{ event_time(occurred) }}</dd>
+  <dt>Event ended</dt><dd>{{ event_time(ended) }}</dd>
+  <dt>Memory created</dt><dd>{{ event_time(created) }}</dd>
+</dl></div>
+<div class="shead"><h2>What happened</h2></div>
+<div class="panel"><article class="markdown memory-summary">{{ html }}</article></div>
+<div class="shead"><h2>Source exchanges <span class="count">{{ entry.source_count }}</span></h2></div>
+<p class="range">Original requests and agent replies. Outcomes in the memory reflect what participants reported.</p>
+{% if sources %}
+<div class="panel memory-sources">
+{% for source in sources %}{% set turn = source.turn %}
+<details class="fold memory-source" id="exchange-{{ turn.id }}"{% if sources|length == 1 %} open{% endif %}>
+  <summary class="row">
+    <span class="at"><time datetime="{{ source.received.iso }}" title="{{ source.received.full }}">{{ source.received.clock }}</time></span>
+    <span class="pin {{ turn.status|status_class }}" role="img" aria-label="{{ turn.status|status_word }}" title="{{ turn.status|status_word }}"></span>
+    <span class="body"><span class="title">{{ turn.user_name or turn.user_id or 'User' }} and agent</span><span class="detail">{{ source.received.date }} · {{ turn.provider }}</span></span>
+    <span class="trail">#{{ turn.id }} {{ icon('chevron-right', 14) }}</span>
+  </summary>
+  <h3 class="memory-speaker">Request</h3>
+  <div class="markdown output-md">{{ source.request_html }}</div>
+  {% if source.request_clipped or turn.request_truncated %}<p class="range memory-source-note">Request shortened{% if turn.request_truncated %} when captured{% else %} for this view{% endif %}.</p>{% endif %}
+  <h3 class="memory-speaker">Agent reply</h3>
+  {% if turn.response %}<div class="markdown output-md">{{ source.response_html }}</div>{% else %}<p class="range memory-source-note">No agent reply was recorded.</p>{% endif %}
+  {% if source.response_clipped or turn.response_truncated %}<p class="range memory-source-note">Reply shortened{% if turn.response_truncated %} when captured{% else %} for this view{% endif %}.</p>{% endif %}
+  {% if turn.error %}<h3 class="memory-speaker">Diagnostic</h3><pre class="output bare" tabindex="0">{{ turn.error }}</pre>{% endif %}
+  {% if source.request_clipped or source.response_clipped %}<p class="range memory-source-note">Full saved exchanges: <code>enso memory show {{ entry.ref }} --sources</code></p>{% endif %}
+  <details class="fold facts">
+    <summary>{{ icon('chevron-right', 14) }}<span class="what"><span>Exchange details</span></span></summary>
+  <dl class="kv">
+    <dt>Received</dt><dd>{{ event_time(source.received) }}</dd>
+    <dt>Completed</dt><dd>{{ event_time(source.completed) }}</dd>
+    <dt>Workspace</dt><dd>{{ turn.workspace }}</dd>
+    <dt>Transport</dt><dd>{{ turn.transport }}</dd>
+    <dt>Channel</dt><dd>{{ turn.channel_name or turn.channel or '—' }}{% if turn.channel_name and turn.channel_name != turn.channel %} <span class="muted">({{ turn.channel }})</span>{% endif %}</dd>
+    {% if turn.thread %}<dt>Thread</dt><dd><code>{{ turn.thread }}</code></dd>{% endif %}
+    {% if turn.message_id %}<dt>Message</dt><dd><code>{{ turn.message_id }}</code></dd>{% endif %}
+    <dt>User</dt><dd>{{ turn.user_name or turn.user_id or 'Unknown' }}{% if turn.user_name and turn.user_id and turn.user_name != turn.user_id %} <span class="muted">({{ turn.user_id }})</span>{% endif %}</dd>
+    <dt>Agent</dt><dd>{{ turn.provider }} / {{ turn.model }}{% if turn.effort %} · {{ turn.effort }}{% endif %}</dd>
+    {% if turn.session_id %}<dt>Session</dt><dd><code>{{ turn.session_id }}</code></dd>{% endif %}
+    {% if turn.files %}<dt>Attachments</dt><dd>{% for file in turn.files %}<code>{{ file }}</code>{{ ', ' if not loop.last }}{% endfor %}</dd>{% endif %}
+  </dl>
+  </details>
+</details>
+{% endfor %}
+</div>
+{% elif not error %}{{ m.empty('Source exchanges are no longer available.') }}{% endif %}
+{% endif %}
+{% endblock %}

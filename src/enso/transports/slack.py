@@ -23,7 +23,7 @@ except ImportError as exc:  # pragma: no cover - import guard
         f"Slack transport dependencies are missing ({exc.name}); install enso[slack]"
     ) from exc
 
-from .. import commands, routing, slack_cache, slack_text, workspaces
+from .. import commands, db, routing, slack_cache, slack_text, workspaces
 from ..config import Paths, SlackConfig
 from ..formatting import has_slack_code_language, md_to_mrkdwn
 from ..outbound import ChartBlock, Column, MarkdownBlock, OutboundMessage, TableBlock
@@ -618,6 +618,7 @@ class SlackTransport(Transport):
 
     async def _handle_event(self, event: dict, *, mentioned: bool) -> None:
         assert self.runtime is not None
+        received_at = db.now()
         if event.get("subtype") in slack_text.IGNORED_SUBTYPES or not self._human_author(event):
             return
         channel, ts, user = event.get("channel", ""), event.get("ts", ""), event.get("user", "")
@@ -729,6 +730,7 @@ class SlackTransport(Transport):
                 reply_thread=reply_thread,
                 workspace=workspace,
                 session_providers=session_providers,
+                received_at=received_at,
             ),
         )
 
@@ -741,6 +743,7 @@ class SlackTransport(Transport):
         reply_thread: str | None,
         workspace: str,
         session_providers: frozenset[str],
+        received_at: str,
     ) -> tuple[Turn, Reply] | None:
         """Resolve context and files for one event after its FIFO reservation."""
         assert self.runtime is not None
@@ -791,6 +794,8 @@ class SlackTransport(Transport):
             context=context,
             channel_name=channel_name,
             workspace=workspace,
+            received_at=received_at,
+            original_text=text,
         )
         return turn, reply
 

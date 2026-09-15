@@ -47,7 +47,7 @@ def test_seed_jobs_stamps_the_agent_and_writes_once(enso_home: Paths) -> None:
     assert done == [
         f"wrote {enso_home.jobs / job / name}"
         for job in workspaces.BUNDLED_JOBS
-        for name in ("JOB.md", "prerun.sh")
+        for name in sorted(path.name for path in (enso_home.jobs / job).iterdir())
     ]
     text = (job_dir / "JOB.md").read_text()
     assert 'provider: "claude"\nmodel: "opus"\neffort: "high"\n' in text

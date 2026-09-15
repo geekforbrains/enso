@@ -24,6 +24,10 @@ All notable changes to Enso are documented here, following
 
 ### Added
 
+- Episodic Memory captures clean Enso conversations with event times, workspace, and transport
+  origin; a bundled job refines them into source-linked summaries, with recent listing, search,
+  explicit forgetting, an agent recall skill, and a separate read-only Memory viewer.
+
 - Shared `knowledge/` and automatically discovered workspace knowledge, with a read-only
   folder and search viewer, stable note URLs, Markdown and wiki links, and backlinks.
   `enso knowledge` maintains minimal metadata and repairs links on moves; the bundled

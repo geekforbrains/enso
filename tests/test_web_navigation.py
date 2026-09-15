@@ -82,6 +82,7 @@ def test_desktop_sidebar_and_mobile_more_reach_every_view_without_javascript():
         "/tasks",
         "/heartbeats",
         "/runs",
+        "/memory",
         "/knowledge",
         "/jobs",
         "/workspaces",
@@ -102,6 +103,7 @@ def test_desktop_sidebar_and_mobile_more_reach_every_view_without_javascript():
     assert "open" not in more.attrs
     assert more.children[0].attrs["aria-controls"] == "more-sections"
     assert [node.attrs["href"] for node in more.find("a")] == [
+        "/memory",
         "/knowledge",
         "/jobs",
         "/workspaces",
@@ -118,6 +120,7 @@ def test_desktop_sidebar_and_mobile_more_reach_every_view_without_javascript():
         ("/tasks/EN-001", "/tasks", False),
         ("/heartbeats/HB-001", "/heartbeats", False),
         ("/runs/abc", "/runs", False),
+        ("/memory/MEM-000001", "/memory", True),
         ("/knowledge/notes/abc", "/knowledge", True),
         ("/jobs/nightly", "/jobs", True),
         ("/workspaces/default", "/workspaces", True),

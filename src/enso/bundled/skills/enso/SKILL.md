@@ -1,6 +1,6 @@
 ---
 name: enso
-description: 'What Enso is and how it is laid out: the home directory, workspaces, skills, jobs, heartbeat, and the enso CLI. Use when asked what Enso is, where something lives, which skill or command covers a task, or where to read more.'
+description: 'What Enso is and how it is laid out: the home directory, workspaces, skills, jobs, heartbeat, memory, and the enso CLI. Use when asked what Enso is, where something lives, which skill or command covers a task, or where to read more.'
 ---
 
 # Enso
@@ -31,7 +31,7 @@ Enso's normal runtime state lives under one directory, `~/.enso` (or `$ENSO_HOME
 ├── heartbeat/<REF>/    # a beat's optional gate.sh and helpers
 ├── worktrees/<KEY>/<REF>/  # one Git worktree per task of a repo project
 ├── secrets/*.env        # KEY=value files exported into the service environment
-├── enso.db             # runs, messages, sessions, jobs, tasks, beats, registered tables
+├── enso.db             # runs, messages, sessions, jobs, tasks, beats, memory, registered tables
 ├── enso.log            # rotating log
 ├── runtime/             # managed releases, current link, installation receipt, update recovery
 └── cache/
@@ -62,6 +62,7 @@ Adding or editing a skill needs no Enso restart. The provider discovers skills t
 | Skill | Use it for |
 | --- | --- |
 | `enso-workspace` | The workspace layout, where files and skills go, bindings, the audit |
+| `enso-memory` | Recent conversations, decisions, reported outcomes, and unfinished work by workspace and time |
 | `enso-knowledge` | Shared and workspace Markdown notes, links, imports, and consistent user-defined formatting |
 | `enso-browser` | Persistent Chrome profiles, human login, and attaching browser tools |
 | `enso-skills` | Finding and installing official optional skills; authoring manual skills and choosing scope |
@@ -89,6 +90,7 @@ enso runs list|show
 enso task add|list|show|advance|return|block|resume|release|edit|note|ref|land|sweep   # see enso-tasks
 enso project list|add
 enso workspace list|create|audit     # see enso-workspace
+enso memory list|search|show|status|forget  # see enso-memory
 enso knowledge roots|list|search|show|audit|create|adopt|update|move  # see enso-knowledge
 enso skill list [--available]        # installed home skills, or the official catalog
 enso skill show|install <name>       # see enso-skills; only geekforbrains/enso-skills
@@ -101,7 +103,7 @@ enso logs [-f] [--turn ID] [--job NAME]
 
 `enso setup`, `enso serve`, `enso service …`, and viewer lifecycle commands (`enso web install|uninstall|start|stop`) are the operator's; do not run them from a turn. `enso web status` is read-only. The viewer has an optional user service, independent of the agent; see [Viewer installation](https://github.com/geekforbrains/enso/blob/main/docs/install.md#the-viewer).
 
-Change configuration with `enso config set PATH VALUE` or `enso config unset PATH`; use `enso config apply --file FILE` for a complete document. Bindings, agents, providers, workspaces, projects, run retention, and heartbeat settings take effect on the next turn or scheduler tick without restarting Enso. A running turn or job keeps the configuration it started with.
+Change configuration with `enso config set PATH VALUE` or `enso config unset PATH`; use `enso config apply --file FILE` for a complete document. Bindings, agents, providers, workspaces, projects, run retention, memory, and heartbeat settings take effect on the next turn or scheduler tick without restarting Enso. A running turn or job keeps the configuration it started with.
 
 The exceptions are `transports` and `logging`, which need a service restart, and `web`, which needs a viewer restart. Apply, set, and unset report `restart_required` in JSON and explain the needed restart in text output. Report the specific restart indicated by the result; adding a skill or changing a model does not need one. See [Configuration](https://github.com/geekforbrains/enso/blob/main/docs/configuration.md#while-the-service-runs) for the restart commands and separate service environment requirements, such as adding a provider directory to the service's `PATH`.
 

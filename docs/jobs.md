@@ -206,7 +206,7 @@ the last agent stage. Worktrees do not isolate shared services or ports.
 
 ## Bundled jobs
 
-`enso setup` and `enso config apply` install `enso-audit` and `enso-update` into
+`enso setup` and `enso config apply` install `enso-audit`, `enso-memory`, and `enso-update` into
 `~/.enso/jobs/` when their directories are missing. `enso init` prepares the home but does
 not install jobs. Existing job directories and their agent choices are preserved.
 
@@ -253,6 +253,14 @@ installed but stopped the doctor reports that, so expect a summary then. The ser
 `PATH` includes the `enso` binary, so the prerun calls plain `enso`; under a unit written
 by hand without it, the run alerts `prerun failed` with
 `enso doctor exited with status 127`.
+
+### Conversation memory
+
+`enso-memory` runs every 15 minutes and refines bounded batches of finalized Enso conversations, preserving failed or stopped outcomes.
+Its deterministic prerun skips the provider when Memory is disabled or there is no pending
+work; postrun checks that the agent recorded its result, including an empty result. It uses
+the setup agent, a five-minute timeout, and one corrective follow-up. It never scrapes chat
+history or writes Knowledge. [Memory](memory.md) owns its pipeline, commands, and retention.
 
 ### Nightly release check
 

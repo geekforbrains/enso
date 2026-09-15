@@ -16,6 +16,7 @@ through the system. Everything else in the docs assumes these words.
 | **Transport** | A chat platform connection: Slack or Telegram. Both run in one process. |
 | **Binding** | A map from a chat location to a workspace. Unbound places are ignored. |
 | **Workspace** | A directory with a fixed layout. The agent's working directory and its context. |
+| **Memory** | Dated conversation exchanges and concise episodic summaries in the database, recalled by workspace, time, and origin |
 | **Knowledge** | Durable Markdown notes in a shared home root or a workspace, written with the agent and browsed read-only |
 | **Agent** | An explicit `provider` + `model` + `effort` triple |
 | **Conversation** | A serialized queue of turns with a resumable provider session |
@@ -135,6 +136,14 @@ truth. Folders help the agent select context, but they do not isolate access.
 Shared material has one home across workspaces; workspace-specific facts stay with their
 workspace and link across roots when needed. See [Knowledge](knowledge.md) for metadata,
 links, imports, and the user-editable formatting convention.
+
+## Memory
+
+Memory preserves what happened in Enso conversations. The runtime captures clean user and
+agent exchanges with their real timestamps, workspace, and transport origin; a bundled job
+refines useful exchanges into concise summaries with source links. Agents query it through
+`enso memory`, and the viewer gives it a separate Memory page. It stays separate from
+maintained Knowledge notes. See [Memory](memory.md) for capture, refinement, recall, and retention.
 
 ## Agent
 

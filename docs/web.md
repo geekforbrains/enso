@@ -99,6 +99,7 @@ its named sections above the content:
 | [Heartbeats](#heartbeats) `/heartbeats` | Current · Previous; each beat opens Overview · History · Runs |
 | [Jobs](#jobs) `/jobs` | a job opens to Overview · History |
 | [Runs](#runs) `/runs` | Acted · Failed · All |
+| [Memory](#memory) `/memory` | a dated timeline; each entry opens its source exchanges |
 | [Knowledge](#knowledge) `/knowledge` | Folders · Recent · All notes |
 | [Workspaces](#workspaces) `/workspaces` | Workspaces · Skills |
 | [Health](#health) `/health` | Doctor · Log |
@@ -114,7 +115,7 @@ includes on the line that counts its rows. An empty list is one quiet sentence w
 rows would have been.
 
 At 820px and below, the sidebar becomes a bottom bar with exactly five items: **Today,
-Tasks, Heartbeats, Runs, More**. More opens a compact popup containing Knowledge, Jobs, Workspaces,
+Tasks, Heartbeats, Runs, More**. More opens a compact popup containing Memory, Knowledge, Jobs, Workspaces,
 and Health. It stays highlighted while one of those views is open, and carries the Health
 attention indicator even while the popup is closed. The bar respects the phone's safe area
 and stays within the viewport at 320px wide.
@@ -306,6 +307,19 @@ workspace files, refs, accepted handoff, and timeline. Timeline rows show the ac
 and surviving run link. Which moves are available is the agent's business and is not shown;
 the viewer moves nothing, because that is chat and the CLI. See [Tasks](tasks.md) for the
 workflow and worktree contracts.
+
+### Memory
+
+`/memory` is a timeline of episodic summaries, grouped by event date and ordered newest first,
+with 50 entries per page. Workspace, transport, channel, date, and summary-search filters run
+on the server. The separate Memory navigation item appears in the desktop sidebar and mobile
+More menu; it does not live inside Knowledge.
+
+An entry at `/memory/MEM-…` shows its summary and origin, with expandable clean source
+exchanges for attribution and exact wording. Long source text uses a marked preview with a
+CLI lookup for the retained text. Event dates are shown separately from the time
+the summary was created. Missing or older databases produce an empty view without migrations
+or writes. [Memory](memory.md) owns capture, query, timestamp, and retention semantics.
 
 ### Knowledge
 

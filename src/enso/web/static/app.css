@@ -846,3 +846,34 @@
     .knowledge-document .markdown { padding: var(--s-6); }
   }
 }
+
+
+/* Memory keeps enough of the episode visible to distinguish similar conversations. */
+@layer components {
+  .memory-list .memory-row {
+    padding-block: var(--s-5);
+    .body { display: block; }
+    .title {
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+      white-space: normal; overflow-wrap: anywhere; line-height: 1.5;
+    }
+    .detail { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .at, .pin, .trail { align-self: start; margin-top: 3px; }
+  }
+  .memory-summary { max-width: none; }
+  .memory-source .trail .icon { display: inline-block; vertical-align: middle; }
+  .memory-speaker { padding: var(--s-5) var(--s-6) 0; font-size: var(--text-xs); color: var(--fg-3); }
+  .memory-source-note { padding: 0 var(--s-6) var(--s-5); }
+}
+@layer phone {
+  @media (width <= 820px) {
+    .memory-toolbar .control.select { flex-basis: calc(50% - var(--s-3)); }
+    .memory-list .memory-row {
+      grid-template-columns: 48px 8px minmax(0, 1fr); padding-right: var(--s-5);
+      .at { padding-left: var(--s-4); }
+      .body { grid-column: 3; grid-row: 1; }
+      .detail { display: block; }
+      .trail { grid-column: 3; grid-row: 2; text-align: left; margin-top: var(--s-2); }
+    }
+  }
+}

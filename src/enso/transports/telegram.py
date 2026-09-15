@@ -21,7 +21,7 @@ except ImportError as exc:  # pragma: no cover - import guard
         f"Telegram transport dependencies are missing ({exc.name}); install enso[telegram]"
     ) from exc
 
-from .. import commands, routing, workspaces
+from .. import commands, db, routing, workspaces
 from ..config import Paths, TelegramConfig
 from ..formatting import md_to_html
 from . import Reply, Transport, Turn
@@ -79,6 +79,7 @@ def build_turn(
     files: list[str] | None = None,
     context: str = "",
     workspace: str = "",
+    received_at: str | None = None,
 ) -> Turn:
     """A private-chat ``Turn``: the chat id is the user's id and there is no thread."""
     user = message.from_user
@@ -96,6 +97,7 @@ def build_turn(
         context=context,
         channel_name="dm",
         workspace=workspace,
+        received_at=received_at or db.now(),
     )
 
 
@@ -302,6 +304,7 @@ class TelegramTransport(Transport):
 
     async def handle_message(self, message: Message) -> None:
         assert self.runtime is not None
+        received_at = db.now()
         if not self._authorized(message):
             return
         user = message.from_user
@@ -333,11 +336,11 @@ class TelegramTransport(Transport):
             conversation,
             reply,
             text,
-            lambda: self._prepare_message(message, reply, workspace),
+            lambda: self._prepare_message(message, reply, workspace, received_at),
         )
 
     async def _prepare_message(
-        self, message: Message, reply: Reply, workspace: str
+        self, message: Message, reply: Reply, workspace: str, received_at: str
     ) -> tuple[Turn, Reply] | None:
         """Resolve files and context for one message after its FIFO reservation."""
         assert self.runtime is not None
@@ -348,7 +351,12 @@ class TelegramTransport(Transport):
         if not text and not files:
             return None
         turn = build_turn(
-            message, text, files=files, context=reply_context(message), workspace=workspace
+            message,
+            text,
+            files=files,
+            context=reply_context(message),
+            workspace=workspace,
+            received_at=received_at,
         )
         return turn, reply
 

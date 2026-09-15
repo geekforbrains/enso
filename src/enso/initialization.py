@@ -91,6 +91,7 @@ def example_config() -> dict[str, Any]:
         "agent": {"timeout": 3600},
         "logging": {"level": "INFO"},
         "runs": {"keep": 500, "max_age_days": 30},
+        "memory": {"enabled": True, "timezone": "local"},
     }
 
 

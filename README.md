@@ -20,6 +20,8 @@ what's coming up, and what needs your attention.
 
 - **Give it context.** Keep your preferences, project instructions, and reference
   files in workspaces, so Enso has the background when you pick things up again.
+- **Remember what happened.** Recall dated conversations, decisions, and unfinished work by
+  workspace, time, and transport, with links back to the original exchanges.
 - **Build your knowledge.** Maintain linked Markdown with Enso, in shared or workspace
   folders, and browse it in the read-only viewer with search and backlinks.
 - **Keep projects moving.** Turn conversations into tasks, carry work through
@@ -73,6 +75,7 @@ The pages here own technical behavior, configuration contracts, and development 
 - [Concepts](docs/concepts.md) — the starting point and how Enso fits together.
 - [Configuration](docs/configuration.md) and [workspaces](docs/workspaces.md) —
   providers, chat routing, permissions, and layout.
+- [Memory](docs/memory.md) — dated conversations, refinement, recent recall, and source history.
 - [Knowledge](docs/knowledge.md) — shared Markdown, folders, links, formatting, and imports.
 - [Jobs](docs/jobs.md), [Heartbeat](docs/heartbeat.md), and [tasks](docs/tasks.md) —
   scheduled work, follow-ups, and project boards.

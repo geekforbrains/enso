@@ -36,7 +36,7 @@ def test_sessions_round_trip_and_prune(enso_home: Paths) -> None:
 def test_fresh_database_is_created_at_current_schema_version(enso_home: Paths) -> None:
     db.migrate(enso_home)
     with db.transaction(enso_home) as con:
-        assert con.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION == 6
+        assert con.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION == 7
         objects = {
             row["name"]
             for row in con.execute(
@@ -56,6 +56,10 @@ def test_fresh_database_is_created_at_current_schema_version(enso_home: Paths) -
             "_enso_beats",
             "_enso_beat_events",
             "_enso_beat_runs",
+            "_enso_memory_turns",
+            "_enso_memory_batches",
+            "_enso_memories",
+            "_enso_memory_sources",
         }
         assert objects >= {"runs_job", "messages_target"}
         columns = {row["name"]: row for row in con.execute("PRAGMA table_info(sessions)")}

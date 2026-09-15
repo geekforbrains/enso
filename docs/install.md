@@ -59,7 +59,7 @@ can use it too; existing scaffold content is preserved.
 4. Connects one transport. Slack checks both tokens and asks you to send a fresh code in
    the bot's private chat. Telegram supplies a Start link with a fresh code. The wizard
    discovers your identity and notification target automatically; see [Connections](connections.md).
-5. Writes `config.json`, seeds the `enso-audit` and `enso-update` jobs with your selected
+5. Writes `config.json`, seeds the `enso-audit`, `enso-memory`, and `enso-update` jobs with your selected
    agent, sends a test message, and offers to install the background service.
 
 The connection acknowledgment and test message verify chat delivery, not provider login.

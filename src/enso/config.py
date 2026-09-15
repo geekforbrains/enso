@@ -250,6 +250,14 @@ class HeartbeatConfig:
 
 
 @dataclass(frozen=True)
+class MemoryConfig:
+    """Conversation capture and the calendar used for episodic recall."""
+
+    enabled: bool = True
+    timezone: str = "local"
+
+
+@dataclass(frozen=True)
 class WebConfig:
     """Where ``enso web start`` listens unless its flags say otherwise."""
 
@@ -375,6 +383,7 @@ class Config:
     web: WebConfig
     projects: dict[str, ProjectConfig] = field(default_factory=dict)
     heartbeat: HeartbeatConfig = field(default_factory=HeartbeatConfig)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
     source_hash: str | None = None
 
     def provider_args(self, workspace: str, provider: str) -> tuple[str, ...]:
@@ -443,6 +452,7 @@ ROOT_KEYS = (
     "web",
     "projects",
     "heartbeat",
+    "memory",
 )
 PROJECT_KEYS = (
     "name",
@@ -469,6 +479,7 @@ SETTINGS_KEYS = {
     "runs": ("keep", "max_age_days"),
     "web": ("host", "port"),
     "heartbeat": ("enabled", "retention_days"),
+    "memory": ("enabled", "timezone"),
 }
 # JSON member names are arbitrary text. An ordinary one prints as itself; anything else is
 # JSON-escaped so a newline or a bidirectional control character in config.json cannot forge
@@ -981,6 +992,25 @@ def _parse_heartbeat(raw: dict, problems: list[str]) -> HeartbeatConfig:
     return HeartbeatConfig(enabled=enabled, retention_days=retention)
 
 
+def _parse_memory(raw: dict, problems: list[str]) -> MemoryConfig:
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    enabled = raw.get("enabled", True)
+    if not isinstance(enabled, bool):
+        problems.append("memory.enabled must be true or false")
+        enabled = False
+    timezone = raw.get("timezone", "local")
+    try:
+        if not isinstance(timezone, str) or not timezone:
+            raise ValueError
+        if timezone != "local":
+            ZoneInfo(timezone)
+    except ValueError, ZoneInfoNotFoundError:
+        problems.append("memory.timezone must be local or an IANA timezone")
+        timezone = "local"
+    return MemoryConfig(enabled=enabled, timezone=timezone)
+
+
 def parse_config(raw: object, paths: Paths) -> tuple[Config | None, list[str], list[str]]:
     """Validate a raw config document; returns (config, problems, warnings)."""
     problems: list[str] = []
@@ -1046,6 +1076,7 @@ def parse_config(raw: object, paths: Paths) -> tuple[Config | None, list[str], l
     )
     web = _parse_web(web_raw, problems)
     heartbeat = _parse_heartbeat(settings["heartbeat"], problems)
+    memory = _parse_memory(settings["memory"], problems)
 
     if problems or defaults is None:
         return None, problems, warnings
@@ -1064,6 +1095,7 @@ def parse_config(raw: object, paths: Paths) -> tuple[Config | None, list[str], l
         web=web,
         projects=projects,
         heartbeat=heartbeat,
+        memory=memory,
     )
     return config, problems, warnings
 

@@ -25,7 +25,7 @@ from aiohttp import web
 
 from .. import __version__
 from ..config import Paths
-from . import Bind, PidFile, WebError, filters, knowledge, views
+from . import Bind, PidFile, WebError, filters, knowledge, memory, views
 from . import tasks as taskviews
 
 log = logging.getLogger("enso.web")
@@ -55,6 +55,7 @@ NAV = (
     ("Tasks", "/tasks"),
     ("Heartbeats", "/heartbeats"),
     ("Runs", "/runs"),
+    ("Memory", "/memory"),
     ("Knowledge", "/knowledge"),
     ("Jobs", "/jobs"),
     ("Workspaces", "/workspaces"),
@@ -307,6 +308,18 @@ async def knowledge_asset(request: web.Request) -> web.StreamResponse:
     return web.Response(body=body, content_type=content_type, headers=headers)
 
 
+async def memory_list(request: web.Request) -> web.StreamResponse:
+    model = await _model(lambda: memory.listing_model(request.app[PATHS], request.query))
+    return render(request, "memory.html", model)
+
+
+async def memory_entry(request: web.Request) -> web.StreamResponse:
+    model = await _model(lambda: memory.entry_model(request.app[PATHS], request.match_info["ref"]))
+    if model is None:
+        return not_found(request, "No memory has that reference.")
+    return render(request, "memory_entry.html", model)
+
+
 async def skills(request: web.Request) -> web.StreamResponse:
     paths = request.app[PATHS]
     selected = request.query.get("workspace") or None
@@ -410,6 +423,8 @@ ROUTES: tuple[tuple[str, Handler], ...] = (
     ("/workspaces/{name}", workspace),
     ("/workspaces/{name}/files/{root}", workspace_files),
     ("/workspaces/{name}/files/{root}/{path:.*}", workspace_files),
+    ("/memory", memory_list),
+    ("/memory/{ref}", memory_entry),
     ("/knowledge", knowledge_list),
     ("/knowledge/notes/{id}", knowledge_note),
     ("/knowledge/file", knowledge_note),

@@ -316,6 +316,32 @@ Moves preserve note identity and rewrite only the resolved links the move would 
 break, in the moved note and in others; they refuse ambiguous inbound targets, stale
 contents, and existing destinations.
 
+## Memory
+
+```bash
+enso memory list [--workspace NAME | --all-workspaces] [--since week] [--limit 10] [--json]
+enso memory search QUERY [--workspace NAME | --all-workspaces] [--since DATE] [--json]
+enso memory show REF [--sources] [--json]
+enso memory status [--json]
+enso memory forget REF --yes [--json]
+enso memory prepare --batch ID [--limit 40] [--json]
+enso memory record --batch ID --file FILE|- [--json]
+enso memory check --batch ID [--json]
+```
+
+List and search also accept `--transport NAME`, `--channel ID`, `--until DATE`,
+`--limit N` (1–100), and `--offset N`. They default to the current `ENSO_WORKSPACE`, otherwise
+all workspaces, and return newest events first. Date filters use `memory.timezone` and accept
+`today`, `week`, `month`, `Nh`, `Nd`, or ISO dates/timestamps; `--until` is exclusive.
+`--json` listing returns `entries`, `total`, `limit`, and `offset`. `show --sources` includes
+original clean exchanges. `forget --yes` removes the entry and connected source history.
+
+Prepare, record, and check support the bundled refinement job. Prepare exits 1 for no work
+or disabled Memory and 2 for errors; check exits 10 for a still-pending batch, 0 when recorded,
+and 2 for errors. Record accepts a JSON array of `{summary, source_ids}` objects, including
+`[]` when nothing deserves saving. [Memory](memory.md) owns capture, timestamps, batch
+validation, retention, and these write contracts.
+
 ## Skills
 
 ```text

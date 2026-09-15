@@ -26,6 +26,8 @@ Product behaviour belongs in its owning page under `docs/`, starting with
 - `src/enso/knowledge/` — Markdown discovery, core metadata, link resolution, safe file
   access, and note writes. The CLI and read-only knowledge viewer share this model;
   user-editable writing style belongs to the bundled `enso-knowledge` skill.
+- `src/enso/memory.py` — conversation capture, dated summary queries, refinement batches,
+  source links, and forgetting. CLI, runtime, and read-only viewer share its model.
 - `src/enso/providers/stream.py` — shared structured-output parsing, session identity,
   bounded pipe reads, and failure diagnostics for chat and background turns. Callers own
   process lifetimes, response presentation, and persistence; `execution.py` owns shared

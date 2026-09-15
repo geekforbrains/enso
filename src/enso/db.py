@@ -25,7 +25,46 @@ from urllib.parse import quote
 
 from .config import Paths
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
+
+_SCHEMA_V7 = """
+CREATE TABLE _enso_memory_turns (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  conversation TEXT NOT NULL, workspace TEXT NOT NULL,
+  provider TEXT NOT NULL, model TEXT NOT NULL, effort TEXT NOT NULL,
+  transport TEXT NOT NULL, channel TEXT NOT NULL, channel_name TEXT NOT NULL,
+  thread TEXT, message_id TEXT NOT NULL, user_id TEXT NOT NULL, user_name TEXT NOT NULL,
+  request TEXT NOT NULL, response TEXT NOT NULL DEFAULT '', files TEXT NOT NULL,
+  received_at TEXT NOT NULL, completed_at TEXT, session_id TEXT,
+  status TEXT NOT NULL DEFAULT 'running', error TEXT NOT NULL DEFAULT '',
+  request_truncated INTEGER NOT NULL DEFAULT 0, response_truncated INTEGER NOT NULL DEFAULT 0,
+  processed_at TEXT);
+CREATE UNIQUE INDEX _enso_memory_source_identity
+  ON _enso_memory_turns (transport, channel, message_id) WHERE message_id != '';
+CREATE INDEX _enso_memory_pending ON _enso_memory_turns (received_at, id)
+  WHERE processed_at IS NULL AND completed_at IS NOT NULL;
+CREATE TABLE _enso_memory_batches (
+  id TEXT PRIMARY KEY, created_at TEXT NOT NULL, turn_ids TEXT NOT NULL,
+  recorded_at TEXT, payload_hash TEXT);
+CREATE TABLE _enso_memories (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id TEXT NOT NULL,
+  summary TEXT NOT NULL, occurred_at TEXT NOT NULL, ended_at TEXT NOT NULL,
+  created_at TEXT NOT NULL, workspace TEXT NOT NULL, transport TEXT NOT NULL,
+  channel TEXT NOT NULL, channel_name TEXT NOT NULL, thread TEXT, conversation TEXT NOT NULL);
+CREATE INDEX _enso_memory_recent ON _enso_memories (occurred_at DESC, id DESC);
+CREATE INDEX _enso_memory_workspace ON _enso_memories (workspace, occurred_at DESC, id DESC);
+CREATE INDEX _enso_memory_location
+  ON _enso_memories (transport, channel, occurred_at DESC, id DESC);
+CREATE TABLE _enso_memory_sources (
+  memory_id INTEGER NOT NULL, turn_id INTEGER NOT NULL,
+  PRIMARY KEY (memory_id, turn_id));
+CREATE INDEX _enso_memory_source_turn ON _enso_memory_sources (turn_id);
+CREATE TRIGGER _enso_memory_delete_sources AFTER DELETE ON _enso_memories
+BEGIN
+  DELETE FROM _enso_memory_sources WHERE memory_id = OLD.id;
+END;
+PRAGMA user_version = 7;
+"""
 
 _SCHEMA_V6 = """
 CREATE TABLE _enso_workflow_transactions (
@@ -412,6 +451,7 @@ def migrate(paths: Paths) -> None:
             (4, _SCHEMA_V4),
             (5, _SCHEMA_V5),
             (6, _SCHEMA_V6),
+            (7, _SCHEMA_V7),
         ):
             if version >= target:
                 continue

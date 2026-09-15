@@ -31,6 +31,7 @@ BUNDLED_SKILLS = (
     "enso-heartbeat",
     "enso-jobs",
     "enso-knowledge",
+    "enso-memory",
     "enso-security",
     "enso-skills",
     "enso-slack",
@@ -45,7 +46,7 @@ BUNDLED_SKILL_SUPPORT = {
     "enso-browser": ("scripts/browser.py", "references/setup.md"),
     "enso-knowledge": ("references/formatting.md", "scripts/lint.py"),
 }
-BUNDLED_JOBS: tuple[str, ...] = ("enso-audit", "enso-update")
+BUNDLED_JOBS: tuple[str, ...] = ("enso-audit", "enso-memory", "enso-update")
 BUNDLED_FILES = ("slack/manifest.json",)
 RESERVED_PREFIX = "enso-"
 # The documented workspace layout (docs/workspaces.md § Layout): the directories, and the

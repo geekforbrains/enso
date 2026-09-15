@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from .. import db
 from ..outbound import OutboundMessage
 
 if TYPE_CHECKING:
@@ -35,6 +36,11 @@ class Turn:
     # The workspace the message was bound to when it arrived, where the transport prepared
     # its uploads; the runtime resolves the binding itself when this is empty.
     workspace: str = ""
+    # Enso's receipt time, captured before transport preparation or a conversation queue.
+    received_at: str = field(default_factory=db.now)
+    # Some transports add shared-message or attachment context to text for the provider.
+    # Memory retains the sender's own text separately from those additions.
+    original_text: str | None = None
 
 
 class Reply(ABC):

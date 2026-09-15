@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Memory{% endblock %}
+{% block content %}
+{% call m.phead(now) %}Memory{% endcall %}
+{{ m.error(error, "Memory could not be read") }}
+{% if not enabled %}<p class="range">Memory capture is disabled. Saved memories remain available.</p>{% endif %}
+<form class="toolbar memory-toolbar" method="get" action="/memory" data-autosubmit>
+  {% call m.select('Workspace', name='workspace') %}<option value="">Any workspace</option>{% for name in facets.workspaces %}<option value="{{ name }}"{% if name == workspace %} selected{% endif %}>{{ name }}</option>{% endfor %}{% endcall %}
+  {% call m.select('Transport', name='transport') %}<option value="">Any transport</option>{% for name in facets.transports %}<option value="{{ name }}"{% if name == transport %} selected{% endif %}>{{ name }}</option>{% endfor %}{% endcall %}
+  {% call m.select('Channel', name='channel') %}<option value="">Any channel</option>{% for name in facets.channels %}<option value="{{ name }}"{% if name == channel %} selected{% endif %}>{{ channel_names.get(name, name) }}{% if channel_names.get(name) and channel_names[name] != name %} ({{ name }}){% endif %}</option>{% endfor %}{% endcall %}
+  {% call m.select('Event date', name='since') %}{% for value, label in date_filters %}<option value="{{ value }}"{% if value == since %} selected{% endif %}>{{ label }}</option>{% endfor %}{% endcall %}
+  {% if until %}<input type="hidden" name="until" value="{{ until }}">{% endif %}
+  {{ m.search('Search memories', name='q', value=q, label='Search memories') }}
+  {{ m.filter_button(hide=False) }}
+  {% if filtered %}<a class="button" href="/memory">Reset</a>{% endif %}
+</form>
+<p class="range">{% if total %}Showing {{ start }}–{{ end }} of {{ total }} memor{{ 'y' if total == 1 else 'ies' }}{% if filtered %} matching the filters{% endif %}.{% endif %} Newest events first · {{ timezone_label }}{% if until %} · Before {{ until }}{% endif %}.</p>
+{% if groups %}
+<div class="panel memory-list">
+  {% for group in groups %}
+  <div class="hourhead"><b>{{ group.label }}</b></div>
+  {% for row in group.rows %}{% set entry = row.entry %}
+  <a class="row memory-row" href="{{ row.href }}">
+    <span class="at"><time datetime="{{ row.stamp.iso }}" title="{{ row.stamp.full }}">{{ row.stamp.clock }}</time></span>
+    <span class="pin muted" aria-hidden="true"></span>
+    <span class="body"><span class="title">{{ row.preview }}</span><span class="detail">{{ entry.workspace }} · {{ entry.transport }}{% if entry.channel_name or entry.channel %} · {{ entry.channel_name or entry.channel }}{% endif %}</span></span>
+    <span class="trail mono">{{ entry.ref }}</span>
+  </a>
+  {% endfor %}
+  {% endfor %}
+</div>
+{% elif not error %}
+{{ m.empty('No memories match these filters.' if filtered else 'No memories yet. Useful moments from Enso conversations appear here after the memory job runs.') }}
+{% endif %}
+{{ m.pager(page, pages, start, end, total, prev_link, next_link) }}
+{% endblock %}

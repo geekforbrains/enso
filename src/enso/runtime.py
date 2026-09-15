@@ -13,9 +13,9 @@ from asyncio.subprocess import Process
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
-from . import connection_setup, db, messages, outbound, policy, routing
+from . import connection_setup, db, memory, messages, outbound, policy, routing
 from . import log as logctx
 from .config import Config, LiveConfig
 from .execution import terminate_process_tree
@@ -120,6 +120,16 @@ async def _cancel_and_wait(task: asyncio.Task[Any]) -> BaseException | None:
 
 
 @dataclass
+class _TurnOutcome:
+    """Clean final reply and execution outcome; no stream or prompt scaffolding."""
+
+    response: str = ""
+    status: Literal["ok", "error", "timeout", "stopped"] = "error"
+    error: str = "Turn did not complete."
+    session_id: str | None = None
+
+
+@dataclass
 class Running:
     """What a conversation is doing right now, for status and stop.
 
@@ -138,6 +148,7 @@ class Running:
     process: Process | None = None
     task: asyncio.Task[Any] | None = None
     stopping: bool = False  # the user asked for the kill; its exit status is not an error
+    outcome: _TurnOutcome = field(default_factory=_TurnOutcome)
 
 
 @dataclass
@@ -639,12 +650,74 @@ class Runtime:
             return
         running.agent = routing.resolve_agent(config, workspace)
         running.config = config
+        memory_start: asyncio.Task[int | None] | None = None
         try:
+            if memory.capture_enabled(config, workspace):
+                memory_start = asyncio.create_task(
+                    asyncio.to_thread(self._start_memory, conversation, workspace, turn, running)
+                )
+                # Cancellation must still collect the inserted id and close that source;
+                # a canceled to_thread await cannot stop its database worker.
+                await asyncio.shield(memory_start)
             await self._turn(conversation, workspace, turn, reply, running)
+        except asyncio.CancelledError:
+            running.outcome.status = "stopped"
+            running.outcome.error = (
+                "Stopped by the user." if running.stopping else "Turn interrupted."
+            )
+            raise
+        except Exception as exc:
+            running.outcome.status = "error"
+            running.outcome.error = str(exc)
+            raise
         finally:
+            if memory_start is not None:
+                memory_id = await memory_start
+                if memory_id is not None:
+                    await asyncio.to_thread(self._finish_memory, memory_id, running.outcome)
             # The agent knows what it sent; those rows must not return as context.
             with contextlib.suppress(Exception):
                 await asyncio.to_thread(messages.consume_own, self.paths, f"turn:{conversation}")
+
+    def _start_memory(
+        self, conversation: str, workspace: str, turn: Turn, running: Running
+    ) -> int | None:
+        """Capture independently of delivery: a Memory write failure must not break chat."""
+        try:
+            return memory.start_turn(
+                self.paths,
+                conversation=conversation,
+                workspace=workspace,
+                provider=running.agent.provider,
+                model=running.agent.model,
+                effort=running.agent.effort,
+                transport=turn.transport,
+                channel=turn.channel,
+                channel_name=turn.channel_name,
+                thread=turn.thread,
+                message_id=turn.message_id,
+                user_id=turn.user_id,
+                user_name=turn.user_name,
+                request=turn.original_text if turn.original_text is not None else turn.text,
+                files=turn.files,
+                received_at=turn.received_at,
+            )
+        except Exception:
+            log.exception("could not capture conversation for Memory")
+            return None
+
+    def _finish_memory(self, memory_id: int, outcome: _TurnOutcome) -> None:
+        try:
+            memory.finish_turn(
+                self.paths,
+                memory_id,
+                response=outcome.response,
+                status=outcome.status,
+                error=outcome.error,
+                session_id=outcome.session_id,
+            )
+        except Exception:
+            log.exception("could not finish Memory source %s", memory_id)
 
     async def _turn(
         self, conversation: str, workspace: str, turn: Turn, reply: Reply, running: Running
@@ -700,6 +773,8 @@ class Runtime:
                 )
             await self._stop_ticker(ticker, stop)
             if timed_out:
+                running.outcome.status = "timeout"
+                running.outcome.error = self._timeout_notice(config.agent_timeout)
                 log.warning("turn timed out after %ss", config.agent_timeout)
                 await self._finish_status(
                     reply, status_id, self._timeout_notice(config.agent_timeout)
@@ -713,6 +788,13 @@ class Runtime:
                 rich is not None,
                 bool(collected.error),
                 running.elapsed,
+            )
+            running.outcome.response = (
+                "" if collected.error else rich.fallback_text if rich is not None else text
+            )
+            running.outcome.status = "ok" if response_ok else "error"
+            running.outcome.error = collected.error or (
+                "" if response_ok else "Response formatting failed." if text else "No response."
             )
             if collected.error:
                 await reply.send(format_error(collected.error[:4000]))
@@ -741,6 +823,8 @@ class Runtime:
             await self._finish_status(reply, status_id, "Stopped.")
             raise
         except Exception as exc:
+            running.outcome.status = "error"
+            running.outcome.error = str(exc)
             await self._stop_ticker(ticker, stop)
             log.exception("turn failed")
             await self._finish_status(reply, status_id, None)
@@ -864,6 +948,7 @@ class Runtime:
         agent = running.agent
         session = await asyncio.to_thread(self._session_for, conversation, provider.name, workspace)
         session_id = session.session_id if session else None
+        running.outcome.session_id = session_id
         new_session = session is None and provider.assigns_session_id
         if new_session:
             session_id = str(uuid.uuid4())
@@ -913,6 +998,7 @@ class Runtime:
                     workspace,
                 )
                 stored_id = stream.session_id
+                running.outcome.session_id = stored_id
 
         try:
             async with contextlib.aclosing(stream.read(process, debug=self.debug)) as events:

@@ -136,6 +136,7 @@ which accepts strict JSON.
   "logging": { "level": "INFO", "max_bytes": 10485760, "backups": 5 },
   "runs":    { "keep": 500, "max_age_days": 30 },
   "heartbeat": { "enabled": true, "retention_days": 30 },
+  "memory":  { "enabled": true, "timezone": "local" },
   "web":     { "host": "127.0.0.1", "port": 8787 }
 }
 ```
@@ -491,6 +492,14 @@ See [Web viewer](web.md).
 saved records. `heartbeat.retention_days` is a positive integer, defaulting to `30`, for
 closed beats. Each beat keeps its own timing and saved agent. See [Heartbeat](heartbeat.md)
 for its lifecycle, gate contract, and retention.
+
+## Memory
+
+`memory.enabled` defaults to `true`; turning it off stops conversation capture and refinement
+while keeping saved history readable. `memory.timezone` defaults to `local` (the machine's
+local timezone) and also accepts an IANA name such as `America/Vancouver`. It controls calendar
+date filters and human-readable event times; storage uses UTC. These settings reload without
+a restart. The bundled job owns its own schedule and agent. See [Memory](memory.md).
 
 ## Logging and runs
 

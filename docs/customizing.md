@@ -188,6 +188,7 @@ Enso installs these into `~/.enso/skills/`:
 | `enso-browser` | Persistent Chrome profiles, human login, and attaching browser tools; see [Browser](browser.md) |
 | `enso-heartbeat` | Finite future actions and temporary watches, script gates, event history, action receipts, and completion |
 | `enso-jobs` | Creating, testing, and troubleshooting scheduled and stage jobs and their prerun and postrun scripts |
+| `enso-memory` | Recalling dated conversations by workspace, time, and origin; refining supplied memory batches |
 | `enso-knowledge` | Finding and maintaining shared or workspace Markdown notes, links, imports, and user-defined formatting |
 | `enso-security` | Restricting a workspace: each CLI's policy file, the provider args it needs, the `restricted` flag, and the audit |
 | `enso-skills` | Finding official optional skills and writing or refining a skill manually |
@@ -223,7 +224,8 @@ and jobs for standing responsibilities, even when the user asks without those na
 detailed skill is loaded only when needed; this routing guidance is not injected into each
 message. It also routes release checks and authorized upgrades through `enso-update`.
 It routes browser tasks through `enso-browser`, skill discovery or authoring through
-`enso-skills`, and note maintenance or formatting through `enso-knowledge`.
+`enso-skills`, note maintenance or formatting through `enso-knowledge`, and past conversation
+recall through `enso-memory`.
 Historical or edited homes may need that guidance merged into their `AGENTS.md`;
 preserve their voice, user information, and local rules.
 
@@ -280,11 +282,10 @@ about a `enso-*` skill or job that Enso did not put there.
 
 ## What Enso will not add
 
-No docs system, no notes feature, no policy engine, no template library. Those are all the
-same thing wearing different hats: a place for text that an agent reads. You already have
-one — a Markdown file in `knowledge/`, and a skill that says when to read it.
-
-Keeping that out of the core is what makes the workspace layout worth being strict about.
+Procedures, policies, and templates belong in ordinary Knowledge files and skills rather than
+a separate system for each kind of text. [Memory](memory.md) has a different purpose: dated
+conversation evidence. Customize its recall guidance in `enso-memory` and its refinement prompt
+and schedule in `jobs/enso-memory/JOB.md`; the database owns source links and event timestamps.
 
 ## Wiring
 
