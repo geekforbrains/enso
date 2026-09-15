@@ -16,6 +16,8 @@ from enso.config import (
     ConfigError,
     LiveConfig,
     Paths,
+    ProjectConfig,
+    Stage,
     check_config,
     load_config,
     parse_config,
@@ -23,6 +25,19 @@ from enso.config import (
 
 REPO = Path(__file__).resolve().parent.parent
 UNKNOWN = "is not a recognized key"
+
+
+@pytest.mark.parametrize(
+    ("stages", "expected"),
+    [
+        ((Stage("approve", human=True),), None),
+        ((Stage("plan", worktree=False),), None),
+        ((Stage("implement"), Stage("report", worktree=False)), "implement"),
+    ],
+)
+def test_last_agent_stage_allows_workflows_without_a_landing_stage(stages, expected):
+    project = ProjectConfig("EN", "Enso", "default", None, stages)
+    assert project.last_agent_stage == expected
 
 
 def test_heartbeat_defaults_and_explicit_settings(enso_home, raw_config):

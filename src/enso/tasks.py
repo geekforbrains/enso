@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import getpass
 import json
+import os
 import re
 import sqlite3
 import unicodedata
@@ -36,14 +37,13 @@ from .config import BUILTIN_STAGES, Config, Paths, ProjectConfig
 
 FINISHED = ("done", "cancelled")
 MOVES = ("advance", "return", "block", "resume", "drop")
-RELEASE_REASONS = ("run_ended", "manual")
+RELEASE_REASONS = ("run_ended", "manual", "deferred")
 ENSO_ACTOR = "enso"
 RECENT_NOTES = 5
 _HANDOFF_KEYS = ("kind", "actor", "run_id", "from_stage", "to_stage", "message")
 # Stage presets for ``enso project add --flow``.
 FLOWS: dict[str, tuple[str, ...]] = {
     "basic": ("work",),
-    "dev": ("triage", "todo", "review"),
     "support": ("triage", "investigate"),
     "marketing": ("research", "draft", "review", "approve:human", "release"),
 }
@@ -535,7 +535,10 @@ def _derive(project: ProjectConfig, task: Task, run_id: str | None) -> list[Move
                 targets[move_id] = ("", human)
         else:
             targets["advance"] = (project.next_stage(stage), [])
-            previous = project.previous_stage(stage)
+            current_stage = project.stage(stage)
+            previous = (
+                current_stage.return_to if current_stage else None
+            ) or project.previous_stage(stage)
             targets["return"] = (
                 previous or "",
                 [] if previous else [f"{stage} is the first stage"],
@@ -595,6 +598,8 @@ def _apply_move(
     message: str,
     after_ref: str | None,
     attention: bool = False,
+    config: Config | None = None,
+    transaction_id: str | None = None,
 ) -> Task:
     """Change the stage, clear the claim, record the event; the rules were checked already."""
     stamp = db.now()
@@ -625,6 +630,12 @@ def _apply_move(
         message=message,
         payload={"move": move_id},
     )
+    if config is not None:
+        from . import workflows
+
+        workflows.enqueue(
+            con, _project(config, task.project), task, to, run_id, transaction_id=transaction_id
+        )
     return _reload(con, task.id)
 
 
@@ -635,6 +646,8 @@ def _settle_waiting(con: sqlite3.Connection, config: Config, task: Task, outcome
     ).fetchall()
     for row in rows:
         waiting = _task(row)
+        if waiting.claim_run_id or _pending(con, waiting.ref):
+            continue
         if outcome == "done":
             project = config.projects.get(waiting.project)
             if project is None:
@@ -653,6 +666,7 @@ def _settle_waiting(con: sqlite3.Connection, config: Config, task: Task, outcome
                 run_id=None,
                 message=f"Resumed: {task.ref} is done",
                 after_ref=None,
+                config=config,
             )
         else:
             con.execute(
@@ -670,6 +684,43 @@ def _settle_waiting(con: sqlite3.Connection, config: Config, task: Task, outcome
             )
 
 
+def settle_dependencies(paths: Paths, config: Config) -> None:
+    """Reconcile dependencies deferred while a task still had a writer or lifecycle hook."""
+    with db.transaction(paths) as con:
+        rows = con.execute(
+            "SELECT DISTINCT parent.* FROM _enso_tasks parent JOIN _enso_tasks child "
+            "ON child.after_ref=parent.ref WHERE child.stage='blocked' "
+            "AND parent.stage IN ('done','cancelled')"
+        ).fetchall()
+        for row in rows:
+            task = _task(row)
+            _settle_waiting(con, config, task, task.stage)
+
+
+def _pending(con: sqlite3.Connection, ref: str) -> bool:
+    return (
+        con.execute(
+            "SELECT 1 FROM _enso_workflow_events WHERE task_ref=? "
+            "AND status IN ('pending','running','failed') LIMIT 1",
+            (ref,),
+        ).fetchone()
+        is not None
+    )
+
+
+def _check_pending_move(con: sqlite3.Connection, task: Task, move_id: str) -> None:
+    if move_id in ("advance", "return", "resume") and _pending(con, task.ref):
+        raise TaskError("pending lifecycle scripts must finish before another stage")
+
+
+def ensure_no_pending(paths: Paths, ref: str) -> None:
+    with db.reader(paths) as con:
+        if _pending(con, parse_ref(ref)):
+            raise TaskError(
+                "pending lifecycle scripts must finish before another stage or integration"
+            )
+
+
 def _worktree_problem(paths: Paths, config: Config, ref: str) -> str | None:
     """Why the task's worktree cannot be handed on: uncommitted tracked files, listed."""
     from . import worktrees  # here, not at module level: worktrees imports this module
@@ -677,6 +728,9 @@ def _worktree_problem(paths: Paths, config: Config, ref: str) -> str | None:
     task = get(paths, ref)
     project = config.projects.get(task.project)
     if project is None or project.repo is None:
+        return None
+    stage = project.stage(task.stage)
+    if stage is None or stage.worktree is False or (stage.human and stage.worktree is not True):
         return None
     try:
         dirty = worktrees.dirty_files(paths, project, task.ref)
@@ -698,14 +752,70 @@ def check_land(config: Config, task: Task, run_id: str | None) -> None:
     problem = _claim_problem(task, run_id)
     if problem:
         raise TaskError(problem)
+    project = _project(config, task.project)
+    if any(stage.checks or stage.integrate for stage in project.stages):
+        raise TaskError(
+            "this workflow owns integration; run its integrate stage "
+            "so required checks cannot be bypassed"
+        )
     if run_id is None:
         return
-    landing = _project(config, task.project).last_agent_stage
+    landing = project.last_agent_stage
+    if landing is None:
+        raise TaskError("this workflow has no agent stage that can land a worktree")
     if task.stage != landing:
         raise TaskError(
             f"{task.ref} is in {task.stage}; only the {landing} stage lands a branch, "
             "advance it there first"
         )
+
+
+def _transition_preflight(
+    paths: Paths,
+    config: Config,
+    ref: str,
+    move_id: str,
+    run_id: str | None,
+    force: bool,
+    to: str | None,
+) -> None:
+    from . import workflows
+
+    if os.environ.get("ENSO_LIFECYCLE"):
+        raise TaskError("lifecycle scripts cannot recursively move tasks")
+    initial = get(paths, ref)
+    project = _project(config, initial.project)
+    selected = project.stage(initial.stage)
+    if move_id == "drop" and run_id is not None:
+        raise TaskError("only a person can drop a task; block it with your reasoning instead")
+    derived = {item.id: item for item in _derive(project, initial, run_id)}[move_id]
+    if not derived.allowed and not force:
+        raise TaskError(f"cannot {move_id} {initial.ref}: {'; '.join(derived.missing)}")
+    if initial.claim_run_id and force:
+        raise TaskError("cannot force a live execution claim; stop its job before moving the task")
+    if (
+        run_id is None
+        and move_id == "advance"
+        and selected
+        and (selected.checks or selected.integrate)
+    ):
+        raise TaskError(
+            "required stage checks must be accepted by Enso; "
+            "run the stage job or enso workflow verify"
+        )
+    if move_id == "resume" and to in project.stage_names and selected is None:
+        project = _project(config, initial.project)
+        expected = (
+            initial.previous_stage
+            if initial.previous_stage in project.stage_names
+            else project.stage_names[0]
+        )
+        if any(stage.checks or stage.integrate for stage in project.stages) and project.index(
+            to
+        ) > project.index(expected):
+            raise TaskError("resume cannot skip required workflow stages")
+    if run_id and move_id in ("advance", "return"):
+        workflows.start(paths, config, initial.ref, run_id)
 
 
 def move(
@@ -725,8 +835,8 @@ def move(
 ) -> Task:
     """Apply one derived move; ``TaskError`` says exactly why when it is refused.
 
-    ``advance`` on a repo project is refused while the task's worktree holds uncommitted
-    tracked changes, so nothing reaches the next stage half-committed; Git is asked before
+    ``advance`` from a worktree stage is refused while it holds uncommitted tracked
+    changes, so nothing reaches the next stage half-committed; Git is asked before
     the transaction opens, so the write lock is never held for a subprocess. ``attention``
     flags the task as it moves (the runner's two-strikes block); every other move clears it.
     """
@@ -736,12 +846,14 @@ def move(
     attached = [(kind, value) for kind, value in refs]
     for kind, _value in attached:
         _check_ref_kind(kind)
+    from . import workflows
+
+    _transition_preflight(paths, config, ref, move_id, run_id, force, to)
     worktree_problem = _worktree_problem(paths, config, ref) if move_id == "advance" else None
     with db.transaction(paths) as con:
         task = _load(con, ref)
+        _check_pending_move(con, task, move_id)
         project = _project(config, task.project)
-        if move_id == "drop" and run_id is not None:
-            raise TaskError("only a person can drop a task; block it with your reasoning instead")
         derived = {item.id: item for item in _derive(project, task, run_id)}[move_id]
         claim = _claim_problem(task, run_id)
         if not derived.allowed and not (force and derived.missing == (claim,)):
@@ -766,6 +878,8 @@ def move(
             after_ref = None
         if worktree_problem is not None:
             raise TaskError(f"cannot {move_id} {task.ref}: {worktree_problem}")
+        if run_id is not None and move_id in ("advance", "return"):
+            return workflows.submit(con, task, move_id, target, text, actor, run_id, attached)
         moved = _apply_move(
             con,
             task,
@@ -776,7 +890,16 @@ def move(
             message=text,
             after_ref=after_ref,
             attention=attention,
+            config=config,
         )
+        # A block/cancel is allowed while work fails, but it does not free its writer.
+        if task.claim_run_id is not None:
+            con.execute(
+                "UPDATE _enso_tasks SET claim_run_id = ?, claim_actor = ?, "
+                "claim_at = ? WHERE id = ?",
+                (task.claim_run_id, task.claim_actor, task.claim_at, task.id),
+            )
+            moved = _reload(con, task.id)
         for kind, value in attached:
             _attach(con, moved.id, kind, value, actor=actor, run_id=run_id)
         if target in FINISHED:
@@ -785,6 +908,39 @@ def move(
 
 
 # -- Claims -------------------------------------------------------------------
+
+
+def migrate_stages(paths: Paths, key: str, mapping: dict[str, str]) -> None:
+    """Operator migration preserves specs, history, claims and blocked return destinations."""
+    with db.transaction(paths) as con:
+        rows = con.execute("SELECT * FROM _enso_tasks WHERE project = ?", (key,)).fetchall()
+        if any(row["claim_run_id"] for row in rows):
+            raise TaskError("stop active project runs before migrating stages")
+        for row in rows:
+            task = _task(row)
+            stage = mapping.get(task.stage, task.stage)
+            previous = (
+                mapping.get(task.previous_stage, task.previous_stage)
+                if task.previous_stage
+                else None
+            )
+            if (stage, previous) == (task.stage, task.previous_stage):
+                continue
+            con.execute(
+                "UPDATE _enso_tasks SET stage=?,previous_stage=?,updated_at=? WHERE id=?",
+                (stage, previous, db.now(), task.id),
+            )
+            _record(
+                con,
+                task.id,
+                "workflow_migrated",
+                ENSO_ACTOR,
+                None,
+                from_stage=task.stage,
+                to_stage=stage,
+                message="Migrated development workflow stage names",
+                payload={"previous_stage": task.previous_stage},
+            )
 
 
 def take(
@@ -803,6 +959,12 @@ def take(
         row = con.execute(
             """SELECT id FROM _enso_tasks
                 WHERE project = ? AND stage = ? AND claim_run_id IS NULL
+                  AND NOT EXISTS (SELECT 1 FROM _enso_workflow_events e
+                    WHERE e.task_ref = _enso_tasks.ref
+                    AND e.status IN ('pending','running','failed'))
+                  AND NOT EXISTS (SELECT 1 FROM _enso_workflow_transactions x
+                    WHERE x.task_ref = _enso_tasks.ref
+                    AND x.status IN ('working','submitted','checking','repairing'))
                 ORDER BY priority DESC, created_at, number LIMIT 1""",
             (key, stage),
         ).fetchone()
@@ -837,7 +999,13 @@ def ready(paths: Paths, config: Config, project: str, stage: str) -> bool:
     with db.reader(paths) as con:
         row = con.execute(
             """SELECT 1 FROM _enso_tasks
-                WHERE project = ? AND stage = ? AND claim_run_id IS NULL LIMIT 1""",
+                WHERE project = ? AND stage = ? AND claim_run_id IS NULL
+                  AND NOT EXISTS (SELECT 1 FROM _enso_workflow_events e
+                    WHERE e.task_ref = _enso_tasks.ref
+                    AND e.status IN ('pending','running','failed'))
+                  AND NOT EXISTS (SELECT 1 FROM _enso_workflow_transactions x
+                    WHERE x.task_ref = _enso_tasks.ref
+                    AND x.status IN ('working','submitted','checking','repairing')) LIMIT 1""",
             (key, stage),
         ).fetchone()
     return row is not None
@@ -862,6 +1030,11 @@ def release(
         if task.claim_run_id is None:
             raise TaskError(f"{task.ref} is not claimed")
         _guard(task, run_id, force)
+        if actor != ENSO_ACTOR:
+            raise TaskError(
+                "execution claims are released by the runner after its writers stop; "
+                "stop the job first"
+            )
         con.execute(
             """UPDATE _enso_tasks
                   SET claim_run_id = NULL, claim_actor = NULL, claim_at = NULL, updated_at = ?
@@ -994,6 +1167,8 @@ def context(paths: Paths, config: Config, ref: str, *, env: Mapping[str, str]) -
     one: the runner takes the task and then builds the packet, so the claiming run's own
     ``taken`` event is skipped.
     """
+    from . import workflows
+
     with db.reader(paths) as con:
         task = _load(con, ref)
         project = _project(config, task.project)
@@ -1064,6 +1239,7 @@ def context(paths: Paths, config: Config, ref: str, *, env: Mapping[str, str]) -
         ],
         "refs": [{"kind": item.kind, "value": item.value} for item in attached],
         "events_total": len(history),
+        "workflow": workflows.history(paths, ref),
     }
 
 

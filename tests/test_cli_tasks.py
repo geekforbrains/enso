@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -9,7 +10,7 @@ import pytest
 from conftest import commit_file, git, write_config
 from typer.testing import CliRunner
 
-from enso import db, tasks, worktrees
+from enso import db, tasks, workflows, worktrees
 from enso.cli import app
 from enso.cli.common import INPUT_LIMIT
 from enso.config import Config, Paths, load_config
@@ -129,6 +130,7 @@ def test_inside_a_run_the_environment_is_the_actor(
     add()
     claimed = tasks.take(enso_home, project_config, "EN", "triage", run_id="r1", actor="job:t")
     assert claimed is not None
+    workflows.start(enso_home, project_config, "EN-001", "r1")
     monkeypatch.setenv("ENSO_JOB", "dev-triage")
     monkeypatch.setenv("ENSO_RUN_ID", "r1")
     code, _, err = run("drop", "EN-1", "--message", "give up")
@@ -153,25 +155,21 @@ def test_inside_a_run_the_environment_is_the_actor(
     code, out, _ = run("advance", "EN-1", "--message", "handoff", "--json")
     assert code == 0
     moved = json.loads(out)
-    assert (moved["stage"], moved["claim_run_id"]) == ("todo", None)
+    assert (moved["stage"], moved["claim_run_id"]) == ("triage", "r1")
     event = tasks.events(enso_home, "EN-001")[0]
     assert (event.actor, event.run_id, event.message) == ("job:dev-triage", "r1", "handoff")
 
     monkeypatch.setenv("ENSO_RUN_ID", "r2")  # another run must respect a claim it does not hold
-    tasks.take(enso_home, project_config, "EN", "todo", run_id="r1", actor="job:t")
     code, _, err = run("advance", "EN-1", "--message", "m")
     assert code == 1 and err == "error: cannot advance EN-001: EN-001 is claimed by run r1\n"
     code, _, err = run("release", "EN-1", "--message", "m")
     assert code == 1 and "claimed by run r1" in err
     monkeypatch.setenv("ENSO_RUN_ID", "r1")
     code, out, _ = run("release", "EN-1", "--message", "stopping early", "--json")
-    assert code == 0 and json.loads(out)["claim_run_id"] is None
-    # A deliberate release is never the runner's run_ended, so it is not reported as recovery.
-    assert tasks.events(enso_home, "EN-001")[0].payload == {
-        "reason": "manual",
-        "released_run_id": "r1",
-    }
-    assert tasks.context(enso_home, project_config, "EN-001", env={})["recovery"] is None
+    assert code == 1 and "runner" in json.loads(out)["error"]
+    assert tasks.get(enso_home, "EN-001").claim_run_id == "r1"
+    workflows.interrupt(enso_home, project_config, "EN-001", "r1", "Execution stopped")
+    assert tasks.get(enso_home, "EN-001").stage == "blocked"
 
 
 def test_a_person_forces_and_edits(
@@ -203,9 +201,9 @@ def test_a_person_forces_and_edits(
     assert code == 1 and "nothing to edit" in err
     code, _, err = run("edit", "EN-1", "--body-file", str(tmp_path / "missing.md"))
     assert code == 1 and err.startswith("error: could not read ")
-    code, out, _ = run("release", "EN-1", "--message", "taking it back", "--force")
-    assert code == 0 and out == "released EN-001: triage — New\n"
-    assert tasks.events(enso_home, "EN-001")[0].payload["reason"] == "manual"
+    code, _, err = run("release", "EN-1", "--message", "taking it back", "--force")
+    assert code == 1 and "stop the job first" in err
+    workflows.interrupt(enso_home, project_config, "EN-001", "r1", "Execution stopped")
     code, out, _ = run("ref", "EN-1", "url", "https://example.test/x")
     assert code == 0 and out == "EN-001: url https://example.test/x\n"
     code, out, _ = run("show", "EN-1")
@@ -288,22 +286,65 @@ def test_land_inside_a_run_is_for_the_holding_run_in_the_last_agent_stage(
         "error: EN-001 is not held by this run; a run moves only the task it claimed\n"
     )
     assert tasks.take(enso_home, repo_config, "EN", "triage", run_id="r1", actor="job:t")
+    workflows.start(enso_home, repo_config, "EN-001", "r1")
     code, _, err = run("land", "EN-1")  # triage: not the landing stage
     assert code == 1 and err == (
         "error: EN-001 is in triage; only the review stage lands a branch, advance it there first\n"
     )
     assert git(repo, "rev-parse", "HEAD").strip() != head
     assert run("advance", "EN-1", "--message", "m")[0] == 0
+    assert tasks.get(enso_home, "EN-001").stage == "triage"
+    assert (
+        asyncio.run(workflows.evaluate(enso_home, repo_config, "EN-001", "r1", {})).status
+        == "accepted"
+    )
     code, _, err = run("advance", "EN-1", "--message", "again")  # the handoff ended its standing
     assert code == 1 and err == (
         "error: cannot advance EN-001: EN-001 is not held by this run; "
         "a run moves only the task it claimed\n"
     )
-    assert tasks.take(enso_home, repo_config, "EN", "todo", run_id="r1", actor="job:t")
+    monkeypatch.setenv("ENSO_RUN_ID", "r2")
+    assert tasks.take(enso_home, repo_config, "EN", "todo", run_id="r2", actor="job:t")
+    workflows.start(enso_home, repo_config, "EN-001", "r2")
     assert run("advance", "EN-1", "--message", "m")[0] == 0
-    assert tasks.take(enso_home, repo_config, "EN", "review", run_id="r1", actor="job:t")
+    assert (
+        asyncio.run(workflows.evaluate(enso_home, repo_config, "EN-001", "r2", {})).status
+        == "accepted"
+    )
+    monkeypatch.setenv("ENSO_RUN_ID", "r3")
+    assert tasks.take(enso_home, repo_config, "EN", "review", run_id="r3", actor="job:t")
     code, out, _ = run("land", "EN-1")
     assert code == 0 and out == f"landed EN-001: main is now at {head}\n"
+
+
+def test_land_refuses_a_live_worktree_owner(
+    enso_home: Paths, repo_config: Config, repo: Path
+) -> None:
+    add()
+    info = worktrees.prepare(enso_home, repo_config.projects["EN"], "EN-001")
+    candidate = commit_file(info.path, "feature.py", "x\n", "feat: one")
+    with worktrees.execution_context(enso_home, "EN-001"):
+        code, _, err = run("land", "EN-1")
+    assert code == 1 and "worktree is in use" in err
+    assert git(repo, "rev-parse", "HEAD").strip() != candidate
+
+
+def test_land_waits_for_pending_lifecycle_events(
+    enso_home: Paths, repo_config: Config, repo: Path
+) -> None:
+    raw = repo_config.raw
+    raw["projects"]["EN"]["hooks"] = {"after_transition": "true"}
+    write_config(enso_home, raw)
+    config = load_config(enso_home)
+    add()
+    info = worktrees.prepare(enso_home, config.projects["EN"], "EN-001")
+    candidate = commit_file(info.path, "feature.py", "x\n", "feat: one")
+    tasks.move(
+        enso_home, config, "EN-001", "advance", actor="user:test", run_id=None, message="Next"
+    )
+    code, _, err = run("land", "EN-1")
+    assert code == 1 and "lifecycle" in err
+    assert git(repo, "rev-parse", "HEAD").strip() != candidate
 
 
 @pytest.mark.parametrize("stdin", [False, True])

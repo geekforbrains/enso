@@ -25,7 +25,24 @@ from urllib.parse import quote
 
 from .config import Paths
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
+
+_SCHEMA_V6 = """
+CREATE TABLE _enso_workflow_transactions (
+  id TEXT PRIMARY KEY, task_ref TEXT NOT NULL, run_id TEXT NOT NULL,
+  stage TEXT NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL);
+CREATE INDEX _enso_workflow_task ON _enso_workflow_transactions (task_ref);
+CREATE TABLE _enso_workflow_events (
+  id TEXT PRIMARY KEY, task_ref TEXT NOT NULL, transaction_id TEXT,
+  status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, data TEXT NOT NULL);
+CREATE INDEX _enso_workflow_events_pending ON _enso_workflow_events (status, task_ref);
+CREATE TABLE _enso_worktrees (
+  ref TEXT PRIMARY KEY, project TEXT NOT NULL, repo TEXT NOT NULL, path TEXT NOT NULL,
+  branch TEXT NOT NULL, base TEXT NOT NULL, start_revision TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'ready', error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+PRAGMA user_version = 6;
+"""
 
 _SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -394,6 +411,7 @@ def migrate(paths: Paths) -> None:
             (3, _SCHEMA_V3),
             (4, _SCHEMA_V4),
             (5, _SCHEMA_V5),
+            (6, _SCHEMA_V6),
         ):
             if version >= target:
                 continue

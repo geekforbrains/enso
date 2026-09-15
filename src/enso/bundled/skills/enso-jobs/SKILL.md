@@ -38,9 +38,9 @@ Names beginning `enso-` are reserved for jobs Enso installs; `enso workspace aud
 ---
 name: Meteor Forum Watch      # required
 schedule: "0 14 * * *"        # required: five-field cron, local time
-provider: claude              # required
-model: sonnet                 # required
-effort: high                  # required
+provider: claude              # required for agent stages; omit for command/integration
+model: sonnet                 # required with provider
+effort: high                  # required with provider
 workspace: meteor             # required: ~/.enso/workspaces/<name> must exist
 project: EN                   # optional, with stage: a stage job for that project
 stage: todo                   # optional, with project: one of its agent stages
@@ -62,7 +62,7 @@ The prompt. {{prerun_output}} is replaced with the prerun's stdout.
 
 Provider, model, and effort are validated against `config.json`; effort follows the provider's rules, with a log line when it changes, and Antigravity reports the level embedded in its model id even when the job requests less. Schedules use the machine's local time.
 
-The frontmatter is one YAML mapping and those fields are all of it. Nothing is guessed or coerced: the block must be valid YAML, each key may appear only once, an unrecognized field is a problem, the seven required fields must be present (`schedule` becomes optional on a stage job), text fields must be non-empty text, `enabled` and `catch_up` must be YAML booleans, the three timeouts and `misfire_grace_seconds` must be positive YAML integers, and `max_followups` must be a nonnegative YAML integer, all written without quotes. A present-but-empty field is a problem rather than an omission. Every problem in a file is reported together, including what `config.json` says about the fields it did get right, and a file with any of them never runs.
+The frontmatter is one YAML mapping and those fields are all of it. Nothing is guessed or coerced: the block must be valid YAML, each key may appear only once, an unrecognized field is a problem, required fields must be present (`schedule` becomes optional on a stage job, and command/integration stages omit the provider triple), text fields must be non-empty text, `enabled` and `catch_up` must be YAML booleans, the three timeouts and `misfire_grace_seconds` must be positive YAML integers, and `max_followups` must be a nonnegative YAML integer, all written without quotes. A present-but-empty field is a problem rather than an omission. Every problem in a file is reported together, including what `config.json` says about the fields it did get right, and a file with any of them never runs.
 
 Quote anything YAML would read as something other than text, and leave real numbers unquoted:
 
@@ -80,18 +80,18 @@ Cron is exactly five fields, `minute hour day-of-month month day-of-week`. `0 9 
 
 ## Stage jobs
 
-A job with `project` and `stage` serves one agent stage of a project on the task board (see `enso-tasks`): `project` must be a configured key and `stage` one of its agent stages, never a human one. Both or neither. Its second trigger is work being ready: each minute Enso checks whether an unclaimed task waits in that stage and fires only then, so idle polling leaves no run row. Keep `schedule` to restrict when that may happen; a slot with nothing ready is skipped silently. `enso job run` on a stage job records `no_work` when nothing waits. Stage jobs of one project serialise through a default `concurrency_group` of `project:<KEY>` unless the file names another.
+A job with `project` and `stage` serves one agent stage of a project on the task board (see `enso-tasks`): `project` must be a configured key and `stage` one of its agent stages, never a human one. Both or neither. Its second trigger is work being ready: each minute Enso checks whether an unclaimed task waits in that stage and fires only then, so idle polling leaves no run row. Keep `schedule` to restrict when that may happen; a slot with nothing ready is skipped silently. `enso job run` on a stage job records `no_work` when nothing waits. Project `max_concurrency` limits concurrent task executions; an explicit `concurrency_group` separately serializes jobs that share a resource. Different stages can work on different task worktrees concurrently.
 
 ```bash
 enso job create --name "Enso todo" --provider claude --model opus --effort high \
   --workspace dev --project EN --stage todo      # --schedule is optional here
 ```
 
-When it fires, Enso claims the readiest task, prepares a worktree for a repo project, and writes a `[Task …]` block ahead of the prompt: the spec, the stage and its moves, the working directory, the last handoff, and the repository's own instructions. The prompt is the stage's instructions: what done means here and what to check, with `{{prerun_output}}` still substituted. Moving the task clears the claim, so the agent should finish its turn; it does not stop the provider or skip postrun checks. Any follow-up in that run cannot move the task again. A run that ends without a move has its claim released, and the next run sees that as recovery.
+When it fires, Enso claims the readiest task, prepares a worktree for a repo project, and writes a `[Task …]` block ahead of the prompt: the spec, the stage and its moves, the working directory, the last handoff, and the repository's own instructions. The prompt is the stage's instructions: what done means here and what to check, with `{{prerun_output}}` still substituted. An advance or return submits a handoff; the agent finishes its turn, then Enso runs the stage checks and accepts the transition. The claim stays held through checking and repair. A failed required check prevents advancement, even if the provider says it succeeded. Command and integration stages run without a provider. Use `enso-workflow` to configure checks, finite repair/return loops, lifecycle hooks, and the development preset; use `enso-tasks` when executing a held task.
 
 ## Prerun scripts
 
-Most jobs should have one. It runs before the provider so nothing is spent when there is nothing to do, while real failures stay visible.
+Use a prerun when a recurring job should gate itself or gather context. Stage jobs already wait for ready tasks; do not add a second gate without a useful condition. A prerun runs before the provider, while real failures stay visible.
 
 - stdout replaces `{{prerun_output}}` in the prompt; include the placeholder or the data is not passed
 - exit 0: run the job
@@ -153,8 +153,8 @@ replays an interrupted hook or resumes an old job session.
 For a repository job, replace `REPO` below with the actual repository path; on a stage job
 of a repo project, use `$ENSO_TASK_DIR`, the task's worktree. This checks for uncommitted
 changes; add a check of the expected commit itself if that is the condition that matters.
-A follow-up on a stage job cannot move the task again once the agent has handed off, since
-a run acts only on the task it holds:
+For task pipelines, put acceptance commands in stage `checks` instead of parsing a
+provider transcript in postrun. Handoff submission retains the claim until acceptance:
 
 ```bash
 #!/usr/bin/env bash
@@ -172,8 +172,8 @@ fi
 exit 0
 ```
 
-The hook may run several times. Put actions intended only after acceptance, such as
-archiving or publishing, after the checks pass. Do not call `enso job run` recursively:
+The hook may run several times. For task pipelines, put effects intended after an accepted
+transition in project lifecycle hooks; postrun completion is not task acceptance. Do not call `enso job run` recursively:
 the job lock is still held. Each follow-up keeps the original session, workspace, agent,
 permissions and run ID; prerun data and prior context are already in that session. Each
 new scheduled or manual trigger starts fresh.

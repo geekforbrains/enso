@@ -84,6 +84,7 @@ def example_config() -> dict[str, Any]:
         "bindings": {},
         "defaults": {"provider": "claude", "model": cls.models[0], "effort": "high"},
         "workspaces": {},
+        "projects": {"EX": {"name": "Example", "workspace": "default", "stages": ["work"]}},
         "providers": {
             "claude": {"path": "claude", "models": cls.models, "args": cls.unattended_args}
         },

@@ -267,18 +267,41 @@ board, groups and count line together, and an emptied board names the filter tha
 Rows follow the [entity row standard](#row-standard): the dot is the state (needs you,
 blocked, active, ready, done, cancelled), the title is the name, the detail line is the
 reference, stage, project, and who holds it (`EN-041 · todo · Enso · claimed by run …`),
-and the trail is the time in its stage. The row is the link.
+and the trail is the time in its stage. While a transaction is active, the detail line also
+names its phase: working, handoff submitted, running required checks, or repairing failed
+checks. The row is the link. The board reads current transaction summaries in one bulk
+query; it does not load every task's check output or timeline.
 
 A task's own page at `/tasks/<ref>` is its record: the heading carries the reference, the
-title, and the attention flag when it is set, and the panel under it the project, the stage
-as the project's pipeline with the current one marked, the priority, and the claim. Then the
-spec rendered with the same safe Markdown renderer as workspace files, its refs, and for a
-repo project the branch and worktree with how many commits it is ahead of its base (read in
-the background with a read-only Git command, and absent when there is no worktree). Then the
-timeline, one row per event, newest first, with the actor, the message, and a link to the run
-page where a run id exists; a run that retention has pruned is labelled as such rather than
-linked. Which moves are available is the agent's business and is not shown; the viewer moves
-nothing either, because that is chat and the CLI.
+title, and the attention flag when it is set. A workflow notice states the latest transaction
+outcome and links to its evidence. The panel under it shows the project, the stage as the
+project's pipeline with the current one marked, the priority, and the claim. The pipeline
+shows the **accepted stage**: submitting a handoff or passing one check does not advance it.
+The notice distinguishes work in progress, submission, checking, repair, acceptance,
+interruption, and blocking. Recorded operator overrides are labelled separately from success.
+
+**Workflow history** is an expandable record of each transaction, newest first. The summary
+names the stage, destination, and Enso's recorded acceptance status. Open it for the submitted
+handoff, candidate revision, spec and workflow versions, repair budget used, timestamps, and
+the linked run. Required checks and lifecycle scripts each show their recorded status, exit
+code, duration, attempt, and captured diagnostic/output; lifecycle scripts also identify the
+event for retry auditing. Script output stays literal and escaped. No check result is inferred
+from an agent's prose or a successful provider exit, and absence of evidence is never labelled
+as a pass. Workflow evidence remains available when retention has pruned the provider run;
+the old run is named without a broken link.
+
+The worktree panel uses the task's recorded path, branch, target branch, starting revision,
+and retention or cleanup status. It works for locations outside the Enso home and does not
+infer the target from whatever branch the main checkout happens to have open. A failed
+cleanup stays visible with its diagnostic. A bounded read-only Git query counts commits
+ahead of the recorded target; if Git or the worktree is unavailable, the metadata still
+renders and the count says unknown. No worktree record means no panel.
+
+The rest of the page holds the spec rendered with the same safe Markdown renderer as
+workspace files, refs, accepted handoff, and timeline. Timeline rows show the actor, message,
+and surviving run link. Which moves are available is the agent's business and is not shown;
+the viewer moves nothing, because that is chat and the CLI. See [Tasks](tasks.md) for the
+workflow and worktree contracts.
 
 ### Workspaces
 
@@ -337,7 +360,7 @@ own page adds Overview and History: the configuration and the prompt body, rende
 same safe Markdown renderer as workspace files (for a stage job, the project and stage it
 serves, linked to the board filtered to that project and stage, and its effective concurrency
 group), prerun and postrun filenames and timeouts, the follow-up limit, a chart of recent
-outcomes, and any `JOB.md` problems keeping it from running. It does not display hook script
+outcomes, project capacity and configured stage check names, and any `JOB.md` problems keeping it from running. Command/integration stages are labelled as Enso engine execution with no model. It does not display hook script
 contents. History shows up to 500 runs of the job; the link to the filtered Runs page provides pagination when
 retention is higher.
 
@@ -387,6 +410,10 @@ always, because their exact spacing is the information. A heartbeat run's output
 the same way, being the same kind of provider transcript. Ordered attempts show each provider
 turn and its postrun result and feedback; attempt 0 represents a reaction hook when no
 provider ran. Older history has no attempts.
+For stage jobs, **Task workflow** shows the transactions belonging to this run using the
+same evidence view as the task page, with a link back to the task's complete audit history.
+Provider completion and stage acceptance are separate facts; the recorded transaction
+status states whether the handoff was accepted.
 The run remains `running` while postrun validates or requests a follow-up. Final duration
 includes hook time; the provider timeout allowance does not. See [Jobs](jobs.md#postrun-scripts).
 

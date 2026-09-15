@@ -13,7 +13,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from conftest import commit_file, git, load_job, write_config, write_job
 
-from enso import db, runs, tasks, web
+from enso import db, runs, tasks, web, workflows, worktrees
 from enso.config import Config, Paths, parse_config
 from enso.web import tasks as taskviews
 from enso.web.server import create_app
@@ -368,7 +368,11 @@ async def test_task_page_reports_a_failed_context_read(
 
 
 async def test_task_page_worktree_panel(
-    client: TestClient, enso_home: Paths, raw_config_projects: dict, repo: Path
+    client: TestClient,
+    enso_home: Paths,
+    raw_config_projects: dict,
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     raw_config_projects["projects"]["EN"]["repo"] = str(repo)
     config, problems, _ = parse_config(raw_config_projects, enso_home)
@@ -378,19 +382,214 @@ async def test_task_page_worktree_panel(
     task = tasks.create(enso_home, config, "EN", "With a branch", actor=USER)
     assert "Worktree" not in await html(client, f"/tasks/{task.ref}")  # nothing prepared yet
 
-    worktree = enso_home.worktrees / "EN" / task.ref
+    worktree = repo / ".worktrees" / task.ref
     worktree.parent.mkdir(parents=True)
     git(repo, "worktree", "add", "-q", "-b", f"enso/{task.ref}", str(worktree))
     commit_file(worktree, "change", "x\n", "work")
+    git(repo, "checkout", "-q", "-b", "other")
+    record = {
+        "path": str(worktree),
+        "repo": str(repo),
+        "branch": f"enso/{task.ref}",
+        "base": "main",
+        "start_revision": git(repo, "rev-parse", "main"),
+        "status": "retained",
+        "error": "Cleanup deferred: untracked files need attention",
+    }
+    monkeypatch.setattr(worktrees, "lookup", lambda _paths, _ref: record)
     page = await html(client, f"/tasks/{task.ref}")
     assert "Worktree" in page and f"<code>enso/{task.ref}</code>" in page
     assert f"<code>{worktree}</code>" in page and "<code>main</code>" in page
     assert "1 commit ahead of main" in page
+    assert "retained" in page and record["error"] in page
+    assert "Starting revision" in page
 
     # Git failing must never take the page down: an unreadable worktree still renders.
     (worktree / ".git").unlink()
     broken = await html(client, f"/tasks/{task.ref}")
     assert "Worktree" in broken and "unknown; git could not count them" in broken
+
+
+@pytest.fixture
+def transaction(board: Board) -> dict:
+    return {
+        "id": "transaction-1",
+        "run_id": board.run_id,
+        "stage": "todo",
+        "to_stage": "review",
+        "status": "submitted",
+        "candidate": "candidate-revision",
+        "spec_hash": "spec-version",
+        "workflow_hash": "workflow-version",
+        "started_at": "2026-09-14T12:00:00+00:00",
+        "ended_at": None,
+        "message": "Agent says everything passed <script>unsafe()</script>",
+        "error": "",
+        "repairs": 1,
+        "max_repairs": 2,
+        "checks": [
+            {
+                "name": "Unit tests",
+                "status": "failed",
+                "exit_code": 1,
+                "duration_ms": 1300,
+                "attempt": 1,
+                "output": "Assertion failed <script>unsafe()</script>",
+                "error": "Test suite failed",
+            },
+            {
+                "name": "Unit tests",
+                "status": "passed",
+                "exit_code": 0,
+                "duration_ms": 800,
+                "attempt": 2,
+                "output": "24 passed",
+                "error": "",
+            },
+        ],
+        "hooks": [
+            {
+                "name": "after-transition",
+                "status": "failed",
+                "event_id": "event-123",
+                "exit_code": 2,
+                "duration_ms": 100,
+                "attempt": 1,
+                "error": "Notification unavailable",
+                "output": "",
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize("status", ["submitted", "checking", "repairing", "blocked", "accepted"])
+async def test_task_workflow_distinguishes_submission_checks_and_acceptance(
+    client: TestClient,
+    board: Board,
+    transaction: dict,
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+) -> None:
+    transaction["status"] = status
+    if status == "blocked":
+        transaction["error"] = "Repair limit exhausted"
+    if status == "accepted":
+        transaction["ended_at"] = "2026-09-14T12:01:00+00:00"
+    monkeypatch.setattr(workflows, "history", lambda _paths, _ref: [transaction])
+    monkeypatch.setattr(workflows, "event_history", lambda _paths, _ref: transaction["hooks"])
+    page = await html(client, "/tasks/EN-001")
+    assert '<span class="chip current">todo</span>' in page
+    assert '<span class="chip current">review</span>' not in page
+    assert "Workflow history" in page and "1 transaction, newest first" in page
+    assert "candidate-revision" in page and "spec-version" in page and "workflow-version" in page
+    assert "1 of 2 allowed" in page and "attempt 1" in page and "attempt 2" in page
+    assert "Test suite failed" in page and "24 passed" in page
+    assert "Lifecycle scripts" in page and "event-123" in page
+    assert "Notification unavailable" in page
+    assert "&lt;script&gt;unsafe()&lt;/script&gt;" in page
+    assert "<script>unsafe()" not in page
+    if status in ("submitted", "checking", "repairing"):
+        assert "The task remains in todo until Enso accepts this handoff." in page
+    assert ("Handoff accepted" in page) == (status == "accepted")
+    if status == "blocked":
+        assert "Repair limit exhausted" in page
+
+
+async def test_task_workflow_evidence_survives_a_pruned_run(
+    client: TestClient, board: Board, transaction: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    transaction.update(run_id="pruned-run", status="accepted", ended_at=transaction["started_at"])
+    monkeypatch.setattr(workflows, "history", lambda _paths, _ref: [transaction])
+    page = await html(client, "/tasks/EN-001")
+    assert "run pruned; workflow evidence retained" in page
+    assert 'href="/runs/pruned-run"' not in page
+    assert "24 passed" in page and "Handoff accepted" in page
+
+
+async def test_task_workflow_shows_integration_before_acceptance(
+    client: TestClient, board: Board, transaction: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    transaction.update(
+        status="blocked",
+        recovery_of="previous-transaction",
+        integration={"phase": "applied", "candidate": "landed-sha", "target_sha": "old-target"},
+    )
+    monkeypatch.setattr(workflows, "history", lambda _paths, _ref: [transaction])
+    page = await html(client, "/tasks/EN-001")
+    assert "Git integration completed, but this handoff was not accepted" in page
+    assert "Recovery requires fresh verification" in page
+    assert "landed-sha" in page and "old-target" in page
+    assert 'href="#transaction-previous-transaction"' in page
+
+
+async def test_task_workflow_distinguishes_pending_checks_from_no_checks(
+    client: TestClient, board: Board, transaction: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    transaction.update(checks=[], hooks=[], stage_definition={"checks": [{"name": "lint"}]})
+    monkeypatch.setattr(workflows, "history", lambda _paths, _ref: [transaction])
+    page = await html(client, "/tasks/EN-001")
+    assert "Not yet run: lint." in page and "No required checks configured." not in page
+    transaction.update(stage_definition={"checks": []}, status="accepted")
+    unchecked = await html(client, "/tasks/EN-001")
+    assert "No required checks configured." in unchecked and "Not yet run:" not in unchecked
+
+
+async def test_task_lifecycle_history_includes_manual_moves_and_delivery_retries(
+    client: TestClient, board: Board, transaction: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    event = {
+        "event_id": "manual-event",
+        "name": "after:done",
+        "from_stage": "review",
+        "to_stage": "done",
+        "status": "delivered",
+        "attempts": 2,
+        "transaction_id": None,
+        "deliveries": [
+            {**transaction["checks"][0], "name": "after:done"},
+            {**transaction["checks"][1], "name": "after:done"},
+        ],
+    }
+    monkeypatch.setattr(workflows, "history", lambda _paths, _ref: [])
+    monkeypatch.setattr(workflows, "event_history", lambda _paths, _ref: [event])
+    page = await html(client, "/tasks/EN-001")
+    assert "Workflow history" not in page and "Lifecycle scripts" in page
+    assert "manual-event" in page and "delivered" in page
+    assert "Test suite failed" in page and "24 passed" in page
+    assert "attempt 1" in page and "attempt 2" in page
+
+
+async def test_board_loads_transaction_summaries_once_without_evidence(
+    client: TestClient, board: Board, transaction: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    transaction["status"] = "checking"
+    summary = Mock(return_value={"EN-001": transaction})
+    monkeypatch.setattr(workflows, "current_summaries", summary)
+    monkeypatch.setattr(workflows, "history", Mock(side_effect=AssertionError("detail-only data")))
+    page = await html(client, "/tasks")
+    summary.assert_called_once()
+    assert set(summary.call_args.args[1]) == {
+        "EN-001",
+        "EN-002",
+        "EN-003",
+        "EN-004",
+        "EN-007",
+        "MKT-001",
+    }
+    assert "Running required checks" in page and "candidate-revision" not in page
+    assert "Test suite failed" not in page and group_rows(page)["Active"] == ["EN-001"]
+
+
+async def test_run_page_separates_provider_output_from_workflow_evidence(
+    client: TestClient, board: Board, transaction: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    transaction.update(status="blocked", error="Required lint check failed")
+    monkeypatch.setattr(workflows, "history", lambda _paths, _ref: [transaction])
+    runs.finish(board.paths, board.run_id, status="ok", exit_code=0, output="Everything passed!")
+    page = await html(client, f"/runs/{board.run_id}")
+    assert "Everything passed!" in page and "Workflow blocked" in page
+    assert "Required lint check failed" in page and "Task workflow" in page
+    assert 'href="/tasks/EN-001#workflow"' in page
 
 
 async def test_run_page_links_to_its_task(client: TestClient, board: Board) -> None:
@@ -418,7 +617,8 @@ async def test_stage_job_pages_say_when_work_is_ready(client: TestClient, board:
     assert "a stage job: it claims a ready task there" in page  # the Stage row
     assert "none; it fires when work is ready" in page
     assert '<a href="/tasks?project=EN&amp;stage=triage">' in page
-    assert '<code>project:EN</code> <span class="muted">(the stage job default)</span>' in page
+    assert "project capacity is enforced separately" in page
+    assert "the stage job default" not in page
     assert "when a task is ready</span>" in page  # the Next run row
     today = await html(client, "/today/reliability")
     assert "<span>when work is ready</span>" in today and "None" not in today

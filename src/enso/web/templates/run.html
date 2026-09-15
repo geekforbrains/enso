@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m %}
+{% import "_workflow.html" as w %}
 {% block title %}Run {{ run.id if run else '' }}{% endblock %}
 {% block content %}
 <p class="crumbs"><a href="/runs">Runs</a> / <span aria-current="page">{{ run.id if run else 'unavailable' }}</span></p>
@@ -17,7 +18,7 @@
     <dt>Run</dt><dd><code>{{ run.id }}</code></dd>
     <dt>Job</dt><dd><a href="/jobs/{{ run.job|urlencode }}">{{ run.job }}</a></dd>
     <dt>Workspace</dt><dd><a href="/workspaces/{{ run.workspace|urlencode }}">{{ run.workspace }}</a></dd>
-    <dt>Agent</dt><dd><span class="chip">{{ run.provider }}</span> <span class="chip">{{ run.model }}</span> <span class="chip">{{ run.effort }}</span></dd>
+    {% if engine %}<dt>Execution</dt><dd>Enso engine · no model</dd>{% else %}<dt>Agent</dt><dd><span class="chip">{{ run.provider }}</span> <span class="chip">{{ run.model }}</span> <span class="chip">{{ run.effort }}</span></dd>{% endif %}
     <dt>Trigger</dt><dd>{{ run.trigger }}</dd>
     {% if tasks %}
     <dt>Task</dt>
@@ -27,11 +28,16 @@
     <dt>Ended</dt><dd>{% if run.ended_at %}<time datetime="{{ run.ended_at|iso }}">{{ run.ended_at|when }}</time>{% else %}-{% endif %}</dd>
     <dt>Duration</dt>
     <dd>{{ run.duration_ms|duration }} <span class="muted">including hooks</span></dd>
-    {% if timeout %}<dt>Provider time budget</dt><dd>{{ timeout }}s across all turns</dd>{% endif %}
+    {% if timeout %}<dt>{{ 'Execution timeout' if engine else 'Provider time budget' }}</dt><dd>{{ timeout }}s{% if not engine %} across all turns{% endif %}</dd>{% endif %}
     <dt>Exit code</dt><dd>{{ run.exit_code if run.exit_code is not none else '-' }}</dd>
     <dt>Session</dt><dd>{% if run.session_id %}<code>{{ run.session_id }}</code>{% else %}-{% endif %}</dd>
   </dl>
 </div>
+
+{% if workflow %}
+<div class="shead"><h2>Task workflow</h2><span class="right">Stage acceptance and recorded evidence</span></div>
+{% for entry in workflow %}{{ w.transaction(entry) }}{% endfor %}
+{% endif %}
 
 {% if run.error and run.error != run.postrun_error %}
 <div class="shead"><h2>Error</h2></div>

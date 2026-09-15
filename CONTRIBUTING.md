@@ -42,7 +42,8 @@ on `main` back into `develop`. [Releases](docs/releasing.md) owns the exact rele
 
 The regular maintainer checkout stays on `develop`. Use a separate Git worktree for
 production patches and release work, leaving the regular checkout's branch unchanged;
-Enso's task worktrees use that branch as their base and landing target. See
+configure the Enso project with `base: develop`. Task worktrees pin their target when
+created; switching the regular checkout never changes a task's integration target. See
 [Development](docs/development.md#agent-and-maintainer-work) before running stage jobs.
 
 After a change has been merged and verified, remove its short-lived branch when cleanup

@@ -21,7 +21,9 @@ what's coming up, and what needs your attention.
 - **Give it context.** Keep your preferences, project instructions, and reference
   files in workspaces, so Enso has the background when you pick things up again.
 - **Keep projects moving.** Turn conversations into tasks, carry work through
-  simple stages, and follow the progress and handoffs in the viewer.
+  simple stages, and follow the progress and evidence in the viewer. Development
+  workflows can use separate Git worktrees and required tests or lint checks;
+  a single unchecked stage works too.
 - **Let it follow through.** Schedule a morning brief or weekly review. Ask Enso to
   watch for a refund, check on a release, or remind you on Friday.
 - **Make it yours.** Add skills, connect persistent browser profiles, or install

@@ -13,9 +13,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import partial
+from pathlib import Path
 from typing import Any
 
-from .. import db, tasks
+from .. import db, tasks, workflows, worktrees
 from ..config import BUILTIN_STAGES, Config, Paths, ProjectConfig
 from . import common, files
 
@@ -53,6 +54,7 @@ class TaskRow:
     task: tasks.Task
     state: str
     project_name: str
+    phase: str = ""
 
 
 @dataclass(frozen=True)
@@ -91,9 +93,18 @@ def _task_state(task: tasks.Task, project: ProjectConfig | None) -> str:
     return "ready" if stage else "needs-you"
 
 
-def _task_row(config: Config | None, task: tasks.Task) -> TaskRow:
+def _task_row(
+    config: Config | None, task: tasks.Task, transaction: dict[str, Any] | None = None
+) -> TaskRow:
     project = _project_of(config, task)
-    return TaskRow(task, _task_state(task, project), project.name if project else task.project)
+    phase = ""
+    if transaction and transaction.get("stage") == task.stage:
+        status = transaction.get("status", "")
+        if status in ("working", "submitted", "checking", "repairing", "interrupted", "blocked"):
+            phase = _WORKFLOW_LABELS.get(status, status)
+    return TaskRow(
+        task, _task_state(task, project), project.name if project else task.project, phase
+    )
 
 
 def _ready_order(config: Config | None, row: TaskRow) -> tuple[str, int, str]:
@@ -165,9 +176,13 @@ def tasks_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any]:
     history = finished or tasks.FinishedTasks(rows=[], total=0, done_count=0)
     done_tasks = history.rows
     error = error or finished_error
+    current, workflow_error = common.attempt(
+        partial(workflows.current_summaries, paths, [task.ref for task in live])
+    )
+    error = error or workflow_error
     groups = _board_groups(
         config,
-        [_task_row(config, task) for task in live],
+        [_task_row(config, task, (current or {}).get(task.ref)) for task in live],
         [_task_row(config, task) for task in done_tasks],
     )
     stages = list(BUILTIN_STAGES)
@@ -254,8 +269,81 @@ def _event_label(event: tasks.TaskEvent) -> tuple[str, str]:
             )
         case "ref":
             return f"ref {payload.get('kind', '')} {payload.get('value', '')}".strip(), "muted"
+        case "submitted":
+            return f"handoff submitted: {event.from_stage} → {event.to_stage}", "running"
+        case "accepted":
+            return f"handoff accepted: {event.from_stage} → {event.to_stage}", "ok"
+        case "check_failed" | "workflow_blocked" | "interrupted":
+            return event.kind.replace("_", " "), "warning"
         case _:
-            return event.kind, "muted"
+            return event.kind.replace("_", " "), "muted"
+
+
+_WORKFLOW_LABELS = {
+    "working": "Working",
+    "submitted": "Handoff submitted",
+    "checking": "Running required checks",
+    "repairing": "Repairing failed checks",
+    "accepted": "Handoff accepted",
+    "blocked": "Workflow blocked",
+    "interrupted": "Workflow interrupted",
+    "overridden": "Operator override",
+}
+_WORKFLOW_TONES = {
+    "working": "running",
+    "submitted": "running",
+    "checking": "running",
+    "repairing": "running",
+    "accepted": "ok",
+    "blocked": "warning",
+    "interrupted": "warning",
+    "overridden": "warning",
+}
+
+
+def workflow_rows(history: list[dict[str, Any]], live: set[str]) -> list[dict[str, Any]]:
+    """Decorate engine records without deriving acceptance from provider output or checks."""
+    rows = []
+    for transaction in history:
+        status = transaction.get("status", "")
+        checks = transaction.get("checks") or []
+        configured = (transaction.get("stage_definition") or {}).get("checks")
+        checked = {check["name"] for check in checks}
+        run_id = transaction.get("run_id")
+        rows.append(
+            {
+                **transaction,
+                "label": _WORKFLOW_LABELS.get(status, status.replace("_", " ")),
+                "tone": _WORKFLOW_TONES.get(status, "muted"),
+                "checks": checks,
+                "configured_checks": configured,
+                "pending_checks": [
+                    check["name"] for check in configured or [] if check["name"] not in checked
+                ],
+                "hooks": transaction.get("hooks") or [],
+                "run_link": f"/runs/{run_id}" if run_id and run_id in live else None,
+            }
+        )
+    return rows
+
+
+def _workflow_notice(task: tasks.Task, rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not rows:
+        return None
+    latest = rows[0]
+    status = latest.get("status")
+    stage = latest.get("stage")
+    why = latest.get("error") or ""
+    if not why:
+        if status == "accepted":
+            why = f"{stage} → {latest.get('to_stage')}. The recorded handoff was accepted by Enso."
+        elif status in ("submitted", "checking", "repairing"):
+            why = f"The task remains in {task.stage} until Enso accepts this handoff."
+        elif status == "working":
+            why = "The stage has not submitted a handoff yet."
+        elif status == "overridden":
+            why = "An operator bypassed the configured checks; this is not a passing check result."
+    return {**latest, "why": why}
 
 
 def _git(cwd: Any, *args: str) -> str | None:
@@ -275,20 +363,21 @@ def _git(cwd: Any, *args: str) -> str | None:
     return done.stdout.strip()[:200] if done.returncode == 0 else None
 
 
-def _worktree(paths: Paths, project: ProjectConfig | None, ref: str) -> dict[str, Any] | None:
-    """The task's worktree panel, or None when the project has no repo or no worktree yet."""
-    if project is None or project.repo is None:
+def _worktree(paths: Paths, ref: str) -> dict[str, Any] | None:
+    """Recorded ownership survives config changes and cleanup; absent records have no panel."""
+    record = worktrees.lookup(paths, ref)
+    if record is None:
         return None
-    path = paths.worktrees / project.key / ref
-    if not path.is_dir():
-        return None
-    branch = f"enso/{ref}"
-    base = _git(project.repo, "symbolic-ref", "--short", "HEAD")
-    counted = _git(path, "rev-list", "--count", f"{base}..{branch}", "--") if base else None
+    path, branch, base = Path(record["path"]), record["branch"], record.get("base")
+    # A missing .git inside a repository-local worktree would make Git walk up and
+    # quietly answer from the main checkout. Keep that unavailable, rather than misleading.
+    counted = (
+        _git(path, "rev-list", "--count", f"{base}..{branch}", "--")
+        if base and (path / ".git").exists()
+        else None
+    )
     return {
-        "path": str(path),
-        "branch": branch,
-        "base": base,
+        **record,
         "ahead": int(counted) if counted is not None and counted.isdigit() else None,
     }
 
@@ -316,8 +405,15 @@ def task_model(paths: Paths, ref_text: str) -> dict[str, Any] | None:
         ctx, ctx_error = common.attempt(partial(tasks.context, paths, config, ref, env={}))
     history, events_error = common.attempt(partial(tasks.events, paths, ref))
     attached, refs_error = common.attempt(partial(tasks.refs, paths, ref))
-    ids = sorted({event.run_id for event in history or [] if event.run_id})
+    transactions, workflow_error = common.attempt(partial(workflows.history, paths, ref))
+    lifecycle, lifecycle_error = common.attempt(partial(workflows.event_history, paths, ref))
+    ids = sorted(
+        {event.run_id for event in history or [] if event.run_id}
+        | {entry["run_id"] for entry in transactions or [] if entry.get("run_id")}
+    )
     live, _runs_error = common.attempt(partial(_existing_runs, paths, ids))
+    workflow = workflow_rows(transactions or [], live or set())
+    worktree, worktree_error = common.attempt(partial(_worktree, paths, ref))
     return {
         "config_problems": problems,
         "alarm": common.alarm(paths),
@@ -328,7 +424,10 @@ def task_model(paths: Paths, ref_text: str) -> dict[str, Any] | None:
         "stages": list(project.stage_names) if project else [],
         "spec": files.render_markdown(task.body) if task.body else None,
         "refs": attached or [],
-        "worktree": _worktree(paths, project, ref),
+        "worktree": worktree,
+        "workflow": workflow,
+        "lifecycle": lifecycle or [],
+        "workflow_notice": _workflow_notice(task, workflow),
         "handoff": ctx["handoff"] if ctx else None,
         "recovery": ctx["recovery"] if ctx else None,
         # The verdict offers the run only while its row exists; pruned runs are named, not linked.
@@ -340,5 +439,12 @@ def task_model(paths: Paths, ref_text: str) -> dict[str, Any] | None:
         "timeline": _timeline(history or [], live or set()),
         # The context read only feeds the handoff and the recovery notice, so it reports last;
         # without this it would fail silently and the page would simply omit both.
-        "error": events_error or refs_error or ctx_error,
+        "error": (
+            events_error
+            or refs_error
+            or ctx_error
+            or workflow_error
+            or lifecycle_error
+            or worktree_error
+        ),
     }

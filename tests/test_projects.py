@@ -12,7 +12,15 @@ from typer.testing import CliRunner
 
 from enso import tasks
 from enso.cli import app
-from enso.config import Paths, ProjectConfig, Stage, load_config, parse_config, parse_stages
+from enso.config import (
+    Paths,
+    ProjectConfig,
+    Stage,
+    load_config,
+    parse_config,
+    parse_stages,
+    stage_dict,
+)
 
 
 def git_repo(path: Path) -> Path:
@@ -49,7 +57,7 @@ def test_projects_parse_with_helpers(
     assert dd.index("todo") == 1 and dd.stage("todo") == Stage("todo") and dd.stage("x") is None
     with pytest.raises(ValueError):
         dd.index("blocked")
-    assert mkt.as_dict()["stages"][1] == {"name": "approve", "human": True}
+    assert mkt.as_dict()["stages"][1] == stage_dict(Stage("approve", human=True))
     assert dd.as_dict()["repo"] == str(repo) and mkt.as_dict()["repo"] is None
     bare, _, _ = parse_config({**raw_config_projects, "projects": None}, enso_home)
     assert bare is not None and bare.projects == {}
@@ -92,9 +100,8 @@ def test_project_problems_are_reported_together(
         "projects.P1.setup must be a command string",
         "projects.P1.copy must be a list of relative paths inside the repository",
         "projects.P2.workspace must be a workspace name (lowercase kebab-case)",
-        "projects.P2.stages must be a non-empty list of stage names",
+        "projects.P2.stages must be a non-empty list of stage names or objects",
         "projects.P3.repo must be a path",
-        "projects.P3.stages needs at least one agent stage",
     ]
     raw_config_projects["projects"] = "EN"
     _, problems, _ = parse_config(raw_config_projects, enso_home)
@@ -181,8 +188,8 @@ def test_project_add_writes_config_atomically(
             "default",
             "--repo",
             str(repo),
-            "--flow",
-            "dev",
+            "--stages",
+            "triage,todo,review",
             "--setup",
             ".dev/prepare",
             "--copy",
@@ -199,12 +206,17 @@ def test_project_add_writes_config_atomically(
         "workspace": "default",
         "repo": str(repo),
         "stages": [
-            {"name": "triage", "human": False},
-            {"name": "todo", "human": False},
-            {"name": "review", "human": False},
+            json.loads(json.dumps(stage_dict(Stage("triage")))),
+            json.loads(json.dumps(stage_dict(Stage("todo")))),
+            json.loads(json.dumps(stage_dict(Stage("review")))),
         ],
         "setup": ".dev/prepare",
         "copy": [".env", ".envrc"],
+        "worktree_root": None,
+        "base": None,
+        "max_concurrency": 1,
+        "hooks": {},
+        "script_timeout": 600,
     }
     written = json.loads(enso_home.config.read_text())
     assert written["projects"] == {
@@ -221,7 +233,7 @@ def test_project_add_writes_config_atomically(
     assert oct(enso_home.config.stat().st_mode & 0o777) == "0o600"
 
     again = runner.invoke(
-        app, ["project", "add", "EN", "--name", "Enso", "--workspace", "default", "--flow", "dev"]
+        app, ["project", "add", "EN", "--name", "Enso", "--workspace", "default", "--flow", "basic"]
     )
     assert again.exit_code == 1 and "project EN already exists" in again.stderr
     custom = runner.invoke(

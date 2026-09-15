@@ -347,34 +347,101 @@ workspace — so it is yours to add, not Enso's.
 
 ## Projects
 
-`projects` declares the projects of the [task board](tasks.md): each key is the prefix of
-its task references (`EN` gives `EN-001`), and the object under it says where its tasks are
-worked and which stages they pass through. `enso project add` writes an entry through the
-same validation and the same atomic writer as `enso setup`; editing the file by hand is
-equally fine. The section is optional and, like the others, reports all its problems at once:
+`projects` declares the [task board's projects](tasks.md), keyed by the prefixes used in
+references (`EN` gives `EN-001`). The section is optional. `enso project add` creates a
+project; `enso workflow init` configures a preset and jobs. Both validate configuration
+and use its atomic writer. Direct file edits use the same schema.
 
-| Rule | What happens otherwise |
+A minimal non-Git project is:
+
+```json
+"projects": {
+  "EX": { "name": "Example", "workspace": "default", "stages": ["work"] }
+}
+```
+
+Checks and Git are optional. A development project can use:
+
+```json
+"projects": {
+  "APP": {
+    "name": "Application",
+    "workspace": "dev",
+    "repo": "~/Projects/app",
+    "base": "main",
+    "worktree_root": ".worktrees",
+    "max_concurrency": 3,
+    "setup": "npm ci",
+    "stages": [
+      { "name": "plan", "worktree": false },
+      {
+        "name": "implement",
+        "max_repairs": 2,
+        "checks": [
+          { "name": "lint", "command": "npm run lint", "timeout": 600 },
+          { "name": "tests", "command": "npm test", "timeout": 600 }
+        ]
+      },
+      { "name": "review", "return_to": "implement", "max_returns": 2 },
+      {
+        "name": "integrate", "integrate": true,
+        "checks": [
+          { "name": "lint", "command": "npm run lint", "timeout": 600 },
+          { "name": "tests", "command": "npm test", "timeout": 600 }
+        ]
+      }
+    ],
+    "hooks": { "after:done": "./scripts/task-done" },
+    "script_timeout": 600
+  }
+}
+```
+
+Choose commands that the project actually provides; the example is not installed as an
+active project. The development preset requires explicit lint and test commands.
+
+| Project field | Contract |
 | --- | --- |
-| A key is 2–10 uppercase letters or digits, starting with a letter | `projects.dd: keys are 2-10 uppercase letters or digits, starting with a letter` |
-| Each entry is an object holding only `name`, `workspace`, `repo`, `stages`, `setup`, `copy` | an unrecognized member is reported by its full path |
-| `name` is non-empty text | `projects.EN.name must be non-empty text` |
-| `workspace` is a workspace name (lowercase kebab-case) whose directory exists | `projects.EN.workspace: directory … missing` |
-| `repo`, when present, is a path (`~` expanded) to a directory holding a Git repository | `projects.EN.repo … is not a directory holding a Git repository` |
-| `stages` is a non-empty list of `name` or `name:human` entries | `projects.EN.stages must be a non-empty list of stage names` |
-| Each stage name is 2–24 lowercase letters, digits, or hyphens, starting with a letter | `projects.EN.stages: 'Todo' is not a stage name (lowercase, digits, hyphens, 2-24 chars)` |
-| No stage is a built-in one: `backlog`, `blocked`, `done`, `cancelled` | `projects.EN.stages: done is a built-in stage` |
-| No stage is listed twice | `projects.EN.stages: todo is listed twice` |
-| At least one stage is an agent stage | `projects.EN.stages needs at least one agent stage` |
-| `setup`, when present, is a non-empty command string | `projects.EN.setup must be a command string` |
-| `copy`, when present, is a list of relative paths that stay inside the repository (no `..`) | `projects.EN.copy must be a list of relative paths inside the repository` |
+| key | 2–10 uppercase letters/digits, starting with a letter |
+| `name` | Nonempty display name |
+| `workspace` | Existing lowercase kebab-case Enso workspace |
+| `repo` | Optional Git repository directory; `~` expands |
+| `stages` | Nonempty ordered list of unique stage names or objects |
+| `base` | Optional target branch; recorded for each task worktree, never silently retargeted |
+| `worktree_root` | Default `<repo>/.worktrees`; repository-relative, absolute, `~`, or a sibling path |
+| `setup` | Optional bash command run while preparing a new worktree |
+| `copy` | Optional relative repository paths; no absolute paths or `..`; see [copy safety](tasks.md#worktrees) |
+| `max_concurrency` | Positive number of simultaneous project task executions; default 1 |
+| `hooks` | Command strings keyed by `after_transition`, `after:STAGE`, or `teardown` |
+| `script_timeout` | Positive seconds per setup/lifecycle script; default 600 |
 
-`repo`, `setup`, and `copy` make a **repo project**: its tasks are worked in a worktree of
-their own under `~/.enso/worktrees/<KEY>/<REF>`, `setup` runs with bash inside a fresh
-worktree, and each `copy` path that exists in the main checkout is copied into it first
-(gitignored env files, typically). Stage order is pipeline order. Stage instructions live in
-the prompt of the [stage job](jobs.md#stage-jobs) bound to each agent stage, not here.
-[Tasks](tasks.md#projects-and-stages) owns what a project means, the built-in stages, and
-the `--flow` presets.
+A string stage is `"work"` or `"approve:human"`. An object stage accepts:
+
+| Stage field | Contract |
+| --- | --- |
+| `name` | 2–24 lowercase letters/digits/hyphens, starting with a letter; never `backlog`, `blocked`, `done`, or `cancelled` |
+| `human` | Boolean, default false; waits for operator action |
+| `command` | Nonempty command; the stage runs without a provider |
+| `integrate` | Boolean, default false; the engine owns landing and requires a repo/worktree |
+| `worktree` | Boolean; false keeps work in the Enso workspace, true requires a repo; omitted follows whether the project has a repo |
+| `checks` | Optional list of required check objects; empty means no executable acceptance checks |
+| `max_repairs` | Nonnegative additional repair opportunities, default 2; zero disables repair |
+| `return_to` | Optional earlier stage name; otherwise `return` uses the previous stage |
+| `max_returns` | Nonnegative return-loop limit, default 2; zero disables returns |
+
+Choose at most one of `human`, `command`, and `integrate`. Other stages use an agent job.
+Each check requires unique nonempty `name` and `command`, accepts positive `timeout`
+seconds (default 600), and optional `protect` repository-relative path patterns. Enso
+executes checks with bash in the task execution directory and records bounded output and
+exit status. Checks do not consume model tokens or require a report format. Existing
+validation inputs are protected from candidate changes; intentional rule changes require
+operator review. [Tasks](tasks.md#stage-transactions-and-checks) owns acceptance, evidence,
+repair, and the trust boundary.
+
+Unknown fields, invalid types, duplicate names, invalid return destinations, or contradictory
+execution kinds are reported with their configuration paths. Stage instructions belong in
+agent jobs' prompts; execution/check rules belong here. Worktree creation, stable metadata,
+copy semantics and safe cleanup are defined in [Tasks](tasks.md#worktrees).
 
 ## Secrets
 
