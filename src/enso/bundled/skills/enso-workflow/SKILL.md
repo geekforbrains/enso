@@ -66,6 +66,8 @@ Project `max_concurrency` limits simultaneous task executions. Different tasks c
 different stages; one task worktree has one execution owner. Keep an explicit job
 `concurrency_group` for genuinely shared resources, such as a test database. Worktrees do
 not isolate ports, processes, secrets, or services. Use per-task setup for mutable dependencies.
+Checks that start development servers must own and clean up those servers. Smoke-test
+timeout and cancellation as well as success: detached servers can outlive the checker.
 
 `setup` prepares a newly created worktree. `hooks.after_transition` and `hooks["after:done"]`
 (or another stage) react to accepted task transitions; `hooks.teardown` runs before cleanup.
