@@ -403,8 +403,9 @@ The source filter selects all work, jobs, or heartbeats. `job` and `status` narr
 and still apply to the whole history; an explicit `status` overrides the view. `page` pages
 at 500 (the default job retention). Every paginated list counts first and then lists one
 page: the shown range comes from the rows actually listed, so a failed listing reads `0–0`
-of the counted total beside its error, and a failed count lists nothing. The list never reads a run's output. Heartbeat checks
-that did not involve an agent are absent; the beat's Overview holds its latest check.
+of the counted total beside its error, and a failed count shows its error and lists nothing.
+The list never reads a run's output. Heartbeat checks that did not involve an agent are
+absent; the beat's Overview holds its latest check.
 
 Each job run opens to its full record: status, exit code, duration,
 trigger, the agent that ran it, the session ID, final postrun diagnostic, the error, and the
