@@ -2,12 +2,13 @@
 
 Enso does not define a permission language of its own. A workspace marked ``restricted``
 in ``config.json`` must instead hold the CLI's own project-level policy file, in the
-place that CLI reads it from the working directory, and the launch must not carry the
-flag that tells the CLI to bypass its own policy. Codex and Grok read a project file only
+place that CLI reads it from the working directory, and the launch must not carry a
+recognized bypass flag. Codex and Grok read a project file only
 below a root they trust, so for them the CLI's own user config must also trust the home.
-Enso checks only that much: the file exists, the bypass flag is absent, and the CLI will
-look at the file. What the file says, and whether the CLI honours it, stays the CLI's
-business. See ``docs/configuration.md`` § Restricted workspaces.
+Enso checks only those prerequisites, not the effective configuration or policy contents.
+Other flags and provider settings can change enforcement. Scripts run outside this gate;
+what a policy permits, and whether the CLI honours it, stays the CLI's business.
+See ``docs/configuration.md`` § Restricted workspaces.
 """
 
 from __future__ import annotations

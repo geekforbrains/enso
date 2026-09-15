@@ -311,8 +311,8 @@ def _restriction_problem(paths: Paths, previous: dict[str, Any] | None, raw: obj
     the variable is absent and nothing is guarded. The restriction is read from the
     document being replaced; one that does not parse is apply's repair job and guards
     nothing. This is a guardrail against an agent loosening its own restriction by
-    accident, not a security boundary: the provider's policy file is what denies the
-    command outright.
+    accident, not a security boundary: the marker is caller-controlled, and neither this
+    check nor a command deny rule protects against direct writes by a process with access.
     """
     name = os.environ.get("ENSO_WORKSPACE")
     if not name or not previous:

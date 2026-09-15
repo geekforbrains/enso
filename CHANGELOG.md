@@ -34,6 +34,8 @@ All notable changes to Enso are documented here, following
 
 ### Fixed
 
+- Clarify bundled security guidance: policy checks cover provider prerequisites, audits
+  cover the chat provider only, and scripts and direct file writes have separate limits.
 - Reject conflicting provider session IDs consistently in chat and background turns,
   preventing resumed chats from silently switching conversations. Unrecognized provider
   output now reports an error instead of establishing a chat session.

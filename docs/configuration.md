@@ -152,7 +152,7 @@ first and then reinstall — Slack never removes scopes from a live token, and t
 drops the bot from its channels, so invite it again.
 
 **Telegram** is private chats only. `allowed_users` are the numeric ids the bot answers;
-everyone else is ignored silently.
+everyone else is ignored silently. An empty list admits nobody; a binding is also required.
 
 `notify` is where job failure alerts and untargeted `enso message send` calls go. It is a
 conversation id (`C…`, `G…`, or `D…`; use `enso slack open-dm U…` for a person) or a
@@ -167,6 +167,12 @@ A binding maps a place to a workspace. Keys are:
 | `slack:C…` or `slack:G…` | A channel. Every top-level message starts its own thread and conversation. |
 | `slack:dm:U…` or `slack:dm:W…` | A user's DM, as one continuous conversation. `W…` ids are Enterprise Grid org-wide user ids. |
 | `telegram:<user id>` | A Telegram private chat |
+
+Slack has no per-user allowlist for bound channels. Human participants are admitted by
+the binding and mention/thread rules; `mention_required` and `thread_mention_required`
+control message admission, not sender authorization. A DM binding is keyed by the sender.
+Binding a shared channel therefore exposes the workspace's agent capabilities to its
+participants. Workspaces do not isolate their filesystem access, credentials, or OS account.
 
 An unbound Slack channel stays silent unless the bot is mentioned, and then replies once to
 say it is not bound; an unbound DM says the same. Bindings are read fresh for each incoming
@@ -190,7 +196,7 @@ replace one provider's flags with `providers.<name>.args`. Providers with an ord
 reasoning ladder clamp effort down to the model's maximum, with a log line. Antigravity and
 OpenCode have the different semantics described below.
 
-Provider-argument overrides apply to both chat turns and jobs in that workspace; they
+Provider-argument overrides apply to chat turns, jobs, and heartbeat assessments; they
 replace the global argument list rather than appending to it.
 
 Only workspaces with overrides need an entry in `workspaces`. The directory
@@ -199,48 +205,63 @@ Only workspaces with overrides need an entry in `workspaces`. The directory
 
 ### Restricted workspaces
 
-`"restricted": true` makes every launch in the workspace — chat turns, jobs, and heartbeat
-assessments — require the provider CLI's own project-level policy file first. Enso defines
-no permission language and never reads the file. It checks, at launch, that the file
-exists, as a regular file, where that CLI reads it from its working directory; that the
-workspace's effective arguments for that provider carry no flag that makes the CLI discard
-the file; and, for Codex and Grok, which read a project file only below a root they trust,
-that the CLI's own user config trusts the home (the table says where). When a check fails,
-the request gets a one-line error naming what to add, the run is recorded as failed, and
-no CLI starts. The default, `false`, keeps the behaviour above: whatever the provider's
-arguments allow.
+`workspaces.<name>.restricted` defaults to `false`. When true,
+[`policy.check`](../src/enso/policy.py) checks prerequisites before chat provider execution,
+the job provider-turn sequence, and heartbeat assessments. A refusal becomes a chat error
+or an error run without starting that provider. The check uses the provider and effective
+workspace arguments for that execution, not necessarily the chat defaults.
 
-| Provider | Policy file in the workspace | Verified on 2026-09-10 | What to know |
-| --- | --- | --- | --- |
-| Claude Code | `.claude/settings.json` | A `permissions.deny` rule held even under `--dangerously-skip-permissions` | Under that flag allow rules and `defaultMode` do nothing, and a project file cannot select `auto` or `bypassPermissions`. For an allowlist, override the workspace's args to `--permission-mode dontAsk`. |
-| Codex | `.codex/config.toml` | `sandbox_mode = "read-only"` applied once the Git root — the home — was trusted (codex-cli 0.153.4) | Codex applies the file only below a trusted root, and `codex exec` records that trust itself after its first run there, so only a fresh home's first run would silently miss it. Enso checks the trust at launch and refuses until `$CODEX_HOME/config.toml` (`~/.codex` by default) holds `[projects."<absolute home path>"]` with `trust_level = "trusted"`; the error prints the exact snippet. The `--dangerously-bypass-approvals-and-sandbox` that setup writes discards the file entirely, so a restricted workspace refuses it (and its alias `--yolo`) until `providers.codex.args` is overridden for the workspace. Other CLI flags still outrank the file. |
-| Grok | `.grok/config.toml` with a `[permission]` table | Deny rules held under `--always-approve` once the home was trusted (1.0.13) | Grok loads project permission rules only below a trusted root and silently skips them otherwise. Enso checks the trust at launch and refuses unless `$GROK_HOME/trusted_folders.toml` (`~/.grok` by default) holds `[folders."<absolute home path>"]` with `trusted = true` or, as the alternative to editing that file, the workspace's effective `providers.grok.args` carry `--trust`, which records the trust itself; the path with a trailing slash, as `grok inspect --json` prints it, counts too, and that command reports `permissions.loaded`. |
-| OpenCode | `opencode.json` | A `bash` deny held under `--auto` (1.18.27) | `--auto` approves only what the file does not deny, so state boundaries as `deny`. |
-| Antigravity | none | — | Permissions live in `~/.gemini/antigravity-cli/settings.json` and Antigravity's own project catalog, not in the workspace, so a restricted workspace refuses to run `agy`. |
+| Provider | Required workspace-relative file | Additional Enso check |
+| --- | --- | --- |
+| `claude` | `.claude/settings.json` | None |
+| `codex` | `.codex/config.toml` | Trusted home; reject exact argument tokens `--dangerously-bypass-approvals-and-sandbox` and `--yolo` |
+| `grok` | `.grok/config.toml` | Trusted home or an exact `--trust` argument |
+| `opencode` | `opencode.json` | None |
+| `agy` | No supported workspace policy | Always refused when restricted |
 
-The file is the CLI's, in the CLI's own format, and the CLI enforces it; Enso only proves
-the CLI will find it. Nothing stops the agent from editing the file during a turn, and a
-rule the CLI does not honour is not made stronger by this check. `enso workspace audit`
-reports a restricted workspace that could not launch its chat provider; see
-[Auditing](workspaces.md#auditing).
+The Codex trust file is `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`), with
+`[projects."<home>"]` and `trust_level = "trusted"`. Grok uses
+`$GROK_HOME/trusted_folders.toml` (default `~/.grok/trusted_folders.toml`), with
+`[folders."<home>"]` and `trusted = true`; `--trust` delegates recording trust to Grok.
+`<home>` is the resolved absolute Enso home, which is the Git root, not the workspace.
+Codex requires the exact key; Grok also accepts a trailing slash. Missing, unreadable,
+or malformed trust configuration does not satisfy the check. Enso never writes this trust.
 
-The policy templates in the bundled `enso-security` skill deny `enso config` to the agent,
-which is what keeps a restricted run from lifting its own restriction. Enso adds a
-guardrail against the accidental case, not a security boundary: `config apply`, `set`, and
-`unset` refuse a change under `workspaces.<name>` or under any provider's `args` when
-`ENSO_WORKSPACE`, which every run Enso starts carries, names a workspace that the current
-document marks restricted. A person's terminal has no `ENSO_WORKSPACE` and is never
-refused, and a `config.json` that no longer parses is repaired without the check.
+The policy-file check is `Path.is_file()` (including a symlink to a regular file).
+Enso does not parse the file, validate rules, or inspect effective provider permissions.
+An empty or malformed policy can pass; other CLI flags, user settings, tools, and provider
+versions can change enforcement. The rejected argument list is deliberately narrow, not
+an exhaustive detector of configurations that weaken a policy. Provider follow-ups and
+job repairs do not turn this gate into continuous tool-call enforcement.
+
+Job prerun/postrun scripts, heartbeat gates, command/integration stages, workflow checks,
+and lifecycle scripts run outside provider policies with the service account's access.
+Preruns and gates may execute before a provider is refused. A workspace audit checks only
+the resolved chat provider's prerequisites; it does not validate job or beat providers or
+prove a rule is enforced. [Auditing](workspaces.md#auditing) owns the report contract.
+
+The config-write guard in [`initialization.py`](../src/enso/initialization.py) prevents
+accidental changes through `config apply`, `set`, and `unset`: when `ENSO_WORKSPACE`
+names a currently restricted workspace, it refuses changes to that workspace's subtree
+or global provider arguments. It uses the previous valid document; missing/invalid
+configuration is repaired without this guard. A caller without that environment marker
+is unguarded. This is not authentication, and neither this guard nor a command deny rule
+protects against direct file writes by a process with access. Enso does not make policy
+files immutable or isolate credentials between workspaces.
+
+Provider-native setup examples, verification probes, and version caveats belong in the
+[public security guide](https://ensobot.ai/docs/security/). The bundled `enso-security`
+skill carries the agent procedure. Maintain these alongside this technical contract when
+changing policy behavior; do not describe model instructions as enforced permissions.
 
 ## Providers
 
 `path` is the executable — `~` is expanded, and a bare name is found on `PATH`. `models` is
 the list a config or job may name. `args` are appended to every invocation verbatim.
 
-Enso never inspects what those flags do, with one exception: a
-[restricted workspace](#restricted-workspaces) refuses the flag that makes a CLI discard its
-policy file. Pick the permission mode you want an unattended agent to run with, knowing it
-will run without anyone watching.
+Enso passes these flags through except for the explicitly rejected Codex arguments in a
+[restricted workspace](#restricted-workspaces). Pick the permission mode you want an
+unattended agent to run with, knowing it will run without anyone watching.
 
 Model ids remain canonical everywhere except their compact chat label. Slack's live run
 header and `!status`, and Telegram's live run header and `/status`, share that presentation;

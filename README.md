@@ -65,6 +65,9 @@ standalone release installer.
 
 ## Documentation
 
+The [docs site](https://ensobot.ai/docs/) provides readable guides and worked examples.
+The pages here own technical behavior, configuration contracts, and development guidance.
+
 - [Concepts](docs/concepts.md) — the starting point and how Enso fits together.
 - [Configuration](docs/configuration.md) and [workspaces](docs/workspaces.md) —
   providers, chat routing, permissions, and layout.

@@ -276,6 +276,10 @@ See [Upgrading](install.md#upgrading) and [CLI updates](cli.md#updates).
 
 ## Prerun scripts
 
+Prerun and postrun scripts execute outside the provider's policy or sandbox, even in a
+[restricted workspace](configuration.md#restricted-workspaces). The prerun precedes the
+provider policy check; it can run when that check would refuse the provider.
+
 The prerun runs before the provider so nothing is spent when there is nothing to do.
 Its stdout is bounded to the final 1 MiB, then stripped of leading and trailing whitespace
 before replacing `{{prerun_output}}`; truncation is logged. Include that placeholder in the

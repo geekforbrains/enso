@@ -181,9 +181,13 @@ The audit checks, each finding carrying the check id shown:
 | No skill name collides with a user-level skill | `skill-collision` | warning | Reports only |
 | No `enso-*` skill or job exists that Enso did not install | `reserved` | warning | Reports only |
 | The workspace is bound, or named by a job | `orphan` | warning | Reports only |
-| A restricted workspace holds its chat provider's policy file, no flag that discards it, and, for Codex and Grok, a home the CLI trusts | `policy` | error | Reports only |
+| A restricted workspace passes its chat provider's [policy prerequisite check](configuration.md#restricted-workspaces) | `policy` | error | Reports only |
 | Unexpected entries at a workspace's top level, or under `workspaces/` | `unexpected` | warning | Reports only |
 | `uploads/` size | — | — | Reported as a number |
+
+The `policy` finding checks the resolved chat provider only. It does not parse policy
+contents, exercise denied operations, or check providers used only by jobs or beats.
+No policy finding therefore means the prerequisites passed, not that access is confined.
 
 `--fix` only ever creates and repairs. It never deletes a file, never edits `AGENTS.md`, and
 never touches anything under `knowledge/`, `drafts/`, or `uploads/`. A real file or
