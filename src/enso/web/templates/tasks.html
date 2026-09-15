@@ -15,7 +15,7 @@
       <span>{{ row.task.stage }}</span>
       {% if row.phase %}<span>{{ row.phase }}</span>{% endif %}
       <span>{{ row.project_name }}</span>
-      {% if row.task.claim_run_id %}<span>claimed by run <span class="mono">{{ row.task.claim_run_id }}</span></span>{% endif %}
+      {% if row.task.claim_run_id %}<span>{{ 'Operator verification' if row.operator_verification else 'claimed by run' }} <span class="mono">{{ row.task.claim_run_id }}</span></span>{% endif %}
     </span>
   </span>
   <span class="trail">{{ row.task.entered_stage_at|since }}</span>

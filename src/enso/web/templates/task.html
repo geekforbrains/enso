@@ -32,7 +32,7 @@
     <dt>Priority</dt><dd>{{ task.priority }}</dd>
     <dt>Attention</dt><dd>{{ 'yes' if task.attention else 'no' }}</dd>
     <dt>Claim</dt>
-    <dd>{% if task.claim_run_id %}run <a href="/runs/{{ task.claim_run_id|urlencode }}"><code>{{ task.claim_run_id }}</code></a> by {{ task.claim_actor }} <span class="muted">({{ task.claim_at|ago }})</span>{% else %}-{% endif %}</dd>
+    <dd>{% if task.claim_run_id %}{% if claim_is_operator %}Operator verification <code>{{ task.claim_run_id }}</code>{% else %}run <a href="/runs/{{ task.claim_run_id|urlencode }}"><code>{{ task.claim_run_id }}</code></a>{% endif %} by {{ task.claim_actor }} <span class="muted">({{ task.claim_at|ago }})</span>{% else %}-{% endif %}</dd>
     {% if task.after_ref %}<dt>Waiting on</dt><dd><a href="/tasks/{{ task.after_ref|urlencode }}">{{ task.after_ref }}</a></dd>{% endif %}
     {% if task.from_ref %}<dt>Created from</dt><dd><a href="/tasks/{{ task.from_ref|urlencode }}">{{ task.from_ref }}</a></dd>{% endif %}
     <dt>In stage since</dt><dd><time datetime="{{ task.entered_stage_at|iso }}">{{ task.entered_stage_at|when }}</time> <span class="muted">({{ task.entered_stage_at|since }})</span></dd>
@@ -102,7 +102,7 @@
     <span class="at">{{ m.time(event.created_at) }}</span>
     <span class="pin {{ entry.tone }}"></span>
     <span class="body">
-      <span class="title">{{ entry.label }} <span class="muted">by {{ event.actor }}{% if entry.run == 'live' %} · run <span class="mono">{{ event.run_id }}</span>{% elif entry.run == 'pruned' %} · run pruned{% endif %}</span></span>
+      <span class="title">{{ entry.label }} <span class="muted">by {{ event.actor }}{% if entry.run == 'live' %} · run <span class="mono">{{ event.run_id }}</span>{% elif entry.run == 'operator' %} · Operator verification{% elif entry.run == 'pruned' %} · run pruned{% endif %}</span></span>
       {% if event.message %}<span class="message">{{ event.message }}</span>{% endif %}
     </span>
     <span class="trail">{{ event.created_at|ago }}</span>

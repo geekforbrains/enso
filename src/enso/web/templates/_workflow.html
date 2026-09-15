@@ -69,7 +69,7 @@
     <dt>Started</dt><dd>{{ entry.started_at|when }}</dd>
     <dt>Ended</dt><dd>{{ entry.ended_at|when if entry.ended_at else 'In progress' }}</dd>
     <dt>Repairs</dt><dd>{{ entry.repairs|default(0) }} of {{ entry.max_repairs|default(0) }} allowed</dd>
-    {% if entry.run_id %}<dt>Run</dt><dd>{% if entry.run_link %}<a href="{{ entry.run_link }}"><code>{{ entry.run_id }}</code></a>{% else %}<code>{{ entry.run_id }}</code> <span class="muted">(run pruned; workflow evidence retained)</span>{% endif %}</dd>{% endif %}
+    {% if entry.run_id %}<dt>{{ 'Execution' if entry.run_kind == 'operator' else 'Run' }}</dt><dd>{% if entry.run_kind == 'operator' %}Operator verification <code>{{ entry.run_id }}</code>{% elif entry.run_link %}<a href="{{ entry.run_link }}"><code>{{ entry.run_id }}</code></a>{% else %}<code>{{ entry.run_id }}</code> <span class="muted">(run pruned; workflow evidence retained)</span>{% endif %}</dd>{% endif %}
     {% if entry.candidate %}<dt>Candidate</dt><dd><code>{{ entry.candidate }}</code></dd>{% endif %}
     {% if entry.spec_hash %}<dt>Spec version</dt><dd><code>{{ entry.spec_hash }}</code></dd>{% endif %}
     {% if entry.workflow_hash %}<dt>Workflow version</dt><dd><code>{{ entry.workflow_hash }}</code></dd>{% endif %}

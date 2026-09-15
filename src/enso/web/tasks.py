@@ -55,6 +55,7 @@ class TaskRow:
     state: str
     project_name: str
     phase: str = ""
+    operator_verification: bool = False
 
 
 @dataclass(frozen=True)
@@ -71,7 +72,20 @@ class TimelineEntry:
     event: tasks.TaskEvent
     label: str
     tone: str
-    run: str | None  # ``live`` when the run row exists, ``pruned`` when it is gone
+    run: str | None  # ``operator``, or ``live``/``pruned`` provider execution
+
+
+def _operator_verification(run_id: str | None) -> bool:
+    """Manual checks have an execution ID but never create a provider run row."""
+    return bool(run_id and re.fullmatch(r"manual-[0-9a-f]{32}", run_id))
+
+
+def _run_kind(run_id: str | None, live: set[str]) -> str | None:
+    if run_id is None:
+        return None
+    if _operator_verification(run_id):
+        return "operator"
+    return "live" if run_id in live else "pruned"
 
 
 def _project_of(config: Config | None, task: tasks.Task) -> ProjectConfig | None:
@@ -103,7 +117,11 @@ def _task_row(
         if status in ("working", "submitted", "checking", "repairing", "interrupted", "blocked"):
             phase = _WORKFLOW_LABELS.get(status, status)
     return TaskRow(
-        task, _task_state(task, project), project.name if project else task.project, phase
+        task,
+        _task_state(task, project),
+        project.name if project else task.project,
+        phase,
+        _operator_verification(task.claim_run_id),
     )
 
 
@@ -242,7 +260,7 @@ def _timeline(history: list[tasks.TaskEvent], live: set[str]) -> list[TimelineEn
     entries = []
     for event in history:
         label, tone = _event_label(event)
-        run = None if event.run_id is None else "live" if event.run_id in live else "pruned"
+        run = _run_kind(event.run_id, live)
         entries.append(TimelineEntry(event, label, tone, run))
     return entries
 
@@ -310,6 +328,7 @@ def workflow_rows(history: list[dict[str, Any]], live: set[str]) -> list[dict[st
         configured = (transaction.get("stage_definition") or {}).get("checks")
         checked = {check["name"] for check in checks}
         run_id = transaction.get("run_id")
+        run_kind = _run_kind(run_id, live)
         rows.append(
             {
                 **transaction,
@@ -321,7 +340,8 @@ def workflow_rows(history: list[dict[str, Any]], live: set[str]) -> list[dict[st
                     check["name"] for check in configured or [] if check["name"] not in checked
                 ],
                 "hooks": transaction.get("hooks") or [],
-                "run_link": f"/runs/{run_id}" if run_id and run_id in live else None,
+                "run_kind": run_kind,
+                "run_link": f"/runs/{run_id}" if run_kind == "live" else None,
             }
         )
     return rows
@@ -419,6 +439,7 @@ def task_model(paths: Paths, ref_text: str) -> dict[str, Any] | None:
         "alarm": common.alarm(paths),
         "ref": ref,
         "task": task,
+        "claim_is_operator": _operator_verification(task.claim_run_id),
         "project": project,
         "project_name": project.name if project else task.project,
         "stages": list(project.stage_names) if project else [],

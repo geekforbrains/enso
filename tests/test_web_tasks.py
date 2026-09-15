@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import sqlite3
 from collections.abc import AsyncIterator
@@ -510,6 +511,64 @@ async def test_task_workflow_evidence_survives_a_pruned_run(
     assert "run pruned; workflow evidence retained" in page
     assert 'href="/runs/pruned-run"' not in page
     assert "24 passed" in page and "Handoff accepted" in page
+    assert "Operator verification" not in page
+
+
+async def test_operator_verification_has_no_provider_run_link_while_active_or_completed(
+    client: TestClient,
+    enso_home: Paths,
+    project_config: Config,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = project_config.raw
+    raw["projects"]["EN"]["stages"] = [
+        {"name": "work", "checks": [{"name": "unit", "command": "echo manual-check-passed"}]}
+    ]
+    config, problems, _ = parse_config(raw, enso_home)
+    assert config is not None, problems
+    write_config(enso_home, raw)
+    task = tasks.create(enso_home, config, "EN", "Verify the candidate", actor=USER)
+    checking = asyncio.Event()
+    finish_check = asyncio.Event()
+    real_command = workflows.command
+
+    async def paused_check(*args, **kwargs):
+        checking.set()
+        await finish_check.wait()
+        return await real_command(*args, **kwargs)
+
+    monkeypatch.setattr(workflows, "command", paused_check)
+    verification = asyncio.create_task(
+        workflows.verify_manual(enso_home, config, task.ref, "Operator reviewed the candidate")
+    )
+    try:
+        await asyncio.wait_for(checking.wait(), timeout=5)
+        held = tasks.get(enso_home, task.ref)
+        run_id = held.claim_run_id
+        assert run_id is not None and run_id.startswith("manual-")
+        assert held.claim_actor == "user:verify"
+        assert not taskviews._existing_runs(enso_home, [run_id])
+        active = await html(client, f"/tasks/{task.ref}")
+        assert re.search(
+            rf"<dt>Claim</dt>\s*<dd>Operator verification <code>{run_id}</code>", active
+        )
+        assert f"<dt>Execution</dt><dd>Operator verification <code>{run_id}</code>" in active
+        assert "· Operator verification" in active  # the submitted event in the timeline
+        assert "run pruned" not in active and f'href="/runs/{run_id}"' not in active
+        board = await html(client, "/tasks")
+        assert f'Operator verification <span class="mono">{run_id}</span>' in board
+        assert "claimed by run" not in board
+    finally:
+        finish_check.set()
+        result = await verification
+    assert result.status == "accepted"
+    transaction = workflows.history(enso_home, task.ref)[0]
+    assert transaction["checks"][0]["status"] == "passed"
+    assert tasks.get(enso_home, task.ref).claim_run_id is None
+    completed = await html(client, f"/tasks/{task.ref}")
+    assert "Handoff accepted" in completed and "manual-check-passed" in completed
+    assert "Operator verification" in completed
+    assert "run pruned" not in completed and f'href="/runs/{run_id}"' not in completed
 
 
 async def test_task_workflow_shows_integration_before_acceptance(
