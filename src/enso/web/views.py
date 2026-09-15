@@ -890,7 +890,8 @@ def heartbeat_model(
         model["recent"] = listing.pop("rows")
     else:
         return model
-    model["error"] = model["error"] or listing.pop("error")
+    listing_error = listing.pop("error")
+    model["error"] = model["error"] or listing_error
     model.update(listing)
     return model
 

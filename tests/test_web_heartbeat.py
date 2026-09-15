@@ -208,6 +208,20 @@ async def test_list_failures_never_claim_rows(client, saved, monkeypatch):
     assert not listed
 
 
+@pytest.mark.parametrize("section,count", [("history", "events"), ("runs", "activity_count")])
+async def test_detail_count_failures_remain_visible(client, saved, monkeypatch, section, count):
+    current = beat(saved)
+    assessment(saved, current)
+
+    def locked(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(reading, count, locked)
+    body = await page(client, f"/heartbeats/{current.ref}/{section}")
+    assert "The heartbeat could not be read" in body
+    assert "database is locked" in body
+
+
 async def test_history_names_the_actor_and_keeps_the_recorded_value(client, saved):
     current = beat(saved)
     heartbeat.note(saved, current.ref, "A person asked", actor="slack:U0AETSSDDEF")
