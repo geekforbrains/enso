@@ -582,5 +582,7 @@ The block is what the model reads, and these variables are what a command it run
 A stage job does the same with the [Task block](tasks.md#the-task-block) and `ENSO_TASK`;
 `ENSO_JOB` and `ENSO_RUN_ID` are also how `enso task` knows it is acting for a run.
 
-Heartbeat clears inherited job, task, run, and chat-origin fields. Its background context
-comes from the saved beat; a prior conversation is not presented as a new incoming message.
+Heartbeat runs and the updater's own notifications clear inherited job, task, run, beat,
+and chat-origin variables before starting a child, so the child reports as its own source
+rather than the caller's. Heartbeat's background context comes from the saved beat; a
+prior conversation is not presented as a new incoming message.

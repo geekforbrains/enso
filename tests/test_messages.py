@@ -23,6 +23,32 @@ def send(paths: Paths, target: str, thread: str | None = None, **fields: str) ->
     )
 
 
+def test_without_identity_drops_every_caller_variable_and_keeps_the_rest() -> None:
+    kept = {"ENSO_HOME": "/home", "ENSO_WORKSPACE": "default", "PATH": "/bin", "TOKEN": "s"}
+    identity = (
+        "ENSO_ORIGIN_TRANSPORT",
+        "ENSO_ORIGIN_USER_ID",
+        "ENSO_ORIGIN_USER_NAME",
+        "ENSO_ORIGIN_CHANNEL",
+        "ENSO_ORIGIN_CHANNEL_NAME",
+        "ENSO_ORIGIN_THREAD_TS",
+        "ENSO_JOB",
+        "ENSO_RUN_ID",
+        "ENSO_TASK",
+        "ENSO_TASK_DIR",
+        "ENSO_BEAT",
+        "ENSO_BEAT_RUN_ID",
+        "ENSO_BEAT_CHECKPOINT",
+        "ENSO_RUN_STATUS",
+        "ENSO_RUN_EXIT_CODE",
+        "ENSO_RUN_DURATION_MS",
+        "ENSO_RUN_ATTEMPT",
+        "ENSO_RUN_FOLLOWUPS_REMAINING",
+    )
+    env = {**kept, **dict.fromkeys(identity, "inherited")}
+    assert messages.without_identity(env) == kept
+
+
 @pytest.mark.parametrize(
     ("env", "source"),
     [

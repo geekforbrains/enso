@@ -16,7 +16,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from . import __version__, db, releases, update_services, web, workspaces
+from . import __version__, db, messages, releases, update_services, web, workspaces
 from .config import Paths, load_config
 from .connection_setup import receiver_active, service_receiver
 from .maintenance import (
@@ -655,12 +655,7 @@ def _send(paths: Paths, text: str, origin: dict[str, str] | None = None) -> None
     receipt = installed(paths)
     binary = paths.runtime_dir / "releases" / receipt["release_id"] / "bin" / "enso"
     command = [str(binary), "message", "send", text, "--json"]
-    env = {
-        key: value
-        for key, value in os.environ.items()
-        if not key.startswith(("ENSO_ORIGIN_", "ENSO_BEAT", "ENSO_RUN_"))
-        and key not in {"ENSO_JOB", "ENSO_RUN_ID", "ENSO_TASK", "ENSO_TASK_DIR"}
-    }
+    env = messages.without_identity(os.environ)
     if origin and origin.get("transport") and origin.get("channel"):
         env.update(
             {
