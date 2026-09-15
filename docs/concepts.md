@@ -132,9 +132,10 @@ An agent is three values, always stated together:
 ```
 
 There is no partial agent and no inferred model. `defaults` in `config.json` gives the
-triple every conversation uses; a workspace may replace the whole triple. Every job must
-state its own triple in `JOB.md`, independent of those chat defaults, while still using
-the workspace's provider-argument overrides. Providers with an ordered reasoning ladder
+triple every conversation uses; a workspace may replace the whole triple. Each provider-backed
+job must state its own triple in `JOB.md`, independent of those chat defaults, while still
+using the workspace's provider-argument overrides. Command and integration stages omit the
+triple because they do not invoke a provider. Providers with an ordered reasoning ladder
 clamp effort *down* to what the model supports, with a log line saying so. Antigravity
 reports the effort embedded in its model id, even when the request is lower; OpenCode
 instead treats it as an exact, model-specific variant. See
