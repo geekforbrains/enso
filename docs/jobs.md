@@ -381,10 +381,20 @@ no extra provider turn runs. Do not recursively call `enso job run` for the same
 postrun: its per-job lock is still held.
 
 Both hooks run from the job directory. Each postrun invocation has `postrun_timeout` seconds
-before its process tree is killed. `timeout` is the combined provider execution allowance
+before its process group is stopped. `timeout` is the combined provider execution allowance
 across the initial turn and follow-ups; hooks use their own budgets and do not reset the
 provider allowance. The recorded final duration includes prerun, all provider turns and
 all postrun calls, so it can exceed `timeout` without a provider timeout.
+
+Timeout and cancellation cleanup targets the subprocess's process group with `SIGTERM`
+and, when needed, `SIGKILL`. This also applies to workflow checks. A command that starts a
+new session or detached process group has created a service outside that cleanup boundary;
+Enso does not discover or stop arbitrary detached descendants. Keep check processes in the
+foreground, or make the command own its services and bounded teardown. Verify both timeout
+and cancellation cleanup before enabling such a workflow. In particular, a Playwright
+web server may run in a separate group; successful test teardown alone does not prove
+interrupted runs release its port. The current termination grace is at most one second,
+so a signal-forwarding wrapper with slower teardown cannot guarantee detached-service cleanup.
 
 A failed postrun changes an otherwise `ok`, `no_work`, or `skipped` result to `error`.
 An existing provider error, timeout, or prerun failure keeps its primary status and gains
