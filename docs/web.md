@@ -288,7 +288,9 @@ code, duration, attempt, and captured diagnostic/output; lifecycle scripts also 
 event for retry auditing. Script output stays literal and escaped. No check result is inferred
 from an agent's prose or a successful provider exit, and absence of evidence is never labelled
 as a pass. Workflow evidence remains available when retention has pruned the provider run;
-the old run is named without a broken link.
+the old run is named without a broken link. Manual check execution is labelled
+**Operator verification** in claims, workflow evidence, and timeline entries, with no
+provider-run link because it never created a provider run.
 
 The worktree panel uses the task's recorded path, branch, target branch, starting revision,
 and retention or cleanup status. It works for locations outside the Enso home and does not
