@@ -17,7 +17,6 @@ import os
 import re
 import select
 import shutil
-import signal
 import subprocess
 import sys
 import time
@@ -28,6 +27,7 @@ from typing import Any
 
 from . import db, locks, tasks
 from .config import Paths, ProjectConfig
+from .execution import kill_process_group
 
 log = logging.getLogger(__name__)
 GIT_TIMEOUT = 120
@@ -62,7 +62,7 @@ def _run(
     keep: int = OUTPUT_KEEP,
     env: dict[str, str] | None = None,
 ) -> tuple[int, str]:
-    """Bound both execution and output; no descendant may outlive a setup/check hook."""
+    """Bound execution/output and clean up the command's owned process group."""
     environment = {**os.environ, "GIT_TERMINAL_PROMPT": "0", **(env or {})}
     try:
         process = subprocess.Popen(
@@ -98,9 +98,7 @@ def _run(
         return rc, bytes(buffer[-keep:]).decode(errors="replace")
     finally:
         # A script may have closed its pipes before starting a background writer.
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(process.pid, signal.SIGKILL)
-        process.wait()
+        kill_process_group(process)
 
 
 def _git(args: list[str], *, cwd: Path, check: bool = True) -> tuple[int, str]:
