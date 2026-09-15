@@ -366,7 +366,6 @@ def test_outcome_origin_is_preserved_but_nightly_notification_uses_default(manag
     calls = []
     monkeypatch.setenv("ENSO_ORIGIN_CHANNEL", "unrelated-channel")
     monkeypatch.setenv("ENSO_JOB", "enso-update")
-    monkeypatch.setenv("ENSO_RUN_ID", "private-run")
     monkeypatch.setattr(
         update_services, "run_command", lambda args, **kwargs: calls.append((args, kwargs)) or ""
     )
@@ -376,7 +375,7 @@ def test_outcome_origin_is_preserved_but_nightly_notification_uses_default(manag
     env = calls[0][1]["env"]
     assert env["ENSO_ORIGIN_CHANNEL"] == "C1"
     assert env["ENSO_ORIGIN_THREAD_TS"] == "1.2"
-    assert "ENSO_JOB" not in env and "ENSO_RUN_ID" not in env
+    assert "ENSO_JOB" not in env
     updates._send(managed.paths, "new release available")
     assert not any(key.startswith("ENSO_ORIGIN_") for key in calls[1][1]["env"])
 

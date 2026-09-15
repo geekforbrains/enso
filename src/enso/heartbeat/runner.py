@@ -68,13 +68,8 @@ def _now(since: datetime) -> datetime:
 
 
 def beat_env(config: Config, beat: Beat, run_id: str | None = None) -> dict[str, str]:
-    """Keep service credentials but remove inherited job, chat, and previous beat identity."""
-    removed = {"ENSO_JOB", "ENSO_RUN_ID", "ENSO_TASK", "ENSO_TASK_DIR"}
-    env = {
-        key: value
-        for key, value in os.environ.items()
-        if key not in removed and not key.startswith(("ENSO_RUN_", "ENSO_ORIGIN_", "ENSO_BEAT"))
-    }
+    """Keep service credentials but replace any inherited identity with this beat's."""
+    env = messages.without_identity(os.environ)
     env.update(
         {
             "ENSO_HOME": str(config.paths.home),

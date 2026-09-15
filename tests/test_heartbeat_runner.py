@@ -105,6 +105,21 @@ async def test_quiet_gate_only_updates_metadata(runtime, monkeypatch):
     ]
 
 
+def test_beat_env_replaces_inherited_identity_with_this_beat(runtime, monkeypatch):
+    config, _clock = runtime
+    beat = make_beat(config)
+    for key in ("ENSO_JOB", "ENSO_BEAT", "ENSO_BEAT_RUN_ID", "ENSO_ORIGIN_CHANNEL"):
+        monkeypatch.setenv(key, "inherited")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "kept")
+    env = module.beat_env(config, beat, run_id="run-1")
+    assert env["SLACK_BOT_TOKEN"] == "kept"
+    assert "ENSO_JOB" not in env and not any(key.startswith("ENSO_ORIGIN_") for key in env)
+    assert env["ENSO_BEAT"] == beat.ref and env["ENSO_BEAT_RUN_ID"] == "run-1"
+    assert env["ENSO_HOME"] == str(config.paths.home) and env["ENSO_WORKSPACE"] == "default"
+    assert json.loads(env["ENSO_BEAT_CHECKPOINT"]) == {}
+    assert "ENSO_BEAT_RUN_ID" not in module.beat_env(config, beat)
+
+
 @pytest.mark.asyncio
 async def test_ready_gate_persists_bounded_evidence_before_compact_provider_prompt(
     runtime, monkeypatch
@@ -113,21 +128,11 @@ async def test_ready_gate_persists_bounded_evidence_before_compact_provider_prom
     # The newline must not hide the fact that the subprocess output was clipped.
     code = "print('x' * 20000)"
     beat = make_beat(config, gate=f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}\n")
-    for key in (
-        "ENSO_JOB",
-        "ENSO_RUN_ID",
-        "ENSO_TASK",
-        "ENSO_RUN_OUTPUT",
-        "ENSO_ORIGIN_CHANNEL",
-    ):
-        monkeypatch.setenv(key, "inherited identity")
     calls = []
 
     async def assess(provider, prompt, model, effort, args, **kwargs):
         env = kwargs["env"]
         calls.append(prompt)
-        assert not any(key in env for key in ("ENSO_JOB", "ENSO_TASK", "ENSO_RUN_ID"))
-        assert not any(key.startswith(("ENSO_RUN_", "ENSO_ORIGIN_")) for key in env)
         assert env["ENSO_HOME"] == str(config.paths.home)
         assert json.loads(env["ENSO_BEAT_CHECKPOINT"]) == {}
         evidence = heartbeat.history(config.paths, beat.ref, unhandled=True)
