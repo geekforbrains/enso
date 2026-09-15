@@ -127,6 +127,11 @@ class FakeTransport(Transport):
     async def fetch_thread(self, target: str, thread: str) -> list[dict]:
         return []
 
+    async def receipt(
+        self, target: str, message_id: str | None, thread: str | None, *, file: bool
+    ) -> dict:
+        return {"ok": True, "transport": self.name, "target": target, "message_id": message_id}
+
 
 class FakeSlack:
     """Stands in for ``AsyncWebClient``: records every call, answers from canned responses.

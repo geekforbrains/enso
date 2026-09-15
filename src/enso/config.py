@@ -18,21 +18,16 @@ from typing import Any, Literal
 
 from . import locks
 from .providers import PROVIDER_CLASSES
+from .transport_registry import TRANSPORTS
 
 log = logging.getLogger(__name__)
 
 CONFIG_VERSION = 1
-TRANSPORT_NAMES = ("slack", "telegram")
 WORKSPACE_NAME_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
-# Slack DM bindings use the message's user id: ``U…`` on standalone workspaces, ``W…`` for
-# Enterprise Grid org-wide ids. DM targets are deliberately not accepted by resolve_target;
-# posting to a DM needs its D… conversation id, not the user id.
-BINDING_KEY_RE = re.compile(r"(?:slack:(?:dm:[UW]|[CG])[A-Z0-9]+|telegram:[0-9]+)")
-SLACK_TARGET_RE = re.compile(r"[CGD][A-Z0-9]+")
-TARGET_FORMS = {
-    "slack": "a Slack conversation id (C…, G…, or D…)",
-    "telegram": "a positive numeric Telegram user id",
-}
+BINDING_KEY_RE = re.compile("|".join(f"(?:{spec.binding_pattern})" for spec in TRANSPORTS.values()))
+_BINDING_FORMS = [form for spec in TRANSPORTS.values() for form in spec.binding_forms]
+BINDING_KEY_FORMS = ", ".join(_BINDING_FORMS[:-1]) + f", or {_BINDING_FORMS[-1]}"
+_TARGET_PREFIXES = " or ".join(f"{name}:" for name in TRANSPORTS)
 DEFAULT_AGENT_TIMEOUT = 3600
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_LOG_MAX_BYTES = 10 * 1024 * 1024
@@ -401,14 +396,14 @@ class Config:
         transport, sep, target = value.partition(":")
         if not sep:
             if len(self.transports) != 1:
-                raise ValueError(f"{value!r} is ambiguous; prefix it with slack: or telegram:")
+                raise ValueError(f"{value!r} is ambiguous; prefix it with {_TARGET_PREFIXES}")
             transport, target = next(iter(self.transports)), value
-        elif transport not in TRANSPORT_NAMES:
-            raise ValueError(f"{value!r}: unknown transport {transport!r}; use slack: or telegram:")
+        elif transport not in TRANSPORTS:
+            raise ValueError(f"{value!r}: unknown transport {transport!r}; use {_TARGET_PREFIXES}")
         elif transport not in self.transports:
             raise ValueError(f"transport {transport} is not configured")
-        if canonical_target(transport, target) is None:
-            raise ValueError(f"{target!r} is not {TARGET_FORMS[transport]}")
+        if TRANSPORTS[transport].canonical_target(target) is None:
+            raise ValueError(f"{target!r} is not {TRANSPORTS[transport].target_form}")
         return transport, target
 
     def default_notify(self) -> tuple[str, str] | None:
@@ -538,36 +533,15 @@ def _parse_slack(raw: object, problems: list[str], unknown: list[str]) -> SlackC
     )
 
 
-def _telegram_user_id(value: object) -> str | None:
-    """A positive Telegram user id: an int, or its exact decimal string."""
-    if isinstance(value, bool):
-        return None
-    # ``isdecimal`` and not ``isdigit``: ``"\u00b2".isdigit()`` is true but ``int`` rejects it,
-    # which would escape parsing as a ValueError instead of landing in ``problems``.
-    if isinstance(value, str) and value.isdecimal() and str(int(value)) == value:
-        value = int(value)
-    if isinstance(value, int) and value > 0:
-        return str(value)
-    return None
-
-
-# One definition of "a place a transport can post to", shared by config parsing, job
-# validation, and the CLI's ``--to``, so a bad destination fails before anything is sent.
-def canonical_target(transport: str, value: object) -> str | None:
-    """``value`` as the id ``transport`` can post to, or None when it is not one."""
-    if transport == "telegram":
-        return _telegram_user_id(value)
-    return value if isinstance(value, str) and SLACK_TARGET_RE.fullmatch(value) else None
-
-
 def _parse_notify(raw: dict, transport: str, problems: list[str]) -> str:
     """The transport's default destination as a canonical id; absent or empty is ''."""
     value = raw.get("notify")
     if value is None or value == "":
         return ""
-    target = canonical_target(transport, value)
+    spec = TRANSPORTS[transport]
+    target = spec.canonical_target(value)
     if target is None:
-        problems.append(f"transports.{transport}.notify must be {TARGET_FORMS[transport]}")
+        problems.append(f"transports.{transport}.notify must be {spec.target_form}")
         return ""
     return target
 
@@ -589,7 +563,7 @@ def _parse_telegram(raw: object, problems: list[str], unknown: list[str]) -> Tel
         users_raw = []
     users: list[str] = []
     for entry in users_raw:
-        user = _telegram_user_id(entry)
+        user = TRANSPORTS["telegram"].canonical_target(entry)
         if user is None:
             problems.append(
                 "transports.telegram.allowed_users must contain positive numeric "
@@ -751,10 +725,7 @@ def _parse_bindings(
         return bindings
     for key, workspace in raw.items():
         if not BINDING_KEY_RE.fullmatch(key):
-            problems.append(
-                f"bindings.{key}: keys look like slack:C…, slack:G…, slack:dm:U…, "
-                "slack:dm:W…, or telegram:<user id>"
-            )
+            problems.append(f"bindings.{key}: keys look like {BINDING_KEY_FORMS}")
             continue
         if not valid_workspace_name(workspace):
             problems.append(f"bindings.{key}: workspace names are lowercase kebab-case")
@@ -1026,12 +997,12 @@ def parse_config(raw: object, paths: Paths) -> tuple[Config | None, list[str], l
         problems.append("transports must be an object")
         transports = {}
     else:
-        _unknown_keys(transports, TRANSPORT_NAMES, "transports", unknown)
+        _unknown_keys(transports, tuple(TRANSPORTS), "transports", unknown)
     slack = _parse_slack(transports.get("slack"), problems, unknown)
     telegram = _parse_telegram(transports.get("telegram"), problems, unknown)
-    configured = {name for name in TRANSPORT_NAMES if transports.get(name) is not None}
+    configured = {name for name in TRANSPORTS if transports.get(name) is not None}
     if not configured:
-        problems.append("transports must configure slack or telegram")
+        problems.append(f"transports must configure {' or '.join(TRANSPORTS)}")
 
     providers = _parse_providers(raw.get("providers"), problems, warnings, unknown)
     defaults = parse_agent(raw.get("defaults"), "defaults", providers, problems, unknown)

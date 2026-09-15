@@ -28,7 +28,6 @@ from .common import (
     read_input,
     report,
     run,
-    written,
 )
 
 if TYPE_CHECKING:
@@ -149,7 +148,7 @@ def slack_edit(
 
     async def go() -> dict:
         await slack.edit(channel, ts, content)
-        return await written(slack, channel, ts, None, file=False)
+        return await slack.receipt(channel, ts, None, file=False)
 
     report(run(go(), as_json=as_json), as_json=as_json)
 

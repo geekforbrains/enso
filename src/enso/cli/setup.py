@@ -10,9 +10,10 @@ import typer
 
 from .. import __version__, db, service
 from ..config import Config, Paths, load_config
-from ..connection_setup import pair_in_terminal, safe_error
+from ..connection_setup import initial_config, pair_in_terminal, safe_error
 from ..initialization import apply_config, initialize_home
 from ..providers import PROVIDER_CLASSES
+from ..transport_registry import TRANSPORTS, TransportSpec
 from ..transports.connection import PairedIdentity
 from .common import deliver, fail
 
@@ -52,44 +53,26 @@ def _agent(providers: dict[str, dict[str, Any]]) -> dict[str, str]:
     return {"provider": provider, "model": model, "effort": effort}
 
 
-def _pair(paths: Paths, transport: str, credentials: dict[str, str]) -> PairedIdentity:
+def _credentials(paths: Paths, spec: TransportSpec) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for credential in spec.credentials:
+        typer.echo(credential.hint.format(home=paths.home))
+        values[credential.key] = typer.prompt(credential.prompt, hide_input=True)
+    return values
+
+
+def _pair(paths: Paths, spec: TransportSpec, credentials: dict[str, str]) -> PairedIdentity:
     async def ready(details: dict[str, str]) -> None:
         typer.echo(f"Open {details['open_url']}")
-        if transport == "slack":
-            typer.echo(f"Send this code in a private message to the bot: {details['instruction']}")
-        else:
-            typer.echo("Press Start in the bot's private chat.")
+        typer.echo(spec.pairing_hint.format(**details))
         typer.echo("Waiting for you (5 minutes; Ctrl-C cancels)…")
 
     try:
-        identity = pair_in_terminal(paths, transport, credentials, ready)
+        identity = pair_in_terminal(paths, spec.name, credentials, ready)
     except Exception as exc:
         fail([safe_error(exc)["error"]])
     typer.echo("Your chat is connected.")
     return identity
-
-
-def _slack(paths: Paths) -> tuple[dict[str, Any], dict[str, str]]:
-    typer.echo(
-        "Create your Slack app at https://api.slack.com/apps?new_app=1\n"
-        "Choose From an app manifest and paste the contents of:\n"
-        f"  {paths.home / 'slack/manifest.json'}\n"
-        "Install it to your workspace, then copy its Bot User OAuth Token."
-    )
-    bot_token = typer.prompt("Bot token (xoxb-…)", hide_input=True)
-    typer.echo("In Basic Information → App-Level Tokens, create a token with connections:write.")
-    app_token = typer.prompt("App token (xapp-…)", hide_input=True)
-    credentials = {"bot_token": bot_token, "app_token": app_token}
-    owner = _pair(paths, "slack", credentials)
-    return {**credentials, "notify": owner.channel}, {f"slack:dm:{owner.user_id}": "default"}
-
-
-def _telegram(paths: Paths) -> tuple[dict[str, Any], dict[str, str]]:
-    typer.echo("Open https://t.me/BotFather, send /newbot, and follow its prompts.")
-    bot_token = typer.prompt("Bot token", hide_input=True)
-    owner = _pair(paths, "telegram", {"bot_token": bot_token})
-    entry = {"bot_token": bot_token, "allowed_users": [owner.user_id], "notify": owner.channel}
-    return entry, {f"telegram:{owner.user_id}": "default"}
 
 
 def _send_test(paths: Paths, config: Config) -> None:
@@ -126,19 +109,17 @@ def setup_wizard() -> None:
     for name, entry in providers.items():
         typer.echo(f"found {name} at {entry['path']}")
     defaults = _agent(providers)
-    transport = _choose("Transport", ["slack", "telegram"], "slack")
+    transport = _choose("Transport", list(TRANSPORTS), next(iter(TRANSPORTS)))
     scaffold = initialize_home(paths)
     if not scaffold["ok"]:
         fail(scaffold["problems"])
     for line in scaffold["changes"]:
         typer.echo(line)
-    entry, bindings = _slack(paths) if transport == "slack" else _telegram(paths)
+    credentials = _credentials(paths, TRANSPORTS[transport])
+    owner = _pair(paths, TRANSPORTS[transport], credentials)
     raw = {
-        "version": 1,
-        "transports": {transport: entry},
-        "bindings": bindings,
+        **initial_config(transport, credentials, owner),
         "defaults": defaults,
-        "workspaces": {},
         "providers": providers,
         "agent": {"timeout": 3600},
         "logging": {"level": "INFO"},
@@ -153,7 +134,7 @@ def setup_wizard() -> None:
     if applied["changes"]:
         where = (
             "reports problems to your notify target"
-            if entry.get("notify")
+            if owner.channel
             else f"has nowhere to report until transports.{transport}.notify is set"
         )
         typer.echo(

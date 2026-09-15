@@ -11,7 +11,6 @@ import asyncio
 import contextlib
 import fcntl
 import hashlib
-import importlib.util
 import json
 import logging
 import os
@@ -24,7 +23,7 @@ import sys
 import tempfile
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -41,10 +40,12 @@ from .config import (
 )
 from .initialization import apply_config, initialize_home
 from .providers import PROVIDER_CLASSES
+from .transport_registry import TRANSPORTS
 from .transports.connection import PairedIdentity, PairingError, PairingRequest, Ready
 
 ATTEMPT_SECONDS = 300
 MAX_INPUT = 16384
+CREDENTIAL_KEYS = frozenset(c.key for spec in TRANSPORTS.values() for c in spec.credentials)
 ACTIVE_STATES = frozenset({"verifying", "waiting"})
 PUBLIC_FIELDS = (
     "attempt_id",
@@ -260,16 +261,20 @@ def snapshot(paths: Paths, attempt_id: str | None = None) -> dict[str, Any]:
 
 
 def _credentials(transport: str, raw: object) -> dict[str, str]:
-    if not isinstance(raw, dict) or set(raw) - {"request_id", "bot_token", "app_token"}:
+    if not isinstance(raw, dict) or set(raw) - {"request_id", *CREDENTIAL_KEYS}:
         raise PairingError("invalid_input", "Supply request_id and the selected bot credentials.")
     request_id = raw.get("request_id")
     if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", request_id):
         raise PairingError("invalid_input", "Supply a unique request_id of 16-128 characters.")
-    if transport not in ("slack", "telegram"):
-        raise PairingError("invalid_input", "Choose Slack or Telegram.")
-    if transport == "telegram" and raw.get("app_token"):
-        raise PairingError("invalid_input", "Telegram needs only its bot token.")
-    for key in ("bot_token", "app_token") if transport == "slack" else ("bot_token",):
+    spec = TRANSPORTS.get(transport)
+    if spec is None:
+        names = " or ".join(name.capitalize() for name in TRANSPORTS)
+        raise PairingError("invalid_input", f"Choose {names}.")
+    keys = [credential.key for credential in spec.credentials]
+    if any(raw.get(key) for key in set(raw) - {"request_id", *keys}):
+        wanted = " and ".join(key.replace("_", " ") for key in keys)
+        raise PairingError("invalid_input", f"{transport.capitalize()} needs only its {wanted}.")
+    for key in keys:
         value = raw.get(key)
         if (
             not isinstance(value, str)
@@ -279,10 +284,11 @@ def _credentials(transport: str, raw: object) -> dict[str, str]:
             raise PairingError(
                 "invalid_input", "Paste the complete bot credentials without spaces."
             )
-    return {
+    credentials = {key: raw[key] for key in keys}
+    return {  # PairingRequest's fields: the contract both receivers share
         "request_id": request_id,
-        "bot_token": raw["bot_token"],
-        "app_token": raw["app_token"] if transport == "slack" else "",
+        "bot_token": credentials["bot_token"],
+        "app_token": credentials.get("app_token", ""),
     }
 
 
@@ -313,12 +319,10 @@ def pair_in_terminal(
             )
 
             async def receive() -> PairedIdentity:
-                from .transports import slack_setup, telegram_setup
-
                 async def claim() -> None:
                     pass  # The sequential receiver returns after its one matching message.
 
-                pair = slack_setup.pair if transport == "slack" else telegram_setup.pair
+                pair = TRANSPORTS[transport].pair()
                 async with asyncio.timeout(ATTEMPT_SECONDS):
                     return await pair(request, ready, claim)
 
@@ -339,8 +343,7 @@ def pair_in_terminal(
 def start(paths: Paths, transport: str, raw: object) -> dict[str, Any]:
     """Create at most one expiring worker; identical requests recover a lost response."""
     credentials = _credentials(transport, raw)
-    module = "telegram" if transport == "telegram" else "slack_sdk"
-    if importlib.util.find_spec(module) is None:
+    if not TRANSPORTS[transport].installed():
         raise PairingError("missing_extra", f"Install enso[{transport}] to connect this bot.")
     prepared = initialize_home(paths)
     if not prepared["ok"]:
@@ -443,9 +446,7 @@ async def _pair_worker(paths: Paths, state: dict[str, Any]) -> None:
         state.update(consumed=True, instruction="", open_url="")
         await asyncio.to_thread(_write, paths.connection_dir / "state.json", state)
 
-    from .transports import slack_setup, telegram_setup
-
-    pair = telegram_setup.pair if state["transport"] == "telegram" else slack_setup.pair
+    pair = TRANSPORTS[state["transport"]].pair()
     try:
         async with asyncio.timeout(max(0, state["expires_timestamp"] - time.time())):
             identity: PairedIdentity = await pair(request, ready, claim)
@@ -550,26 +551,27 @@ def _agent(raw: object) -> dict[str, str]:
     return dict(raw)
 
 
+def initial_config(
+    transport: str, credentials: Mapping[str, str], owner: PairedIdentity
+) -> dict[str, Any]:
+    """A first config.json: the paired transport, its owner's private chat bound to ``default``."""
+    spec = TRANSPORTS[transport]
+    binding = spec.binding_key(owner.channel, is_dm=True, user_id=owner.user_id)
+    return {
+        "version": 1,
+        "transports": {transport: spec.config_entry(credentials, owner)},
+        "bindings": {binding: "default"},
+        "workspaces": {},
+    }
+
+
 def _configuration(paths: Paths, state: dict[str, Any], defaults: dict[str, str]) -> dict[str, Any]:
     if state["state"] == "applied":
         raw = read_raw_config(paths)
     else:
         credentials = _read(paths.connection_dir / "credentials.json")
-        entry: dict[str, Any] = {"bot_token": credentials["bot_token"], "notify": state["channel"]}
-        transport = state["transport"]
-        if transport == "telegram":
-            entry["allowed_users"] = [state["user_id"]]
-            binding = f"telegram:{state['user_id']}"
-        else:
-            entry["app_token"] = credentials["app_token"]
-            binding = f"slack:dm:{state['user_id']}"
-        raw = {
-            "version": 1,
-            "transports": {transport: entry},
-            "bindings": {binding: "default"},
-            "workspaces": {},
-            "providers": {},
-        }
+        owner = PairedIdentity(state["user_id"], state["channel"])
+        raw = initial_config(state["transport"], credentials, owner)
     name = defaults["provider"]
     cls = PROVIDER_CLASSES[name]
     raw.setdefault("providers", {}).setdefault(

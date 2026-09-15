@@ -1,4 +1,4 @@
-"""Home seeding and the setup wizard's Slack path with the platform calls stubbed."""
+"""Home seeding and the setup wizard's transport paths with the platform calls stubbed."""
 
 from __future__ import annotations
 
@@ -190,6 +190,31 @@ def test_setup_wizard_slack_path(enso_home: Paths, monkeypatch: pytest.MonkeyPat
     assert job.enabled and job.workspace == "default" and job.prerun == "prerun.sh"
     assert installs == [enso_home]
     assert CliRunner().invoke(app, ["setup"]).exit_code == 1  # fresh homes only
+
+
+def test_setup_wizard_telegram_path(enso_home: Paths, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The wizard's prompts and the first config come from the transport's declaration."""
+    monkeypatch.setattr(
+        wizard.shutil, "which", lambda name: sys.executable if name == "claude" else None
+    )
+    paired: list[tuple[str, dict[str, str]]] = []
+
+    def pair_in_terminal(paths, transport, credentials, ready):
+        paired.append((transport, credentials))
+        return wizard.PairedIdentity("123", "123")
+
+    monkeypatch.setattr(wizard, "pair_in_terminal", pair_in_terminal)
+    monkeypatch.setattr(wizard, "_send_test", lambda paths, config: None)
+    # Provider, model, effort, transport, then the one Telegram token; no background service.
+    answers = ["", "", "", "telegram", "123:abc", "n"]
+    result = CliRunner().invoke(app, ["setup"], input="\n".join(answers) + "\n")
+
+    assert result.exit_code == 0, result.output
+    assert "BotFather" in result.output and "Create your Slack app" not in result.output
+    assert paired == [("telegram", {"bot_token": "123:abc"})]
+    config = load_config(enso_home)
+    assert config.telegram is not None and config.telegram.allowed_users == ("123",)
+    assert config.telegram.notify == "123" and config.bindings == {"telegram:123": "default"}
 
 
 def test_send_test_names_the_extra_when_the_transport_cannot_be_built(

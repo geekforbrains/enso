@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from .config import Config
 from .providers import provider_class
+from .transport_registry import TRANSPORTS
 
 log = logging.getLogger(__name__)
 
@@ -23,9 +24,7 @@ class ResolvedAgent:
 
 def binding_key(transport: str, channel: str, *, is_dm: bool = False, user_id: str = "") -> str:
     """The ``bindings`` key for a message's location."""
-    if transport == "slack" and is_dm:
-        return f"slack:dm:{user_id}"
-    return f"{transport}:{channel}"
+    return TRANSPORTS[transport].binding_key(channel, is_dm=is_dm, user_id=user_id)
 
 
 def conversation_key(

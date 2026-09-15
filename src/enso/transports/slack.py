@@ -492,6 +492,21 @@ class SlackTransport(Transport):
         )
         return str((result.get("file") or {}).get("id") or "")
 
+    async def receipt(
+        self, target: str, message_id: str | None, thread: str | None, *, file: bool
+    ) -> dict:
+        result: dict[str, Any] = {"ok": True, "transport": self.name, "channel": target}
+        if file:  # an upload has a file id, not a message ts
+            return {
+                **result,
+                "ts": None,
+                "thread_ts": thread,
+                "file": message_id,
+                "permalink": None,
+            }
+        permalink = await self.permalink(target, message_id) if message_id else None
+        return {**result, "ts": message_id, "thread_ts": thread, "permalink": permalink}
+
     async def permalink(self, target: str, message_id: str) -> str | None:
         try:
             result = await self.client.chat_getPermalink(channel=target, message_ts=message_id)

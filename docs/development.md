@@ -12,6 +12,14 @@ Product behaviour belongs in its owning page under `docs/`, starting with
   behaviour in `transports/`, command presentation in `cli/`, and persistence in the
   database modules. `tasks.py` owns task queries, shared filters, and row conversion for
   CLI, jobs, and web consumers; the viewer owns display grouping and history limits.
+- `src/enso/transport_registry.py` — one `TransportSpec` per transport: the module its
+  extra installs, its target and binding-key forms, the credentials it pairs with and the
+  wizard copy for them, its chat command prefix, and lazy access to the transport class and
+  pairing receiver. Code that runs without a transport's extra (config, doctor, routing,
+  onboarding, the CLI) consults it instead of comparing transport names; a new transport is
+  declared there once. It sits beside `config.py`, not under `transports/`, because the
+  viewer imports `config` and must never load the transports package. The `--json` write
+  receipt is each transport class's `receipt`.
 - `src/enso/formatting.py` — shared text labels, durations, errors, previews, message
   chunking, and transport-specific Markdown rendering. Chat and CLI callers import text
   helpers here; this module does not load runtime, routing, or database code.

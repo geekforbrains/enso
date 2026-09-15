@@ -98,7 +98,7 @@ def test_native_commands_record_receipts_and_refuse_duplicate_sends(
     config, beat, run = active
     name = "telegram" if to else "slack"
     sender = Sender(config, beat, name=name)
-    monkeypatch.setattr(messaging, "_telegram", lambda *a, **kw: sender)
+    monkeypatch.setattr(messaging, "_sender", lambda *a, **kw: sender)
     monkeypatch.setattr(slack, "transport", lambda *a, **kw: sender)
     attachment = tmp_path / "dinner.txt"
     attachment.write_text("Dinner details")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import builtins
 import contextlib
+import importlib.util
 import json
 import os
 import sqlite3
@@ -581,10 +582,14 @@ def test_json_transport_import_failure(
     importing = builtins.__import__
     error = f"Missing transport dependencies; install enso[{transport}]"
 
-    def missing_transport(name, *args, **kwargs):
-        if name == f"transports.{transport}":
+    def missing_transport(name, globals=None, locals=None, fromlist=(), level=0):
+        package = globals["__package__"] if level else ""
+        if (
+            importlib.util.resolve_name("." * level + name, package)
+            == f"enso.transports.{transport}"
+        ):
             raise ImportError(error)
-        return importing(name, *args, **kwargs)
+        return importing(name, globals, locals, fromlist, level)
 
     monkeypatch.setattr(builtins, "__import__", missing_transport)
     if generic:
@@ -929,7 +934,12 @@ def test_message_attach_and_telegram_send(
     attachment = tmp_path / "a.txt"
     attachment.write_text("x")
     attach = ["message", "attach", str(attachment), "see", "--to", "telegram:456", "--json"]
-    assert json.loads(runner.invoke(app, attach).stdout)["chat_id"] == "456"
+    assert json.loads(runner.invoke(app, attach).stdout) == {
+        "ok": True,
+        "transport": "telegram",
+        "chat_id": "456",
+        "message_id": "1",
+    }
     assert bot.documents == [(456, "a.txt", "see")]
     assert runner.invoke(app, ["telegram", "send", "hi", "--to", "slack:C1"]).exit_code == 1
     rows = json.loads(runner.invoke(app, ["message", "list", "--json"]).stdout)

@@ -31,6 +31,7 @@ from ..connection_setup import PairingError, service_receiver
 from ..heartbeat.runner import HeartbeatRunner
 from ..jobs.runner import JobRunner
 from ..runtime import Runtime
+from ..transport_registry import TRANSPORTS
 from ..transports import Transport
 from .common import JSON_FLAG, InputError, columns, echo_json, fail, human_bytes, read_input
 from .connect import connect_app
@@ -127,20 +128,11 @@ def _root(
 def build_transports(config: Config) -> list[Transport]:
     """One transport per configured entry; a missing extra is logged, not fatal."""
     transports: list[Transport] = []
-    if config.slack is not None:
+    for name in config.transports:
         try:
-            from ..transports.slack import SlackTransport
-
-            transports.append(SlackTransport(config.slack, config.paths))
+            transports.append(TRANSPORTS[name].build(config))
         except ImportError as exc:
-            log.error("slack transport unavailable: %s", exc)
-    if config.telegram is not None:
-        try:
-            from ..transports.telegram import TelegramTransport
-
-            transports.append(TelegramTransport(config.telegram, config.paths))
-        except ImportError as exc:
-            log.error("telegram transport unavailable: %s", exc)
+            log.error("%s transport unavailable: %s", name, exc)
     return transports
 
 

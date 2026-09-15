@@ -133,6 +133,23 @@ def test_start_preserves_preexisting_config(enso_home, raw_config, child_process
     assert enso_home.config.read_bytes() == previous
 
 
+@pytest.mark.parametrize(
+    ("transport", "raw", "message"),
+    [
+        ("discord", TOKENS, "Choose Slack or Telegram."),
+        ("telegram", {**TOKENS, "app_token": "xapp-1"}, "Telegram needs only its bot token."),
+        ("slack", TOKENS, "Paste the complete bot credentials without spaces."),
+    ],
+)
+def test_credentials_follow_the_transport_declaration(transport, raw, message):
+    with pytest.raises(PairingError) as failure:
+        setup._credentials(transport, raw)
+    assert (failure.value.code, str(failure.value)) == ("invalid_input", message)
+    accepted = setup._credentials("slack", {**TOKENS, "app_token": "xapp-private-app-token"})
+    assert accepted["app_token"] == "xapp-private-app-token"
+    assert setup._credentials("telegram", TOKENS)["app_token"] == ""  # PairingRequest's field
+
+
 def test_cancel_stops_receiver_then_clears_code_and_private_credentials(enso_home, child_process):
     started = setup.start(enso_home, "telegram", TOKENS)
     cancelled = setup.cancel(enso_home, started["connection"]["attempt_id"])
