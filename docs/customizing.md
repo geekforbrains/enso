@@ -111,8 +111,22 @@ not prepend its contents to the prompt. Anything longer than a screen belongs in
 Pricing rules are in `knowledge/pricing.md`. Read it before quoting a number.
 ```
 
-That is the replacement for a built-in docs feature, and it is better: the agent reads what
-it needs, when it needs it, and you can see the file.
+The agent reads the relevant files when needed, and the read-only viewer lets you browse
+them. Shared reference belongs in the home's `knowledge/`; see [Knowledge](knowledge.md).
+
+## Knowledge formatting
+
+The bundled `enso-knowledge` skill owns the agent's note workflow. Its
+`references/formatting.md` supplies the default writing conventions, and `scripts/lint.py`
+checks mechanical style such as heading spacing and trailing whitespace. Both live under
+`~/.enso/skills/enso-knowledge/` and apply to General and workspace knowledge alike.
+
+Ask the agent to change those files together when you want a different style. Start with
+one common convention; the agent must not relax a rule just to make a note pass. Managed
+upgrades preserve customized instructions, references, and scripts under the same bundle
+rules below. These checks report findings without rewriting note prose, and the viewer
+never runs user scripts. Core metadata, stable identity, path safety, and link validation
+remain part of Enso itself; [Knowledge](knowledge.md) owns those fixed contracts.
 
 ## Skills
 
@@ -174,6 +188,7 @@ Enso installs these into `~/.enso/skills/`:
 | `enso-browser` | Persistent Chrome profiles, human login, and attaching browser tools; see [Browser](browser.md) |
 | `enso-heartbeat` | Finite future actions and temporary watches, script gates, event history, action receipts, and completion |
 | `enso-jobs` | Creating, testing, and troubleshooting scheduled and stage jobs and their prerun and postrun scripts |
+| `enso-knowledge` | Finding and maintaining shared or workspace Markdown notes, links, imports, and user-defined formatting |
 | `enso-security` | Restricting a workspace: each CLI's policy file, the provider args it needs, the `restricted` flag, and the audit |
 | `enso-skills` | Finding official optional skills and writing or refining a skill manually |
 | `enso-slack` | Looking people and channels up, reading history, sending, tables and charts |
@@ -207,8 +222,9 @@ The default home `AGENTS.md` teaches the agent to choose Heartbeat for finite fo
 and jobs for standing responsibilities, even when the user asks without those names. The
 detailed skill is loaded only when needed; this routing guidance is not injected into each
 message. It also routes release checks and authorized upgrades through `enso-update`.
-It routes browser tasks through `enso-browser` and skill discovery or authoring through
-`enso-skills`. Historical or edited homes may need that guidance merged into their `AGENTS.md`;
+It routes browser tasks through `enso-browser`, skill discovery or authoring through
+`enso-skills`, and note maintenance or formatting through `enso-knowledge`.
+Historical or edited homes may need that guidance merged into their `AGENTS.md`;
 preserve their voice, user information, and local rules.
 
 ### Official optional skills

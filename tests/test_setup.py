@@ -26,10 +26,10 @@ def test_seed_home_writes_once_and_refreshes_skills_with_a_backup(enso_home: Pat
     assert sorted(p.name for p in enso_home.skills.iterdir()) == list(workspaces.BUNDLED_SKILLS)
     for link in (enso_home.home / ".claude" / "skills", enso_home.home / ".agents" / "skills"):
         assert os.readlink(link) == "../skills" and (link / "enso-jobs" / "SKILL.md").is_file()
-    # AGENTS.md, bundled files and skills, the three links, and git init.
-    assert (enso_home.home / ".git").is_dir()
+    # AGENTS.md, bundled files and skills, shared knowledge, the three links, and git init.
+    assert (enso_home.home / ".git").is_dir() and enso_home.knowledge.is_dir()
     assert (
-        len(done) == 1 + len(workspaces.BUNDLED_FILES) + len(workspaces.bundled_skill_files()) + 4
+        len(done) == 1 + len(workspaces.BUNDLED_FILES) + len(workspaces.bundled_skill_files()) + 5
     )
     assert workspaces.seed_home(enso_home) == []
     skill = enso_home.skills / "enso-slack" / "SKILL.md"

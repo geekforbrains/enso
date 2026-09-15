@@ -82,6 +82,7 @@ def test_desktop_sidebar_and_mobile_more_reach_every_view_without_javascript():
         "/tasks",
         "/heartbeats",
         "/runs",
+        "/knowledge",
         "/jobs",
         "/workspaces",
         "/health",
@@ -100,7 +101,12 @@ def test_desktop_sidebar_and_mobile_more_reach_every_view_without_javascript():
     assert more.children[0].text.strip().endswith("More")
     assert "open" not in more.attrs
     assert more.children[0].attrs["aria-controls"] == "more-sections"
-    assert [node.attrs["href"] for node in more.find("a")] == ["/jobs", "/workspaces", "/health"]
+    assert [node.attrs["href"] for node in more.find("a")] == [
+        "/knowledge",
+        "/jobs",
+        "/workspaces",
+        "/health",
+    ]
     # Native summary and plain links supply every operation before the script enhances focus.
     assert not mobile.find("button")
 
@@ -112,6 +118,7 @@ def test_desktop_sidebar_and_mobile_more_reach_every_view_without_javascript():
         ("/tasks/EN-001", "/tasks", False),
         ("/heartbeats/HB-001", "/heartbeats", False),
         ("/runs/abc", "/runs", False),
+        ("/knowledge/notes/abc", "/knowledge", True),
         ("/jobs/nightly", "/jobs", True),
         ("/workspaces/default", "/workspaces", True),
         ("/skills/enso-heartbeat", "/workspaces", True),

@@ -216,6 +216,7 @@ def test_home_checks_and_fix(enso_home: Paths) -> None:
     assert [(f.check, f.severity, f.fixable) for f in before.findings] == [
         ("git-root", "error", True),
         ("directory", "error", True),
+        ("directory", "error", True),
         ("link", "error", True),
         ("link", "error", True),
         ("link", "error", True),
@@ -228,7 +229,7 @@ def test_home_checks_and_fix(enso_home: Paths) -> None:
 
     after = audit.audit_home(enso_home, fix=True, user_dirs=USER_DIRS)
     assert [line.split(" ", 1)[0] for line in after.fixed] == [
-        "created", "linked", "linked", "linked", "ran",
+        "created", "created", "linked", "linked", "linked", "ran",
     ]  # fmt: skip
     assert (home / ".git").is_dir() and os.readlink(home / ".claude" / "skills") == "../skills"
     assert [f.check for f in after.findings] == ["agents-md", "unexpected", "unexpected"]
@@ -259,6 +260,51 @@ def test_a_file_where_a_dot_directory_belongs_is_reported_not_fixed(enso_home: P
         ("link", ".agents is a file, not a directory; move it aside", False)
     ]
     assert (root / ".agents").read_text() == "in the way"
+
+
+@pytest.mark.parametrize("scope", ["home", "workspace"])
+@pytest.mark.parametrize("kind", ["file", "symlink", "dangling-symlink"])
+def test_knowledge_roots_preserve_conflicts_and_never_follow_links(
+    enso_home: Paths, tmp_path: Path, scope: str, kind: str
+) -> None:
+    workspaces.seed_home(enso_home)
+    root = enso_home.workspace("default")
+    finish(root)
+    knowledge = enso_home.knowledge if scope == "home" else root / "knowledge"
+    knowledge.rmdir()
+    outside = tmp_path / "outside"
+    if kind == "file":
+        knowledge.write_text("keep this file\n")
+    else:
+        if kind == "symlink":
+            outside.mkdir()
+            (outside / "Keep.md").write_text("keep this note\n")
+        knowledge.symlink_to(outside, target_is_directory=True)
+
+    report = audit.audit(enso_home, ["default"], fix=True, user_dirs=USER_DIRS)
+
+    findings = report.home.findings if scope == "home" else report.workspaces[0].findings
+    assert len(findings) == 1
+    assert findings[0].check == "directory" and not findings[0].fixable
+    if kind == "file":
+        assert knowledge.read_text() == "keep this file\n"
+    else:
+        assert knowledge.is_symlink() and knowledge.readlink() == outside
+        if kind == "symlink":
+            assert (outside / "Keep.md").read_text() == "keep this note\n"
+        else:
+            assert not outside.exists()
+
+
+def test_missing_shared_knowledge_is_created_without_changing_existing_notes(enso_home: Paths):
+    workspaces.seed_home(enso_home)
+    enso_home.knowledge.rmdir()
+    assert audit.audit_home(enso_home, user_dirs=USER_DIRS).findings[0].fixable
+    result = audit.audit_home(enso_home, fix=True, user_dirs=USER_DIRS)
+    assert result.ok and result.fixed == [f"created {enso_home.knowledge}"]
+    (enso_home.knowledge / "Keep.md").write_text("untouched content\n")
+    assert audit.audit_home(enso_home, fix=True, user_dirs=USER_DIRS).fixed == []
+    assert (enso_home.knowledge / "Keep.md").read_text() == "untouched content\n"
 
 
 def test_startup_warnings_cover_the_home_and_in_use_workspaces(

@@ -12,10 +12,11 @@ through the system. Everything else in the docs assumes these words.
 
 | Primitive | What it is |
 | --- | --- |
-| **Home** | `~/.enso` (or `ENSO_HOME`) — config, database, log, workspaces, jobs, skills, secrets |
+| **Home** | `~/.enso` (or `ENSO_HOME`) — config, database, log, workspaces, knowledge, jobs, skills, secrets |
 | **Transport** | A chat platform connection: Slack or Telegram. Both run in one process. |
 | **Binding** | A map from a chat location to a workspace. Unbound places are ignored. |
 | **Workspace** | A directory with a fixed layout. The agent's working directory and its context. |
+| **Knowledge** | Durable Markdown notes in a shared home root or a workspace, written with the agent and browsed read-only |
 | **Agent** | An explicit `provider` + `model` + `effort` triple |
 | **Conversation** | A serialized queue of turns with a resumable provider session |
 | **Job** | `JOB.md`: a cron schedule or executable stage, a workspace, and agent instructions when a model is used |
@@ -43,6 +44,7 @@ Enso's normal runtime state lives under one directory:
 ├── AGENTS.md            # instructions for every turn and job (CLAUDE.md links to it)
 ├── CLAUDE.md -> AGENTS.md
 ├── skills/              # enso-wide skills, available in every workspace
+├── knowledge/           # shared Markdown knowledge, visible across workspaces
 ├── browser/             # optional private Chrome profiles, output, state, and tooling
 ├── .claude/skills       # symlink -> ../skills, discovered by the provider CLIs
 ├── .agents/skills       # symlink -> ../skills
@@ -122,6 +124,17 @@ Every conversation, job, and beat names exactly one workspace. That workspace be
 provider's working directory. Its `AGENTS.md` adds workspace-specific context to Enso's
 home-level instructions and any user-level instructions the provider loads; see
 [Customizing](customizing.md#instructions-agentsmd).
+
+## Knowledge
+
+Knowledge is ordinary Markdown under the home's shared `knowledge/` directory or a
+workspace's `knowledge/`. The agent maintains notes through chat and the CLI; the viewer
+provides folder navigation, search, and clickable note links. Files remain the source of
+truth. Folders help the agent select context, but they do not isolate access.
+
+Shared material has one home across workspaces; workspace-specific facts stay with their
+workspace and link across roots when needed. See [Knowledge](knowledge.md) for metadata,
+links, imports, and the user-editable formatting convention.
 
 ## Agent
 
@@ -432,7 +445,8 @@ paths; worktrees and environment actor variables are not an OS sandbox.
 ## What Enso is not
 
 - **Not a sandbox.** Permissions belong to the provider CLI. Enso passes your flags through.
-- **Not a content system.** No docs, notes, or wiki features. Use a directory and a skill.
+- **Not a publishing or editing application.** Knowledge stays in Markdown files, maintained
+  through the agent and CLI. The viewer browses notes read-only; there is no web editor.
 - **Not multi-user.** One operator and their machine.
 - **Not a control plane.** The web viewer is read-only by design; the board moves from
   chat and the CLI.

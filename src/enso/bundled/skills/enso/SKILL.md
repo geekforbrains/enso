@@ -22,6 +22,7 @@ Enso's normal runtime state lives under one directory, `~/.enso` (or `$ENSO_HOME
 ├── AGENTS.md            # instructions for every turn and job (CLAUDE.md links to it)
 ├── CLAUDE.md -> AGENTS.md
 ├── skills/              # enso-wide skills: enso, enso-*, and the user's own
+├── knowledge/           # shared Markdown knowledge across workspaces
 ├── browser/             # private browser profiles, output, state, and optional tooling
 ├── .claude/skills -> ../skills
 ├── .agents/skills -> ../skills
@@ -61,6 +62,7 @@ Adding or editing a skill needs no Enso restart. The provider discovers skills t
 | Skill | Use it for |
 | --- | --- |
 | `enso-workspace` | The workspace layout, where files and skills go, bindings, the audit |
+| `enso-knowledge` | Shared and workspace Markdown notes, links, imports, and consistent user-defined formatting |
 | `enso-browser` | Persistent Chrome profiles, human login, and attaching browser tools |
 | `enso-skills` | Finding and installing official optional skills; authoring manual skills and choosing scope |
 | `enso-security` | Restricting a workspace: each CLI's policy file, the provider args it needs, the `restricted` flag, what that guarantees |
@@ -87,6 +89,7 @@ enso runs list|show
 enso task add|list|show|advance|return|block|resume|release|edit|note|ref|land|sweep   # see enso-tasks
 enso project list|add
 enso workspace list|create|audit     # see enso-workspace
+enso knowledge roots|list|search|show|audit|create|adopt|update|move  # see enso-knowledge
 enso skill list [--available]        # installed home skills, or the official catalog
 enso skill show|install <name>       # see enso-skills; only geekforbrains/enso-skills
 enso config show|check|set|unset     # set PATH VALUE or unset PATH edits one key; see reload rules below

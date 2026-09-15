@@ -107,6 +107,7 @@ def _layout_problems(paths: Paths) -> list[str]:
         paths.cache,
         paths.secrets,
         paths.skills,
+        paths.knowledge,
         *(default / name for name in workspaces.WORKSPACE_DIRS),
     }
     files = {

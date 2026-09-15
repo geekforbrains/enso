@@ -16,13 +16,14 @@ Paths below show the default home; use `ENSO_HOME` instead of `~/.enso` when it 
 ├── AGENTS.md                 # shared instructions for every turn and job
 ├── CLAUDE.md -> AGENTS.md
 ├── skills/                   # enso-wide skills: enso, enso-*, and yours
+├── knowledge/                # shared reference across workspaces
 ├── .claude/skills -> ../skills
 ├── .agents/skills -> ../skills
 └── workspaces/<name>/
     ├── AGENTS.md             # purpose, scope, terms, approval rules for this workspace
     ├── CLAUDE.md -> AGENTS.md
     ├── skills/               # skills unique to this workspace
-    ├── knowledge/            # durable shared material
+    ├── knowledge/            # durable reference owned by this workspace
     ├── drafts/               # generated or editable output
     ├── uploads/              # chat attachments, one directory per turn
     ├── .claude/skills -> ../skills
@@ -32,6 +33,10 @@ Paths below show the default home; use `ENSO_HOME` instead of `~/.enso` when it 
 `AGENTS.md` and `skills/` are the files you write; the `CLAUDE.md` and `.claude`/`.agents` links are generated and are how the provider CLIs find them. Never replace a link with a copy, and never add skills under the links instead of `skills/`. A `.git` inside a workspace hides the home's `AGENTS.md` and skills from the agent, so keep repositories elsewhere.
 
 Keep `AGENTS.md` small: what the workspace is for, what ambiguous terms mean, and any rule that must be visible every turn. Point to files in `knowledge/` for detail instead of inlining it.
+
+Load `enso-knowledge` to find, write, import, organize, or link durable notes, or change their
+formatting. It owns shared versus workspace placement and the common formatting rules;
+the viewer discovers these knowledge roots automatically and stays read-only.
 
 ## Commands
 

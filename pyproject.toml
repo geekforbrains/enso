@@ -20,6 +20,7 @@ dependencies = [
     "rich>=13.0",
     "croniter>=1.0",
     "pyyaml>=6.0",
+    "markdown-it-py>=4.0",
 ]
 
 [project.urls]
@@ -31,7 +32,7 @@ Issues = "https://github.com/geekforbrains/enso/issues"
 [project.optional-dependencies]
 slack = ["slack-bolt>=1.28", "aiohttp>=3.9"]
 telegram = ["python-telegram-bot>=22.6"]
-web = ["aiohttp>=3.9", "jinja2>=3.1", "markdown-it-py>=4.0"]
+web = ["aiohttp>=3.9", "jinja2>=3.1"]
 
 [project.scripts]
 enso = "enso.cli:main"

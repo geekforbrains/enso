@@ -27,7 +27,7 @@ rather than assembled by hand.
 
 | Directory | What belongs there |
 | --- | --- |
-| `knowledge/` | Things that stay true. Reference notes, extracted facts, research the agent should be able to find next week. |
+| `knowledge/` | Durable reference owned by this workspace: notes, facts, and research worth finding again. |
 | `drafts/` | Ordinary work product. Posts, reports, scratch analysis. Safe to delete. |
 | `uploads/` | Chat attachments. Enso writes here; nothing else should. |
 | `skills/` | Skills only this workspace needs. |
@@ -35,6 +35,13 @@ rather than assembled by hand.
 
 Names are lowercase kebab-case (`meteor`, `blog-research`), at most 64 characters. The name
 is the directory name, and there is no other valid location.
+
+The home also has `~/.enso/knowledge/` (or `$ENSO_HOME/knowledge/`) for shared reference that
+belongs across workspaces. The viewer discovers existing workspace knowledge roots from
+the directories themselves; no extra registration is needed. Both roots support nested
+folders with notes and subfolders together. Keep one owning note and link across scopes
+instead of copying shared facts into every workspace. [Knowledge](knowledge.md) owns the
+note format, links, searching, and import behavior; `enso-knowledge` guides agent maintenance.
 
 `AGENTS.md` is the file you write; `CLAUDE.md` is always a symlink to it so both CLI
 families read one document. Skills follow the same rule: `skills/` is the directory you
@@ -173,7 +180,7 @@ The audit checks, each finding carrying the check id shown:
 | `CLAUDE.md` is a symlink to `AGENTS.md` | `link` | error | Creates or repoints the link |
 | `.claude/skills` and `.agents/skills` are symlinks to `../skills` | `link` | error | Creates or repoints the link |
 | The home is a Git root, and no workspace is one | `git-root` | error | Runs `git init` in the home |
-| The home has `AGENTS.md`, `skills/`, and the same three links | `agents-md`, `directory`, `link` | error | Creates `skills/` and the links |
+| The home has `AGENTS.md`, `skills/`, `knowledge/`, and the same three links | `agents-md`, `directory`, `link` | error | Creates missing directories and the links |
 | `AGENTS.md` exists | `agents-md` | error | Reports only |
 | `AGENTS.md` is not still the untouched template | `agents-md` | warning | Reports only |
 | Every skill directory has a `SKILL.md` whose `name` matches the directory | `skill` | error | Reports only |
@@ -193,6 +200,12 @@ No policy finding therefore means the prerequisites passed, not that access is c
 never touches anything under `knowledge/`, `drafts/`, or `uploads/`. A real file or
 directory sitting where a link belongs is reported and left for you to move aside. Fixes
 run first and the report shows what remains, so a second `--fix` finds nothing to do.
+
+The shared `knowledge/` directory is created when missing, by setup, managed upgrades, or
+the fixing audit, without changing its contents.
+A file or symbolic link occupying a knowledge root is reported and preserved, including
+a dangling link. Note metadata, links, and style use the separate
+[knowledge checks](knowledge.md), not the workspace layout audit.
 
 The command exits 1 while any error remains and 0 otherwise; warnings never fail an
 audit. An orphan workspace — one nothing is bound to and no job names — is a warning, not

@@ -13,7 +13,7 @@ All notable changes to Enso are documented here, following
 - Task worktrees default to `<repo>/.worktrees`, support custom roots, and retain their
   recorded target and ownership across configuration changes. Project concurrency allows
   different tasks in different stages while execution and landing remain serialized where needed.
-- CLI text inputs use one bounded reader: messages, notes, task bodies, heartbeat input
+- CLI text inputs use one bounded reader: messages, task notes, task bodies, heartbeat input
   (including checkpoints), and Slack rich-message envelopes accept 256 KiB, `config apply`
   1 MiB, and `connect` 16 KiB. Limits apply equally to text arguments, files, and stdin,
   counting UTF-8 bytes. Previously unbounded inputs are refused with consistent errors,
@@ -24,6 +24,11 @@ All notable changes to Enso are documented here, following
 
 ### Added
 
+- Shared `knowledge/` and automatically discovered workspace knowledge, with a read-only
+  folder and search viewer, stable note URLs, Markdown and wiki links, and backlinks.
+  `enso knowledge` maintains minimal metadata and repairs links on moves; the bundled
+  `enso-knowledge` skill supplies customizable formatting rules and a style checker.
+  A scripted importer copies existing Markdown collections without changing the originals.
 - `enso workflow` commands and the bundled `enso-workflow` skill for a simple unchecked flow,
   a checked development preset, existing-job migration, audit history, and explicit recovery.
 - Command and integration stages without a model, optional lifecycle scripts with durable

@@ -109,6 +109,11 @@ class Paths:
         return self.home / "workspaces"
 
     @property
+    def knowledge(self) -> Path:
+        """Shared Markdown knowledge, alongside workspace-local knowledge directories."""
+        return self.home / "knowledge"
+
+    @property
     def jobs(self) -> Path:
         return self.home / "jobs"
 

@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% from "_icons.html" import icon %}
+{% block title %}{{ note.title }} · Knowledge{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/knowledge">Knowledge</a>{% for label, href in crumbs %} / <a href="{{ href }}">{{ label }}</a>{% endfor %}</p>
+{% call m.phead(now) %}{{ note.title }}{% endcall %}
+<div class="knowledge-layout">
+  <div class="knowledge-reading">
+    <div class="knowledge-properties">
+      <span>Updated {{ updated|when }}</span>
+      {% if created %}<span>Created {{ created|when }}</span>{% endif %}
+      <a href="{{ note_url if raw else raw_url }}">{{ 'Read note' if raw else 'View source' }}</a>
+    </div>
+    {% if note_problems %}<details class="knowledge-findings"><summary>{{ note_problems|length }} metadata finding{{ 's' if note_problems|length != 1 }}</summary><ul>{% for problem in note_problems %}<li>{{ problem }}</li>{% endfor %}</ul></details>{% endif %}
+    <div class="panel knowledge-document">{% if raw %}<pre class="output bare" tabindex="0">{{ source }}</pre>{% else %}<article class="markdown">{{ html }}</article>{% endif %}</div>
+    <section aria-labelledby="backlinks-head">
+      <div class="shead"><h2 id="backlinks-head">Linked from</h2><span class="right">{{ backlink_count }} note{{ 's' if backlink_count != 1 }}</span></div>
+      {% if backlinks %}<div class="panel rows knowledge-rows">{% for row in backlinks %}<a class="row knowledge-row" href="{{ row.href }}"><span class="knowledge-symbol">{{ icon('note') }}</span><span class="body"><span class="title">{{ row.title }}</span><span class="detail">{{ row.scope }} / {{ row.path }}</span></span></a>{% endfor %}</div>{% if backlink_count > backlinks|length %}<p class="range">Showing the first {{ backlinks|length }} backlinks.</p>{% endif %}{% else %}{{ m.empty('No notes link here yet.') }}{% endif %}
+    </section>
+  </div>
+  <aside class="knowledge-context" aria-label="Folder context">
+    <div class="shead"><h2>In this folder</h2><a href="{{ folder_url }}">View all {{ sibling_count }}</a></div>
+    <div class="panel rows knowledge-rows">{% for row in siblings %}<a class="row knowledge-row{% if row.href == note_url %} is-current{% endif %}" href="{{ row.href }}"{% if row.href == note_url %} aria-current="page"{% endif %}><span class="knowledge-symbol">{{ icon('folder' if row.kind == 'folder' else 'note') }}</span><span class="body"><span class="title">{{ row.title }}</span></span></a>{% endfor %}</div>
+    {% if sibling_count > siblings|length %}<p class="range">Showing {{ siblings|length }} of {{ sibling_count }} items.</p>{% endif %}
+  </aside>
+</div>
+{% endblock %}

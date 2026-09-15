@@ -3,8 +3,8 @@
 Every row of the check table in ``docs/workspaces.md`` § Auditing, for the home and for
 each workspace. A finding carries a stable check id, a severity, a message, and whether
 ``--fix`` repairs it. ``--fix`` only creates and repairs (directories, links, the home's
-Git root); it never deletes, never edits ``AGENTS.md``, and never touches ``knowledge/``,
-``drafts/``, or ``uploads/``. ``enso doctor`` and the web viewer read the same report.
+Git root); it never deletes, never edits ``AGENTS.md``, and never touches contents under
+``knowledge/``, ``drafts/``, or ``uploads/``. ``enso doctor`` and the viewer share the report.
 """
 
 from __future__ import annotations
@@ -95,7 +95,7 @@ class _Root:
 
 @dataclass(kw_only=True)
 class HomeAudit(_Root):
-    """The home: a Git root with ``AGENTS.md``, ``skills/``, and the links."""
+    """The home: a Git root with instructions, skills, shared knowledge, and the links."""
 
     path: Path
     findings: list[Finding] = field(default_factory=list)
@@ -191,7 +191,7 @@ def audit(
 def audit_home(
     paths: Paths, *, fix: bool = False, user_dirs: Sequence[Path] | None = None
 ) -> HomeAudit:
-    """The Git root, links, ``AGENTS.md``, ``skills/``, ``jobs/`` names, and ``workspaces/``."""
+    """The Git root, links, instructions, skills, shared knowledge, jobs, and workspaces."""
     home = paths.home
     result = HomeAudit(path=home)
     if fix:
@@ -212,6 +212,12 @@ def audit_home(
         findings.append(Finding(DIRECTORY, ERROR, "skills/ is missing", fixable=True))
     elif not paths.skills.is_dir():
         findings.append(Finding(DIRECTORY, ERROR, "skills/ is a file, not a directory"))
+    if paths.knowledge.is_symlink():
+        findings.append(Finding(DIRECTORY, ERROR, "knowledge/ is a symbolic link; move it aside"))
+    elif not paths.knowledge.exists():
+        findings.append(Finding(DIRECTORY, ERROR, "knowledge/ is missing", fixable=True))
+    elif not paths.knowledge.is_dir():
+        findings.append(Finding(DIRECTORY, ERROR, "knowledge/ is a file, not a directory"))
     findings.extend(_check_links(home))
     if not paths.agents_md.is_file():
         findings.append(Finding(AGENTS_MD, ERROR, "AGENTS.md is missing"))
@@ -298,7 +304,9 @@ def tree_size(path: Path) -> int:
 def _check_dirs(root: Path) -> Iterator[Finding]:
     for name in workspaces.WORKSPACE_DIRS:
         path = root / name
-        if not path.exists():
+        if name == "knowledge" and path.is_symlink():
+            yield Finding(DIRECTORY, ERROR, "knowledge/ is a symbolic link; move it aside")
+        elif not path.exists():
             yield Finding(DIRECTORY, ERROR, f"{name}/ is missing", fixable=True)
         elif not path.is_dir():
             yield Finding(DIRECTORY, ERROR, f"{name}/ is a file, not a directory")

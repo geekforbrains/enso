@@ -215,6 +215,7 @@ version = "0.1.2"
 source = { editable = "." }
 dependencies = [
     { name = "croniter" },
+    { name = "markdown-it-py" },
     { name = "pyyaml" },
     { name = "rich" },
     { name = "typer" },
@@ -231,7 +232,6 @@ telegram = [
 web = [
     { name = "aiohttp" },
     { name = "jinja2" },
-    { name = "markdown-it-py" },
 ]
 
 [package.dev-dependencies]
@@ -250,7 +250,7 @@ requires-dist = [
     { name = "aiohttp", marker = "extra == 'web'", specifier = ">=3.9" },
     { name = "croniter", specifier = ">=1.0" },
     { name = "jinja2", marker = "extra == 'web'", specifier = ">=3.1" },
-    { name = "markdown-it-py", marker = "extra == 'web'", specifier = ">=4.0" },
+    { name = "markdown-it-py", specifier = ">=4.0" },
     { name = "python-telegram-bot", marker = "extra == 'telegram'", specifier = ">=22.6" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = ">=13.0" },

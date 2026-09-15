@@ -99,6 +99,7 @@ its named sections above the content:
 | [Heartbeats](#heartbeats) `/heartbeats` | Current · Previous; each beat opens Overview · History · Runs |
 | [Jobs](#jobs) `/jobs` | a job opens to Overview · History |
 | [Runs](#runs) `/runs` | Acted · Failed · All |
+| [Knowledge](#knowledge) `/knowledge` | Folders · Recent · All notes |
 | [Workspaces](#workspaces) `/workspaces` | Workspaces · Skills |
 | [Health](#health) `/health` | Doctor · Log |
 
@@ -113,7 +114,7 @@ includes on the line that counts its rows. An empty list is one quiet sentence w
 rows would have been.
 
 At 820px and below, the sidebar becomes a bottom bar with exactly five items: **Today,
-Tasks, Heartbeats, Runs, More**. More opens a compact popup containing Jobs, Workspaces,
+Tasks, Heartbeats, Runs, More**. More opens a compact popup containing Knowledge, Jobs, Workspaces,
 and Health. It stays highlighted while one of those views is open, and carries the Health
 attention indicator even while the popup is closed. The bar respects the phone's safe area
 and stays within the viewport at 320px wide.
@@ -306,6 +307,52 @@ and surviving run link. Which moves are available is the agent's business and is
 the viewer moves nothing, because that is chat and the CLI. See [Tasks](tasks.md) for the
 workflow and worktree contracts.
 
+### Knowledge
+
+`/knowledge` reads the shared home `knowledge/` and automatically discovers every visible
+workspace `knowledge/` directory. The scope selector starts at **General**; **All knowledge**
+brings the roots together without moving their files. The Markdown files remain the source
+of truth. See [Knowledge](knowledge.md) for metadata, writing conventions, imports, and the
+agent's maintenance tools.
+
+**Folders** shows immediate subfolders followed by notes directly in the current folder,
+including folders that have both. Breadcrumbs move up the hierarchy. **All notes** lists
+the current folder and all its descendants; **Recent** orders the same collection by its
+`updated` metadata, falling back to file modification time when that date is unknown.
+Search matches titles, paths, and note bodies under the current folder. The explicit
+**All knowledge** search option broadens to every discovered root. Every list shows at most
+50 items per page, with its count, range, and ordinary Previous/Next links. Thousands of
+notes never produce a fully expanded tree or an unbounded page.
+
+A note opens at `/knowledge/notes/<id>`, using its permanent ID so the URL survives moves
+and renames. Notes without a valid or unique ID remain readable through an explicit
+scope-and-path URL and show their metadata findings. The title comes from the filename;
+frontmatter is omitted from the reading view. Created and updated dates appear above the
+body, and **View source** shows the complete file. The note's folder appears beside it on a
+wide screen and below it on a narrow one. **Linked from** shows up to 50 incoming notes and
+the total backlink count. Folder context is capped at 20 items, with a link to the complete
+paginated folder.
+
+Wiki links (`[[Page]]`, `[[Folder/Page|Label]]`, `[[Page#Heading]]`) and ordinary relative
+Markdown links navigate inside the viewer. Cross-scope links explicitly name `general:`
+or `workspace:<name>:`. Duplicate filenames require a qualified path: ambiguous and missing
+references are visibly marked instead of selecting a destination arbitrarily. Missing
+heading anchors are marked while the destination note remains clickable. Headings get
+Unicode-aware anchors with `-1`, `-2` suffixes for repeats. Browser back/forward and opening
+a link in a new tab work normally; no JavaScript is required.
+
+Local Markdown images and Obsidian image embeds display PNG, JPEG, GIF, WebP, and AVIF
+assets under the selected knowledge root. Other attachments download; note embeds become
+links to their notes. Remote images never load automatically. Raw HTML is escaped and
+only `http`, `https`, and `mailto` external links are clickable. Asset reads are bounded at
+20 MiB, reject symlinks and hidden/system paths, and never follow a path outside its root.
+SVG and HTML attachments download as binary files, never as active same-origin documents.
+
+Each visit scans current file metadata and reuses unchanged parsed notes in process memory;
+refreshing sees additions, moves, and edits. The viewer builds no persistent index, creates
+no missing directories, and never changes Markdown, metadata, or the database. Knowledge
+appears in the desktop sidebar and the phone's **More** menu.
+
 ### Workspaces
 
 The list is a workspace name and its [audit](workspaces.md) verdict, so a malformed workspace
@@ -313,7 +360,8 @@ is visible before it surprises you. Its own page carries the rest: what is bound
 that name it, its upload size, and every audit finding — which required directories exist,
 whether `CLAUDE.md` and the skill links are correct, whether any skill name collides.
 
-A file browser over `knowledge/`, `drafts/`, and `uploads/`, with text and Markdown rendered
+A workspace's `knowledge/` card opens its scope in [Knowledge](#knowledge). The existing
+file browser remains available over `knowledge/`, `drafts/`, and `uploads/`, with text and Markdown rendered
 in place. This is the "what files is the agent reading" view: it shows what is actually on
 disk in the directories the agent has been told to use, dotfiles included. Files over 2 MiB,
 binary files, and anything unreadable show their metadata instead of a body. Markdown is
@@ -475,7 +523,8 @@ The viewer binds `127.0.0.1` by default and has no authentication, because it as
 only reachable from the machine it runs on. It answers `GET` and nothing else: every other
 method, `HEAD` included, gets a 405. The only forms are read-only `GET` filters. Every
 response carries a Content Security Policy that allows nothing but the viewer's own
-stylesheet, script, icons, and manifest, and pages are never cached.
+stylesheet, script, icons, manifest, and safely served local knowledge images, and pages are
+never cached.
 
 `--host` will bind elsewhere, and you should not use it on an untrusted network. Everything
 the viewer displays — job prompts, run output, workspace files — is content you would not

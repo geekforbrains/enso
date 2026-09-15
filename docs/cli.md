@@ -277,6 +277,44 @@ wiring, and whether each workspace is bound or used by a job. `--fix` creates an
 it never deletes. The command exits 1 while any error remains; warnings alone exit 0. See
 [Workspaces](workspaces.md).
 
+## Knowledge
+
+```text
+enso knowledge roots [--json]
+enso knowledge list [--scope S] [--folder PATH] [--limit N] [--offset N] [--json]
+enso knowledge search QUERY [--scope S] [--folder PATH] [--limit N] [--offset N] [--json]
+enso knowledge show REF [--scope general] [--json]
+enso knowledge audit [--scope S] [--json]
+enso knowledge create PATH --file FILE|- [--scope general] [--json]
+enso knowledge adopt PATH [--scope general] [--expected-hash SHA] [--json]
+enso knowledge update REF --file FILE|- --expected-hash SHA [--scope general] [--json]
+enso knowledge move REF DEST [--scope general] [--to-scope S] [--expected-hash SHA] [--json]
+```
+
+Scopes are `general` and `workspace:<name>`. `REF` is a UUID or an exact path inside the
+selected scope; UUIDs identify a note globally. New/destination paths must end in `.md`.
+`--folder` includes descendants. Listing/search defaults to all scopes and 50 notes, with
+`--limit` from 1 to 500 and a nonnegative `--offset`. Search matches every whitespace-separated
+term against paths and bodies, case insensitively. No command loads transport configuration
+or initializes the database. [Knowledge](knowledge.md) owns the filesystem, metadata,
+link-resolution, adoption, and write-safety contracts.
+
+With `--json`, `roots` returns `[{scope, label, path}]`. Listing/search returns
+`{total, offset, limit, notes, problems}`. Each note contains
+`{scope, path, title, id, metadata, sha256, problems}`; `show` adds `body` and `backlinks`.
+`metadata` exposes only core properties; raw unknown import fields remain in the original
+file. `audit` returns `{ok, notes, problems}`, where `notes` is the count and each problem has
+`{scope, path, problem}`; findings exit 1, a clean audit exits 0. Read failures are findings,
+while command failures use the standard error object at the top of this page.
+
+`create` and `update` read Markdown body text from `--file` (or stdin `-`) and manage
+frontmatter themselves. `update` requires the `sha256` from the last read. `adopt` preserves
+unfamiliar original metadata in the note body and leaves unknown dates absent. Successful
+create/adopt/update return `{ok: true, ...note}`. `move` returns
+`{ok: true, id, scope, path, links_updated}`, where `links_updated` counts other notes rewritten.
+Moves preserve note identity and repair resolved incoming/outgoing paths; they refuse
+ambiguous inbound targets, stale contents, and existing destinations.
+
 ## Skills
 
 ```text
