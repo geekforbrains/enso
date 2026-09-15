@@ -187,6 +187,27 @@ async def test_history_receipts_times_delivery_and_clipping_are_visible(client, 
     assert second.count('<div class="panel rows">') == 1
 
 
+async def test_list_failures_never_claim_rows(client, saved, monkeypatch):
+    """A failed listing reads 0-0 of the counted total; a failed count lists nothing."""
+    current = beat(saved)
+    beat(saved, title="Second")
+
+    def locked(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(reading, "beat_rows", locked)
+    body = await page(client, "/heartbeats")
+    assert "Showing 0\u20130 of 2 heartbeats." in body and "database is locked" in body
+    assert f'href="/heartbeats/{current.ref}"' not in body
+
+    listed = []
+    monkeypatch.setattr(reading, "beat_count", locked)
+    monkeypatch.setattr(reading, "beat_rows", lambda *args, **kwargs: listed.append(kwargs) or [])
+    body = await page(client, "/heartbeats")
+    assert "No current heartbeats." in body and "database is locked" in body
+    assert not listed
+
+
 async def test_history_names_the_actor_and_keeps_the_recorded_value(client, saved):
     current = beat(saved)
     heartbeat.note(saved, current.ref, "A person asked", actor="slack:U0AETSSDDEF")
