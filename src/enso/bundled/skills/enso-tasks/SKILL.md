@@ -1,13 +1,13 @@
 ---
 name: enso-tasks
-description: Work an Enso task from a stage job or move one from chat; read the Task block, hand off with advance, return, or block, attach evidence, create discovered work, and land a review branch. Use when a prompt opens with a [Task …] block, ENSO_TASK is set, or the user asks about the board, a task reference such as EN-041, or a project's stages.
+description: Work an Enso task from a stage job or move one from chat; read the Task block, hand off with advance, return, or block, attach evidence, create discovered work, and inspect workflow evidence. Use when a prompt opens with a [Task …] block, ENSO_TASK is set, or the user asks about the board, a task reference such as EN-041, or a task's current stage.
 ---
 
 # Tasks
 
 ## How Enso sets it up
 
-A task is one unit of work on a board Enso keeps in `enso.db`: a reference such as `EN-041`, a project, a title and a spec, a stage, a priority, and an append-only timeline of who did what. A project declares its stages in order (`triage, todo, review`); each is an agent stage served by one stage job, or a human stage where the task waits for a person. Every project also has `backlog`, `blocked`, `done`, and `cancelled`. A job bound to a stage fires when a task is ready there, and Enso claims the highest-priority one for that run before you start. Nothing is ever pruned: a finished task is the record of how it got there.
+A task is one unit of work on a board Enso keeps in `enso.db`: a reference such as `EN-041`, a project, a title and a spec, a stage, a priority, and an append-only timeline of who did what. A project declares its stages in order (`plan, implement, review, integrate`, for example); each is agent work served by a job, an engine-run command/integration stage, or a human checkpoint. Every project also has `backlog`, `blocked`, `done`, and `cancelled`. A job bound to a stage fires when a task is ready there, and Enso claims the highest-priority one for that run before you start. Nothing is ever pruned: a finished task is the record of how it got there.
 
 Actor identity is derived from the environment, never passed. In a run you are `job:<name>`; in a chat turn, `slack:U…` or `telegram:<id>`; in a terminal, `user:<login>`. The rules that follow (no `drop`, no `--force`, a run moves only the task it holds) are read from `ENSO_RUN_ID` and `ENSO_JOB` in your own environment; they are guardrails, not a boundary you should look for a way around. Never clear or change those variables, and never act as another run.
 
@@ -29,7 +29,7 @@ Do only this task, then stop. `enso task show REF --json` returns the same packe
 
 ## Handing off
 
-A move hands off the task and clears your claim. It does not stop the provider or skip the job's postrun checks. A run acts only on the task it holds, so a second move on the same task is refused, including in a postrun follow-up: make the move last and finish your turn. A run that ends without one has its claim released by Enso, which the next run sees as recovery and, twice in a row, blocks the task for a person.
+Advancing or returning submits a candidate handoff; it does not immediately change the stage or release your claim. Finish the turn after submitting. Once the provider stops, Enso runs the configured required checks and accepts the transition only if they pass. A repair request includes the actual failure: fix it within this same task and submit again. The task stays in its current stage through checking and repair. Exhausted or interrupted work remains visible for recovery. Blocking remains available when you cannot continue. Even a no-check workflow waits for the run to finish before accepting its submitted handoff.
 
 ```bash
 enso task advance REF --message "what changed, the evidence, what the next stage should check"
@@ -38,7 +38,7 @@ enso task block REF --message "what is needed and what unblocks it" [--after EN-
 ```
 
 - `advance` when the stage's job is done; from the last stage it finishes the task.
-- `return` when the previous stage's work is wrong or incomplete, never as a way to avoid the work.
+- `return` when the earlier stage's work is wrong or incomplete. The configured return destination and finite return budget apply.
 - `block` when you cannot finish: a decision needed, a dependency, a fault outside the task. Say what unblocks it. `--after REF` resumes it by itself when that task is done. Do not `enso task release` a task to try again later; a blocked task with a reason is worth more than a released one without.
 - Never `drop`. A run is not offered it; only a person cancels.
 - `--message -` reads stdin for anything longer than a line. `--force` is a person's flag and is refused in a run.
@@ -59,9 +59,28 @@ Attach a ref for every commit, file, or page a reviewer would want to find again
 
 ## Repo projects
 
-A repo project gives each task its own worktree at `~/.enso/worktrees/<KEY>/<REF>` on branch `enso/<REF>`, based on the main checkout's current branch. Work and commit there. Never edit, commit, or switch branches in the main checkout, and never push. `advance` is refused while the worktree has uncommitted tracked changes, with the file list; commit or discard first.
+A repo project creates a worktree only when a stage needs one. The default root is
+`<repo>/.worktrees`, but the operator can choose another location. Use the path and pinned
+base in the Task block; do not infer either from the current main checkout or Enso's home.
+Work and commit there. Do not edit, commit, or switch branches in the main checkout, and
+never push without explicit authorization. A planning stage may have no worktree: stay in
+the Enso workspace and read the repository for context.
 
-In a review stage, run `enso task land REF`: it rebases the branch onto its base, fast-forwards the main checkout, prints the new HEAD, and attaches it as a `commit` ref. A refusal names what to fix on the branch; a dirty main checkout is not yours to fix, so block the task with that reason. Land, then advance. Enso sweeps the worktrees of finished tasks itself. The refusals and the sweep rules are in the Tasks page of the docs.
+The default dev workflow has a separate integration stage. Review submits its judgment;
+the engine then updates the target candidate, runs checks, and lands it under a repository
+lock. Do not call `enso task land` to bypass a configured integration stage. The legacy
+manual land command is available only to unchecked workflows; use runtime help and the
+project's explicit instructions if that is the chosen process.
+
+Blocked and human-review worktrees are retained. Enso removes eligible finished worktrees
+safely after lifecycle scripts finish; dirty, unmerged, or cleanup failures stay visible.
+Do not force-delete a worktree, its ignored data, or a branch to make a task look done.
+
+`enso workflow show REF --json` and the web task page show authoritative transaction/check
+history, separate from your own notes and attached refs. Checks bind to the candidate and
+selected spec/workflow; editing existing validation rules may require operator review.
+Do not clear actor variables, fabricate evidence, edit the database, or approve your own
+rule changes. Ask for the decision needed by blocking the task with the actual diagnostic.
 
 ## From chat or a terminal
 
@@ -72,7 +91,8 @@ enso task resume REF [--to STAGE] [--message "…"]
 enso task drop REF --message "why"             # a person only
 enso task edit REF [--title T] [--body-file F] [--priority N] [--after REF]
 enso project list
-enso project add KEY --name NAME --workspace WS [--repo PATH] --flow dev|basic|support|marketing
+enso project add KEY --name NAME --workspace WS [--repo PATH] --flow basic
+enso workflow show REF [--json]
 ```
 
-Finished tasks are hidden unless `--all` or `--stage done`. A move on a task a live run holds is refused with the run id; wait, or a person can pass `--force`. Inside a run, a move, release, edit, or land on any task but the one it holds is refused too; `resume` and `drop` are a person's, from chat or a terminal. Stage instructions live in the bound job's `JOB.md` (see `enso-jobs`); the board is at the Tasks tab of the web viewer.
+Finished tasks are hidden unless `--all` or `--stage done`. A move on a task a live run holds is refused with the run id; wait, or a person can pass `--force`. Inside a run, a move, release, edit, or land on any task but the one it holds is refused too; `resume` and `drop` are a person's, from chat or a terminal. For workflow design, presets, check configuration, or migration load `enso-workflow`. Stage instructions live in the bound job's `JOB.md` (see `enso-jobs`); the board is at the Tasks tab of the web viewer.

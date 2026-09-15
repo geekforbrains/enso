@@ -7,7 +7,7 @@ work, and hand off with a written trace; you read the board in the [web viewer](
 and move tasks from chat or a terminal with `enso task`.
 
 This page owns tasks, projects, stages, moves, claims, the Task block, worktrees, and the
-`task` and `project` commands. [Jobs](jobs.md#stage-jobs) owns how a job binds to a stage
+`task`, `project`, and `workflow` commands. [Jobs](jobs.md#stage-jobs) owns how a job binds to a stage
 and when it fires; [Configuration](configuration.md#projects) owns the `projects` section's
 validation; [Web viewer](web.md#tasks) owns the Tasks tab.
 
@@ -26,7 +26,7 @@ validation; [Web viewer](web.md#tasks) owns the Tasks tab.
 | timeline | Events, newest first: `created`, `taken`, `released`, `moved`, `edited`, `noted`, `ref`; each with its actor, run id, message, and payload |
 | refs | Evidence attached to the task: a `commit`, `path`, `url`, `page`, or any lowercase kind, with an opaque value |
 
-Tasks, events, and refs are never pruned. Finished tasks (`done` and `cancelled`) are hidden
+Tasks, events, refs, workflow transactions, check results, and lifecycle deliveries are never pruned. Finished tasks (`done` and `cancelled`) are hidden
 from listings unless asked for.
 
 ## Projects and stages
@@ -40,7 +40,9 @@ letters or digits:
     "name": "Enso",
     "workspace": "dev",
     "repo": "~/Projects/enso",
-    "stages": ["triage", "todo", "review"],
+    "base": "develop",
+    "worktree_root": ".worktrees",
+    "stages": ["work"],
     "setup": ".dev/prepare",
     "copy": [".env"]
   }
@@ -48,10 +50,11 @@ letters or digits:
 ```
 
 `name` is the display name, `workspace` the workspace its stage jobs run in, and `stages`
-the pipeline in order. A stage is `name` or `name:human`. An **agent stage** is served by a
-stage job; a **human stage** has no job, and a task in it waits for a person to move it. At
-least one stage must be an agent stage. `repo`, `setup`, and `copy` make it a **repo
-project**, whose tasks get [worktrees](#worktrees). [Configuration](configuration.md#projects)
+the pipeline in order. A stage can be a string (`name` or `name:human`) or an object
+containing execution and acceptance rules. An **agent stage** is served by a stage job;
+a **command stage** runs a script without a model; an **integration stage** lets Enso
+validate and land a Git candidate; a **human stage** waits for an operator. A repository
+is optional. Repo projects create [worktrees](#worktrees) only for stages that need one. [Configuration](configuration.md#projects)
 lists every validation rule.
 
 Every project also has four built-in stages, which a project may not name:
@@ -64,37 +67,39 @@ Every project also has four built-in stages, which a project may not name:
 | `cancelled` | Dropped by a person |
 
 `enso project add` writes an entry with the same atomic writer `enso setup` uses, after
-validating the whole file; it refuses a key that exists. Four presets cover the usual
+validating the whole file; it refuses a key that exists. Three simple stage lists cover the usual
 shapes, or spell the stages out with `--stages`:
 
 | `--flow` | Stages |
 | --- | --- |
 | `basic` | `work` |
-| `dev` | `triage, todo, review` |
 | `support` | `triage, investigate` |
 | `marketing` | `research, draft, review, approve:human, release` |
 
 ```bash
-enso project add EN --name Enso --workspace dev --repo ~/Projects/enso --flow dev \
+enso project add EN --name Enso --workspace dev --repo ~/Projects/enso --flow basic \
   --setup .dev/prepare --copy .env
+enso workflow init EN --preset dev --base develop \
+  --lint "uv run ruff check ." --test "uv run pytest"
 enso project add MKT --name Marketing --workspace marketing \
   --stages research,draft,review,approve:human,release
 enso project list
 ```
 
-Stage instructions do not live in the project. They are the prompt of the job bound to
-that stage: what done means there and what to check. See [Jobs](jobs.md#stage-jobs).
+Agent instructions live in the prompt of the job bound to that stage. Required acceptance
+checks and command stages live in the project definition, where Enso can execute them
+independently. See [Jobs](jobs.md#stage-jobs).
 
 ## Moves
 
-Moves are derived from the stage list, so there is no workflow language. From the task's
-current stage:
+Moves follow the ordered stage list and any configured earlier `return_to` destination.
+From the task's current stage:
 
 | Move | From | To | Message |
 | --- | --- | --- | --- |
 | `advance` | `backlog` | the first stage | required |
 | `advance` | a project stage | the next stage, or `done` after the last | required |
-| `return` | a project stage after the first | the previous stage | required |
+| `return` | a project stage after the first | `return_to`, or the previous stage, within `max_returns` | required |
 | `block` | a project stage | `blocked`, remembering where it was; `--after REF` names a task to wait on | required |
 | `resume` | `blocked` | the stage it left (else the first), or `--to STAGE` for any project stage; clears `after` | optional |
 | `drop` | any unfinished stage | `cancelled` | required |
@@ -109,16 +114,21 @@ agent reads lists only the available ones.
 
 The message is the handoff: what changed, the evidence, what the next stage should do. It
 is stored on the `moved` event and shown to whoever holds the task next, so a bare "done"
-helps nobody. Every successful move clears the claim, restamps the time in stage, and clears
-the attention flag.
+helps nobody. Inside a run, `advance` and `return` **submit** that message and candidate.
+The stage and claim remain unchanged until Enso accepts the handoff after execution
+stops. A committed transition restamps the stage and clears attention; the runner retains
+execution ownership until its remaining work is complete. Blocking and cancellation do
+not depend on passing checks. An operator advancing a checked stage uses `enso workflow
+verify`, which runs those checks; `--force` is not a check bypass.
 
 Three rules separate people from runs. **A run never drops**: inside a job the move is not
 offered, and asking for it is refused with `only a person can drop a task; block it with
 your reasoning instead`. **A run never forces**: `--force` is a person's flag. **A run acts
 only on the task it holds**: a move, a release, a title or body edit, or a land on any other
 task is refused with `EN-041 is not held by this run; a run moves only the task it
-claimed`. A handoff clears the claim, so the run holds nothing afterwards and cannot walk the
-task on through the next stage, and a run never resumes a blocked task, which nobody holds.
+claimed`. A submitted handoff belongs to one stage transaction, so the run cannot walk
+the task through several stages. A repair may submit an updated candidate for the same
+stage. A run never resumes a blocked task, which nobody holds.
 
 Blocking with `--after` links tasks across projects. A support task can create a dev task
 with `--from` and block itself `--after EN-041`; when `EN-041` advances into `done`, every
@@ -141,13 +151,12 @@ hold the same task. The claim is the run id and the actor `job:<name>`; it is wh
 second job or a person from moving the task underneath the run.
 
 While a task is claimed, a move, a `release`, or an edit of the title or body by anyone but
-the claiming run is refused, naming the run (`EN-041 is claimed by run <id>`); a refused
-release or edit adds `wait for it, or use --force`. A person may force past it; a run may
-not. The same commands inside a run on a task the run does not hold are refused with
+the claiming run is refused, naming the run (`EN-041 is claimed by run <id>`). A live execution claim cannot be forced: stop its job and let recovery release it first. The same commands inside a run on a task the run does not hold are refused with
 `EN-041 is not held by this run; a run moves only the task it claimed`. Priority and
 `after` edits are allowed on any unfinished task.
 
-A move is how a run hands off, and it clears the claim. A run that ends without one (the
+A submission is how a run requests a handoff; the claim stays held through validation and
+bounded repair. Acceptance is distinct from a successful provider exit. A run that ends without one (the
 agent stopped, timed out, crashed, or was cancelled) has its claim released by the runner
 with the reason `run_ended` and the message `run <id> ended (<status>) without a handoff`.
 The next run of that stage sees that release as **recovery** in its Task block, with any
@@ -159,7 +168,7 @@ happened to the task from outside those runs in between: a note, an edit, or a r
 person between the two releases counts as a look and resets the count.
 
 `enso task release` clears a claim without moving, for the claiming run or a person with
-`--force`. It is the wrong tool for "try again later": a blocked task with a reason is worth
+`--force` only where no live execution remains. It is the wrong tool for "try again later": a blocked task with a reason is worth
 more than a released one without.
 
 ## Who is acting
@@ -189,7 +198,7 @@ is the agent's authoritative answer to what it is doing and where, the way the
 Task: EN-041 — Fix labelled Slack code fences
 Project: EN (Enso) · Stage: todo (2 of 3: triage, todo, review) · Priority: 0
 Moves: advance to review (message required) · return to triage (message required) · block (reason required)
-Working directory: /Users/x/.enso/worktrees/EN/EN-041 (branch enso/EN-041, base develop)
+Working directory: /Users/x/Projects/enso/.worktrees/EN-041 (branch enso/EN-041, base develop)
 Main checkout: /Users/x/Projects/enso — do not edit, commit, or switch branches there
 Recovery: run 8f2c1a3b ended without a handoff; uncommitted changes in src/enso/slack_text.py
 Refs: commit abc123 · path drafts/notes.md
@@ -214,7 +223,7 @@ Attach evidence with `enso task ref EN-041 commit <sha>`; reread with `enso task
 ```
 
 `Moves` lists only the moves available from this stage; `drop` is never among them. The
-working directory, main checkout, and branch appear for repo projects only. `Recovery` is
+working directory, main checkout, and branch appear when the stage uses a worktree. `Recovery` is
 the last run that ended without a handoff and the uncommitted files it left, when there is
 one. `Handoff` is the last move's message, `Recent notes` the newest five notes, and `Refs`
 the attached evidence; a line with nothing to say is omitted. After the block comes a
@@ -227,61 +236,230 @@ says so: they are data for the agent to work from, not instructions that outrank
 prompt. Every line of that text is indented four spaces and Enso's own lines start at
 column 0, so a spec that spells out `Moves:` or a `[Project instructions — …]` heading of
 its own cannot pass for the real thing. The same packet is what
-`enso task show --json` prints, and the block is regenerated from the live task on every
+`enso task show --json` prints (with durable `workflow` history), and the block is regenerated from the live task on every
 run, so an edit made while a task waits is what the next run reads.
 
 The provider still starts in the workspace directory, so the home-level `AGENTS.md` and
 skills load as usual; the block tells the agent where to `cd`. The run's environment adds
-`ENSO_TASK=<ref>` and, for a repo project, `ENSO_TASK_DIR=<worktree>`; see
+`ENSO_TASK=<ref>` and, when the stage uses a worktree, `ENSO_TASK_DIR=<worktree>`; see
 [CLI § Environment for agents](cli.md#environment-for-agents). How the run around the block
 proceeds is [How a stage job run flows](concepts.md#how-a-stage-job-run-flows).
 
+## Stage transactions and checks
+
+Checks are optional. A project with `"stages": ["work"]` is a valid `work → done` flow,
+with no Git requirement and no mandatory tests or review. Required checks are an opt-in
+contract: once configured, all must pass before a forward handoff is accepted.
+
+1. Enso claims the task and records the selected stage, spec/workflow versions, starting
+   revision, and execution directory.
+2. The agent works and submits `advance` or `return` with a handoff, then finishes its turn.
+3. After provider execution and job postrun work stop, Enso evaluates the submission.
+   Forward handoffs run configured commands against the stable candidate; returning work
+   uses the configured earlier stage and return budget, without requiring a broken candidate
+   to pass its forward checks.
+4. A repairable failure feeds actual check output back into the same task, within finite
+   attempt/time limits. A new candidate needs fresh evidence. Exhaustion, interruption,
+   stale inputs, or an infrastructure failure preserves the work and diagnostic for attention.
+5. Enso records acceptance, moves the task, and enqueues lifecycle events atomically.
+   No database write transaction remains open while commands or models execute.
+
+A check is a named command plus a timeout. Exit 0 passes; nonzero, missing/failed execution,
+timeout, interruption, or a missing required result cannot pass. Commands may be shell,
+Python, package scripts, or existing test tools; no report format or eval framework is
+required. A model review is judgment, recorded as a handoff, not an executable check result.
+
+Results bind to the candidate and selected spec/workflow. Editing the spec or workflow,
+rebasing, or changing the candidate invalidates earlier acceptance evidence. Existing
+validation inputs (including common test files and package/tool manifests) are protected
+against candidate changes; check `protect` patterns can add project-specific inputs.
+New tests are allowed. An operator can review intentional rule changes with `enso workflow
+approve-rules REF --message "what changed and why it is acceptable"`; the decision pins the
+reviewed content, and later changes require review again. This never records a check pass.
+
+Repair and return budgets persist across runs and service restarts. `max_repairs` and
+`max_returns` default to 2; zero disables the respective loop. `enso workflow retry REF
+--message "why another attempt is justified"` is an explicit, audited operator reset;
+it never turns a failed check into a pass. Resolve the cause before resuming blocked work.
+
+These are controller guarantees through Enso's supported execution paths. Environment
+actor labels are not authentication. A provider with unrestricted access under the same
+OS account can tamper with local files and controller state. Worktrees isolate Git files,
+not privileges, processes, ports, or secrets; hostile-agent enforcement requires OS/provider
+isolation plus a separately protected controller. A passing command proves its result,
+not exhaustive software correctness.
+
+## Development preset
+
+`enso workflow init KEY --preset dev --lint COMMAND --test COMMAND --base BRANCH` configures
+an existing repo project and creates its stage jobs:
+
+| Stage | Responsibility |
+| --- | --- |
+| `plan` | Scope, acceptance criteria, validation plan; runs in the Enso workspace without a worktree |
+| `implement` | Code, useful tests, and related docs; required lint/test commands, up to two repairs |
+| `review` | Separate review against the spec and candidate; return to implementation for changes, up to two returns |
+| `integrate` | Engine execution without a model: serialize landing, update against the target, recheck, land |
+| `done` | Accepted result; deliver configured lifecycle events, then eligible worktree cleanup |
+
+Both lint and test commands are required to select this preset; missing commands are not
+silently skipped. Choose actual project commands, then inspect the generated job prompts
+and configuration. Add type checks, build checks, browser tests, artifact validation,
+human checkpoints, or external CI commands only where useful. A command stage can prepare
+an artifact or poll an external result without invoking a provider. Integration is explicit;
+a final agent stage does not automatically imply permission to merge or publish.
+
+Use `--preset basic` for one unchecked `work` stage. The bundled `enso-workflow` skill helps
+choose and customize either process. This is an ordered pipeline with finite loops, not a
+general DAG engine or a requirement to adopt the development preset.
+
+## Lifecycle scripts
+
+Task transitions and worktree lifetime are separate. Project `setup` prepares a fresh
+worktree; `hooks.after_transition` runs after every accepted move, and `hooks["after:done"]`
+(or another stage name) reacts to that destination. `hooks.teardown` runs before worktree
+removal. Required pre-transition checks belong in the stage's `checks` array.
+
+After-transition events are durably enqueued with the move, including CLI and dependency
+moves. They run in order after execution ownership permits it, with the recorded worktree
+as their directory when available, otherwise the Enso workspace. A failing reaction does
+not undo an accepted stage: its output, retry attempts, and attention state stay visible.
+Delivery is at least once, with three automatic attempts; use `ENSO_EVENT_ID` for effect
+deduplication. A lifecycle script cannot recursively move tasks through the supported CLI.
+Worktree-using events must finish before cleanup; teardown failure preserves the worktree.
+See [Configuration](configuration.md#projects) for fields and [CLI](cli.md#environment-for-agents)
+for script context. Use lifecycle events for completion reactions rather than inferring
+completion from provider output or job postrun success.
+
+## Migrating an existing pipeline
+
+Inspect tasks, worktrees, stage jobs, prompts, and scripts before running `enso workflow
+init KEY --preset dev --lint COMMAND --test COMMAND --migrate`. Pause admissions and drain
+active jobs first. The beta migration intentionally replaces the former immediate agent
+handoff behavior with submissions and acceptance. It preserves task history, worktree
+ownership and branches, retains old job files/scripts as disabled definitions, and remaps
+`triage` to `plan` and `todo` to `implement`. Review other custom stage mappings and prompts
+instead of silently dropping their meaning.
+
+The command validates the complete replacement before changing project files, then briefly
+pauses new admissions while it installs disabled stage jobs and migrates task stage names.
+Original config and job snapshots, checksums, and the operation record live privately in
+`runtime/workflow-migrations/<operation-id>/`; original job definitions also remain beside
+their scripts as `JOB.md.pre-workflow`. If a crash or write failure interrupts installation,
+the admission gate stays closed. Rerun `enso workflow init KEY` to resume the recorded plan;
+the original flags and check commands do not need to be repeated. Resume refuses to overwrite
+files changed since the operation began. Do not manually remove its gate or backups.
+
+Move actual acceptance requirements from old postrun scripts into stage checks; move
+completion reactions into lifecycle hooks. Preserve setup and copy choices and inspect
+retained worktree paths before cleanup. Validate config and every job, then run a small
+failure/repair/acceptance trial and inspect its web task history before enabling a broad
+queue. See [Worktrees](#worktrees) for retained-path migration and cleanup rules.
+
 ## Worktrees
 
-A repo project keeps its tasks out of each other's way with one Git worktree per task:
+Repository stages can request one worktree per task. Stages that only plan or wait for a
+person need not create one. Once created, the same directory survives implementation,
+review, repairs, blocking, and human checkpoints.
 
-| | |
+| Property | Default and ownership |
 | --- | --- |
-| Location | `~/.enso/worktrees/<KEY>/<REF>/`, an Enso-owned path the layout audit knows |
+| Location | `<repo>/.worktrees/<REF>/`; outside the Enso home |
 | Branch | `enso/<REF>` |
-| Base | The main checkout's current branch, read with `git symbolic-ref`; a detached main checkout is an error |
+| Target | Project `base`, or the main checkout's current branch on first creation |
+| Recorded identity | Repository, absolute path, branch, target, starting commit, preparation and cleanup status |
 
-Here, **main checkout** means the regular repository directory, not the Git branch named
-`main`. For Enso development it stays on `develop`, following
-[the branch workflow](../CONTRIBUTING.md#branches). The base is read again when a task
-lands, so switching that checkout while stage jobs run can change their merge destination.
-Use a separate worktree for a production patch or release.
+`worktree_root` accepts a path relative to the repository, an absolute path, or `~`.
+For example, `"worktree_root": "../task-worktrees"` puts task directories beside the
+repository. Enso adds a nested root to Git's local `info/exclude`; it does not edit the
+tracked `.gitignore`. Git's administrative directory cannot contain a worktree root.
 
-Before the provider starts, Enso prunes stale worktree registrations, reuses the task's
-worktree when it exists, and otherwise adds one on a new `enso/<REF>` branch (or attaches
-the existing branch). On creation only, it copies each `copy` path that exists in the main
-checkout (gitignored env files, typically), then runs `setup` with bash inside the worktree
-with bounded output and a 600 second timeout. A failing setup fails the run, releases the
-claim with the fault as the message, and removes the half-made worktree and the branch it
-created, so the next run starts afresh. The main checkout itself is never edited, committed
-to, or switched; the Task block says so, and nothing pushes.
+Changing the project configuration does not move, forget, or retarget an existing task's
+worktree. Registered legacy directories under `~/.enso/worktrees/<KEY>/<REF>` are adopted
+in place, preserving branches and local files. A registration on a different branch or an
+unregistered directory with content is refused, with the directory left untouched. Missing
+worktrees can reattach their recorded branch at the recorded path.
 
-Three commands close the loop:
+### Preparation
 
-- `enso task advance` on a repo project refuses a worktree with uncommitted tracked changes
-  (`git status --porcelain --untracked-files=no`), listing the files, so nothing is handed to
-  the next stage half-committed.
-- `enso task land REF`, meant for a review stage, rebases `enso/<REF>` onto its base and
-  fast-forwards the main checkout, printing the new HEAD. It refuses a dirty worktree; a branch
-  with nothing the base lacks, saying whether the work was already merged or never committed;
-  a conflict, aborting the rebase and leaving the branch to resolve; and a main checkout with
-  uncommitted tracked changes, with `main checkout is dirty; block the task until it is
-  clean`, because that is your working tree and not the agent's to touch. It also refuses a
-  task another run holds, and on success attaches the new HEAD as a `commit` ref. Inside a
-  run it is refused for a task the run does not hold, and outside the project's last agent
-  stage, naming that stage; a person may land from anywhere. It never pushes.
-- `enso task sweep [--project KEY]` removes the worktrees of finished tasks that are clean and
-  deletes their branches when merged, leaving everything else alone and touching nothing outside
-  `worktrees/<KEY>/`. Clean here means nothing uncommitted at all, untracked files included
-  (ignored files such as a copied `.env` do not count), because the sweep deletes the
-  directory and a file never added would be gone for good. The runner sweeps a project itself
-  after a run finishes a task and once per scheduler tick; failures are logged once at warning
-  level.
+Before the first writing stage, Enso records ownership, adds the worktree, copies selected
+local inputs, and runs the configured `setup` command with bash in that worktree. Output is
+bounded and the timeout is `script_timeout` (600 seconds by default). Setup must be
+idempotent: a failed or interrupted setup is recorded and retried in the retained directory.
+Enso preserves any files the failed setup created. Successful setup runs only once.
+
+Setup and teardown receive `ENSO_HOME`, `ENSO_PROJECT`, `ENSO_TASK`, `ENSO_REPO`,
+`ENSO_PROJECT_REPO`, `ENSO_TASK_DIR`, `ENSO_WORKTREE`, `ENSO_BRANCH`, `ENSO_BASE`,
+`ENSO_FROM_STAGE`, `ENSO_TO_STAGE`, `ENSO_RUN_ID`, `ENSO_ATTEMPT`, `ENSO_EVENT`, and
+`ENSO_EVENT_ID`. Setup/teardown use the current task stage for both stage fields. The event ID is stable across retries so a script can avoid repeating an
+external effect. Preparation output and copy counts appear in the task's timeline.
+
+A repository `.worktreeinclude` selects **ignored files** to copy from the repository's
+main checkout. It uses one repository-relative glob per line; directories include their
+contents recursively, `**` matches directory levels, blank lines and `#` comments are
+ignored, and a leading `!` excludes a matching path and its descendants regardless of order:
+
+```text
+.env
+settings.local.json
+local-fixtures/
+!local-fixtures/private/
+```
+
+The existing project `copy` list adds explicit paths to these selections. Tracked files
+already arrive through Git. Enso never overwrites an existing destination, follows a
+symlink, copies Git metadata or a nested repository, or copies a registered worktree or the
+nested worktree root. Copy-on-write filesystem clones are preferred; an ordinary independent
+copy is the fallback, and its use is reported. No mutable dependency directory is shared
+automatically. Use the project's package manager in setup to create environments that must
+be installed at their own path, such as Python virtual environments.
+
+### Integration and cleanup
+
+The workflow's explicit integration stage owns landing. Enso serializes integration per
+repository, rebases the task branch onto its **recorded target's current commit**, and checks
+that candidate. Both candidate and target must still match when it lands. A changed target
+requires another rebase and check; a changed candidate requires fresh evidence. Conflicts or
+a timed-out rebase are aborted and retained for repair. Dirty candidates and dirty target
+checkouts are refused. When the target is the main checkout's branch, Enso fast-forwards it;
+when it is not checked out, Enso updates only that branch with a compare-and-swap. A target
+checked out in another worktree is left alone. Landing never pushes or deploys.
+
+Before updating Git, Enso saves the exact integration intent and its check evidence. It
+records the observed Git outcome before accepting the stage. If execution stops between
+those operations, operator recovery can recheck the already-integrated candidate against
+the current target and then accept it. It does not reuse old passing checks or create a
+second integration commit. The task history distinguishes an applying intent, an applied
+Git change, and an accepted stage. Cancellation waits for any Git worker to stop before
+releasing the repository or task execution lock.
+
+`enso task land` remains available where the workflow permits it; configured acceptance
+checks cannot be bypassed by moving or landing a task directly. A task's `done` stage means
+whatever its configured workflow establishes, such as a verified local integration, rather
+than a claim that it has been published.
+
+One execution owner holds a task's worktree from preparation through agent work, checks,
+repairs, and worktree-using lifecycle hooks. Other tasks can run up to the configured project
+concurrency limit. The repository integration lock also coordinates different Enso homes.
+
+`enso task sweep [--project KEY]` and the runner reconcile only Enso-owned, terminal tasks.
+A live claim, execution owner, or pending/running/failed lifecycle event prevents cleanup.
+Blocked tasks and human checkpoints retain their worktrees. Tracked changes, untracked
+nonignored files, and branches not integrated into the recorded target are preserved with
+an attention entry describing the reason.
+
+If configured, `hooks.teardown` runs before removal. Failure preserves the worktree; after three failed attempts, `enso workflow retry`
+with a reason is required before another retry. A successful teardown is recorded and is not repeated if Git removal needs a retry. Teardown
+can archive valuable local artifacts. **Ignored files are removed with an otherwise clean
+worktree**, so an ignored file is not a durable archive. Git removal never uses `--force`,
+and the branch is deleted only after proving it is integrated into the recorded target.
+An interrupted removal is reconciled from its recorded state on the next sweep.
+
+Worktrees isolate working files; they are not a sandbox. Shared databases, ports, credentials,
+Git configuration and external services still need appropriate project setup and resource
+concurrency groups. The workflow's acceptance records prevent ordinary premature handoffs;
+provider policies or a separate execution account are needed against an unrestricted process
+that can modify the controller itself.
 
 ## Evidence, notes, and edits
 
@@ -317,8 +495,13 @@ enso task note REF TEXT|- [--attention]
 enso task ref REF KIND VALUE
 enso task land REF
 enso task sweep [--project KEY]
+enso workflow show REF
+enso workflow verify REF --message TEXT|-
+enso workflow retry REF --message TEXT|-
+enso workflow approve-rules REF --message TEXT|-
+enso workflow init KEY --preset basic|dev [--lint CMD --test CMD] [--base BRANCH] [--worktree-root PATH] [--migrate]
 enso project list
-enso project add KEY --name NAME --workspace WS [--repo PATH] (--stages a,b,c:human | --flow basic|dev|support|marketing) [--setup CMD] [--copy PATH]...
+enso project add KEY --name NAME --workspace WS [--repo PATH] (--stages a,b,c:human | --flow basic|support|marketing) [--setup CMD] [--copy PATH]...
 ```
 
 Every command takes `--json` and follows the [JSON error contract](cli.md): a refused move or
@@ -338,7 +521,7 @@ the three timestamps included).
 
 `show` prints the fields, every move with `available` or the reason it is not, the refs, the
 body, and the timeline. `show --json` prints the context packet, the same data the Task block
-is rendered from, plus `events`, the full timeline newest first:
+is rendered from, plus `events`, the full timeline newest first, and `workflow`, the durable stage transactions:
 
 ```json
 {"ref": "EN-041", "project": "EN", "project_name": "Enso", "title": "…", "body": "…",
@@ -361,10 +544,11 @@ is rendered from, plus `events`, the full timeline newest first:
 `edited` event's the old values, a `noted` event's whether it raised attention, a `taken`
 event's the stage it was taken in, and a `ref` event's the kind and value attached.
 
-The other commands print one line (`advance EN-041: review — Fix labelled Slack code
-fences`) or, with `--json`, the task object; `note` and `ref` print the event and the ref.
+Task moves print one line or, with `--json`, the task object. An in-run advance/return
+prints the retained stage because it submitted a handoff, not an already accepted move; `note` and `ref` print the event and the ref.
 `project list --json` is a list of project objects with `key`, `name`, `workspace`, `repo`,
-`stages` (each `{"name", "human"}`), `setup`, and `copy`; `project add --json` prints the
+`stages` (objects with execution/check settings), `setup`, `copy`, `base`, `worktree_root`,
+`max_concurrency`, `hooks`, and `script_timeout`; `project add --json` prints the
 one it wrote.
 
 ## From chat

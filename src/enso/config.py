@@ -258,11 +258,28 @@ class WebConfig:
 
 
 @dataclass(frozen=True)
+class Check:
+    """An engine-executed acceptance command and its trusted inputs."""
+
+    name: str
+    command: str
+    timeout: int = 600
+    protect: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class Stage:
     """One step of a project's pipeline: served by a stage job, or waiting on a person."""
 
     name: str
     human: bool = False
+    command: str | None = None
+    worktree: bool | None = None
+    checks: tuple[Check, ...] = ()
+    max_repairs: int = 2
+    max_returns: int = 2
+    return_to: str | None = None
+    integrate: bool = False
 
 
 @dataclass(frozen=True)
@@ -276,6 +293,11 @@ class ProjectConfig:
     stages: tuple[Stage, ...]
     setup: str | None = None  # bash command run once inside a fresh worktree
     copy: tuple[str, ...] = ()  # relative paths copied from the main checkout into a worktree
+    worktree_root: str | None = None
+    base: str | None = None
+    max_concurrency: int = 1
+    hooks: dict[str, str] = field(default_factory=dict)
+    script_timeout: int = 600
 
     @property
     def stage_names(self) -> tuple[str, ...]:
@@ -290,9 +312,16 @@ class ProjectConfig:
         return tuple(stage.name for stage in self.stages if stage.human)
 
     @property
-    def last_agent_stage(self) -> str:
-        """The agent stage that lands a task's branch; validation guarantees there is one."""
-        return self.agent_stages[-1]
+    def last_agent_stage(self) -> str | None:
+        """The last non-human stage that can hold a worktree, if the flow has one."""
+        return next(
+            (
+                stage.name
+                for stage in reversed(self.stages)
+                if not stage.human and stage.worktree is not False
+            ),
+            None,
+        )
 
     def stage(self, name: str) -> Stage | None:
         return next((stage for stage in self.stages if stage.name == name), None)
@@ -317,9 +346,14 @@ class ProjectConfig:
             "name": self.name,
             "workspace": self.workspace,
             "repo": str(self.repo) if self.repo is not None else None,
-            "stages": [{"name": stage.name, "human": stage.human} for stage in self.stages],
+            "stages": [stage_dict(stage) for stage in self.stages],
             "setup": self.setup,
             "copy": list(self.copy),
+            "worktree_root": self.worktree_root,
+            "base": self.base,
+            "max_concurrency": self.max_concurrency,
+            "hooks": self.hooks,
+            "script_timeout": self.script_timeout,
         }
 
 
@@ -410,7 +444,19 @@ ROOT_KEYS = (
     "projects",
     "heartbeat",
 )
-PROJECT_KEYS = ("name", "workspace", "repo", "stages", "setup", "copy")
+PROJECT_KEYS = (
+    "name",
+    "workspace",
+    "repo",
+    "stages",
+    "setup",
+    "copy",
+    "worktree_root",
+    "base",
+    "max_concurrency",
+    "hooks",
+    "script_timeout",
+)
 SLACK_KEYS = ("bot_token", "app_token", "notify", "mention_required", "thread_mention_required")
 TELEGRAM_KEYS = ("bot_token", "allowed_users", "notify")
 PROVIDER_KEYS = ("path", "models", "args")
@@ -724,43 +770,139 @@ def _parse_bindings(
     return bindings
 
 
-def parse_stages(raw: object, where: str, problems: list[str]) -> tuple[Stage, ...]:
-    """A stage list: ``name`` or ``name:human`` entries, unique, no built-in, one agent stage.
+def stage_dict(stage: Stage) -> dict[str, Any]:
+    from dataclasses import asdict
 
-    Shared with ``enso project add`` so a ``--stages`` flag and a hand-written list are
-    judged by the same rule.
-    """
-    entries = _str_list(raw)
-    if not entries:
-        problems.append(f"{where} must be a non-empty list of stage names")
+    return asdict(stage)
+
+
+def _parse_checks(raw: object, where: str, problems: list[str]) -> tuple[Check, ...]:
+    if not isinstance(raw, list):
+        problems.append(f"{where} must be a list")
+        return ()
+    result: list[Check] = []
+    for value in raw:
+        if not isinstance(value, dict):
+            problems.append(f"{where} entries must be objects")
+            continue
+        _unknown_keys(value, ("name", "command", "timeout", "protect"), where, problems)
+        if not all(isinstance(value.get(k), str) and value[k].strip() for k in ("name", "command")):
+            problems.append(f"{where} requires name and command")
+            continue
+        if any(check.name == value["name"] for check in result):
+            problems.append(f"{where}: duplicate check {value['name']}")
+        timeout = _positive_int(value, "timeout", 600, where, problems)
+        if timeout == 0:
+            problems.append(f"{where}: check timeout must be positive")
+        protect = _str_list(value.get("protect", []))
+        if protect is None or not all(_inside_repo(x) for x in protect):
+            problems.append(f"{where}: protect must be repository-relative paths or patterns")
+            protect = []
+        result.append(Check(value["name"], value["command"], timeout, tuple(protect)))
+    return tuple(result)
+
+
+def _stage_entry(entry: object, where: str, problems: list[str]) -> Stage | None:
+    if isinstance(entry, str):
+        name, sep, suffix = entry.partition(":")
+        if sep and suffix != "human":
+            problems.append(f"{where}: {entry!r} is not a stage; use NAME or NAME:human")
+            return None
+        entry = {"name": name, "human": bool(sep)}
+    if not isinstance(entry, dict):
+        problems.append(f"{where}: each stage must be a name or object")
+        return None
+    _unknown_keys(entry, tuple(Stage.__dataclass_fields__), where, problems)
+    name = entry.get("name", "")
+    if not isinstance(name, str) or not STAGE_NAME_RE.fullmatch(name):
+        problems.append(
+            f"{where}: {name!r} is not a stage name (lowercase, digits, hyphens, 2-24 chars)"
+        )
+        return None
+    data = {k: v for k, v in entry.items() if k in Stage.__dataclass_fields__}
+    for flag in ("human", "integrate", "worktree"):
+        if (
+            flag in entry
+            and not isinstance(entry[flag], bool)
+            and not (flag == "worktree" and entry[flag] is None)
+        ):
+            problems.append(f"{where}.{name}.{flag} must be true or false")
+            data[flag] = False
+    for key in ("max_repairs", "max_returns"):
+        data[key] = _positive_int(entry, key, 2, f"{where}.{name}", problems)
+    for key in ("command", "return_to"):
+        if entry.get(key) is not None and (
+            not isinstance(entry[key], str) or not entry[key].strip()
+        ):
+            problems.append(f"{where}.{name}.{key} must be non-empty text")
+            data[key] = None
+    data["checks"] = _parse_checks(entry.get("checks", []), f"{where}.{name}.checks", problems)
+    stage = Stage(**data)
+    if sum((stage.human, stage.command is not None, stage.integrate)) > 1:
+        problems.append(f"{where}.{name}: choose human, command, or integrate")
+    if stage.integrate and stage.worktree is False:
+        problems.append(f"{where}.{name}: integration requires a worktree")
+    return stage
+
+
+def parse_stages(raw: object, where: str, problems: list[str]) -> tuple[Stage, ...]:
+    """Strings keep the simple flow; objects opt into execution and acceptance rules."""
+    if not isinstance(raw, list) or not raw:
+        problems.append(f"{where} must be a non-empty list of stage names or objects")
         return ()
     stages: list[Stage] = []
-    for entry in entries:
-        name, sep, suffix = entry.partition(":")
-        human = sep != "" and suffix == "human"
-        if sep and not human:
-            problems.append(f"{where}: {entry!r} is not a stage; use NAME or NAME:human")
+    for entry in raw:
+        stage = _stage_entry(entry, where, problems)
+        if stage is None:
             continue
-        if not STAGE_NAME_RE.fullmatch(name):
-            problems.append(
-                f"{where}: {name!r} is not a stage name (lowercase, digits, hyphens, 2-24 chars)"
-            )
-            continue
-        if name in BUILTIN_STAGES:
-            problems.append(f"{where}: {name} is a built-in stage")
-            continue
-        if any(stage.name == name for stage in stages):
-            problems.append(f"{where}: {name} is listed twice")
-            continue
-        stages.append(Stage(name, human))
-    if stages and all(stage.human for stage in stages):
-        problems.append(f"{where} needs at least one agent stage")
+        if stage.name in BUILTIN_STAGES:
+            problems.append(f"{where}: {stage.name} is a built-in stage")
+        elif any(s.name == stage.name for s in stages):
+            problems.append(f"{where}: {stage.name} is listed twice")
+        else:
+            if stage.return_to is not None and stage.return_to not in {s.name for s in stages}:
+                problems.append(f"{where}.{stage.name}.return_to must name an earlier stage")
+            stages.append(stage)
     return tuple(stages)
 
 
 def _inside_repo(item: str) -> bool:
     """A relative path that cannot leave the checkout it is copied from."""
     return bool(item) and not Path(item).is_absolute() and ".." not in Path(item).parts
+
+
+def _project_workflow_options(
+    entry: dict, stages: tuple[Stage, ...], where: str, problems: list[str]
+) -> dict[str, Any]:
+    extra: dict[str, Any] = {}
+    for option in ("worktree_root", "base"):
+        value = entry.get(option)
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            problems.append(f"{where}.{option} must be non-empty text")
+            value = None
+        extra[option] = value
+    for option, default in (("max_concurrency", 1), ("script_timeout", 600)):
+        value = _positive_int(entry, option, default, where, problems)
+        if value == 0:
+            problems.append(f"{where}.{option} must be positive")
+        extra[option] = value
+    hooks = entry.get("hooks", {})
+    allowed_hooks = {
+        "after_transition",
+        "teardown",
+        *(f"after:{s}" for s in (*BUILTIN_STAGES, *(s.name for s in stages))),
+    }
+    if not isinstance(hooks, dict):
+        problems.append(f"{where}.hooks must be an object")
+        hooks = {}
+    for event, command in hooks.items():
+        if event not in allowed_hooks or not isinstance(command, str) or not command.strip():
+            problems.append(
+                f"{where}.hooks.{event}: use after_transition, after:STAGE, "
+                "or teardown with a command"
+            )
+    extra["hooks"] = hooks
+    return extra
 
 
 def _parse_project(
@@ -796,7 +938,11 @@ def _parse_project(
     if copy is None or not all(_inside_repo(item) for item in copy):
         problems.append(f"{where}.copy must be a list of relative paths inside the repository")
         copy = []
+    extra = _project_workflow_options(entry, stages, where, problems)
+    if repo is None and any(s.worktree or s.integrate for s in stages):
+        problems.append(f"{where}: worktree/integrate stages require repo")
     return ProjectConfig(
+        **extra,
         key=key,
         name=str(name).strip(),
         workspace=str(workspace),

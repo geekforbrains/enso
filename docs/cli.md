@@ -395,16 +395,35 @@ enso task land REF [--json]
 enso task sweep [--project KEY] [--json]
 enso project list [--json]
 enso project add KEY --name NAME --workspace WS [--repo PATH] (--stages a,b,c:human | --flow F) [--setup CMD] [--copy PATH]... [--json]
+enso workflow init KEY --preset basic|dev [--lint COMMAND --test COMMAND] [--base BRANCH] [--worktree-root PATH] [--migrate] [--json]
+enso workflow show REF [--json]
+enso workflow verify REF --message TEXT [--json]
+enso workflow retry REF --message TEXT [--json]
+enso workflow approve-rules REF --message TEXT [--json]
 ```
 
 The board, its moves, the claim rules, and what each command prints are in
 [Tasks](tasks.md#the-cli). A refused move exits 1 with the reason, or with `--json` the error
 object described above. The actor is derived from the environment, never passed: a job run
 acts as `job:<name>`, a chat turn as its sender, a terminal as the local user. `--force`,
-which overrides another run's claim, is refused inside a run; `drop` is only offered
+is refused inside a run and cannot override a live execution claim or required checks; `drop` is only offered
 outside one; and a run may move, release, edit, or land only the task it holds. `--message -` and `--body-file -` read stdin. `project add` takes exactly one of
-`--stages` and `--flow` (`basic`, `dev`, `support`, `marketing`), validates the whole
+`--stages` and `--flow` (`basic`, `support`, `marketing`), validates the whole
 `config.json`, and writes it atomically; see [Configuration](configuration.md#projects).
+
+`workflow init` configures an existing project. The basic preset has one unchecked stage;
+dev requires a Git repository plus real lint/test commands and scaffolds plan, implement,
+review, and engine integration. `--migrate` preserves old job definitions as disabled files
+and remaps legacy stages while retaining task history and worktree metadata. Inspect and
+drain live work before migration; review custom instructions before enabling new jobs.
+
+`workflow show` exposes durable transactions, check results, repair budgets and lifecycle
+history. `verify` runs the selected stage's acceptance without a provider; it does not bypass
+checks. `retry` explicitly resets retry budgets and failed lifecycle delivery for another
+attempt, with the required reason recorded. `approve-rules` records an operator's review
+of changed protected validation inputs; later changes invalidate that approval. Recovery
+commands are refused from an agent run. No recovery command fabricates a passing result.
+See [Tasks](tasks.md#stage-transactions-and-checks) for evidence and the OS trust boundary.
 
 ## Web
 
@@ -540,7 +559,14 @@ Re-registering it updates its description and display name; it does not change t
 | `ENSO_ORIGIN_THREAD_TS` | chat turns | The Slack thread, when there is one |
 | `ENSO_JOB` / `ENSO_RUN_ID` | jobs | The job's directory name and this run's id |
 | `ENSO_TASK` | stage jobs | The reference of the task claimed for this run, such as `EN-041` |
-| `ENSO_TASK_DIR` | stage jobs of a repo project | The task's worktree; the provider's cwd is still the workspace |
+| `ENSO_TASK_DIR` | stages using a worktree | The recorded task worktree; the provider's cwd is still the workspace |
+| `ENSO_PROJECT_REPO` | repo stage jobs and lifecycle scripts | The regular repository path for context |
+| `ENSO_TRANSACTION_ID` / `ENSO_CANDIDATE` | workflow checks | Transaction and stable candidate being evaluated |
+| `ENSO_EVENT_ID` | lifecycle scripts | Stable event identity; use for idempotency/deduplication |
+| `ENSO_PROJECT` / `ENSO_FROM_STAGE` / `ENSO_TO_STAGE` | lifecycle scripts | Project and accepted transition |
+| `ENSO_BRANCH` / `ENSO_BASE` | lifecycle scripts | Recorded task branch and target |
+| `ENSO_ATTEMPT` | workflow checks and lifecycle scripts | Current verification or delivery attempt |
+| `ENSO_LIFECYCLE` | lifecycle scripts | Marks lifecycle execution; recursive task moves are refused |
 | `ENSO_BEAT` | beat gates and runs | The beat reference, such as `HB-001` |
 | `ENSO_BEAT_RUN_ID` | beat agent runs | This assessment's run ID |
 | `ENSO_BEAT_CHECKPOINT` | beat gates and runs | The saved source checkpoint as a JSON object |

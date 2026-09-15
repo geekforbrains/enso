@@ -40,7 +40,7 @@ misfire_grace_seconds: 300    # optional: how late a slot may still fire (defaul
 The prompt. {{prerun_output}} is replaced with the prerun's stdout.
 ```
 
-`provider`, `model`, and `effort` are required on every job and validated against
+`provider`, `model`, and `effort` are required on agent jobs and validated against
 `config.json`; jobs never inherit the default or workspace agent triple. Workspace
 provider-argument overrides still apply. Effort follows the provider's rules at run time:
 ordered ladders clamp to the model's maximum, Antigravity uses its embedded model effort,
@@ -53,11 +53,13 @@ configured; without it, alerts go to the first configured transport with a `noti
 (see [Scheduling](#scheduling)). `project` and `stage` come together or not at all: `project`
 must be a key in `config.json`'s [`projects`](configuration.md#projects) and `stage` one of
 that project's agent stages (`approve is a human stage; a job cannot serve it`). With a
-`stage`, `schedule` is optional, and still validated when present.
+`stage`, `schedule` is optional, and still validated when present. Command and integration
+stages omit the provider triple and execute their project-defined work without a model.
 
-`concurrency_group` is optional non-empty text; a stage job without one is in
-`project:<KEY>`, so the stages of one project serialise and different projects run in
-parallel. Jobs in the same group run their preruns independently, but Enso admits only one
+`concurrency_group` is optional non-empty text. Project task capacity is separately
+controlled by `max_concurrency` (default 1); raise it to allow different tasks in different
+stages concurrently. Each task worktree still has one execution owner. Use an explicit
+group for jobs sharing another resource, such as a test database. Jobs in the same group run their preruns independently, but Enso admits only one
 selected run through provider execution and postrun checks at a time. It uses an advisory
 file lock under `jobs/.concurrency/`, shared with manual runs, so the operating system
 releases it if a process or the service dies; a stale database flag cannot strand a group.
@@ -76,7 +78,7 @@ and nothing is coerced, so a `JOB.md` says exactly one thing or it says nothing:
 | The block is valid YAML and a `key: value` mapping | reported with the line and column of the fault |
 | Each key appears once | `answers 'name' twice at line 4, column 1` |
 | Every key is one of the fields above | `'retries' is not a recognized field` |
-| The seven required fields are present (`schedule` may be absent on a stage job) | `effort is required` |
+| Required fields are present (`schedule` may be absent on a stage job; command/integration stages omit the provider triple) | `effort is required` |
 | `project` and `stage` are both present or both absent, name a configured project and one of its agent stages | `approve is a human stage; a job cannot serve it` |
 | Text fields are non-empty text | `effort must be non-empty text` |
 | `enabled` and `catch_up` are YAML booleans | `enabled must be true or false` |
@@ -138,7 +140,7 @@ did not.
 
 ## Stage jobs
 
-A stage job serves one agent stage of a [project](tasks.md#projects-and-stages): its
+A stage job serves one executable stage of a [project](tasks.md#projects-and-stages): its
 `project` and `stage` bind it, and its prompt is that stage's instructions, what done means
 there and what to check. `enso job create --project KEY --stage NAME` scaffolds one, and
 with those two flags `--schedule` is optional.
@@ -167,15 +169,40 @@ an unscheduled stage job, and `job show` prints `group` (the effective concurren
 no `next_run` for it.
 
 When it fires, Enso claims the ready task with the highest priority for that run, prepares
-a worktree for a repo project, writes the [Task block](tasks.md#the-task-block) and the
+a worktree when that stage needs one, writes the [Task block](tasks.md#the-task-block) and the
 repository's own instructions ahead of the prompt, and sets `ENSO_TASK` (and
 `ENSO_TASK_DIR`) in the environment. The prerun, provider turns, and postrun are the ordinary
-ones; `{{prerun_output}}` is still substituted. Moving the task hands it off and clears the
-claim; it does not stop the provider process or skip the remaining postrun checks. The agent
-must finish after the handoff and cannot move the task again from that run. A run that ends
-still holding its claim has it released and recorded, and the next run sees that as recovery.
+ones; `{{prerun_output}}` is still substituted. An agent's advance/return submits a handoff
+and the agent finishes its turn. The stage and claim remain unchanged through provider
+completion, job postrun, and workflow acceptance. Enso then runs the selected required
+checks, sends actual failures back for a bounded repair when allowed, and commits the
+transition only on acceptance. Provider success alone never proves that a task advanced.
+Command and integration stages use the same transaction/evidence path without a provider.
+A failed or interrupted execution preserves its diagnostic and work for recovery.
 [Tasks](tasks.md#claims-and-readiness) owns the claim rules and
 [Concepts](concepts.md#how-a-stage-job-run-flows) the full run order.
+
+### Workflow checks and lifecycle events
+
+Stage `checks` enforce forward acceptance independently of the model. They run after the
+provider stops writing; a repair receives concrete output, uses the same held task, and
+submits a fresh handoff. Stage budgets persist across restarts and scheduler re-entry, so
+another run does not silently buy unlimited attempts. A return goes to an earlier stage
+within its own finite budget. No-check stages remain valid and accept a successfully
+submitted handoff after execution completes. See [Tasks](tasks.md#stage-transactions-and-checks).
+
+Project lifecycle hooks react to accepted transitions and worktree cleanup. They are
+persisted events, including manual task moves, with stable IDs and recorded retry deliveries.
+They differ from a job's prerun/postrun hooks, which describe that job invocation. Use
+stage checks for lint/tests, and `hooks["after:done"]` for an accepted-completion reaction.
+A failed after-transition hook does not undo the move; it raises attention and preserves
+cleanup resources. Script effects must tolerate at-least-once delivery. See
+[Tasks](tasks.md#lifecycle-scripts).
+
+The run/task ownership lasts through checks and repair, and worktree-using lifecycle events
+prevent reuse or cleanup until delivered. Integration has a separate per-repository landing
+lock and revalidates the target candidate; it is configured explicitly, not inferred from
+the last agent stage. Worktrees do not isolate shared services or ports.
 
 ## Bundled jobs
 
@@ -301,7 +328,8 @@ permissions. It receives only the new message; the provider session keeps the or
 prompt, prerun data and previous turns. Prerun is not repeated. The next scheduled or manual
 trigger starts a fresh session. Enso never silently falls back to a fresh session if it
 cannot resume the current one. Jobs with postrun use structured provider output from their
-first turn to capture and validate the session ID; jobs without postrun keep batch execution.
+first turn to capture and validate the session ID; ordinary jobs without postrun keep batch execution. Agent stage jobs retain a resumable
+session for workflow repair even when they have no postrun script.
 Structured turns follow the shared [session identity rules](configuration.md#session-identity).
 
 Postrun also runs once for `no_work`, `prerun_error`, group `skipped`, and provider failure
@@ -347,8 +375,8 @@ exit 0
 
 A clean working tree checks for remaining changes; it does not prove a particular commit
 was created. If the job requires a specific commit or artifact, check that condition too.
-The script can run more than once, so put actions intended only after acceptance, such as
-archiving a result, after its checks pass. For ordinary cleanup, do the work and exit `0`;
+The script can run more than once. On task workflows, put accepted-completion reactions in
+project lifecycle hooks; successful postrun execution is not stage acceptance. For ordinary cleanup, do the work and exit `0`;
 no extra provider turn runs. Do not recursively call `enso job run` for the same job from
 postrun: its per-job lock is still held.
 

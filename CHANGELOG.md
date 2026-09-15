@@ -7,6 +7,12 @@ All notable changes to Enso are documented here, following
 
 ### Changed
 
+- Agent task handoffs are submitted for Enso acceptance after execution finishes. Required
+  stage checks, when configured, run outside the model and retain candidate-bound evidence,
+  bounded repair/return history, and diagnostics. Simple unchecked workflows remain valid.
+- Task worktrees default to `<repo>/.worktrees`, support custom roots, and retain their
+  recorded target and ownership across configuration changes. Project concurrency allows
+  different tasks in different stages while execution and landing remain serialized where needed.
 - CLI text inputs use one bounded reader: messages, notes, task bodies, heartbeat input
   (including checkpoints), and Slack rich-message envelopes accept 256 KiB, `config apply`
   1 MiB, and `connect` 16 KiB. Limits apply equally to text arguments, files, and stdin,
@@ -18,6 +24,10 @@ All notable changes to Enso are documented here, following
 
 ### Added
 
+- `enso workflow` commands and the bundled `enso-workflow` skill for a simple unchecked flow,
+  a checked development preset, existing-job migration, audit history, and explicit recovery.
+- Command and integration stages without a model, optional lifecycle scripts with durable
+  retry history, and task/run web views showing handoff acceptance, checks, repairs, and cleanup.
 - `enso web install` and `uninstall` manage an optional viewer user service on macOS
   and Linux. It starts at login, restarts after crashes, reports its health in `doctor`,
   and cooperates with viewer start/stop and managed release updates.

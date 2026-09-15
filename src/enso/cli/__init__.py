@@ -45,6 +45,7 @@ from .tables import table_app
 from .tasks import task_app
 from .update import update_app
 from .web import web_app
+from .workflows import workflow_app
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="Chat with agent CLIs.")
 config_app = typer.Typer(
@@ -56,6 +57,7 @@ service_app = typer.Typer(
 )
 app.command("setup")(setup_wizard)
 app.add_typer(config_app, name="config")
+app.add_typer(workflow_app, name="workflow")
 app.add_typer(connect_app, name="connect")
 app.add_typer(workspace_app, name="workspace")
 app.add_typer(service_app, name="service")
@@ -91,9 +93,15 @@ def _root(
     independent = ctx.invoked_subcommand in {"update", "serve", "logs", "web"}
     try:
         state = maintenance.read_json(paths.update_state)
+        workflow_gate = (
+            maintenance.read_json(paths.maintenance) if ctx.invoked_subcommand == "workflow" else {}
+        )
     except (maintenance.UpdateError, OSError) as exc:
         fail([str(exc)], as_json="--json" in ctx.args or "--json" in sys.argv)
     internal = bool(state.get("id")) and os.environ.get("ENSO_UPDATE_INTERNAL") == state["id"]
+    workflow_resume = (
+        ctx.invoked_subcommand == "workflow" and workflow_gate.get("kind") == "workflow-init"
+    )
     if not independent and not internal and (paths.runtime_dir / "install.json").exists():
         try:
             fd = maintenance.acquire_access(paths)
@@ -105,6 +113,7 @@ def _root(
         and not independent
         and state.get("status") != "draining"
         and not internal
+        and not workflow_resume
     ):
         fail(
             ["Enso is updating; wait for update status before changing its home"],

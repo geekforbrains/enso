@@ -1,20 +1,20 @@
-"""Stage job runs: claim a task, prepare its worktree, frame the prompt, release at the end.
+"""Claim stage tasks, retain execution ownership, frame work, and settle interruptions.
 
-The runner calls ``begin`` after the prerun and the group lock, runs the provider exactly as
-it does for any other job with the prompt and environment ``begin`` hands back, and calls
-``end`` however the run stopped. The task's own rules stay in ``enso.tasks``: this module
-only decides what Enso itself does around a run, which is to claim, to frame, and to let go
-of a claim the agent never handed off. See ``docs/tasks.md`` and ``docs/concepts.md``.
+The workflow engine accepts submissions after execution and checks stop. This module keeps
+the task and worktree reserved through preparation and hands ownership back to the runner
+for the complete transaction. See ``docs/tasks.md`` and ``docs/concepts.md``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
-from dataclasses import dataclass, field
+from contextlib import AbstractContextManager
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from .. import tasks, worktrees
+from .. import tasks, workflows, worktrees
 from ..config import Config, Paths
 from . import Job
 
@@ -22,7 +22,6 @@ log = logging.getLogger(__name__)
 
 INSTRUCTIONS_LIMIT = 64 * 1024
 INSTRUCTION_FILES = ("AGENTS.md", "CLAUDE.md")
-TWO_STRIKES = "Two runs ended without a handoff; needs a look"
 
 
 @dataclass(frozen=True)
@@ -33,10 +32,49 @@ class StageRun:
     prompt: str | None = None  # None when preparation failed; ``error`` says why
     env: dict[str, str] = field(default_factory=dict)
     error: str = ""
+    deferred: bool = False
+    ownership: AbstractContextManager[None] | None = field(default=None, compare=False, repr=False)
 
 
 def actor(job: Job) -> str:
     return f"job:{job.dir_name}"
+
+
+async def _join_worker[T](worker: asyncio.Task[T]) -> T:
+    """During cancellation cleanup, repeated stops must still wait for the real writer."""
+    while True:
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            if worker.cancelled():
+                raise
+
+
+async def _reserve(paths: Paths, config: Config, job: Job, run_id: str) -> tasks.Task | None:
+    assert job.project is not None and job.stage is not None
+    worker = asyncio.create_task(
+        asyncio.to_thread(
+            tasks.take, paths, config, job.project, job.stage, run_id=run_id, actor=actor(job)
+        )
+    )
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        task = await _join_worker(worker)
+        if task is not None:
+            await _join_worker(
+                asyncio.create_task(
+                    asyncio.to_thread(
+                        workflows.interrupt,
+                        paths,
+                        config,
+                        task.ref,
+                        run_id,
+                        "run cancelled while reserving the task",
+                    )
+                )
+            )
+        raise
 
 
 def _instructions(repo: Path) -> tuple[str, str] | None:
@@ -63,16 +101,20 @@ def _prepare(
     """Worktree, packet, and prompt for a claimed task; raises when the worktree fails."""
     assert job.project is not None
     project = config.projects[job.project]
+    definition = project.stage(task.stage)
     env = {"ENSO_TASK": task.ref}
     info = None
     instructions = None
     recovery = None
     if project.repo is not None:
-        info = worktrees.prepare(paths, project, task.ref)
-        env["ENSO_TASK_DIR"] = str(info.path)
+        env["ENSO_PROJECT_REPO"] = str(project.repo)
         instructions = _instructions(project.repo)
-        if info.dirty:
-            recovery = "uncommitted changes in " + ", ".join(info.dirty)
+        if definition is None or definition.worktree is not False:
+            info = worktrees.prepare(paths, project, task.ref)
+            env["ENSO_TASK_DIR"] = str(info.path)
+            if info.dirty:
+                recovery = "uncommitted changes in " + ", ".join(info.dirty)
+    workflows.start(paths, config, task.ref, run_id)
     ctx = tasks.context(
         paths, config, task.ref, env={"ENSO_RUN_ID": run_id, "ENSO_JOB": job.dir_name}
     )
@@ -98,84 +140,104 @@ async def begin(
 ) -> StageRun | None:
     """Claim the readiest task for this run and prepare it; None when nothing waits.
 
-    A worktree that cannot be prepared releases the claim at once with the fault as the
-    message, so the timeline says why the run failed and the two-strikes rule still applies.
+    Preparation faults block the task with their diagnostic; cancellation waits until the
+    actual setup worker stops before releasing ownership.
     """
     assert job.project is not None and job.stage is not None
-    task = await asyncio.to_thread(
-        tasks.take, paths, config, job.project, job.stage, run_id=run_id, actor=actor(job)
-    )
+    task = await _reserve(paths, config, job, run_id)
     if task is None:
         return None
     log.info("run=%s took %s (%s)", run_id, task.ref, job.stage)
+    ownership = worktrees.execution_context(paths, task.ref)
+    preparation: asyncio.Task[StageRun] | None = None
+    entered = transferred = False
     try:
-        return await asyncio.to_thread(_prepare, paths, config, job, task, run_id, prerun_output)
+        ownership.__enter__()
+        entered = True
+        preparation = asyncio.create_task(
+            asyncio.to_thread(_prepare, paths, config, job, task, run_id, prerun_output)
+        )
+        prepared = await asyncio.shield(preparation)
+        transferred = True
+        return replace(prepared, ownership=ownership)
+    except worktrees.WorktreeBusyError as exc:
+        # Acceptance can release its claim before its final hook/ownership cleanup. The
+        # next stage may reserve the task in that gap, but must simply retry admission.
+        await asyncio.to_thread(
+            tasks.release,
+            paths,
+            task.ref,
+            actor=tasks.ENSO_ACTOR,
+            run_id=run_id,
+            message=str(exc),
+            reason="deferred",
+        )
+        return StageRun(task, error=str(exc), deferred=True)
     except (worktrees.WorktreeError, tasks.TaskError, OSError) as exc:
         message = f"could not prepare {task.ref}: {exc}"
         log.warning("run=%s %s", run_id, message)
-        await asyncio.to_thread(_release, paths, config, task.ref, run_id, message)
+        await asyncio.to_thread(workflows.interrupt, paths, config, task.ref, run_id, message)
         return StageRun(task, error=message)
     except BaseException as exc:
-        # A stop during a long setup, or a fault nobody expected: the claim must not outlive
-        # the run, or the task silently never becomes ready again. The runner never sees a
-        # StageRun for this claim, so it cannot settle it; release here and re-raise.
+        # A cancelled await does not stop a worker thread. Keep the task reserved until
+        # setup really finishes, so another run cannot start writing into the same tree.
         cancelled = isinstance(exc, asyncio.CancelledError)
+        if cancelled and preparation is not None:
+            with contextlib.suppress(Exception):
+                await _join_worker(preparation)
         status = "cancelled" if cancelled else f"error: {type(exc).__name__}: {exc}"
         message = f"run {run_id} ended ({status}) while preparing {task.ref}"
         log.warning("run=%s %s", run_id, message)
         try:
             await asyncio.shield(
-                asyncio.to_thread(_release, paths, config, task.ref, run_id, message)
+                asyncio.to_thread(workflows.interrupt, paths, config, task.ref, run_id, message)
             )
+            if tasks.get(paths, task.ref).claim_run_id == run_id:
+                await asyncio.shield(
+                    asyncio.to_thread(_release, paths, config, task.ref, run_id, message)
+                )
         except tasks.TaskError as release_exc:
             log.warning("run=%s could not release %s: %s", run_id, task.ref, release_exc)
         raise
+    finally:
+        if entered and not transferred:
+            ownership.__exit__(None, None, None)
+
+
+def end_ownership(stage: StageRun) -> StageRun:
+    """Release only after setup, all writers, checks, settlement, and lifecycle work stop."""
+    if stage.ownership is not None:
+        stage.ownership.__exit__(None, None, None)
+        return replace(stage, ownership=None)
+    return stage
 
 
 def _release(paths: Paths, config: Config, ref: str, run_id: str, message: str) -> tasks.Task:
-    """Let go of a claim the run still holds; two such releases in a row block the task."""
-    released = tasks.release(
+    """Release a stale claim whose stage no longer permits workflow settlement."""
+    return tasks.release(
         paths, ref, actor=tasks.ENSO_ACTOR, run_id=run_id, message=message, reason="run_ended"
     )
-    previous = None
-    for event in tasks.events(paths, ref)[1:]:  # [0] is the release just written
-        if event.run_id == run_id:
-            continue  # this run's own claim, refs, and notes are not a person's look
-        previous = event
-        break
-    if (
-        previous is not None
-        and previous.kind == "released"
-        and previous.payload.get("reason") == "run_ended"
-    ):
-        log.warning("%s: %s", ref, TWO_STRIKES)
-        # Enso's own move, like an automatic resume: the claim is already gone, and a run
-        # may only move the task it holds, so this is not done in the run's name.
-        return tasks.move(
-            paths,
-            config,
-            ref,
-            "block",
-            actor=tasks.ENSO_ACTOR,
-            run_id=None,
-            message=TWO_STRIKES,
-            attention=True,
-        )
-    return released
 
 
-def _end(paths: Paths, config: Config, ref: str, run_id: str, status: str) -> tasks.Task:
+def _end(
+    paths: Paths, config: Config, ref: str, run_id: str, status: str, error: str = ""
+) -> tasks.Task:
     task = tasks.get(paths, ref)
     if task.claim_run_id != run_id:
         return task  # the agent handed off (or a person forced past the claim)
+    reason = f"run {run_id} ended ({status})" + (f": {error}" if error else " without a handoff")
+    workflows.interrupt(paths, config, ref, run_id, reason)
+    task = tasks.get(paths, ref)
+    if task.claim_run_id != run_id:
+        return task
     return _release(paths, config, ref, run_id, f"run {run_id} ended ({status}) without a handoff")
 
 
 async def end(
-    paths: Paths, config: Config, stage: StageRun, run_id: str, status: str
+    paths: Paths, config: Config, stage: StageRun, run_id: str, status: str, error: str = ""
 ) -> tasks.Task:
-    """Release the claim when the run still holds it; the task as it stands afterwards."""
-    return await asyncio.to_thread(_end, paths, config, stage.task.ref, run_id, status)
+    """Block an unaccepted transaction and release its claim after execution stopped."""
+    return await asyncio.to_thread(_end, paths, config, stage.task.ref, run_id, status, error)
 
 
 def release_orphans(paths: Paths, config: Config, run_id: str, message: str) -> list[str]:
@@ -183,12 +245,14 @@ def release_orphans(paths: Paths, config: Config, run_id: str, message: str) -> 
 
     The runner's recovery closes the run rows an earlier Enso left ``running``; the claims
     those runs took would otherwise point at a dead run forever, and a claimed task is never
-    ready. The two-strikes rule applies as for any run that ended without a handoff.
+    ready. Block interrupted work so restarting the scheduler cannot reset repair budgets.
     """
     released = []
     for task in tasks.claimed_by(paths, run_id):
         try:
-            _release(paths, config, task.ref, run_id, message)
+            workflows.interrupt(paths, config, task.ref, run_id, message)
+            if tasks.get(paths, task.ref).claim_run_id == run_id:
+                _release(paths, config, task.ref, run_id, message)
         except tasks.TaskError as exc:
             log.warning("run=%s could not release %s: %s", run_id, task.ref, exc)
             continue

@@ -20,7 +20,7 @@ from math import ceil
 from typing import Any
 from urllib.parse import quote, urlencode
 
-from .. import audit, db, doctor, runs, skills, tasks, workspaces
+from .. import audit, db, doctor, runs, skills, tasks, workflows, workspaces
 from .. import heartbeat as beats
 from .. import log as logsetup
 from ..config import Config, Paths, valid_workspace_name
@@ -28,6 +28,7 @@ from ..jobs import Job, load_jobs
 from ..scheduling import cron_slots
 from . import Bind, common, files, filters
 from . import heartbeat as beatviews
+from . import tasks as taskviews
 
 LOG_TAIL_LINES = 200
 RECENT_RUNS = 20  # on a job's page
@@ -708,6 +709,8 @@ def job_model(paths: Paths, name: str, section: str = "overview") -> dict[str, A
         partial(runs.list_summaries, paths, job=name, limit=limit)
     )
     recent = summaries or []
+    project = config.projects.get(job.project) if config and job and job.project else None
+    stage = project.stage(job.stage) if project and job and job.stage else None
     return {
         "config_problems": problems,
         "alarm": common.alarm(paths),
@@ -717,6 +720,9 @@ def job_model(paths: Paths, name: str, section: str = "overview") -> dict[str, A
         "average": _average(recent),
         "name": name,
         "job": job,
+        "project": project,
+        "stage_definition": stage,
+        "engine": bool(stage and (stage.command is not None or stage.integrate)),
         "problems": job_problems.get(name, []),
         # JOB.md's body is Markdown, so the page renders it rather than showing the source.
         "prompt": files.render_markdown(job.prompt) if job and job.prompt else None,
@@ -1041,6 +1047,17 @@ def run_model(paths: Paths, run_id: str) -> dict[str, Any] | None:
     related, _tasks_error = (
         common.attempt(partial(tasks.tasks_for_run, paths, run.id)) if run else ([], None)
     )
+    workflow: list[dict[str, Any]] = []
+    workflow_error: str | None = None
+    if run:
+        for ref, _title in related or []:
+            history, failure = common.attempt(partial(workflows.history, paths, ref))
+            workflow_error = workflow_error or failure
+            workflow.extend(
+                {**entry, "task_ref": ref}
+                for entry in taskviews.workflow_rows(history or [], {run.id})
+                if entry.get("run_id") == run.id
+            )
     return {
         "config_problems": problems,
         "alarm": common.alarm(paths),
@@ -1048,7 +1065,19 @@ def run_model(paths: Paths, run_id: str) -> dict[str, Any] | None:
         "attempts": attempts or [],
         "timeout": timeout,
         "tasks": related or [],
-        "error": error or attempt_error,
+        "workflow": workflow,
+        "engine": bool(
+            run
+            and (
+                run.provider == "command"
+                or any(
+                    (entry.get("stage_definition") or {}).get("command")
+                    or (entry.get("stage_definition") or {}).get("integrate")
+                    for entry in workflow
+                )
+            )
+        ),
+        "error": error or attempt_error or workflow_error,
     }
 
 

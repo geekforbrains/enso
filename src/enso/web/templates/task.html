@@ -1,11 +1,16 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m %}
+{% import "_workflow.html" as w %}
 {% block title %}{{ ref }}{% if task %} · {{ task.title }}{% endif %}{% endblock %}
 {% block content %}
 <p class="crumbs"><a href="/tasks">Tasks</a> / <span aria-current="page">{{ ref }}</span></p>
 {{ m.error(error, "The task could not be read") }}
 {% if task %}
 {% call m.phead(now) %}<span class="mono">{{ task.ref }}</span> {{ task.title }}{% if task.attention %} {{ m.tag('warning', 'needs attention') }}{% endif %}{% endcall %}
+
+{% if workflow_notice %}
+{{ m.verdict(workflow_notice.tone, '✓' if workflow_notice.status == 'accepted' else '!', workflow_notice.label, workflow_notice.why, '#workflow', 'View evidence') }}
+{% endif %}
 
 {% if recovery %}
 {{ m.verdict('warning', '!', 'Run ' ~ recovery.run_id ~ ' ended without a handoff', recovery.message ~ ('' if recovery_link else ' (the run has been pruned)'), recovery_link, 'Open the run') }}
@@ -42,10 +47,23 @@
   <dl class="kv">
     <dt>Branch</dt><dd><code>{{ worktree.branch }}</code></dd>
     <dt>Path</dt><dd><code>{{ worktree.path }}</code></dd>
-    <dt>Base</dt><dd>{% if worktree.base %}<code>{{ worktree.base }}</code>{% else %}<span class="muted">unknown; the main checkout could not be read</span>{% endif %}</dd>
+    <dt>Target branch</dt><dd>{% if worktree.base %}<code>{{ worktree.base }}</code>{% else %}<span class="muted">unknown; no target recorded</span>{% endif %}</dd>
+    {% if worktree.start_revision %}<dt>Starting revision</dt><dd><code>{{ worktree.start_revision }}</code></dd>{% endif %}
+    {% if worktree.status %}<dt>Status</dt><dd>{{ worktree.status|replace('_', ' ') }}</dd>{% endif %}
+    {% if worktree.error %}<dt>Needs attention</dt><dd class="error-text">{{ worktree.error }}</dd>{% endif %}
     <dt>Commits ahead</dt><dd>{% if worktree.ahead is not none %}{{ worktree.ahead }} commit{{ 's' if worktree.ahead != 1 }} ahead of {{ worktree.base }}{% else %}<span class="muted">unknown; git could not count them</span>{% endif %}</dd>
   </dl>
 </div>
+{% endif %}
+
+{% if workflow %}
+<div class="shead" id="workflow"><h2>Workflow history</h2><span class="right">{{ workflow|length }} transaction{{ 's' if workflow|length != 1 }}, newest first</span></div>
+{% for entry in workflow %}{{ w.transaction(entry, include_hooks=False) }}{% endfor %}
+{% endif %}
+
+{% if lifecycle %}
+<div class="shead"><h2>Lifecycle scripts</h2><span class="right">{{ lifecycle|length }} event{{ 's' if lifecycle|length != 1 }}</span></div>
+{% for event in lifecycle %}{{ w.lifecycle(event) }}{% endfor %}
 {% endif %}
 
 <div class="shead"><h2>Spec</h2></div>

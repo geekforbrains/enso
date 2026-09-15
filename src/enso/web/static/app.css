@@ -573,6 +573,11 @@
     &:hover { background: var(--surface-2); color: var(--fg); }
   }
   details.panel[open] > summary { border-bottom: 1px solid var(--border); }
+  .workflow-results { padding: var(--s-4) var(--s-6) var(--s-6); }
+  .workflow-transaction { scroll-margin-block: var(--s-6); }
+  :is(.workflow-transaction, .workflow-result) > summary { flex-wrap: wrap; gap: var(--s-2); }
+  :is(.workflow-transaction, .workflow-result)[open] > summary > svg { transform: rotate(90deg); }
+  .verdict.running .lamp { background: var(--running-fill); color: var(--on-fill); }
   details.panel h3, .beat-event-body h3 { padding: var(--s-5) var(--s-6) 0; }
   /* The chevron trails the event number: a beat event's status dot owns the column a
      fold normally puts its chevron in, and the dot is the more useful of the two. */

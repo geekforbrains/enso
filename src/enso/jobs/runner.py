@@ -12,15 +12,15 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import IO, Literal
 
-from .. import db, execution, messages, policy, routing, runs, scheduling, tasks
+from .. import db, execution, messages, policy, routing, runs, scheduling, tasks, workflows
 from .. import log as logctx
-from ..config import Config, LiveConfig, Paths
+from ..config import Config, LiveConfig, Paths, config_fingerprint
 from ..execution import NOTIFY_LIMIT as NOTIFY_LIMIT
 from ..execution import alert_text, enso_error
 from ..locks import LockPathError, acquire_file_lock
 from ..providers import make_provider
 from ..transports import Transport
-from . import Job, load_jobs, taskflow
+from . import Job, command_stage, load_jobs, parse_job, taskflow
 
 log = logging.getLogger(__name__)
 
@@ -105,9 +105,18 @@ def acquire_group_lock(paths: Paths, group: str) -> IO[str] | None:
     directory = paths.jobs / GROUP_LOCK_DIRNAME
     if directory.is_symlink():
         raise LockPathError(f"group lock directory must not be a symbolic link: {directory}")
-    directory.mkdir(mode=0o700, exist_ok=True)
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     name = hashlib.sha256(group.encode()).hexdigest()
     return acquire_file_lock(directory / f"{name}.lock")
+
+
+def acquire_project_slot(paths: Paths, project: str, limit: int) -> IO[str] | None:
+    """Reserve one project execution slot across schedulers and manual job processes."""
+    for number in range(limit):
+        lock = acquire_group_lock(paths, f"project:{project}:slot:{number}")
+        if lock is not None:
+            return lock
+    return None
 
 
 class JobRunner:
@@ -142,6 +151,7 @@ class JobRunner:
         if paused(self.paths):
             return
         config = await asyncio.to_thread(self._live.current)
+        await workflows.drain_events(self.paths, config)
         jobs, problems = await asyncio.to_thread(load_jobs, self.paths, config)
         if problems != self._problems:
             for name, found in problems.items():
@@ -248,6 +258,22 @@ class JobRunner:
 
     # -- One run --
 
+    def _admission_problem(self, job: Job, config: Config) -> str:
+        """Recheck queued work after locking; maintenance never interrupts an active run."""
+        from ..maintenance import paused
+
+        if paused(self.paths):
+            return "Enso is paused for maintenance"
+        if job.stage is None:
+            return ""
+        if config.source_hash is not None and config_fingerprint(self.paths) != config.source_hash:
+            return "project configuration changed before the stage run started; trigger it again"
+        if job.path.exists():
+            current, problems = parse_job(job.dir_name, job.path, config)
+            if problems or current != job:
+                return "stage job definition changed before the run started; trigger it again"
+        return ""
+
     async def run(self, job: Job, *, trigger: str, config: Config | None = None) -> RunResult:
         """Lock, prerun, provider, run row, postrun; scheduled runs also alert.
 
@@ -260,9 +286,12 @@ class JobRunner:
                 log.info("already running (lock held); skipping this trigger")
                 return RunResult("skipped", error="already running")
             try:
-                return await self._run_locked(
-                    job, trigger, self.config if config is None else config
-                )
+                selected = self.config if config is None else config
+                problem = await asyncio.to_thread(self._admission_problem, job, selected)
+                if problem:
+                    log.info(problem)
+                    return RunResult("skipped", error=problem)
+                return await self._run_locked(job, trigger, selected)
             finally:
                 # last_run was already stamped at dispatch in tick(); re-stamping here with
                 # the completion time would shift the anchor a long run computes its next
@@ -272,7 +301,11 @@ class JobRunner:
     async def _run_locked(self, job: Job, trigger: str, config: Config) -> RunResult:
         notify = trigger in ("schedule", "ready")
         # Clamped once here so the run row and the provider command cannot disagree.
-        effort = routing.clamp_effort(job.provider, job.model, job.effort)
+        effort = (
+            job.effort
+            if command_stage(job, config)
+            else routing.clamp_effort(job.provider, job.model, job.effort)
+        )
         run_id = await asyncio.to_thread(runs.start, self.paths, job, trigger, effort=effort)
         log.info(
             "start run=%s trigger=%s %s %s %s workspace=%s prerun=%s postrun=%s timeout=%ss",
@@ -287,7 +320,7 @@ class JobRunner:
             job.timeout,
         )
         started = time.monotonic()
-        group_lock = None
+        resource_locks: list[IO[str]] = []
         stage: taskflow.StageRun | None = None
         try:
             prerun = await self._prerun(job, run_id)
@@ -298,13 +331,11 @@ class JobRunner:
             elif prerun.outcome == "no_work":
                 result = RunResult("no_work", run_id, exit_code=1)
             else:
-                if job.group:
-                    group_lock = await asyncio.to_thread(acquire_group_lock, self.paths, job.group)
-                    if group_lock is None:
-                        message = f"concurrency group {job.group!r} is already running"
-                        log.info(message)
-                        result = RunResult("skipped", run_id, error=message)
-                if not job.group or group_lock is not None:
+                resource_locks, collision = await self._acquire_resources(job, config)
+                if collision:
+                    log.info(collision)
+                    result = RunResult("skipped", run_id, error=collision)
+                else:
                     stage, early = await self._claim(job, run_id, prerun.output, config=config)
                     if early is not None:
                         result = early
@@ -321,7 +352,9 @@ class JobRunner:
                 result = checked
             if stage is not None:
                 result = replace(result, task=stage.task.ref)
-                await self._settle(stage, run_id, result.status, config=config)
+                await self._settle(stage, run_id, result.status, config=config, error=result.error)
+                await workflows.drain_events(self.paths, config)
+                stage = taskflow.end_ownership(stage)
             await asyncio.to_thread(self._finish, result, config)
         except BaseException as exc:
             # A stop (cancellation) or a bug must not leave the row ``running`` forever:
@@ -335,13 +368,17 @@ class JobRunner:
             log.warning("run=%s did not finish: %s", run_id, error)
             if stage is not None:
                 await self._settle(
-                    stage, run_id, "cancelled" if cancelled else "error", config=config
+                    stage, run_id, "cancelled" if cancelled else "error", config=config, error=error
                 )
             raise
         finally:
             self._run_env.pop(run_id, None)
-            if group_lock is not None:
-                group_lock.close()
+            if stage is not None:
+                taskflow.end_ownership(stage)
+            for lock in resource_locks:
+                lock.close()
+        if stage is not None:
+            await asyncio.to_thread(tasks.settle_dependencies, self.paths, config)
         if stage is not None and job.project is not None:
             settled = await asyncio.to_thread(tasks.get, self.paths, stage.task.ref)
             if settled.finished:
@@ -355,6 +392,33 @@ class JobRunner:
         if notify:
             await self._alert(job, prerun, result, config=config)
         return result
+
+    async def _acquire_resources(self, job: Job, config: Config) -> tuple[list[IO[str]], str]:
+        """Reserve explicit resources and project capacity without waiting or partial holds."""
+        held: list[IO[str]] = []
+        try:
+            if job.group:
+                lock = await asyncio.to_thread(acquire_group_lock, self.paths, job.group)
+                if lock is None:
+                    return [], f"concurrency group {job.group!r} is already running"
+                held.append(lock)
+            if job.project is not None:
+                slot = await asyncio.to_thread(
+                    acquire_project_slot,
+                    self.paths,
+                    job.project,
+                    config.projects[job.project].max_concurrency,
+                )
+                if slot is None:
+                    for lock in held:
+                        lock.close()
+                    return [], f"project {job.project} is at its run limit"
+                held.append(slot)
+        except BaseException:
+            for lock in held:
+                lock.close()
+            raise
+        return held, ""
 
     def _finish(self, result: RunResult, config: Config) -> int | None:
         """Close the row only after every turn and hook has finished."""
@@ -384,8 +448,10 @@ class JobRunner:
         if stage is None:
             log.info("no task is ready in %s/%s", job.project, job.stage)
             return None, RunResult("no_work", run_id)
-        if stage.prompt is None:  # the worktree failed; the claim is already released
-            return stage, RunResult("error", run_id, error=stage.error)
+        if stage.prompt is None:  # preparation settled or deferred; no provider may start
+            return stage, RunResult(
+                "no_work" if stage.deferred else "error", run_id, error=stage.error
+            )
         self._run_env[run_id] = stage.env
         return stage, None
 
@@ -401,11 +467,15 @@ class JobRunner:
         config: Config,
     ) -> RunResult:
         """The provider turns and hooks, framed by the stage's prompt when there is one."""
+        if stage is not None and command_stage(job, config):
+            return await self._stage_command(job, run_id, stage, started, config=config)
         try:
             policy.check(config, job.workspace, job.provider)  # one revision checks and launches
         except policy.PolicyError as exc:
             log.warning("run=%s refused: %s", run_id, exc)
             return RunResult("error", run_id, error=str(exc))
+        if stage is not None:
+            return await self._stage_turns(job, run_id, stage, effort, started, config=config)
         prompt = stage.prompt if stage is not None else None
         if job.postrun:
             return await self._execute_checked(
@@ -420,12 +490,170 @@ class JobRunner:
         )
         return result
 
+    async def _stage_command(
+        self, job: Job, run_id: str, stage: taskflow.StageRun, started: float, *, config: Config
+    ) -> RunResult:
+        """Run a configured command or integration transaction without invoking a model."""
+        assert job.project is not None and job.stage is not None
+        definition = config.projects[job.project].stage(job.stage)
+        assert definition is not None
+        output = ""
+        exit_code: int | None = 0
+        if definition.command is not None:
+            output, stderr, exit_code, timed_out = await execution.run_process(
+                ["bash", "-c", definition.command],
+                cwd=Path(stage.env.get("ENSO_TASK_DIR", self.paths.workspace(job.workspace))),
+                env=self._env(job, run_id),
+                timeout=job.timeout,
+                merge_stderr=False,
+                label=f"stage command {job.dir_name}",
+                output_keep=POSTRUN_FEEDBACK_LIMIT,
+            )
+            if timed_out or exit_code != 0:
+                result = RunResult(
+                    "timeout" if timed_out else "error",
+                    run_id,
+                    output=output,
+                    error=(
+                        f"stage command timed out after {job.timeout}s"
+                        if timed_out
+                        else enso_error(stderr) or f"stage command exited with status {exit_code}"
+                    ),
+                    exit_code=exit_code,
+                )
+                await self._record_attempt(result, 1)
+                return result
+        tasks.move(
+            self.paths,
+            config,
+            stage.task.ref,
+            "advance",
+            actor=tasks.ENSO_ACTOR,
+            run_id=run_id,
+            message="Integration requested" if definition.integrate else "Stage command completed",
+        )
+        result = RunResult("ok", run_id, output=output, exit_code=exit_code)
+        await self._record_attempt(result, 1)
+        if job.postrun:
+            hook = await self._postrun(
+                job, result, int((time.monotonic() - started) * 1000), attempt=1
+            )
+            result, diagnostic = self._checked_result(job, result, hook, attempt=1)
+            await self._record_attempt(result, 1, hook=replace(hook, error=diagnostic))
+            if result.status != "ok":
+                return result
+        evaluated = await workflows.evaluate(
+            self.paths, config, stage.task.ref, run_id, self._env(job, run_id)
+        )
+        if evaluated.status != "accepted":
+            return replace(result, status="error", error=evaluated.feedback)
+        return result
+
+    async def _stage_turns(
+        self,
+        job: Job,
+        run_id: str,
+        stage: taskflow.StageRun,
+        effort: str,
+        started: float,
+        *,
+        config: Config,
+    ) -> RunResult:
+        """Submit, stop writing, verify, and repair within one shared provider budget."""
+        assert stage.prompt is not None
+        provider = make_provider(job.provider, config.providers[job.provider].path)
+        args = config.provider_args(job.workspace, job.provider)
+        remaining = float(job.timeout)
+        prompt = stage.prompt
+        session_id = None
+        attempt = 1
+        postrun_followups = 0
+        while True:
+            turn_started = time.monotonic()
+            turn = await execution.execute_turn(
+                provider,
+                prompt,
+                job.model,
+                effort,
+                args,
+                cwd=self.paths.workspace(job.workspace),
+                env=self._env(job, run_id),
+                timeout=remaining,
+                session_id=session_id,
+            )
+            elapsed = time.monotonic() - turn_started
+            remaining = max(0.0, remaining - elapsed)
+            duration_ms = int(elapsed * 1000)
+            result = RunResult(
+                turn.status,
+                run_id,
+                output=turn.output,
+                error=turn.error,
+                exit_code=turn.exit_code,
+                session_id=turn.session_id,
+            )
+            if result.status == "timeout":
+                result = replace(
+                    result, error=f"timed out after {job.timeout}s of provider runtime"
+                )
+            await self._record_attempt(result, attempt, duration_ms=duration_ms)
+            if job.postrun:
+                hook = await self._postrun(
+                    job,
+                    result,
+                    int((time.monotonic() - started) * 1000),
+                    attempt=postrun_followups + 1,
+                )
+                checked, diagnostic = self._checked_result(
+                    job, result, hook, attempt=postrun_followups + 1
+                )
+                await self._record_attempt(
+                    result, attempt, hook=replace(hook, error=diagnostic), duration_ms=duration_ms
+                )
+                if checked.status != "ok":
+                    return checked
+                if hook.exit_code == 10:
+                    if remaining <= 0:
+                        return replace(
+                            result, status="timeout", error="provider time budget exhausted"
+                        )
+                    prompt = hook.output
+                    session_id = result.session_id
+                    postrun_followups += 1
+                    attempt += 1
+                    continue
+            if result.status != "ok":
+                return result
+            evaluated = await workflows.evaluate(
+                self.paths, config, stage.task.ref, run_id, self._env(job, run_id)
+            )
+            if evaluated.status == "accepted":
+                return result
+            if evaluated.status != "repair":
+                return replace(result, status="error", error=evaluated.feedback)
+            if remaining <= 0:
+                return replace(result, status="timeout", error="provider time budget exhausted")
+            prompt = (
+                stage.prompt
+                + "\n\n[Enso verification feedback]\n"
+                + evaluated.feedback
+                + "\nRepair the candidate and submit a new handoff, then stop."
+            )
+            session_id = result.session_id
+            attempt += 1
+
     async def _settle(
-        self, stage: taskflow.StageRun, run_id: str, status: str, *, config: Config
+        self,
+        stage: taskflow.StageRun,
+        run_id: str,
+        status: str,
+        *,
+        config: Config,
+        error: str = "",
     ) -> None:
         """Release a claim the agent never handed off; best effort, so a crash cannot mask one."""
         try:
-            task = await taskflow.end(self.paths, config, stage, run_id, status)
+            task = await taskflow.end(self.paths, config, stage, run_id, status, error)
         except tasks.TaskError, OSError:
             log.warning("run=%s could not release %s", run_id, stage.task.ref, exc_info=True)
             return

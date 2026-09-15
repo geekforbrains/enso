@@ -18,11 +18,12 @@ through the system. Everything else in the docs assumes these words.
 | **Workspace** | A directory with a fixed layout. The agent's working directory and its context. |
 | **Agent** | An explicit `provider` + `model` + `effort` triple |
 | **Conversation** | A serialized queue of turns with a resumable provider session |
-| **Job** | `JOB.md`: a cron schedule or a stage to serve, an agent, a workspace, and a prompt |
+| **Job** | `JOB.md`: a cron schedule or executable stage, a workspace, and agent instructions when a model is used |
 | **Beat** | One future action or finite situation to follow until resolved, managed by Heartbeat |
 | **Run** | One agent execution for a job or beat: status, exit code, duration, output |
 | **Project** | A key, a workspace, an ordered list of stages, and optionally a Git repository |
 | **Task** | One unit of work in a project: a reference, a spec, a stage, and its timeline |
+| **Workflow transaction** | One stage execution and submitted candidate, accepted by Enso with any required check evidence |
 | **Skill** | Instructions the agent can load, resolved across three scopes |
 | **Table** | A registered SQLite table in `enso.db` holding your structured data |
 | **Message** | An out-of-band send, recorded so the next turn hears about it |
@@ -49,7 +50,7 @@ Enso's normal runtime state lives under one directory:
 ├── jobs/<name>/JOB.md   # scheduled and stage jobs
 ├── jobs/.concurrency/   # advisory locks for job concurrency groups
 ├── heartbeat/<HB-ref>/  # optional gate.sh and helpers for one beat
-├── worktrees/<KEY>/<REF>/  # one Git worktree per task of a repo project
+├── worktrees/           # legacy task worktrees retained during migration; new defaults live by the repo
 ├── secrets/*.env        # KEY=value files exported into the service environment
 ├── enso.db             # runs, messages, sessions, jobs, tasks, beats, registered tables
 ├── enso.log            # rotating log
@@ -174,9 +175,10 @@ follow-up message into the same provider session. Every trigger that passes the
 per-job lock creates a **run** row recording status, exit code, duration, and the output
 tail. See [Jobs](jobs.md).
 
-A **stage job** names a project and one of its agent stages instead of, or as well as, a
+A **stage job** names a project and one of its executable stages instead of, or as well as, a
 schedule. It fires when a task is ready in that stage, and Enso claims the task for the run
-before the provider starts; see [Stage jobs](jobs.md#stage-jobs).
+before execution starts. Agent stages use a provider; command and integration stages run
+without one. See [Stage jobs](jobs.md#stage-jobs).
 
 ## Heartbeat and beat
 
@@ -196,10 +198,22 @@ See [Heartbeat](heartbeat.md) for the lifecycle, gate contract, and retention ru
 A project is a key such as `EN`, a workspace, an ordered list of stages, and optionally a
 Git repository, declared in `config.json`. A task belongs to one project, sits in one stage
 (one of the project's own, or the built-in `backlog`, `blocked`, `done`, or `cancelled`),
-and carries an append-only timeline. Moves between stages are derived from the list —
-`advance`, `return`, `block`, `resume`, `drop` — and every move records a handoff message,
-so a finished task is a labelled trace of how it got there. Tasks of a repo project are
-worked in a worktree of their own under `worktrees/`. [Tasks](tasks.md) owns all of it.
+and carries an append-only timeline. Moves follow the ordered stages — `advance`, `return`,
+`block`, `resume`, `drop`. An agent's forward/return handoff is submitted to a transaction;
+it does not immediately advance the task. Enso checks the stable candidate after the model
+stops, repairs within configured limits, and commits acceptance with its evidence.
+
+Required checks are optional. `work → done` with no Git or checks remains valid. The dev
+preset adds planning, implementation checks, review, and explicit engine integration.
+Human checkpoints and command-only stages fit the same ordered flow. Workflow/check/spec
+versions and candidates bind the evidence; the viewer shows submission separately from
+acceptance and retains the audit when provider runs are pruned.
+
+Repo projects create a worktree lazily for stages that need one, by default at
+`<repo>/.worktrees/<REF>`, with a configurable root and a recorded target branch. Tasks can
+execute concurrently within project limits while each worktree has one owner and repository
+landing is serialized. Lifecycle scripts react to accepted transitions separately from
+worktree setup/cleanup. [Tasks](tasks.md) owns these contracts and the trust limitations.
 
 ## Skill
 
@@ -377,31 +391,42 @@ reads.
 
 ## How a stage job run flows
 
-A stage job follows the job run above, with a task threaded through it:
+A stage job follows the job flow above, with a task transaction around execution:
 
-1. On each tick, a stage job fires when an unclaimed task waits in its stage (trigger
-   `ready`), or at a cron slot that has passed when it also has a `schedule` and a task is
-   waiting. Nothing is recorded when nothing waits; a manual `enso job run` records
-   `no_work` instead.
-2. The per-job lock, the `running` row, and the prerun are as above. A stage job's
-   `concurrency_group` defaults to `project:<KEY>`, so one project's stages serialise and
-   different projects run in parallel.
-3. Enso claims the ready task with the highest priority, then the oldest, for this run.
-   None left: `no_work`.
-4. For a repo project, the task's worktree is prepared under `worktrees/<KEY>/<REF>`. A
-   failure here releases the claim with the fault as the message and fails the run.
-5. The prompt is assembled: the [Task block](tasks.md#the-task-block), the main checkout's
-   `AGENTS.md` (else `CLAUDE.md`) as project instructions, then the job prompt with
-   `{{prerun_output}}` substituted. The provider runs in the workspace with `ENSO_TASK` and,
-   for a repo project, `ENSO_TASK_DIR` set.
-6. Provider turns and postrun follow-ups proceed exactly as above.
-7. The agent hands off with a move, which clears the claim; the run then holds nothing and
-   may not move the task again, so a postrun follow-up cannot walk it on through the next
-   stage. If the run ends still holding the claim, Enso releases it and records that the
-   run ended without a handoff; a second such run in a row blocks the task with the
-   attention flag.
-8. After a run finishes a task, and once per tick for every repo project, the worktrees of
-   finished tasks are swept.
+1. On each tick, a valid enabled stage job fires when work is ready, or at its configured
+   cron slot when a task waits. Idle polling creates no run; a manual run records `no_work`.
+2. The per-job lock and optional shared-resource group apply. Project `max_concurrency`
+   separately limits simultaneous task executions, so distinct stages can work on distinct
+   tasks. One task/worktree has one owner through execution and checks.
+3. Enso claims the highest-priority ready task, oldest first on ties, and lazily prepares its
+   worktree if the stage needs one. Existing path/base metadata is reused. Setup failure
+   stops execution and records the reason.
+4. Enso snapshots the spec, workflow, starting revision, and execution directory in a
+   transaction record. Agent stages receive the Task block, main repository instructions,
+   and job prompt; the provider still starts in the Enso workspace. Command and integration
+   stages use the engine without starting a model.
+5. The agent works, submits a handoff with `advance` or `return`, and finishes its turn.
+   Submission retains the stage and claim; it cannot walk through another stage. A return
+   names the configured earlier stage and is constrained by a finite return budget.
+6. After the provider and postrun stop writing, Enso checks the candidate and selected
+   inputs. Required commands run outside the model and outside database write transactions.
+   Actual failures can request bounded repair in the held task; a changed candidate needs
+   fresh evidence. Budgets survive restart/re-entry. Unrecoverable work stays visible for
+   attention rather than being accepted from a successful provider exit.
+7. Integration, when configured, serializes against the repository target, updates the
+   candidate against that target, rechecks, and lands. An ordinary last stage does not imply
+   integration. Blocking/cancellation remain possible when forward checks cannot pass.
+8. Enso atomically records evidence, accepts the transition, and enqueues lifecycle events.
+   Events retain stable IDs and retry outcomes; an after-transition failure does not undo
+   the stage. Execution ownership and worktree-using hooks prevent an overlapping writer.
+9. Finished worktrees become cleanup candidates only after their users finish. Safe cleanup
+   preserves dirty or unmerged work, runs teardown, and records failures. Blocked and human
+   checkpoints retain their worktrees. Startup recovery and subsequent ticks reconcile
+   interrupted work and pending events; they never infer a pass from incomplete evidence.
+
+[Tasks](tasks.md) owns submission, evidence, lifecycle and recovery. [Jobs](jobs.md#stage-jobs)
+owns trigger/execution behavior. These mechanisms enforce workflow through supported Enso
+paths; worktrees and environment actor variables are not an OS sandbox.
 
 ## What Enso is not
 

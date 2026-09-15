@@ -77,6 +77,7 @@ Choose from the request's intent; people do not need to know Enso's feature name
 - `enso-heartbeat`: a reminder, one future action, a particular situation to follow until resolved, or a beat run.
 - `enso-jobs`: a standing responsibility, recurring digest, or a scheduled or task-stage run.
 - `enso-tasks`: work needing a tracked workflow, a board question, or a prompt with a `[Task …]` block.
+- `enso-workflow`: designing, configuring, migrating, or troubleshooting a task pipeline, its checks, lifecycle scripts, or worktrees.
 - `enso-tables`: structured records that should outlast a conversation.
 - `enso-update`: checking for a release, an authorized upgrade, or an interrupted update.
 - `enso-skills`: finding or installing an official optional skill, adding a capability, or creating or refining a skill.

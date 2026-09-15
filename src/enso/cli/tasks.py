@@ -424,11 +424,16 @@ def task_land(ref: str, as_json: bool = JSON_FLAG) -> None:
         fail([f"project {task.project} has no repository; nothing to land"], as_json=as_json)
     run_id = tasks.in_run(os.environ)
     try:
-        tasks.check_land(config, task, run_id)
-        head = worktrees.land(paths, project, task.ref)
+        with worktrees.execution_context(paths, task.ref):
+            task = tasks.get(paths, ref)
+            tasks.ensure_no_pending(paths, task.ref)
+            tasks.check_land(config, task, run_id)
+            head = worktrees.land(paths, project, task.ref)
     except (tasks.TaskError, worktrees.WorktreeError) as exc:
         fail([str(exc)], as_json=as_json)
-    base = worktrees.base_branch(project.repo)
+    base = (worktrees.lookup(paths, task.ref) or {}).get("base") or worktrees.base_branch(
+        project.repo
+    )
     with contextlib.suppress(tasks.TaskError):  # a finished task takes no refs; it landed anyway
         tasks.add_ref(
             paths, task.ref, "commit", head, actor=tasks.actor_from_env(os.environ), run_id=run_id

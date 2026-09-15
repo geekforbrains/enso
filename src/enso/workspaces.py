@@ -36,6 +36,7 @@ BUNDLED_SKILLS = (
     "enso-tables",
     "enso-tasks",
     "enso-update",
+    "enso-workflow",
     "enso-workspace",
 )
 # Explicitly list support files too: a local __pycache__ must never become a bundle.

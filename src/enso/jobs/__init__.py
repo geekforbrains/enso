@@ -94,14 +94,8 @@ class Job:
 
     @property
     def group(self) -> str | None:
-        """The effective concurrency group: the file's, else ``project:<KEY>`` on a stage job.
-
-        The stages of one project serialise by default so two runs never work the same
-        checkout at once, while different projects still run in parallel.
-        """
-        if self.concurrency_group is not None:
-            return self.concurrency_group
-        return f"project:{self.project}" if self.project is not None else None
+        """An explicit shared-resource group; project capacity is enforced separately."""
+        return self.concurrency_group
 
     def next_run(self, after: datetime) -> datetime:
         """The first slot after ``after`` as a local instant; slots are wall-clock times."""
@@ -165,10 +159,13 @@ def parse_job(
         for key in fields
         if key not in FIELDS
     ]
+    command_stage = _command_stage(fields, config)
     problems += [
         f"{key} is required"
         for key in REQUIRED
-        if key not in fields and not (key == "schedule" and "stage" in fields)
+        if key not in fields
+        and not (key == "schedule" and "stage" in fields)
+        and not (command_stage and key in ("provider", "model", "effort"))
     ]
     problems += [
         f"{key} {_TYPE_PROBLEMS[kind]}"
@@ -177,7 +174,7 @@ def parse_job(
     ]
     if ("project" in fields) != ("stage" in fields):
         problems.append("project and stage go together; give both or neither")
-    if not document.body:
+    if not document.body and not command_stage:
         problems.append("the prompt body is empty")
     schema_holds = not problems
     if config is not None:
@@ -186,6 +183,10 @@ def parse_job(
         return None, problems
     given = {key: fields[key] for key in FIELDS if key in fields}
     given.setdefault("schedule", None)  # a stage job may leave it out
+    if command_stage:
+        given.setdefault("provider", "command")
+        given.setdefault("model", "command")
+        given.setdefault("effort", "none")
     return Job(dir_name=dir_name, path=path, prompt=document.body, **given), problems
 
 
@@ -199,6 +200,19 @@ def _usable(fields: Mapping[str, object], key: str) -> str | None:
     return value if isinstance(value, str) and _holds(TEXT, value) else None
 
 
+def _command_stage(fields: Mapping[str, object], config: Config | None) -> bool:
+    """Whether configuration assigns this stage to Enso instead of a provider."""
+    if config is None:
+        return False
+    project = config.projects.get(_usable(fields, "project") or "")
+    stage = project.stage(_usable(fields, "stage") or "") if project else None
+    return stage is not None and (stage.command is not None or stage.integrate)
+
+
+def command_stage(job: Job, config: Config) -> bool:
+    return _command_stage({"project": job.project, "stage": job.stage}, config)
+
+
 def _agent_problems(fields: Mapping[str, object], config: Config) -> list[str]:
     """What config.json says about provider, model, and effort, each judged on its own.
 
@@ -208,6 +222,8 @@ def _agent_problems(fields: Mapping[str, object], config: Config) -> list[str]:
     wrong model never hides a wrong effort, and either is still reported when the other is
     the field that is missing.
     """
+    if _command_stage(fields, config):
+        return []
     name = _usable(fields, "provider")
     if name is None:
         return []

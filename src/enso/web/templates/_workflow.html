@@ -1,0 +1,80 @@
+{% import "_macros.html" as m %}
+{% from "_icons.html" import icon %}
+
+{# Engine evidence stays literal and escaped; it is never interpreted as agent prose. #}
+{% macro result(item, hook=False) -%}
+{% set status = item.status|default('pending') %}
+{% set tone = 'ok' if status in ('ok', 'passed', 'pass', 'succeeded') else 'running' if status in ('running', 'checking') else 'error' if status in ('error', 'failed', 'fail') else 'warning' if status in ('timeout', 'interrupted', 'cancelled') else 'muted' %}
+<details class="panel workflow-result">
+  <summary>{{ icon("chevron-right", 14) }} {{ item.name }} {{ m.tag(tone, status|replace('_', ' ')) }}{% if item.attempt %}<span class="muted"> · attempt {{ item.attempt }}</span>{% endif %}</summary>
+  <dl class="kv">
+    <dt>Exit code</dt><dd>{{ item.exit_code if item.exit_code is defined and item.exit_code is not none else '—' }}</dd>
+    <dt>Duration</dt><dd>{{ item.duration_ms|default(none)|duration }}</dd>
+    {% if hook and item.event_id %}<dt>Event</dt><dd><code>{{ item.event_id }}</code></dd>{% endif %}
+    {% if item.candidate %}<dt>Candidate</dt><dd><code>{{ item.candidate }}</code></dd>{% endif %}
+  </dl>
+  {% if item.error %}<pre class="output bare error-text" tabindex="0">{{ item.error }}</pre>{% endif %}
+  {% if item.output %}<pre class="output bare" tabindex="0">{{ item.output }}</pre>{% endif %}
+  {% if not item.output and not item.error %}<p class="empty">No output recorded.</p>{% endif %}
+</details>
+{%- endmacro %}
+
+{% macro lifecycle(event) -%}
+{% if event.deliveries is defined %}
+<details class="panel workflow-transaction" id="event-{{ event.event_id }}">
+  <summary>{{ icon("chevron-right", 14) }} {{ event.name }} {{ m.tag('ok' if event.status == 'delivered' else 'error' if event.status == 'failed' else 'running' if event.status == 'running' else 'muted', event.status) }}</summary>
+  <dl class="kv">
+    <dt>Transition</dt><dd>{{ event.from_stage }} → {{ event.to_stage }}</dd>
+    <dt>Event</dt><dd><code>{{ event.event_id }}</code></dd>
+    <dt>Attempts</dt><dd>{{ event.attempts|default(0) }}</dd>
+  </dl>
+  {% if event.deliveries %}<div class="workflow-results">{% for item in event.deliveries %}{{ result(item) }}{% endfor %}</div>
+  {% else %}<p class="empty">Waiting for delivery.</p>{% endif %}
+</details>
+{% else %}{{ result(event, hook=True) }}{% endif %}
+{%- endmacro %}
+
+{% macro transaction(entry, include_hooks=True) -%}
+<details class="panel workflow-transaction" id="transaction-{{ entry.id }}">
+  <summary>{{ icon("chevron-right", 14) }} {{ entry.stage }}{% if entry.to_stage %} → {{ entry.to_stage }}{% endif %} {{ m.tag(entry.tone, entry.label) }} <span class="muted">· {{ entry.started_at|ago }}</span></summary>
+
+  {% if entry.error %}<pre class="output bare error-text" tabindex="0">{{ entry.error }}</pre>{% endif %}
+  {% if entry.message %}<h3>Submitted handoff</h3><pre class="output bare" tabindex="0">{{ entry.message }}</pre>{% endif %}
+  <h3>Required checks</h3>
+  {% if entry.checks %}
+  <div class="workflow-results">{% for item in entry.checks %}{{ result(item) }}{% endfor %}</div>
+  {% elif entry.configured_checks is not none and not entry.configured_checks %}<p class="empty">No required checks configured.</p>
+  {% else %}<p class="empty">No check results recorded.</p>{% endif %}
+  {% if entry.pending_checks %}<p class="empty">Not yet run: {{ entry.pending_checks|join(', ') }}.</p>{% endif %}
+  {% if entry.integration %}
+  <h3>Integration</h3>
+  {% if entry.integration.phase == 'applied' and entry.status != 'accepted' %}<p class="error-text">Git integration completed, but this handoff was not accepted. Recovery requires fresh verification.</p>
+  {% elif entry.integration.phase == 'applying' %}<p>Git integration was started. Recovery verifies the actual target before accepting the handoff.</p>
+  {% else %}<p>Git integration completed.</p>{% endif %}
+  <dl class="kv">
+    <dt>Phase</dt><dd>{{ entry.integration.phase }}</dd>
+    <dt>Previous target</dt><dd><code>{{ entry.integration.target_sha }}</code></dd>
+    <dt>Integrated candidate</dt><dd><code>{{ entry.integration.candidate }}</code></dd>
+    {% if entry.recovery_of %}<dt>Recovery of</dt><dd><a href="#transaction-{{ entry.recovery_of }}"><code>{{ entry.recovery_of }}</code></a></dd>{% endif %}
+  </dl>
+  {% endif %}
+  {% if include_hooks and entry.hooks %}
+  <h3>Lifecycle scripts</h3>
+  <div class="workflow-results">{% for item in entry.hooks %}{{ lifecycle(item) }}{% endfor %}</div>
+  {% endif %}
+  <div class="workflow-results"><details class="panel workflow-result">
+    <summary>{{ icon("chevron-right", 14) }} Evidence details</summary>
+  <dl class="kv">
+    {% if entry.task_ref %}<dt>Task</dt><dd><a href="/tasks/{{ entry.task_ref|urlencode }}#workflow">{{ entry.task_ref }}</a></dd>{% endif %}
+    <dt>Started</dt><dd>{{ entry.started_at|when }}</dd>
+    <dt>Ended</dt><dd>{{ entry.ended_at|when if entry.ended_at else 'In progress' }}</dd>
+    <dt>Repairs</dt><dd>{{ entry.repairs|default(0) }} of {{ entry.max_repairs|default(0) }} allowed</dd>
+    {% if entry.run_id %}<dt>Run</dt><dd>{% if entry.run_link %}<a href="{{ entry.run_link }}"><code>{{ entry.run_id }}</code></a>{% else %}<code>{{ entry.run_id }}</code> <span class="muted">(run pruned; workflow evidence retained)</span>{% endif %}</dd>{% endif %}
+    {% if entry.candidate %}<dt>Candidate</dt><dd><code>{{ entry.candidate }}</code></dd>{% endif %}
+    {% if entry.spec_hash %}<dt>Spec version</dt><dd><code>{{ entry.spec_hash }}</code></dd>{% endif %}
+    {% if entry.workflow_hash %}<dt>Workflow version</dt><dd><code>{{ entry.workflow_hash }}</code></dd>{% endif %}
+    <dt>Transaction</dt><dd><code>{{ entry.id }}</code></dd>
+  </dl>
+  </details></div>
+</details>
+{%- endmacro %}

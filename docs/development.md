@@ -172,11 +172,11 @@ broader checks only when their demonstrated value warrants the cost.
 Follow [Contributing § Branches](../CONTRIBUTING.md#branches) for the `main`/`develop`
 workflow. Confirm the base before starting: normal development targets `develop`, while
 production patches target `main` in a separate worktree. The regular checkout stays on
-`develop` because Enso reads its current branch when creating and landing task worktrees;
-it does not pin a task's base permanently at creation. Do not switch that checkout for a
-patch or release while stage jobs can run. A user-authorized direct feature branch there
-is appropriate only while the project's stage jobs are disabled; return it to `develop`
-before resuming them.
+`develop`, and the Enso project should explicitly configure `base: develop`. Each task
+worktree records its target at creation; later configuration or checkout changes do not
+silently retarget it. Integration requires the regular checkout to have the recorded target
+branch checked out. Use a separate worktree for patches, releases, or direct feature work
+while stage jobs can run.
 
 Preserve unrelated work in the checkout and make the smallest coherent change. For work
 that needs planning or design, maintainers with access to Enso's project board use project

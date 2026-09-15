@@ -57,6 +57,14 @@ def project_add(
     load(paths, as_json=as_json)  # the current file must be sound before it is rewritten
     if (stages is None) == (flow is None):
         fail(["give --stages or --flow, not both and not neither"], as_json=as_json)
+    if flow == "dev":
+        fail(
+            [
+                "create the project with --flow basic, then use enso workflow init KEY "
+                "--preset dev --lint COMMAND --test COMMAND for the development workflow"
+            ],
+            as_json=as_json,
+        )
     if flow is not None and flow not in tasks.FLOWS:
         fail([f"--flow must be one of {', '.join(tasks.FLOWS)}"], as_json=as_json)
     names = (

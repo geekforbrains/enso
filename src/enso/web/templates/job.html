@@ -88,9 +88,14 @@
       <dt>File</dt><dd><code>{{ job.path }}</code></dd>
       <dt>Schedule</dt><dd>{% if job.schedule %}<code>{{ job.schedule }}</code> <span class="muted">cron, local time</span>{% else %}<span class="muted">none; it fires when work is ready</span>{% endif %}</dd>
       {% if job.stage %}<dt>Stage</dt><dd><a href="/tasks?project={{ job.project|urlencode }}&amp;stage={{ job.stage|urlencode }}"><code>{{ job.project }}</code> / <code>{{ job.stage }}</code></a> <span class="muted">a stage job: it claims a ready task there</span></dd>{% endif %}
-      <dt>Agent</dt><dd><span class="chip">{{ job.provider }}</span> <span class="chip">{{ job.model }}</span> <span class="chip">{{ job.effort }}</span></dd>
+      {% if engine %}<dt>Execution</dt><dd>Enso engine · no model</dd>{% else %}<dt>Agent</dt><dd><span class="chip">{{ job.provider }}</span> <span class="chip">{{ job.model }}</span> <span class="chip">{{ job.effort }}</span></dd>{% endif %}
       <dt>Workspace</dt><dd><a href="/workspaces/{{ job.workspace|urlencode }}">{{ job.workspace }}</a></dd>
-      <dt>Concurrency group</dt><dd>{% if job.group %}<code>{{ job.group }}</code>{% if not job.concurrency_group %} <span class="muted">(the stage job default)</span>{% endif %}{% else %}<span class="muted">none</span>{% endif %}</dd>
+      <dt>Concurrency group</dt><dd>{% if job.group %}<code>{{ job.group }}</code>{% else %}<span class="muted">none</span>{% endif %}{% if job.stage %} <span class="muted">· project capacity is enforced separately</span>{% endif %}</dd>
+      {% if project %}<dt>Project capacity</dt><dd>{{ project.max_concurrency }} task execution{{ 's' if project.max_concurrency != 1 }}</dd>{% endif %}
+      {% if stage_definition %}
+      <dt>Required checks</dt><dd>{% if stage_definition.checks %}{% for check in stage_definition.checks %}{{ check.name }}{% if not loop.last %}, {% endif %}{% endfor %}{% else %}<span class="muted">none configured</span>{% endif %}</dd>
+      <dt>Workflow repairs</dt><dd>{{ stage_definition.max_repairs }} allowed</dd>
+      {% endif %}
       <dt>Enabled</dt><dd>{{ 'yes' if job.enabled else 'no' }}</dd>
       <dt>Timeout</dt><dd>{{ job.timeout }}s</dd>
       <dt>Prerun</dt><dd>{% if job.prerun %}<code>{{ job.prerun }}</code> ({{ job.prerun_timeout }}s timeout){% else %}<span class="muted">none</span>{% endif %}</dd>

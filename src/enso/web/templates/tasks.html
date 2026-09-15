@@ -13,6 +13,7 @@
     <span class="detail">
       <span class="mono">{{ row.task.ref }}</span>
       <span>{{ row.task.stage }}</span>
+      {% if row.phase %}<span>{{ row.phase }}</span>{% endif %}
       <span>{{ row.project_name }}</span>
       {% if row.task.claim_run_id %}<span>claimed by run <span class="mono">{{ row.task.claim_run_id }}</span></span>{% endif %}
     </span>
