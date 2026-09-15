@@ -120,6 +120,19 @@ class SlackTransport(Transport):
     async def send_file(self, target, path, *, caption="", thread=None):
         return "file"
 
+    async def receipt(self, target, message_id, thread, *, file):
+        result = {
+            "ok": True,
+            "transport": self.name,
+            "channel": target,
+            "ts": None if file else message_id,
+            "thread_ts": thread,
+            "permalink": None,
+        }
+        if file:
+            result["file"] = message_id
+        return result
+
     async def edit(self, target, message_id, text):
         pass
 
