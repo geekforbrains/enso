@@ -692,6 +692,9 @@ class SlackTransport(Transport):
             # silence the unmentioned follow-ups.
             self._replied.add((channel, reply_thread))
 
+        # Commands run here, before any Slack lookup or the FIFO reservation, so !stop
+        # can cancel a blocked turn. Cached names suffice: only the leading prefix
+        # matters, and _prepare_event flattens again with resolved names for the prompt.
         queue_text = slack_text.flatten_mentions(
             slack_text.unescape(raw_text),
             bot_user_id=self.bot_user_id,
@@ -789,8 +792,6 @@ class SlackTransport(Transport):
             channel_name=channel_name,
             workspace=workspace,
         )
-        if await commands.dispatch(self.runtime, turn, reply):
-            return None
         return turn, reply
 
     async def thread_context(
