@@ -45,7 +45,7 @@ enso providers [--json]             bundled provider, model, and effort choices
 enso slack manifest                 packaged app manifest, JSON on stdout
 enso connect start|status|cancel|finish  private owner pairing; see Connections for arguments
 enso models [--all] [--json]       look up OpenRouter models OpenCode can run
-enso doctor [--json]                config, home, workspaces, providers, transports, service, viewer_service, jobs, heartbeat
+enso doctor [--json]                config, home, workspaces, providers, transports, service, viewer_service, jobs, heartbeat, knowledge, memory
 enso update check|apply|status|recover  managed release checks and recovery; see Updates
 ```
 
@@ -58,6 +58,14 @@ health. `viewer_service` reports its unit, home, and process ownership; an unins
 viewer service is healthy, while one installed for this home but not serving it is an
 error. A unit for another home is reported separately without a health error.
 The heartbeat check reads saved state without running gates or migrating the database.
+The knowledge and memory sections compose the existing note audits across their roots,
+including metadata, identity, timestamps, placement, links, and memory capture sources.
+They report note/finding counts and at most ten findings per section, with each finding's
+message limited to 500 characters. Use `enso knowledge audit --workspace NAME` (or `--shared`)
+and `enso memory audit --workspace NAME` for complete scoped findings. Reads reuse the
+existing file parse caches; doctor never rewrites notes or creates a note database.
+These checks establish structural validity, not factual truth or the most useful workspace
+for a note. Unsupported shared memory and invalid roots are reported without following links.
 An error-level finding is a health problem and makes
 `doctor` exit 1; warnings alone exit 0. That strict health result does not mean every Enso
 operation is blocked: for example, a workspace layout error fails `doctor`, while `serve`
@@ -68,7 +76,9 @@ a valid `config.json` are `skipped` until it is.
 order, each `{"name", "status", "note", "problems", "warnings", "details"}`. `status` is
 `ok`, `warning`, `error`, or `skipped`; `problems` and `warnings` are the messages the text
 output shows; `details` holds the facts (provider paths and whether they resolve, transport
-extras, the service pid, job names, and beat counts and attention references).
+extras, the service pid, job names, and beat counts and attention references). The note
+sections' `details` contain `notes` and `findings` counts and a `roots` object mapping scope
+names to paths; they run even when configuration is invalid.
 
 `serve` logs to `~/.enso/enso.log` (rotating) and, when stderr is a terminal, to the
 terminal. `--debug` adds the full prompt and every raw provider event. Each chat turn is

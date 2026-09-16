@@ -511,7 +511,9 @@ def test_occupied_shared_root_is_reported_by_kind(tmp_path, kind):
     catalog = knowledge.scan(paths)
     assert catalog.roots == ()
     described = "symbolic link" if kind == "symlink" else "file"
-    assert catalog.problems == (f"general: knowledge root must be a directory, not a {described}",)
+    assert catalog.problems == (
+        f"general: {paths.knowledge}: knowledge root must be a directory, not a {described}",
+    )
 
 
 def test_move_refuses_ambiguous_incoming_and_existing_targets(tmp_path):

@@ -153,7 +153,7 @@ when it is read is logged once and the last valid configuration stays in force; 
 ```bash
 enso config check         # config validity and every problem at once
 enso workspace audit      # workspace layout and skill wiring
-enso doctor               # both, plus provider paths, transport extras, service state, jobs
+enso doctor               # both, plus runtime health and knowledge/memory audits
 ```
 
 The `enso-audit` job that setup installed runs `enso doctor` nightly and reports problems

@@ -16,7 +16,7 @@ import yaml
 
 from . import captures, frontmatter
 from . import note_storage as storage
-from .config import Paths, require_workspace, valid_workspace_name
+from .config import Paths, require_workspace
 from .knowledge.catalog import Catalog as NoteCatalog
 from .knowledge.catalog import Note, Resolution, scan_roots
 from .knowledge.links import extract_links
@@ -149,27 +149,16 @@ class Catalog(NoteCatalog):
         return super().get(ref, scope)
 
 
-def scan(paths: Paths, workspace: str) -> Catalog:
+def scan(paths: Paths, workspace: str | None = None) -> Catalog:
     """Discover memory from files, including other workspaces for duplicate identity checks."""
     paths = Paths(paths.home.resolve())
-    require_workspace(paths, workspace)
-    roots: list[Root] = []
-    problems: list[str] = []
-    for directory in sorted(paths.workspaces.iterdir()):
-        if (
-            not valid_workspace_name(directory.name)
-            or directory.is_symlink()
-            or not directory.is_dir()
-        ):
-            continue
-        root = Root(
-            f"workspace:{directory.name}", directory.name, paths.workspace_memory(directory.name)
-        )
-        if root.path.is_symlink() or (root.path.exists() and not root.path.is_dir()):
-            problems.append(f"{root.scope}: memory root must be a real directory")
-        else:
-            roots.append(root)
-    notes, read_problems, assets = scan_roots(tuple(roots), _read_note)
+    if workspace is not None:
+        require_workspace(paths, workspace)
+    roots, problems = storage.discover_roots(paths, "memory")
+    shared = paths.home / "memory"
+    if shared.exists() or shared.is_symlink():
+        problems += (f"{shared}: shared memory is unsupported; memory belongs in a workspace",)
+    notes, read_problems, assets = scan_roots(roots, _read_note)
     # Database validity is checked outside the file parse cache: a source may arrive later.
     notes = tuple(
         replace(
@@ -181,7 +170,7 @@ def scan(paths: Paths, workspace: str) -> Catalog:
         else note
         for note in notes
     )
-    return Catalog(tuple(roots), notes, tuple(problems) + read_problems, assets)
+    return Catalog(roots, notes, problems + read_problems, assets)
 
 
 def document(fields: dict[str, Any], body: str) -> str:

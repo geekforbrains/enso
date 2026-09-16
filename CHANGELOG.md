@@ -7,6 +7,10 @@ All notable changes to Enso are documented here, following
 
 ### Changed
 
+- `enso doctor` now summarizes knowledge and memory audits with bounded findings, note
+  counts, and paths, including invalid roots and capture sources; detailed scoped audits
+  remain available without modifying notes.
+
 - Knowledge commands default to the selected workspace, with `--workspace` or explicit
   `--shared` replacing `--scope` and implicit shared/all-root defaults. UUID operations
   respect the selected root; moves use `--to-workspace` or `--to-shared` for transfers.

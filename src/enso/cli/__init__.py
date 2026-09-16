@@ -514,7 +514,7 @@ def doctor_lines(report: doctor.Report) -> list[str]:
 
 @app.command("doctor")
 def doctor_command(as_json: bool = JSON_FLAG) -> None:
-    """Config, home, workspaces, providers, transports, service, and jobs; exit 1 on a problem."""
+    """Check installation health and Markdown notes; exit 1 on a problem."""
     paths = Paths.from_env()
     report = doctor.run(paths)
     if as_json:

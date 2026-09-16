@@ -286,7 +286,7 @@ def test_root_audit_and_missing_memory_reads_do_not_create_files(paths):
     root = paths.workspace_memory("team")
     root.symlink_to(paths.workspace("personal"))
     findings = memory.scan(paths, "team").audit("workspace:team")
-    assert len(findings) == 1 and "real directory" in findings[0]["problem"]
+    assert len(findings) == 1 and "symbolic link" in findings[0]["problem"]
 
 
 def test_cli_manual_recall_correction_and_scope_selection(paths):
