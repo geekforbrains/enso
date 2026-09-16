@@ -102,7 +102,8 @@ paired chat, valid configuration, and a successful provider reply are separate m
 **Partly implemented for 0.2.0:** workspace settings now use `WORKSPACE.md`, and the new
 workspace directories are scaffolded. Jobs, projects, and Heartbeat scripts now use the
 [workspace ownership layout](workspaces.md#ownership-in-020). Workspace Markdown memory and
-its manual CLI are implemented; capture and harvesting remain forthcoming.
+its manual CLI and SQLite capture storage are implemented; live capture and harvesting
+remain forthcoming.
 Installation support
 files shown here keep their documented purpose and locations unless that layout explicitly
 changes them. Operational records stay in one home database; maintained knowledge and memory
@@ -174,12 +175,13 @@ links, imports, and the user-editable formatting convention.
 
 ## Memory
 
-**Forthcoming in 0.2.0.** Memory is dated conversation and experience maintained as Markdown
+Memory is dated conversation and experience maintained as Markdown
 in one workspace's `memory/`. Knowledge holds current facts and reference material. When a
 user asks about an earlier discussion, the agent uses the memory CLI and `enso-memory`
 skill, starting in the selected workspace. People sharing a workspace share its maintained
 memory, while their DM conversations and live provider sessions remain distinct.
-[Memory](memory.md) owns capture, recall, and removal.
+[Memory](memory.md) owns capture, recall, and removal. Manual memory and capture storage
+are implemented; transport integration, harvesting, and the skill remain forthcoming.
 
 ## Agent
 

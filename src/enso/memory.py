@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from dataclasses import replace
 from datetime import date, datetime
 from functools import lru_cache
 from pathlib import PurePosixPath
@@ -12,7 +13,7 @@ from uuid import uuid4
 
 import yaml
 
-from . import frontmatter
+from . import captures, frontmatter
 from . import note_storage as storage
 from .config import Paths, require_workspace, valid_workspace_name
 from .knowledge.catalog import Catalog as NoteCatalog
@@ -106,8 +107,6 @@ def _read_note(root: Root, relative: str, signature: tuple[int, ...]) -> Note:
     sources = original.get("sources")
     if isinstance(sources, list) and all(type(source) is int for source in sources):
         fields["sources"] = sources
-    if sources and _valid_sources(sources):
-        problems.append("capture references cannot be verified: capture storage is not available")
     for key in ("created", "updated"):
         if stamp := valid_timestamp(original.get(key)):
             fields[key] = stamp
@@ -170,6 +169,17 @@ def scan(paths: Paths, workspace: str) -> Catalog:
         else:
             roots.append(root)
     notes, read_problems, assets = scan_roots(tuple(roots), _read_note)
+    # Database validity is checked outside the file parse cache: a source may arrive later.
+    notes = tuple(
+        replace(
+            note,
+            problems=note.problems
+            + captures.source_problems(paths, note.root.label, note.metadata["sources"]),
+        )
+        if note.metadata.get("sources") and _valid_sources(note.metadata["sources"])
+        else note
+        for note in notes
+    )
     return Catalog(tuple(roots), notes, tuple(problems) + read_problems, assets)
 
 

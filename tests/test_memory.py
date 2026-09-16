@@ -12,7 +12,7 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
-from enso import locks, memory
+from enso import captures, db, locks, memory
 from enso import note_storage as storage
 from enso.cli import app
 from enso.config import Paths
@@ -195,13 +195,14 @@ def test_duplicate_identity_across_workspaces_blocks_lookup_and_writes(paths):
     }
 
 
-def test_unverifiable_capture_references_are_reported_preserved_and_not_writable(paths):
+def test_missing_capture_references_are_reported_preserved_and_not_writable(paths):
     target = imported(paths, "undated/Sourced.md", sources=[1201, 1202])
     original = target.read_bytes()
     note = get(paths, "undated/Sourced.md")
     assert note.metadata["sources"] == [1201, 1202]
     assert note.problems == (
-        "capture references cannot be verified: capture storage is not available",
+        "capture 1201 does not exist",
+        "capture 1202 does not exist",
     )
     with pytest.raises(NoteError, match="cannot update"):
         memory.update_note(paths, "team", note.id, "Correction", expected_hash=note.sha256)
@@ -343,3 +344,36 @@ def test_cli_manual_recall_correction_and_scope_selection(paths):
     ):
         result = runner.invoke(app, ["memory", *args, "--json"], input="Stale")
         assert result.exit_code == 1 and not json.loads(result.output)["ok"]
+
+
+def test_source_validity_is_not_cached_with_the_file(paths):
+    imported(paths, "undated/Sourced.md", sources=[1])
+    assert get(paths, "undated/Sourced.md").problems == ("capture 1 does not exist",)
+    db.initialize(paths)
+    source, _ = captures.record(
+        paths,
+        captures.Message(
+            "slack",
+            "team",
+            "slack:C1:1",
+            "C1",
+            "1",
+            "1",
+            "U1",
+            "Person",
+            "2026-09-16T12:00:00Z",
+            "A proposal",
+            kind="ambient",
+        ),
+    )
+    assert source.id == 1
+    note = get(paths, "undated/Sourced.md")
+    assert note.problems == ()
+    corrected = memory.update_note(
+        paths, "team", note.id, "A correction", expected_hash=note.sha256
+    )
+    assert corrected.metadata["sources"] == [1]
+    imported(paths, "undated/Other.md", workspace="personal", sources=[1])
+    assert get(paths, "undated/Other.md", "personal").problems == (
+        "capture 1 belongs to another workspace",
+    )

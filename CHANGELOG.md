@@ -66,6 +66,10 @@ All notable changes to Enso are documented here, following
 
 ### Added
 
+- SQLite capture storage with permanent transport message identities, separate reply and
+  delivery outcomes, bounded workspace queries, recoverable processing receipts, and
+  workspace-checked memory source references. Live transport integration is forthcoming.
+
 - Workspace Markdown memory with explicit event dates, UTC date folders, undated imports,
   stable IDs, relative links, and conflict-checked corrections. `enso memory` lists, searches,
   reads, creates, updates, and audits manual notes without a database; capture and harvesting

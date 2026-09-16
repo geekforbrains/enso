@@ -1,8 +1,8 @@
 # Memory
 
-Markdown memory and its manual CLI are implemented for 0.2.0. Conversation capture,
-harvesting, removal, and the `enso-memory` skill remain forthcoming; the sections below
-specify their agreed contracts. These features are not available in 0.1.x.
+Markdown memory, its manual CLI, and SQLite capture storage are implemented for 0.2.0.
+Live transport capture, harvesting, removal, and the `enso-memory` skill remain forthcoming;
+the sections below specify their agreed contracts. These features are not available in 0.1.x.
 
 ## Purpose and ownership
 
@@ -61,10 +61,10 @@ silently removed or reassigned. Imported provenance from another installation be
 the body unless its captures are deliberately mapped to records in this installation;
 matching numbers alone do not establish that relationship.
 
-Until capture storage is implemented, nonempty source references are reported as
-unverifiable. Their files remain readable and unchanged, but managed updates refuse them;
-manual notes with `sources: []` are fully supported. Do not erase existing source IDs to
-bypass the finding. Capture existence and workspace validation arrive with capture storage.
+Memory reads, audits, and managed updates check source existence and workspace ownership
+in SQLite without creating a database. Missing sources and an unreadable database are
+reported; files remain readable and unchanged, but managed updates refuse invalid sources.
+Do not erase source IDs to bypass a finding. Manual notes with `sources: []` need no database.
 
 ### Occurrence, placement, and corrections
 
@@ -152,7 +152,7 @@ modification time, and change time. [CLI](cli.md#memory) owns exact signatures a
 
 ## Conversation capture
 
-**Forthcoming.**
+**Storage implemented; live transport integration forthcoming.**
 
 Enso captures eligible live human messages it receives while running in a bound
 conversation, after resolving its workspace. This includes messages that do not address
@@ -176,6 +176,37 @@ are excluded. Injected history, background context, system guidance, tool calls/
 progress messages, and internal formatting-repair turns are not new conversation captures.
 Attachments remain workspace-owned references. Recovery never reruns a provider or resends
 a message merely to complete a missing capture.
+
+### Storage and processing state
+
+The fresh 0.2.0 schema reserves `_enso_captures` for permanent history. An integer capture
+ID identifies each input or reply; `(transport, channel, message_id)` deduplicates human
+messages independently of workspace bindings. A reply has one unique addressed parent,
+with the same workspace, conversation, channel, and thread. The first human text, sender,
+time, and attachment metadata remain unchanged; normal preparation can update attachment
+download status and workspace-relative paths.
+
+Addressed inputs remain pending until their reply handling finishes. Outcomes distinguish
+completed, failed, cancelled, timed-out, dropped, empty, and interrupted handling. A reply
+checkpoints generation separately from delivery; `finalized` says whether its delivery
+attempt has ended. Each delivery part records its character range, known message ID, and
+sending/sent/failed/uncertain state. Ranges refer to the full representation and may extend
+beyond a truncated stored prefix. Service-start recovery can mark unfinished inputs
+interrupted and in-flight sends uncertain; it never starts work or sends messages.
+
+Storage queries require a workspace, optionally a conversation, and return stable capture-ID
+order (receipt chronology) after a cursor. Source timestamps preserve event time separately.
+A page is limited to 100 captures and 128 KiB of source text, stopping before either budget
+is exceeded. Reads expose truncation explicitly alongside the stored prefix.
+
+Processing reservations live in `_enso_memory_receipts` and `_enso_memory_inputs`; each
+capture can belong to only one receipt. A pending receipt holds the selected source IDs and
+publication plan for recovery. Empty outputs explicitly mean no useful memory. Completion
+is recorded only after the caller verifies durable publication; SQLite does not prove a
+Markdown file was written. `_enso_memory_progress` advances independently per workspace,
+only past contiguous completed inputs. These are processing records, never an authoritative
+copy of maintained memory. The harvesting workflow that publishes and reconciles notes is
+still forthcoming.
 
 ### Text, rich replies, and attachments
 
