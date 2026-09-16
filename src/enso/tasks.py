@@ -63,6 +63,7 @@ class TaskError(Exception):
 @dataclass(frozen=True)
 class Task:
     id: int
+    workspace: str
     project: str
     number: int
     ref: str
@@ -206,10 +207,14 @@ def _reload(con: sqlite3.Connection, task_id: int) -> Task:
     return _task(con.execute("SELECT * FROM _enso_tasks WHERE id = ?", (task_id,)).fetchone())
 
 
-def _project(config: Config, key: str) -> ProjectConfig:
+def _project(config: Config, key: str, workspace: str | None = None) -> ProjectConfig:
     project = config.projects.get(key)
     if project is None:
         raise TaskError(f"project {key} is not configured")
+    if workspace is not None and project.workspace != workspace:
+        raise TaskError(
+            f"project {key} belongs to {project.workspace}, but the task belongs to {workspace}"
+        )
     return project
 
 
@@ -283,7 +288,8 @@ def create(
     is parked as asked.
     """
     key = project.strip().upper()
-    stages = _project(config, key).stage_names
+    owner = _project(config, key)
+    stages = owner.stage_names
     title = clean_text(title, single_line=True)
     if not title:
         raise TaskError("the title is empty")
@@ -299,10 +305,12 @@ def create(
         ref = f"{key}-{number:03d}"
         cursor = con.execute(
             """INSERT INTO _enso_tasks
-                 (project, number, ref, title, body, stage, priority, after_ref, from_ref,
+                 (workspace, project, number, ref, title, body, stage, priority,
+                  after_ref, from_ref,
                   entered_stage_at, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
+                owner.workspace,
                 key,
                 number,
                 ref,
@@ -331,9 +339,14 @@ def create(
         return _reload(con, task_id)
 
 
-def get(paths: Paths, ref: str) -> Task:
+def get(paths: Paths, ref: str, *, workspace: str | None = None) -> Task:
     with db.reader(paths) as con:
-        return _load(con, ref)
+        task = _load(con, ref)
+    if workspace is not None and task.workspace != workspace:
+        raise TaskError(
+            f"{task.ref} belongs to workspace {task.workspace}; select it with --workspace"
+        )
+    return task
 
 
 def _like(text: str) -> str:
@@ -376,6 +389,7 @@ def list_tasks(
     idle_for: timedelta | None = None,
     query: str | None = None,
     config: Config | None = None,
+    workspace: str | None = None,
 ) -> list[Task]:
     """Tasks matching every given filter; finished ones only with ``all`` or by stage.
 
@@ -385,6 +399,9 @@ def list_tasks(
     if ready and config is None:
         raise TaskError("listing ready tasks needs the config")
     clauses, params = _filters(project=project, stage=stage, query=query)
+    if workspace is not None:
+        clauses.append("workspace = ?")
+        params.append(workspace)
     if not stage and not all:
         clauses.append("stage NOT IN (?, ?)")
         params.extend(FINISHED)
@@ -411,6 +428,7 @@ def list_tasks(
             task
             for task in tasks
             if task.project in config.projects
+            and config.projects[task.project].workspace == task.workspace
             and task.stage in config.projects[task.project].agent_stages
         ]
     return tasks
@@ -571,7 +589,7 @@ def _derive(project: ProjectConfig, task: Task, run_id: str | None) -> list[Move
 
 def moves(config: Config, task: Task, *, env: Mapping[str, str]) -> list[Move]:
     """The moves available from where the task stands, for the packet and ``task show``."""
-    return _derive(_project(config, task.project), task, in_run(env))
+    return _derive(_project(config, task.project, task.workspace), task, in_run(env))
 
 
 def _check_force(force: bool, run_id: str | None) -> None:
@@ -634,7 +652,12 @@ def _apply_move(
         from . import workflows
 
         workflows.enqueue(
-            con, _project(config, task.project), task, to, run_id, transaction_id=transaction_id
+            con,
+            _project(config, task.project, task.workspace),
+            task,
+            to,
+            run_id,
+            transaction_id=transaction_id,
         )
     return _reload(con, task.id)
 
@@ -650,7 +673,7 @@ def _settle_waiting(con: sqlite3.Connection, config: Config, task: Task, outcome
             continue
         if outcome == "done":
             project = config.projects.get(waiting.project)
-            if project is None:
+            if project is None or project.workspace != waiting.workspace:
                 continue  # nowhere to resume to; it stays blocked for a person
             to = (
                 waiting.previous_stage
@@ -752,7 +775,7 @@ def check_land(config: Config, task: Task, run_id: str | None) -> None:
     problem = _claim_problem(task, run_id)
     if problem:
         raise TaskError(problem)
-    project = _project(config, task.project)
+    project = _project(config, task.project, task.workspace)
     if any(stage.checks or stage.integrate for stage in project.stages):
         raise TaskError(
             "this workflow owns integration; run its integrate stage "
@@ -784,7 +807,7 @@ def _transition_preflight(
     if os.environ.get("ENSO_LIFECYCLE"):
         raise TaskError("lifecycle scripts cannot recursively move tasks")
     initial = get(paths, ref)
-    project = _project(config, initial.project)
+    project = _project(config, initial.project, initial.workspace)
     selected = project.stage(initial.stage)
     if move_id == "drop" and run_id is not None:
         raise TaskError("only a person can drop a task; block it with your reasoning instead")
@@ -804,7 +827,7 @@ def _transition_preflight(
             "run the stage job or enso workflow verify"
         )
     if move_id == "resume" and to in project.stage_names and selected is None:
-        project = _project(config, initial.project)
+        project = _project(config, initial.project, initial.workspace)
         expected = (
             initial.previous_stage
             if initial.previous_stage in project.stage_names
@@ -853,7 +876,7 @@ def move(
     with db.transaction(paths) as con:
         task = _load(con, ref)
         _check_pending_move(con, task, move_id)
-        project = _project(config, task.project)
+        project = _project(config, task.project, task.workspace)
         derived = {item.id: item for item in _derive(project, task, run_id)}[move_id]
         claim = _claim_problem(task, run_id)
         if not derived.allowed and not (force and derived.missing == (claim,)):
@@ -910,39 +933,6 @@ def move(
 # -- Claims -------------------------------------------------------------------
 
 
-def migrate_stages(paths: Paths, key: str, mapping: dict[str, str]) -> None:
-    """Operator migration preserves specs, history, claims and blocked return destinations."""
-    with db.transaction(paths) as con:
-        rows = con.execute("SELECT * FROM _enso_tasks WHERE project = ?", (key,)).fetchall()
-        if any(row["claim_run_id"] for row in rows):
-            raise TaskError("stop active project runs before migrating stages")
-        for row in rows:
-            task = _task(row)
-            stage = mapping.get(task.stage, task.stage)
-            previous = (
-                mapping.get(task.previous_stage, task.previous_stage)
-                if task.previous_stage
-                else None
-            )
-            if (stage, previous) == (task.stage, task.previous_stage):
-                continue
-            con.execute(
-                "UPDATE _enso_tasks SET stage=?,previous_stage=?,updated_at=? WHERE id=?",
-                (stage, previous, db.now(), task.id),
-            )
-            _record(
-                con,
-                task.id,
-                "workflow_migrated",
-                ENSO_ACTOR,
-                None,
-                from_stage=task.stage,
-                to_stage=stage,
-                message="Migrated development workflow stage names",
-                payload={"previous_stage": task.previous_stage},
-            )
-
-
 def take(
     paths: Paths, config: Config, project: str, stage: str, *, run_id: str, actor: str
 ) -> Task | None:
@@ -958,7 +948,7 @@ def take(
     with db.transaction(paths) as con:
         row = con.execute(
             """SELECT id FROM _enso_tasks
-                WHERE project = ? AND stage = ? AND claim_run_id IS NULL
+                WHERE project = ? AND workspace = ? AND stage = ? AND claim_run_id IS NULL
                   AND NOT EXISTS (SELECT 1 FROM _enso_workflow_events e
                     WHERE e.task_ref = _enso_tasks.ref
                     AND e.status IN ('pending','running','failed'))
@@ -966,7 +956,7 @@ def take(
                     WHERE x.task_ref = _enso_tasks.ref
                     AND x.status IN ('working','submitted','checking','repairing'))
                 ORDER BY priority DESC, created_at, number LIMIT 1""",
-            (key, stage),
+            (key, _project(config, key).workspace, stage),
         ).fetchone()
         if row is None:
             return None
@@ -999,14 +989,14 @@ def ready(paths: Paths, config: Config, project: str, stage: str) -> bool:
     with db.reader(paths) as con:
         row = con.execute(
             """SELECT 1 FROM _enso_tasks
-                WHERE project = ? AND stage = ? AND claim_run_id IS NULL
+                WHERE project = ? AND workspace = ? AND stage = ? AND claim_run_id IS NULL
                   AND NOT EXISTS (SELECT 1 FROM _enso_workflow_events e
                     WHERE e.task_ref = _enso_tasks.ref
                     AND e.status IN ('pending','running','failed'))
                   AND NOT EXISTS (SELECT 1 FROM _enso_workflow_transactions x
                     WHERE x.task_ref = _enso_tasks.ref
                     AND x.status IN ('working','submitted','checking','repairing')) LIMIT 1""",
-            (key, stage),
+            (key, _project(config, key).workspace, stage),
         ).fetchone()
     return row is not None
 
@@ -1171,7 +1161,7 @@ def context(paths: Paths, config: Config, ref: str, *, env: Mapping[str, str]) -
 
     with db.reader(paths) as con:
         task = _load(con, ref)
-        project = _project(config, task.project)
+        project = _project(config, task.project, task.workspace)
         rows = con.execute(
             "SELECT * FROM _enso_task_events WHERE task_id = ? ORDER BY id DESC", (task.id,)
         ).fetchall()
@@ -1198,6 +1188,7 @@ def context(paths: Paths, config: Config, ref: str, *, env: Mapping[str, str]) -
     return {
         "ref": task.ref,
         "project": task.project,
+        "workspace": task.workspace,
         "project_name": project.name,
         "title": task.title,
         "body": task.body,

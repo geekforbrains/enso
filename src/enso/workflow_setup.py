@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 import contextlib
-import copy
 import hashlib
-import json
 import os
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from . import db, frontmatter, jobs, locks, maintenance, tasks, workflows, worktrees
-from .config import Config, Paths, config_lock, load_config, parse_config, read_raw_config
+from .config import (
+    Config,
+    Paths,
+    config_lock,
+    load_config,
+    parse_project,
+    resolve_workspace,
+)
 from .jobs.runner import acquire_lock
 
 
@@ -98,26 +103,30 @@ def _plan(
     if development and project.repo is None:
         raise ValueError("the development preset requires a repository")
     existing = _idle(paths, key)
-    mapping = {"triage": "plan", "todo": "implement"} if migrate and development else {}
     names = [stage if isinstance(stage, str) else stage["name"] for stage in stages]
     invalid = [
         t.ref
         for t in existing
-        if (t.stage not in (*names, *tasks.BUILTIN_STAGES) and mapping.get(t.stage) not in names)
-        or (t.previous_stage and mapping.get(t.previous_stage, t.previous_stage) not in names)
+        if t.stage not in (*names, *tasks.BUILTIN_STAGES)
+        or (t.previous_stage and t.previous_stage not in names)
     ]
     if invalid:
-        raise ValueError("existing tasks need explicit stage migration: " + ", ".join(invalid))
-    raw = copy.deepcopy(read_raw_config(paths))
-    entry = raw["projects"][key]
+        raise ValueError(
+            "replacement workflow does not contain existing task stages: " + ", ".join(invalid)
+        )
+    path = paths.project(project.workspace, key) / "PROJECT.md"
+    project_document = frontmatter.read(path)
+    entry = dict(project_document.fields)
     entry.update(stages=stages, max_concurrency=3 if development else 1)
     if base is not None:
         entry["base"] = base
     if worktree_root is not None:
         entry["worktree_root"] = worktree_root
-    changed, problems, _ = parse_config(raw, paths)
-    if changed is None:
+    problems: list[str] = []
+    replacement = parse_project(paths, project.workspace, key, entry, problems)
+    if problems:
         raise ValueError("; ".join(problems))
+    changed = replace(config, projects={**config.projects, key: replacement})
     all_jobs, faults = jobs.load_jobs(paths, config)
     old_jobs = [job for job in all_jobs if job.project == key]
     if old_jobs and not migrate:
@@ -171,17 +180,18 @@ def _plan(
             fields.update(provider=agent.provider, model=agent.model, effort=agent.effort)
         changes[path] = _change(paths, path, _job_text(path, fields, prompts[name], changed))
         targets.append(str(path))
-    changes[paths.config] = _change(
-        paths, paths.config, (json.dumps(raw, indent=2) + "\n").encode()
+    project_path = paths.project(project.workspace, key) / "PROJECT.md"
+    changes[project_path] = _change(
+        paths, project_path, frontmatter.render(entry, project_document.body).encode()
     )
     return (
         list(changes.values()),
         {
             "project": key,
+            "workspace": project.workspace,
             "stages": names,
             "jobs": targets,
             "enabled": False,
-            "mapping": mapping,
         },
         old_jobs,
     )
@@ -241,6 +251,7 @@ def _resume(paths: Paths, key: str) -> tuple[Path, dict] | None:
 
 def _apply(paths: Paths, directory: Path, manifest: dict) -> dict[str, Any]:
     result = manifest["result"]
+    _idle(paths, result["project"])
     # Refuse to overwrite edits made while an interrupted migration was being inspected.
     for entry in manifest["files"]:
         path = _safe_path(paths, entry["path"])
@@ -260,13 +271,11 @@ def _apply(paths: Paths, directory: Path, manifest: dict) -> dict[str, Any]:
         desired = (directory / f"{entry['snapshot']}.after").read_bytes()
         if not path.exists() or _digest(path.read_bytes()) != entry["after"]:
             maintenance.write_bytes(path, desired)
-    # This operation is idempotent and atomic, including its task audit events.
-    tasks.migrate_stages(paths, result["project"], result["mapping"])
     manifest["status"] = "complete"
     maintenance.write_json(directory / "manifest.json", manifest)
     paths.maintenance.unlink()
     maintenance.sync_directory(paths.maintenance.parent)
-    return {key: value for key, value in result.items() if key != "mapping"} | {
+    return result | {
         "backup": str(directory),
         "resumed": manifest.pop("resumed", False),
     }
@@ -282,19 +291,28 @@ def initialize(
     migrate: bool,
     base: str | None,
     worktree_root: str | None,
+    workspace: str | None = None,
 ) -> dict[str, Any]:
     """Install one prevalidated plan; an interrupted plan resumes behind its admission gate."""
     workflows._operator()
+    selected = resolve_workspace(paths, workspace)
     with maintenance.lock(paths), config_lock(paths), contextlib.ExitStack() as held:
         db.initialize(paths)
         pending = _resume(paths, key)
         if pending is not None:
             directory, manifest = pending
+            if manifest["result"]["workspace"] != selected:
+                raise ValueError("pending workflow belongs to another workspace")
             manifest["resumed"] = True
             return _apply(paths, directory, manifest)
         config = load_config(paths)
         if key not in config.projects:
             raise ValueError(f"unknown project {key}; create it with enso project add first")
+        if config.projects[key].workspace != selected:
+            raise ValueError(
+                f"project {key} belongs to workspace {config.projects[key].workspace}; "
+                "select it with --workspace"
+            )
         changes, result, old_jobs = _plan(
             paths,
             config,

@@ -82,6 +82,12 @@ selected spec/workflow; editing existing validation rules may require operator r
 Do not clear actor variables, fabricate evidence, edit the database, or approve your own
 rule changes. Ask for the decision needed by blocking the task with the actual diagnostic.
 
+Task, project, and workflow commands use `ENSO_WORKSPACE`, or an explicit `--workspace`.
+Use `--all-workspaces` on task/project lists for deliberate broader discovery; `--all` only
+includes finished tasks. A task reference must match the selected workspace. Dependencies
+through `--after` and `--from` may cross workspaces without transferring ownership. Project
+definitions are `projects/<KEY>/PROJECT.md` in their workspace, and stage jobs share that owner.
+
 ## From chat or a terminal
 
 ```bash

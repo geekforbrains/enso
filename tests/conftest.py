@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from enso import db
+from enso import db, frontmatter
 from enso.config import Config, Paths, parse_config
 from enso.jobs import Job, find_job, render
 from enso.runtime import Runtime, origin_block
@@ -50,10 +50,9 @@ TELEGRAM_CONFIG: dict = {
 }
 # Two projects: a plain agent pipeline, and one with a human stage in the middle.
 PROJECTS: dict = {
-    "EN": {"name": "Enso", "workspace": "default", "stages": ["triage", "todo", "review"]},
+    "EN": {"name": "Enso", "stages": ["triage", "todo", "review"]},
     "MKT": {
         "name": "Marketing",
-        "workspace": "default",
         "stages": ["draft", "approve:human", "release"],
     },
 }
@@ -212,19 +211,30 @@ def raw_config_both(raw_config: dict) -> dict:
 
 
 @pytest.fixture
-def raw_config_projects(raw_config: dict) -> dict:
-    raw_config["projects"] = copy.deepcopy(PROJECTS)
-    return raw_config
-
-
-@pytest.fixture
-def project_config(enso_home: Paths, raw_config_projects: dict) -> Config:
-    """A config with the two projects, the schema initialized, and the file written."""
-    config, problems, _ = parse_config(raw_config_projects, enso_home)
+def project_config(enso_home: Paths, raw_config: dict, monkeypatch: pytest.MonkeyPatch) -> Config:
+    """Workspace projects, a selected CLI context, and a fresh operational database."""
+    for key, fields in PROJECTS.items():
+        write_project(enso_home, key, fields)
+    monkeypatch.setenv("ENSO_WORKSPACE", "default")
+    config, problems, _ = parse_config(raw_config, enso_home)
     assert config is not None, problems
-    write_config(enso_home, raw_config_projects)
+    write_config(enso_home, raw_config)
     db.initialize(enso_home)
     return config
+
+
+def write_project(paths: Paths, key: str, fields: dict, workspace: str = "default") -> Path:
+    path = paths.project(workspace, key) / "PROJECT.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(frontmatter.render(fields, ""), "utf-8")
+    return path
+
+
+def edit_project(paths: Paths, key: str = "EN", *, workspace: str = "default", **fields) -> Path:
+    path = paths.project(workspace, key) / "PROJECT.md"
+    document = frontmatter.read(path)
+    path.write_text(frontmatter.render({**document.fields, **fields}, document.body), "utf-8")
+    return path
 
 
 @pytest.fixture

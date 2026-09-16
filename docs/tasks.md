@@ -8,7 +8,7 @@ and move tasks from chat or a terminal with `enso task`.
 
 This page owns tasks, projects, stages, moves, claims, the Task block, worktrees, and the
 `task`, `project`, and `workflow` commands. [Jobs](jobs.md#stage-jobs) owns how a job binds to a stage
-and when it fires; [Configuration](configuration.md#projects) owns the `projects` section's
+and when it fires; [Configuration](configuration.md#projects) owns `PROJECT.md`'s
 validation; [Web viewer](web.md#tasks) owns the Tasks tab.
 
 ## The model
@@ -31,30 +31,21 @@ from listings unless asked for.
 
 ## Projects and stages
 
-The configuration examples in this section describe current 0.1.x behavior. The forthcoming
-[project-file contract](#project-files-and-scripts-in-020) moves those definitions and their
-scripts into the owning workspace.
+A project is `workspaces/<workspace>/projects/<KEY>/PROJECT.md`. The directory supplies
+its installation-unique key and workspace; frontmatter defines its display name and stages:
 
-A project is an entry in the `projects` section of `config.json`, keyed by 2–10 uppercase
-letters or digits:
-
-```json
-"projects": {
-  "EN": {
-    "name": "Enso",
-    "workspace": "dev",
-    "repo": "~/Projects/enso",
-    "base": "develop",
-    "worktree_root": ".worktrees",
-    "stages": ["work"],
-    "setup": ".dev/prepare",
-    "copy": [".env"]
-  }
-}
+```yaml
+---
+name: Enso
+repo: ~/Projects/enso
+base: develop
+stages: [work]
+setup: ./setup.sh
+copy: [.env]
+---
 ```
 
-`name` is the display name, `workspace` the workspace its stage jobs run in, and `stages`
-the pipeline in order. A stage can be a string (`name` or `name:human`) or an object
+`name` is the display name and `stages` the pipeline in order. A stage can be a string (`name` or `name:human`) or an object
 containing execution and acceptance rules. An **agent stage** is served by a stage job;
 a **command stage** runs a script without a model; an **integration stage** lets Enso
 validate and land a Git candidate; a **human stage** waits for an operator. A repository
@@ -70,8 +61,8 @@ Every project also has four built-in stages, which a project may not name:
 | `done` | Finished; the last stage's `advance` lands here |
 | `cancelled` | Dropped by a person |
 
-`enso project add` writes an entry with the same atomic writer `enso setup` uses, after
-validating the whole file; it refuses a key that exists. Three simple stage lists cover the usual
+`enso project add` validates and atomically creates `PROJECT.md`; it refuses a key that
+already exists anywhere in the installation. Three simple stage lists cover the usual
 shapes, or spell the stages out with `--stages`:
 
 | `--flow` | Stages |
@@ -82,13 +73,16 @@ shapes, or spell the stages out with `--stages`:
 
 ```bash
 enso project add EN --name Enso --workspace dev --repo ~/Projects/enso --flow basic \
-  --setup .dev/prepare --copy .env
-enso workflow init EN --preset dev --base develop \
-  --lint "uv run ruff check ." --test "uv run pytest"
+  --setup ./setup.sh --copy .env
+enso workflow init EN --workspace dev --preset dev --base develop \
+  --lint ./lint.sh --test ./test.sh
 enso project add MKT --name Marketing --workspace marketing \
   --stages research,draft,review,approve:human,release
-enso project list
+enso project list --all-workspaces
 ```
+
+Create `setup.sh`, `lint.sh`, and `test.sh` beside the project definition before using the
+repository workflow. The script pattern below enters the task code explicitly.
 
 Agent instructions live in the prompt of the job bound to that stage. Required acceptance
 checks and command stages live in the project definition, where Enso can execute them
@@ -96,9 +90,9 @@ independently. See [Jobs](jobs.md#stage-jobs).
 
 ### Project files and scripts in 0.2.0
 
-**Forthcoming in 0.2.0.** Each definition is
-`workspaces/<workspace>/projects/<KEY>/PROJECT.md`. Its YAML frontmatter retains the current
-project settings except `workspace`; the exact fields and an example belong to
+Each definition is
+`workspaces/<workspace>/projects/<KEY>/PROJECT.md`. Its YAML frontmatter holds
+project settings; the exact fields and an example belong to
 [Configuration](configuration.md#projectmd-in-020). The location supplies both ownership
 and the installation-unique project key. Task references keep the `KEY-NNN` form.
 
@@ -123,9 +117,14 @@ validation inputs, bounded execution, acceptance evidence, and lifecycle orderin
 their existing contracts. The worktree remains held while a script uses it, even though
 the script's initial directory is the project directory.
 
-The execution-directory descriptions in [Preparation](#preparation),
-[Lifecycle scripts](#lifecycle-scripts), and the current configuration examples describe
-0.1.x until this contract is implemented.
+Task CLI commands use `ENSO_WORKSPACE`, with `--workspace` overriding it. Missing context is
+an error, even for a unique `KEY-NNN` reference; the current directory never supplies it.
+Task and project lists and `task sweep` support `--all-workspaces` for a deliberate
+installation-wide operation. `--all` only includes finished tasks. Explicit `--after` and
+`--from` references can link work across workspaces without transferring either task.
+Task records retain their workspace in the home database. Moving a project directory does
+not reassign existing tasks; inconsistent ownership is refused. Stage jobs must live in
+the same workspace as their project. Renaming or transferring work needs deliberate repair.
 
 ## Moves
 
@@ -364,9 +363,9 @@ worktree; `hooks.after_transition` runs after every accepted move, and `hooks["a
 removal. Required pre-transition checks belong in the stage's `checks` array.
 
 After-transition events are durably enqueued with the move, including CLI and dependency
-moves. They run in order after execution ownership permits it, with the recorded worktree
-as their directory when available, otherwise the Enso workspace. A failing reaction does
-not undo an accepted stage: its output, retry attempts, and attention state stay visible.
+moves. They run in order after execution ownership permits it, in the project directory.
+`ENSO_TASK_DIR` points to the recorded worktree when available (empty otherwise). A failing
+reaction does not undo an accepted stage: its output, retry attempts, and attention state stay visible.
 Delivery is at least once, with three automatic attempts; use `ENSO_EVENT_ID` for effect
 deduplication. A lifecycle script cannot recursively move tasks through the supported CLI.
 Worktree-using events must finish before cleanup; teardown failure preserves the worktree.
@@ -374,19 +373,18 @@ See [Configuration](configuration.md#projects) for fields and [CLI](cli.md#envir
 for script context. Use lifecycle events for completion reactions rather than inferring
 completion from provider output or job postrun success.
 
-## Migrating an existing pipeline
+## Replacing an existing workflow
 
 Inspect tasks, worktrees, stage jobs, prompts, and scripts before running `enso workflow
 init KEY --preset dev --lint COMMAND --test COMMAND --migrate`. Pause admissions and drain
-active jobs first. The beta migration intentionally replaces the former immediate agent
-handoff behavior with submissions and acceptance. It preserves task history, worktree
-ownership and branches, retains old job files/scripts as disabled definitions, and remaps
-`triage` to `plan` and `todo` to `implement`. Review other custom stage mappings and prompts
-instead of silently dropping their meaning.
+active jobs first. Replacement preserves task records, history, worktree ownership, and
+branches, and retains old job files/scripts as disabled definitions. Existing task stages
+and blocked return destinations must exist in the replacement workflow; otherwise the
+command refuses before writing. It never renames stages or converts an older Enso home.
 
 The command validates the complete replacement before changing project files, then briefly
-pauses new admissions while it installs disabled stage jobs and migrates task stage names.
-Original config and job snapshots, checksums, and the operation record live privately in
+pauses new admissions while it replaces `PROJECT.md` and installs disabled stage jobs.
+Original project and job snapshots, checksums, and the operation record live privately in
 `runtime/workflow-migrations/<operation-id>/`; original job definitions also remain beside
 their scripts as `JOB.md.pre-workflow`. If a crash or write failure interrupts installation,
 the admission gate stays closed. Rerun `enso workflow init KEY` to resume the recorded plan;
@@ -397,7 +395,7 @@ Move actual acceptance requirements from old postrun scripts into stage checks; 
 completion reactions into lifecycle hooks. Preserve setup and copy choices and inspect
 retained worktree paths before cleanup. Validate config and every job, then run a small
 failure/repair/acceptance trial and inspect its web task history before enabling a broad
-queue. See [Worktrees](#worktrees) for retained-path migration and cleanup rules.
+queue. See [Worktrees](#worktrees) for recorded paths and cleanup rules.
 
 ## Worktrees
 
@@ -433,12 +431,13 @@ worktrees can reattach their recorded branch at the recorded path.
 ### Preparation
 
 Before the first writing stage, Enso records ownership, adds the worktree, copies selected
-local inputs, and runs the configured `setup` command with bash in that worktree. Output is
-bounded and the timeout is `script_timeout` (600 seconds by default). Setup must be
+local inputs, and runs the configured `setup` command with bash beside `PROJECT.md`.
+The script enters `ENSO_TASK_DIR` to prepare task code; supporting scripts stay beside the
+definition. Output is bounded and the timeout is `script_timeout` (600 seconds by default). Setup must be
 idempotent: a failed or interrupted setup is recorded and retried in the retained directory.
 Enso preserves any files the failed setup created. Successful setup runs only once.
 
-Setup and teardown receive `ENSO_HOME`, `ENSO_PROJECT`, `ENSO_TASK`, `ENSO_REPO`,
+Setup and teardown receive `ENSO_WORKSPACE`, `ENSO_HOME`, `ENSO_PROJECT`, `ENSO_TASK`, `ENSO_REPO`,
 `ENSO_PROJECT_REPO`, `ENSO_TASK_DIR`, `ENSO_WORKTREE`, `ENSO_BRANCH`, `ENSO_BASE`,
 `ENSO_FROM_STAGE`, `ENSO_TO_STAGE`, `ENSO_RUN_ID`, `ENSO_ATTEMPT`, `ENSO_EVENT`, and
 `ENSO_EVENT_ID`. Setup/teardown use the current task stage for both stage fields. The event ID is stable across retries so a script can avoid repeating an
@@ -531,27 +530,27 @@ that can modify the controller itself.
 ## The CLI
 
 ```text
-enso task add TITLE --project KEY [--body TEXT | --body-file PATH|-] [--priority N] [--backlog] [--after REF] [--from REF]
-enso task list [--project KEY] [--stage NAME] [--ready] [--claimed] [--attention] [--all] [--idle-for 30m]
-enso task show REF
-enso task advance REF --message TEXT|- [--ref KIND:VALUE ...] [--force]
-enso task return REF --message TEXT|- [--force]
-enso task block REF --message TEXT|- [--after REF] [--force]
-enso task resume REF [--message TEXT|-] [--to STAGE]
-enso task drop REF --message TEXT|-
-enso task release REF --message TEXT|- [--force]
-enso task edit REF [--title T] [--body-file PATH|-] [--priority N] [--after REF] [--force]
-enso task note REF TEXT|- [--attention]
-enso task ref REF KIND VALUE
-enso task land REF
-enso task sweep [--project KEY]
-enso workflow show REF
-enso workflow verify REF --message TEXT|-
-enso workflow retry REF --message TEXT|-
-enso workflow approve-rules REF --message TEXT|-
-enso workflow init KEY --preset basic|dev [--lint CMD --test CMD] [--base BRANCH] [--worktree-root PATH] [--migrate]
-enso project list
-enso project add KEY --name NAME --workspace WS [--repo PATH] (--stages a,b,c:human | --flow basic|support|marketing) [--setup CMD] [--copy PATH]...
+enso task add TITLE --project KEY [--body TEXT | --body-file PATH|-] [--priority N] [--backlog] [--after REF] [--from REF] [--workspace W]
+enso task list [--project KEY] [--stage NAME] [--ready] [--claimed] [--attention] [--all] [--idle-for 30m] [--workspace W] [--all-workspaces]
+enso task show REF [--workspace W]
+enso task advance REF --message TEXT|- [--ref KIND:VALUE ...] [--force] [--workspace W]
+enso task return REF --message TEXT|- [--force] [--workspace W]
+enso task block REF --message TEXT|- [--after REF] [--force] [--workspace W]
+enso task resume REF [--message TEXT|-] [--to STAGE] [--workspace W]
+enso task drop REF --message TEXT|- [--workspace W]
+enso task release REF --message TEXT|- [--force] [--workspace W]
+enso task edit REF [--title T] [--body-file PATH|-] [--priority N] [--after REF] [--force] [--workspace W]
+enso task note REF TEXT|- [--attention] [--workspace W]
+enso task ref REF KIND VALUE [--workspace W]
+enso task land REF [--workspace W]
+enso task sweep [--project KEY] [--workspace W] [--all-workspaces]
+enso workflow show REF [--workspace W]
+enso workflow verify REF --message TEXT|- [--workspace W]
+enso workflow retry REF --message TEXT|- [--workspace W]
+enso workflow approve-rules REF --message TEXT|- [--workspace W]
+enso workflow init KEY --preset basic|dev [--lint CMD --test CMD] [--base BRANCH] [--worktree-root PATH] [--migrate] [--workspace W]
+enso project list [--workspace W] [--all-workspaces]
+enso project add KEY --name NAME [--workspace WS] [--repo PATH] (--stages a,b,c:human | --flow basic|support|marketing) [--setup CMD] [--copy PATH]...
 ```
 
 Every command takes `--json` and follows the [JSON error contract](cli.md): a refused move or
@@ -574,7 +573,7 @@ body, and the timeline. `show --json` prints the context packet, the same data t
 is rendered from, plus `events`, the full timeline newest first, and `workflow`, the durable stage transactions:
 
 ```json
-{"ref": "EN-041", "project": "EN", "project_name": "Enso", "title": "…", "body": "…",
+{"ref": "EN-041", "project": "EN", "workspace": "dev", "project_name": "Enso", "title": "…", "body": "…",
  "stage": "todo", "stages": ["triage", "todo", "review"], "human_stages": [],
  "priority": 0, "attention": false, "after": null, "from": null,
  "claim": {"run_id": "…", "actor": "job:dev-enso-todo", "at": "…"},

@@ -89,7 +89,8 @@ def _run_kind(run_id: str | None, live: set[str]) -> str | None:
 
 
 def _project_of(config: Config | None, task: tasks.Task) -> ProjectConfig | None:
-    return config.projects.get(task.project) if config else None
+    project = config.projects.get(task.project) if config else None
+    return project if project and project.workspace == task.workspace else None
 
 
 def _task_state(task: tasks.Task, project: ProjectConfig | None) -> str:

@@ -12,7 +12,7 @@ rather than assembled by hand.
 ## Layout
 
 This layout is implemented on the 0.2.0 development branch, including workspace jobs.
-Memory behavior and the relocation of project definitions and Heartbeat scripts remain
+Memory behavior and the relocation of Heartbeat scripts remain
 forthcoming, as detailed in the [ownership layout](#ownership-in-020).
 
 ```text
@@ -24,7 +24,7 @@ forthcoming, as detailed in the [ownership layout](#ownership-in-020).
 ├── knowledge/         # durable reference material the agent should keep
 ├── memory/            # dated memories (feature forthcoming)
 ├── jobs/              # scheduled and stage jobs
-├── projects/          # workspace project definitions (relocation forthcoming)
+├── projects/          # workspace project definitions and scripts
 ├── heartbeat/         # optional; workspace gate scripts (relocation forthcoming)
 ├── drafts/            # generated or editable output
 ├── uploads/           # chat attachments, one directory per turn
@@ -38,7 +38,8 @@ forthcoming, as detailed in the [ownership layout](#ownership-in-020).
 | --- | --- |
 | `knowledge/` | Durable reference owned by this workspace: notes, facts, and research worth finding again. |
 | `jobs/` | Scheduled and stage jobs, identified as `<workspace>:<job>`. |
-| `memory/`, `projects/` | Prepared roots for the forthcoming workspace-owned features below. |
+| `memory/` | Prepared root for forthcoming maintained memory. |
+| `projects/` | Project definitions and scripts, each under `<KEY>/`; see [Tasks](tasks.md#projects-and-stages). |
 | `heartbeat/` | Optional root, created only when workspace gate scripts are used. |
 | `WORKSPACE.md` | Optional settings; [Configuration](configuration.md#workspacemd-in-020) owns its format and reload behavior. |
 | `drafts/` | Ordinary work product. Posts, reports, scratch analysis. Safe to delete. |
@@ -77,8 +78,8 @@ retains its separately documented repair behavior.
 
 ## Ownership in 0.2.0
 
-**Target for 0.2.0.** Workspace paths, settings, and jobs are implemented; project relocation,
-workspace Heartbeat scripts, and memory behavior remain forthcoming. Workspace-owned files
+**Target for 0.2.0.** Workspace paths, settings, projects, and jobs are implemented;
+workspace Heartbeat scripts and memory behavior remain forthcoming. Workspace-owned files
 live under their workspace; the containing directory determines ownership. Installation
 settings remain in `config.json`, as described
 in [Configuration](configuration.md#configuration-ownership-in-020).
@@ -155,8 +156,8 @@ and `team:memory`; those jobs process only their containing workspace.
 workspace for a turn, which keeps that selection through preparation and queueing. Removing
 its binding or losing its workspace drops it before execution; the
 [connection access contract](connections.md#access-in-020) owns admission and notices. The
-shared context resolver implements the precedence below; individual task/list/search and
-Heartbeat command changes remain forthcoming and are identified in
+shared resolver is used by task, project, workflow, and job creation commands. Knowledge
+search and Heartbeat changes remain forthcoming and are identified in
 [CLI](cli.md#workspace-context-in-020). Enso sets `ENSO_WORKSPACE` for its chat agents,
 jobs, and Heartbeat runs, and CLI calls they launch
 inherit it. Workspace-scoped CLI operations default to that value; an optional
@@ -385,8 +386,8 @@ links. Then bind a conversation to it in `config.json`; the next message in that
 conversation lands in the new workspace, with no restart. See
 [Configuration](configuration.md).
 
-To retire one, remove or repoint its bindings and jobs, and repoint any projects that name
-it while preserving their tasks. Inspect active and paused beats with
+To retire one, remove or repoint its bindings and jobs, and resolve any projects it owns
+while preserving their tasks. Inspect active and paused beats with
 `enso heartbeat list --workspace NAME`, paging through results if needed; move ongoing beats
 to another workspace or explicitly close work that is ending. Pausing a beat keeps its
 workspace reference. Keep the directory while any of those dependents still needs it.

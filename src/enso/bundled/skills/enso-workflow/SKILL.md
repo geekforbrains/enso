@@ -12,7 +12,8 @@ check evidence.
 
 ## Inspect, then configure
 
-Read `enso project list --json`, `enso job list --json`, and `enso config show` before
+Read `enso project list --json`, `enso job list --json`, and the selected workspace's
+`projects/<KEY>/PROJECT.md` before
 changing an existing process. Inspect project instructions and the repository's actual
 validation commands. Use runtime `--help` for accepted syntax; never invent a package
 script or silently replace an absent check with `true`.
@@ -22,10 +23,24 @@ For a new project, create its workspace and project first using `enso-workspace`
 
 ```bash
 enso workflow init KEY --preset basic
-enso workflow init KEY --preset dev --lint 'npm run lint' --test 'npm test' --base main
+enso workflow init KEY --preset dev --lint ./lint.sh --test ./test.sh --base main
 ```
 
-The commands are examples: select ones the project actually provides. The dev preset
+Create `lint.sh` and `test.sh` beside `PROJECT.md`, using commands the repository actually
+provides. All project commands start beside that definition, including setup, checks,
+command stages, and lifecycle scripts. A repository script must enter the task directory:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+cd "${ENSO_TASK_DIR:?This command needs a task worktree}"
+npm test
+```
+
+Make directly invoked scripts executable. Providers still start in their workspace. Task,
+project, and workflow commands default to `ENSO_WORKSPACE`; pass `--workspace` to select
+another owner. Missing context is an error. Project keys are unique across the installation,
+and a stage job must share its project's workspace. The dev preset
 requires a repository plus both commands, and creates `plan → implement → review →
 integrate → done`. Plan runs in the Enso workspace without a worktree. Implementation
 uses its task worktree and required checks, with two repair opportunities. Review can
@@ -42,10 +57,11 @@ dependency paths and the running application's health. Change roots between acti
 do not relocate an existing task checkout as part of a configuration edit.
 
 For an existing pipeline, use `--migrate` after inspecting its current jobs and tasks.
-The migration preserves old job files/scripts as disabled definitions and remaps familiar
-`triage`/`todo` stages to `plan`/`implement`. Preserve custom instructions and useful scripts
-when moving them into the new flow. Stop new admissions and drain active runs before a live
-migration; retain backups and check task counts, retained worktrees, and stage mappings.
+Replacement preserves old job files/scripts as disabled definitions and leaves task
+records and history unchanged. Existing task stages and blocked return destinations must
+fit the new workflow; no stages are renamed automatically. Preserve custom instructions
+and useful scripts. Stop new admissions and drain active runs before replacement; retain
+backups and check task counts, retained worktrees, and stages.
 Do not remove old branches or user files merely because configuration changed.
 
 ## Customizing the flow

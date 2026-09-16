@@ -284,15 +284,16 @@ it never deletes. The command exits 1 while any error remains; warnings alone ex
 
 ### Workspace context in 0.2.0
 
-**Partly implemented in 0.2.0.** Job creation uses the shared resolver; adoption by
-task, Heartbeat, and other context-sensitive commands remains forthcoming.
+**Partly implemented in 0.2.0.** Job creation and task, project, and workflow commands use
+the shared resolver; adoption by Heartbeat and other context-sensitive commands remains forthcoming.
 Workspace-scoped commands use `ENSO_WORKSPACE`,
 inherited from the Enso chat agent, job, or Heartbeat run calling them. Optional `--workspace` overrides it
 for that operation. The [context contract](workspaces.md#context-selection-in-020) owns
 validation and recorded ownership; there is no directory inference or implicit `default`.
 Installation-wide commands retain their installation scope.
 
-For an agent running with `ENSO_WORKSPACE=team`, these forthcoming examples select context:
+For an agent running with `ENSO_WORKSPACE=team`, task commands select context as shown
+below; Heartbeat creation remains forthcoming:
 
 ```bash
 enso task list                         # team
@@ -495,28 +496,34 @@ these attempts too. History from before attempt recording was added has an empty
 ## Tasks and projects
 
 ```text
-enso task add TITLE --project KEY [--body TEXT | --body-file PATH|-] [--priority N] [--backlog] [--after REF] [--from REF] [--json]
-enso task list [--project KEY] [--stage NAME] [--ready] [--claimed] [--attention] [--all] [--idle-for 30m] [--json]
-enso task show REF [--json]
-enso task advance REF --message TEXT|- [--ref KIND:VALUE ...] [--force] [--json]
-enso task return REF --message TEXT|- [--force] [--json]
-enso task block REF --message TEXT|- [--after REF] [--force] [--json]
-enso task resume REF [--message TEXT|-] [--to STAGE] [--json]
-enso task drop REF --message TEXT|- [--json]
-enso task release REF --message TEXT|- [--force] [--json]
-enso task edit REF [--title T] [--body-file PATH|-] [--priority N] [--after REF] [--force] [--json]
-enso task note REF TEXT|- [--attention] [--json]
-enso task ref REF KIND VALUE [--json]
-enso task land REF [--json]
-enso task sweep [--project KEY] [--json]
-enso project list [--json]
-enso project add KEY --name NAME --workspace WS [--repo PATH] (--stages a,b,c:human | --flow F) [--setup CMD] [--copy PATH]... [--json]
-enso workflow init KEY --preset basic|dev [--lint COMMAND --test COMMAND] [--base BRANCH] [--worktree-root PATH] [--migrate] [--json]
-enso workflow show REF [--json]
-enso workflow verify REF --message TEXT [--json]
-enso workflow retry REF --message TEXT [--json]
-enso workflow approve-rules REF --message TEXT [--json]
+enso task add TITLE --project KEY [--body TEXT | --body-file PATH|-] [--priority N] [--backlog] [--after REF] [--from REF] [--json] [--workspace W]
+enso task list [--project KEY] [--stage NAME] [--ready] [--claimed] [--attention] [--all] [--idle-for 30m] [--json] [--workspace W] [--all-workspaces]
+enso task show REF [--json] [--workspace W]
+enso task advance REF --message TEXT|- [--ref KIND:VALUE ...] [--force] [--json] [--workspace W]
+enso task return REF --message TEXT|- [--force] [--json] [--workspace W]
+enso task block REF --message TEXT|- [--after REF] [--force] [--json] [--workspace W]
+enso task resume REF [--message TEXT|-] [--to STAGE] [--json] [--workspace W]
+enso task drop REF --message TEXT|- [--json] [--workspace W]
+enso task release REF --message TEXT|- [--force] [--json] [--workspace W]
+enso task edit REF [--title T] [--body-file PATH|-] [--priority N] [--after REF] [--force] [--json] [--workspace W]
+enso task note REF TEXT|- [--attention] [--json] [--workspace W]
+enso task ref REF KIND VALUE [--json] [--workspace W]
+enso task land REF [--json] [--workspace W]
+enso task sweep [--project KEY] [--json] [--workspace W] [--all-workspaces]
+enso project list [--json] [--workspace W] [--all-workspaces]
+enso project add KEY --name NAME [--workspace WS] [--repo PATH] (--stages a,b,c:human | --flow F) [--setup CMD] [--copy PATH]... [--json]
+enso workflow init KEY --preset basic|dev [--lint COMMAND --test COMMAND] [--base BRANCH] [--worktree-root PATH] [--migrate] [--json] [--workspace W]
+enso workflow show REF [--json] [--workspace W]
+enso workflow verify REF --message TEXT [--json] [--workspace W]
+enso workflow retry REF --message TEXT [--json] [--workspace W]
+enso workflow approve-rules REF --message TEXT [--json] [--workspace W]
 ```
+
+Every task, project, and workflow command accepts `--workspace W`, defaulting to
+`ENSO_WORKSPACE`. A missing selection is an error, including commands with explicit task
+references or project keys. Task/project lists and `task sweep` accept `--all-workspaces`;
+`--all` only changes whether finished tasks are shown. Explicit dependency references can
+cross workspaces without changing either task's owner.
 
 The board, its moves, the claim rules, and what each command prints are in
 [Tasks](tasks.md#the-cli). A refused move exits 1 with the reason, or with `--json` the error
@@ -524,14 +531,16 @@ object described above. The actor is derived from the environment, never passed:
 acts as `job:<workspace>:<job>`, a chat turn as its sender, a terminal as the local user. `--force`,
 is refused inside a run and cannot override a live execution claim or required checks; `drop` is only offered
 outside one; and a run may move, release, edit, or land only the task it holds. `--message -` and `--body-file -` read stdin. `project add` takes exactly one of
-`--stages` and `--flow` (`basic`, `support`, `marketing`), validates the whole
-`config.json`, and writes it atomically; see [Configuration](configuration.md#projects).
+`--stages` and `--flow` (`basic`, `support`, `marketing`) and atomically creates
+`PROJECT.md` in the selected workspace; see [Configuration](configuration.md#projects).
 
-`workflow init` configures an existing project. The basic preset has one unchecked stage;
+`workflow init` updates the existing project's `PROJECT.md` and preserves its Markdown body.
+Commands run beside that file; repository checks enter `ENSO_TASK_DIR` explicitly. The basic preset has one unchecked stage;
 dev requires a Git repository plus real lint/test commands and scaffolds plan, implement,
 review, and engine integration. `--migrate` preserves old job definitions as disabled files
-and remaps legacy stages while retaining task history and worktree metadata. Inspect and
-drain live work before migration; review custom instructions before enabling new jobs.
+while retaining task history and worktree metadata. Existing task stages and blocked
+return destinations must fit the replacement; no stages are renamed automatically. Inspect
+and drain live work before replacement; review custom instructions before enabling new jobs.
 
 `workflow show` exposes durable transactions, check results, repair budgets and lifecycle
 history. `verify` runs the selected stage's acceptance without a provider; it does not bypass

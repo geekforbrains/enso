@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
-from conftest import write_config, write_job
+from conftest import edit_project, write_job
 from typer.testing import CliRunner
 
 from enso import jobs, maintenance, tasks, workflow_setup
@@ -35,21 +35,24 @@ def dev_args() -> tuple[str, ...]:
 
 @pytest.fixture
 def repo_config(enso_home: Paths, project_config: Config, repo: Path) -> Config:
-    raw = project_config.raw
-    raw["projects"]["EN"]["repo"] = str(repo)
-    write_config(enso_home, raw)
+    edit_project(enso_home, repo=str(repo))
     return load_config(enso_home)
 
 
 def test_basic_preset_has_no_checks_or_repository_requirement(
     enso_home: Paths, project_config: Config
 ) -> None:
+    path = enso_home.project("default", "EN") / "PROJECT.md"
+    path.write_text(path.read_text() + "Keep this project context.\n")
+    installation = enso_home.config.read_bytes()
     result = invoke("init", "EN", "--preset", "basic")
     assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
     assert payload["stages"] == ["work"] and not payload["enabled"]
     configured = load_config(enso_home)
     assert configured.projects["EN"].stages[0].checks == ()
+    assert "Keep this project context." in path.read_text()
+    assert enso_home.config.read_bytes() == installation
     loaded, faults = jobs.load_jobs(enso_home, configured)
     assert not faults and len(loaded) == 1 and not loaded[0].enabled
     assert not maintenance.paused(enso_home)
@@ -58,10 +61,10 @@ def test_basic_preset_has_no_checks_or_repository_requirement(
 def test_development_preset_requires_commands_before_any_project_mutation(
     enso_home: Paths, repo_config: Config
 ) -> None:
-    original = enso_home.config.read_bytes()
+    original = (enso_home.project("default", "EN") / "PROJECT.md").read_bytes()
     result = invoke("init", "EN", "--preset", "dev", "--lint", "true")
     assert result.exit_code == 1 and "--test" in json.loads(result.stdout)["error"]
-    assert enso_home.config.read_bytes() == original
+    assert (enso_home.project("default", "EN") / "PROJECT.md").read_bytes() == original
     assert not enso_home.workspace_jobs("default").exists()
     assert not maintenance.paused(enso_home)
 
@@ -84,11 +87,13 @@ def test_development_preset_creates_disabled_valid_jobs_and_external_worktrees(
     assert integration.provider == "command"
 
 
-def test_migration_preserves_scripts_and_history_and_retires_original_jobs(
+def test_replacement_preserves_scripts_tasks_and_history_and_retires_original_jobs(
     enso_home: Paths, repo_config: Config
 ) -> None:
+    edit_project(enso_home, stages=["plan"])
+    repo_config = load_config(enso_home)
     task = tasks.create(enso_home, repo_config, "EN", "Existing work", actor="user:test")
-    tasks.move(
+    blocked = tasks.move(
         enso_home,
         repo_config,
         task.ref,
@@ -97,22 +102,20 @@ def test_migration_preserves_scripts_and_history_and_retires_original_jobs(
         run_id=None,
         message="Waiting on clarification",
     )
-    old = write_job(enso_home, "old-triage", project="EN", stage="triage", omit=["schedule"])
+    old = write_job(enso_home, "old-plan", project="EN", stage="plan", omit=["schedule"])
     original = old.read_bytes()
     custom = old.parent / "postrun.sh"
     custom.write_text("printf 'custom check'\n")
     history_before = tasks.events(enso_home, task.ref)
     result = invoke(*dev_args(), "--migrate")
     assert result.exit_code == 0, result.output
-    migrated = tasks.get(enso_home, task.ref)
-    assert migrated.stage == "blocked" and migrated.previous_stage == "plan"
-    assert migrated.title == task.title
-    assert len(tasks.events(enso_home, task.ref)) == len(history_before) + 1
+    assert tasks.get(enso_home, task.ref) == blocked
+    assert tasks.events(enso_home, task.ref) == history_before
     assert old.with_name("JOB.md.pre-workflow").read_bytes() == original
     assert custom.read_text() == "printf 'custom check'\n"
     loaded, faults = jobs.load_jobs(enso_home, load_config(enso_home))
     assert not faults
-    archived = next(job for job in loaded if job.dir_name == "old-triage")
+    archived = next(job for job in loaded if job.dir_name == "old-plan")
     assert not archived.enabled and archived.project is None and archived.schedule
 
 
@@ -121,10 +124,10 @@ def test_initialization_refuses_live_claims_and_preserves_config(
 ) -> None:
     tasks.create(enso_home, repo_config, "EN", "Busy", actor="user:test")
     tasks.take(enso_home, repo_config, "EN", "triage", run_id="busy", actor="job:test")
-    original = enso_home.config.read_bytes()
+    original = (enso_home.project("default", "EN") / "PROJECT.md").read_bytes()
     result = invoke(*dev_args(), "--migrate")
     assert result.exit_code == 1 and "active project runs" in json.loads(result.stdout)["error"]
-    assert enso_home.config.read_bytes() == original
+    assert (enso_home.project("default", "EN") / "PROJECT.md").read_bytes() == original
     assert not maintenance.paused(enso_home)
 
 
@@ -141,6 +144,8 @@ def test_existing_unrelated_target_is_never_overwritten(
 def test_partial_io_failure_keeps_admission_closed_and_same_command_resumes(
     enso_home: Paths, repo_config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    edit_project(enso_home, stages=["plan"])
+    repo_config = load_config(enso_home)
     task = tasks.create(enso_home, repo_config, "EN", "Existing", actor="user:test")
     original_write = maintenance.write_bytes
     broken_path = enso_home.workspace_jobs("default") / "en-implement" / "JOB.md"
@@ -181,11 +186,9 @@ def test_workflow_recovery_is_not_available_inside_an_agent_run(
 def test_verify_executes_checks_and_does_not_fake_a_failed_stage(
     enso_home: Paths, project_config: Config
 ) -> None:
-    raw = project_config.raw
-    raw["projects"]["EN"]["stages"] = [
-        {"name": "work", "checks": [{"name": "lint", "command": "exit 1"}]}
-    ]
-    write_config(enso_home, raw)
+    edit_project(
+        enso_home, stages=[{"name": "work", "checks": [{"name": "lint", "command": "exit 1"}]}]
+    )
     config = load_config(enso_home)
     task = tasks.create(enso_home, config, "EN", "Fail validation", actor="user:test")
     result = invoke("verify", task.ref, "--message", "Candidate ready")
@@ -196,3 +199,30 @@ def test_verify_executes_checks_and_does_not_fake_a_failed_stage(
     assert transaction["checks"][0]["exit_code"] == 1
     assert transaction["status"] != "accepted"
     assert tasks.get(enso_home, task.ref).stage != "done"
+
+
+@pytest.mark.parametrize("stage,blocked", [("triage", False), ("todo", True)])
+def test_replacement_never_converts_legacy_task_stages(enso_home, repo_config, stage, blocked):
+    edit_project(enso_home, stages=[stage])
+    config = load_config(enso_home)
+    task = tasks.create(enso_home, config, "EN", "Retain this stage", actor="user:test")
+    if blocked:
+        task = tasks.move(
+            enso_home,
+            config,
+            task.ref,
+            "block",
+            actor="user:test",
+            run_id=None,
+            message="Keep the return destination",
+        )
+    history = tasks.events(enso_home, task.ref)
+    project = enso_home.project("default", "EN") / "PROJECT.md"
+    job = write_job(enso_home, "existing", project="EN", stage=stage, omit=["schedule"])
+    before = project.read_bytes(), job.read_bytes()
+    result = invoke(*dev_args(), "--migrate")
+    assert result.exit_code == 1 and "existing task stages" in result.stdout
+    assert tasks.get(enso_home, task.ref) == task and tasks.events(enso_home, task.ref) == history
+    assert (project.read_bytes(), job.read_bytes()) == before
+    assert not maintenance.paused(enso_home)
+    assert not (enso_home.workspace_jobs("default") / "en-plan").exists()

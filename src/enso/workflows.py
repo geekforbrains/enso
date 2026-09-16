@@ -24,7 +24,16 @@ from pathlib import Path
 from typing import Any
 
 from . import db, execution, locks, tasks, worktrees
-from .config import Config, Paths, ProjectConfig, Stage, load_config, stage_dict
+from .config import (
+    Config,
+    ConfigError,
+    Paths,
+    ProjectConfig,
+    Stage,
+    load_config,
+    project_directory,
+    stage_dict,
+)
 
 ACTIVE = ("working", "submitted", "checking", "repairing")
 PENDING_EVENTS = ("pending", "running", "failed")
@@ -168,7 +177,7 @@ def _cwd(paths: Paths, project: ProjectConfig, stage: Stage, ref: str) -> Path:
 def start(paths: Paths, config: Config, ref: str, run_id: str) -> dict[str, Any]:
     task = tasks.get(paths, ref)
     ref = task.ref
-    project = config.projects[task.project]
+    project = tasks._project(config, task.project, task.workspace)
     stage = project.stage(task.stage)
     if stage is None:
         raise tasks.TaskError(f"{ref} has no runnable stage")
@@ -299,7 +308,7 @@ def _check_current(
     paths: Paths, config: Config, tx: dict[str, Any]
 ) -> tuple[tasks.Task, ProjectConfig, Stage]:
     task = tasks.get(paths, tx["task_ref"])
-    project = config.projects[task.project]
+    project = tasks._project(config, task.project, task.workspace)
     # A running controller uses a snapshot, but reject an operator config change instead
     # of accepting stale rules. Scratch/in-memory configs need no file round trip.
     if paths.config.exists():
@@ -643,6 +652,11 @@ async def evaluate(
             _update(paths, tx)
             check_env = {
                 **env,
+                "ENSO_HOME": str(paths.home),
+                "ENSO_WORKSPACE": project.workspace,
+                "ENSO_TASK": ref,
+                "ENSO_TASK_DIR": str(cwd) if project.repo and stage.worktree is not False else "",
+                "ENSO_PROJECT_REPO": str(project.repo) if project.repo else "",
                 "ENSO_TRANSACTION_ID": tx["id"],
                 "ENSO_CANDIDATE": candidate or "",
                 "ENSO_ATTEMPT": str(tx["attempts"]),
@@ -663,7 +677,11 @@ async def evaluate(
                 tx["checks"].append(result)
                 _update(paths, tx)
                 measured = await command(
-                    check.command, cwd=cwd, env=check_env, timeout=check.timeout, name=check.name
+                    check.command,
+                    cwd=project_directory(paths, project.workspace, project.key),
+                    env=check_env,
+                    timeout=check.timeout,
+                    name=check.name,
                 )
                 result.update(measured)
                 _update(paths, tx)
@@ -714,7 +732,7 @@ async def evaluate(
         _accept(paths, config, tx)
         await drain_events(paths, config, ref=ref)
         return Evaluation("accepted")
-    except (tasks.TaskError, worktrees.WorktreeError, OSError) as exc:
+    except (tasks.TaskError, worktrees.WorktreeError, ConfigError, ValueError, OSError) as exc:
         return _failure(paths, tx, str(exc), repairable=False)
     finally:
         if lease is not None:
@@ -840,18 +858,26 @@ async def drain_events(paths: Paths, config: Config, *, ref: str | None = None) 
                 "ENSO_RUN_ID": event["run_id"] or "",
                 "ENSO_ATTEMPT": str(event["attempts"]),
                 "ENSO_TASK_DIR": event["cwd"],
+                "ENSO_WORKSPACE": event["workspace"],
                 "ENSO_PROJECT_REPO": info.get("repo", ""),
                 "ENSO_BRANCH": info.get("branch", ""),
                 "ENSO_BASE": info.get("base", ""),
                 "ENSO_LIFECYCLE": "1",
             }
-            result = await command(
-                event["command"],
-                cwd=Path(event["cwd"]) if event["cwd"] else paths.workspace(event["workspace"]),
-                env=env,
-                timeout=event["timeout"],
-                name=event["name"],
-            )
+            try:
+                cwd = project_directory(paths, event["workspace"], event["project"])
+            except (OSError, ValueError) as exc:
+                result: dict[str, Any] = {
+                    "status": "error",
+                    "exit_code": None,
+                    "output": "",
+                    "error": str(exc),
+                    "duration_ms": 0,
+                }
+            else:
+                result = await command(
+                    event["command"], cwd=cwd, env=env, timeout=event["timeout"], name=event["name"]
+                )
             event["deliveries"].append({**result, "attempt": event["attempts"], "at": db.now()})
             event.update(result)
             event["status"] = "delivered" if result["status"] == "passed" else "failed"
@@ -986,7 +1012,7 @@ def approve_rules(paths: Paths, config: Config, ref: str, message: str) -> None:
     task = tasks.get(paths, ref)
     if task.claim_run_id:
         raise tasks.TaskError("stop the active run before approving changed acceptance rules")
-    project = config.projects[task.project]
+    project = tasks._project(config, task.project, task.workspace)
     stage = project.stage((task.previous_stage or "") if task.stage == "blocked" else task.stage)
     info = worktrees.lookup(paths, ref)
     if stage is None or not info:
@@ -1017,7 +1043,7 @@ async def verify_manual(paths: Paths, config: Config, ref: str, message: str) ->
     """Operator checkpoint/check-only acceptance; no model and no unchecked override."""
     _operator()
     task = tasks.get(paths, ref)
-    project = config.projects[task.project]
+    project = tasks._project(config, task.project, task.workspace)
     stage = project.stage(task.stage)
     if stage is None:
         raise tasks.TaskError("resume the task into its stage before verification")

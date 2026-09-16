@@ -7,6 +7,13 @@ All notable changes to Enso are documented here, following
 
 ### Changed
 
+- Projects now live in workspace `projects/<KEY>/PROJECT.md` files; duplicate keys and the
+  old `projects` config block are rejected. Setup, checks, command stages, and lifecycle
+  scripts run beside the definition, with task code in `ENSO_TASK_DIR`. Task commands select
+  a workspace, persisted task ownership prevents silent reassignment, and stage jobs must
+  share their project's workspace. Workflow replacement preserves tasks without the old
+  automatic stage-name conversion.
+
 - Jobs now live under `workspaces/<workspace>/jobs/` and use `workspace:job` references
   across commands, runs, alerts, task claims, and the viewer. Setup and managed bundle
   refresh use the same paths, preserving customization. Concurrency groups remain shared

@@ -35,7 +35,10 @@ def test_prepare_creates_once_then_reuses(
     enso_home: Paths, project_config: Config, repo: Path
 ) -> None:
     project = project_for(
-        project_config, repo, setup="echo ran >> setup.txt", copy=(".env", "missing.txt")
+        project_config,
+        repo,
+        setup='echo ran >> "$ENSO_TASK_DIR/setup.txt"',
+        copy=(".env", "missing.txt"),
     )
     info = worktrees.prepare(enso_home, project, "EN-001")
     assert info == worktrees.WorktreeInfo(
@@ -85,7 +88,7 @@ def test_failing_setup_preserves_work_and_can_resume(
     assert worktrees.lookup(enso_home, "EN-001")["status"] == "setup_failed"
     (path / ".env").write_text("retained\n")
     info = worktrees.prepare(
-        enso_home, replace(project, setup="echo recovered > setup.txt"), "EN-001"
+        enso_home, replace(project, setup='echo recovered > "$ENSO_TASK_DIR/setup.txt"'), "EN-001"
     )
     assert not info.created
     assert (path / ".env").read_text() == "retained\n"
@@ -317,7 +320,7 @@ def test_setup_context_and_ignored_copy_exclusions_with_fallback(
         repo,
         setup=(
             'printf "%s|%s|%s|%s" "$ENSO_TASK" "$ENSO_PROJECT" '
-            '"$ENSO_BASE" "$ENSO_TASK_DIR" > setup.txt'
+            '"$ENSO_BASE" "$ENSO_TASK_DIR" > "$ENSO_TASK_DIR/setup.txt"'
         ),
     )
     info = worktrees.prepare(enso_home, project, "EN-001")
@@ -468,7 +471,7 @@ def test_teardown_failure_retains_work_and_success_is_not_repeated(
     assert info.path.exists()
     assert "teardown failed" in worktrees.lookup(enso_home, "EN-001")["error"]
     assert tasks.get(enso_home, "EN-001").attention
-    project = replace(project, hooks={"teardown": "echo successful >> setup.txt"})
+    project = replace(project, hooks={"teardown": 'echo successful >> "$ENSO_TASK_DIR/setup.txt"'})
     original = worktrees._git
 
     def temporarily_refuse_remove(args: list[str], **kwargs: object) -> tuple[int, str]:
@@ -529,7 +532,9 @@ def test_teardown_retries_are_bounded_and_operator_reset_allows_recovery(
 
     tasks.create(enso_home, project_config, "EN", "bounded teardown", actor=USER)
     project = project_for(
-        project_config, repo, hooks={"teardown": "echo attempted >> setup.txt; exit 1"}
+        project_config,
+        repo,
+        hooks={"teardown": 'echo attempted >> "$ENSO_TASK_DIR/setup.txt"; exit 1'},
     )
     info = worktrees.prepare(enso_home, project, "EN-001")
     tasks.move(

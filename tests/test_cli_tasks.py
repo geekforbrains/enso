@@ -7,10 +7,10 @@ import json
 from pathlib import Path
 
 import pytest
-from conftest import commit_file, git, write_config
+from conftest import commit_file, edit_project, git
 from typer.testing import CliRunner
 
-from enso import db, tasks, workflows, worktrees
+from enso import tasks, workflows, worktrees
 from enso.cli import app
 from enso.cli.common import INPUT_LIMIT
 from enso.config import Config, Paths, load_config
@@ -212,13 +212,10 @@ def test_a_person_forces_and_edits(
 
 
 @pytest.fixture
-def repo_config(enso_home: Paths, raw_config_projects: dict, repo: Path) -> Config:
-    """The two projects with ``EN`` bound to a real repository, written and migrated."""
-    raw_config_projects["projects"]["EN"]["repo"] = str(repo)
-    write_config(enso_home, raw_config_projects)
-    config = load_config(enso_home)
-    db.initialize(enso_home)
-    return config
+def repo_config(enso_home: Paths, project_config: Config, repo: Path) -> Config:
+    """The two projects with ``EN`` bound to a real repository."""
+    edit_project(enso_home, repo=str(repo))
+    return load_config(enso_home)
 
 
 def test_advance_refuses_a_dirty_worktree_then_land_and_sweep(
@@ -332,9 +329,7 @@ def test_land_refuses_a_live_worktree_owner(
 def test_land_waits_for_pending_lifecycle_events(
     enso_home: Paths, repo_config: Config, repo: Path
 ) -> None:
-    raw = repo_config.raw
-    raw["projects"]["EN"]["hooks"] = {"after_transition": "true"}
-    write_config(enso_home, raw)
+    edit_project(enso_home, hooks={"after_transition": "true"})
     config = load_config(enso_home)
     add()
     info = worktrees.prepare(enso_home, config.projects["EN"], "EN-001")

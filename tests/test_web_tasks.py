@@ -12,10 +12,17 @@ from unittest.mock import Mock
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
-from conftest import commit_file, git, load_job, write_config, write_job
+from conftest import (
+    commit_file,
+    edit_project,
+    git,
+    load_job,
+    write_job,
+    write_project,
+)
 
-from enso import db, runs, tasks, web, workflows, worktrees
-from enso.config import Config, Paths, parse_config
+from enso import runs, tasks, web, workflows, worktrees
+from enso.config import Config, Paths, load_config
 from enso.web import tasks as taskviews
 from enso.web.server import create_app
 
@@ -282,17 +289,10 @@ async def test_board_filters(client: TestClient, board: Board) -> None:
 
 
 async def test_task_search_keeps_unicode_uppercase_reference_matches(
-    client: TestClient, enso_home: Paths, raw_config_projects: dict
+    client: TestClient, enso_home: Paths, project_config: Config
 ) -> None:
-    raw_config_projects["projects"]["ID"] = {
-        "name": "Support",
-        "workspace": "default",
-        "stages": ["triage"],
-    }
-    config, problems, _ = parse_config(raw_config_projects, enso_home)
-    assert config is not None, problems
-    write_config(enso_home, raw_config_projects)
-    db.initialize(enso_home)
+    write_project(enso_home, "ID", {"name": "Support", "stages": ["triage"]})
+    config = load_config(enso_home)
     task = tasks.create(enso_home, config, "ID", "Handle ticket", actor=USER)
     # Dotless i is outside the reference grammar, but uppercases to the stored ASCII ID.
     for finished in (False, True):
@@ -371,15 +371,12 @@ async def test_task_page_reports_a_failed_context_read(
 async def test_task_page_worktree_panel(
     client: TestClient,
     enso_home: Paths,
-    raw_config_projects: dict,
+    project_config: Config,
     repo: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    raw_config_projects["projects"]["EN"]["repo"] = str(repo)
-    config, problems, _ = parse_config(raw_config_projects, enso_home)
-    assert config is not None, problems
-    write_config(enso_home, raw_config_projects)
-    db.initialize(enso_home)
+    edit_project(enso_home, repo=str(repo))
+    config = load_config(enso_home)
     task = tasks.create(enso_home, config, "EN", "With a branch", actor=USER)
     assert "Worktree" not in await html(client, f"/tasks/{task.ref}")  # nothing prepared yet
 
@@ -520,13 +517,13 @@ async def test_operator_verification_has_no_provider_run_link_while_active_or_co
     project_config: Config,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    raw = project_config.raw
-    raw["projects"]["EN"]["stages"] = [
-        {"name": "work", "checks": [{"name": "unit", "command": "echo manual-check-passed"}]}
-    ]
-    config, problems, _ = parse_config(raw, enso_home)
-    assert config is not None, problems
-    write_config(enso_home, raw)
+    edit_project(
+        enso_home,
+        stages=[
+            {"name": "work", "checks": [{"name": "unit", "command": "echo manual-check-passed"}]}
+        ],
+    )
+    config = load_config(enso_home)
     task = tasks.create(enso_home, config, "EN", "Verify the candidate", actor=USER)
     checking = asyncio.Event()
     finish_check = asyncio.Event()

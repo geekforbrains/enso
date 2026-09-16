@@ -26,7 +26,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from . import db, locks, tasks
-from .config import Paths, ProjectConfig
+from .config import Paths, ProjectConfig, project_directory
 from .execution import kill_process_group
 
 log = logging.getLogger(__name__)
@@ -565,9 +565,13 @@ def _setup(paths: Paths, project: ProjectConfig, record: dict[str, Any]) -> None
         if project.setup:
             rc, output = _run(
                 ["bash", "-c", project.setup],
-                cwd=path,
+                cwd=project_directory(paths, project.workspace, project.key),
                 timeout=project.script_timeout,
-                env={"ENSO_HOME": str(paths.home), **_context(paths, record, "setup", event_id)},
+                env={
+                    "ENSO_HOME": str(paths.home),
+                    "ENSO_WORKSPACE": project.workspace,
+                    **_context(paths, record, "setup", event_id),
+                },
             )
             if rc != 0:
                 raise WorktreeError(f"setup failed (exit {rc}) in {path}: {output.strip()[-2000:]}")
@@ -590,7 +594,7 @@ def _setup(paths: Paths, project: ProjectConfig, record: dict[str, Any]) -> None
                 ref,
                 counts["copied"],
             )
-    except (OSError, WorktreeError) as exc:
+    except (OSError, ValueError, WorktreeError) as exc:
         _state(paths, ref, "setup_failed", str(exc))
         _event(
             paths,
@@ -773,11 +777,15 @@ def _teardown(paths: Paths, project: ProjectConfig, record: dict[str, Any]) -> N
     try:
         rc, output = _run(
             ["bash", "-c", command],
-            cwd=Path(record["path"]),
+            cwd=project_directory(paths, project.workspace, project.key),
             timeout=project.script_timeout,
-            env={"ENSO_HOME": str(paths.home), **_context(paths, record, "teardown", event_id)},
+            env={
+                "ENSO_HOME": str(paths.home),
+                "ENSO_WORKSPACE": project.workspace,
+                **_context(paths, record, "teardown", event_id),
+            },
         )
-    except WorktreeError as exc:
+    except (ValueError, WorktreeError) as exc:
         rc, output = -1, str(exc)
     _event(
         paths,
@@ -815,7 +823,7 @@ def _adopt_legacy(
         ):
             continue
         try:
-            tasks.get(paths, entry.name)
+            tasks.get(paths, entry.name, workspace=project.workspace)
             with execution_context(paths, entry.name):
                 prepare(paths, project, entry.name)
                 if record := lookup(paths, entry.name):
@@ -852,7 +860,7 @@ def _finish_removal(paths: Paths, record: dict[str, Any]) -> None:
 
 def _remove_owned(paths: Paths, project: ProjectConfig, record: dict[str, Any]) -> bool:
     ref = record["ref"]
-    task = tasks.get(paths, ref)
+    task = tasks.get(paths, ref, workspace=project.workspace)
     if not task.finished or task.claim_run_id or _pending(paths, ref):
         return False
     path = Path(record["path"])

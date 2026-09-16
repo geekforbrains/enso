@@ -14,7 +14,7 @@ from typing import IO, Literal
 
 from .. import db, execution, messages, routing, runs, scheduling, tasks, workflows
 from .. import log as logctx
-from ..config import Config, LiveConfig, Paths, config_fingerprint
+from ..config import Config, LiveConfig, Paths, check_config, project_directory
 from ..execution import NOTIFY_LIMIT as NOTIFY_LIMIT
 from ..execution import alert_text, enso_error
 from ..locks import LockPathError, acquire_file_lock
@@ -269,8 +269,16 @@ class JobRunner:
             return "Enso is paused for maintenance"
         if job.stage is None:
             return ""
-        if config.source_hash is not None and config_fingerprint(self.paths) != config.source_hash:
-            return "project configuration changed before the stage run started; trigger it again"
+        if config.source_hash is not None:
+            fresh, _, _ = check_config(self.paths)
+            if (
+                fresh is None
+                or fresh.source_hash != config.source_hash
+                or fresh.projects.get(job.project or "") != config.projects.get(job.project or "")
+            ):
+                return (
+                    "project configuration changed before the stage run started; trigger it again"
+                )
         if job.path.exists():
             current, problems = parse_job(job.path, config)
             if problems or current != job:
@@ -505,7 +513,7 @@ class JobRunner:
         if definition.command is not None:
             output, stderr, exit_code, timed_out = await execution.run_process(
                 ["bash", "-c", definition.command],
-                cwd=Path(stage.env.get("ENSO_TASK_DIR", self.paths.workspace(job.workspace))),
+                cwd=project_directory(self.paths, job.workspace, job.project),
                 env=self._env(job, run_id),
                 timeout=job.timeout,
                 merge_stderr=False,

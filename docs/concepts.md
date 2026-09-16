@@ -100,7 +100,7 @@ Enso's runtime state lives under one directory:
 paired chat, valid configuration, and a successful provider reply are separate milestones.
 
 **Partly implemented for 0.2.0:** workspace settings now use `WORKSPACE.md`, and the new
-workspace directories are scaffolded. Jobs now use the workspace paths; projects, memory,
+workspace directories are scaffolded. Jobs and projects now use the workspace paths; memory
 and Heartbeat scripts will use the [workspace ownership layout](workspaces.md#ownership-in-020).
 Installation support
 files shown here keep their documented purpose and locations unless that layout explicitly
@@ -260,8 +260,7 @@ See [Heartbeat](heartbeat.md) for the lifecycle, gate contract, and retention ru
 ## Project and task
 
 A project is a key such as `EN`, a workspace, an ordered list of stages, and optionally a
-Git repository, currently declared in `config.json`. **Forthcoming in 0.2.0:** its definition
-moves to the containing workspace's `projects/<KEY>/PROJECT.md`; see
+Git repository, defined in the containing workspace's `projects/<KEY>/PROJECT.md`; see
 [Configuration](configuration.md#configuration-ownership-in-020).
 
 A task belongs to one project, sits in one stage
