@@ -189,6 +189,7 @@ Enso installs these into `~/.enso/skills/`:
 | `enso-heartbeat` | Finite future actions and temporary watches, script gates, event history, action receipts, and completion |
 | `enso-jobs` | Creating, testing, and troubleshooting scheduled and stage jobs and their prerun and postrun scripts |
 | `enso-knowledge` | Finding and maintaining shared or workspace Markdown notes, links, imports, and user-defined formatting |
+| `enso-memory` | Recalling, recording, and correcting dated workspace memory, and writing useful summaries of captured conversations |
 | `enso-security` | Installation trust, provider permissions, credential handling, and untrusted input |
 | `enso-skills` | Finding official optional skills and writing or refining a skill manually |
 | `enso-slack` | Looking people and channels up, reading history, sending, tables and charts |
@@ -204,6 +205,9 @@ Each one says how Enso sets its subject up, then how the agent uses it. `enso in
 A bundled maintenance job is installed in `workspaces/default/jobs/` and stamped with
 the default agent during setup or config apply; those commands
 leave an existing job directory alone, including missing scripts.
+Each workspace also gets its own [memory job](jobs.md#workspace-memory-job-in-020), stamped
+with its effective agent. Customize memory writing preferences in `enso-memory/SKILL.md`;
+source validation and crash recovery remain enforced by the CLI.
 
 Managed upgrades use `.bundles.json`, which records hashes when Enso seeds files. A bundled
 home instruction, skill, job file, or Slack manifest refreshes only when its current bytes

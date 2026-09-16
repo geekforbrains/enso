@@ -391,6 +391,29 @@ def test_snapshot_path_tampering_is_rejected_before_restoring_anything(managed):
     assert managed.paths.config.read_text() == "configuration to keep"
 
 
+def test_rollback_restores_all_workspace_jobs_without_replacing_memories(managed):
+    state = queue(managed)
+    paths = managed.paths
+    for name in ("team", "research"):
+        paths.workspace(name).mkdir(parents=True)
+    job = paths.workspace_jobs("team") / "memory/JOB.md"
+    job.parent.mkdir(parents=True)
+    job.write_text("customized job")
+    note = paths.workspace_memory("team") / "Keep.md"
+    note.parent.mkdir()
+    note.write_text("original note")
+    updates._snapshot(paths, state)
+    job.write_text("changed during preparation")
+    fresh = paths.workspace_jobs("research") / "memory/JOB.md"
+    fresh.parent.mkdir(parents=True)
+    fresh.write_text("new bundled job")
+    note.write_text("human correction")
+    updates._restore(paths, state)
+    assert job.read_text() == "customized job"
+    assert not fresh.exists()
+    assert note.read_text() == "human correction"
+
+
 def test_operation_directory_symlink_is_rejected_before_writing_outside_home(managed, tmp_path):
     outside = tmp_path / "outside-operations"
     outside.mkdir()

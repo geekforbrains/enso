@@ -56,10 +56,10 @@ def test_workspace_create_and_list(enso_home: Paths, raw_config: dict) -> None:
 
     result = runner.invoke(app, ["workspace", "list"])
     assert result.exit_code == 0
-    assert result.stdout.splitlines() == [
-        "WORKSPACE  BINDINGS               JOBS  AUDIT",
-        "default    slack:C1, slack:dm:U1  -     11 errors",  # the fixture's bare directory
-        "meteor     -                      -     2 warnings",  # untouched template, orphan
+    assert [line.split() for line in result.stdout.splitlines()] == [
+        ["WORKSPACE", "BINDINGS", "JOBS", "AUDIT"],
+        ["default", "slack:C1,", "slack:dm:U1", "-", "11", "errors"],
+        ["meteor", "-", "meteor:memory", "1", "warning"],
     ]
     assert result.stderr.startswith("home: ")  # not seeded either
 
@@ -93,9 +93,9 @@ def test_workspace_audit_command(enso_home: Paths, raw_config: dict) -> None:
     (root / "uploads" / "x" / "f").write_bytes(b"x" * 2048)
     warned = runner.invoke(app, ["workspace", "audit", "lonely"])
     assert warned.exit_code == 0 and warned.stdout.splitlines()[1:] == [
-        "lonely: 2 warnings",
+        "lonely: 1 warning",
+        "  jobs: lonely:memory",
         "  warning: AGENTS.md is still the untouched template; say what the workspace is for",
-        "  warning: nothing is bound to this workspace and no job names it",
     ]
     assert "  uploads: 2.0 KB" in runner.invoke(app, ["workspace", "audit", "default"]).stdout
     listed = json.loads(runner.invoke(app, ["workspace", "audit", "--json"]).stdout)

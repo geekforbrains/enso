@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__, db, messages, releases, update_services, web, workspaces
-from .config import Paths, load_config, resolve_workspace
+from .config import Paths, load_config, resolve_workspace, valid_workspace_name
 from .connection_setup import receiver_active, service_receiver
 from .maintenance import (
     UpdateError,
@@ -40,7 +40,6 @@ MIGRATION_PATHS = (
     "enso.db-wal",
     "enso.db-shm",
     "skills",
-    "workspaces/default/jobs",
     "AGENTS.md",
     ".bundles.json",
     "slack",
@@ -428,9 +427,29 @@ def _copy(source: Path, destination: Path) -> None:
 
 
 def _check_snapshot_parents(paths: Paths) -> None:
-    for parent in (paths.home, paths.workspaces, paths.workspace("default")):
+    parents = [paths.home, paths.workspaces, paths.workspace("default")]
+    if paths.workspaces.is_dir() and not paths.workspaces.is_symlink():
+        parents.extend(p for p in paths.workspaces.iterdir() if valid_workspace_name(p.name))
+    for parent in parents:
         if parent.is_symlink():
             raise UpdateError(f"{parent} must not be a symbolic link during a managed update")
+
+
+def _migration_paths(paths: Paths) -> tuple[str, ...]:
+    return MIGRATION_PATHS + tuple(
+        f"workspaces/{name}/jobs"
+        for name in sorted({"default", *workspaces.list_workspaces(paths)})
+    )
+
+
+def _restorable(name: str) -> bool:
+    parts = name.split("/")
+    return name in MIGRATION_PATHS or (
+        len(parts) == 3
+        and parts[0] == "workspaces"
+        and valid_workspace_name(parts[1])
+        and parts[2] == "jobs"
+    )
 
 
 def _snapshot(paths: Paths, state: dict[str, Any]) -> None:
@@ -441,7 +460,7 @@ def _snapshot(paths: Paths, state: dict[str, Any]) -> None:
     backup = _operation_dir(paths, state["id"]) / "backup"
     backup.mkdir(mode=0o700)
     captured: list[str] = []
-    for name in MIGRATION_PATHS:
+    for name in _migration_paths(paths):
         source = paths.home / name
         if source.exists() or source.is_symlink():
             _copy(source, backup / name)
@@ -479,17 +498,20 @@ def _restore(paths: Paths, state: dict[str, Any]) -> None:
     directory = _operation_dir(paths, state["id"])
     backup = directory / "backup"
     snapshot = read_json(backup / "snapshot.json")
-    if not snapshot or not set(snapshot["paths"]) <= set(MIGRATION_PATHS):
+    captured = snapshot.get("paths")
+    if not isinstance(captured, list) or not all(
+        isinstance(name, str) and _restorable(name) for name in captured
+    ):
         raise UpdateError("the pre-update snapshot is incomplete; recovery requires inspection")
     failed = directory / f"failed-state-{uuid.uuid4().hex[:8]}"
     failed.mkdir(mode=0o700)
-    for name in MIGRATION_PATHS:
+    for name in sorted(set(_migration_paths(paths)) | set(captured)):
         current = paths.home / name
         if current.exists() or current.is_symlink():
             destination = failed / name
             destination.parent.mkdir(parents=True, exist_ok=True)
             os.replace(current, destination)
-        if name in snapshot["paths"]:
+        if name in captured:
             _copy(backup / name, current)
             _sync_snapshot(current)
     sync_directory(failed)
@@ -504,7 +526,14 @@ def prepare_home(paths: Paths) -> None:
         if paths.config.exists():
             config = load_config(paths)
             db.initialize(paths)
-            workspaces.reconcile_bundles(paths, config.defaults)
+            workspaces.reconcile_bundles(
+                paths,
+                config.defaults,
+                workspace_agents={
+                    name: settings.agent or config.defaults
+                    for name, settings in config.workspaces.items()
+                },
+            )
 
 
 def _finish(paths: Paths, state: dict[str, Any], status: str, **fields: Any) -> None:

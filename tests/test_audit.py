@@ -407,8 +407,6 @@ def test_reserved_names_warn_unless_enso_installed_them(enso_home: Paths) -> Non
 
     report = audit.audit(enso_home, ["default"], user_dirs=USER_DIRS)
 
-    bundled = workspaces.BUNDLED_SKILLS + workspaces.BUNDLED_JOBS
-    assert all(workspaces.reserved(name) for name in bundled)
     assert [(f.check, f.severity, f.message) for f in report.home.findings] == [
         ("reserved", "warning", RESERVED.format("skills/enso-extra")),
         ("reserved", "warning", RESERVED.format("workspaces/default/jobs/enso-extra")),

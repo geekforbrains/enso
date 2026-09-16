@@ -379,7 +379,7 @@ contents, and existing destinations.
 The memory CLI finds and maintains dated workspace history. Start in the
 [selected workspace](#workspace-context-in-020); `--workspace` overrides `ENSO_WORKSPACE`.
 There is no shared memory root or all-workspace search. Missing context and invalid
-selections error. The forthcoming `enso-memory` skill will guide automated harvesting;
+selections error. The bundled `enso-memory` skill guides recall and automated harvesting;
 [Memory](memory.md) owns the note schema, corrections, capture, and retention.
 
 ```text
@@ -433,6 +433,7 @@ Harvesting and source inspection use JSON on stdout:
 enso memory source CAPTURE_ID [--workspace NAME]
 enso memory batch [--workspace NAME] [--ready]
 enso memory publish --file FILE|- [--workspace NAME]
+enso memory job-hook prerun|postrun
 ```
 
 `source` returns the selected workspace's capture with its sender, time, text, attachments,
@@ -465,6 +466,12 @@ Successful publication returns `{ok: true, receipt, sources, notes}`, with each 
 and path. Invalid or stale results exit 1 with `{ok: false, error}` and never overwrite
 existing notes. [Memory](memory.md#validating-and-publishing-a-pass) owns reconciliation
 and the distinction between source validation and factual accuracy.
+
+`job-hook` is the bundled job's adapter, requiring its active `ENSO_RUN_ID` and
+`ENSO_WORKSPACE`. The prerun pins a batch and exits 1 without output when quiet; errors
+exit 2. Postrun checks stdin only after `ENSO_RUN_STATUS=ok`; a correctable result requests
+a follow-up with exit 10, while storage/recovery errors exit 2. The run's input budget stays
+fixed through follow-ups. Use `enso job run WORKSPACE:memory --json` for a manual sweep.
 
 The agreed removal command is also **forthcoming**, not executable in 0.1.x:
 

@@ -53,6 +53,7 @@ def test_fresh_database_is_created_at_current_schema_version(enso_home: Paths) -
             "_enso_memory_receipts",
             "_enso_memory_inputs",
             "_enso_memory_progress",
+            "_enso_memory_batches",
             "_enso_run_attempts",
             "_enso_tasks",
             "_enso_task_events",

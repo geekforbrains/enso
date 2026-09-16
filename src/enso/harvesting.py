@@ -10,7 +10,7 @@ from itertools import groupby
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
-from . import captures, db, frontmatter, memory
+from . import captures, db, frontmatter, memory, runs
 from . import note_storage as storage
 from .config import Paths, require_workspace
 from .note_storage import NoteError
@@ -213,3 +213,48 @@ def _reconcile_edit(note: memory.Note, output: dict[str, str]) -> None:
         note.metadata["sources"]
     ):
         raise NoteError(f"cannot recover {note.path}: preserve its body and original source IDs")
+
+
+def job_batch(paths: Paths, workspace: str, run_id: str, *, prepare: bool = False) -> Batch:
+    """Pin the normal memory job's inputs once per run, including across provider follow-ups."""
+    run = runs.get(paths, run_id)
+    if (
+        run is None
+        or run.id != run_id
+        or run.status != "running"
+        or run.job != f"{workspace}:memory"
+    ):
+        raise NoteError("memory hooks require the current running workspace:memory job")
+    require_workspace(paths, workspace)
+    with storage.writer(paths, "memory"):
+        _recover(paths, workspace)
+        with db.reader(paths) as con:
+            row = con.execute(
+                "SELECT run_id, sources FROM _enso_memory_batches WHERE workspace = ?",
+                (workspace,),
+            ).fetchone()
+        if row is None or row["run_id"] != run_id:
+            if not prepare:
+                raise NoteError("this memory run has no prepared batch")
+            selected = _next(paths, workspace)
+            with db.transaction(paths) as con:
+                con.execute(
+                    "INSERT INTO _enso_memory_batches VALUES (?, ?, ?) "
+                    "ON CONFLICT (workspace) DO UPDATE SET run_id = excluded.run_id, "
+                    "sources = excluded.sources",
+                    (workspace, run_id, json.dumps(selected.sources)),
+                )
+            return selected
+        sources = _ids(json.loads(row["sources"]))
+        rows = tuple(captures.get(paths, workspace, ident) for ident in sources)
+        if any(c is None or not c.finalized for c in rows):
+            raise NoteError("prepared captures are missing or unfinished")
+        return Batch(workspace, tuple(c for c in rows if c is not None))
+
+
+def check_job_result(paths: Paths, selected: Batch, value: Any) -> None:
+    """Check the fixed batch before publication; a recovered completed pass is already done."""
+    if captures.handled(paths, selected.workspace, selected.sources):
+        return
+    _outputs(selected, value)
+    publish(paths, selected.workspace, value)

@@ -49,6 +49,7 @@ Keep one short entry per person when useful; larger rosters and detailed prefere
 - The workspace's own `AGENTS.md` (`CLAUDE.md` links to it) says what the workspace is for and its rules; follow it, and if it is still the blank template, ask before assuming. Workspace reference goes in `knowledge/`, shared reference in `$ENSO_HOME/knowledge/`, work product in `drafts/`, and nothing of yours in `uploads/`. Load `enso-knowledge` for durable notes and their formatting rules.
 - Keep detailed procedures and changing inventories in their authoritative source, referenced by path, rather than copying them into instructions that load on every turn.
 - A conversation resumes its own session, so earlier turns in the same thread, DM, or chat may be in your context; other conversations and jobs start fresh. Write down anything that should outlast the conversation.
+- For earlier conversations, decisions, promises, or follow-ups, load `enso-memory` and search the selected workspace with `enso memory`; inspect relevant notes and their sources before answering.
 - Finish immediate work in the conversation. When work should continue later, load the relevant skill and make the arrangement real before promising a follow-up.
 
 ## The turn
@@ -75,6 +76,7 @@ Choose from the request's intent; people do not need to know Enso's feature name
 - `enso`: questions about Enso itself, configuration, CLI usage, or sending a message or attachment outside the normal reply.
 - `enso-workspace`: setting up a workspace, clarifying its context, or deciding where files belong.
 - `enso-knowledge`: finding, creating, updating, linking, or organizing durable notes; importing a vault; or changing note formatting conventions.
+- `enso-memory`: recalling earlier conversations, decisions, promises, and follow-ups; recording or correcting dated memories; or refining captures in the workspace memory job.
 - `enso-heartbeat`: a reminder, one future action, a particular situation to follow until resolved, or a beat run.
 - `enso-jobs`: a standing responsibility, recurring digest, or a scheduled or task-stage run.
 - `enso-tasks`: work needing a tracked workflow, a board question, or a prompt with a `[Task …]` block.

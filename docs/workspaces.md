@@ -12,8 +12,8 @@ rather than assembled by hand.
 ## Layout
 
 This layout is implemented on the 0.2.0 development branch, including workspace jobs.
-Heartbeat scripts and Markdown memory also use their owning workspace; capture and
-harvesting remain forthcoming, as detailed in the [ownership layout](#ownership-in-020).
+Heartbeat scripts, Markdown memory, live captures, and memory harvesting also use their
+owning workspace, as detailed in the [ownership layout](#ownership-in-020).
 
 ```text
 ~/.enso/workspaces/<name>/
@@ -79,7 +79,7 @@ retains its separately documented repair behavior.
 ## Ownership in 0.2.0
 
 **Target for 0.2.0.** Workspace paths, settings, projects, jobs, and Heartbeat scripts are
-implemented, including manual Markdown memory and live capture; harvesting remains forthcoming.
+implemented, including Markdown memory, live capture, and workspace memory harvesting.
 Workspace-owned files live under their workspace; the containing directory determines
 ownership. Installation settings remain in `config.json`, as described
 in [Configuration](configuration.md#configuration-ownership-in-020).
@@ -146,7 +146,7 @@ Fresh setup keeps the name `default` and places installation-maintenance jobs th
 `workspaces/default/jobs/enso-audit/JOB.md` and
 `workspaces/default/jobs/enso-update/JOB.md`, referenced as `default:enso-audit` and
 `default:enso-update`. `default` is an ordinary workspace, not a privileged role or an
-implicit fallback for missing CLI context. Each workspace will also own its own forthcoming
+implicit fallback for missing CLI context. Each workspace also owns its own
 [memory harvesting job](jobs.md#workspace-memory-job-in-020), including `default:memory`
 and `team:memory`; those jobs process only their containing workspace.
 

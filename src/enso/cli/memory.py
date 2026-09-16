@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from dataclasses import asdict
+from enum import StrEnum
 from typing import Any
 
 import typer
@@ -26,6 +28,39 @@ _HARVEST_ERRORS = (
     db.UnsupportedDatabaseError,
     sqlite3.Error,
 )
+
+
+class HookPhase(StrEnum):
+    prerun = "prerun"
+    postrun = "postrun"
+
+
+@memory_app.command("job-hook")
+def job_hook(phase: HookPhase) -> None:
+    """Run the bundled memory job's gate or result check using its current run context."""
+    if phase == HookPhase.postrun and os.environ.get("ENSO_RUN_STATUS") != "ok":
+        return
+    try:
+        paths = Paths.from_env()
+        selected = resolve_workspace(paths)
+        batch = harvesting.job_batch(
+            paths, selected, os.environ.get("ENSO_RUN_ID", ""), prepare=phase == HookPhase.prerun
+        )
+        if phase == HookPhase.prerun:
+            if not batch.sources or captures.handled(paths, selected, batch.sources):
+                raise typer.Exit(1)
+            echo_json(batch.as_dict())
+        else:
+            try:
+                harvesting.check_job_result(paths, batch, json.loads(read_input("-")))
+            except (ValueError, NoteError, InputError) as exc:
+                typer.echo(
+                    f"Correct the JSON result for the SAME batch; do not read more inputs. {exc}"
+                )
+                raise typer.Exit(10) from None
+    except _HARVEST_ERRORS as exc:
+        typer.echo(f"ENSO_ERROR: {exc}", err=True)
+        raise typer.Exit(2) from None
 
 
 @memory_app.command("batch")

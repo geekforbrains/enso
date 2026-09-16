@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -15,22 +16,25 @@ from dataclasses import asdict
 from importlib import resources
 from pathlib import Path
 
+from . import frontmatter
 from .config import Agent, Paths, require_workspace, valid_workspace_name
 
+log = logging.getLogger(__name__)
+
 # Shared files in ``src/enso/bundled/`` keep their relative paths under ``$ENSO_HOME``.
-# ``jobs/<name>/`` (a ``JOB.md`` with its scripts) seeds the default workspace.
+# ``jobs/<name>/`` seeds maintenance jobs in default and memory in every workspace.
 # ``bundled/workspace/AGENTS.md`` is the per-workspace template,
 # stamped by ``create_workspace``; a job is stamped with the agent chosen at setup.
 # Managed updates refresh only bundle files matching their recorded baseline. What
-# Enso installs says so in its name: ``enso`` and
-# ``enso-*`` are reserved for it, so a skill or job of that name Enso did not install is an
-# audit warning, and a refresh rewrites only these and never the operator's own.
+# Enso installs generally says so in its name: ``enso`` and ``enso-*`` are reserved;
+# the workspace ``memory`` job instead relies on its recorded bundle baseline.
 BUNDLED_SKILLS = (
     "enso",
     "enso-browser",
     "enso-heartbeat",
     "enso-jobs",
     "enso-knowledge",
+    "enso-memory",
     "enso-security",
     "enso-skills",
     "enso-slack",
@@ -45,7 +49,7 @@ BUNDLED_SKILL_SUPPORT = {
     "enso-browser": ("scripts/browser.py", "references/setup.md"),
     "enso-knowledge": ("references/formatting.md", "scripts/lint.py"),
 }
-BUNDLED_JOBS: tuple[str, ...] = ("enso-audit", "enso-update")
+BUNDLED_JOBS: tuple[str, ...] = ("enso-audit", "enso-update", "memory")
 BUNDLED_FILES = ("slack/manifest.json",)
 RESERVED_PREFIX = "enso-"
 # The documented workspace layout (docs/workspaces.md § Layout): the directories, and the
@@ -171,24 +175,51 @@ def seed_home(paths: Paths, *, refresh_skills: bool = False) -> list[str]:
     return done
 
 
-def seed_jobs(paths: Paths, agent: Agent) -> list[str]:
+def bundled_jobs(workspace: str) -> tuple[str, ...]:
+    """Maintenance jobs belong to default; every workspace gets its own memory job."""
+    return tuple(name for name in BUNDLED_JOBS if workspace == "default" or name == "memory")
+
+
+def _memory_conflict(paths: Paths, relative: str, known: dict[str, str]) -> str | None:
+    target = paths.home / relative
+    if (
+        target.name == "memory"
+        and (target.exists() or target.is_symlink())
+        and not any(key.startswith(relative + "/") for key in known)
+    ):
+        message = f"conflict: preserved existing {target}; memory job was not installed"
+        log.warning(message)
+        return message
+    return None
+
+
+def seed_jobs(
+    paths: Paths, agent: Agent, *, workspace: str = "default", memory_agent: Agent | None = None
+) -> list[str]:
     """Install the bundled jobs that are not there yet, stamped with ``agent``; says what changed.
 
     A job is written once: an existing ``jobs/<name>/`` is the operator's whatever it holds
     (an edited ``JOB.md`` stays, a deleted script is not put back), and no refresh flag
     reaches jobs. ``provider``, ``model``, and ``effort`` come from the default agent chosen
-    at setup, so the job runs with what the operator picked rather than a guess of ours.
+    at setup; memory alone uses the workspace's effective agent when supplied.
     """
     done: list[str] = []
-    require_workspace(paths, "default")
-    jobs_root = paths.workspace_jobs("default")
+    require_workspace(paths, workspace)
+    jobs_root = paths.workspace_jobs(workspace)
     if jobs_root.is_symlink():
         raise OSError("jobs directory must not be a symbolic link")
-    # The job template wraps these fields in YAML double quotes. JSON escaping preserves
-    # arbitrary configured model ids as one scalar rather than injecting frontmatter.
-    stamps = {key: json.dumps(value)[1:-1] for key, value in asdict(agent).items()}
-    for name in BUNDLED_JOBS:
-        if (jobs_root / name).exists():
+    from .maintenance import read_json
+
+    known = read_json(paths.home / ".bundles.json").get("files", {})
+    for name in bundled_jobs(workspace):
+        selected = memory_agent if name == "memory" and memory_agent is not None else agent
+        # Templates quote these fields; JSON escaping keeps configured IDs in one scalar.
+        stamps = {key: json.dumps(value)[1:-1] for key, value in asdict(selected).items()}
+        relative = f"workspaces/{workspace}/jobs/{name}"
+        target = jobs_root / name
+        if target.exists() or target.is_symlink():
+            if problem := _memory_conflict(paths, relative, known):
+                done.append(problem)
             continue
         jobs_root.mkdir(parents=True, exist_ok=True)
         bundled = resources.files("enso").joinpath("bundled", "jobs", name)
@@ -210,7 +241,7 @@ def seed_jobs(paths: Paths, agent: Agent) -> list[str]:
             for filename in names:
                 _record_bundle(
                     paths,
-                    f"workspaces/default/jobs/{name}/{filename}",
+                    f"{relative}/{filename}",
                     (jobs_root / name / filename).read_text("utf-8"),
                 )
     return done
@@ -219,7 +250,8 @@ def seed_jobs(paths: Paths, agent: Agent) -> list[str]:
 def _bundle_root(relative: str) -> str | None:
     if relative.startswith("skills/"):
         return "/".join(relative.split("/")[:2])
-    if relative.startswith("workspaces/default/jobs/"):
+    parts = relative.split("/")
+    if len(parts) >= 4 and parts[0] == "workspaces" and parts[2] == "jobs":
         return "/".join(relative.split("/")[:4])
     return None
 
@@ -235,15 +267,30 @@ def _new_bundle_file(relative: str, previous: dict[str, str], existing: set[str]
     return tracked == (bundle in existing)
 
 
-def reconcile_bundles(paths: Paths, agent: Agent) -> list[str]:
+def _installed_agent(job: Path, default: Agent) -> Agent | None:
+    if not job.is_file() or job.is_symlink():
+        return default
+    try:
+        fields = frontmatter.read(job).fields
+        values = [
+            value
+            for key in ("provider", "model", "effort")
+            if isinstance(value := fields.get(key), str)
+        ]
+        return Agent(*values) if len(values) == 3 else None
+    except OSError, ValueError:
+        return None
+
+
+def reconcile_bundles(
+    paths: Paths, agent: Agent, *, workspace_agents: Mapping[str, Agent] | None = None
+) -> list[str]:
     """Refresh proven untouched files; retain edits and remembered deletions.
 
     Historical files without a receipt are user-owned. New bundle names are
     installed when absent, but removing a previously tracked bundle is a choice
     that survives later releases. Existing jobs keep their own agent triple.
     """
-    import yaml
-
     from .maintenance import read_json, write_bytes, write_json
 
     state = read_json(paths.home / ".bundles.json")
@@ -252,24 +299,24 @@ def reconcile_bundles(paths: Paths, agent: Agent) -> list[str]:
     contents = {"AGENTS.md": _bundled("AGENTS.md")}
     contents.update({name: _bundled(name) for name in BUNDLED_FILES})
     contents.update({relative: _bundled(relative) for relative in bundled_skill_files()})
-    for name in BUNDLED_JOBS:
-        values = asdict(agent)
-        job = paths.workspace_jobs("default") / name / "JOB.md"
-        if job.is_file() and not job.is_symlink():
-            try:
-                header = yaml.safe_load(job.read_text("utf-8").split("---", 2)[1])
-                values = {key: header[key] for key in values}
-                if not all(isinstance(value, str) for value in values.values()):
-                    continue
-            except ValueError, IndexError, KeyError, TypeError, yaml.YAMLError:
-                continue
+    changed: list[str] = []
+    for workspace, name in (
+        (owner, slug) for owner in list_workspaces(paths) for slug in bundled_jobs(owner)
+    ):
+        relative = f"workspaces/{workspace}/jobs/{name}"
+        job = paths.home / relative / "JOB.md"
+        if problem := _memory_conflict(paths, relative, previous):
+            changed.append(problem)
+            continue
+        initial = (workspace_agents or {}).get(workspace, agent) if name == "memory" else agent
+        selected = _installed_agent(job, initial)
+        if selected is None:
+            continue
+        values = asdict(selected)
         stamps = {key: json.dumps(value)[1:-1] for key, value in values.items()}
         for entry in resources.files("enso").joinpath("bundled", "jobs", name).iterdir():
             if entry.is_file():
-                contents[f"workspaces/default/jobs/{name}/{entry.name}"] = _stamp(
-                    entry.read_text("utf-8"), stamps
-                )
-    changed: list[str] = []
+                contents[f"{relative}/{entry.name}"] = _stamp(entry.read_text("utf-8"), stamps)
     preexisting_bundles = {
         bundle
         for relative in contents

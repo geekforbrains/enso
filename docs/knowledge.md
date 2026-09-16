@@ -14,7 +14,7 @@ content; operational records, including source message captures, live in the hom
 When a user asks for a current fact or reference, agents use the knowledge CLI and
 `enso-knowledge` skill, starting with relevant knowledge in the selected workspace and
 consulting shared knowledge where applicable. Questions about earlier discussions, decisions,
-promises, and follow-ups use the memory CLI and forthcoming `enso-memory` skill. Broaden a
+promises, and follow-ups use the memory CLI and bundled `enso-memory` skill. Broaden a
 lookup deliberately when needed; selecting a workspace organizes context rather than
 enforcing confidentiality. [Workspaces](workspaces.md#context-selection-in-020) owns selection.
 

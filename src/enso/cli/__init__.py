@@ -700,9 +700,15 @@ def workspace_create(name: str) -> None:
     paths = Paths.from_env()
     try:
         root = workspaces.create_workspace(paths, name)
+        config, _, _ = check_config(paths)
+        changes = workspaces.seed_jobs(paths, config.defaults, workspace=name) if config else []
     except (ValueError, OSError) as exc:
         fail([str(exc)])
     typer.echo(f"created {root}")
+    for change in changes:
+        typer.echo(change)
+    if config is None:
+        typer.echo("memory job awaits valid configuration; config apply will install it", err=True)
     typer.echo(f'bind a conversation to it in {paths.config}: "bindings": {{"slack:C…": "{name}"}}')
 
 
