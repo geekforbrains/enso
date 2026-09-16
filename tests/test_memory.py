@@ -377,3 +377,97 @@ def test_source_validity_is_not_cached_with_the_file(paths):
     assert get(paths, "undated/Other.md", "personal").problems == (
         "capture 1 belongs to another workspace",
     )
+
+
+def test_removal_previews_one_note_and_deletes_only_after_explicit_yes(paths):
+    note = memory.create_note(paths, "team", "Remove.md", "A recollection", occurred=None)
+    keep = memory.create_note(paths, "team", "Keep.md", "Keep this", occurred=None)
+    target = paths.workspace_memory("team") / note.path
+    original = target.read_bytes()
+    cli = CliRunner()
+    preview = cli.invoke(app, ["memory", "remove", note.id])
+    assert preview.exit_code == 0, preview.output
+    assert f"Preview: team:{note.path}" in preview.output
+    assert f"id: {note.id}" in preview.output and "sources: none" in preview.output
+    assert "No changes made" in preview.output and target.read_bytes() == original
+    removed = cli.invoke(app, ["memory", "remove", note.path, "--yes"])
+    assert removed.exit_code == 0, removed.output
+    assert removed.output.index(f"Removing: team:{note.path}") < removed.output.index("Removed.")
+    assert not target.exists() and get(paths, keep.id).body == "Keep this"
+    assert not paths.db.exists()
+
+
+def test_removal_refuses_ambiguous_identity_scope_wildcards_and_multiple_targets(
+    paths, monkeypatch
+):
+    note = memory.create_note(paths, "team", "Keep.md", "Keep this", occurred=None)
+    cli = CliRunner()
+    for args in (
+        [note.id, "--workspace", "personal"],
+        [note.id, "--workspace", "missing"],
+        ["undated/*.md"],
+        [note.path, "undated/Second.md"],
+        ["../escape.md"],
+    ):
+        assert cli.invoke(app, ["memory", "remove", *args, "--yes"]).exit_code != 0
+    monkeypatch.delenv("ENSO_WORKSPACE")
+    assert cli.invoke(app, ["memory", "remove", note.id, "--yes"]).exit_code == 1
+    target = paths.workspace_memory("team") / note.path
+    target.with_name("Copy.md").write_bytes(target.read_bytes())
+    for ref in (note.id, note.path):
+        result = cli.invoke(app, ["memory", "remove", ref, "--workspace", "team", "--yes"])
+        assert result.exit_code == 1 and "duplicate" in result.output
+    assert target.exists() and target.with_name("Copy.md").exists()
+
+
+def test_removal_checks_reported_revision_and_preserves_intervening_edits(paths, monkeypatch):
+    note = memory.create_note(paths, "team", "Keep.md", "Original", occurred=None)
+    target = paths.workspace_memory("team") / note.path
+    target.write_text(target.read_text().replace("Original", "Human correction"))
+    with pytest.raises(NoteError, match="changed since"):
+        memory.remove_note(paths, "team", note.path, expected_hash=note.sha256)
+    current = get(paths, note.path)
+    hashed = storage.hash_at
+
+    def changed(directory, name):
+        target.write_text(target.read_text().replace("Human correction", "Later correction"))
+        return hashed(directory, name)
+
+    monkeypatch.setattr(storage, "hash_at", changed)
+    with pytest.raises(NoteError, match="changed during"):
+        memory.remove_note(paths, "team", note.path, expected_hash=current.sha256)
+    assert "Later correction" in target.read_text()
+
+
+def test_removal_refuses_symlinks_and_reports_unlink_failure_without_deleting(paths, monkeypatch):
+    note = memory.create_note(paths, "team", "Keep.md", "Original", occurred=None)
+    root = paths.workspace_memory("team")
+    target = root / note.path
+    original = target.read_bytes()
+    target.with_name("Link.md").symlink_to(target)
+    cli = CliRunner()
+    refused = cli.invoke(app, ["memory", "remove", "undated/Link.md", "--yes"])
+    assert refused.exit_code == 1 and target.read_bytes() == original
+    unlink = os.unlink
+
+    def denied(name, **kwargs):
+        if name == target.name:
+            raise PermissionError("permission denied")
+        return unlink(name, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", denied)
+    failed = cli.invoke(app, ["memory", "remove", note.path, "--yes"])
+    assert failed.exit_code == 1 and "permission denied" in failed.output
+    assert "Removed." not in failed.output and target.read_bytes() == original
+
+
+def test_removal_reports_malformed_metadata_and_accepts_an_exact_import_path(paths):
+    target = imported(paths, "undated/Import.md", id="invalid", sources="unknown")
+    cli = CliRunner()
+    preview = cli.invoke(app, ["memory", "remove", "undated/Import.md"])
+    assert preview.exit_code == 0, preview.output
+    assert "id: missing/invalid" in preview.output and "sources: unavailable" in preview.output
+    assert "problem:" in preview.output and target.exists()
+    removed = cli.invoke(app, ["memory", "remove", "undated/Import.md", "--yes"])
+    assert removed.exit_code == 0, removed.output
+    assert not target.exists()

@@ -81,6 +81,8 @@ All notable changes to Enso are documented here, following
   publication receipts before advancing progress; source captures remain inspectable.
   The bundled `enso-memory` skill guides recall and corrections; each workspace gets an
   enabled 15-minute `memory` job with a fixed input budget and no provider call when quiet.
+  `enso memory remove` previews one note and requires `--yes` to delete it, preserving
+  source captures and processing receipts so ordinary sweeps do not recreate it.
 
 - Shared `knowledge/` and automatically discovered workspace knowledge, with a read-only
   folder and search viewer, stable note URLs, Markdown and wiki links, and backlinks.

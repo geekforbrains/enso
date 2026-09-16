@@ -473,7 +473,7 @@ exit 2. Postrun checks stdin only after `ENSO_RUN_STATUS=ok`; a correctable resu
 a follow-up with exit 10, while storage/recovery errors exit 2. The run's input budget stays
 fixed through follow-ups. Use `enso job run WORKSPACE:memory --json` for a manual sweep.
 
-The agreed removal command is also **forthcoming**, not executable in 0.1.x:
+Remove one selected note, with a preview by default:
 
 ```text
 enso memory remove REF [--workspace NAME] [--yes]
@@ -484,6 +484,11 @@ enso memory remove REF [--workspace NAME] [--yes]
 ambiguous identity errors. With no `--yes`, the command previews the selected note and
 deletes nothing. With `--yes`, it reports the exact note before deleting it. There is no
 bulk removal, wildcard selection, or capture deletion.
+
+The report names the workspace, path, ID, source references, and any metadata problems.
+Deletion rechecks that exact file revision; a change after the report is an error. If an
+unfinished publication receipt names the note, removal stops until `enso memory batch`
+has reconciled it. Neither preview nor removal advances processing or deletes capture data.
 
 ```bash
 enso memory remove 2026/09/16/launch-date-proposal.md --workspace team

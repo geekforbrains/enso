@@ -1,8 +1,8 @@
 # Memory
 
 Markdown memory, its CLI, live Slack/Telegram capture, bounded harvesting, the workspace
-job, and `enso-memory` skill are implemented for 0.2.0. Removal remains forthcoming;
-its section below specifies the agreed contract. These features are not available in 0.1.x.
+job, explicit removal, and `enso-memory` skill are implemented for 0.2.0.
+These features are not available in 0.1.x.
 
 ## Purpose and ownership
 
@@ -404,6 +404,13 @@ references and deletes nothing. `--yes` prints the selected-note report before d
 that note. It accepts no globs, filters, multiple references, or bulk-removal switch.
 Workspace selection follows `ENSO_WORKSPACE` with optional `--workspace`; duplicate or
 otherwise ambiguous identity is an error, not permission to select a file arbitrarily.
+
+Removal rechecks the reported file's exact-byte hash under the memory writer lock and
+refuses intervening edits, links, or unsafe paths. A note still named by an unfinished
+publication receipt cannot be removed: run `enso memory batch` in its workspace to finish
+recovery, resolve any reported conflict, then preview it again. This prevents an unfinished
+receipt from recreating a file the removal command just deleted. Removal itself does not
+change captures, receipts, or the processing position, and a manual note needs no database.
 
 For example, preview the team's launch proposal, inspect the reported note, then repeat
 the command with `--yes` as shown in the CLI example. Preserve its source captures,

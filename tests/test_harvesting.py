@@ -5,9 +5,10 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 
 import pytest
+from conftest import FakeReply, make_turn
 from typer.testing import CliRunner
 
-from enso import captures, db, harvesting, memory
+from enso import captures, commands, db, harvesting, memory
 from enso import note_storage as storage
 from enso.cli import app
 from enso.note_storage import NoteError
@@ -305,3 +306,84 @@ def test_cli_quiet_errors_and_json_round_trip(paths):
 def test_quiet_uninitialized_workspace_never_creates_database(enso_home):
     assert not harvesting.batch(enso_home, "default").sources
     assert not enso_home.db.exists()
+
+
+def processing_state(paths):
+    with db.reader(paths) as con:
+        return {
+            table: [tuple(row) for row in con.execute(f"SELECT * FROM {table}")]
+            for table in (
+                "_enso_captures",
+                "_enso_memory_receipts",
+                "_enso_memory_inputs",
+                "_enso_memory_progress",
+                "_enso_memory_batches",
+            )
+        }
+
+
+@pytest.mark.parametrize("direct", [False, True])
+def test_removed_memory_stays_removed_and_preserves_sources_receipts_and_knowledge(paths, direct):
+    record(paths)
+    receipt = harvesting.publish(paths, "default", result(harvesting.batch(paths, "default")))
+    output = receipt.outputs[0]
+    target = paths.workspace_memory("default") / output["path"]
+    retained = paths.workspace_knowledge("default") / "Promoted.md"
+    retained.parent.mkdir()
+    retained.write_text("A deliberately promoted fact.\n")
+    backup = paths.home / "note-backup.md"
+    backup.write_bytes(target.read_bytes())
+    before = processing_state(paths)
+    if direct:
+        target.unlink()
+    else:
+        cli = CliRunner()
+        preview = cli.invoke(app, ["memory", "remove", output["id"]])
+        assert preview.exit_code == 0 and f"sources: {receipt.sources[0]}" in preview.output
+        assert target.exists() and processing_state(paths) == before
+        removed = cli.invoke(app, ["memory", "remove", output["id"], "--yes"])
+        assert removed.exit_code == 0, removed.output
+    assert not harvesting.batch(paths, "default").sources
+    assert not target.exists() and not memory.scan(paths, "default").notes
+    assert processing_state(paths) == before
+    assert retained.read_text() == "A deliberately promoted fact.\n" and backup.exists()
+
+
+def test_remove_requires_pending_publication_to_finish_first(paths, monkeypatch):
+    record(paths)
+    value = result(harvesting.batch(paths, "default"))
+    complete = captures.complete_receipt
+
+    def interrupted(*args):
+        raise OSError("interrupted")
+
+    monkeypatch.setattr(captures, "complete_receipt", interrupted)
+    with pytest.raises(OSError):
+        harvesting.publish(paths, "default", value)
+    note = memory.scan(paths, "default").notes[0]
+    cli = CliRunner()
+    before = processing_state(paths)
+    refused = cli.invoke(app, ["memory", "remove", note.id, "--yes"])
+    assert refused.exit_code == 1 and "note creation is still being recorded" in refused.output
+    assert processing_state(paths) == before
+    assert (note.root.path / note.path).exists()
+    monkeypatch.setattr(captures, "complete_receipt", complete)
+    harvesting.batch(paths, "default")
+    assert cli.invoke(app, ["memory", "remove", note.id, "--yes"]).exit_code == 0
+    assert not harvesting.batch(paths, "default").sources
+    assert not (note.root.path / note.path).exists()
+
+
+async def test_session_clear_preserves_captures_notes_and_processing(paths, runtime):
+    record(paths, conversation="slack:D1", channel="D1", thread=None)
+    harvesting.publish(paths, "default", result(harvesting.batch(paths, "default")))
+    note = memory.scan(paths, "default").notes[0]
+    before = processing_state(paths)
+    contents = (note.root.path / note.path).read_bytes()
+    await runtime.handle(make_turn("Hello"), FakeReply())
+    assert db.get_sessions(paths, "slack:D1")
+    assert await commands.dispatch(runtime, make_turn("!clear"), FakeReply())
+    assert not db.get_sessions(paths, "slack:D1")
+    assert processing_state(paths) == before
+    assert (note.root.path / note.path).read_bytes() == contents
+    assert not harvesting.batch(paths, "default").sources

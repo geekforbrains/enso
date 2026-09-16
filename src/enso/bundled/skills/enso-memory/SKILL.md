@@ -50,6 +50,22 @@ Promote a useful confirmed lasting fact into its owning knowledge note deliberat
 `enso-knowledge`. Keep the memory path and relevant source context beside the fact. Search
 for the existing owning knowledge note first; do not duplicate every memory into knowledge.
 
+## Remove a memory
+
+For an explicit removal request, preview the exact note, inspect its identity and sources,
+then repeat with `--yes` after verifying the selection:
+
+```bash
+enso memory remove 2026/09/16/launch-proposal.md
+enso memory remove 2026/09/16/launch-proposal.md --yes
+```
+
+Only that Markdown note is removed. Source captures and processing records remain, so an
+ordinary sweep does not recreate it from processed inputs. Knowledge facts deliberately
+promoted from it, backups, and Git history remain too. Session `clear` only resets the
+provider session. An unfinished publication receipt must be recovered with `enso memory
+batch` before removing its note; handle any reported conflict and preview again.
+
 ## Refine captured conversations
 
 The workspace's scheduled `memory` job supplies one bounded JSON batch. Read only that
