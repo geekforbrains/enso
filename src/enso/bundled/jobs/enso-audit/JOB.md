@@ -21,6 +21,7 @@ Write a short summary for the operator, who is probably reading it on a phone:
 - Say which problems `enso workspace audit --fix` would repair; the doctor marks those with "(repairable with `enso workspace audit --fix`)". Everything else needs a hand.
 - A job problem names its `JOB.md` in brackets. Quote that path and say which frontmatter field to edit. Nothing repairs a job for the operator, and a schedule is never guessed or rewritten: it is five cron fields, `minute hour day-of-month month day-of-week`.
 - A heartbeat problem names an `HB-…` reference. Read `enso heartbeat show REF --json` and only the relevant history if needed, then explain what is waiting or failing. Do not retry its actions, advance a checkpoint, or change its state.
+- Knowledge and memory findings name note paths and give counts. If the summary is truncated, use `enso knowledge audit --workspace NAME --json` (or `--shared`) or `enso memory audit --workspace NAME --json` for the relevant root. These are structural checks, not proof that a note is true or belongs in the best workspace.
 - If there are warnings, one closing line covering them.
 
 Fix nothing yourself: do not run `--fix`, and do not edit `config.json` or any other file. The operator decides what to do.

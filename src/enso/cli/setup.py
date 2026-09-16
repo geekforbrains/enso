@@ -11,7 +11,7 @@ import typer
 from .. import __version__, db, service
 from ..config import Config, Paths, load_config
 from ..connection_setup import initial_config, pair_in_terminal, safe_error
-from ..initialization import apply_config, initialize_home
+from ..initialization import apply_config, home_problems, initialize_home
 from ..providers import PROVIDER_CLASSES
 from ..transport_registry import TRANSPORTS, TransportSpec
 from ..transports.connection import PairedIdentity
@@ -107,6 +107,8 @@ def _send_test(paths: Paths, config: Config) -> None:
 def setup_wizard() -> None:
     """Configure a fresh home: providers, one transport, defaults, the default workspace."""
     paths = Paths.from_env()
+    if problems := home_problems(paths):
+        fail(problems)
     if paths.config.exists():
         fail([f"{paths.config} exists; edit it by hand, or move it aside to start over"])
     typer.echo(f"Enso {__version__} — home {paths.home}")
@@ -123,6 +125,12 @@ def setup_wizard() -> None:
     for line in scaffold["changes"]:
         typer.echo(line)
     credentials = _credentials(paths, TRANSPORTS[transport])
+    typer.echo(
+        "Pairing grants your account access and selects the default workspace. People sharing "
+        "a workspace share its memory; a personal workspace is not confidential from other "
+        "agents in this installation. Binding a channel trusts all its human participants "
+        "and captures their eligible live messages."
+    )
     owner = _pair(paths, TRANSPORTS[transport], credentials)
     raw = {
         **initial_config(transport, credentials, owner),
@@ -146,7 +154,7 @@ def setup_wizard() -> None:
         )
         typer.echo(
             "installed the enso-audit job: a nightly `enso doctor` that stays silent while "
-            f"the home is healthy and {where}; `enso job show enso-audit`"
+            f"the home is healthy and {where}; `enso job show default:enso-audit`"
         )
     config = load_config(paths)
     try:

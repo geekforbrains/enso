@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -54,6 +55,23 @@ main()
     assert json.loads(enso_home.config_example.read_text())["version"] == 2
     assert not list(enso_home.workspace_jobs("default").iterdir())
     assert (enso_home.home / ".git").is_dir()
+
+
+@pytest.mark.parametrize("legacy", ["config", "database", "jobs"])
+@pytest.mark.parametrize("command", ["init", "setup"])
+def test_onboarding_refuses_obsolete_homes_before_seeding(enso_home, legacy, command):
+    if legacy == "config":
+        enso_home.config.write_text('{"version": 1}')
+    elif legacy == "database":
+        with sqlite3.connect(enso_home.db) as con:
+            con.execute("PRAGMA user_version=10")
+    else:
+        (enso_home.home / "jobs").mkdir()
+    before = {p: p.read_bytes() for p in enso_home.home.rglob("*") if p.is_file()}
+    result = CliRunner().invoke(app, [command])
+    assert result.exit_code == 1 and "predates 0.2.0" in result.output
+    assert "migration" in result.output and not enso_home.agents_md.exists()
+    assert before == {p: p.read_bytes() for p in enso_home.home.rglob("*") if p.is_file()}
 
 
 def test_init_rerun_preserves_active_config_instructions_jobs_and_skills(enso_home, raw_config):

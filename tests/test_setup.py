@@ -109,8 +109,11 @@ def test_templates_mention_only_paths_that_exist(enso_home: Paths) -> None:
     assert stamped.startswith("# meteor\n") and "## Purpose" in stamped
     for text in (enso_home.agents_md.read_text(), stamped):
         mentioned = set(MENTIONED_PATHS.findall(text))
-        assert {"knowledge/", "drafts/", "uploads/"} <= mentioned
+        assert {"knowledge/", "memory/", "drafts/", "uploads/"} <= mentioned
         assert [path for path in sorted(mentioned) if not (root / path).exists()] == []
+        for kind in ("knowledge", "memory"):
+            assert f"enso-{kind}" in text and f"enso {kind}" in text
+            assert (enso_home.skills / f"enso-{kind}" / "SKILL.md").is_file()
 
 
 # The general prose must not tell the agent which platform this turn came from; the origin block
@@ -171,6 +174,8 @@ def test_setup_wizard_slack_path(enso_home: Paths, monkeypatch: pytest.MonkeyPat
     result = CliRunner().invoke(app, ["setup"], input="\n".join(answers) + "\n")
     assert result.exit_code == 0, result.output
     assert "Your chat is connected." in result.output
+    assert "People sharing a workspace share its memory" in result.output
+    assert "Binding a channel trusts all its human participants" in result.output
     assert "Your Slack user id" not in result.output
     config = load_config(enso_home)
     assert config.bindings == {"slack:dm:U1": "default"}
@@ -189,6 +194,7 @@ def test_setup_wizard_slack_path(enso_home: Paths, monkeypatch: pytest.MonkeyPat
         if line.startswith("installed the enso-audit job")
     )
     assert "reports problems to your notify target" in summary
+    assert "enso job show default:enso-audit" in summary
     assert (job.provider, job.model, job.effort) == ("claude", "opus", "high")  # the wizard's
     assert job.enabled and job.workspace == "default" and job.prerun == "prerun.sh"
     assert installs == [enso_home]

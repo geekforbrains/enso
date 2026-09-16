@@ -7,6 +7,10 @@ All notable changes to Enso are documented here, following
 
 ### Changed
 
+- Setup explains binding trust and shared memory, and home/workspace guidance routes current
+  reference and dated recall through their respective skills. Setup and offline initialization
+  reject obsolete homes before seeding content.
+
 - `enso doctor` now summarizes knowledge and memory audits with bounded findings, note
   counts, and paths, including invalid roots and capture sources; detailed scoped audits
   remain available without modifying notes.
