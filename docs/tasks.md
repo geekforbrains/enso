@@ -31,6 +31,10 @@ from listings unless asked for.
 
 ## Projects and stages
 
+The configuration examples in this section describe current 0.1.x behavior. The forthcoming
+[project-file contract](#project-files-and-scripts-in-020) moves those definitions and their
+scripts into the owning workspace.
+
 A project is an entry in the `projects` section of `config.json`, keyed by 2–10 uppercase
 letters or digits:
 
@@ -89,6 +93,39 @@ enso project list
 Agent instructions live in the prompt of the job bound to that stage. Required acceptance
 checks and command stages live in the project definition, where Enso can execute them
 independently. See [Jobs](jobs.md#stage-jobs).
+
+### Project files and scripts in 0.2.0
+
+**Forthcoming in 0.2.0.** Each definition is
+`workspaces/<workspace>/projects/<KEY>/PROJECT.md`. Its YAML frontmatter retains the current
+project settings except `workspace`; the exact fields and an example belong to
+[Configuration](configuration.md#projectmd-in-020). The location supplies both ownership
+and the installation-unique project key. Task references keep the `KEY-NNN` form.
+
+All project commands start in the directory beside `PROJECT.md`: setup, command stages,
+acceptance checks, after-transition hooks, and teardown. A command that needs task code
+explicitly enters the recorded `ENSO_TASK_DIR`. For the configuration example, `test.sh`
+lives beside `PROJECT.md` and can contain:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+cd "${ENSO_TASK_DIR:?This check requires a task worktree}"
+uv run pytest
+```
+
+The same pattern lets `setup.sh` call a repository's `.dev/prepare` from the worktree.
+This separates the stable script location from the candidate being checked. A task without
+a worktree must not pretend that the regular repository is its candidate; commands needing
+one require a worktree stage. Non-Git commands can work directly in the project directory.
+Provider processes still start in the owning workspace. Worktree ownership, protected
+validation inputs, bounded execution, acceptance evidence, and lifecycle ordering retain
+their existing contracts. The worktree remains held while a script uses it, even though
+the script's initial directory is the project directory.
+
+The execution-directory descriptions in [Preparation](#preparation),
+[Lifecycle scripts](#lifecycle-scripts), and the current configuration examples describe
+0.1.x until this contract is implemented.
 
 ## Moves
 

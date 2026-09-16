@@ -206,6 +206,10 @@ the last agent stage. Worktrees do not isolate shared services or ports.
 
 ## Bundled jobs
 
+The installation paths below describe current 0.1.x behavior. In 0.2.0, the maintenance
+jobs belong to [the default workspace](workspaces.md#ownership-in-020), and each workspace
+also has the forthcoming [memory job](#workspace-memory-job-in-020).
+
 `enso setup` and `enso config apply` install `enso-audit` and `enso-update` into
 `~/.enso/jobs/` when their directories are missing. `enso init` prepares the home but does
 not install jobs. Existing job directories and their agent choices are preserved.
@@ -273,6 +277,29 @@ The job never upgrades Enso. The operator asks in chat or runs `enso update appl
 ready. Disable it with `enabled: false` to stop nightly checks; manual `enso update check`
 still works. Older homes can install the new job by applying their existing valid config.
 See [Upgrading](install.md#upgrading) and [CLI updates](cli.md#updates).
+
+### Workspace memory job in 0.2.0
+
+**Forthcoming in 0.2.0.** Install one harvesting job with the consistent local name
+`memory` in every workspace: `workspaces/<name>/jobs/memory/JOB.md`. References are
+`default:memory`, `team:memory`, and so on. It is enabled by default, with
+`schedule: "*/15 * * * *"`; use the normal scheduler's local-time cron rules. Note folders
+use UTC independently of the scheduler's timezone.
+
+The job follows the normal explicit-agent contract: its initial triple is the owning
+workspace's effective agent at installation, saved in `JOB.md`. Subsequent default-agent
+changes do not rewrite it, and the workspace's provider-argument overrides still apply.
+Existing job directories are preserved; a conflicting `memory` definition is reported,
+not overwritten. Operators can edit the job's agent or schedule or set `enabled: false`
+using the ordinary job workflow.
+
+The prerun checks for new unprocessed captures in that workspace and exits 1, producing
+`no_work` without a provider call when there are none. For example, `team:memory` can process
+team discussion while `default:memory` skips a quiet workspace. Manual runs use the same input
+bounds, ownership, and processing receipts. [Memory](memory.md#harvesting-schedule-and-bounds)
+owns the exact batch limits, conversation segments, and recovery rules. Prompts and
+scripts stay small; the CLI and shared code own validation and recovery. Job output and
+notifications do not become conversation captures.
 
 ## Prerun scripts
 

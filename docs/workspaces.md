@@ -122,8 +122,15 @@ repeating them as ownership fields. Project scripts live alongside the definitio
 from that directory. External source repositories can remain at their configured paths.
 Internal records still retain the ownership needed to query and recover work correctly;
 moving a directory must not silently reassign recorded work. Missing or ambiguous ownership
-is an error. There is no required privileged workspace type; installation-maintenance jobs
-can belong to an ordinary workspace.
+is an error. There is no required privileged workspace type.
+
+Fresh setup keeps the name `default` and places installation-maintenance jobs there:
+`workspaces/default/jobs/enso-audit/JOB.md` and
+`workspaces/default/jobs/enso-update/JOB.md`, referenced as `default:enso-audit` and
+`default:enso-update`. `default` is an ordinary workspace, not a privileged role or an
+implicit fallback for missing CLI context. Each workspace also owns its own
+[memory harvesting job](jobs.md#workspace-memory-job-in-020), including `default:memory`
+and `team:memory`; those jobs process only their containing workspace.
 
 ## Context selection in 0.2.0
 

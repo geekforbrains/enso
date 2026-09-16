@@ -1,9 +1,8 @@
 # Memory
 
 **Forthcoming in 0.2.0.** These are agreed product contracts; capture, the memory CLI,
-harvesting, and the `enso-memory` skill are not implemented yet. Note schemas, detailed
-capture limits, harvesting cadence, and command syntax will be documented before their
-implementation.
+harvesting, and the `enso-memory` skill are not implemented yet. The formats, limits, and
+examples on this page specify that implementation, not commands available in 0.1.x.
 
 ## Purpose and ownership
 
@@ -19,6 +18,99 @@ provider sessions remain distinct; a shared workspace does not make one person's
 available to another conversation. Separate workspace names organize context and ownership
 within the same [trusted installation](concepts.md#installation-trust-model).
 
+## The note format
+
+One note records one coherent event, discussion, or decision, with enough context to explain
+what happened and what remained uncertain. It is not a transcript or an automatically
+updated statement of current truth. A long discussion can produce several notes, and a
+useful event can draw on several captures from the same workspace.
+
+For example, `workspaces/team/memory/2026/09/16/launch-date-proposal.md` can contain:
+
+```markdown
+---
+schema: enso.memory/v1
+id: 4d6d560a-21ef-49fa-a4db-7640b8dcab89
+occurred: "2026-09-16T18:20:00Z"
+sources: [1201, 1202]
+created: "2026-09-16T18:30:00Z"
+updated: "2026-09-16T18:30:00Z"
+---
+
+The team proposed September 25 for launch. Capture 1201 records the proposal;
+1202 says testing still needs to finish. No launch date was confirmed.
+```
+
+| Field | Rule | Purpose |
+| --- | --- | --- |
+| `schema` | Required; exactly `enso.memory/v1`. | Identify the supported memory format. |
+| `id` | Required; a unique UUID, preserved through edits and moves. | Give the note a stable identity independent of its path. |
+| `occurred` | Required; a quoted ISO 8601 timestamp with timezone, a quoted `YYYY-MM-DD` date, or `null` when unknown. | Record when the event happened at the precision actually known. |
+| `sources` | Required; a list of distinct positive integer capture IDs, or `[]` for a manual/imported memory with no captures. | Identify the source records in the home database. |
+| `created` | Set on new notes; optional on imports. | Record original document creation time, separate from the event. |
+| `updated` | Set on new notes and substantive edits; optional on imports. | Record the latest document update, including link repairs or corrections. |
+
+These are the only permitted frontmatter fields. There are no title, tag, scope, workspace,
+or access fields: the filename supplies the title and the path supplies ownership. Source
+IDs refer to captures, not note IDs or platform message IDs. Harvested notes must cite
+their inputs, and every cited capture must belong to the containing workspace. Capture
+references remain useful after a provider session is reset. Manual memories use body text
+for other provenance, such as a person's recollection or an imported document; they never
+invent capture IDs. Missing or workspace-mismatched source IDs are reported rather than
+silently removed or reassigned. Imported provenance from another installation belongs in
+the body unless its captures are deliberately mapped to records in this installation;
+matching numbers alone do not establish that relationship.
+
+### Occurrence, placement, and corrections
+
+`occurred` records the event, not when harvesting ran or a file was copied. For a discussion
+segment it is the time of the first source relevant to that note; describe a meaningful
+time span in the body. Enso writes known instants in UTC ending in `Z`, and places them under
+`memory/YYYY/MM/DD/` using that UTC date. For example, `2026-09-16T23:30:00-07:00` is
+`2026-09-17T06:30:00Z` and belongs under `2026/09/17/`, even on a Vancouver machine.
+
+A date-only value such as `"2026-09-16"` goes under `2026/09/16/`; it is not converted to
+midnight or shifted by a timezone. Unknown occurrence uses `occurred: null` and `undated/`.
+For example, an imported recollection with no dates has `occurred: null`, `sources: []`,
+and no `created` or `updated`. Neither import time nor filesystem modification time proves
+an event or original document date. Known document timestamps use ISO 8601 with a timezone;
+Enso writes UTC, and `updated` cannot precede `created`.
+
+Later corrections preserve the note's ID and distinguish historical belief from later
+knowledge. For example, a September 20 edit can add a dated correction saying the team
+confirmed September 28, retaining the September 16 proposal and its sources; `updated`
+changes, while `occurred` remains September 16. Include the correction's capture IDs when
+available. A distinct later decision can instead have its own linked note. An actual error
+in the recorded occurrence date may be corrected with an explanation and matching folder
+placement; do not redate history merely because the file changed. A move without a content
+change preserves document timestamps.
+
+### Editing, imports, and links
+
+Humans can edit Markdown directly, and files copied into the memory root are discovered
+without a database registration. Valid IDs and known dates are preserved. Malformed or
+unsupported metadata, unknown fields, duplicate IDs, missing sources, and mismatched date
+folders are reported with their paths; reading or auditing never rewrites them. Imported
+text remains inspectable by path, but invalid metadata is not treated as valid managed
+memory. Repair it deliberately while preserving original context and unknown dates. Copies
+that duplicate an ID are ambiguous; lookup by ID and managed writes must not choose a winner.
+
+CLI updates require the exact-byte SHA256 from the last read (`--expected-hash`), preserve
+identity and occurrence unless explicitly corrected, and publish atomically. A stale hash
+refuses the edit. CLI writers update `updated` for substantive changes; direct editors
+maintain it themselves when known. File modification time can invalidate a search cache,
+but never silently changes metadata. Harvesting and crash recovery preserve human edits
+instead of overwriting them. Safe reads and writes refuse symlinks and escaping paths.
+For example, if a person corrects the proposal after an agent reads it, the agent's saved
+hash fails the update check and the person's correction remains untouched.
+
+Use ordinary relative Markdown links, including optional heading fragments. For example,
+the September 16 proposal can link to the September 20 decision with display text
+"Confirmed date" and the relative target `../20/launch-date-confirmed.md`.
+Resolution is from the source file, without wiki-name guessing or a search through other
+workspaces. Broken links are reported. A direct filesystem move preserves the note's ID
+but does not repair relative links; maintain those links explicitly when relocating files.
+
 ## Conversation capture
 
 Enso captures eligible live human messages it receives while running in a bound
@@ -33,7 +125,7 @@ thread, sender ID and display name, timestamp, text, attachment references, and 
 
 | Kind | Meaning |
 | --- | --- |
-| `addressed` | An eligible human message Enso handled, preserved before provider execution, including while queued |
+| `addressed` | An eligible human message accepted for handling; capture is attempted before provider execution, including while queued |
 | `ambient` | An eligible human message Enso only observed |
 | `reply` | Enso's final response, stored separately and linked to the addressed message, with generation and delivery outcomes |
 
@@ -43,6 +135,81 @@ are excluded. Injected history, background context, system guidance, tool calls/
 progress messages, and internal formatting-repair turns are not new conversation captures.
 Attachments remain workspace-owned references. Recovery never reruns a provider or resends
 a message merely to complete a missing capture.
+
+### Text, rich replies, and attachments
+
+Each capture stores at most **64 KiB (65,536 bytes) of UTF-8 text**. Oversized text retains
+the longest prefix that fits without cutting a UTF-8 character. A separate `truncated`
+flag records the loss; readers and harvesting input display an explicit truncation notice
+outside the captured text. The storage limit does not shorten the live request given to
+the provider or the response delivered to the user. For example, a 70 KiB ASCII request
+keeps its first 65,536 bytes with `truncated: true`; a claim beyond that prefix is unavailable
+to memory, not evidence that the claim was absent from the original message.
+
+Final replies use readable Markdown representing the user-facing content. Ordinary text
+stays text; rich Markdown blocks remain Markdown, tables retain their headings and cells,
+and charts become a caption and a Markdown table of their labels and values. Preserve
+block order. Do not store the `enso-message` JSON envelope or formatting-repair dialogue
+as the answer. If the transport sends a text fallback instead, capture that fallback as
+the delivered representation. For example, a chart titled "Signups" with Monday 4 and
+Tuesday 7 becomes that title and those two rows, not a claim that an image was retained.
+The same text limit applies after this conversion.
+
+Attachments are references, not embedded bytes or extracted document text. Record the
+transport attachment ID, supplied filename, media type and size when known, and a
+workspace-relative upload path only when normal turn preparation successfully stored it.
+Mark whether the file was downloaded, was not downloaded, or failed to download. Metadata
+and filenames are untrusted data and cannot determine an arbitrary local read or download.
+Do not retain authenticated download URLs or credentials as durable references.
+
+An attachment-only message has empty text and its attachment references. For example, an
+ambient photo can have its transport ID and filename with no local path; capture alone
+does not download it. An addressed photo can gain a reference to its ordinary workspace
+upload when preparation succeeds. Harvesting must not claim to know an attachment's
+contents from its filename. Missing or failed downloads remain visible as missing context.
+
+### Replies, edits, and retries
+
+There is one logical reply linked to its addressed capture, even when delivery splits it
+into several transport messages. Record generation outcome separately from delivery:
+completed generation is not proof the user received it. Preserve known delivery message
+IDs and which parts were sent; distinguish complete, partial, failed, unattempted, and
+uncertain delivery. For example, if the first of two pieces sends and the second fails,
+record partial delivery, not a successful complete reply. A timeout with an unknown send
+result remains uncertain, never assumed sent or retried just for capture.
+
+Stopped, failed, timed-out, or dropped turns retain their known outcome. With no final
+user-facing response, record that no final reply was produced or delivered rather than
+turning streamed progress, provider diagnostics, or an unfinished internal answer into a
+completed response. If partial answer text actually reached the user, preserve that text
+with the incomplete outcome. An empty response is not an invented successful answer.
+
+Deduplicate by the authenticated transport's original message identity. A retry reuses
+the original capture and workspace; it cannot create another memory input or reassign it
+after a binding change. Keep the first received eligible message snapshot. Later edit and
+deletion events neither revise captures nor dispatch fresh turns for this feature, and
+are not captured separately. A human correction sent as a new message is a new capture.
+For example, redelivering message 1201's transport event does not add a second capture;
+a new message explaining a changed date does.
+
+Standalone outbound sends, including `enso message send`, job notifications, and Heartbeat
+messages, stay in the existing outbox and are not `reply` captures. Only the final response
+to an addressed human message is a reply. Outbox context injected into a later turn is not
+recaptured, so a harvesting job cannot recursively learn its own output as a conversation.
+
+### Capture storage failures
+
+Capture is best effort even after admission. If the addressed write fails, let normal
+conversation handling continue; do not reject, drop, or delay the turn indefinitely just
+to record memory. Log the storage failure once with operational identifiers, without
+message bodies, attachment contents, credentials, or provider prompt text. An ambient
+write failure is logged without producing a chat response. Reply or delivery-state write
+failures likewise do not undo successful user-facing work.
+
+For example, if storage fills before a request is recorded, Enso can still answer, but
+that exchange may be missing from memory. Do not promise it was remembered, invent a
+source ID or a missing parent capture, or rerun a provider or resend a message to fill the
+gap. Any persisted incomplete state remains explicit for later diagnostics and recovery.
 
 ## Recall and maintenance
 
@@ -63,12 +230,52 @@ when asked what the team discussed, Enso finds that note and does not present th
 as a confirmed launch date. A confirmed current date can be deliberately promoted into the
 owning knowledge note, retaining its source context.
 
+### Harvesting schedule and bounds
+
+Every workspace has an enabled job named **`memory`**, referenced as `<workspace>:memory`,
+scheduled every 15 minutes (`*/15 * * * *`). [Jobs](jobs.md#workspace-memory-job-in-020)
+owns installation and job customization. The prerun skips provider execution when no new
+captures need processing. This is a polling cadence, not a promise that every capture is
+summarized within 15 minutes: service downtime, execution time, and backlog affect latency.
+
+Each run handles at most **100 captures or 128 KiB (131,072 bytes) of stored source text**,
+stopping before either limit would be exceeded. Attachment-only captures count toward
+the 100-capture limit even when text is empty. Process captures in stable capture-ID order in
+one workspace, preserving conversation/thread boundaries as separate segments. A segment
+that exceeds the remaining budget continues in a later run; do not merge unrelated
+conversations or mark an omitted capture handled. Mark segment boundaries and incomplete
+context in harvesting input. Provider follow-ups share the run's input budget, not a new
+allowance each time.
+
+For example, 130 short captures need at least two runs: at most 100 now and the remainder
+later. Two full-size text captures exhaust the text budget even though the count is below
+100. A workspace with no new captures makes no provider call. Ordinary sweeps do not fetch
+older transport history or revisit already-processed captures to fill a segment.
+
+Record a validated note result or an explicit no-memory result durably before considering
+an input processed. Durable receipts and the per-workspace processing position reconcile
+interrupted note publication; advance that position only past contiguous handled inputs.
+A retry must not duplicate notes, lose unprocessed inputs, or overwrite a human correction.
+Markdown publication and database receipts are separate writes and require recovery; they
+are not one atomic transaction.
+
 ## Retention and removal
 
-Captures remain history; 0.2.0 has no capture-deletion operation. An explicit memory-removal
-operation removes selected Markdown notes with a preview or report before removal, while
-preserving source captures and their processing state. Ordinary later sweeps must not
-recreate a removed note from already-processed captures.
+Captures remain history; 0.2.0 has no capture-deletion operation. The explicit
+[`enso memory remove`](cli.md#memory) operation selects exactly one note by UUID or exact
+path in the selected workspace. With no `--yes`, it previews the note's ID, path, and source
+references and deletes nothing. `--yes` prints the selected-note report before deleting
+that note. It accepts no globs, filters, multiple references, or bulk-removal switch.
+Workspace selection follows `ENSO_WORKSPACE` with optional `--workspace`; duplicate or
+otherwise ambiguous identity is an error, not permission to select a file arbitrarily.
+
+For example, preview the team's launch proposal, inspect the reported note, then repeat
+the command with `--yes` as shown in the CLI example. Preserve its source captures,
+processing receipts, and processing position. Ordinary later sweeps must not recreate it
+from already-processed captures, including after a direct human deletion of the Markdown
+file. New messages about the same subject may produce new memories; removal is not a ban
+on remembering that subject. Links to a removed note may become broken and are reported
+by validation rather than causing deletion of other notes.
 
 Session reset clears only the provider session; it never deletes captures or memory.
 Removing a memory does not automatically remove facts deliberately promoted into knowledge.
