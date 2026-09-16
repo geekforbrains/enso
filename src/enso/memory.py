@@ -183,7 +183,8 @@ def scan(paths: Paths, workspace: str) -> Catalog:
     return Catalog(tuple(roots), notes, tuple(problems) + read_problems, assets)
 
 
-def _document(fields: dict[str, Any], body: str) -> str:
+def document(fields: dict[str, Any], body: str) -> str:
+    """Render validated memory metadata and its Markdown body."""
     if problems := metadata_problems(fields):
         raise NoteError("; ".join(problems))
     # YAML quotes date-like strings. Preserve body indentation and meaningful trailing spaces.
@@ -218,7 +219,7 @@ def create_note(
             "created": stamp,
             "updated": stamp,
         }
-        storage.publish(root, relative, _document(fields, body), expected_hash=None)
+        storage.publish(root, relative, document(fields, body), expected_hash=None)
         return scan(paths, workspace).get(relative, scope)
 
 
@@ -261,5 +262,5 @@ def update_note(
         if body.strip("\r\n") == note.body and fields == note.metadata:
             return note
         fields["updated"] = storage.timestamp()
-        storage.publish(note.root, note.path, _document(fields, body), expected_hash=expected_hash)
+        storage.publish(note.root, note.path, document(fields, body), expected_hash=expected_hash)
         return scan(paths, workspace).get(note.path, scope)

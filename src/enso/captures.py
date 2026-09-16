@@ -292,6 +292,7 @@ def query(
     conversation: str | None = None,
     limit: int = MAX_BATCH_COUNT,
     max_bytes: int = MAX_BATCH_BYTES,
+    unprocessed: bool = False,
 ) -> tuple[Capture, ...]:
     """Read a bounded page in stable ID order; no content crosses workspace ownership."""
     if not 1 <= limit <= MAX_BATCH_COUNT or not 1 <= max_bytes <= MAX_BATCH_BYTES or after < 0:
@@ -302,6 +303,8 @@ def query(
         if conversation is not None:
             sql += " AND conversation = ?"
             args.append(conversation)
+        if unprocessed:
+            sql += " AND id NOT IN (SELECT capture_id FROM _enso_memory_inputs)"
         rows = con.execute(sql + " ORDER BY id LIMIT ?", (*args, limit)).fetchall()
     result = []
     used = 0

@@ -427,6 +427,45 @@ unsupported import metadata remains in the original file with findings. `audit` 
 `{ok, workspace, notes, problems}`, with a note count and `{scope, path, problem}` findings
 using the internal root identifier `workspace:<name>`. Findings exit 1; a clean audit exits 0.
 
+Harvesting and source inspection use JSON on stdout:
+
+```text
+enso memory source CAPTURE_ID [--workspace NAME]
+enso memory batch [--workspace NAME] [--ready]
+enso memory publish --file FILE|- [--workspace NAME]
+```
+
+`source` returns the selected workspace's capture with its sender, time, text, attachments,
+kind, parent, generation/handling outcome, delivery parts, and truncation notice. An ID from
+another workspace is not found. `batch` recovers pending publication before emitting
+`{workspace, batch, sources, guidance, segments}`. Segments preserve conversation/thread
+boundaries and identify incomplete context. No-work batches have empty `sources` and
+`segments`; with `--ready`, no work emits nothing and exits 1, while an error exits 2.
+This lets job preruns distinguish quiet workspaces from failed recovery.
+
+`publish` accepts at most 256 KiB of UTF-8 JSON with exactly these fields:
+
+```json
+{
+  "batch": "identity returned by memory batch",
+  "sources": [1201, 1202],
+  "notes": [{
+    "name": "launch-proposal.md",
+    "body": "The team proposed September 25; testing must finish before confirmation.",
+    "sources": [1201]
+  }],
+  "no_memory": [1202]
+}
+```
+
+Copy the batch identity and ordered IDs from the batch read. Each input must be cited or
+explicitly assigned to `no_memory`. A note name is one `.md` filename, at most 218 UTF-8
+bytes; Enso appends a stable UUID and supplies its date folder and validated metadata.
+Successful publication returns `{ok: true, receipt, sources, notes}`, with each note's ID
+and path. Invalid or stale results exit 1 with `{ok: false, error}` and never overwrite
+existing notes. [Memory](memory.md#validating-and-publishing-a-pass) owns reconciliation
+and the distinction between source validation and factual accuracy.
+
 The agreed removal command is also **forthcoming**, not executable in 0.1.x:
 
 ```text
