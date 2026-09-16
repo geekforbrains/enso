@@ -756,7 +756,7 @@ async def test_recover_releases_the_claims_of_runs_that_never_ended(
 
 
 async def test_an_idle_tick_asks_git_nothing(
-    enso_home: Paths, stage_config: Config, monkeypatch: pytest.MonkeyPatch
+    enso_home: Paths, stage_config: Config, repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from enso import worktrees
 
@@ -765,7 +765,7 @@ async def test_an_idle_tick_asks_git_nothing(
     runner = JobRunner(stage_config, {"slack": FakeTransport()})
     stage_job(enso_home, stage_config)
     await runner.tick(NOW)  # no worktrees directory
-    (enso_home.worktrees / "EN").mkdir(parents=True)
+    (repo / ".worktrees").mkdir(parents=True)
     await runner.tick(NOW)  # an empty one
     assert calls == []
 

@@ -105,7 +105,6 @@ def _layout_problems(paths: Paths) -> list[str]:
         paths.workspaces,
         default,
         paths.heartbeat,
-        paths.worktrees,
         paths.cache,
         paths.secrets,
         paths.skills,
@@ -187,7 +186,6 @@ def initialize_home(paths: Paths) -> dict[str, Any]:
             for directory in (
                 paths.workspaces,
                 paths.heartbeat,
-                paths.worktrees,
                 paths.cache,
                 paths.secrets,
                 paths.workspace("default"),

@@ -23,7 +23,7 @@ from urllib.parse import quote, urlencode
 from .. import audit, db, doctor, runs, skills, tasks, workflows, workspaces
 from .. import heartbeat as beats
 from .. import log as logsetup
-from ..config import Config, Paths, valid_workspace_name
+from ..config import Config, Paths, require_workspace
 from ..jobs import Job, load_jobs
 from ..scheduling import cron_slots
 from . import Bind, common, files, filters
@@ -421,14 +421,20 @@ def workspaces_model(paths: Paths) -> dict[str, Any]:
 
 
 def workspace_model(paths: Paths, name: str) -> dict[str, Any] | None:
-    if not valid_workspace_name(name) or not paths.workspace(name).is_dir():
+    try:
+        require_workspace(paths, name)
+    except ValueError:
         return None
     config, problems = common.read_config(paths)
     report, error = common.attempt(partial(audit.audit, paths, [name], config=config))
     roots = []
     for root in files.ROOTS:
         directory = paths.workspace(name) / root
-        entries, size = files.tree_summary(directory) if directory.is_dir() else (0, 0)
+        try:
+            resolved = files.resolve(paths, name, root, "")
+            entries, size = files.tree_summary(resolved.root)
+        except OSError, files.PathRejectedError:
+            entries, size = 0, 0
         roots.append(
             {"name": root, "is_dir": directory.is_dir(), "entries": entries, "bytes": size}
         )

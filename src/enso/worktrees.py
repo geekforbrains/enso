@@ -123,13 +123,11 @@ def _repo(project: ProjectConfig) -> Path:
 def lookup(paths: Paths, ref: str) -> dict[str, Any] | None:
     """Read the recorded identity, including retained and removed worktrees."""
     _check_ref(ref)
-    if not paths.db.exists():
+    try:
+        with db.reader(paths) as con:
+            row = con.execute("SELECT * FROM _enso_worktrees WHERE ref = ?", (ref,)).fetchone()
+    except db.MissingDatabaseError:
         return None
-    with contextlib.closing(db.read_connect(paths)) as con:
-        # Read-only views can encounter a home before its first v6 runtime startup.
-        if not con.execute("SELECT 1 FROM sqlite_master WHERE name='_enso_worktrees'").fetchone():
-            return None
-        row = con.execute("SELECT * FROM _enso_worktrees WHERE ref = ?", (ref,)).fetchone()
     return dict(row) if row else None
 
 
@@ -147,9 +145,6 @@ def worktree_path(paths: Paths, project: ProjectConfig, ref: str) -> Path:
     record = lookup(paths, ref)
     if record is not None:
         return Path(record["path"])
-    legacy = paths.worktrees / project.key / _check_ref(ref)
-    if (legacy / ".git").exists():
-        return legacy
     # Computing a display path needs no Git process; prepare validates the location.
     root = Path(project.worktree_root or ".worktrees").expanduser()
     return (root if root.is_absolute() else _repo(project) / root) / ref
@@ -436,7 +431,7 @@ class _Copy:
 def _copy_into(repo: Path, worktree: Path, items: tuple[str, ...]) -> dict[str, int]:
     """Copy selected ignored paths without following symlinks or overwriting files.
 
-    .worktreeinclude adds root-relative globs and ! exclusions to the legacy copy paths.
+    .worktreeinclude adds root-relative globs and ! exclusions to the configured copy paths.
     Directories are recursive; .git, registered worktrees and the nested worktree root
     are always excluded. Dependencies receive independent copies, never mutable links.
     """
@@ -504,9 +499,7 @@ def _prepare_record(paths: Paths, project: ProjectConfig, ref: str) -> dict[str,
             raise WorktreeError(f"{ref} belongs to recorded project {record['project']}")
         return record
     repo = _repo(project)
-    path = worktree_path(paths, project, ref)
-    if path != paths.worktrees / project.key / ref:
-        path = _root(project) / ref
+    path = _root(project) / ref
     if path.is_symlink():
         raise WorktreeError(f"worktree path must not be a symbolic link: {path}")
     path = path.resolve()
@@ -647,7 +640,7 @@ def _landing_record(paths: Paths, project: ProjectConfig, ref: str) -> dict[str,
         path = worktree_path(paths, project, ref)
         if not (path / ".git").exists():
             raise WorktreeError(f"{ref} has no worktree at {path}")
-        prepare(paths, project, ref)  # adopt a legacy registered worktree only
+        prepare(paths, project, ref)
         record = lookup(paths, ref)
     assert record is not None
     _verify(record)
@@ -806,32 +799,6 @@ def _teardown(paths: Paths, project: ProjectConfig, record: dict[str, Any]) -> N
         )
 
 
-def _adopt_legacy(
-    paths: Paths,
-    project: ProjectConfig,
-    records: list[dict[str, Any]],
-) -> None:
-    legacy = paths.worktrees / project.key
-    known = {record["ref"] for record in records}
-    if not legacy.is_dir():
-        return
-    for entry in sorted(legacy.iterdir()):
-        if (
-            entry.name in known
-            or not _REF_RE.fullmatch(entry.name)
-            or not (entry / ".git").is_file()
-        ):
-            continue
-        try:
-            tasks.get(paths, entry.name, workspace=project.workspace)
-            with execution_context(paths, entry.name):
-                prepare(paths, project, entry.name)
-                if record := lookup(paths, entry.name):
-                    records.append(record)
-        except (tasks.TaskError, WorktreeError) as exc:
-            log.info("could not adopt %s: %s", entry, exc)
-
-
 def _finish_removal(paths: Paths, record: dict[str, Any]) -> None:
     repo, path, ref = Path(record["repo"]), Path(record["path"]), record["ref"]
     branch, base = record["branch"], record["base"]
@@ -895,17 +862,18 @@ def sweep(paths: Paths, project: ProjectConfig) -> list[str]:
     Ignored files are removed with a clean worktree; teardown can archive valuable local
     artifacts first. Dirty, unmerged, failed-hook and actively owned worktrees stay visible.
     """
-    if not paths.db.exists():
+    try:
+        with db.reader(paths) as con:
+            records = [
+                dict(row)
+                for row in con.execute(
+                    "SELECT * FROM _enso_worktrees WHERE project=? "
+                    "AND status!='removed' ORDER BY ref",
+                    (project.key,),
+                )
+            ]
+    except db.MissingDatabaseError:
         return []
-    with contextlib.closing(db.read_connect(paths)) as con:
-        records = [
-            dict(row)
-            for row in con.execute(
-                "SELECT * FROM _enso_worktrees WHERE project=? AND status!='removed' ORDER BY ref",
-                (project.key,),
-            )
-        ]
-    _adopt_legacy(paths, project, records)
     removed = []
     for record in records:
         ref = record["ref"]

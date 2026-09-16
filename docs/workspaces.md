@@ -81,8 +81,6 @@ retains its separately documented repair behavior.
 
 ## Ownership in 0.2.0
 
-**Target for 0.2.0.** Workspace paths, settings, projects, jobs, and Heartbeat scripts are
-implemented, including Markdown memory, live capture, and workspace memory harvesting.
 Workspace-owned files live under their workspace; the containing directory determines
 ownership. Installation settings remain in `config.json`, as described
 in [Configuration](configuration.md#configuration-ownership-in-020).
@@ -390,11 +388,13 @@ links. Then bind a conversation to it in `config.json`; the next message in that
 conversation lands in the new workspace, with no restart. See
 [Configuration](configuration.md).
 
-To retire one, remove or repoint its bindings and jobs, and resolve any projects it owns
-while preserving their tasks. Inspect active and paused beats with
-`enso heartbeat list --workspace NAME`, paging through results if needed; move ongoing beats
-to another workspace or explicitly close work that is ending. Pausing a beat keeps its
-workspace reference. Keep the directory while any of those dependents still needs it.
+To retire one, remove or repoint its bindings, disable its jobs, and resolve open project
+tasks. Inspect active and paused beats with `enso heartbeat list --workspace NAME`, paging
+through results if needed; close work only when the retirement request authorizes ending it.
+Pausing a beat keeps its workspace reference. Beats cannot transfer workspaces, and moving
+job or project files does not reassign existing records. There is no automated workspace
+rename or transfer; any reference repair needs a deliberate, case-specific plan. Keep the
+directory while its work or retained history still needs it.
 
 Let running turns, jobs, and beats finish before moving files. Workspace overrides live
 with the directory in `WORKSPACE.md`, so there is no configuration override block to remove.

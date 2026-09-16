@@ -28,6 +28,9 @@ what's coming up, and what needs your attention.
   files in workspaces, so Enso has the background when you pick things up again.
 - **Build your knowledge.** Maintain linked Markdown with Enso, in shared or workspace
   folders, and browse it in the read-only viewer with search and backlinks.
+- **Pick up earlier conversations.** Ask what the team discussed or correct a remembered
+  detail. Enso keeps dated workspace memory from eligible live conversations, including
+  discussion that did not address it; [Memory](docs/memory.md) explains its sources and limits.
 - **Keep projects moving.** Turn conversations into tasks, carry work through
   simple stages, and follow the progress and evidence in the viewer. Development
   workflows can use separate Git worktrees and required tests or lint checks;
@@ -54,6 +57,10 @@ it is not a security sandbox. The viewer is a window into Enso, not a control pa
 Enso is in pre-1.0 beta and runs on macOS and Linux. You need an authenticated agent
 CLI and a Slack app or Telegram bot; the release installer supplies Python and uv
 when needed.
+
+The upcoming 0.2.0 release starts a new home format and does not read 0.1.x homes;
+existing installations require manual conversion following the [migration guide](docs/migration.md)
+when it is complete. The current release and its home should stay together until then.
 
 Install Enso with one command:
 

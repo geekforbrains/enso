@@ -5,11 +5,24 @@ All notable changes to Enso are documented here, following
 
 ## [Unreleased]
 
+### Breaking
+
+- 0.2.0 does not read a 0.1.x home, configuration, or database. Conversion is manual, from
+  backups, following the [migration guide](docs/migration.md) when complete; the managed
+  0.1.x updater does not perform this conversion. Version assignment and publication
+  remain separate release work.
+- Automatic discovery and adoption of old home-level worktrees are removed. Task worktrees
+  use their configured root or recorded path; existing files elsewhere remain untouched.
+
 ### Changed
 
 - Setup explains binding trust and shared memory, and home/workspace guidance routes current
   reference and dated recall through their respective skills. Setup and offline initialization
   reject obsolete homes before seeding content.
+
+- Viewer workspace routes now reject linked workspace directories and avoid scanning roots
+  outside the workspace. Health retains diagnostic context and detailed note-audit commands
+  when findings exist.
 
 - `enso doctor` now summarizes knowledge and memory audits with bounded findings, note
   counts, and paths, including invalid roots and capture sources; detailed scoped audits
