@@ -14,7 +14,7 @@ import pytest
 from conftest import FakeTransport, write_workspace
 
 from enso import db, execution, heartbeat
-from enso.config import save_config
+from enso.config import load_config, save_config
 from enso.heartbeat import runner as module
 from enso.heartbeat.runner import HeartbeatRunner
 
@@ -45,7 +45,7 @@ def make_beat(config, *, gate=None, **changes):
         data["gate"] = "gate.sh"
     beat = heartbeat.create(config, data)
     if gate is not None:
-        directory = config.paths.heartbeat / beat.ref
+        directory = config.paths.workspace_heartbeat(beat.workspace) / beat.ref
         directory.mkdir(parents=True)
         (directory / "gate.sh").write_text(gate)
     return heartbeat.resume(config, beat.ref)
@@ -103,6 +103,101 @@ async def test_quiet_gate_only_updates_metadata(runtime, monkeypatch):
         "resumed",
         "created",
     ]
+
+
+@pytest.mark.asyncio
+async def test_restart_keeps_workspace_gate_helpers_provider_and_action_receipts(
+    runtime, monkeypatch
+):
+    config, clock = runtime
+    workspace = config.paths.workspace("team")
+    workspace.mkdir()
+    write_workspace(config.paths, "team", {"providers": {"claude": {"args": ["--team"]}}})
+    beat = make_beat(config, workspace="team", gate=". ./helper.sh\n")
+    directory = config.paths.workspace_heartbeat("team") / beat.ref
+    (directory / "helper.sh").write_text('printf "%s\\n%s\\n" "$PWD" "$ENSO_WORKSPACE"\n')
+    calls = []
+
+    async def assess(provider, prompt, model, effort, args, **kwargs):
+        env = kwargs["env"]
+        calls.append(env["ENSO_BEAT_RUN_ID"])
+        assert kwargs["cwd"] == workspace and args == ("--team",)
+        assert env["ENSO_WORKSPACE"] == "team"
+        assert f"{directory}\nteam" in prompt
+        run = heartbeat.get_run(config.paths, env["ENSO_BEAT_RUN_ID"])
+        assert run.definition.workspace == "team"
+        if len(calls) == 1:
+            heartbeat.begin_action(config, beat.ref, "notify", "Notify once", run_id=run.id)
+            heartbeat.resolve_action(
+                config,
+                beat.ref,
+                "notify",
+                "succeeded",
+                "Delivered",
+                receipt="mail:receipt",
+                run_id=run.id,
+            )
+        else:
+            with pytest.raises(heartbeat.HeartbeatError, match="succeeded"):
+                heartbeat.begin_action(config, beat.ref, "notify", "Retry", run_id=run.id)
+        settle(config, env, complete=len(calls) == 2)
+        return execution.ProviderTurn("ok", session_id=f"session-{len(calls)}")
+
+    monkeypatch.setattr(execution, "execute_turn", assess)
+    first = HeartbeatRunner(load_config(config.paths))
+    await tick(first, clock)
+    await first.stop()
+    # The new process inherits another workspace context and changed agent defaults.
+    monkeypatch.setenv("ENSO_WORKSPACE", "default")
+    changed = {**config.raw, "defaults": {"provider": "codex", "model": "sol", "effort": "high"}}
+    save_config(config.paths, changed)
+    restarted = HeartbeatRunner(load_config(config.paths))
+    assert restarted.recover() == 0
+    await tick(restarted, clock)
+    await tick(restarted, clock)
+    saved = heartbeat.get(config.paths, beat.ref)
+    assert saved.workspace == "team" and saved.state == "fulfilled"
+    assert len(calls) == 2
+    assert {
+        run.definition.agent.provider for run in heartbeat.list_runs(config.paths, beat.ref)
+    } == {"claude"}
+    assert not config.paths.workspace_heartbeat("default").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parent", ["workspace", "heartbeat", "missing-workspace"])
+async def test_relocated_gate_never_follows_a_linked_parent(runtime, monkeypatch, tmp_path, parent):
+    config, clock = runtime
+    config.paths.workspace("team").mkdir()
+    beat = make_beat(config, workspace="team", gate="echo should-not-run\n")
+    root = (
+        config.paths.workspace("team")
+        if parent in ("workspace", "missing-workspace")
+        else config.paths.workspace_heartbeat("team")
+    )
+    target = tmp_path / "moved"
+    root.rename(target)
+    if parent != "missing-workspace":
+        root.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(heartbeat.HeartbeatError, match=r"link|missing"):
+        heartbeat.validate_gate(config.paths, beat)
+
+    async def forbidden(*args, **kwargs):
+        pytest.fail("an unsafe gate must not run or start a provider")
+
+    monkeypatch.setattr(execution, "run_process", forbidden)
+    monkeypatch.setattr(execution, "execute_turn", forbidden)
+    await tick(HeartbeatRunner(config), clock)
+    saved = heartbeat.get(config.paths, beat.ref)
+    assert saved.workspace == "team"
+    if parent == "workspace":
+        # Live config rejects linked workspace identities before admitting any work.
+        assert saved.last_check_status is None
+    else:
+        assert saved.last_check_status == "error"
+        assert "link" in saved.last_check_error or "missing" in saved.last_check_error
+    assert heartbeat.list_runs(config.paths, beat.ref) == []
 
 
 def test_beat_env_replaces_inherited_identity_with_this_beat(runtime, monkeypatch):
@@ -183,7 +278,7 @@ async def test_gate_failure_never_falls_back_and_recovery_handles_pending_on_qui
     events = heartbeat.history(config.paths, beat.ref, kind="check_failed")
     assert len(events) == 1 and events[0].message == "source unavailable"
     assert heartbeat.get(config.paths, beat.ref).attention
-    (config.paths.heartbeat / beat.ref / "gate.sh").write_text("exit 1\n")
+    (config.paths.workspace_heartbeat(beat.workspace) / beat.ref / "gate.sh").write_text("exit 1\n")
     await tick(runner, clock)
     assert calls == [True]
     assert len(heartbeat.history(config.paths, beat.ref, kind="check_recovered")) == 1
@@ -194,7 +289,7 @@ async def test_gate_failure_never_falls_back_and_recovery_handles_pending_on_qui
 async def test_missing_or_changed_gate_is_an_error_without_provider(runtime, monkeypatch):
     config, clock = runtime
     beat = make_beat(config, gate="exit 0\n")
-    (config.paths.heartbeat / beat.ref / "gate.sh").unlink()
+    (config.paths.workspace_heartbeat(beat.workspace) / beat.ref / "gate.sh").unlink()
     await tick(HeartbeatRunner(config), clock)
     assert heartbeat.get(config.paths, beat.ref).last_check_status == "error"
     assert heartbeat.list_runs(config.paths, beat.ref) == []
@@ -283,7 +378,9 @@ async def test_one_shot_interruption_on_either_side_of_claim_preserves_a_durable
     runtime, monkeypatch, claimed, gate
 ):
     config, clock = runtime
-    beat = make_beat(config, at=clock[0].isoformat(), gate=gate)
+    config.paths.workspace("team").mkdir()
+    beat = make_beat(config, workspace="team", at=clock[0].isoformat(), gate=gate)
+    monkeypatch.setenv("ENSO_WORKSPACE", "default")
     claim = HeartbeatRunner._claim
 
     async def interrupt(self, attempt, **kwargs):
@@ -296,6 +393,7 @@ async def test_one_shot_interruption_on_either_side_of_claim_preserves_a_durable
     await runner.tick(clock[0])
     await drain(runner)
     saved = heartbeat.get(config.paths, beat.ref)
+    assert saved.workspace == "team"
     assert saved.last_check_at is None
     if claimed:
         assert saved.at_consumed and saved.attention and saved.next_check_at is None
@@ -617,7 +715,9 @@ async def test_failed_transport_retries_and_failure_recovery_notices_are_transit
 @pytest.mark.asyncio
 async def test_lock_overlap_recovery_and_pruning_preserve_owned_boundaries(runtime, tmp_path):
     config, clock = runtime
-    beat = make_beat(config, gate="exit 1\n")
+    config.paths.workspace("team").mkdir()
+    beat = make_beat(config, workspace="team", gate="exit 1\n")
+    other = make_beat(config, gate="exit 1\n")
     runner = HeartbeatRunner(config)
     lock = heartbeat.acquire_lock(config.paths, beat.ref)
     assert lock is not None
@@ -632,10 +732,12 @@ async def test_lock_overlap_recovery_and_pruning_preserve_owned_boundaries(runti
     await runner.tick(clock[0])
     await drain(runner)
     assert heartbeat.get(config.paths, beat.ref) is None
-    assert not (config.paths.heartbeat / beat.ref).exists()
+    assert not (config.paths.workspace_heartbeat(beat.workspace) / beat.ref).exists()
+    assert heartbeat.get(config.paths, other.ref).state == "active"
+    assert (config.paths.workspace_heartbeat(other.workspace) / other.ref / "gate.sh").is_file()
     # A closed beat's symlink is never followed into somebody else's files.
     unsafe = make_beat(config)
-    directory = config.paths.heartbeat / unsafe.ref
+    directory = config.paths.workspace_heartbeat(unsafe.workspace) / unsafe.ref
     directory.symlink_to(tmp_path, target_is_directory=True)
     marker = tmp_path / "keep"
     marker.write_text("user data")

@@ -21,6 +21,7 @@ from enso.config import load_config
 def active(enso_home, raw_config_both, monkeypatch):
     write_config(enso_home, raw_config_both)
     config = load_config(enso_home)
+    enso_home.workspace("team").mkdir()
     db.initialize(enso_home)
     beat = heartbeat.create(
         config,
@@ -29,7 +30,7 @@ def active(enso_home, raw_config_both, monkeypatch):
             "instructions": "Follow this dinner plan until everyone has agreed.",
             "completion": "Dinner agreed and final notification sent.",
             "allowed_actions": "Reply in the dinner thread and notify me.",
-            "workspace": "default",
+            "workspace": "team",
             "at": "2030-09-08T08:30:00+00:00",
             "notify": "slack:C3",
             "notify_thread": "7.0",
@@ -39,6 +40,7 @@ def active(enso_home, raw_config_both, monkeypatch):
     run = heartbeat.start_run(config, beat.ref, trigger="manual")
     monkeypatch.setenv("ENSO_BEAT", beat.ref)
     monkeypatch.setenv("ENSO_BEAT_RUN_ID", run.id)
+    monkeypatch.setenv("ENSO_WORKSPACE", "default")
     return config, beat, run
 
 

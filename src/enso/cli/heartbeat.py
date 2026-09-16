@@ -12,7 +12,7 @@ from pathlib import Path
 import typer
 
 from .. import heartbeat, tasks
-from ..config import Config, Paths
+from ..config import Config, Paths, resolve_workspace
 from .common import JSON_FLAG, InputError, columns, echo_json, fail, load, read_input
 
 heartbeat_app = typer.Typer(no_args_is_help=True, help="Finite actions and temporary watches.")
@@ -28,7 +28,7 @@ def _using(*, as_json: bool) -> Iterator[Config]:
         yield load(Paths.from_env(), as_json=as_json)
     except heartbeat.HeartbeatError as exc:
         fail(exc.problems, as_json=as_json)
-    except (InputError, OSError, UnicodeError, sqlite3.Error) as exc:
+    except (InputError, OSError, ValueError, sqlite3.Error) as exc:
         fail([str(exc)], as_json=as_json)
 
 
@@ -63,7 +63,13 @@ def _object(text: str) -> dict[str, object]:
 
 
 def _definition(file: Path) -> dict[str, object]:
-    return _object(read_input(file))
+    data = _object(read_input(file))
+    if "workspace" in data:
+        raise heartbeat.HeartbeatError(
+            "workspace is not a JSON definition field; select it with --workspace or "
+            "ENSO_WORKSPACE at creation; an existing beat cannot change workspace"
+        )
+    return data
 
 
 def _message(text: str) -> str:
@@ -108,7 +114,6 @@ def _owned(config: Config, ref: str) -> None:
 
 
 def _defaults(data: dict[str, object]) -> dict[str, object]:
-    data.setdefault("workspace", os.environ.get("ENSO_WORKSPACE") or "default")
     origin = {
         key: value
         for key in ("transport", "user_id", "user_name", "channel", "channel_name", "thread_ts")
@@ -142,12 +147,18 @@ def heartbeat_status(as_json: bool = JSON_FLAG) -> None:
 
 
 @heartbeat_app.command("create")
-def heartbeat_create(file: Path = DEFINITION, as_json: bool = JSON_FLAG) -> None:
+def heartbeat_create(
+    file: Path = DEFINITION,
+    workspace: str | None = typer.Option(None, "--workspace", help="Defaults to ENSO_WORKSPACE."),
+    as_json: bool = JSON_FLAG,
+) -> None:
     """Save a paused beat; create its returned directory when adding a gate, then resume."""
     with _using(as_json=as_json) as config:
         _management_only()
-        beat = heartbeat.create(config, _defaults(_definition(file)), actor=_actor())
-        directory = str(config.paths.heartbeat / beat.ref)
+        data = _defaults(_definition(file))
+        data["workspace"] = resolve_workspace(config.paths, workspace)
+        beat = heartbeat.create(config, data, actor=_actor())
+        directory = str(config.paths.workspace_heartbeat(beat.workspace) / beat.ref)
         if as_json:
             echo_json({**beat.as_dict(), "directory": directory})
         else:

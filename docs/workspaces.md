@@ -12,8 +12,8 @@ rather than assembled by hand.
 ## Layout
 
 This layout is implemented on the 0.2.0 development branch, including workspace jobs.
-Memory behavior and the relocation of Heartbeat scripts remain
-forthcoming, as detailed in the [ownership layout](#ownership-in-020).
+Heartbeat scripts also use their owning workspace; memory behavior remains forthcoming,
+as detailed in the [ownership layout](#ownership-in-020).
 
 ```text
 ~/.enso/workspaces/<name>/
@@ -25,7 +25,7 @@ forthcoming, as detailed in the [ownership layout](#ownership-in-020).
 ├── memory/            # dated memories (feature forthcoming)
 ├── jobs/              # scheduled and stage jobs
 ├── projects/          # workspace project definitions and scripts
-├── heartbeat/         # optional; workspace gate scripts (relocation forthcoming)
+├── heartbeat/<REF>/   # optional; a beat's gate.sh and helpers
 ├── drafts/            # generated or editable output
 ├── uploads/           # chat attachments, one directory per turn
 ├── .claude/skills     # symlink -> ../skills, read by Claude Code and Grok
@@ -78,8 +78,8 @@ retains its separately documented repair behavior.
 
 ## Ownership in 0.2.0
 
-**Target for 0.2.0.** Workspace paths, settings, projects, and jobs are implemented;
-workspace Heartbeat scripts and memory behavior remain forthcoming. Workspace-owned files
+**Target for 0.2.0.** Workspace paths, settings, projects, jobs, and Heartbeat scripts are
+implemented; memory behavior remains forthcoming. Workspace-owned files
 live under their workspace; the containing directory determines ownership. Installation
 settings remain in `config.json`, as described
 in [Configuration](configuration.md#configuration-ownership-in-020).
@@ -156,8 +156,8 @@ and `team:memory`; those jobs process only their containing workspace.
 workspace for a turn, which keeps that selection through preparation and queueing. Removing
 its binding or losing its workspace drops it before execution; the
 [connection access contract](connections.md#access-in-020) owns admission and notices. The
-shared resolver is used by task, project, workflow, and job creation commands. Knowledge
-search and Heartbeat changes remain forthcoming and are identified in
+shared resolver is used by task, project, workflow, job creation, and Heartbeat creation
+commands. Other context-sensitive lists and searches remain forthcoming and are identified in
 [CLI](cli.md#workspace-context-in-020). Enso sets `ENSO_WORKSPACE` for its chat agents,
 jobs, and Heartbeat runs, and CLI calls they launch
 inherit it. Workspace-scoped CLI operations default to that value; an optional

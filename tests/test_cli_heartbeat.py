@@ -7,7 +7,7 @@ import sqlite3
 
 import pytest
 import typer
-from conftest import write_config
+from conftest import write_config, write_workspace
 from typer.testing import CliRunner
 
 from enso import heartbeat
@@ -21,8 +21,9 @@ runner = CliRunner()
 
 
 @pytest.fixture(autouse=True)
-def cli_home(enso_home, raw_config):
+def cli_home(enso_home, raw_config, monkeypatch):
     write_config(enso_home, raw_config)
+    monkeypatch.setenv("ENSO_WORKSPACE", "default")
     return enso_home
 
 
@@ -37,8 +38,8 @@ def packet(*args, input=None):
     return json.loads(result.stdout)
 
 
-def create(**fields):
-    value = {
+def definition(**fields):
+    return {
         "title": "Thank Bob",
         "instructions": "Send Bob a thank-you email about yesterday's meeting.",
         "completion": "The email is sent and its receipt recorded.",
@@ -46,24 +47,101 @@ def create(**fields):
         "at": "2030-09-08T08:30:00+00:00",
         **fields,
     }
-    return packet("create", "--file", "-", input=json.dumps(value))
+
+
+def create(*args, **fields):
+    return packet("create", "--file", "-", *args, input=json.dumps(definition(**fields)))
 
 
 def test_create_defaults_and_origin_are_saved(cli_home, monkeypatch):
+    cli_home.workspace("team").mkdir()
+    write_workspace(
+        cli_home, "team", {"agent": {"provider": "codex", "model": "sol", "effort": "high"}}
+    )
+    monkeypatch.setenv("ENSO_WORKSPACE", "team")
     monkeypatch.setenv("ENSO_ORIGIN_TRANSPORT", "slack")
     monkeypatch.setenv("ENSO_ORIGIN_CHANNEL", "C3")
     monkeypatch.setenv("ENSO_ORIGIN_THREAD_TS", "7.0")
     monkeypatch.setenv("ENSO_ORIGIN_USER_ID", "U7")
     monkeypatch.setenv("ENSO_ORIGIN_USER_NAME", "Gavin")
     beat = create()
-    assert beat["state"] == "paused" and beat["workspace"] == "default"
-    assert beat["agent"] == {"provider": "claude", "model": "opus", "effort": "xhigh"}
+    assert beat["state"] == "paused" and beat["workspace"] == "team"
+    assert beat["agent"] == {"provider": "codex", "model": "sol", "effort": "high"}
     assert beat["notify"] == "slack:C3" and beat["notify_thread"] == "7.0"
     assert beat["origin"]["user_id"] == "U7"
-    assert beat["directory"] == str(cli_home.heartbeat / beat["ref"])
+    assert beat["directory"] == str(cli_home.workspace_heartbeat(beat["workspace"]) / beat["ref"])
+    assert not cli_home.workspace_heartbeat("team").exists()
     events = packet("history", beat["ref"])
     assert len(events) == 1 and events[0]["actor"] == "slack:U7"
     assert [item["ref"] for item in packet("list")] == [beat["ref"]]
+
+
+def test_creation_requires_context_even_inside_a_workspace(cli_home, monkeypatch):
+    monkeypatch.delenv("ENSO_WORKSPACE")
+    monkeypatch.chdir(cli_home.workspace("default"))
+    result = invoke("create", "--file", "-", "--json", input=json.dumps(definition()))
+    assert result.exit_code == 1 and result.stderr == ""
+    assert "--workspace or ENSO_WORKSPACE" in json.loads(result.stdout)["error"]
+    assert heartbeat.list_beats(cli_home) == []
+    assert create("--workspace", "default")["workspace"] == "default"
+
+
+def test_explicit_context_overrides_environment_without_reassigning_existing_beats(
+    cli_home, monkeypatch
+):
+    cli_home.workspace("team").mkdir()
+    beat = create("--workspace", "team")
+    assert beat["workspace"] == "team"
+    assert create()["workspace"] == "default"
+    monkeypatch.delenv("ENSO_WORKSPACE")
+    updated = packet("update", beat["ref"], "--file", "-", input='{"title":"Updated"}')
+    assert updated["workspace"] == "team"
+    assert packet("show", beat["ref"])["beat"]["workspace"] == "team"
+    assert packet("resume", beat["ref"])["workspace"] == "team"
+
+
+@pytest.mark.parametrize("workspace", ["", "missing", "../default"])
+def test_invalid_explicit_context_never_uses_environment(cli_home, workspace):
+    result = invoke(
+        "create",
+        "--file",
+        "-",
+        "--workspace",
+        workspace,
+        "--json",
+        input=json.dumps(definition()),
+    )
+    assert result.exit_code == 1 and result.stderr == ""
+    assert json.loads(result.stdout)["ok"] is False
+    assert heartbeat.list_beats(cli_home) == []
+
+
+@pytest.mark.parametrize("workspace", ["default", None])
+def test_json_workspace_is_rejected_on_create_and_update(cli_home, workspace):
+    result = invoke(
+        "create",
+        "--file",
+        "-",
+        "--workspace",
+        "default",
+        "--json",
+        input=json.dumps(definition(workspace=workspace)),
+    )
+    assert result.exit_code == 1 and result.stderr == ""
+    assert "not a JSON definition field" in json.loads(result.stdout)["error"]
+    assert heartbeat.list_beats(cli_home) == []
+    beat = create()
+    result = invoke(
+        "update",
+        beat["ref"],
+        "--file",
+        "-",
+        "--json",
+        input=json.dumps({"workspace": workspace}),
+    )
+    assert result.exit_code == 1
+    assert "not a JSON definition field" in json.loads(result.stdout)["error"]
+    assert heartbeat.get(cli_home, beat["ref"]).revision == beat["revision"]
 
 
 def test_update_merges_fields_and_preserves_explicit_destination(tmp_path):
@@ -85,7 +163,7 @@ def test_gate_creation_stays_paused_and_resume_only_checks_syntax(cli_home):
     beat = create(gate="gate.sh")
     missing = invoke("resume", beat["ref"], "--json")
     assert missing.exit_code == 1 and "gate" in json.loads(missing.stdout)["error"]
-    script = cli_home.heartbeat / beat["ref"] / "gate.sh"
+    script = cli_home.workspace_heartbeat(beat["workspace"]) / beat["ref"] / "gate.sh"
     script.parent.mkdir(parents=True)
     script.write_text("touch should-never-run\nexit 1\n")
     resumed = packet("resume", beat["ref"])

@@ -119,7 +119,7 @@ class Paths:
 
     @property
     def heartbeat(self) -> Path:
-        """Beat gate scripts and execution locks, separate from scheduled job files."""
+        """Stable installation-level beat locks; script paths are workspace-owned."""
         return self.home / "heartbeat"
 
     @property

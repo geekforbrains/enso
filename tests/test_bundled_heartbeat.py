@@ -5,7 +5,11 @@ from __future__ import annotations
 import json
 import re
 
+from typer.testing import CliRunner
+
 from enso import heartbeat, skills, workspaces
+from enso.cli import app
+from enso.config import save_config
 
 
 def test_heartbeat_skill_reaches_every_workspace(config):
@@ -24,12 +28,18 @@ def test_heartbeat_skill_reaches_every_workspace(config):
 def test_shipped_definition_example_creates_a_paused_beat(config):
     paths = config.paths
     workspaces.seed_home(paths)
+    save_config(paths, config.raw)
     text = (paths.skills / "enso-heartbeat/SKILL.md").read_text()
     examples = re.findall(r"```json\n(.*?)\n```", text, re.DOTALL)
     assert examples
     for example in examples:
-        definition = json.loads(example)
-        definition.setdefault("workspace", "default")
-        beat = heartbeat.create(config, definition)
-        assert beat.state == "paused" and beat.gate == "gate.sh"
-        assert heartbeat.list_runs(paths, beat.ref) == []
+        result = CliRunner().invoke(
+            app,
+            ["heartbeat", "create", "--file", "-", "--workspace", "default", "--json"],
+            input=example,
+        )
+        assert result.exit_code == 0, result.stdout
+        beat = json.loads(result.stdout)
+        assert beat["state"] == "paused" and beat["gate"] == "gate.sh"
+        assert beat["directory"] == str(paths.workspace_heartbeat("default") / beat["ref"])
+        assert heartbeat.list_runs(paths, beat["ref"]) == []

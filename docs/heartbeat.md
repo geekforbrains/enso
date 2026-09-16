@@ -21,9 +21,17 @@ SQLite in `$ENSO_HOME/enso.db` owns definitions and current state. The internal 
 `enso heartbeat`, not registered as user tables or edited with SQL. There is no parallel
 `BEAT.md` or status file. References such as `HB-001` remain unique after pruning.
 
-A beat's script files live under `$ENSO_HOME/heartbeat/<ref>/`. The optional entry point is
-`gate.sh`; it can call Python or other helpers. The provider runs in the beat's workspace,
-while the gate runs in the beat's directory. All paths derive from `ENSO_HOME`.
+A beat's script files live under `$ENSO_HOME/workspaces/<workspace>/heartbeat/<ref>/`.
+The optional entry point is `gate.sh`; it can call Python or other helpers beside it.
+The provider runs in the recorded workspace, while the gate runs in the beat's directory.
+Create the script directory only when adding a gate. Enso rejects linked workspace or
+gate directories and never falls back to scripts in another location.
+
+The saved workspace owns the beat for its lifetime: definition updates cannot transfer it.
+Restarting Enso or changing a binding, the caller's `ENSO_WORKSPACE`, or the default agent
+does not reassign existing definitions, runs, or action receipts. Commands using `HB-001`
+operate on that recorded beat. Per-beat execution locks retain their installation-level
+location at `$ENSO_HOME/heartbeat/.locks/`, outside the prunable script directories.
 
 ## Creation and management
 
@@ -36,6 +44,12 @@ Every command accepts `--json`. A failed command emits one `{"ok": false, "error
 object and exits 1. Declarative validation reports independent problems together.
 CLI syntax errors follow the usual exit-2 convention.
 
+Creation selects an existing workspace from `--workspace`, or otherwise `ENSO_WORKSPACE`.
+Missing or invalid context is an error, even when the command runs inside a workspace.
+There is no implicit `default`. JSON definitions and updates reject `workspace`; Enso
+saves the resolved owner in the database. For example, use
+`enso heartbeat create --file beat.json --workspace team` to save a follow-up in `team`.
+
 For example, a definition for a temporary watch is:
 
 ```json
@@ -44,7 +58,6 @@ For example, a definition for a temporary watch is:
   "instructions": "Watch this refund thread and report meaningful progress.",
   "completion": "The refund has arrived and the user has been notified.",
   "allowed_actions": "Read the thread and notify me; ask before contacting the seller.",
-  "workspace": "default",
   "schedule": "0 * * * *",
   "timezone": "America/Vancouver",
   "gate": "gate.sh"

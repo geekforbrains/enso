@@ -242,7 +242,11 @@ def validate_gate(paths: Paths, beat: Beat) -> None:
     """Check a confined shell gate's syntax without running it or reading shell startup files."""
     if beat.gate is None:
         return
-    root = paths.heartbeat
+    try:
+        require_workspace(paths, beat.workspace)
+    except ValueError as exc:
+        raise HeartbeatError(str(exc)) from exc
+    root = paths.workspace_heartbeat(beat.workspace)
     directory = root / beat.ref
     gate = directory / beat.gate
     try:

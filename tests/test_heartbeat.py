@@ -108,7 +108,7 @@ def test_ungated_recurring_checks_require_explicit_disclosure(config, definition
 
 def test_resume_checks_gate_without_execution_and_rejects_bad_paths(config, definition, tmp_path):
     beat = heartbeat.create(config, {**definition, "gate": "gate.sh"})
-    directory = config.paths.heartbeat / beat.ref
+    directory = config.paths.workspace_heartbeat(beat.workspace) / beat.ref
     directory.mkdir(parents=True)
     marker = tmp_path / "executed"
     gate = directory / "gate.sh"
@@ -130,7 +130,7 @@ def test_resume_checks_gate_without_execution_and_rejects_bad_paths(config, defi
 
 def test_gate_size_and_directory_symlinks_are_rejected(config, definition, tmp_path):
     beat = heartbeat.create(config, {**definition, "gate": "gate.sh"})
-    directory = config.paths.heartbeat / beat.ref
+    directory = config.paths.workspace_heartbeat(beat.workspace) / beat.ref
     directory.mkdir(parents=True)
     (directory / "gate.sh").write_text("#" * (64 * 1024 + 1))
     with pytest.raises(heartbeat.HeartbeatError, match="64 KiB"):
@@ -140,6 +140,15 @@ def test_gate_size_and_directory_symlinks_are_rejected(config, definition, tmp_p
     directory.symlink_to(tmp_path, target_is_directory=True)
     with pytest.raises(heartbeat.HeartbeatError, match="symlinks"):
         heartbeat.resume(config, beat.ref)
+
+
+def test_recorded_workspace_cannot_be_transferred(config, definition):
+    config.paths.workspace("team").mkdir()
+    beat = heartbeat.create(config, definition)
+    with pytest.raises(heartbeat.HeartbeatError, match="workspace cannot be changed"):
+        heartbeat.update(config, beat.ref, {"workspace": "team"})
+    assert heartbeat.get(config.paths, beat.ref) == beat
+    assert len(heartbeat.history(config.paths, beat.ref)) == 1
 
 
 def test_check_history_records_transitions_without_per_poll_rows(config, definition, clock):
@@ -389,7 +398,7 @@ def test_recovery_and_pruning_skip_live_locks_and_never_reuse_ids(config, defini
     lock = heartbeat.acquire_lock(config.paths, beat.ref)
     with lock:
         assert heartbeat.prune(config, now=future) == []
-    assert heartbeat.prune(config, now=future) == [beat.ref]
+    assert [beat.ref for beat in heartbeat.prune(config, now=future)] == [beat.ref]
     assert (
         heartbeat.history(config.paths, beat.ref)
         == heartbeat.list_runs(config.paths, beat.ref)
