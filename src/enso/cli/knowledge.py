@@ -7,10 +7,19 @@ from typing import Any
 import typer
 
 from .. import knowledge
-from ..config import Paths
-from .common import JSON_FLAG, InputError, columns, echo_json, fail, read_input
+from ..config import Paths, resolve_workspace
+from .common import JSON_FLAG, WORKSPACE, InputError, columns, echo_json, fail, read_input
 
 knowledge_app = typer.Typer(no_args_is_help=True, help="Browse and maintain Markdown knowledge.")
+SHARED = typer.Option(False, "--shared", help="Select shared knowledge instead of a workspace.")
+
+
+def _scope(paths: Paths, workspace: str | None, shared: bool) -> str:
+    if shared:
+        if workspace is not None:
+            raise ValueError("give --workspace or --shared, not both")
+        return "general"
+    return f"workspace:{resolve_workspace(paths, workspace)}"
 
 
 def _summary(note: knowledge.Note) -> dict[str, Any]:
@@ -44,12 +53,19 @@ def roots(as_json: bool = JSON_FLAG) -> None:
 
 
 def _listing(
-    query: str, scope: str | None, folder: str, limit: int, offset: int, as_json: bool
+    query: str,
+    workspace: str | None,
+    shared: bool,
+    folder: str,
+    limit: int,
+    offset: int,
+    as_json: bool,
 ) -> None:
     try:
-        catalog = knowledge.scan(Paths.from_env())
-        if scope:
-            catalog.root(scope)
+        paths = Paths.from_env()
+        scope = _scope(paths, workspace, shared)
+        catalog = knowledge.scan(paths)
+        catalog.root(scope)
         if folder:
             from ..knowledge.storage import relative_parts
 
@@ -59,7 +75,7 @@ def _listing(
         notes = [
             note
             for note in catalog.notes
-            if (not scope or note.scope == scope)
+            if note.scope == scope
             and note.path.startswith(prefix)
             and all(term in f"{note.path}\n{note.body}".casefold() for term in terms)
         ]
@@ -69,9 +85,9 @@ def _listing(
             "offset": offset,
             "limit": limit,
             "notes": [_summary(note) for note in notes[offset : offset + limit]],
-            "problems": list(catalog.problems),
+            "problems": [p for p in catalog.problems if p.startswith(f"{scope}:")],
         }
-    except (OSError, knowledge.KnowledgeError) as exc:
+    except (OSError, ValueError, knowledge.KnowledgeError) as exc:
         fail([str(exc)], as_json=as_json)
     if as_json:
         echo_json(result)
@@ -92,43 +108,47 @@ def _listing(
 
 @knowledge_app.command("list")
 def list_notes(
-    scope: str | None = typer.Option(None, "--scope"),
+    workspace: str | None = WORKSPACE,
+    shared: bool = SHARED,
     folder: str = typer.Option("", "--folder", help="Include this folder and its descendants."),
     limit: int = typer.Option(50, "--limit", min=1, max=500),
     offset: int = typer.Option(0, "--offset", min=0),
     as_json: bool = JSON_FLAG,
 ) -> None:
     """List a bounded page of notes and their revision hashes."""
-    _listing("", scope, folder, limit, offset, as_json)
+    _listing("", workspace, shared, folder, limit, offset, as_json)
 
 
 @knowledge_app.command("search")
 def search(
     query: str,
-    scope: str | None = typer.Option(None, "--scope"),
+    workspace: str | None = WORKSPACE,
+    shared: bool = SHARED,
     folder: str = typer.Option("", "--folder"),
     limit: int = typer.Option(50, "--limit", min=1, max=500),
     offset: int = typer.Option(0, "--offset", min=0),
     as_json: bool = JSON_FLAG,
 ) -> None:
-    """Search filenames and note bodies within optional scope and folder boundaries."""
-    _listing(query, scope, folder, limit, offset, as_json)
+    """Search filenames and bodies in the selected knowledge root and optional folder."""
+    _listing(query, workspace, shared, folder, limit, offset, as_json)
 
 
 @knowledge_app.command("show")
 def show(
-    ref: str, scope: str = typer.Option("general", "--scope"), as_json: bool = JSON_FLAG
+    ref: str, workspace: str | None = WORKSPACE, shared: bool = SHARED, as_json: bool = JSON_FLAG
 ) -> None:
     """Read a UUID or exact path, including its hash and backlinks."""
     try:
-        catalog = knowledge.scan(Paths.from_env())
+        paths = Paths.from_env()
+        scope = _scope(paths, workspace, shared)
+        catalog = knowledge.scan(paths)
         note = catalog.get(ref, scope)
         result = {
             **_summary(note),
             "body": note.body,
             "backlinks": [_summary(n) for n in catalog.backlinks(note)],
         }
-    except (OSError, knowledge.KnowledgeError) as exc:
+    except (OSError, ValueError, knowledge.KnowledgeError) as exc:
         fail([str(exc)], as_json=as_json)
     if as_json:
         echo_json(result)
@@ -137,16 +157,19 @@ def show(
 
 
 @knowledge_app.command("audit")
-def audit(scope: str | None = typer.Option(None, "--scope"), as_json: bool = JSON_FLAG) -> None:
+def audit(
+    workspace: str | None = WORKSPACE, shared: bool = SHARED, as_json: bool = JSON_FLAG
+) -> None:
     """Check core metadata, duplicate IDs, link targets, and heading anchors."""
     try:
-        catalog = knowledge.scan(Paths.from_env())
-        if scope:
-            catalog.root(scope)
+        paths = Paths.from_env()
+        scope = _scope(paths, workspace, shared)
+        catalog = knowledge.scan(paths)
+        catalog.root(scope)
         problems = catalog.audit(scope)
-        count = sum(1 for note in catalog.notes if not scope or note.scope == scope)
+        count = sum(1 for note in catalog.notes if note.scope == scope)
         result = {"ok": not problems, "notes": count, "problems": problems}
-    except (OSError, knowledge.KnowledgeError) as exc:
+    except (OSError, ValueError, knowledge.KnowledgeError) as exc:
         fail([str(exc)], as_json=as_json)
     if as_json:
         echo_json(result)
@@ -173,13 +196,15 @@ def _write_result(note: knowledge.Note, as_json: bool) -> None:
 def create(
     path: str,
     file: str = typer.Option(..., "--file", help="Markdown body file, or - for stdin."),
-    scope: str = typer.Option("general", "--scope"),
+    workspace: str | None = WORKSPACE,
+    shared: bool = SHARED,
     as_json: bool = JSON_FLAG,
 ) -> None:
     """Create a Markdown note with automatically maintained core metadata."""
     try:
-        note = knowledge.create_note(Paths.from_env(), scope, path, _input(file))
-    except (OSError, InputError, knowledge.KnowledgeError) as exc:
+        paths = Paths.from_env()
+        note = knowledge.create_note(paths, _scope(paths, workspace, shared), path, _input(file))
+    except (OSError, ValueError, InputError, knowledge.KnowledgeError) as exc:
         fail([str(exc)], as_json=as_json)
     _write_result(note, as_json)
 
@@ -187,14 +212,18 @@ def create(
 @knowledge_app.command("adopt")
 def adopt(
     path: str,
-    scope: str = typer.Option("general", "--scope"),
+    workspace: str | None = WORKSPACE,
+    shared: bool = SHARED,
     expected_hash: str | None = typer.Option(None, "--expected-hash"),
     as_json: bool = JSON_FLAG,
 ) -> None:
     """Normalize one existing note while preserving unfamiliar original metadata."""
     try:
-        note = knowledge.adopt_note(Paths.from_env(), scope, path, expected_hash=expected_hash)
-    except (OSError, knowledge.KnowledgeError) as exc:
+        paths = Paths.from_env()
+        note = knowledge.adopt_note(
+            paths, _scope(paths, workspace, shared), path, expected_hash=expected_hash
+        )
+    except (OSError, ValueError, knowledge.KnowledgeError) as exc:
         fail([str(exc)], as_json=as_json)
     _write_result(note, as_json)
 
@@ -206,15 +235,17 @@ def update(
     expected_hash: str = typer.Option(
         ..., "--expected-hash", help="SHA256 from the last show/list."
     ),
-    scope: str = typer.Option("general", "--scope"),
+    workspace: str | None = WORKSPACE,
+    shared: bool = SHARED,
     as_json: bool = JSON_FLAG,
 ) -> None:
     """Update a managed note, refusing an edit based on stale contents."""
     try:
+        paths = Paths.from_env()
         note = knowledge.update_note(
-            Paths.from_env(), scope, ref, _input(file), expected_hash=expected_hash
+            paths, _scope(paths, workspace, shared), ref, _input(file), expected_hash=expected_hash
         )
-    except (OSError, InputError, knowledge.KnowledgeError) as exc:
+    except (OSError, ValueError, InputError, knowledge.KnowledgeError) as exc:
         fail([str(exc)], as_json=as_json)
     _write_result(note, as_json)
 
@@ -223,22 +254,33 @@ def update(
 def move(
     ref: str,
     destination: str,
-    scope: str = typer.Option("general", "--scope"),
-    to_scope: str | None = typer.Option(None, "--to-scope"),
+    workspace: str | None = WORKSPACE,
+    shared: bool = SHARED,
+    to_workspace: str | None = typer.Option(None, "--to-workspace"),
+    to_shared: bool = typer.Option(False, "--to-shared"),
     expected_hash: str | None = typer.Option(None, "--expected-hash"),
     as_json: bool = JSON_FLAG,
 ) -> None:
     """Move one note and repair resolved incoming and outgoing note/asset links."""
     try:
+        paths = Paths.from_env()
+        scope = _scope(paths, workspace, shared)
+        if to_workspace is not None and to_shared:
+            raise ValueError("give --to-workspace or --to-shared, not both")
+        destination_scope = (
+            _scope(paths, to_workspace, to_shared)
+            if to_workspace is not None or to_shared
+            else scope
+        )
         result = knowledge.move_note(
-            Paths.from_env(),
+            paths,
             scope,
             ref,
             destination,
-            to_scope=to_scope,
+            to_scope=destination_scope,
             expected_hash=expected_hash,
         )
-    except (OSError, knowledge.KnowledgeError) as exc:
+    except (OSError, ValueError, knowledge.KnowledgeError) as exc:
         fail([str(exc)], as_json=as_json)
     if as_json:
         echo_json(result)

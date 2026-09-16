@@ -85,6 +85,8 @@ def test_valid_timestamp_preserved_invalid_schema_and_metadata_are_readable(tmp_
     note = knowledge.scan(paths).get("Dates")
     assert not note.problems
     assert note.metadata["created"] == "2020-01-02T12:00:00Z"
+    assert note.metadata["updated"] == "2020-01-03T10:00:00Z"
+    assert 'updated: "2020-01-03T10:00:00Z"' in target.read_text()
     target.write_text("---\nid: no\ntags: [noise]\n---\n\nStill readable\n")
     note = knowledge.scan(paths).get("Dates")
     assert note.id is None and note.body == "Still readable"
@@ -173,6 +175,84 @@ def test_create_update_and_adopt_are_atomic_and_reject_stale_or_occupied_paths(t
     adopted = knowledge.adopt_note(paths, "general", "Legacy.md")
     assert set(adopted.metadata) == {"schema", "id"}
     assert adopted.body == "Legacy body"
+
+
+def test_import_edits_preserve_unknown_creation_and_moves_preserve_dates(tmp_path):
+    paths = Paths(tmp_path)
+    target = put(paths, "Imported.md", "A recollection without known document dates.")
+    imported = knowledge.scan(paths).get("Imported")
+    updated = knowledge.update_note(
+        paths, "general", imported.id, "Confirmed current fact.", expected_hash=imported.sha256
+    )
+    assert updated.id == imported.id
+    assert set(updated.metadata) == {"schema", "id", "updated"}
+    unchanged = knowledge.update_note(
+        paths, "general", updated.id, updated.body, expected_hash=updated.sha256
+    )
+    assert unchanged.sha256 == updated.sha256
+    original = target.read_bytes()
+    knowledge.move_note(paths, "general", updated.id, "Reference/Imported.md")
+    assert (paths.knowledge / "Reference/Imported.md").read_bytes() == original
+
+
+def test_edit_refuses_to_write_an_update_before_document_creation(tmp_path, monkeypatch):
+    paths = Paths(tmp_path)
+    note = knowledge.create_note(paths, "general", "Page.md", "Original")
+    target = paths.knowledge / note.path
+    original = target.read_bytes()
+    monkeypatch.setattr(writing, "_timestamp", lambda: "2000-01-01T00:00:00Z")
+    with pytest.raises(knowledge.KnowledgeError, match="earlier than created"):
+        knowledge.update_note(paths, "general", note.id, "Changed", expected_hash=note.sha256)
+    assert target.read_bytes() == original
+
+
+@pytest.mark.parametrize("operation", ["adopt", "update", "move", "linked-move"])
+def test_managed_writes_refuse_duplicate_ids_even_by_path(tmp_path, operation):
+    paths = Paths(tmp_path)
+    target = put(paths, "Page.md", "[[Target]]")
+    put(paths, "Target.md", "Target")
+    copy = put(paths, "Copy.md", "Copy", "team")
+    copy.write_bytes(target.read_bytes())
+    original = target.read_bytes()
+    with pytest.raises(knowledge.KnowledgeError, match="duplicate"):
+        if operation == "adopt":
+            knowledge.adopt_note(paths, "general", "Page.md")
+        elif operation == "update":
+            knowledge.update_note(
+                paths,
+                "general",
+                "Page.md",
+                "Changed",
+                expected_hash=hashlib.sha256(original).hexdigest(),
+            )
+        elif operation == "move":
+            knowledge.move_note(paths, "general", "Page.md", "Moved.md")
+        else:
+            knowledge.move_note(paths, "general", "Target.md", "Moved.md")
+    assert target.read_bytes() == copy.read_bytes() == original
+    assert not (paths.knowledge / "Moved.md").exists()
+
+
+def test_publication_detects_a_direct_edit_during_write(tmp_path, monkeypatch):
+    paths = Paths(tmp_path)
+    note = knowledge.create_note(paths, "general", "Page.md", "Original")
+    target = paths.knowledge / note.path
+    edited = target.read_text().replace("Original", "Human correction")
+    original_hash_at = writing._hash_at
+    calls = 0
+
+    def concurrent_hash(directory, name):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            target.write_text(edited)
+        return original_hash_at(directory, name)
+
+    monkeypatch.setattr(writing, "_hash_at", concurrent_hash)
+    with pytest.raises(knowledge.KnowledgeError, match="changed during write"):
+        knowledge.update_note(paths, "general", note.id, "Agent edit", expected_hash=note.sha256)
+    assert target.read_text() == edited
+    assert not list(paths.knowledge.glob(".enso-note-*"))
 
 
 def test_writers_refuse_contention_and_symlink_lock(tmp_path):
@@ -431,7 +511,7 @@ def test_occupied_shared_root_is_reported_by_kind(tmp_path, kind):
     catalog = knowledge.scan(paths)
     assert catalog.roots == ()
     described = "symbolic link" if kind == "symlink" else "file"
-    assert catalog.problems == (f"general knowledge root must be a directory, not a {described}",)
+    assert catalog.problems == (f"general: knowledge root must be a directory, not a {described}",)
 
 
 def test_move_refuses_ambiguous_incoming_and_existing_targets(tmp_path):
@@ -474,14 +554,16 @@ def test_cli_json_read_write_audit_and_errors(tmp_path, monkeypatch):
     monkeypatch.setenv("ENSO_HOME", str(tmp_path))
     runner = CliRunner()
     created = runner.invoke(
-        app, ["knowledge", "create", "Folder/One.md", "--file", "-", "--json"], input="Body text\n"
+        app,
+        ["knowledge", "create", "Folder/One.md", "--file", "-", "--shared", "--json"],
+        input="Body text\n",
     )
     assert created.exit_code == 0, created.output
     note = json.loads(created.output)
     assert note["ok"] and len(note["sha256"]) == 64
-    listing = runner.invoke(app, ["knowledge", "search", "body", "--scope", "general", "--json"])
+    listing = runner.invoke(app, ["knowledge", "search", "body", "--shared", "--json"])
     assert json.loads(listing.output)["total"] == 1
-    shown = runner.invoke(app, ["knowledge", "show", note["id"], "--json"])
+    shown = runner.invoke(app, ["knowledge", "show", note["id"], "--shared", "--json"])
     assert json.loads(shown.output)["body"] == "Body text"
     updated = runner.invoke(
         app,
@@ -493,12 +575,13 @@ def test_cli_json_read_write_audit_and_errors(tmp_path, monkeypatch):
             "-",
             "--expected-hash",
             note["sha256"],
+            "--shared",
             "--json",
         ],
         input="[[Missing]]\n",
     )
     assert updated.exit_code == 0, updated.output
-    audited = runner.invoke(app, ["knowledge", "audit", "--json"])
+    audited = runner.invoke(app, ["knowledge", "audit", "--shared", "--json"])
     assert audited.exit_code == 1 and not json.loads(audited.output)["ok"]
     conflict = runner.invoke(
         app,
@@ -510,6 +593,7 @@ def test_cli_json_read_write_audit_and_errors(tmp_path, monkeypatch):
             "-",
             "--expected-hash",
             note["sha256"],
+            "--shared",
             "--json",
         ],
         input="Stale\n",
@@ -519,3 +603,100 @@ def test_cli_json_read_write_audit_and_errors(tmp_path, monkeypatch):
         hashlib.sha256((tmp_path / "knowledge/Folder/One.md").read_bytes()).hexdigest()
         != note["sha256"]
     )
+
+
+@pytest.mark.parametrize(
+    ("environment", "options", "selected"),
+    [
+        ("team", [], "workspace:team"),
+        ("team", ["--workspace", "personal"], "workspace:personal"),
+        ("missing", ["--workspace", "team"], "workspace:team"),
+        ("missing", ["--shared"], "general"),
+        (None, ["--shared"], "general"),
+        (None, [], None),
+        ("team", ["--workspace", "missing"], None),
+        ("team", ["--workspace", "team", "--shared"], None),
+    ],
+)
+def test_cli_knowledge_context_selection(tmp_path, monkeypatch, environment, options, selected):
+    paths = Paths(tmp_path)
+    monkeypatch.setenv("ENSO_HOME", str(tmp_path))
+    if environment is None:
+        monkeypatch.delenv("ENSO_WORKSPACE", raising=False)
+    else:
+        monkeypatch.setenv("ENSO_WORKSPACE", environment)
+    for scope in ("general", "team", "personal"):
+        put(paths, "Note.md", "Reference", scope)
+    result = CliRunner().invoke(app, ["knowledge", "list", *options, "--json"])
+    data = json.loads(result.output)
+    if selected is None:
+        assert result.exit_code == 1 and not data["ok"]
+    else:
+        assert result.exit_code == 0, result.output
+        assert data["total"] == 1
+        assert data["notes"][0]["scope"] == selected
+    assert not paths.db.exists()
+
+
+def test_cli_workspace_writes_scoped_ids_and_cross_root_moves(tmp_path, monkeypatch):
+    paths = Paths(tmp_path)
+    monkeypatch.setenv("ENSO_HOME", str(tmp_path))
+    monkeypatch.setenv("ENSO_WORKSPACE", "team")
+    put(paths, "Index.md", "[[Page]]", "team")
+    put(paths, "Index.md", "Personal reference", "personal")
+    runner = CliRunner()
+    created = runner.invoke(
+        app, ["knowledge", "create", "Page.md", "--file", "-", "--json"], input="Reference"
+    )
+    assert created.exit_code == 0, created.output
+    note = json.loads(created.output)
+    assert note["scope"] == "workspace:team"
+    for command in (
+        ["show", note["id"]],
+        ["update", note["id"], "--file", "-", "--expected-hash", note["sha256"]],
+        ["move", note["id"], "Moved.md"],
+    ):
+        refused = runner.invoke(app, ["knowledge", *command, "--shared", "--json"], input="Wrong")
+        assert refused.exit_code == 1, refused.output
+        assert "belongs to workspace:team" in json.loads(refused.output)["error"]
+    conflict = runner.invoke(
+        app,
+        ["knowledge", "move", "Page.md", "Page.md", "--to-shared", "--to-workspace", "personal"],
+    )
+    assert conflict.exit_code == 1 and "not both" in conflict.output
+    moved = runner.invoke(
+        app, ["knowledge", "move", note["id"], "Page.md", "--to-shared", "--json"]
+    )
+    assert moved.exit_code == 0, moved.output
+    assert json.loads(moved.output)["scope"] == "general"
+    again = runner.invoke(
+        app,
+        [
+            "knowledge",
+            "move",
+            note["id"],
+            "Page.md",
+            "--shared",
+            "--to-workspace",
+            "personal",
+            "--json",
+        ],
+    )
+    assert again.exit_code == 0, again.output
+    catalog = knowledge.scan(paths)
+    assert catalog.by_id(note["id"]).scope == "workspace:personal"
+    assert "[[workspace:personal:Page]]" in catalog.get("Index", "workspace:team").body
+    assert not catalog.audit()
+
+
+def test_cli_scoped_audit_and_search_report_only_selected_root(tmp_path, monkeypatch):
+    paths = Paths(tmp_path)
+    monkeypatch.setenv("ENSO_HOME", str(tmp_path))
+    monkeypatch.setenv("ENSO_WORKSPACE", "team")
+    put(paths, "Note.md", "Reference", "team")
+    paths.knowledge.write_text("Invalid shared root")
+    runner = CliRunner()
+    for command in (["audit"], ["search", "Reference"]):
+        result = runner.invoke(app, ["knowledge", *command, "--json"])
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["problems"] == []

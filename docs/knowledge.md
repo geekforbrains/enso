@@ -6,8 +6,8 @@ reading. Files remain usable outside Enso; the viewer is not an editor or the so
 
 ## Knowledge and memory in 0.2.0
 
-**Forthcoming in 0.2.0.** Knowledge holds current maintained facts and useful reference
-material. [Memory](memory.md) holds dated conversations and experiences in the workspace
+Knowledge holds current maintained facts and useful reference material. The forthcoming
+[Memory](memory.md) feature holds dated conversations and experiences in the workspace
 where they happened. Both remain ordinary Markdown and are authoritative for their maintained
 content; operational records, including source message captures, live in the home database.
 
@@ -34,6 +34,13 @@ Workspace knowledge roots are discovered from the filesystem without requiring w
 configuration or a viewer restart. Hidden directories and files, symbolic links, `node_modules`,
 and `__pycache__` are excluded. A root itself must be a real directory. Files outside these
 roots are not knowledge attachments or link destinations.
+
+Knowledge commands default to `ENSO_WORKSPACE`; `--workspace NAME` selects a different
+workspace. Use `--shared` deliberately for the home root, including when the environment
+selects a workspace. The two flags cannot be combined. No context means an error, not
+shared knowledge. UUIDs identify notes globally but CLI operations require their root to
+be selected, just like paths. The viewer's stable ID URLs and cross-root links continue to
+resolve globally. [CLI](cli.md#knowledge) owns the command signatures.
 
 Keep general personal/reference material in shared knowledge. Keep material whose meaning
 and ownership belong to one workspace in that workspace's knowledge directory. Link between
@@ -87,7 +94,9 @@ CLI edit sets `updated` to that edit's time while leaving an unknown `created` a
 These are the only frontmatter fields. There are no types, tags, aliases, summaries, or custom
 property namespaces in v1. Titles come from filenames, with `.md` removed; paths supply folder
 and workspace context. Sources and useful context belong in the body near the relevant text.
-Duplicate IDs are reported and never arbitrarily resolved.
+Duplicate IDs are reported and never arbitrarily resolved. Managed updates, adoption,
+and moves (including linked notes they repair) refuse duplicate identity even when given
+an exact path; inspect and repair the duplicate deliberately first.
 
 Legacy notes with absent or invalid metadata remain readable by path. The viewer exposes core
 properties and metadata problems; View source retains the original document. Core auditing is

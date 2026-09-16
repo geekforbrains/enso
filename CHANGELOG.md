@@ -7,6 +7,10 @@ All notable changes to Enso are documented here, following
 
 ### Changed
 
+- Knowledge commands default to the selected workspace, with `--workspace` or explicit
+  `--shared` replacing `--scope` and implicit shared/all-root defaults. UUID operations
+  respect the selected root; moves use `--to-workspace` or `--to-shared` for transfers.
+
 - Background messages retain their sending workspace through chat binding changes. CLI
   sends and operational lists require `--workspace` or `ENSO_WORKSPACE`; sends can explicitly
   select another workspace, and lists offer `--all-workspaces`. Registered tables and the
@@ -77,6 +81,9 @@ All notable changes to Enso are documented here, following
 
 ### Fixed
 
+- Knowledge writes refuse duplicate note identities even when selected by path. Adoption
+  writes known timestamps in UTC without inventing dates, and edits cannot publish an
+  update time earlier than document creation.
 - Every paginated viewer page derives its shown range from the listed rows and reports
   count failures without listing rows; the Heartbeats list no longer claims a row range it
   did not render when its listing fails.

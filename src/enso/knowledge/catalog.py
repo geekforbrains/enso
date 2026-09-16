@@ -7,7 +7,7 @@ import os
 import posixpath
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -77,7 +77,10 @@ def valid_timestamp(value: Any) -> str | None:
         return None
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         return None
-    return parsed.isoformat().replace("+00:00", "Z")
+    try:
+        return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    except OverflowError:
+        return None
 
 
 def metadata_problems(fields: dict[str, Any]) -> tuple[str, ...]:
@@ -155,7 +158,7 @@ def scan(paths: Paths) -> Catalog:
     problems: list[str] = []
     if not any(root.scope == "general" for root in roots):
         kind = "symbolic link" if Paths(paths.home.resolve()).knowledge.is_symlink() else "file"
-        problems.append(f"general knowledge root must be a directory, not a {kind}")
+        problems.append(f"general: knowledge root must be a directory, not a {kind}")
     for root in roots:
         root_assets: list[str] = []
         if not root.path.exists():
@@ -237,11 +240,22 @@ class Catalog:
             raise KnowledgeError("duplicate note id; repair the duplicate metadata first")
         return candidates[0] if candidates else None
 
+    def require_unique(self, note: Note) -> None:
+        """Refuse managed writes to an identity or path with more than one owner."""
+        if note.id:
+            self.by_id(note.id)
+        if len(self._paths[(note.scope, note.path.casefold())]) > 1:
+            raise KnowledgeError("note path is ambiguous")
+
     def get(self, ref: str, scope: str = "general") -> Note:
-        """Address a note by globally unique UUID or an exact path in a named scope."""
+        """Address a note by UUID or exact path within the selected scope."""
         if valid_id(ref):
             note = self.by_id(ref)
             if note:
+                if note.scope != scope:
+                    raise KnowledgeError(
+                        f"note belongs to {note.scope}; select that knowledge root explicitly"
+                    )
                 return note
         path = ref if ref.lower().endswith(".md") else f"{ref}.md"
         safe_path(self.root(scope), path)
@@ -325,7 +339,11 @@ class Catalog:
 
     def audit(self, scope: str | None = None) -> list[dict[str, str]]:
         """Collect metadata, identity, missing-target and missing-heading problems."""
-        problems = [{"scope": "", "path": "", "problem": p} for p in self.problems]
+        problems = [
+            {"scope": "", "path": "", "problem": p}
+            for p in self.problems
+            if not scope or p.startswith(f"{scope}:")
+        ]
         for note in self.notes:
             if scope and note.scope != scope:
                 continue
