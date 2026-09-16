@@ -30,3 +30,6 @@ uploads/
 /.agents/
 /.claude/
 /.codex/
+
+# Scratch planning file, never committed
+/PLAN.md
