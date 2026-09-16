@@ -21,9 +21,13 @@ Paths below show the default home; use `ENSO_HOME` instead of `~/.enso` when it 
 ├── .agents/skills -> ../skills
 └── workspaces/<name>/
     ├── AGENTS.md             # purpose, scope, terms, approval rules for this workspace
+    ├── WORKSPACE.md           # optional agent triple and provider arguments
     ├── CLAUDE.md -> AGENTS.md
     ├── skills/               # skills unique to this workspace
     ├── knowledge/            # durable reference owned by this workspace
+    ├── memory/               # prepared for workspace memory (forthcoming)
+    ├── jobs/                 # prepared for job relocation (forthcoming)
+    ├── projects/             # prepared for project relocation (forthcoming)
     ├── drafts/               # generated or editable output
     ├── uploads/              # chat attachments, one directory per turn
     ├── .claude/skills -> ../skills
@@ -51,19 +55,31 @@ enso config check                # validates bindings against existing directori
 
 ## Bind conversations and jobs
 
-Bindings live in `~/.enso/config.json`. Keys are `slack:C…` (a channel), `slack:dm:U…` or `slack:dm:W…` (a user's DM; `W…` is an Enterprise Grid org-wide user id), or `telegram:<user id>`; values are workspace names. A workspace may override the agent or a provider's permission flags:
+Bindings live in `~/.enso/config.json`. Keys are `slack:C…` (a channel), `slack:dm:U…` or `slack:dm:W…` (a user's DM; `W…` is an Enterprise Grid org-wide user id), or `telegram:<user id>`; values are workspace names. Workspace overrides live in the optional `WORKSPACE.md`, not in `config.json`:
 
 ```json
-{
-  "bindings": {"slack:C0BP5BQF6UF": "meteor"},
-  "workspaces": {
-    "meteor": {"agent": {"provider": "codex", "model": "sol", "effort": "xhigh"}},
-    "testing": {"providers": {"claude": {"args": ["--permission-mode", "dontAsk"]}}}
-  }
-}
+{ "bindings": {"slack:C0BP5BQF6UF": "meteor"} }
 ```
 
-An `agent` block needs all three keys. A job names its workspace in `JOB.md`. Bindings are read again for every message: `enso config set bindings.slack:C… <name>`, or an edit to the file, takes effect on the next message in that conversation, with no restart. Use `enso slack lookup-channel` for ids; never guess one.
+For example, `workspaces/meteor/WORKSPACE.md`:
+
+```yaml
+---
+agent:
+  provider: codex
+  model: sol
+  effort: xhigh
+providers:
+  claude:
+    args: ["--permission-mode", "dontAsk"]
+---
+```
+
+An `agent` block needs all three keys. Provider `args` replace the global list, including an empty list. Omitting the file inherits installation defaults. Edit it directly, preserving other settings and any explanatory Markdown; run `enso config check` afterward. Do not put credentials, executable paths, bindings, or a workspace-name field here. The format and validation belong to [Configuration](https://github.com/geekforbrains/enso/blob/develop/docs/configuration.md#workspacemd-in-020).
+
+A job currently names its workspace in `JOB.md`; job and project relocation remain forthcoming. Bindings and workspace settings are read fresh for each operation, with no restart. A queued turn keeps its arrival workspace; removing its binding drops it before provider startup. Use `enso slack lookup-channel` for ids; never guess one.
+
+The workspace scaffold keeps `skills/` and its provider links ready even when empty. `WORKSPACE.md` and the future workspace `heartbeat/` root are optional and are not created by scaffolding.
 
 ## Skills
 
@@ -81,4 +97,4 @@ the profile itself is private data under the home, not content to put in `skills
 
 Remove or repoint its bindings and jobs, repoint any projects that name it while preserving their tasks, and review all active and paused beats with `enso heartbeat list --workspace NAME` (page through results if needed). Use `enso-heartbeat` to move ongoing beats to another workspace or close them when the retirement request includes ending that work; pausing alone leaves the workspace reference in place. Keep the directory while any of that work still needs it.
 
-Let running turns, jobs, and beats finish before moving their files. Remove the retired workspace's entry under `workspaces` in configuration, if present, once its dependents have moved. Confirm with `enso config check`, then archive the directory or delete it with the user's authorization, and check configuration again. These changes need no Enso restart. See [Workspaces](https://github.com/geekforbrains/enso/blob/main/docs/workspaces.md#creating-and-retiring) for the lifecycle.
+Let running turns, jobs, and beats finish before moving their files. Overrides live in its `WORKSPACE.md`; there is no workspace override entry in `config.json` to remove. Confirm with `enso config check`, then archive the directory or delete it with the user's authorization, and check configuration again. These changes need no Enso restart. See [Workspaces](https://github.com/geekforbrains/enso/blob/main/docs/workspaces.md#creating-and-retiring) for the lifecycle.

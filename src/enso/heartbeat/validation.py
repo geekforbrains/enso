@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from ..config import Agent, Config, Paths, valid_workspace_name
+from ..config import Agent, Config, Paths, require_workspace
 from ..providers import PROVIDER_CLASSES
 from ..scheduling import next_cron, schedule_problem
 from .models import Beat, Definition, HeartbeatError
@@ -186,10 +186,11 @@ def validate_definition(raw: object, config: Config, *, at_consumed: bool = Fals
         if value is not None:
             result[key] = value
     workspace = result.get("workspace")
-    if workspace and (
-        not valid_workspace_name(workspace) or not config.paths.workspace(workspace).is_dir()
-    ):
-        problems.append(f"workspace directory {config.paths.workspace(workspace)} is missing")
+    if workspace:
+        try:
+            require_workspace(config.paths, workspace)
+        except ValueError as exc:
+            problems.append(str(exc))
     result["agent"] = _agent(data, config, problems)
     result.update(_timing(data, problems))
     if (

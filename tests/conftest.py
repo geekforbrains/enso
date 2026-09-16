@@ -12,6 +12,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from pathlib import Path
 
 import pytest
+import yaml
 
 from enso import db
 from enso.config import Config, Paths, parse_config
@@ -31,7 +32,6 @@ VALID_CONFIG: dict = {
     },
     "bindings": {"slack:dm:U1": "default", "slack:C1": "default"},
     "defaults": {"provider": "claude", "model": "opus", "effort": "xhigh"},
-    "workspaces": {},
     "providers": {
         # haiku is absent from Claude's cap table, so it tops out at high
         "claude": {
@@ -240,6 +240,13 @@ def config_both(enso_home: Paths, raw_config_both: dict):
     config, problems, _ = parse_config(raw_config_both, enso_home)
     assert config is not None, problems
     return config
+
+
+def write_workspace(paths: Paths, name: str, fields: dict) -> Path:
+    """Write settings in an existing scratch workspace through the real Markdown format."""
+    path = paths.workspace_settings(name)
+    path.write_text("---\n" + yaml.safe_dump(fields, sort_keys=False) + "---\n", "utf-8")
+    return path
 
 
 def write_config(paths: Paths, raw: dict) -> None:

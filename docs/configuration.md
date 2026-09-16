@@ -4,14 +4,15 @@ Enso's configuration and normal runtime state live under one home directory, `~/
 unless `ENSO_HOME` is set. See [Concepts](concepts.md#home) for the layout and the
 integration-specific user-level state Enso may inspect or create.
 
-`enso config check` validates the file and lists every problem at once; `enso serve`
-refuses to start on a problem. `enso config show` prints it with tokens redacted.
+`enso config check` validates installation and workspace settings and lists every problem
+at once; `enso serve` refuses to start on a problem. `enso config show` prints `config.json`
+with tokens redacted.
 
 ## Configuration ownership in 0.2.0
 
-**Forthcoming in 0.2.0.** `config.json` contains installation settings only: transport
-connections, bindings, default agent, global providers, and service/runtime options.
-Workspace and project definitions move out of this credential-bearing file.
+**Partly implemented on the 0.2.0 development branch.** Workspace settings now live in
+`WORKSPACE.md`; `config.json` retains installation settings and, temporarily, project
+definitions. Project and job relocation remain forthcoming.
 
 | Setting | Owning file in 0.2.0 |
 | --- | --- |
@@ -22,9 +23,10 @@ Workspace and project definitions move out of this credential-bearing file.
 
 For example, `workspaces/team/WORKSPACE.md` holds `team`'s agent override, while
 `"bindings": { "slack:C0123": "team" }` stays in `config.json`. The `workspaces` and `projects`
-blocks are removed from config. `WORKSPACE.md` is optional: without it the workspace uses
-the installation defaults. Its settings are read fresh like bindings. The exact forthcoming
-formats are [WORKSPACE.md](#workspacemd-in-020) and [PROJECT.md](#projectmd-in-020) below.
+blocks are removed from config in 0.2.0; `workspaces` is already rejected. `WORKSPACE.md` is
+optional: without it the workspace uses the installation defaults. Its settings are read
+fresh like bindings. The formats are [WORKSPACE.md](#workspacemd-in-020) and
+[PROJECT.md](#projectmd-in-020) below.
 The [workspace layout](workspaces.md#ownership-in-020) owns paths, project scripts, qualified
 `<workspace>:<job>` references, and installation-wide concurrency groups.
 
@@ -34,19 +36,21 @@ a binding, the canned unbound notice, and trusted pairing. Missing bound workspa
 errors, with no fallback. [Workspace context](workspaces.md#context-selection-in-020) owns
 CLI selection through `ENSO_WORKSPACE` and optional `--workspace`.
 
-**Implemented on the 0.2.0 development branch:** the config schema is `version: 2`, and
-Enso's workspace restriction mode is removed. See
-[Provider permissions](#provider-permissions-and-installation-trust) for the launch and trust contract. Version 1 is refused without parsing its fields, using
+**Implemented on the 0.2.0 development branch:** the config schema is `version: 2`, Enso's
+workspace restriction mode is removed, and workspace settings load from `WORKSPACE.md`.
+[Provider permissions](#provider-permissions-and-installation-trust) owns the launch and
+trust contract. Version 1 is refused without parsing its fields, using
 one message: "This Enso home predates 0.2.0; see the migration guide:" followed by the
 [guide's repository URL](migration.md). Existing homes require deliberate manual conversion;
 changing the version number alone is not a migration.
 
-Workspace/project relocation and binding-only Telegram access above remain forthcoming.
+Project/job relocation and binding-only Telegram access above remain forthcoming.
 The examples below describe the currently implemented schema until those tasks land.
 
 ### WORKSPACE.md in 0.2.0
 
-**Forthcoming in 0.2.0.** The optional file contains YAML frontmatter with only these fields:
+**Implemented on the 0.2.0 development branch.** The optional file contains YAML
+frontmatter with only these fields:
 
 | Field | Contract |
 | --- | --- |
@@ -77,7 +81,16 @@ providers:
 This changes `team`'s chat agent and its Claude arguments. Jobs retain their own saved
 agent triple, while workspace provider-argument overrides apply to chat, jobs, and
 Heartbeat. A missing file or an empty frontmatter mapping supplies no overrides; malformed
-settings are reported with the file path, never silently treated as an absent file.
+settings are reported with the file path, never silently treated as an absent file. An
+empty mapping is written as `---`, `{}`, `---` on three lines; an empty document or a
+frontmatter block without a mapping is invalid. Duplicate keys and non-text keys are
+rejected using the shared Markdown frontmatter rules. Workspace directories and this file
+must be real directories/files, not symbolic links; setup and audit preserve conflicting
+paths.
+
+Edit this file directly, preserving unrelated settings and explanatory Markdown.
+`enso config set` and `unset` edit only `config.json`; they do not edit `WORKSPACE.md`.
+Configuration checks read settings from every discovered workspace, including unbound ones.
 
 ### PROJECT.md in 0.2.0
 
@@ -149,10 +162,10 @@ in an update's snapshot.
 
 `enso config set PATH VALUE` stores one value in the current `config.json` and
 `enso config unset PATH` removes one key. `PATH` is dotted: each segment is an object key,
-so a workspace, provider, binding, or project name is just a segment, and `set` creates
+so a provider, binding, or project name is just a segment, and `set` creates
 the objects on the way when they are missing. `VALUE` is JSON; text that is not valid JSON
 is stored as a string, so `enso config set defaults.model opus` and
-`enso config set workspaces.meteor.providers.claude.args '[]'` both do what they look like. Quote a
+`enso config set providers.claude.args '[]'` both do what they look like. Quote a
 string that would parse as JSON, such as `'"123"'`, to keep it a string, and put `--`
 before a value that starts with `-`, after any options. Removing a key that is not set is
 a problem. The patched document takes exactly the path apply does — the same lock,
@@ -163,10 +176,12 @@ path. Neither command prints the document or a value.
 
 ### While the service runs
 
-`enso serve` reads `config.json` again before each chat turn, before each job scheduler
-tick, and whenever a transport or chat command resolves a binding, so `bindings`,
-`defaults`, `workspaces`, `providers`, `projects`, `agent`, `runs`, and `heartbeat` take
-effect on the next turn or tick without a restart, however the file was written. A turn or
+`enso serve` checks `config.json` and workspace settings before each chat turn, each job
+scheduler tick, and whenever a transport or chat command resolves a binding. Files are
+parsed again when they change, including creation, replacement, or removal of
+`WORKSPACE.md`. Thus `bindings`, `defaults`, `providers`, `projects`, `agent`, `runs`,
+`heartbeat`, and workspace overrides take effect on the next turn or tick without a
+restart, however the file was written. A turn or
 job run keeps the snapshot it started with; a queued message runs in the workspace it was
 bound to when it arrived, and is dropped with a notice if that binding is removed before it
 runs. `transports` and `logging` are read when `enso serve` starts, so a change there needs
@@ -178,8 +193,9 @@ is false on a fresh home and whenever nothing was applied. A provider whose dire
 to the service unit also needs `enso service install`; see
 [The service](install.md#the-service).
 
-A file that fails validation when it is read is logged once per revision, and chat turns
-and jobs keep the last valid configuration until the file is valid again.
+An invalid installation or workspace file is logged once per observed revision, and chat
+turns and jobs keep the last valid combined snapshot until all settings are valid again.
+Removing `WORKSPACE.md` is valid and restores inheritance on the next snapshot.
 [Heartbeat](heartbeat.md) is stricter: it stops admitting assessments and cancels running
 ones while the file is invalid.
 
@@ -224,10 +240,6 @@ which accepts strict JSON.
     "telegram:123456":      "default"
   },
   "defaults": { "provider": "claude", "model": "opus", "effort": "xhigh" },
-  "workspaces": {                           // optional overrides only
-    "meteor":  { "agent": { "provider": "codex", "model": "sol", "effort": "xhigh" } },
-    "testing": { "providers": { "claude": { "args": ["--permission-mode", "dontAsk"] } } }
-  },
   "providers": {
     "claude": { "path": "/Users/x/.local/bin/claude", "models": ["opus", "sonnet", "haiku"],
                 "args": ["--dangerously-skip-permissions"] },
@@ -299,15 +311,15 @@ its own triple in `JOB.md`; changing chat defaults or a workspace's `agent` does
 an existing job. Command and integration stages omit the triple because they do not invoke
 a provider.
 
-A workspace may replace the whole triple with an `agent` block (also all three keys), or
-replace one provider's flags with `providers.<name>.args`. Providers with an ordered
+A workspace may replace the whole triple in `WORKSPACE.md` with an `agent` block
+(also all three keys), or replace one provider's flags with `providers.<name>.args`. Providers with an ordered
 reasoning ladder clamp effort down to the model's maximum, with a log line. Antigravity and
 OpenCode have the different semantics described below.
 
 Provider-argument overrides apply to chat turns, jobs, and heartbeat assessments; they
 replace the global argument list rather than appending to it.
 
-Only workspaces with overrides need an entry in `workspaces`. The directory
+Only workspaces with overrides need a `WORKSPACE.md`. The directory
 `~/.enso/workspaces/<name>` must exist for every binding and job that names it;
 `enso workspace create NAME` scaffolds it. See [Workspaces](workspaces.md).
 
@@ -318,9 +330,9 @@ organize context and ownership; they do not isolate agents, credentials, or file
 other workspaces. Teams needing separation run separate installations on separate machines
 or VPSs. [Concepts](concepts.md#installation-trust-model) owns this trust model.
 
-Enso has no workspace restriction mode. `workspaces.<name>.restricted` is rejected as an
-unknown key, including when its value is `false`. Chat, jobs, and Heartbeat start their
-provider in the workspace directory with the configured arguments. An override replaces
+Enso has no workspace restriction mode. `restricted` is rejected in `WORKSPACE.md`,
+including when its value is `false`; the old `workspaces` config block is also rejected.
+Chat, jobs, and Heartbeat start their provider in the workspace directory with the configured arguments. An override replaces
 the global list, including an explicit empty list; removing the old mode does not change
 setup's provider defaults or insert bypass flags into existing argument lists.
 

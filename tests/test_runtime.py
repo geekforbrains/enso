@@ -11,7 +11,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from conftest import FakeReply, chat_prompt, make_turn, script, write_config
+from conftest import FakeReply, chat_prompt, make_turn, script, write_config, write_workspace
 
 from enso import db
 from enso.config import Config, LiveConfig, Paths, parse_config
@@ -502,10 +502,9 @@ async def test_config_edits_apply_to_the_next_turn_without_a_restart(
     await runtime.handle(make_turn("again"), rebound)
     assert rebound.sent[0].startswith("new ") and "workspace=other" in rebound.sent[0]
 
-    raw["workspaces"] = {
-        "other": {"agent": {"provider": "claude", "model": "sonnet", "effort": "high"}}
-    }
-    write_config(enso_home, raw)
+    write_workspace(
+        enso_home, "other", {"agent": {"provider": "claude", "model": "sonnet", "effort": "high"}}
+    )
     changed = FakeReply()
     await runtime.handle(make_turn("again"), changed)
     assert changed.sent[0].startswith("resumed ") and "workspace=other" in changed.sent[0]
@@ -573,6 +572,35 @@ async def test_a_turn_runs_in_the_workspace_it_was_bound_to_when_it_arrived(
     turn = replace(make_turn("read it"), workspace="default", files=[upload])
     await runtime.handle(turn, reply)
     assert "workspace=default" in reply.sent[0] and upload in reply.sent[0]
+
+
+async def test_queued_turn_keeps_resolved_workspace_and_loads_its_current_settings(
+    runtime,
+    enso_home,
+    monkeypatch,
+):
+    entered, release = asyncio.Event(), asyncio.Event()
+    observed = []
+
+    async def execute(conversation, workspace, turn, reply, running):
+        if turn.text == "first":
+            entered.set()
+            await release.wait()
+        observed.append((workspace, running.config.provider_args(workspace, "claude")))
+
+    monkeypatch.setattr(runtime, "_turn", execute)
+    before = runtime.config.provider_args("default", "claude")
+    drain = await runtime.submit(make_turn("first"), FakeReply())
+    await asyncio.wait_for(entered.wait(), 5)
+    assert await runtime.submit(make_turn("second"), FakeReply()) is None
+    enso_home.workspace("other").mkdir()
+    raw = copy.deepcopy(runtime.config.raw)
+    raw["bindings"]["slack:dm:U1"] = "other"
+    write_config(enso_home, raw)
+    write_workspace(enso_home, "default", {"providers": {"claude": {"args": []}}})
+    release.set()
+    await asyncio.wait_for(drain, 5)
+    assert observed == [("default", before), ("default", ())]
 
 
 async def test_a_turn_is_dropped_when_its_workspace_is_unbound_or_gone(
@@ -1157,14 +1185,13 @@ async def test_opencode_keeps_the_session_an_early_error_announced(
 async def test_chat_preserves_provider_arguments_without_policy_prerequisites(
     fake_config, enso_home, tmp_path, monkeypatch, args
 ):
-    from enso.config import WorkspaceConfig
-
     launch_log = tmp_path / "launches.jsonl"
     monkeypatch.setenv("FAKE_CLAUDE_LAUNCHES", str(launch_log))
-    overrides = {} if args is None else {"claude": args}
-    runtime = Runtime(
-        replace(fake_config, workspaces={"default": WorkspaceConfig(provider_args=overrides)})
-    )
+    if args is not None:
+        write_workspace(enso_home, "default", {"providers": {"claude": {"args": list(args)}}})
+    config, problems, _ = parse_config(fake_config.raw, enso_home)
+    assert config is not None, problems
+    runtime = Runtime(config)
     reply = FakeReply()
     await runtime.handle(make_turn("hello"), reply)
     assert reply.sent[0].startswith("new ")

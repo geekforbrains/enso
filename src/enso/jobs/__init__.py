@@ -15,7 +15,7 @@ from pathlib import Path
 import yaml
 
 from .. import frontmatter
-from ..config import Config, Paths, valid_workspace_name
+from ..config import Config, Paths, require_workspace
 from ..providers import PROVIDER_CLASSES
 from ..scheduling import CRON_FIELDS as CRON_FIELDS
 from ..scheduling import next_cron
@@ -279,9 +279,10 @@ def _config_problems(fields: Mapping[str, object], config: Config) -> list[str]:
     problems += _stage_problems(fields, config)
     workspace = _usable(fields, "workspace")
     if workspace is not None:
-        workspace_dir = config.paths.workspace(workspace)
-        if not valid_workspace_name(workspace) or not workspace_dir.is_dir():
-            problems.append(f"workspace directory {workspace_dir} is missing")
+        try:
+            require_workspace(config.paths, workspace)
+        except ValueError as exc:
+            problems.append(str(exc))
     notify = _usable(fields, "notify")
     if notify is not None:
         try:

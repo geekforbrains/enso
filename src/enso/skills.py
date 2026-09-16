@@ -122,7 +122,7 @@ def resolve(
         raise ValueError("workspace names are lowercase kebab-case (letters, digits, hyphens)")
     found: list[Skill] = []
     if workspace is not None:
-        found.extend(_scan(paths.workspace(workspace) / "skills", "workspace"))
+        found.extend(_scan(paths.workspace_skills(workspace), "workspace"))
     found.extend(_scan(paths.skills, "enso"))
     found.extend(_user_skills(user_skill_dirs() if user_dirs is None else user_dirs))
     return _mark_collisions(found)

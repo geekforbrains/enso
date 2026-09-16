@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 
 import pytest
-from conftest import write_config
+from conftest import write_config, write_workspace
 from typer.testing import CliRunner
 
 from enso.cli import app
@@ -97,10 +97,6 @@ def _set(raw: dict, value: object, *path: str) -> dict:
         ),
         (lambda r: _set(r, "nope", "defaults", "model"), "defaults.model 'nope' is not in"),
         (lambda r: _set(r, "ultra", "defaults", "effort"), "defaults.effort must be one of"),
-        (
-            lambda r: _set(r, {"provider": "claude"}, "workspaces", "default", "agent"),
-            "workspaces.default.agent.model is required",
-        ),
         (lambda r: _set(r, "nope", "bindings", "slack:C2"), "workspace directory"),
         (lambda r: _set(r, "default", "bindings", "slack:U1"), "bindings.slack:U1: keys look like"),
         # Telegram is private chats only, so a group id (negative) is not a binding.
@@ -124,7 +120,6 @@ def _set(raw: dict, value: object, *path: str) -> dict:
             "transports.telegram.notify must be a positive numeric Telegram user id",
         ),
         (lambda r: _set(r, "Bad Name", "bindings", "slack:C2"), "lowercase kebab-case"),
-        (lambda r: _set(r, {}, "workspaces", "Bad_Name"), "lowercase kebab-case"),
         (
             lambda r: _without(r, "transports", "slack", "app_token"),
             "transports.slack.app_token is required",
@@ -152,10 +147,6 @@ def _set(raw: dict, value: object, *path: str) -> dict:
         ),
         (lambda r: _set(r, -1, "agent", "timeout"), "agent.timeout must be a non-negative integer"),
         (lambda r: _set(r, "LOUD", "logging", "level"), "logging.level must be one of"),
-        (
-            lambda r: _set(r, {"args": []}, "workspaces", "default", "providers", "agy"),
-            "workspaces.default.providers.agy: provider is not configured",
-        ),
     ],
 )
 def test_invalid_configs_are_rejected(enso_home: Paths, raw_config: dict, mutate, fragment) -> None:
@@ -176,15 +167,6 @@ def test_invalid_configs_are_rejected(enso_home: Paths, raw_config: dict, mutate
         ),
         (lambda r: _set(r, [], "providers", "claude", "arg"), "providers.claude.arg"),
         (lambda r: _set(r, "high", "defaults", "reasoning"), "defaults.reasoning"),
-        (lambda r: _set(r, {}, "workspaces", "meteor", "agents"), "workspaces.meteor.agents"),
-        (
-            lambda r: _set(r, "opus", "workspaces", "meteor", "agent", "tools"),
-            "workspaces.meteor.agent.tools",
-        ),
-        (
-            lambda r: _set(r, [], "workspaces", "meteor", "providers", "claude", "flags"),
-            "workspaces.meteor.providers.claude.flags",
-        ),
         (lambda r: _set(r, 60, "agent", "timeouts"), "agent.timeouts"),
         (lambda r: _set(r, 1, "logging", "max_byte"), "logging.max_byte"),
         (lambda r: _set(r, 1, "runs", "keeps"), "runs.keeps"),
@@ -224,11 +206,6 @@ def test_every_unknown_key_is_reported_once_in_parse_order(
         (lambda r: _set(r, "INFO", "logging"), "logging must be an object"),
         (lambda r: _set(r, ["slack"], "transports"), "transports must be an object"),
         (lambda r: _set(r, "claude", "providers", "claude"), "providers.claude must be an object"),
-        (lambda r: _set(r, "codex", "workspaces", "meteor"), "workspaces.meteor must be an object"),
-        (
-            lambda r: _set(r, "--skip", "workspaces", "meteor", "providers", "claude"),
-            "workspaces.meteor.providers.claude.args must be a list of strings",
-        ),
     ],
 )
 def test_a_malformed_subtree_reports_its_type_and_is_not_inspected(
@@ -260,10 +237,14 @@ def test_dynamic_names_are_data_rather_than_schema_keys(enso_home: Paths, raw_co
     """Binding keys, workspace names, and provider names are the user's to choose."""
     (enso_home.workspaces / "meteor").mkdir()
     raw_config["bindings"]["slack:dm:W1"] = "meteor"
-    raw_config["workspaces"]["meteor"] = {
-        "agent": {"provider": "codex", "model": "sol", "effort": "xhigh"},
-        "providers": {"claude": {"args": ["--settings", "x.json"]}},
-    }
+    write_workspace(
+        enso_home,
+        "meteor",
+        {
+            "agent": {"provider": "codex", "model": "sol", "effort": "xhigh"},
+            "providers": {"claude": {"args": ["--settings", "x.json"]}},
+        },
+    )
 
     config, problems, _ = parse_config(raw_config, enso_home)
 
@@ -313,10 +294,14 @@ def test_the_documented_example_uses_only_recognized_keys(enso_home: Paths) -> N
 
 def test_valid_config_parses_with_defaults(enso_home: Paths, raw_config: dict) -> None:
     (enso_home.workspaces / "meteor").mkdir()
-    raw_config["workspaces"]["meteor"] = {
-        "agent": {"provider": "codex", "model": "sol", "effort": "ultra"},
-        "providers": {"claude": {"args": ["--settings", "x.json"]}},
-    }
+    write_workspace(
+        enso_home,
+        "meteor",
+        {
+            "agent": {"provider": "codex", "model": "sol", "effort": "ultra"},
+            "providers": {"claude": {"args": ["--settings", "x.json"]}},
+        },
+    )
     raw_config["bindings"]["slack:C2"] = "meteor"
     raw_config["transports"]["telegram"] = {
         "bot_token": "1:abc",
@@ -474,13 +459,13 @@ def test_default_notify(enso_home: Paths, raw_config_both: dict) -> None:
     assert config is not None and config.default_notify() is None
 
 
-@pytest.mark.parametrize("value", [True, False, "yes"])
-def test_removed_workspace_restriction_is_rejected(enso_home, raw_config, value):
-    raw_config["workspaces"]["default"] = {"restricted": value}
+@pytest.mark.parametrize("value", [{}, {"default": {"restricted": False}}, None])
+def test_removed_workspaces_block_is_rejected(enso_home, raw_config, value):
+    raw_config["workspaces"] = value
     config, problems, _ = parse_config(raw_config, enso_home)
     assert config is None
     assert len(problems) == 1
-    assert "workspaces.default.restricted is not a recognized key" in problems[0]
+    assert "workspaces is not a recognized key" in problems[0]
 
 
 @pytest.mark.parametrize(

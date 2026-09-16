@@ -26,7 +26,7 @@ from .. import (
     workspaces,
 )
 from .. import log as logsetup
-from ..config import Config, ConfigError, Paths, check_config, load_config
+from ..config import Config, ConfigError, Paths, check_config, load_config, valid_workspace_name
 from ..connection_setup import PairingError, service_receiver
 from ..heartbeat.runner import HeartbeatRunner
 from ..jobs.runner import JobRunner
@@ -426,7 +426,7 @@ def _config_value(text: str) -> object:
 @config_app.command("set")
 def config_set(
     path: str = typer.Argument(
-        ..., help="Dotted keys, such as defaults.model or workspaces.NAME.providers.claude.args."
+        ..., help="Dotted installation keys, such as defaults.model or providers.claude.args."
     ),
     value: str = typer.Argument(..., help="JSON, or plain text when it is not valid JSON."),
     expected_hash: str | None = EXPECTED_HASH,
@@ -670,7 +670,7 @@ def workspace_audit(
 ) -> None:
     """Check the home and the workspaces against the documented layout; exit 1 on errors."""
     paths = Paths.from_env()
-    if name is not None and not paths.workspace(name).is_dir():
+    if name is not None and (not valid_workspace_name(name) or not paths.workspace(name).is_dir()):
         fail([f"no workspace named {name}"], as_json=as_json)
     config, _, _ = check_config(paths)
     report = audit.audit(paths, [name] if name is not None else None, fix=fix, config=config)
@@ -678,7 +678,7 @@ def workspace_audit(
         echo_json(report.as_dict())
     else:
         if config is None:
-            typer.echo("config.json is unusable, so bindings were not checked", err=True)
+            typer.echo("configuration is unusable, so bindings were not checked", err=True)
         for line in audit_lines(report, fix=fix):
             typer.echo(line)
     if not report.ok:
@@ -687,11 +687,11 @@ def workspace_audit(
 
 @workspace_app.command("create")
 def workspace_create(name: str) -> None:
-    """Scaffold NAME: AGENTS.md, skills/, knowledge/, drafts/, uploads/, and the links."""
+    """Scaffold NAME with instructions, content directories, and provider discovery links."""
     paths = Paths.from_env()
     try:
         root = workspaces.create_workspace(paths, name)
-    except (ValueError, FileExistsError) as exc:
+    except (ValueError, OSError) as exc:
         fail([str(exc)])
     typer.echo(f"created {root}")
     typer.echo(f'bind a conversation to it in {paths.config}: "bindings": {{"slack:C…": "{name}"}}')

@@ -11,7 +11,7 @@ import threading
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from conftest import FakeTransport
+from conftest import FakeTransport, write_workspace
 
 from enso import db, execution, heartbeat
 from enso.config import save_config
@@ -653,9 +653,7 @@ async def test_assessments_preserve_provider_arguments_without_policy_prerequisi
 ):
     config, clock = runtime
     beat = make_beat(config, gate="echo 'refund pending'\n")
-    raw = json.loads(json.dumps(config.raw))
-    raw["workspaces"] = {"default": {"providers": {"claude": {"args": args}}}}
-    save_config(config.paths, raw)
+    write_workspace(config.paths, "default", {"providers": {"claude": {"args": args}}})
     calls = []
 
     async def assess(provider, prompt, model, effort, actual_args, **kwargs):

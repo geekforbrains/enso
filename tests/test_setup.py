@@ -144,7 +144,7 @@ def test_ensure_layout_creates_and_repoints_but_never_removes(enso_home: Paths) 
     done = workspaces.ensure_layout(root)
 
     verbs = [line.split(" ", 1)[0] for line in done]
-    assert verbs == ["created", "created", "created", "linked", "repointed"]
+    assert verbs == ["created"] * 6 + ["linked", "repointed"]
     assert all((root / name).is_dir() for name in workspaces.WORKSPACE_DIRS)
     assert (root / "drafts" / "post.md").read_text() == "keep me"
     assert os.readlink(root / "CLAUDE.md") == "AGENTS.md"

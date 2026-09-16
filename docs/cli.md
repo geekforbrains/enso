@@ -155,6 +155,8 @@ The offline commands in this section work without an active config or transport 
 `1`, independent of the package version and the `config.json` schema version, now `2`.
 Version-1 configuration files receive the [migration notice](configuration.md#configuration-ownership-in-020).
 `ENSO_WORKSPACE` does not restrict config edits; validation and write-conflict checks still apply.
+These commands edit only `config.json`. Workspace overrides are edited directly in
+[`WORKSPACE.md`](configuration.md#workspacemd-in-020) and checked by `enso config check`.
 
 | Command | Report fields |
 | --- | --- |
@@ -281,8 +283,9 @@ it never deletes. The command exits 1 while any error remains; warnings alone ex
 
 ### Workspace context in 0.2.0
 
-**Forthcoming in 0.2.0.** Workspace-scoped commands use `ENSO_WORKSPACE`, inherited from the
-Enso chat agent, job, or Heartbeat run calling them. Optional `--workspace` overrides it
+**Forthcoming command behavior in 0.2.0.** The shared resolver is implemented; individual
+command adoption remains forthcoming. Workspace-scoped commands use `ENSO_WORKSPACE`,
+inherited from the Enso chat agent, job, or Heartbeat run calling them. Optional `--workspace` overrides it
 for that operation. The [context contract](workspaces.md#context-selection-in-020) owns
 validation and recorded ownership; there is no directory inference or implicit `default`.
 Installation-wide commands retain their installation scope.

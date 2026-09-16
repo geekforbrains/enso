@@ -7,6 +7,11 @@ All notable changes to Enso are documented here, following
 
 ### Changed
 
+- Workspace agent and provider-argument overrides now live in optional `WORKSPACE.md`
+  files, reloaded alongside installation settings; the old `workspaces` config block is
+  rejected. Workspace scaffolding adds memory, job, and project directories while retaining
+  provider discovery, and queued turns keep their selected workspace through rebinding.
+
 - Configuration now requires schema version 2; version-1 files are refused with a link to
   the migration guide. Enso's workspace restriction mode, provider prerequisite gates,
   policy audit findings, and mode-dependent config-write guards are removed. Provider
