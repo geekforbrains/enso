@@ -35,7 +35,8 @@ Product behaviour belongs in its owning page under `docs/`, starting with
   `Reply.deliver` checkpoints every final send and fallback through the writer; transports
   identify definite rejections separately from unknown network outcomes.
 - `src/enso/memory.py` — workspace-only dated Markdown, occurrence/placement validation,
-  source metadata, relative links, and manual corrections; capture/harvesting remain separate.
+  source metadata, relative links, and manual corrections. `harvesting.py` owns bounded
+  capture selection, generated-result validation, publication, and receipt reconciliation.
 - `src/enso/knowledge/` — Markdown discovery, core metadata, link resolution, and note writes.
   The CLI and read-only knowledge viewer share this model;
   user-editable writing style belongs to the bundled `enso-knowledge` skill.

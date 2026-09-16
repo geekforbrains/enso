@@ -2,17 +2,86 @@
 
 from __future__ import annotations
 
+import json
+import sqlite3
+from dataclasses import asdict
 from typing import Any
 
 import typer
 
-from .. import memory
+from .. import captures, db, harvesting, memory
 from ..config import Paths, resolve_workspace
 from ..knowledge.catalog import Note
 from ..note_storage import MAX_NOTE_BYTES, NoteError
 from .common import JSON_FLAG, WORKSPACE, InputError, columns, echo_json, fail, read_input
 
 memory_app = typer.Typer(no_args_is_help=True, help="Find and maintain dated workspace memory.")
+
+_HARVEST_ERRORS = (
+    OSError,
+    ValueError,
+    NoteError,
+    db.MissingDatabaseError,
+    db.UnreadableDatabaseError,
+    db.UnsupportedDatabaseError,
+    sqlite3.Error,
+)
+
+
+@memory_app.command("batch")
+def batch(workspace: str | None = WORKSPACE, ready: bool = typer.Option(False, "--ready")) -> None:
+    """Recover pending publication and emit one JSON batch; --ready exits 1 when quiet."""
+    try:
+        paths = Paths.from_env()
+        selected = resolve_workspace(paths, workspace)
+        result = harvesting.batch(paths, selected)
+    except _HARVEST_ERRORS as exc:
+        # A prerun's exit 1 means no work, so failures must remain distinguishable.
+        echo_json({"ok": False, "error": str(exc)})
+        raise typer.Exit(2) from None
+    if ready and not result.sources:
+        raise typer.Exit(1)
+    echo_json(result.as_dict())
+
+
+@memory_app.command("publish")
+def publish(
+    file: str = typer.Option(..., "--file", help="Harvest result JSON, or - for stdin."),
+    workspace: str | None = WORKSPACE,
+) -> None:
+    """Validate and publish one batch result, retaining its receipt for crash recovery."""
+    try:
+        paths = Paths.from_env()
+        selected = resolve_workspace(paths, workspace)
+        value = json.loads(read_input(file))
+        receipt = harvesting.publish(paths, selected, value)
+    except (*_HARVEST_ERRORS, InputError) as exc:
+        fail([str(exc)], as_json=True)
+    echo_json(
+        {
+            "ok": True,
+            "receipt": receipt.id,
+            "sources": receipt.sources,
+            "notes": [{"id": o["id"], "path": o["path"]} for o in receipt.outputs],
+        }
+    )
+
+
+@memory_app.command("source")
+def source(
+    capture_id: int = typer.Argument(..., min=1),
+    workspace: str | None = WORKSPACE,
+) -> None:
+    """Read one original capture and its known outcomes as JSON in the selected workspace."""
+    try:
+        paths = Paths.from_env()
+        selected = resolve_workspace(paths, workspace)
+        capture = captures.get(paths, selected, capture_id)
+        if capture is None:
+            raise NoteError("capture does not exist in this workspace")
+    except _HARVEST_ERRORS as exc:
+        fail([str(exc)], as_json=True)
+    echo_json({**asdict(capture), "text": capture.source_text})
 
 
 def _summary(note: Note) -> dict[str, Any]:
