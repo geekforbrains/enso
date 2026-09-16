@@ -49,6 +49,9 @@ time; the Markdown files remain authoritative and no database migration is neede
 
 ## The note format
 
+The following metadata contract is retained unchanged for 0.2.0. Knowledge continues to
+use `enso.note/v1`; the separate [memory schema](memory.md#the-note-format) does not replace it.
+
 Every managed note begins with YAML frontmatter:
 
 ```markdown
@@ -75,6 +78,11 @@ Timestamps use ISO 8601 with a timezone; Enso writes UTC ending in `Z`. An impor
 filesystem timestamp does not prove when its contents were created or updated, so unknown
 dates stay absent. `updated` cannot precede `created`. A move that does not change the body
 does not change its update time.
+
+For example, an imported reference with no known dates has only
+`schema: enso.note/v1` and its preserved or newly assigned `id`. Neither the import date
+nor the source file's modification time becomes `created` or `updated`. A later substantive
+CLI edit sets `updated` to that edit's time while leaving an unknown `created` absent.
 
 These are the only frontmatter fields. There are no types, tags, aliases, summaries, or custom
 property namespaces in v1. Titles come from filenames, with `.md` removed; paths supply folder

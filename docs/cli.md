@@ -348,8 +348,33 @@ contents, and existing destinations.
 **Forthcoming in 0.2.0.** The memory CLI and `enso-memory` skill let agents find and maintain
 dated workspace history when a user asks about past conversations or experiences. Start in
 the [selected workspace](#workspace-context-in-020). [Memory](memory.md) owns capture,
-recall, retention, and explicit note removal; its command syntax will be documented when
-specified and implemented. Resetting a provider session does not remove memory or captures.
+the note schema, recall, and retention. Read/list/search, create/update, and validation
+commands land with the memory implementation; their complete signatures will be documented
+then. Updates require `--expected-hash` from the last read, following the
+[editing contract](memory.md#editing-imports-and-links). Resetting a provider session does
+not remove memory or captures.
+
+The agreed removal command is also **forthcoming**, not executable in 0.1.x:
+
+```text
+enso memory remove REF [--workspace NAME] [--yes]
+```
+
+`REF` is one UUID or an exact `.md` path relative to the selected workspace's memory root.
+`ENSO_WORKSPACE` supplies context unless `--workspace` overrides it; absent context or
+ambiguous identity errors. With no `--yes`, the command previews the selected note and
+deletes nothing. With `--yes`, it reports the exact note before deleting it. There is no
+bulk removal, wildcard selection, or capture deletion.
+
+```bash
+enso memory remove 2026/09/16/launch-date-proposal.md --workspace team
+enso memory remove 2026/09/16/launch-date-proposal.md --workspace team --yes
+```
+
+Inspect the first command's preview before issuing the second. Source captures and their
+processing state remain intact, so a subsequent ordinary sweep does not recreate the note
+from already-processed inputs. [Retention and removal](memory.md#retention-and-removal)
+owns the effects on later memories, knowledge, backups, and history.
 
 ## Skills
 

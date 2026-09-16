@@ -23,8 +23,8 @@ Workspace and project definitions move out of this credential-bearing file.
 For example, `workspaces/team/WORKSPACE.md` holds `team`'s agent override, while
 `"bindings": { "slack:C0123": "team" }` stays in `config.json`. The `workspaces` and `projects`
 blocks are removed from config. `WORKSPACE.md` is optional: without it the workspace uses
-the installation defaults. Its settings are read fresh like bindings. Exact workspace and
-project frontmatter formats will be documented before their loaders are implemented.
+the installation defaults. Its settings are read fresh like bindings. The exact forthcoming
+formats are [WORKSPACE.md](#workspacemd-in-020) and [PROJECT.md](#projectmd-in-020) below.
 The [workspace layout](workspaces.md#ownership-in-020) owns paths, project scripts, qualified
 `<workspace>:<job>` references, and installation-wide concurrency groups.
 
@@ -42,8 +42,82 @@ checks nor enforces those files in 0.2.0. Transport authentication, pairing, and
 validation remain part of the [installation trust model](concepts.md#installation-trust-model).
 
 The config schema becomes `version: 2`, with no compatibility parsing of version 1 or
-removed settings. The examples and restriction details below remain **current 0.1.x
-behavior** until the corresponding implementation lands; they are not a 0.2.0 template.
+removed settings. Outside the explicitly marked 0.2.0 sections, the config examples and
+restriction details remain **current 0.1.x behavior** until implementation lands.
+
+### WORKSPACE.md in 0.2.0
+
+**Forthcoming in 0.2.0.** The optional file contains YAML frontmatter with only these fields:
+
+| Field | Contract |
+| --- | --- |
+| `agent` | Optional complete object with nonempty `provider`, `model`, and `effort` strings; replaces the installation's whole default triple. |
+| `providers` | Optional map from provider name to an object containing only `args`, a list of strings; replaces that provider's global arguments. |
+
+Omitting `agent` inherits `defaults`. Omitting a provider override inherits its global
+arguments; an explicit `args: []` replaces them with an empty list. The existing provider,
+model, and effort validation rules still apply. Partial triples, unknown fields, provider
+executable paths, model catalogs, bindings, credentials, and `restricted` are not accepted
+here. There is no workspace-name field: the directory supplies it. Markdown after the
+frontmatter may explain the settings; agent working guidance belongs in `AGENTS.md`.
+
+For example, `workspaces/team/WORKSPACE.md` can contain:
+
+```yaml
+---
+agent:
+  provider: claude
+  model: opus
+  effort: xhigh
+providers:
+  claude:
+    args: ["--permission-mode", "dontAsk"]
+---
+```
+
+This changes `team`'s chat agent and its Claude arguments. Jobs retain their own saved
+agent triple, while workspace provider-argument overrides apply to chat, jobs, and
+Heartbeat. A missing file or an empty frontmatter mapping supplies no overrides; malformed
+settings are reported with the file path, never silently treated as an absent file.
+
+### PROJECT.md in 0.2.0
+
+**Forthcoming in 0.2.0.** YAML frontmatter contains the existing [project fields](#projects)
+except `workspace`: `name`, `repo`, `stages`, `base`, `worktree_root`, `setup`, `copy`,
+`max_concurrency`, `hooks`, and `script_timeout`. `name` and `stages` are required; the
+remaining fields retain their existing optionality and defaults. Stage and check objects
+retain the fields, validation, and defaults in that section. There is no additional
+`key`, `workspace`, or schema-version field. Unknown fields are errors.
+
+The key comes from `projects/<KEY>/` and the workspace from its parent workspace. Keys
+remain unique across the installation; a duplicate is reported with both paths rather
+than selecting one. For example, `workspaces/team/projects/APP/PROJECT.md` can contain:
+
+```yaml
+---
+name: Application
+repo: ~/Projects/app
+base: develop
+setup: ./setup.sh
+stages:
+  - name: work
+    checks:
+      - name: tests
+        command: ./test.sh
+        timeout: 600
+hooks:
+  after:done: ./done.sh
+---
+```
+
+This defines project `APP` in `team`. A non-Git project needs only `name` and, for example,
+`stages: [work]`. Markdown after the frontmatter may describe the project; it is not another
+source of workflow settings. Setup, stage commands, checks, and lifecycle commands start
+in the directory containing `PROJECT.md`. Supporting scripts live there and explicitly
+enter `ENSO_TASK_DIR` when they need the task's code; see
+[Tasks](tasks.md#project-files-and-scripts-in-020) for a complete script example. External
+repositories remain at `repo`, and `worktree_root` and `copy` keep their repository-relative
+meaning. Moving the definition does not move or retarget an existing task's worktree.
 
 ## Applying configuration
 
