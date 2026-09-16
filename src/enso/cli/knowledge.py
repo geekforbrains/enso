@@ -67,7 +67,7 @@ def _listing(
         catalog = knowledge.scan(paths)
         catalog.root(scope)
         if folder:
-            from ..knowledge.storage import relative_parts
+            from ..note_storage import relative_parts
 
             relative_parts(folder)
         prefix = folder.strip("/") + "/" if folder else ""

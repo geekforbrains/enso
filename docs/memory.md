@@ -1,8 +1,8 @@
 # Memory
 
-**Forthcoming in 0.2.0.** These are agreed product contracts; capture, the memory CLI,
-harvesting, and the `enso-memory` skill are not implemented yet. The formats, limits, and
-examples on this page specify that implementation, not commands available in 0.1.x.
+Markdown memory and its manual CLI are implemented for 0.2.0. Conversation capture,
+harvesting, removal, and the `enso-memory` skill remain forthcoming; the sections below
+specify their agreed contracts. These features are not available in 0.1.x.
 
 ## Purpose and ownership
 
@@ -61,6 +61,11 @@ silently removed or reassigned. Imported provenance from another installation be
 the body unless its captures are deliberately mapped to records in this installation;
 matching numbers alone do not establish that relationship.
 
+Until capture storage is implemented, nonempty source references are reported as
+unverifiable. Their files remain readable and unchanged, but managed updates refuse them;
+manual notes with `sources: []` are fully supported. Do not erase existing source IDs to
+bypass the finding. Capture existence and workspace validation arrive with capture storage.
+
 ### Occurrence, placement, and corrections
 
 `occurred` records the event, not when harvesting ran or a file was copied. For a discussion
@@ -111,7 +116,43 @@ Resolution is from the source file, without wiki-name guessing or a search throu
 workspaces. Broken links are reported. A direct filesystem move preserves the note's ID
 but does not repair relative links; maintain those links explicitly when relocating files.
 
+### Manual maintenance
+
+Use `enso memory create NAME.md --occurred VALUE --file FILE` to record an event in the
+selected workspace. The occurrence is required: a known date, a timestamp with timezone,
+or the explicit word `unknown`. Enso chooses the date folder and writes `sources: []` for
+manual notes. Describe recollections, documents, and uncertainty in the body.
+
+`show --json` supplies the exact-byte hash for `update --expected-hash`. An ordinary update
+replaces the body, preserving the ID, occurrence, sources, and any known creation date;
+an unchanged body leaves the entire file unchanged. Include the original historical context
+and dated correction in the replacement body. Unknown imported creation dates stay absent.
+Read and audit do not adopt or normalize imported files.
+
+`update --occurred VALUE` explicitly corrects the event time, including `unknown`. The file
+must already be in the matching date folder. If the correction changes its day, deliberately
+relocate the file first, maintain affected relative links, then update its occurrence with
+an explanation in the body. The file's hash survives a content-preserving move. A placement
+finding remains visible until the correction succeeds; the CLI never silently moves a file
+or rewrites related historical notes. Other invalid metadata still needs deliberate repair.
+
+`list` and `search` return newest known events first, with unknown or invalid occurrence
+last, and path order to break ties. They inspect one workspace; `--workspace` overrides
+`ENSO_WORKSPACE`. There is no shared memory selector, directory inference, or fallback
+workspace. IDs are checked across workspace memory roots for duplicates, but lookup and
+writes require the selected owner. The reader and writer limit each note to 2 MiB.
+
+`audit` checks metadata, duplicate identity, date placement, links, and heading targets;
+findings include their root/path and never rewrite files. Hidden/system entries and
+symlinks are excluded, and an occupied or linked memory root is reported. CLI writers use
+a home `.memory.lock` and atomic publication shared with knowledge's filesystem primitives;
+the two note formats retain their own metadata rules. Listing and search rebuild their view
+from the files, reusing only an in-memory parse cache invalidated by file identity, size,
+modification time, and change time. [CLI](cli.md#memory) owns exact signatures and results.
+
 ## Conversation capture
+
+**Forthcoming.**
 
 Enso captures eligible live human messages it receives while running in a bound
 conversation, after resolving its workspace. This includes messages that do not address
@@ -214,9 +255,9 @@ gap. Any persisted incomplete state remains explicit for later diagnostics and r
 ## Recall and maintenance
 
 When a user asks about earlier conversations, decisions, promises, or follow-ups, the agent
-uses the memory CLI and `enso-memory` skill. Search the selected workspace first, inspect
-relevant notes and their source context, and broaden deliberately if needed. A fresh provider
-session can find maintained memory through that lookup.
+uses the memory CLI and, once available, the `enso-memory` skill. Search the selected
+workspace first, inspect relevant notes and their source context, and broaden deliberately
+if needed. A fresh provider session can find maintained memory through that lookup.
 
 Workspace harvesting turns bounded batches of captures into useful memory, including ambient
 discussion, without mixing another workspace's captures or fetching chat history. Captured

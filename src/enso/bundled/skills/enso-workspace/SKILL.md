@@ -25,9 +25,9 @@ Paths below show the default home; use `ENSO_HOME` instead of `~/.enso` when it 
     ├── CLAUDE.md -> AGENTS.md
     ├── skills/               # skills unique to this workspace
     ├── knowledge/            # durable reference owned by this workspace
-    ├── memory/               # prepared for workspace memory (forthcoming)
+    ├── memory/               # dated Markdown memory, maintained with enso memory
     ├── jobs/                 # scheduled and stage jobs
-    ├── projects/             # prepared for project relocation (forthcoming)
+    ├── projects/             # workspace project definitions
     ├── drafts/               # generated or editable output
     ├── uploads/              # chat attachments, one directory per turn
     ├── .claude/skills -> ../skills

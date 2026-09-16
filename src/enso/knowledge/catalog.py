@@ -6,22 +6,33 @@ import hashlib
 import os
 import posixpath
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import unquote, urlsplit
-from uuid import UUID
 
 from .. import frontmatter
 from ..config import Paths
+from ..note_storage import (
+    EXCLUDED_DIRS,
+    MAX_NOTE_BYTES,
+    Root,
+    read_bytes,
+    safe_path,
+    split_document,
+    valid_id,
+    valid_timestamp,
+)
+from ..note_storage import (
+    NoteError as KnowledgeError,
+)
 from .links import Link, extract_links, heading_ids, slug_heading
-from .storage import EXCLUDED_DIRS, KnowledgeError, Root, read_bytes, safe_path, split_document
 
 SCHEMA = "enso.note/v1"
 CORE_FIELDS = {"schema", "id", "created", "updated"}
-MAX_NOTE_BYTES = 2 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -53,34 +64,6 @@ class Resolution:
     asset: Path | None = None
     fragment: str = ""
     candidates: tuple[Note, ...] = ()
-
-
-def valid_id(value: Any) -> str | None:
-    if not isinstance(value, str):
-        return None
-    try:
-        return str(UUID(value))
-    except ValueError:
-        return None
-
-
-def valid_timestamp(value: Any) -> str | None:
-    """Require a real instant, including timezone; file mtimes are not creation dates."""
-    if isinstance(value, datetime):
-        parsed = value
-    elif isinstance(value, str):
-        try:
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-    else:
-        return None
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        return None
-    try:
-        return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
-    except OverflowError:
-        return None
 
 
 def metadata_problems(fields: dict[str, Any]) -> tuple[str, ...]:
@@ -153,12 +136,21 @@ def _read_note(root: Root, relative: str, signature: tuple[int, ...]) -> Note:
 def scan(paths: Paths) -> Catalog:
     """Stat all files, reuse unchanged parsed notes, and report independent read problems."""
     roots = discover_roots(paths)
-    notes: list[Note] = []
-    assets: dict[str, tuple[str, ...]] = {}
-    problems: list[str] = []
+    notes, read_problems, assets = scan_roots(roots, _read_note)
+    problems = list(read_problems)
     if not any(root.scope == "general" for root in roots):
         kind = "symbolic link" if Paths(paths.home.resolve()).knowledge.is_symlink() else "file"
         problems.append(f"general: knowledge root must be a directory, not a {kind}")
+    return Catalog(roots, notes, tuple(problems), assets)
+
+
+def scan_roots(
+    roots: tuple[Root, ...], reader: Callable[[Root, str, tuple[int, ...]], Note]
+) -> tuple[tuple[Note, ...], tuple[str, ...], dict[str, tuple[str, ...]]]:
+    """Discover portable notes/assets with each format's own parser and metadata rules."""
+    notes: list[Note] = []
+    assets: dict[str, tuple[str, ...]] = {}
+    problems: list[str] = []
     for root in roots:
         root_assets: list[str] = []
         if not root.path.exists():
@@ -193,13 +185,13 @@ def scan(paths: Paths) -> Catalog:
                 try:
                     info = path.stat()
                     signature = (info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-                    notes.append(_read_note(root, relative, signature))
+                    notes.append(reader(root, relative, signature))
                 except (OSError, UnicodeError, KnowledgeError) as exc:
                     problems.append(
                         f"{root.scope}:{relative}: cannot read note ({type(exc).__name__})"
                     )
         assets[root.scope] = tuple(root_assets)
-    return Catalog(roots, tuple(notes), tuple(problems), assets)
+    return tuple(notes), tuple(problems), assets
 
 
 @dataclass(frozen=True)
@@ -232,7 +224,7 @@ class Catalog:
         for root in self.roots:
             if root.scope == scope:
                 return root
-        raise KnowledgeError(f"unknown knowledge scope: {scope}")
+        raise KnowledgeError(f"unknown note root: {scope}")
 
     def by_id(self, note_id: str) -> Note | None:
         candidates = self._ids.get(valid_id(note_id) or "", [])

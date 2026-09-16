@@ -38,6 +38,7 @@ from .connect import connect_app
 from .heartbeat import heartbeat_app
 from .jobs import job_app, runs_app
 from .knowledge import knowledge_app
+from .memory import memory_app
 from .messaging import message_app, telegram_app
 from .projects import project_app
 from .setup import setup_wizard
@@ -76,6 +77,7 @@ app.add_typer(web_app, name="web")
 app.add_typer(update_app, name="update")
 app.add_typer(skill_app, name="skill")
 app.add_typer(knowledge_app, name="knowledge")
+app.add_typer(memory_app, name="memory")
 # Named explicitly: after a re-exec this module runs as __main__.
 log = logging.getLogger("enso.cli")
 

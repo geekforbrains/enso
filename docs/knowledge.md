@@ -6,8 +6,8 @@ reading. Files remain usable outside Enso; the viewer is not an editor or the so
 
 ## Knowledge and memory in 0.2.0
 
-Knowledge holds current maintained facts and useful reference material. The forthcoming
-[Memory](memory.md) feature holds dated conversations and experiences in the workspace
+Knowledge holds current maintained facts and useful reference material.
+[Memory](memory.md) holds dated conversations and experiences in the workspace
 where they happened. Both remain ordinary Markdown and are authoritative for their maintained
 content; operational records, including source message captures, live in the home database.
 

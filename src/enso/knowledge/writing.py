@@ -6,40 +6,35 @@ import hashlib
 import os
 import re
 import tempfile
-from collections.abc import Iterator
-from contextlib import contextmanager, suppress
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 from urllib.parse import quote
 from uuid import uuid4
 
-from .. import frontmatter, locks
+from .. import frontmatter
+from .. import note_storage as storage
 from ..config import Paths
+from ..note_storage import (
+    NoteError as KnowledgeError,
+)
+from ..note_storage import (
+    Root,
+    open_parent,
+    read_bytes,
+    safe_path,
+    split_document,
+    valid_id,
+    valid_timestamp,
+)
 from .catalog import (
-    MAX_NOTE_BYTES,
     SCHEMA,
     Catalog,
     Note,
     Resolution,
     metadata_problems,
     scan,
-    valid_id,
-    valid_timestamp,
 )
-from .storage import (
-    KnowledgeError,
-    Root,
-    open_parent,
-    read_at,
-    read_bytes,
-    safe_path,
-    split_document,
-)
-
-
-def _timestamp() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def _document(fields: dict[str, str], body: str) -> str:
@@ -86,19 +81,6 @@ def normalize_text(text: str) -> str:
     return _document(fields, body)
 
 
-@contextmanager
-def _writer(paths: Paths) -> Iterator[None]:
-    paths.home.mkdir(parents=True, exist_ok=True)
-    try:
-        fd = locks.acquire(paths.home / ".knowledge.lock")
-    except BlockingIOError:
-        raise KnowledgeError("another knowledge write is in progress; retry") from None
-    try:
-        yield
-    finally:
-        os.close(fd)
-
-
 def _hash(root: Root, relative: str) -> str | None:
     try:
         return hashlib.sha256(read_bytes(root, relative)).hexdigest()
@@ -106,57 +88,10 @@ def _hash(root: Root, relative: str) -> str | None:
         return None
 
 
-def _publish(root: Root, relative: str, text: str, *, expected_hash: str | None) -> None:
-    """Atomically publish one file, refusing a stale revision or occupied new destination."""
-    if len(text.encode("utf-8")) > MAX_NOTE_BYTES:
-        raise KnowledgeError(f"notes must be at most {MAX_NOTE_BYTES} bytes including metadata")
-    path = safe_path(root, relative)
-    if path.suffix.lower() != ".md":
-        raise KnowledgeError("notes must use the .md extension")
-    directory, name = open_parent(root, relative, create=True)
-    temporary = f".enso-note-{uuid4()}"
-    try:
-        if _hash_at(directory, name) != expected_hash:
-            raise KnowledgeError("note changed or destination already exists; read it again")
-        fd = os.open(
-            temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory
-        )
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
-            if expected_hash is not None:
-                mode = os.stat(name, dir_fd=directory, follow_symlinks=False).st_mode & 0o777
-                os.fchmod(stream.fileno(), mode)
-            stream.write(text)
-            stream.flush()
-            os.fsync(stream.fileno())
-        if _hash_at(directory, name) != expected_hash:
-            raise KnowledgeError("note changed during write; read it again")
-        if expected_hash is None:
-            # A hard link is an atomic create-only publication, unlike replace().
-            os.link(
-                temporary, name, src_dir_fd=directory, dst_dir_fd=directory, follow_symlinks=False
-            )
-        else:
-            os.replace(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
-        os.fsync(directory)
-    finally:
-        try:
-            with suppress(FileNotFoundError):
-                os.unlink(temporary, dir_fd=directory)
-        finally:
-            os.close(directory)
-
-
-def _hash_at(directory: int, name: str) -> str | None:
-    try:
-        return hashlib.sha256(read_at(directory, name)).hexdigest()
-    except FileNotFoundError:
-        return None
-
-
 def _unlink(root: Root, relative: str, expected_hash: str) -> None:
     directory, name = open_parent(root, relative)
     try:
-        if _hash_at(directory, name) != expected_hash:
+        if storage.hash_at(directory, name) != expected_hash:
             raise KnowledgeError("note changed before removal")
         os.unlink(name, dir_fd=directory)
         os.fsync(directory)
@@ -176,14 +111,14 @@ def _expected(note: Note, expected_hash: str | None) -> str:
 
 def create_note(paths: Paths, scope: str, relative: str, body: str) -> Note:
     """Create a new note with exactly four managed fields; never overwrite a note."""
-    _body_only(body)
-    with _writer(paths):
+    storage.body_only(body)
+    with storage.writer(paths, "knowledge"):
         catalog = scan(paths)
         root = catalog.root(scope)
         _unoccupied(catalog, scope, relative)
-        stamp = _timestamp()
+        stamp = storage.timestamp()
         text = _document({"id": str(uuid4()), "created": stamp, "updated": stamp}, body)
-        _publish(root, relative, text, expected_hash=None)
+        storage.publish(root, relative, text, expected_hash=None)
         return _note_after(paths, scope, relative)
 
 
@@ -191,7 +126,7 @@ def adopt_note(
     paths: Paths, scope: str, relative: str, *, expected_hash: str | None = None
 ) -> Note:
     """Normalize one existing copied note; preserve unfamiliar frontmatter in its body."""
-    with _writer(paths):
+    with storage.writer(paths, "knowledge"):
         catalog = scan(paths)
         note = catalog.get(relative, scope)
         catalog.require_unique(note)
@@ -201,14 +136,14 @@ def adopt_note(
             raise KnowledgeError("note changed since it was read; read it again")
         normalized = normalize_text(text)
         if normalized != text:
-            _publish(note.root, note.path, normalized, expected_hash=expected)
+            storage.publish(note.root, note.path, normalized, expected_hash=expected)
         return _note_after(paths, scope, note.path)
 
 
 def update_note(paths: Paths, scope: str, ref: str, body: str, *, expected_hash: str) -> Note:
     """Replace a managed note's body using its last read hash, preserving identity/creation."""
-    _body_only(body)
-    with _writer(paths):
+    storage.body_only(body)
+    with storage.writer(paths, "knowledge"):
         catalog = scan(paths)
         note = catalog.get(ref, scope)
         catalog.require_unique(note)
@@ -217,10 +152,10 @@ def update_note(paths: Paths, scope: str, ref: str, body: str, *, expected_hash:
             raise KnowledgeError("adopt the note's metadata before updating it")
         if body.strip("\r\n") == note.body.strip("\r\n"):
             return note
-        fields = {"id": note.id, "updated": _timestamp()}
+        fields = {"id": note.id, "updated": storage.timestamp()}
         if created := valid_timestamp(note.metadata.get("created")):
             fields["created"] = created
-        _publish(note.root, note.path, _document(fields, body), expected_hash=expected_hash)
+        storage.publish(note.root, note.path, _document(fields, body), expected_hash=expected_hash)
         return _note_after(paths, note.scope, note.path)
 
 
@@ -289,12 +224,6 @@ def _identity(note: Note, moved: Note, moved_after: Note) -> tuple[str, str]:
     return note.scope, note.path
 
 
-def _body_only(body: str) -> None:
-    lines = body.lstrip("\r\n").splitlines()
-    if lines and lines[0].rstrip() == "---":
-        raise KnowledgeError("provide the Markdown body without frontmatter; use adopt for imports")
-
-
 def _unoccupied(catalog: Catalog, scope: str, relative: str) -> None:
     if any(
         note.scope == scope and note.path.casefold() == relative.casefold()
@@ -308,7 +237,7 @@ def _with_body(note: Note, raw: str, body: str) -> str:
         return raw
     if note.problems or not note.id:
         raise KnowledgeError("adopt linked notes with invalid metadata before moving this note")
-    fields = {"id": note.id, "updated": _timestamp()}
+    fields = {"id": note.id, "updated": storage.timestamp()}
     if created := valid_timestamp(note.metadata.get("created")):
         fields["created"] = created
     return _document(fields, body)
@@ -329,7 +258,7 @@ def move_note(
     revision is checked before publication. Failures roll back only untouched writes;
     originals remain in a recovery directory if a concurrent edit prevents rollback.
     """
-    with _writer(paths):
+    with storage.writer(paths, "knowledge"):
         catalog = scan(paths)
         moved = catalog.get(ref, scope)
         catalog.require_unique(moved)
@@ -401,11 +330,11 @@ def _apply_move(
             if _hash(note.root, note.path) != note.sha256:
                 raise KnowledgeError("a linked note changed; retry the move")
         moved_text = next(new for note, _, new in changes if note == moved)
-        _publish(target_root, destination, moved_text, expected_hash=None)
+        storage.publish(target_root, destination, moved_text, expected_hash=None)
         destination_hash = hashlib.sha256(moved_text.encode()).hexdigest()
         for note, raw, new in changes:
             if note != moved:
-                _publish(note.root, note.path, new, expected_hash=note.sha256)
+                storage.publish(note.root, note.path, new, expected_hash=note.sha256)
                 applied.append((note, raw, new))
         if _hash(moved.root, moved.path) != moved.sha256:
             raise KnowledgeError("source changed during move")
@@ -434,7 +363,7 @@ def _rollback(
     ok = True
     for note, raw, new in reversed(applied):
         try:
-            _publish(
+            storage.publish(
                 note.root, note.path, raw, expected_hash=hashlib.sha256(new.encode()).hexdigest()
             )
         except OSError, KnowledgeError:

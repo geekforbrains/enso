@@ -294,8 +294,7 @@ it never deletes. The command exits 1 while any error remains; warnings alone ex
 ### Workspace context in 0.2.0
 
 Job and Heartbeat creation, message sends, operational lists, and task, project, and workflow
-commands and knowledge use the shared resolver. Memory lookup remains forthcoming
-under its section below.
+commands, knowledge, and memory use the shared resolver.
 Workspace-scoped commands use `ENSO_WORKSPACE`,
 inherited from the Enso chat agent, job, or Heartbeat run calling them. Optional `--workspace` overrides it
 for that operation. The [context contract](workspaces.md#context-selection-in-020) owns
@@ -377,14 +376,56 @@ contents, and existing destinations.
 
 ## Memory
 
-**Forthcoming in 0.2.0.** The memory CLI and `enso-memory` skill let agents find and maintain
-dated workspace history when a user asks about past conversations or experiences. Start in
-the [selected workspace](#workspace-context-in-020). [Memory](memory.md) owns capture,
-the note schema, recall, and retention. Read/list/search, create/update, and validation
-commands land with the memory implementation; their complete signatures will be documented
-then. Updates require `--expected-hash` from the last read, following the
-[editing contract](memory.md#editing-imports-and-links). Resetting a provider session does
-not remove memory or captures.
+The memory CLI finds and maintains dated workspace history. Start in the
+[selected workspace](#workspace-context-in-020); `--workspace` overrides `ENSO_WORKSPACE`.
+There is no shared memory root or all-workspace search. Missing context and invalid
+selections error. The forthcoming `enso-memory` skill will guide automated harvesting;
+[Memory](memory.md) owns the note schema, corrections, capture, and retention.
+
+```text
+enso memory list [--workspace NAME] [--limit N] [--offset N] [--json]
+enso memory search QUERY [--workspace NAME] [--limit N] [--offset N] [--json]
+enso memory show REF [--workspace NAME] [--json]
+enso memory create NAME.md --occurred VALUE --file FILE|- [--workspace NAME] [--json]
+enso memory update REF --file FILE|- --expected-hash SHA [--occurred VALUE] [--workspace NAME] [--json]
+enso memory audit [--workspace NAME] [--json]
+```
+
+`REF` is a UUID or an exact `.md` path relative to the selected memory root. UUIDs remain
+stable across moves but do not override workspace selection. `create` accepts one filename,
+chooses its folder from the required occurrence, assigns a UUID, and sets document dates.
+`VALUE` is a quoted date or timezone-aware timestamp, or `unknown`; manual notes use
+`sources: []` and describe other provenance in their body. Commands require neither
+transport configuration nor an initialized database.
+Until capture storage lands, nonempty capture references are reported as unverifiable and
+managed updates refuse them without changing the original sources.
+
+```bash
+enso memory create launch-proposal.md --workspace team --occurred 2026-09-16 --file proposal.md
+enso memory show 2026/09/16/launch-proposal.md --workspace team --json
+enso memory update 2026/09/16/launch-proposal.md --workspace team --file corrected.md --expected-hash HASH
+enso memory search "launch proposal" --workspace team --json
+enso memory audit --workspace team --json
+```
+
+Updates preserve identity, sources, occurrence, and known creation time, require the last
+read's exact-byte SHA256, and change `updated` only for substantive edits. `--occurred`
+explicitly corrects the event time; a changed day requires deliberate file relocation and
+link maintenance first, following the [editing contract](memory.md#manual-maintenance).
+Human edits and imports are discovered directly without database registration. Resetting a
+provider session does not remove memory or captures.
+
+Listing/search defaults to 50 results, with `--limit` from 1 to 500 and nonnegative
+`--offset`. Every whitespace-separated query term must match the filename/path or body,
+case insensitively. Sort order is newest known occurrence first, unknown/invalid last,
+then path for ties; filtering precedes pagination.
+
+JSON list/search results contain `{workspace, total, offset, limit, notes, problems}`.
+Each note contains `{workspace, path, title, id, metadata, sha256, problems}`; `show` adds
+`body`, and successful writes add `ok: true`. `metadata` exposes supported properties;
+unsupported import metadata remains in the original file with findings. `audit` returns
+`{ok, workspace, notes, problems}`, with a note count and `{scope, path, problem}` findings
+using the internal root identifier `workspace:<name>`. Findings exit 1; a clean audit exits 0.
 
 The agreed removal command is also **forthcoming**, not executable in 0.1.x:
 

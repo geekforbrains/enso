@@ -66,6 +66,11 @@ All notable changes to Enso are documented here, following
 
 ### Added
 
+- Workspace Markdown memory with explicit event dates, UTC date folders, undated imports,
+  stable IDs, relative links, and conflict-checked corrections. `enso memory` lists, searches,
+  reads, creates, updates, and audits manual notes without a database; capture and harvesting
+  remain forthcoming.
+
 - Shared `knowledge/` and automatically discovered workspace knowledge, with a read-only
   folder and search viewer, stable note URLs, Markdown and wiki links, and backlinks.
   `enso knowledge` maintains minimal metadata and repairs links on moves; the bundled

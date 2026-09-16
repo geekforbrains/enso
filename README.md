@@ -82,7 +82,7 @@ The pages here own technical behavior, configuration contracts, and development 
 - [Configuration](docs/configuration.md) and [workspaces](docs/workspaces.md) —
   providers, chat routing, permissions, and layout.
 - [Knowledge](docs/knowledge.md) — shared Markdown, folders, links, formatting, and imports.
-- [Memory](docs/memory.md) — forthcoming workspace history and conversation capture in 0.2.0.
+- [Memory](docs/memory.md) — dated workspace Markdown, with conversation capture forthcoming.
 - [Jobs](docs/jobs.md), [Heartbeat](docs/heartbeat.md), and [tasks](docs/tasks.md) —
   scheduled work, follow-ups, and project boards.
 - [Customization and skills](docs/customizing.md) and [browser setup](docs/browser.md) —

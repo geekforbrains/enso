@@ -23,8 +23,12 @@ Product behaviour belongs in its owning page under `docs/`, starting with
 - `src/enso/formatting.py` — shared text labels, durations, errors, previews, message
   chunking, and transport-specific Markdown rendering. Chat and CLI callers import text
   helpers here; this module does not load runtime, routing, or database code.
-- `src/enso/knowledge/` — Markdown discovery, core metadata, link resolution, safe file
-  access, and note writes. The CLI and read-only knowledge viewer share this model;
+- `src/enso/note_storage.py` — shared bounded file reads, safe paths, timestamp validation,
+  writer locks, and atomic publication for knowledge and memory.
+- `src/enso/memory.py` — workspace-only dated Markdown, occurrence/placement validation,
+  source metadata, relative links, and manual corrections; capture/harvesting remain separate.
+- `src/enso/knowledge/` — Markdown discovery, core metadata, link resolution, and note writes.
+  The CLI and read-only knowledge viewer share this model;
   user-editable writing style belongs to the bundled `enso-knowledge` skill.
 - `src/enso/providers/stream.py` — shared structured-output parsing, session identity,
   bounded pipe reads, and failure diagnostics for chat and background turns. Callers own
