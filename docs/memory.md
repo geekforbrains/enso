@@ -149,6 +149,9 @@ a home `.memory.lock` and atomic publication shared with knowledge's filesystem 
 the two note formats retain their own metadata rules. Listing and search rebuild their view
 from the files, reusing only an in-memory parse cache invalidated by file identity, size,
 modification time, and change time. [CLI](cli.md#memory) owns exact signatures and results.
+`enso doctor` summarizes the same checks across workspace memory roots, including capture
+source validity and unsupported home-level memory. It cannot prove that a recollection is
+true or that the selected workspace is the most useful owner.
 
 ## Conversation capture
 

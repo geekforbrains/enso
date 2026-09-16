@@ -2,8 +2,8 @@
 
 Composes what already exists rather than checking anything twice: ``config.check_config``,
 the workspace audit, the provider paths, the transport extras, ``service.status``, and
-``jobs.load_jobs``. An error-level health finding makes doctor exit 1 but does not imply
-that every Enso operation is blocked; warnings alone exit 0. ``--json`` is
+``jobs.load_jobs``, and the Markdown note audits. An error-level health finding makes doctor
+exit 1 but does not imply that every Enso operation is blocked; warnings alone exit 0. ``--json`` is
 ``Report.as_dict``.
 """
 
@@ -14,8 +14,9 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import audit, db, heartbeat, service, web
+from . import audit, db, heartbeat, knowledge, memory, service, web
 from .config import Config, Paths, check_config
+from .formatting import preview
 from .jobs import load_jobs
 from .transport_registry import TRANSPORTS
 from .web import service as viewer_service
@@ -30,6 +31,8 @@ SECTIONS = (
     "viewer_service",
     "jobs",
     "heartbeat",
+    "knowledge",
+    "memory",
 )
 SKIPPED = "skipped"
 # Appended to a finding the workspace audit can repair; the enso-audit prompt quotes it, so
@@ -109,8 +112,38 @@ def run(paths: Paths) -> Report:
         _viewer_service(paths),
         _jobs(paths, config),
         _heartbeat(paths, config),
+        _notes(paths, "knowledge"),
+        _notes(paths, "memory"),
     ]
     return Report(paths.home, sections)
+
+
+def _notes(paths: Paths, kind: str) -> Section:
+    """Bound the health summary while leaving detailed findings to scoped audit commands."""
+    section = Section(kind)
+    try:
+        catalog = knowledge.scan(paths) if kind == "knowledge" else memory.scan(paths)
+        findings = catalog.audit()
+        section.note = f"{len(catalog.notes)} notes, {len(findings)} findings"
+        section.details = {
+            "notes": len(catalog.notes),
+            "findings": len(findings),
+            "roots": {root.scope: str(root.path) for root in catalog.roots},
+        }
+        for finding in findings[:10]:
+            scope, relative = finding["scope"], finding["path"]
+            path = str(catalog.root(scope).path / relative) if scope else str(paths.home)
+            section.problems.append(f"{path}: {preview(finding['problem'], width=500)}")
+        if findings:
+            selectors = (
+                "--workspace NAME or --shared" if kind == "knowledge" else "--workspace NAME"
+            )
+            section.note += f"; details: enso {kind} audit {selectors}"
+        if len(findings) > 10:
+            section.problems.append(f"{len(findings) - 10} more findings; use the scoped audit")
+    except (OSError, ValueError, knowledge.KnowledgeError) as exc:
+        section.problems.append(f"could not read {kind} at {paths.home}: {exc}")
+    return section
 
 
 def _skipped(name: str) -> Section:

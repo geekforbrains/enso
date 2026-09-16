@@ -11,7 +11,7 @@ import pytest
 from conftest import write_config, write_job
 from typer.testing import CliRunner
 
-from enso import doctor, heartbeat, service, workspaces
+from enso import doctor, heartbeat, knowledge, memory, service, workspaces
 from enso.cli import app
 from enso.config import Paths, load_config
 from enso.providers.codex import CodexProvider
@@ -63,6 +63,8 @@ def test_a_healthy_home_is_ok_everywhere(enso_home: Paths, raw_config: dict, uni
         "not installed (optional)",
         "1 job, 1 enabled",
         "0 active, 0 paused",
+        "0 notes, 0 findings",
+        "0 notes, 0 findings",
     ]
     payload = json.loads(json.dumps(report.as_dict()))
     assert payload["ok"] and payload["home"] == str(enso_home.home)
@@ -168,6 +170,8 @@ def test_a_fresh_home_reports_and_skips(enso_home: Paths, monkeypatch: pytest.Mo
         "viewer_service": "ok",
         "jobs": "skipped",
         "heartbeat": "skipped",
+        "knowledge": "ok",
+        "memory": "ok",
     }
     assert report.section("config").problems == [
         f"{enso_home.config} is missing; run `enso setup` first"
@@ -278,6 +282,8 @@ def test_doctor_command(enso_home: Paths, raw_config: dict, unit: Path) -> None:
         "viewer_service: ok (not installed (optional))",
         "jobs: ok (none yet)",
         "heartbeat: ok (0 active, 0 paused)",
+        "knowledge: ok (0 notes, 0 findings)",
+        "memory: ok (0 notes, 0 findings)",
     ]
 
     shutil.rmtree(enso_home.workspace("default") / "drafts")
@@ -303,4 +309,76 @@ def test_doctor_command(enso_home: Paths, raw_config: dict, unit: Path) -> None:
         "ok",
         "ok",
         "ok",
+        "ok",
+        "ok",
     ]
+
+
+def test_note_audits_report_paths_and_counts_without_writes(enso_home, raw_config, unit):
+    healthy(enso_home, raw_config)
+    reference = knowledge.create_note(enso_home, "general", "Reference.md", "Current facts.")
+    recalled = memory.create_note(enso_home, "default", "Recall.md", "History.", occurred=None)
+    assert doctor.run(enso_home).ok
+    root = enso_home.workspace_memory("default")
+    original = root / recalled.path
+    # Duplicate identity, wrong date placement, missing source, and broken link.
+    (root / "Copy.md").write_text(
+        original.read_text().replace("sources: []", "sources: [123]") + "\n[missing](Gone.md)\n"
+    )
+    (enso_home.knowledge / "Wrong.md").write_text(original.read_text())
+    (enso_home.knowledge / "Corrupt.md").write_bytes(b"\xff")
+    before = {p: p.read_bytes() for p in enso_home.home.rglob("*") if p.is_file()}
+    report = doctor.run(enso_home)
+    assert not report.ok and not enso_home.db.exists()
+    for kind, catalog in (
+        ("knowledge", knowledge.scan(enso_home)),
+        ("memory", memory.scan(enso_home)),
+    ):
+        section = report.section(kind)
+        assert section.details["notes"] == len(catalog.notes)
+        assert section.details["findings"] == len(catalog.audit())
+        assert section.status == "error"
+        assert f"enso {kind} audit" in section.note
+    errors = "\n".join(report.section("memory").problems)
+    assert str(root / "Copy.md") in errors
+    assert all(
+        text in errors for text in ("duplicate note id", "undated/", "capture 123", "missing link")
+    )
+    assert "schema must be enso.note/v1" in "\n".join(report.section("knowledge").problems)
+    assert knowledge.scan(enso_home).get(reference.id).body == "Current facts."
+    assert before == {p: p.read_bytes() for p in enso_home.home.rglob("*") if p.is_file()}
+    runner = CliRunner()
+    result = runner.invoke(app, ["doctor", "--json"])
+    assert result.exit_code == 1 and json.loads(result.stdout) == report.as_dict()
+
+
+def test_doctor_bounds_note_findings_and_scoped_audit_keeps_details(enso_home, raw_config, unit):
+    healthy(enso_home, raw_config)
+    for index in range(20):
+        (enso_home.knowledge / f"{index:02}.md").write_text("Missing metadata.")
+    report = doctor.run(enso_home)
+    section = report.section("knowledge")
+    assert section.details["notes"] == 20 and section.details["findings"] == 20
+    assert len(section.problems) == 11 and section.problems[-1].startswith("10 more findings")
+    detailed = CliRunner().invoke(app, ["knowledge", "audit", "--shared", "--json"])
+    assert detailed.exit_code == 1 and len(json.loads(detailed.stdout)["problems"]) == 20
+
+
+def test_doctor_reports_invalid_note_roots_without_following_links(
+    enso_home, raw_config, unit, tmp_path
+):
+    healthy(enso_home, raw_config)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "Secret.md").write_text("This must not be read.")
+    for kind in ("knowledge", "memory"):
+        root = enso_home.workspace("default") / kind
+        root.rmdir()
+        root.symlink_to(outside, target_is_directory=True)
+    (enso_home.home / "memory").symlink_to(outside, target_is_directory=True)
+    report = doctor.run(enso_home)
+    for kind in ("knowledge", "memory"):
+        section = report.section(kind)
+        assert section.status == "error" and section.details["notes"] == 0
+        assert "symbolic link" in "\n".join(section.problems)
+    assert "shared memory is unsupported" in "\n".join(report.section("memory").problems)

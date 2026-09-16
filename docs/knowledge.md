@@ -101,6 +101,8 @@ an exact path; inspect and repair the duplicate deliberately first.
 Legacy notes with absent or invalid metadata remain readable by path. The viewer exposes core
 properties and metadata problems; View source retains the original document. Core auditing is
 read-only and reports independent metadata, identity, link, and heading problems together.
+`enso doctor` summarizes this audit across all knowledge roots; the scoped knowledge audit
+retains the complete findings. Neither check proves factual truth or appropriate filing.
 
 ## Links and attachments
 

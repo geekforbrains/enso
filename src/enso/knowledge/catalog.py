@@ -29,6 +29,9 @@ from ..note_storage import (
 from ..note_storage import (
     NoteError as KnowledgeError,
 )
+from ..note_storage import (
+    discover_roots as note_roots,
+)
 from .links import Link, extract_links, heading_ids, slug_heading
 
 SCHEMA = "enso.note/v1"
@@ -85,22 +88,7 @@ def metadata_problems(fields: dict[str, Any]) -> tuple[str, ...]:
 
 def discover_roots(paths: Paths) -> tuple[Root, ...]:
     """Shared knowledge and visible workspace knowledge, discovered without config loading."""
-    # Resolve the operator-selected home once, but retain workspace ancestors lexically
-    # so a later symlink replacement cannot silently redirect a captured root.
-    paths = Paths(paths.home.resolve())
-    roots: list[Root] = []
-    if not paths.knowledge.is_symlink() and (
-        not paths.knowledge.exists() or paths.knowledge.is_dir()
-    ):
-        roots.append(Root("general", "General", paths.knowledge))
-    if paths.workspaces.is_dir() and not paths.workspaces.is_symlink():
-        for workspace in sorted(paths.workspaces.iterdir()):
-            if workspace.name.startswith(".") or workspace.is_symlink() or not workspace.is_dir():
-                continue
-            root = workspace / "knowledge"
-            if root.is_dir() and not root.is_symlink():
-                roots.append(Root(f"workspace:{workspace.name}", workspace.name, root))
-    return tuple(roots)
+    return note_roots(paths, "knowledge", shared=True)[0]
 
 
 @lru_cache(maxsize=16384)
@@ -135,13 +123,9 @@ def _read_note(root: Root, relative: str, signature: tuple[int, ...]) -> Note:
 
 def scan(paths: Paths) -> Catalog:
     """Stat all files, reuse unchanged parsed notes, and report independent read problems."""
-    roots = discover_roots(paths)
+    roots, problems = note_roots(paths, "knowledge", shared=True)
     notes, read_problems, assets = scan_roots(roots, _read_note)
-    problems = list(read_problems)
-    if not any(root.scope == "general" for root in roots):
-        kind = "symbolic link" if Paths(paths.home.resolve()).knowledge.is_symlink() else "file"
-        problems.append(f"general: knowledge root must be a directory, not a {kind}")
-    return Catalog(roots, notes, tuple(problems), assets)
+    return Catalog(roots, notes, problems + read_problems, assets)
 
 
 def scan_roots(
@@ -158,7 +142,7 @@ def scan_roots(
             continue
 
         def onerror(error: OSError, scope: str = root.scope) -> None:
-            problems.append(f"{scope}: cannot read directory ({error.strerror})")
+            problems.append(f"{scope}: {error.filename}: cannot read directory ({error.strerror})")
 
         for directory, dirs, files in os.walk(
             root.path,
@@ -177,7 +161,7 @@ def scan_roots(
                 path = root.path / os.path.relpath(directory, root.path) / name
                 relative = path.relative_to(root.path).as_posix()
                 if path.is_symlink():
-                    problems.append(f"{root.scope}:{relative}: symbolic link excluded")
+                    problems.append(f"{root.scope}: {path}: symbolic link excluded")
                     continue
                 if path.suffix.lower() != ".md":
                     root_assets.append(relative)
@@ -188,7 +172,7 @@ def scan_roots(
                     notes.append(reader(root, relative, signature))
                 except (OSError, UnicodeError, KnowledgeError) as exc:
                     problems.append(
-                        f"{root.scope}:{relative}: cannot read note ({type(exc).__name__})"
+                        f"{root.scope}: {path}: cannot read note ({type(exc).__name__})"
                     )
         assets[root.scope] = tuple(root_assets)
     return tuple(notes), tuple(problems), assets

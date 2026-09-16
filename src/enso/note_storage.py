@@ -15,7 +15,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from . import locks
-from .config import Paths
+from .config import Paths, valid_workspace_name
 
 MAX_NOTE_BYTES = 2 * 1024 * 1024
 MAX_FILE_BYTES = 32 * 1024 * 1024
@@ -33,6 +33,41 @@ class Root:
     scope: str
     label: str
     path: Path
+
+
+def discover_roots(
+    paths: Paths, kind: str, *, shared: bool = False
+) -> tuple[tuple[Root, ...], tuple[str, ...]]:
+    """Find note roots without following workspace links; retain invalid-root findings."""
+    paths = Paths(paths.home.resolve())
+    candidates = [Root("general", "General", paths.home / kind)] if shared else []
+    problems: list[str] = []
+    try:
+        if paths.workspaces.is_symlink():
+            problems.append(f"{paths.workspaces}: workspace root must not be a symbolic link")
+        elif paths.workspaces.exists():
+            for workspace in sorted(paths.workspaces.iterdir()):
+                if (
+                    not valid_workspace_name(workspace.name)
+                    or workspace.is_symlink()
+                    or not workspace.is_dir()
+                ):
+                    continue
+                path = workspace / kind
+                if not shared or path.exists() or path.is_symlink():
+                    candidates.append(Root(f"workspace:{workspace.name}", workspace.name, path))
+    except OSError as exc:
+        problems.append(f"{paths.workspaces}: cannot read workspace roots ({exc.strerror})")
+    roots: list[Root] = []
+    for root in candidates:
+        if root.path.is_symlink() or (root.path.exists() and not root.path.is_dir()):
+            entry = "symbolic link" if root.path.is_symlink() else "file"
+            problems.append(
+                f"{root.scope}: {root.path}: {kind} root must be a directory, not a {entry}"
+            )
+        else:
+            roots.append(root)
+    return tuple(roots), tuple(problems)
 
 
 def relative_parts(relative: str) -> tuple[str, ...]:
