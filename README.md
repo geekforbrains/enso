@@ -9,7 +9,7 @@ whatever you're into next. It runs on your own machine, and you talk to it in Sl
 or Telegram. Choose the agent CLI that powers it, give it some context, and give it
 something to work on.
 
-**Forthcoming in 0.2.0:** one installation serves a person or a small trusted team.
+One installation serves a person or a small trusted team.
 Workspaces organize context and ownership; everyone using the installation trusts the
 same environment. Teams needing separation run separate installations on separate machines
 or VPSs, with their own credentials and chat connections. See the
@@ -38,7 +38,9 @@ what's coming up, and what needs your attention.
   optional skills from the official catalog.
 
 Enso is powered by Claude Code, Codex, Grok, Antigravity, or OpenCode. Each provider
-CLI manages its own sessions and permissions.
+CLI manages its own sessions and permissions. Enso passes configured provider arguments
+through and leaves workspace policy files to the provider; it has no workspace restriction
+mode. See [provider permissions](docs/configuration.md#provider-permissions-and-installation-trust).
 
 The provider, model, and effort are always explicit. A workspace organizes context;
 it is not a security sandbox. The viewer is a window into Enso, not a control panel.

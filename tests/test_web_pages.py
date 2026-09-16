@@ -252,7 +252,7 @@ async def test_health_reports_every_section_database_and_log(
 async def test_health_diagnoses_a_broken_config_and_database(
     client: TestClient, home: Home
 ) -> None:
-    home.paths.config.write_text('{"version": 1, "transports": {}}')
+    home.paths.config.write_text('{"version": 2, "transports": {}}')
     body = await page(client, "/health")
     assert "transports must configure slack or telegram" in body
     assert "Skipped until config.json is valid" in body

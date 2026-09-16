@@ -84,6 +84,6 @@ Choose from the request's intent; people do not need to know Enso's feature name
 - `enso-skills`: finding or installing an official optional skill, adding a capability, or creating or refining a skill.
 - `enso-browser`: a website that needs a real browser or a signed-in session.
 - `enso-slack`: a Slack-specific lookup, history, send, or formatting request, when Slack is involved.
-- `enso-security`: workspace restrictions, permissions, or policy questions.
+- `enso-security`: installation trust, provider permissions, credentials, or untrusted input.
 
 Use the relevant installed optional or workspace skills as needs arise. Run `enso --help` or a command's own help instead of guessing syntax.

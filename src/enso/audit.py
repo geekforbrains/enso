@@ -15,7 +15,7 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import policy, routing, skills, workspaces
+from . import skills, workspaces
 from .config import Config, Paths, valid_workspace_name
 from .jobs import load_jobs
 from .skills import ERROR, WARNING
@@ -30,16 +30,16 @@ SKILL_COLLISION = "skill-collision"  # a name shared with another scope
 ORPHAN = "orphan"  # nothing is bound to the workspace and no job names it
 UNEXPECTED = "unexpected"  # an entry the layout has no place for
 RESERVED = "reserved"  # an enso-* skill or job that Enso did not install
-POLICY = "policy"  # a restricted workspace that cannot launch its chat provider
-# The top-level entries the layout accounts for, the provider policy files a restricted
-# workspace may hold, and OS noise nobody wants a warning about.
+# The layout includes optional provider configuration; its contents belong to the provider.
 EXPECTED_ENTRIES = frozenset(
     {
         "AGENTS.md",
         "worktrees",
         *workspaces.WORKSPACE_DIRS,
         *(link.split("/")[0] for link, _ in workspaces.LINKS),
-        *(relative.split("/")[0] for relative in policy.POLICY_FILES.values()),
+        ".codex",
+        ".grok",
+        "opencode.json",
     }
 )
 IGNORED_ENTRIES = frozenset({".DS_Store"})
@@ -182,8 +182,6 @@ def audit(
         result = audit_workspace(
             paths, name, fix=fix, bound=bound, jobs=named.get(name, []), user_dirs=user_dirs
         )
-        if config is not None and result.path.is_dir():
-            result.findings.extend(_check_policy(config, name))
         found.append(result)
     return Report(audit_home(paths, fix=fix, user_dirs=user_dirs), found)
 
@@ -401,14 +399,6 @@ def _check_jobs(paths: Paths) -> Iterator[Finding]:
         installed = entry.name in workspaces.BUNDLED_JOBS
         if entry.is_dir() and workspaces.reserved(entry.name) and not installed:
             yield Finding(RESERVED, WARNING, _reserved_message("jobs", entry.name))
-
-
-def _check_policy(config: Config, name: str) -> Iterator[Finding]:
-    """A restricted workspace must be able to launch the provider its chats run with."""
-    try:
-        policy.check(config, name, routing.resolve_agent(config, name).provider)
-    except policy.PolicyError as exc:
-        yield Finding(POLICY, ERROR, str(exc))
 
 
 def _check_entries(root: Path) -> Iterator[Finding]:

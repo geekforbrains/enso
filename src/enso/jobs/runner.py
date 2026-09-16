@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import IO, Literal
 
-from .. import db, execution, messages, policy, routing, runs, scheduling, tasks, workflows
+from .. import db, execution, messages, routing, runs, scheduling, tasks, workflows
 from .. import log as logctx
 from ..config import Config, LiveConfig, Paths, config_fingerprint
 from ..execution import NOTIFY_LIMIT as NOTIFY_LIMIT
@@ -469,11 +469,6 @@ class JobRunner:
         """The provider turns and hooks, framed by the stage's prompt when there is one."""
         if stage is not None and command_stage(job, config):
             return await self._stage_command(job, run_id, stage, started, config=config)
-        try:
-            policy.check(config, job.workspace, job.provider)  # one revision checks and launches
-        except policy.PolicyError as exc:
-            log.warning("run=%s refused: %s", run_id, exc)
-            return RunResult("error", run_id, error=str(exc))
         if stage is not None:
             return await self._stage_turns(job, run_id, stage, effort, started, config=config)
         prompt = stage.prompt if stage is not None else None

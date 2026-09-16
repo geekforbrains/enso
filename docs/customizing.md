@@ -189,7 +189,7 @@ Enso installs these into `~/.enso/skills/`:
 | `enso-heartbeat` | Finite future actions and temporary watches, script gates, event history, action receipts, and completion |
 | `enso-jobs` | Creating, testing, and troubleshooting scheduled and stage jobs and their prerun and postrun scripts |
 | `enso-knowledge` | Finding and maintaining shared or workspace Markdown notes, links, imports, and user-defined formatting |
-| `enso-security` | Restricting a workspace: each CLI's policy file, the provider args it needs, the `restricted` flag, and the audit |
+| `enso-security` | Installation trust, provider permissions, credential handling, and untrusted input |
 | `enso-skills` | Finding official optional skills and writing or refining a skill manually |
 | `enso-slack` | Looking people and channels up, reading history, sending, tables and charts |
 | `enso-tables` | Creating, registering, and querying structured data in `enso.db` |
@@ -294,7 +294,7 @@ Everything that is not instructions or skills is configuration:
 | --- | --- |
 | Which chat locations use which workspace | `bindings` in [`config.json`](configuration.md) |
 | Which agent a workspace or job uses | `defaults`, `workspaces.<name>.agent`, `JOB.md` |
-| Provider permissions and workspace policy prerequisites | [Restricted workspaces](configuration.md#restricted-workspaces) and `providers.<name>.args` |
+| Provider permissions | [Provider-native controls](configuration.md#provider-permissions-and-installation-trust) and `providers.<name>.args` |
 | Environment for providers and scripts | `~/.enso/secrets/*.env` |
 | Scheduled work | [`JOB.md`](jobs.md) plus its prerun and postrun scripts |
 | Projects and their stages | `enso workflow init` and `projects` in [`config.json`](configuration.md#projects); acceptance checks in stage definitions, agent instructions in the bound job's `JOB.md` |

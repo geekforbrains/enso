@@ -9,11 +9,11 @@ This document defines the primitives and traces how conversations and background
 through the system. Everything else in the docs assumes these words.
 
 Sections marked **Forthcoming in 0.2.0** describe agreed contracts awaiting implementation.
-The other runtime descriptions still describe 0.1.x.
+Other runtime descriptions reflect the currently implemented behavior.
 
 ## Installation trust model
 
-**Forthcoming in 0.2.0.** One Enso installation is one trusted environment for a person or
+One Enso installation is one trusted environment for a person or
 a small team, with one service and one operational database. Workspaces select relevant
 context and own work; they do not keep data confidential from agents elsewhere in the same
 installation. Separate personal workspace names or home directories under the same
@@ -24,7 +24,7 @@ their own credentials, provider logins, data, and chat connections. Provider per
 remain configurable. Enso still authenticates transports, validates input, protects
 credentials, preserves user data, and requires authorization for external actions. Removing
 Enso's workspace restriction mode does not silently replace provider arguments with bypass
-flags; [Configuration](configuration.md#configuration-ownership-in-020) owns that change.
+flags; [Configuration](configuration.md#provider-permissions-and-installation-trust) owns that contract.
 
 For example, two team channels can select different workspaces in one installation while
 sharing its credentials and capabilities. A finance team needing separation from development

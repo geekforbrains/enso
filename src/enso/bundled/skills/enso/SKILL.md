@@ -65,7 +65,7 @@ Adding or editing a skill needs no Enso restart. The provider discovers skills t
 | `enso-knowledge` | Shared and workspace Markdown notes, links, imports, and consistent user-defined formatting |
 | `enso-browser` | Persistent Chrome profiles, human login, and attaching browser tools |
 | `enso-skills` | Finding and installing official optional skills; authoring manual skills and choosing scope |
-| `enso-security` | Restricting a workspace: each CLI's policy file, the provider args it needs, the `restricted` flag, what that guarantees |
+| `enso-security` | Installation trust, provider permissions, credential handling, and untrusted input |
 | `enso-heartbeat` | Finite future actions and temporary watches: gates, event history, action receipts, explicit completion |
 | `enso-jobs` | Scheduled and stage jobs: `JOB.md`, no-work prerun gates, postrun checks and same-session follow-ups, run history |
 | `enso-tasks` | The task board: the Task block a stage job opens with, the moves, evidence, worktrees, landing a branch |

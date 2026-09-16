@@ -17,7 +17,7 @@ from datetime import datetime
 from functools import partial
 from typing import Any
 
-from .. import db, execution, messages, policy, routing
+from .. import db, execution, messages, routing
 from ..config import Config, ConfigError, load_config
 from ..providers import make_provider
 from ..transports import Transport
@@ -462,23 +462,17 @@ class HeartbeatRunner:
         config, current = await asyncio.to_thread(self._inspect, beat.ref, attempt)
         agent = attempt.run.definition.agent
         started = time.monotonic()
-        try:
-            policy.check(config, beat.workspace, agent.provider)
-        except policy.PolicyError as exc:
-            log.warning("%s refused: %s", beat.ref, exc)
-            result = execution.ProviderTurn("error", error=str(exc))
-        else:
-            provider = make_provider(agent.provider, config.providers[agent.provider].path)
-            result = await execution.execute_turn(
-                provider,
-                prompt,
-                agent.model,
-                agent.effort,
-                config.provider_args(beat.workspace, agent.provider),
-                cwd=self.paths.workspace(beat.workspace),
-                env=beat_env(config, current, attempt.run.id),
-                timeout=beat.timeout,
-            )
+        provider = make_provider(agent.provider, config.providers[agent.provider].path)
+        result = await execution.execute_turn(
+            provider,
+            prompt,
+            agent.model,
+            agent.effort,
+            config.provider_args(beat.workspace, agent.provider),
+            cwd=self.paths.workspace(beat.workspace),
+            env=beat_env(config, current, attempt.run.id),
+            timeout=beat.timeout,
+        )
         await asyncio.to_thread(
             store.finish_run,
             config,
