@@ -8,6 +8,30 @@ provider CLIs that can power it; each execution runs inside a workspace.
 This document defines the primitives and traces how conversations and background work move
 through the system. Everything else in the docs assumes these words.
 
+Sections marked **Forthcoming in 0.2.0** describe agreed contracts awaiting implementation.
+The other runtime descriptions still describe 0.1.x.
+
+## Installation trust model
+
+**Forthcoming in 0.2.0.** One Enso installation is one trusted environment for a person or
+a small team, with one service and one operational database. Workspaces select relevant
+context and own work; they do not keep data confidential from agents elsewhere in the same
+installation. Separate personal workspace names or home directories under the same
+unrestricted account do not provide that separation.
+
+Teams needing separation use separate installations on separate machines or VPSs, with
+their own credentials, provider logins, data, and chat connections. Provider permissions
+remain configurable. Enso still authenticates transports, validates input, protects
+credentials, preserves user data, and requires authorization for external actions. Removing
+Enso's workspace restriction mode does not silently replace provider arguments with bypass
+flags; [Configuration](configuration.md#configuration-ownership-in-020) owns that change.
+
+For example, two team channels can select different workspaces in one installation while
+sharing its credentials and capabilities. A finance team needing separation from development
+runs another installation on another machine. [Connections](connections.md#access-in-020)
+owns who a binding admits; [Workspaces](workspaces.md#ownership-in-020) owns resource locations
+and [context selection](workspaces.md#context-selection-in-020).
+
 ## The primitives
 
 | Primitive | What it is |
@@ -32,7 +56,7 @@ through the system. Everything else in the docs assumes these words.
 
 ## Home
 
-Enso's normal runtime state lives under one directory:
+Enso's current 0.1.x runtime state lives under one directory:
 
 ```text
 ~/.enso/
@@ -75,6 +99,12 @@ Enso's normal runtime state lives under one directory:
 
 [Connections](connections.md) owns the pairing lifecycle and private state. Prepared home,
 paired chat, valid configuration, and a successful provider reply are separate milestones.
+
+**Forthcoming in 0.2.0:** workspace settings, jobs, projects, memory, and Heartbeat scripts
+use the [workspace ownership layout](workspaces.md#ownership-in-020). Installation support
+files shown here keep their documented purpose and locations unless that layout explicitly
+changes them. Operational records stay in one home database; maintained knowledge and memory
+stay in Markdown.
 
 Enso keeps its runtime state inside its home. The release installer writes a stable
 launcher in the selected bin directory; `enso service install` and `enso web install`
@@ -136,6 +166,15 @@ Shared material has one home across workspaces; workspace-specific facts stay wi
 workspace and link across roots when needed. See [Knowledge](knowledge.md) for metadata,
 links, imports, and the user-editable formatting convention.
 
+## Memory
+
+**Forthcoming in 0.2.0.** Memory is dated conversation and experience maintained as Markdown
+in one workspace's `memory/`. Knowledge holds current facts and reference material. When a
+user asks about an earlier discussion, the agent uses the memory CLI and `enso-memory`
+skill, starting in the selected workspace. People sharing a workspace share its maintained
+memory, while their DM conversations and live provider sessions remain distinct.
+[Memory](memory.md) owns capture, recall, and removal.
+
 ## Agent
 
 An agent is three values, always stated together:
@@ -168,8 +207,11 @@ A **binding** maps a place to a workspace:
 { "slack:C0BP5BQF6UF": "meteor", "slack:dm:U0AETSSDDEF": "default", "telegram:123456": "default" }
 ```
 
-An unbound location is silent. Enso answers once to say it is unbound only if you mention
-the bot or DM it directly.
+**Forthcoming in 0.2.0:** a binding also grants access to the installation. Bound channel
+participants can use Enso there; each Slack DM or Telegram user needs an explicit binding.
+Unknown senders receive only the canned unbound notice in the circumstances defined by
+[Connections](connections.md#access-in-020). Mention/thread settings decide when Enso replies;
+eligible live human messages in bound conversations are captured even when Enso only observes.
 
 A **conversation** is finer-grained than a binding. In a Slack channel each top-level
 message starts its own thread and its own conversation; a DM or a Telegram chat is one
@@ -182,6 +224,9 @@ valid only in the workspace it was created in.
 A job is a directory under `~/.enso/jobs/` containing a `JOB.md`: YAML frontmatter naming
 the schedule, agent, and workspace, plus a prompt body. The scheduler wakes once a minute
 and fires the jobs whose cron slot has passed.
+
+**Forthcoming in 0.2.0:** jobs live inside their workspace and use `<workspace>:<job>`
+references, as defined in [Workspaces](workspaces.md#ownership-in-020).
 
 A job may have a **prerun** script that gates it (nothing is spent when there is nothing to
 do) and a **postrun** script that checks or reacts to the outcome, optionally sending a
@@ -210,7 +255,11 @@ See [Heartbeat](heartbeat.md) for the lifecycle, gate contract, and retention ru
 ## Project and task
 
 A project is a key such as `EN`, a workspace, an ordered list of stages, and optionally a
-Git repository, declared in `config.json`. A task belongs to one project, sits in one stage
+Git repository, currently declared in `config.json`. **Forthcoming in 0.2.0:** its definition
+moves to the containing workspace's `projects/<KEY>/PROJECT.md`; see
+[Configuration](configuration.md#configuration-ownership-in-020).
+
+A task belongs to one project, sits in one stage
 (one of the project's own, or the built-in `backlog`, `blocked`, `done`, or `cancelled`),
 and carries an append-only timeline. Moves follow the ordered stages — `advance`, `return`,
 `block`, `resume`, `drop`. An agent's forward/return handoff is submitted to a transaction;
@@ -447,6 +496,5 @@ paths; worktrees and environment actor variables are not an OS sandbox.
 - **Not a sandbox.** Permissions belong to the provider CLI. Enso passes your flags through.
 - **Not a publishing or editing application.** Knowledge stays in Markdown files, maintained
   through the agent and CLI. The viewer browses notes read-only; there is no web editor.
-- **Not multi-user.** One operator and their machine.
 - **Not a control plane.** The web viewer is read-only by design; the board moves from
   chat and the CLI.

@@ -7,6 +7,44 @@ integration-specific user-level state Enso may inspect or create.
 `enso config check` validates the file and lists every problem at once; `enso serve`
 refuses to start on a problem. `enso config show` prints it with tokens redacted.
 
+## Configuration ownership in 0.2.0
+
+**Forthcoming in 0.2.0.** `config.json` contains installation settings only: transport
+connections, bindings, default agent, global providers, and service/runtime options.
+Workspace and project definitions move out of this credential-bearing file.
+
+| Setting | Owning file in 0.2.0 |
+| --- | --- |
+| Transports, bindings, defaults, providers, and service options | Home `config.json` |
+| Optional workspace agent triple and provider-argument overrides | `workspaces/<name>/WORKSPACE.md` |
+| Project definition and workflow | `workspaces/<name>/projects/<KEY>/PROJECT.md` |
+| Job definition | `workspaces/<name>/jobs/<job>/JOB.md` |
+
+For example, `workspaces/team/WORKSPACE.md` holds `team`'s agent override, while
+`"bindings": { "slack:C0123": "team" }` stays in `config.json`. The `workspaces` and `projects`
+blocks are removed from config. `WORKSPACE.md` is optional: without it the workspace uses
+the installation defaults. Its settings are read fresh like bindings. Exact workspace and
+project frontmatter formats will be documented before their loaders are implemented.
+The [workspace layout](workspaces.md#ownership-in-020) owns paths, project scripts, qualified
+`<workspace>:<job>` references, and installation-wide concurrency groups.
+
+Bindings become the sole chat access rule, including Telegram; `allowed_users` is removed.
+The [connection access contract](connections.md#access-in-020) owns the audience trusted by
+a binding, the canned unbound notice, and trusted pairing. Missing bound workspaces are
+errors, with no fallback. [Workspace context](workspaces.md#context-selection-in-020) owns
+CLI selection through `ENSO_WORKSPACE` and optional `--workspace`.
+
+Enso's `restricted` workspace mode and its prerequisite gates are removed. Provider
+argument configuration and native permission behavior remain: a workspace override replaces
+that provider's global argument list, and Enso does not silently substitute bypass flags.
+Provider CLIs still read their own policy files from their working directory; Enso neither
+checks nor enforces those files in 0.2.0. Transport authentication, pairing, and input
+validation remain part of the [installation trust model](concepts.md#installation-trust-model).
+
+The config schema becomes `version: 2`, with no compatibility parsing of version 1 or
+removed settings. The examples and restriction details below remain **current 0.1.x
+behavior** until the corresponding implementation lands; they are not a 0.2.0 template.
+
 ## Applying configuration
 
 `enso config apply --file FILE` validates and atomically replaces the complete document;
@@ -168,17 +206,14 @@ A binding maps a place to a workspace. Keys are:
 | `slack:dm:U…` or `slack:dm:W…` | A user's DM, as one continuous conversation. `W…` ids are Enterprise Grid org-wide user ids. |
 | `telegram:<user id>` | A Telegram private chat |
 
-Slack has no per-user allowlist for bound channels. Human participants are admitted by
-the binding and mention/thread rules; `mention_required` and `thread_mention_required`
-control message admission, not sender authorization. A DM binding is keyed by the sender.
-Binding a shared channel therefore exposes the workspace's agent capabilities to its
-participants. Workspaces do not isolate their filesystem access, credentials, or OS account.
+**Forthcoming in 0.2.0:** these bindings both grant access and select workspace context,
+without Telegram's separate allowlist. [Connections](connections.md#access-in-020) owns the
+access and unbound-notice rules, pairing, and queued-turn behavior. Mention/thread settings
+control when Enso responds, independently of access and eligible live message capture.
 
-An unbound Slack channel stays silent unless the bot is mentioned, and then replies once to
-say it is not bound; an unbound DM says the same. Bindings are read fresh for each incoming
-message, so a binding added or changed in `config.json` applies to the next message with no
-restart; a message already queued runs in the workspace it was bound to when it arrived,
-and is dropped with a notice if that binding is removed before it runs.
+In 0.1.x, Slack already uses explicit channel and DM bindings, with an unbound notice when
+mentioned or messaged directly; Telegram additionally requires `allowed_users`.
+[Applying configuration](#while-the-service-runs) describes live binding reads.
 
 The named workspace directory must exist. `config check` treats a binding pointing at a
 missing directory as a problem.
