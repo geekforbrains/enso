@@ -1023,24 +1023,31 @@ async def test_scheduled_alerts_suppress_repeats_and_recover(
     assert text.endswith("fake: boom") and len(text) == NOTIFY_LIMIT
 
 
-async def test_a_restricted_workspace_refuses_the_job_without_a_policy_file(
-    enso_home: Paths, fake_config: Config, transport: FakeTransport
-) -> None:
+@pytest.mark.parametrize("args", [(), ("--permission-mode", "dontAsk")])
+async def test_jobs_preserve_provider_arguments_without_policy_prerequisites(
+    enso_home, fake_config, transport, tmp_path, monkeypatch, args
+):
     from dataclasses import replace
 
     from enso.config import WorkspaceConfig
 
-    config = replace(fake_config, workspaces={"default": WorkspaceConfig(restricted=True)})
-    runner = JobRunner(config, {"slack": transport})
-    result = await runner.run(job(enso_home, config, prompt="hello"), trigger="schedule")
-    assert result.status == "error" and result.run_id
-    assert result.error.startswith(
-        "workspace default is restricted and has no claude policy file; add "
-        ".claude/settings.json to the workspace"
+    launch_log = tmp_path / "launches.jsonl"
+    monkeypatch.setenv("FAKE_CLAUDE_LAUNCHES", str(launch_log))
+    config = replace(
+        fake_config, workspaces={"default": WorkspaceConfig(provider_args={"claude": args})}
     )
+    result = await JobRunner(config, {"slack": transport}).run(
+        job(enso_home, config, prompt="hello"), trigger="schedule"
+    )
+    assert result.status == "ok" and result.run_id
     run = runs.get(enso_home, result.run_id)
-    assert run is not None and run.status == "error" and run.error == result.error
-    assert transport.sent == [("C1", f"⚠️ [Nightly (error)]\n{result.error}")]
+    assert run is not None and run.status == "ok"
+    (launch,) = [json.loads(line) for line in launch_log.read_text().splitlines()]
+    argv = launch["args"]
+    assert argv[argv.index("--output-format") + 2 : argv.index("--model")] == list(args)
+    assert launch["cwd"] == str(enso_home.workspace("default").resolve())
+    assert not (enso_home.workspace("default") / ".claude/settings.json").exists()
+    assert transport.sent == []
 
 
 def test_job_locks_refuse_symbolic_links(

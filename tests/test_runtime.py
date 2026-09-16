@@ -502,11 +502,14 @@ async def test_config_edits_apply_to_the_next_turn_without_a_restart(
     await runtime.handle(make_turn("again"), rebound)
     assert rebound.sent[0].startswith("new ") and "workspace=other" in rebound.sent[0]
 
-    raw["workspaces"] = {"other": {"restricted": True}}
+    raw["workspaces"] = {
+        "other": {"agent": {"provider": "claude", "model": "sonnet", "effort": "high"}}
+    }
     write_config(enso_home, raw)
-    refused = FakeReply()
-    await runtime.handle(make_turn("again"), refused)
-    assert refused.sent[0].startswith("Error:") and "restricted" in refused.sent[0]
+    changed = FakeReply()
+    await runtime.handle(make_turn("again"), changed)
+    assert changed.sent[0].startswith("resumed ") and "workspace=other" in changed.sent[0]
+    assert "sonnet" in changed.status[0]
 
 
 async def test_a_broken_edit_keeps_the_last_good_config(
@@ -1150,27 +1153,25 @@ async def test_opencode_keeps_the_session_an_early_error_announced(
     assert db.get_sessions(enso_home, "slack:D1") == []
 
 
-async def test_a_restricted_workspace_needs_a_policy_file_before_the_cli_runs(
-    fake_config, enso_home: Paths
-) -> None:
+@pytest.mark.parametrize("args", [None, (), ("--permission-mode", "dontAsk")])
+async def test_chat_preserves_provider_arguments_without_policy_prerequisites(
+    fake_config, enso_home, tmp_path, monkeypatch, args
+):
     from enso.config import WorkspaceConfig
 
+    launch_log = tmp_path / "launches.jsonl"
+    monkeypatch.setenv("FAKE_CLAUDE_LAUNCHES", str(launch_log))
+    overrides = {} if args is None else {"claude": args}
     runtime = Runtime(
-        replace(fake_config, workspaces={"default": WorkspaceConfig(restricted=True)})
+        replace(fake_config, workspaces={"default": WorkspaceConfig(provider_args=overrides)})
     )
-    refused = FakeReply()
-    await runtime.handle(make_turn("hello"), refused)
-    assert refused.sent == [
-        "Error: workspace default is restricted and has no claude policy file; add "
-        '.claude/settings.json to the workspace or set "restricted": false for the '
-        "workspace in config.json"
-    ]
-    assert db.get_sessions(enso_home, "slack:D1") == []
-    assert refused.deleted
-
-    settings = enso_home.workspace("default") / ".claude" / "settings.json"
-    settings.parent.mkdir()
-    settings.write_text('{"permissions": {"deny": ["Bash(rm *)"]}}')
-    allowed = FakeReply()
-    await runtime.handle(make_turn("hello"), allowed)
-    assert allowed.sent[0].startswith("new ")
+    reply = FakeReply()
+    await runtime.handle(make_turn("hello"), reply)
+    assert reply.sent[0].startswith("new ")
+    (launch,) = [json.loads(line) for line in launch_log.read_text().splitlines()]
+    expected = fake_config.providers["claude"].args if args is None else args
+    argv = launch["args"]
+    assert argv[argv.index("--verbose") + 1 : argv.index("--model")] == list(expected)
+    assert launch["cwd"] == str(enso_home.workspace("default").resolve())
+    assert not (enso_home.workspace("default") / ".claude/settings.json").exists()
+    assert db.get_sessions(enso_home, "slack:D1")

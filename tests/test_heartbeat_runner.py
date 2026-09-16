@@ -647,20 +647,26 @@ async def test_lock_overlap_recovery_and_pruning_preserve_owned_boundaries(runti
 
 
 @pytest.mark.asyncio
-async def test_a_restricted_workspace_refuses_the_assessment(runtime, monkeypatch):
+@pytest.mark.parametrize("args", [[], ["--permission-mode", "dontAsk"]])
+async def test_assessments_preserve_provider_arguments_without_policy_prerequisites(
+    runtime, monkeypatch, args
+):
     config, clock = runtime
     beat = make_beat(config, gate="echo 'refund pending'\n")
     raw = json.loads(json.dumps(config.raw))
-    raw["workspaces"] = {"default": {"restricted": True}}
+    raw["workspaces"] = {"default": {"providers": {"claude": {"args": args}}}}
     save_config(config.paths, raw)
+    calls = []
 
-    async def forbidden(*args, **kwargs):
-        raise AssertionError("the provider must not run")
+    async def assess(provider, prompt, model, effort, actual_args, **kwargs):
+        calls.append(provider.name)
+        assert actual_args == tuple(args)
+        assert kwargs["cwd"] == config.paths.workspace("default")
+        assert not (kwargs["cwd"] / ".claude/settings.json").exists()
+        settle(config, kwargs["env"])
+        return execution.ProviderTurn("ok", output="Recorded", exit_code=0)
 
-    monkeypatch.setattr(execution, "execute_turn", forbidden)
-    runner = HeartbeatRunner(config)
-    await tick(runner, clock)
-    run = heartbeat.list_runs(config.paths, beat.ref)[0]
-    assert run.status == "error" and run.error.startswith(
-        "workspace default is restricted and has no claude policy file"
-    )
+    monkeypatch.setattr(execution, "execute_turn", assess)
+    await tick(HeartbeatRunner(config), clock)
+    assert calls == ["claude"]
+    assert heartbeat.list_runs(config.paths, beat.ref)[0].status == "ok"

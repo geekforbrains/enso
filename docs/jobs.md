@@ -303,9 +303,9 @@ notifications do not become conversation captures.
 
 ## Prerun scripts
 
-Prerun and postrun scripts execute outside the provider's policy or sandbox, even in a
-[restricted workspace](configuration.md#restricted-workspaces). The prerun precedes the
-provider policy check; it can run when that check would refuse the provider.
+Prerun and postrun scripts execute with the service account's access, outside the
+provider's policy or sandbox. Provider turns use the workspace's effective arguments,
+with no Enso policy prerequisites; see [Provider permissions](configuration.md#provider-permissions-and-installation-trust).
 
 The prerun runs before the provider so nothing is spent when there is nothing to do.
 Its stdout is bounded to the final 1 MiB, then stripped of leading and trailing whitespace

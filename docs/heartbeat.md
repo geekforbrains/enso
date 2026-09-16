@@ -118,9 +118,10 @@ cannot be established, notify the user and pause instead of clearing the uncerta
 
 ## Execution
 
-The gate executes outside provider policies and before the
-[restricted-workspace check](configuration.md#restricted-workspaces). The assessment is
-checked against its saved provider; a passing chat-provider audit does not cover it.
+The gate executes with the service account's access, outside provider policies. The
+assessment uses its saved provider and the workspace's effective arguments, with no Enso
+policy prerequisites. [Provider permissions](configuration.md#provider-permissions-and-installation-trust)
+remain the provider's responsibility.
 
 `enso serve` runs jobs and Heartbeat from one minute clock. Each system decides its own
 readiness and uses the same bounded subprocess and provider execution code. A lock prevents

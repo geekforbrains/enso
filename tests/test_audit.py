@@ -412,27 +412,25 @@ def test_official_receipts_recognized_only_at_home_and_bad_receipts_warn(enso_ho
     assert [f for f in report.home.findings if f.check == "reserved"]
 
 
-def test_a_restricted_workspace_must_be_able_to_launch_its_chat_provider(
-    enso_home: Paths, config: Config
-) -> None:
-    from dataclasses import replace
-
-    from enso.config import WorkspaceConfig
-
+def test_audit_preserves_optional_provider_files_without_checking_permissions(enso_home, config):
     workspaces.seed_home(enso_home)
-    finish(enso_home.workspace("default"))
-    config = replace(config, workspaces={"default": WorkspaceConfig(restricted=True)})
-
-    (found,) = audit.audit(enso_home, config=config, user_dirs=USER_DIRS).workspaces
-    assert [(f.check, f.severity, f.fixable) for f in found.findings] == [
-        ("policy", "error", False)
-    ]
-    assert found.findings[0].message.startswith(
-        "workspace default is restricted and has no claude policy file"
-    )
-
-    settings = enso_home.workspace("default") / ".claude" / "settings.json"
-    settings.write_text("{}")
-    (enso_home.workspace("default") / "opencode.json").write_text("{}")  # expected, not noise
+    workspace = enso_home.workspace("default")
+    finish(workspace)
     (found,) = audit.audit(enso_home, config=config, user_dirs=USER_DIRS).workspaces
     assert found.findings == []
+
+    files = [
+        workspace / path
+        for path in (
+            ".claude/settings.json",
+            ".codex/config.toml",
+            ".grok/config.toml",
+            "opencode.json",
+        )
+    ]
+    for file in files:
+        file.parent.mkdir(exist_ok=True)
+        file.write_text("user-authored provider settings")
+    (found,) = audit.audit(enso_home, config=config, user_dirs=USER_DIRS, fix=True).workspaces
+    assert found.findings == []
+    assert all(file.read_text() == "user-authored provider settings" for file in files)

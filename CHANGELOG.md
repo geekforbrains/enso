@@ -7,6 +7,10 @@ All notable changes to Enso are documented here, following
 
 ### Changed
 
+- Configuration now requires schema version 2; version-1 files are refused with a link to
+  the migration guide. Enso's workspace restriction mode, provider prerequisite gates,
+  policy audit findings, and mode-dependent config-write guards are removed. Provider
+  arguments, native permissions, transport authentication, and pairing remain unchanged.
 - Agent task handoffs are submitted for Enso acceptance after execution finishes. Required
   stage checks, when configured, run outside the model and retain candidate-bound evidence,
   bounded repair/return history, and diagnostics. Simple unchecked workflows remain valid.
@@ -42,8 +46,6 @@ All notable changes to Enso are documented here, following
 - Every paginated viewer page derives its shown range from the listed rows and reports
   count failures without listing rows; the Heartbeats list no longer claims a row range it
   did not render when its listing fails.
-- Clarify bundled security guidance: policy checks cover provider prerequisites, audits
-  cover the chat provider only, and scripts and direct file writes have separate limits.
 - Reject conflicting provider session IDs consistently in chat and background turns,
   preventing resumed chats from silently switching conversations. Unrecognized provider
   output now reports an error instead of establishing a chat session.

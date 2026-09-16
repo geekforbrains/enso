@@ -30,6 +30,7 @@ from typing import Any
 
 from . import locks
 from .config import (
+    CONFIG_VERSION,
     ConfigConflictError,
     ConfigError,
     Paths,
@@ -558,7 +559,7 @@ def initial_config(
     spec = TRANSPORTS[transport]
     binding = spec.binding_key(owner.channel, is_dm=True, user_id=owner.user_id)
     return {
-        "version": 1,
+        "version": CONFIG_VERSION,
         "transports": {transport: spec.config_entry(credentials, owner)},
         "bindings": {binding: "default"},
         "workspaces": {},

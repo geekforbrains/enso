@@ -11,7 +11,7 @@ rather than assembled by hand.
 
 ## Layout
 
-This is the current 0.1.x layout; the [0.2.0 ownership layout](#ownership-in-020) below is
+This is the currently implemented layout; the [0.2.0 ownership layout](#ownership-in-020) below is
 forthcoming.
 
 ```text
@@ -25,7 +25,7 @@ forthcoming.
 ├── .claude/skills     # symlink -> ../skills, read by Claude Code and Grok
 ├── .agents/skills     # symlink -> ../skills, read by Codex, Grok, Antigravity, and OpenCode
 └── .claude/settings.json, .codex/config.toml, .grok/config.toml, opencode.json
-                       # optional: each CLI's own policy file; required when restricted
+                       # optional: each CLI's own policy file
 ```
 
 | Directory | What belongs there |
@@ -34,7 +34,7 @@ forthcoming.
 | `drafts/` | Ordinary work product. Posts, reports, scratch analysis. Safe to delete. |
 | `uploads/` | Chat attachments. Enso writes here; nothing else should. |
 | `skills/` | Skills only this workspace needs. |
-| Policy files | Each CLI's own project-level permission file, in its own format. Optional, unless the workspace is [restricted](configuration.md#restricted-workspaces). |
+| Policy files | Each CLI's own project-level permission file, in its own format. Optional; Enso neither checks nor enforces it. See [Provider permissions](configuration.md#provider-permissions-and-installation-trust). |
 
 Names are lowercase kebab-case (`meteor`, `blog-research`), at most 64 characters. The name
 is the directory name, and there is no other valid location.
@@ -287,13 +287,12 @@ The audit checks, each finding carrying the check id shown:
 | No skill name collides with a user-level skill | `skill-collision` | warning | Reports only |
 | No `enso-*` skill or job exists that Enso did not install | `reserved` | warning | Reports only |
 | The workspace is bound, or named by a job | `orphan` | warning | Reports only |
-| A restricted workspace passes its chat provider's [policy prerequisite check](configuration.md#restricted-workspaces) | `policy` | error | Reports only |
 | Unexpected entries at a workspace's top level, or under `workspaces/` | `unexpected` | warning | Reports only |
 | `uploads/` size | — | — | Reported as a number |
 
-The `policy` finding checks the resolved chat provider only. It does not parse policy
-contents, exercise denied operations, or check providers used only by jobs or beats.
-No policy finding therefore means the prerequisites passed, not that access is confined.
+The audit checks layout and skill discovery. Optional provider policy files are allowed
+in the layout and preserved, with no policy or trust checks. An audit does not establish
+provider permissions or prove that access is confined.
 
 `--fix` only ever creates and repairs. It never deletes a file, never edits `AGENTS.md`, and
 never touches anything under `knowledge/`, `drafts/`, or `uploads/`. A real file or

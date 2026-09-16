@@ -14,6 +14,7 @@ from typing import Any, Literal
 
 from . import __version__, workspaces
 from .config import (
+    CONFIG_VERSION,
     ConfigConflictError,
     ConfigError,
     Paths,
@@ -79,7 +80,7 @@ def example_config() -> dict[str, Any]:
     """An editable template: empty credentials deliberately prevent use as an active config."""
     cls = PROVIDER_CLASSES["claude"]
     return {
-        "version": 1,
+        "version": CONFIG_VERSION,
         "transports": {"slack": {"bot_token": "", "app_token": "", "notify": ""}},
         "bindings": {},
         "defaults": {"provider": "claude", "model": cls.models[0], "effort": "high"},
@@ -282,57 +283,6 @@ def _report() -> dict[str, Any]:
     }
 
 
-def _subtree(document: object, *keys: str) -> object:
-    """The value under a key path, or None when any step is missing or not an object."""
-    for key in keys:
-        document = document.get(key) if isinstance(document, dict) else None
-    return document
-
-
-def _provider_args(document: object) -> object:
-    """The ``args`` of every provider that has them, so other provider fields stay editable
-    and a provider without arguments may be added; adding, removing, or changing a list is
-    still a change.
-    """
-    providers = _subtree(document, "providers")
-    if not isinstance(providers, dict):
-        return providers
-    return {
-        name: args
-        for name, entry in providers.items()
-        if (args := _subtree(entry, "args")) is not None
-    }
-
-
-def _restriction_problem(paths: Paths, previous: dict[str, Any] | None, raw: object) -> str | None:
-    """Why a run inside a restricted workspace may not make this change, or None.
-
-    Every process Enso starts for a chat turn, job, or heartbeat carries ENSO_WORKSPACE,
-    so an ``enso config`` call from inside one can be told from a person's terminal, where
-    the variable is absent and nothing is guarded. The restriction is read from the
-    document being replaced; one that does not parse is apply's repair job and guards
-    nothing. This is a guardrail against an agent loosening its own restriction by
-    accident, not a security boundary: the marker is caller-controlled, and neither this
-    check nor a command deny rule protects against direct writes by a process with access.
-    """
-    name = os.environ.get("ENSO_WORKSPACE")
-    if not name or not previous:
-        return None
-    current, _, _ = parse_config(previous, paths)
-    if current is None:
-        return None
-    override = current.workspaces.get(name)
-    if override is None or not override.restricted:
-        return None
-    same_workspace = _subtree(previous, "workspaces", name) == _subtree(raw, "workspaces", name)
-    if same_workspace and _provider_args(previous) == _provider_args(raw):
-        return None
-    return (
-        f"workspace {name} is restricted, so a run inside it cannot change workspaces.{name} "
-        "or provider arguments; ask a person to make this change from a terminal"
-    )
-
-
 def _validated_write(
     paths: Paths,
     build: Callable[[dict[str, Any] | None], object],
@@ -363,9 +313,7 @@ def _validated_write(
             config, problems, warnings = parse_config(raw, paths)
             result["problems"] = safe_diagnostics(raw, problems)
             result["warnings"] = safe_diagnostics(raw, warnings)
-            if (refusal := _restriction_problem(paths, previous, raw)) is not None:
-                result["problems"].append(refusal)
-            if config is None or refusal is not None:
+            if config is None:
                 return result
             write_config_locked(paths, config.raw)
             result["applied"] = True

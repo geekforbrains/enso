@@ -34,16 +34,15 @@ a binding, the canned unbound notice, and trusted pairing. Missing bound workspa
 errors, with no fallback. [Workspace context](workspaces.md#context-selection-in-020) owns
 CLI selection through `ENSO_WORKSPACE` and optional `--workspace`.
 
-Enso's `restricted` workspace mode and its prerequisite gates are removed. Provider
-argument configuration and native permission behavior remain: a workspace override replaces
-that provider's global argument list, and Enso does not silently substitute bypass flags.
-Provider CLIs still read their own policy files from their working directory; Enso neither
-checks nor enforces those files in 0.2.0. Transport authentication, pairing, and input
-validation remain part of the [installation trust model](concepts.md#installation-trust-model).
+**Implemented on the 0.2.0 development branch:** the config schema is `version: 2`, and
+Enso's workspace restriction mode is removed. See
+[Provider permissions](#provider-permissions-and-installation-trust) for the launch and trust contract. Version 1 is refused without parsing its fields, using
+one message: "This Enso home predates 0.2.0; see the migration guide:" followed by the
+[guide's repository URL](migration.md). Existing homes require deliberate manual conversion;
+changing the version number alone is not a migration.
 
-The config schema becomes `version: 2`, with no compatibility parsing of version 1 or
-removed settings. Outside the explicitly marked 0.2.0 sections, the config examples and
-restriction details remain **current 0.1.x behavior** until implementation lands.
+Workspace/project relocation and binding-only Telegram access above remain forthcoming.
+The examples below describe the currently implemented schema until those tasks land.
 
 ### WORKSPACE.md in 0.2.0
 
@@ -153,7 +152,7 @@ in an update's snapshot.
 so a workspace, provider, binding, or project name is just a segment, and `set` creates
 the objects on the way when they are missing. `VALUE` is JSON; text that is not valid JSON
 is stored as a string, so `enso config set defaults.model opus` and
-`enso config set workspaces.meteor.restricted true` both do what they look like. Quote a
+`enso config set workspaces.meteor.providers.claude.args '[]'` both do what they look like. Quote a
 string that would parse as JSON, such as `'"123"'`, to keep it a string, and put `--`
 before a value that starts with `-`, after any options. Removing a key that is not set is
 a problem. The patched document takes exactly the path apply does — the same lock,
@@ -193,8 +192,9 @@ such as `logging.max_byte`, or a key from some other tool — is a problem repor
 path alongside the others, never a silently ignored extra that leaves the default in force.
 The names you choose are not members: binding keys, workspace names, and provider names stay
 free-form within their own rules, and only the objects stored under them are closed. `version`
-names the schema itself, so a file declaring anything but `1` is reported as an unsupported
-version and its members are left alone rather than measured against version 1.
+names the schema itself, so a file declaring anything but integer `2` is reported as an unsupported
+version and its members are left alone rather than measured against version 2. Version 1
+gets only the migration notice above.
 
 ## `config.json`
 
@@ -203,7 +203,7 @@ which accepts strict JSON.
 
 ```jsonc
 {
-  "version": 1,
+  "version": 2,
   "transports": {
     "slack": {
       "bot_token": "xoxb-…", "app_token": "xapp-…",
@@ -226,8 +226,7 @@ which accepts strict JSON.
   "defaults": { "provider": "claude", "model": "opus", "effort": "xhigh" },
   "workspaces": {                           // optional overrides only
     "meteor":  { "agent": { "provider": "codex", "model": "sol", "effort": "xhigh" } },
-    "testing": { "restricted": true,        // needs the provider's policy file; see below
-                 "providers": { "claude": { "args": ["--permission-mode", "dontAsk"] } } }
+    "testing": { "providers": { "claude": { "args": ["--permission-mode", "dontAsk"] } } }
   },
   "providers": {
     "claude": { "path": "/Users/x/.local/bin/claude", "models": ["opus", "sonnet", "haiku"],
@@ -312,65 +311,47 @@ Only workspaces with overrides need an entry in `workspaces`. The directory
 `~/.enso/workspaces/<name>` must exist for every binding and job that names it;
 `enso workspace create NAME` scaffolds it. See [Workspaces](workspaces.md).
 
-### Restricted workspaces
+### Provider permissions and installation trust
 
-`workspaces.<name>.restricted` defaults to `false`. When true,
-[`policy.check`](../src/enso/policy.py) checks prerequisites before chat provider execution,
-the job provider-turn sequence, and heartbeat assessments. A refusal becomes a chat error
-or an error run without starting that provider. The check uses the provider and effective
-workspace arguments for that execution, not necessarily the chat defaults.
+One installation is one trusted environment for a person or a small team. Workspaces
+organize context and ownership; they do not isolate agents, credentials, or files from
+other workspaces. Teams needing separation run separate installations on separate machines
+or VPSs. [Concepts](concepts.md#installation-trust-model) owns this trust model.
 
-| Provider | Required workspace-relative file | Additional Enso check |
-| --- | --- | --- |
-| `claude` | `.claude/settings.json` | None |
-| `codex` | `.codex/config.toml` | Trusted home; reject exact argument tokens `--dangerously-bypass-approvals-and-sandbox` and `--yolo` |
-| `grok` | `.grok/config.toml` | Trusted home or an exact `--trust` argument |
-| `opencode` | `opencode.json` | None |
-| `agy` | No supported workspace policy | Always refused when restricted |
+Enso has no workspace restriction mode. `workspaces.<name>.restricted` is rejected as an
+unknown key, including when its value is `false`. Chat, jobs, and Heartbeat start their
+provider in the workspace directory with the configured arguments. An override replaces
+the global list, including an explicit empty list; removing the old mode does not change
+setup's provider defaults or insert bypass flags into existing argument lists.
 
-The Codex trust file is `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`), with
-`[projects."<home>"]` and `trust_level = "trusted"`. Grok uses
-`$GROK_HOME/trusted_folders.toml` (default `~/.grok/trusted_folders.toml`), with
-`[folders."<home>"]` and `trusted = true`; `--trust` delegates recording trust to Grok.
-`<home>` is the resolved absolute Enso home, which is the Git root, not the workspace.
-Codex requires the exact key; Grok also accepts a trailing slash. Missing, unreadable,
-or malformed trust configuration does not satisfy the check. Enso never writes this trust.
-
-The policy-file check is `Path.is_file()` (including a symlink to a regular file).
-Enso does not parse the file, validate rules, or inspect effective provider permissions.
-An empty or malformed policy can pass; other CLI flags, user settings, tools, and provider
-versions can change enforcement. The rejected argument list is deliberately narrow, not
-an exhaustive detector of configurations that weaken a policy. Provider follow-ups and
-job repairs do not turn this gate into continuous tool-call enforcement.
+Provider CLIs can still load their own workspace policy files, such as
+`.claude/settings.json`, `.codex/config.toml`, `.grok/config.toml`, and `opencode.json`.
+The provider controls loading, trust requirements, and enforcement. Enso neither requires
+nor inspects these files or provider trust settings, and the workspace audit leaves them
+alone. Configure and verify permissions with the provider itself.
 
 Job prerun/postrun scripts, heartbeat gates, command/integration stages, workflow checks,
-and lifecycle scripts run outside provider policies with the service account's access.
-Preruns and gates may execute before a provider is refused. A workspace audit checks only
-the resolved chat provider's prerequisites; it does not validate job or beat providers or
-prove a rule is enforced. [Auditing](workspaces.md#auditing) owns the report contract.
+and lifecycle scripts run with the service account's access, outside provider policies.
+Transport authentication, pairing, admission checks, input validation, safe file handling,
+subprocess limits, and authorization for external actions remain in force.
 
-The config-write guard in [`initialization.py`](../src/enso/initialization.py) prevents
-accidental changes through `config apply`, `set`, and `unset`: when `ENSO_WORKSPACE`
-names a currently restricted workspace, it refuses changes to that workspace's subtree
-or global provider arguments. It uses the previous valid document; missing/invalid
-configuration is repaired without this guard. A caller without that environment marker
-is unguarded. This is not authentication, and neither this guard nor a command deny rule
-protects against direct file writes by a process with access. Enso does not make policy
-files immutable or isolate credentials between workspaces.
+`ENSO_WORKSPACE` selects context; it does not gate `enso config apply`, `set`, or `unset`.
+These commands retain validation, conflict detection, locks, and atomic writes. A workspace
+name is not an authenticated identity, and Enso does not protect configuration from direct
+writes by a process with access to it.
 
-Provider-native setup examples, verification probes, and version caveats belong in the
-[public security guide](https://ensobot.ai/docs/security/). The bundled `enso-security`
-skill carries the agent procedure. Maintain these alongside this technical contract when
-changing policy behavior; do not describe model instructions as enforced permissions.
+The bundled `enso-security` skill guides agents through these responsibilities. The
+[public security guide](https://ensobot.ai/docs/security/) is maintained separately; this
+page owns the current Enso behavior.
 
 ## Providers
 
 `path` is the executable — `~` is expanded, and a bare name is found on `PATH`. `models` is
 the list a config or job may name. `args` are appended to every invocation verbatim.
 
-Enso passes these flags through except for the explicitly rejected Codex arguments in a
-[restricted workspace](#restricted-workspaces). Pick the permission mode you want an
-unattended agent to run with, knowing it will run without anyone watching.
+Enso passes these flags through without workspace permission gates. Choose the intended
+permission mode for unattended execution using the provider's own controls; see
+[Provider permissions](#provider-permissions-and-installation-trust).
 
 Model ids remain canonical everywhere except their compact chat label. Slack's live run
 header and `!status`, and Telegram's live run header and `/status`, share that presentation;

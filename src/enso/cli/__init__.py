@@ -426,7 +426,7 @@ def _config_value(text: str) -> object:
 @config_app.command("set")
 def config_set(
     path: str = typer.Argument(
-        ..., help="Dotted keys, such as defaults.model or workspaces.NAME.restricted."
+        ..., help="Dotted keys, such as defaults.model or workspaces.NAME.providers.claude.args."
     ),
     value: str = typer.Argument(..., help="JSON, or plain text when it is not valid JSON."),
     expected_hash: str | None = EXPECTED_HASH,

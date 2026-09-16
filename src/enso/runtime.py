@@ -15,7 +15,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import connection_setup, db, messages, outbound, policy, routing
+from . import connection_setup, db, messages, outbound, routing
 from . import log as logctx
 from .config import Config, LiveConfig
 from .execution import terminate_process_tree
@@ -629,7 +629,7 @@ class Runtime:
     async def _run_turn_inner(
         self, conversation: str, turn: Turn, reply: Reply, running: Running
     ) -> None:
-        # One snapshot per turn: the agent, policy, launch arguments, timeout, and receipt
+        # One snapshot per turn: the agent, launch arguments, timeout, and receipt
         # hash all come from it, read here rather than at admission because the turn may
         # have waited in the queue.
         config = await asyncio.to_thread(self._live.current)
@@ -800,13 +800,7 @@ class Runtime:
     ) -> tuple[_Response, bool]:
         """Stream the provider to completion under the deadline, retrying once if transient."""
         collected = _Response()
-        config = running.config  # the check and the launch must read one revision
-        try:
-            policy.check(config, workspace, provider.name)
-        except policy.PolicyError as exc:
-            log.warning("turn refused: %s", exc)
-            collected.error = str(exc)
-            return collected, False
+        config = running.config
         args = config.provider_args(workspace, provider.name)
         env = self._env(turn, reply, workspace)
         cwd = str(self.paths.workspace(workspace))

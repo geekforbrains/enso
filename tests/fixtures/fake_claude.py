@@ -8,7 +8,8 @@ TEXT (batch mode) then exits 1.
 Environment: ``FAKE_FAIL=1`` exits 2 without printing anything (a launch that never
 created its session); ``FAKE_RESPONSES=<dir>`` answers with the directory's files in
 name order, one per invocation, until they run out; ``FAKE_SESSION_ID=<id>`` reports that
-id in the result event instead of the one Enso assigned.
+id in the result event instead of the one Enso assigned. ``FAKE_CLAUDE_LAUNCHES=<path>``
+records the argument list and working directory for each invocation.
 """
 
 import json
@@ -18,6 +19,9 @@ import time
 from pathlib import Path
 
 args = sys.argv[1:]
+if launch_log := os.environ.get("FAKE_CLAUDE_LAUNCHES"):
+    with open(launch_log, "a") as handle:
+        handle.write(json.dumps({"args": args, "cwd": os.getcwd()}) + "\n")
 if os.environ.get("FAKE_FAIL"):
     sys.stderr.write("fake: launch failed\n")
     sys.exit(2)

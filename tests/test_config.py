@@ -12,6 +12,7 @@ from typer.testing import CliRunner
 
 from enso.cli import app
 from enso.config import (
+    LEGACY_HOME_MESSAGE,
     Config,
     ConfigError,
     LiveConfig,
@@ -87,7 +88,7 @@ def _set(raw: dict, value: object, *path: str) -> dict:
 @pytest.mark.parametrize(
     ("mutate", "fragment"),
     [
-        (lambda r: _set(r, 2, "version"), "version must be 1"),
+        (lambda r: _set(r, 3, "version"), "version must be 2"),
         (lambda r: _without(r, "defaults"), "defaults must be an object"),
         (lambda r: _without(r, "defaults", "effort"), "defaults.effort is required"),
         (
@@ -239,18 +240,18 @@ def test_a_malformed_subtree_reports_its_type_and_is_not_inspected(
     assert not any(UNKNOWN in problem for problem in problems), problems
 
 
-def test_an_unsupported_version_is_not_judged_against_version_1_keys(
+def test_an_unsupported_version_is_not_judged_against_current_keys(
     enso_home: Paths, raw_config: dict
 ) -> None:
     """A future schema's member names are its own; its value problems still stand."""
-    raw_config["version"] = 2
+    raw_config["version"] = 3
     raw_config["future_option"] = True
     raw_config["logging"] = {"level": "LOUD", "max_byte": 1}
 
     config, problems, _ = parse_config(raw_config, enso_home)
 
     assert config is None
-    assert "version must be 1" in problems
+    assert "version must be 2" in problems
     assert any("logging.level must be one of" in problem for problem in problems), problems
     assert not any(UNKNOWN in problem for problem in problems), problems
 
@@ -473,16 +474,41 @@ def test_default_notify(enso_home: Paths, raw_config_both: dict) -> None:
     assert config is not None and config.default_notify() is None
 
 
-def test_restricted_is_a_workspace_boolean(enso_home: Paths, raw_config: dict) -> None:
-    raw_config["workspaces"]["default"] = {"restricted": True}
+@pytest.mark.parametrize("value", [True, False, "yes"])
+def test_removed_workspace_restriction_is_rejected(enso_home, raw_config, value):
+    raw_config["workspaces"]["default"] = {"restricted": value}
     config, problems, _ = parse_config(raw_config, enso_home)
-    assert config is not None, problems
-    assert config.workspaces["default"].restricted
-    assert config.workspaces["default"].agent is None
+    assert config is None
+    assert len(problems) == 1
+    assert "workspaces.default.restricted is not a recognized key" in problems[0]
 
-    raw_config["workspaces"]["default"] = {"restricted": "yes"}
-    _, problems, _ = parse_config(raw_config, enso_home)
-    assert problems == ["workspaces.default.restricted must be true or false"]
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        {"version": 1},
+        {"version": 1, "workspaces": {"default": {"restricted": True}}, "transports": "invalid"},
+    ],
+)
+def test_version_one_is_refused_once_without_parsing_legacy_fields(enso_home, raw):
+    config, problems, warnings = parse_config(raw, enso_home)
+    assert config is None and problems == [LEGACY_HOME_MESSAGE] and warnings == []
+    write_config(enso_home, raw)
+    before = enso_home.config.read_bytes()
+    with pytest.raises(ConfigError) as refused:
+        load_config(enso_home)
+    assert refused.value.problems == [LEGACY_HOME_MESSAGE]
+    result = CliRunner().invoke(app, ["config", "check", "--json"])
+    assert result.exit_code == 1
+    assert json.loads(result.stdout)["problems"] == [LEGACY_HOME_MESSAGE]
+    assert enso_home.config.read_bytes() == before
+
+
+@pytest.mark.parametrize("version", [True, False, 1.0, 2.0, "2", None])
+def test_config_version_requires_an_integer(enso_home, raw_config, version):
+    raw_config["version"] = version
+    config, problems, _ = parse_config(raw_config, enso_home)
+    assert config is None and problems == ["version must be 2"]
 
 
 def test_a_deeply_nested_document_is_rejected_once_like_any_other_bad_revision(

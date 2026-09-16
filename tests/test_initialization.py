@@ -50,7 +50,7 @@ main()
     assert run.returncode == 0, run.stderr
     assert json.loads(run.stdout)["ok"]
     assert not enso_home.config.exists() and not enso_home.db.exists()
-    assert enso_home.config_example.is_file()
+    assert json.loads(enso_home.config_example.read_text())["version"] == 2
     assert not list(enso_home.jobs.iterdir())
     assert (enso_home.home / ".git").is_dir()
 
@@ -336,10 +336,6 @@ APPLY_FIELDS = {
     "problems",
     "warnings",
 }
-REFUSAL = (
-    "workspace meteor is restricted, so a run inside it cannot change workspaces.meteor or "
-    "provider arguments; ask a person to make this change from a terminal"
-)
 
 
 def test_set_creates_a_nested_key_and_validates_the_result(enso_home, raw_config):
@@ -348,8 +344,8 @@ def test_set_creates_a_nested_key_and_validates_the_result(enso_home, raw_config
     code, report = invoke(
         "config",
         "set",
-        "workspaces.meteor.restricted",
-        "true",
+        "workspaces.meteor.providers.claude.args",
+        '["--permission-mode", "dontAsk"]',
         "--json",
         "--expected-hash",
         revision,
@@ -359,7 +355,10 @@ def test_set_creates_a_nested_key_and_validates_the_result(enso_home, raw_config
     assert report["restart_required"] is False
     assert report["config_hash"] == config_fingerprint(enso_home) != revision
     assert enso_home.config.stat().st_mode & 0o777 == 0o600
-    assert load_config(enso_home).workspaces["meteor"].restricted is True
+    assert load_config(enso_home).provider_args("meteor", "claude") == (
+        "--permission-mode",
+        "dontAsk",
+    )
     assert (enso_home.jobs / "enso-audit" / "JOB.md").is_file()
 
 
@@ -432,86 +431,27 @@ def test_set_with_a_stale_revision_preserves_config(enso_home, raw_config):
     assert enso_home.config.read_bytes() == previous
 
 
-@pytest.mark.parametrize(
-    "edit",
-    [
-        initialization.ConfigEdit("set", "workspaces.meteor.restricted", False),
-        initialization.ConfigEdit("unset", "workspaces.meteor"),
-        initialization.ConfigEdit("set", "workspaces.meteor.providers.claude.args", []),
-        initialization.ConfigEdit("set", "providers.claude.args", []),
-        initialization.ConfigEdit("unset", "providers.grok"),
-        initialization.ConfigEdit(
-            "set", "providers.opencode", {"path": sys.executable, "models": ["m"], "args": []}
-        ),
-    ],
-)
-def test_a_restricted_run_cannot_loosen_its_own_restriction(
-    enso_home, raw_config, monkeypatch, edit
+@pytest.mark.parametrize("operation", ["apply", "set"])
+def test_workspace_context_does_not_gate_provider_argument_edits(
+    enso_home, raw_config, monkeypatch, operation
 ):
-    raw_config["workspaces"]["meteor"] = {"restricted": True}
     save_config(enso_home, raw_config)
-    previous = enso_home.config.read_bytes()
-    monkeypatch.setenv("ENSO_WORKSPACE", "meteor")
-    report = initialization.patch_config(enso_home, [edit])
-    assert not report["applied"] and report["problems"] == [REFUSAL]
-    assert enso_home.config.read_bytes() == previous
-
-
-def test_a_restricted_run_cannot_apply_provider_arguments_either(
-    enso_home, raw_config, monkeypatch
-):
-    raw_config["workspaces"]["meteor"] = {"restricted": True}
-    save_config(enso_home, raw_config)
-    previous = enso_home.config.read_bytes()
-    monkeypatch.setenv("ENSO_WORKSPACE", "meteor")
-    raw_config["providers"]["claude"]["args"] = ["--skip", "--more"]
-    report = initialization.apply_config(enso_home, raw_config)
-    assert not report["applied"] and report["problems"] == [REFUSAL]
-    raw_config["version"] = 9  # the refusal is reported with the validation problems
-    report = initialization.apply_config(enso_home, raw_config)
-    assert report["problems"] == ["version must be 1", REFUSAL]
-    assert enso_home.config.read_bytes() == previous
-
-
-def test_a_restricted_run_may_still_change_unrelated_keys(enso_home, raw_config, monkeypatch):
-    raw_config["workspaces"]["meteor"] = {"restricted": True}
-    save_config(enso_home, raw_config)
-    monkeypatch.setenv("ENSO_WORKSPACE", "meteor")
-    for edit in (
-        initialization.ConfigEdit("set", "logging.level", "DEBUG"),
-        initialization.ConfigEdit("set", "workspaces.default.restricted", True),
-        initialization.ConfigEdit("set", "providers.claude.models", ["opus", "sonnet"]),
-        # A provider added without arguments changes nothing under any provider's args.
-        initialization.ConfigEdit(
-            "set", "providers.opencode", {"path": sys.executable, "models": ["m"]}
-        ),
-    ):
-        report = initialization.patch_config(enso_home, [edit])
-        assert report["ok"], report["problems"]
-    config = load_config(enso_home)
-    assert config.workspaces["meteor"].restricted and config.workspaces["default"].restricted
-    assert config.providers["opencode"].args == ()
-
-
-@pytest.mark.parametrize("workspace", [None, "default"])
-def test_the_guard_needs_a_restricted_calling_workspace(
-    enso_home, raw_config, monkeypatch, workspace
-):
-    raw_config["workspaces"]["meteor"] = {"restricted": True}
-    save_config(enso_home, raw_config)
-    if workspace is not None:
-        monkeypatch.setenv("ENSO_WORKSPACE", workspace)
-    edit = initialization.ConfigEdit("set", "workspaces.meteor.restricted", False)
-    assert initialization.patch_config(enso_home, [edit])["ok"]
-    raw_config["workspaces"]["meteor"]["restricted"] = False
-    raw_config["providers"]["claude"]["args"] = []
-    assert initialization.apply_config(enso_home, raw_config)["ok"]
-    assert not load_config(enso_home).workspaces["meteor"].restricted
-
-
-def test_an_unparsable_document_is_repaired_without_the_guard(enso_home, raw_config, monkeypatch):
-    raw_config["workspaces"]["meteor"] = {"restricted": True}
-    save_config(enso_home, {**raw_config, "version": 9})
-    monkeypatch.setenv("ENSO_WORKSPACE", "meteor")
-    raw_config["providers"]["claude"]["args"] = []
-    assert initialization.apply_config(enso_home, raw_config)["ok"]
+    monkeypatch.setenv("ENSO_WORKSPACE", "default")
+    raw_config["workspaces"]["default"] = {"providers": {"claude": {"args": []}}}
+    raw_config["providers"]["claude"]["args"] = ["--permission-mode", "dontAsk"]
+    if operation == "apply":
+        report = initialization.apply_config(enso_home, raw_config)
+    else:
+        report = initialization.patch_config(
+            enso_home,
+            [
+                initialization.ConfigEdit("set", "workspaces.default.providers.claude.args", []),
+                initialization.ConfigEdit(
+                    "set", "providers.claude.args", ["--permission-mode", "dontAsk"]
+                ),
+            ],
+        )
+    assert report["ok"], report["problems"]
+    current = load_config(enso_home)
+    assert current.provider_args("default", "claude") == ()
+    assert current.providers["claude"].args == ("--permission-mode", "dontAsk")

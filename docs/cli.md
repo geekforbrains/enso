@@ -152,7 +152,9 @@ The offline commands in this section work without an active config or transport 
 `connect` is the networked pairing workflow and requires the selected transport's extra.
 `init`, `config apply`, `config set`, `config unset`, and `config check` print exactly one JSON report with `--json`;
 `ok: false` exits 1 and `ok: true` exits 0. Errors never print submitted credentials. Their contract `version` is
-`1`, independent of the package version and configuration schema version.
+`1`, independent of the package version and the `config.json` schema version, now `2`.
+Version-1 configuration files receive the [migration notice](configuration.md#configuration-ownership-in-020).
+`ENSO_WORKSPACE` does not restrict config edits; validation and write-conflict checks still apply.
 
 | Command | Report fields |
 | --- | --- |

@@ -25,7 +25,7 @@ FAKE_AGY = FIXTURES / "fake_agy.py"
 FAKE_OPENCODE = FIXTURES / "fake_opencode.py"
 
 VALID_CONFIG: dict = {
-    "version": 1,
+    "version": 2,
     "transports": {
         "slack": {"bot_token": "xoxb-test", "app_token": "xapp-test", "notify": "C1"},
     },

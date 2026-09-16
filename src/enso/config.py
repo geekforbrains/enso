@@ -22,7 +22,11 @@ from .transport_registry import TRANSPORTS
 
 log = logging.getLogger(__name__)
 
-CONFIG_VERSION = 1
+CONFIG_VERSION = 2
+LEGACY_HOME_MESSAGE = (
+    "This Enso home predates 0.2.0; see the migration guide: "
+    "https://github.com/geekforbrains/enso/blob/develop/docs/migration.md"
+)
 WORKSPACE_NAME_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 BINDING_KEY_RE = re.compile("|".join(f"(?:{spec.binding_pattern})" for spec in TRANSPORTS.values()))
 _BINDING_FORMS = [form for spec in TRANSPORTS.values() for form in spec.binding_forms]
@@ -201,15 +205,10 @@ class ProviderConfig:
 
 @dataclass(frozen=True)
 class WorkspaceConfig:
-    """Per-workspace overrides; absent keys fall back to the global config.
-
-    ``restricted`` makes a launch in the workspace require the provider's own policy file
-    first; see ``policy.py``. False keeps the default: whatever the provider's args allow.
-    """
+    """Per-workspace overrides; absent keys fall back to the global config."""
 
     agent: Agent | None = None
     provider_args: dict[str, tuple[str, ...]] = field(default_factory=dict)
-    restricted: bool = False
 
 
 @dataclass(frozen=True)
@@ -427,7 +426,7 @@ def valid_workspace_name(name: object) -> bool:
 
 # -- Parsing ------------------------------------------------------------------
 
-# Every closed object in the version-1 schema, by the path it is reported under. Dynamic maps
+# Every closed object in the current schema, by the path it is reported under. Dynamic maps
 # are absent on purpose: bindings, workspaces, providers, and workspace provider overrides are
 # named by the user and validated by their own name rules, not by this table.
 ROOT_KEYS = (
@@ -461,7 +460,7 @@ SLACK_KEYS = ("bot_token", "app_token", "notify", "mention_required", "thread_me
 TELEGRAM_KEYS = ("bot_token", "allowed_users", "notify")
 PROVIDER_KEYS = ("path", "models", "args")
 AGENT_KEYS = ("provider", "model", "effort")
-WORKSPACE_KEYS = ("agent", "providers", "restricted")
+WORKSPACE_KEYS = ("agent", "providers")
 WORKSPACE_PROVIDER_KEYS = ("args",)
 SETTINGS_KEYS = {
     "agent": ("timeout",),
@@ -705,13 +704,7 @@ def _parse_workspaces(
                 problems.append(f"{where}.args must be a list of strings")
             else:
                 provider_args[provider] = tuple(args)
-        restricted = entry.get("restricted", False)
-        if not isinstance(restricted, bool):
-            problems.append(f"workspaces.{name}.restricted must be true or false")
-            restricted = False
-        workspaces[name] = WorkspaceConfig(
-            agent=agent, provider_args=provider_args, restricted=restricted
-        )
+        workspaces[name] = WorkspaceConfig(agent=agent, provider_args=provider_args)
     return workspaces
 
 
@@ -987,13 +980,16 @@ def parse_config(raw: object, paths: Paths) -> tuple[Config | None, list[str], l
     warnings: list[str] = []
     if not isinstance(raw, dict):
         return None, ["config.json must contain a JSON object"], warnings
-    version_ok = raw.get("version") == CONFIG_VERSION
+    version = raw.get("version")
+    if type(version) is int and version == 1:
+        return None, [LEGACY_HOME_MESSAGE], warnings
+    version_ok = type(version) is int and version == CONFIG_VERSION
     if not version_ok:
         problems.append(f"version must be {CONFIG_VERSION}")
-    # A document declaring another schema version is not a version-1 document, so its member
+    # A document declaring another schema version is not a current-schema document, so its member
     # names belong to a schema this build does not define. Its value and type problems still
     # stand, but unknown-key findings go to a list that is thrown away rather than reporting
-    # a future schema as a pile of version-1 typos.
+    # a future schema as a pile of current-schema typos.
     unknown = problems if version_ok else []
     _unknown_keys(raw, ROOT_KEYS, "", unknown)
 
