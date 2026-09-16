@@ -213,7 +213,8 @@ def test_setup_wizard_telegram_path(enso_home: Paths, monkeypatch: pytest.Monkey
     assert "BotFather" in result.output and "Create your Slack app" not in result.output
     assert paired == [("telegram", {"bot_token": "123:abc"})]
     config = load_config(enso_home)
-    assert config.telegram is not None and config.telegram.allowed_users == ("123",)
+    assert config.raw["transports"]["telegram"] == {"bot_token": "123:abc", "notify": "123"}
+    assert config.telegram is not None
     assert config.telegram.notify == "123" and config.bindings == {"telegram:123": "default"}
 
 

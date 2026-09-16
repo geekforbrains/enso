@@ -11,6 +11,7 @@ import pytest
 from enso import commands, db
 from enso.config import Agent, Config
 from enso.outbound import parse_outbound_message
+from enso.routing import UNBOUND_NOTICE
 from enso.runtime import ORIGIN_HEADER, Runtime, origin_block
 from enso.transports import Reply, Turn
 from enso.transports.slack import (
@@ -76,6 +77,128 @@ def test_admission(case: dict, expected: str) -> None:
         thread_active=False,
     )
     assert admit(**{**defaults, **case}) == expected
+
+
+@pytest.fixture
+def admission_transport(config):
+    transport = SlackTransport(config.slack, config.paths)
+    transport.runtime = _OriginRuntime(config)
+    transport._client = RecordingClient()
+    transport.bot_user_id = "UBOT"
+    return transport
+
+
+@pytest.mark.parametrize(
+    ("event", "notice"),
+    [
+        ({"channel": "C9", "text": "<@UBOT> !restart"}, True),
+        ({"channel": "C9", "text": "hi"}, False),
+        ({"channel": "D9", "channel_type": "im", "text": "!clear"}, True),
+        ({"channel": "D9", "channel_type": "im", "text": "bind me to default"}, True),
+        ({"channel": "C1", "text": "<@UBOT> hi", "bot_id": "B1"}, False),
+        ({"channel": "C1", "text": "<@UBOT> hi", "bot_profile": {"id": "B1"}}, False),
+        ({"channel": "C1", "text": "<@UBOT> hi", "user": "USLACKBOT"}, False),
+        ({"channel": "C1", "text": "<@UBOT> hi", "user": "UBOT"}, False),
+        ({"channel": "C1", "text": "<@UBOT> hi", "user": ""}, False),
+        ({"channel": "C1", "text": "<@UBOT> hi", "subtype": "bot_message"}, False),
+        ({"channel": "G1", "channel_type": "mpim", "text": "<@UBOT> !restart"}, False),
+    ],
+)
+async def test_slack_rejects_before_lookup_download_or_commands(
+    admission_transport, monkeypatch, event, notice
+):
+    transport = admission_transport
+    runtime = transport.runtime
+    runtime.config = replace(
+        runtime.config, bindings={**runtime.config.bindings, "slack:G1": "default"}
+    )
+
+    async def unexpected(*args, **kwargs):
+        pytest.fail("rejected input reached lookup, preparation, or command dispatch")
+
+    for method in ("sessions", "defer"):
+        monkeypatch.setattr(runtime, method, unexpected)
+    monkeypatch.setattr(commands, "dispatch", unexpected)
+    event = {"user": "U9", "ts": "100.001", "files": [{"id": "F1"}], **event}
+    await transport._handle_event(event, mentioned=False)
+    # app_mention delivery of the same message does not repeat the notice.
+    if notice:
+        await transport._handle_event(event, mentioned=True)
+    assert [call["text"] for call in transport.client.calls] == ([UNBOUND_NOTICE] if notice else [])
+    assert runtime.handled == []
+
+
+@pytest.mark.parametrize("text", ["<@UBOT> !restart", "<@UBOT> read this"])
+async def test_missing_workspace_rejects_slack_before_preparation(
+    admission_transport, monkeypatch, text
+):
+    transport = admission_transport
+    paths = transport.paths
+    paths.workspace("default").rename(paths.workspace("retired"))
+
+    async def unexpected(*args, **kwargs):
+        pytest.fail("missing workspace reached lookup, preparation, or command dispatch")
+
+    monkeypatch.setattr(transport.runtime, "sessions", unexpected)
+    monkeypatch.setattr(transport.runtime, "defer", unexpected)
+    monkeypatch.setattr(commands, "dispatch", unexpected)
+    await transport._handle_event(
+        {"user": "U1", "channel": "C1", "ts": "100.001", "text": text, "files": [{"id": "F1"}]},
+        mentioned=False,
+    )
+    assert [call["text"] for call in transport.client.calls] == [UNBOUND_NOTICE]
+    assert not paths.workspace("default").exists()
+
+
+@pytest.mark.parametrize("workspace", ["default", "team"])
+async def test_channel_binding_admits_participants_without_dm_access(
+    admission_transport, workspace
+):
+    transport = admission_transport
+    runtime = transport.runtime
+    transport.paths.workspace(workspace).mkdir(exist_ok=True)
+    runtime.config = replace(runtime.config, bindings={"slack:C1": workspace})
+    transport._users["U9"] = "New participant"
+    transport._channels["C1"] = "#team"
+    await transport._handle_event(
+        {"user": "U9", "channel": "C1", "ts": "100.001", "text": "<@UBOT> hello"},
+        mentioned=False,
+    )
+    (turn, _) = runtime.handled[0]
+    assert (turn.workspace, turn.user_id) == (workspace, "U9")
+    await transport._handle_event(
+        {"user": "U9", "channel": "D9", "ts": "100.002", "text": "hello"}, mentioned=False
+    )
+    assert len(runtime.handled) == 1
+    assert [call["text"] for call in transport.client.calls] == [UNBOUND_NOTICE]
+
+
+async def test_removed_binding_drops_deferred_slack_attachment(admission_transport, monkeypatch):
+    transport = admission_transport
+    runtime = transport.runtime
+
+    async def defer(conversation, reply, text, prepare):
+        runtime.config = replace(runtime.config, bindings={})
+        assert await prepare() is None
+
+    async def unexpected(*args, **kwargs):
+        pytest.fail("removed binding reached lookup or attachment download")
+
+    monkeypatch.setattr(runtime, "defer", defer)
+    monkeypatch.setattr(transport, "user_name", unexpected)
+    monkeypatch.setattr(transport, "download_files", unexpected)
+    await transport._handle_event(
+        {
+            "user": "U1",
+            "channel": "D1",
+            "ts": "100.001",
+            "text": "read this",
+            "files": [{"id": "F1"}],
+        },
+        mentioned=False,
+    )
+    assert [call["text"] for call in transport.client.calls] == [UNBOUND_NOTICE]
+    assert runtime.handled == []
 
 
 async def test_followup_in_running_user_thread_reaches_runtime(

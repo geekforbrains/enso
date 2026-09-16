@@ -46,7 +46,6 @@ VALID_CONFIG: dict = {
 }
 TELEGRAM_CONFIG: dict = {
     "bot_token": "123456:token",
-    "allowed_users": ["123", "456"],  # 456 is allowed but its chat is not bound
     "notify": "123",
 }
 # Two projects: a plain agent pipeline, and one with a human stage in the middle.

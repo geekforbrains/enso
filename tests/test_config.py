@@ -305,7 +305,6 @@ def test_valid_config_parses_with_defaults(enso_home: Paths, raw_config: dict) -
     raw_config["bindings"]["slack:C2"] = "meteor"
     raw_config["transports"]["telegram"] = {
         "bot_token": "1:abc",
-        "allowed_users": [12, "34"],
         "notify": 12,
     }
     raw_config["bindings"]["telegram:12"] = "default"
@@ -318,23 +317,18 @@ def test_valid_config_parses_with_defaults(enso_home: Paths, raw_config: dict) -
     assert config.provider_args("meteor", "claude") == ("--settings", "x.json")
     assert config.provider_args("default", "claude") == ("--skip",)
     assert config.telegram is not None
-    assert config.telegram.allowed_users == ("12", "34") and config.telegram.notify == "12"
+    assert config.telegram.notify == "12"
     assert config.slack is not None and config.slack.notify == "C1"
     assert (config.agent_timeout, config.logging.level, config.runs.keep) == (30, "INFO", 500)
 
 
-# ``"\u00b2"`` and ``"\u2460"`` are digits to ``str.isdigit`` but not to ``int``; Arabic-Indic
-# digits parse but are not the id's own text, so none of them is a usable user id.
-@pytest.mark.parametrize(
-    "entry", ["@gavin", True, -5, 0, "012", 12.5, "\u00b2", "\u2460", "\u0661\u0662\u0663"]
-)
-def test_telegram_allowed_users_must_be_numeric_ids(
-    enso_home: Paths, raw_config: dict, entry: object
-) -> None:
-    raw_config["transports"]["telegram"] = {"bot_token": "1:abc", "allowed_users": [entry, 12]}
+@pytest.mark.parametrize("value", [[], [123], None, "private-token"])
+def test_removed_telegram_allowlist_has_an_actionable_error(enso_home, raw_config, value):
+    raw_config["transports"]["telegram"] = {"bot_token": "1:abc", "allowed_users": value}
     config, problems, _ = parse_config(raw_config, enso_home)
     assert config is None
-    assert any("allowed_users must contain positive numeric" in p for p in problems), problems
+    assert any("allowed_users was removed" in p and "explicit bindings" in p for p in problems)
+    assert "private-token" not in "\n".join(problems)
 
 
 def test_missing_executable_and_unconfigured_transport_are_warnings(

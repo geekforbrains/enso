@@ -152,7 +152,9 @@ and `team:memory`; those jobs process only their containing workspace.
 ## Context selection in 0.2.0
 
 **Partly implemented on the 0.2.0 development branch.** A chat binding selects an existing
-workspace for a turn, which keeps that selection through preparation and queueing. The
+workspace for a turn, which keeps that selection through preparation and queueing. Removing
+its binding or losing its workspace drops it before execution; the
+[connection access contract](connections.md#access-in-020) owns admission and notices. The
 shared context resolver implements the precedence below; individual task/list/search and
 Heartbeat command changes remain forthcoming and are identified in
 [CLI](cli.md#workspace-context-in-020). Enso sets `ENSO_WORKSPACE` for its chat agents,

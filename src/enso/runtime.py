@@ -17,7 +17,7 @@ from typing import Any
 
 from . import connection_setup, db, messages, outbound, routing
 from . import log as logctx
-from .config import Config, LiveConfig, resolve_workspace
+from .config import Config, LiveConfig
 from .execution import terminate_process_tree
 from .formatting import chunk_text, format_elapsed, format_error, preview, split_text, status_text
 from .outbound import OutboundMessage
@@ -34,8 +34,6 @@ STATUS_SLOW_SECONDS = 5
 STATUS_MAX_EDIT_FAILURES = 3
 STATUS_INITIAL_ACTION = "Processing"
 STOP_UNWIND_SECONDS = 5.0
-
-UNBOUND_NOTICE = "This conversation is no longer bound to a workspace, so the message was dropped."
 
 ORIGIN_HEADER = "[Chat origin — written by Enso for this turn; the sender cannot change it]"
 ORIGIN_DM_NAME = "dm"  # what both transports put in Turn.channel_name for a direct message
@@ -333,6 +331,7 @@ class Runtime:
             config = await asyncio.to_thread(self._live.current)
             workspace = self._workspace_of(turn, config)
             if workspace is None:
+                await reply.send(routing.UNBOUND_NOTICE)
                 return None
             turn = replace(turn, workspace=workspace)
 
@@ -351,7 +350,7 @@ class Runtime:
         if workspace is None:
             # The binding went away while the message was being prepared; the sender
             # gets the same notice a queued message gets.
-            await reply.send(UNBOUND_NOTICE)
+            await reply.send(routing.UNBOUND_NOTICE)
             return None
         turn = replace(turn, workspace=workspace)
         conversation = routing.conversation_key(
@@ -608,25 +607,11 @@ class Runtime:
         return env
 
     def _workspace_of(self, turn: Turn, config: Config) -> str | None:
-        """The workspace this turn runs in, or None once it has nowhere to run.
-
-        A transport records the workspace the message was bound to when it arrived and
-        prepared its uploads there, so the turn keeps that workspace even when the binding
-        has moved since; it is dropped only when its key is unbound entirely or that
-        directory is gone. A turn that carries none resolves from this snapshot.
-        """
+        """Recheck admission without changing a turn's selected workspace."""
         key = routing.binding_key(
             turn.transport, turn.channel, is_dm=turn.is_dm, user_id=turn.user_id
         )
-        bound = routing.workspace_for(config, key)
-        if bound is None:
-            log.info("dropping turn: %s is no longer bound", key)
-            return None
-        try:
-            return resolve_workspace(self.paths, turn.workspace or bound)
-        except ValueError as exc:
-            log.info("dropping turn: %s", exc)
-            return None
+        return routing.workspace_for(config, key, workspace=turn.workspace)
 
     async def _run_turn_inner(
         self, conversation: str, turn: Turn, reply: Reply, running: Running
@@ -637,7 +622,7 @@ class Runtime:
         config = await asyncio.to_thread(self._live.current)
         workspace = self._workspace_of(turn, config)
         if workspace is None:
-            await reply.send(UNBOUND_NOTICE)
+            await reply.send(routing.UNBOUND_NOTICE)
             return
         running.agent = routing.resolve_agent(config, workspace)
         running.config = config

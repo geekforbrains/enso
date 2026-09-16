@@ -160,12 +160,11 @@ class TelegramSpec(TransportSpec):
         return None
 
     def binding_key(self, channel: str, *, is_dm: bool = False, user_id: str = "") -> str:
-        return f"telegram:{channel}"
+        return f"telegram:{user_id}"
 
     def config_entry(self, credentials: Mapping[str, str], owner: PairedIdentity) -> dict[str, Any]:
         return {
             "bot_token": credentials["bot_token"],
-            "allowed_users": [owner.user_id],
             "notify": owner.channel,
         }
 

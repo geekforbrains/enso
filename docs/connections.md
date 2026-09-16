@@ -7,8 +7,9 @@ manual; see [Install](install.md).
 
 ## Access in 0.2.0
 
-**Forthcoming in 0.2.0.** A binding both grants access to the installation and selects an
-existing Enso workspace. The key uses platform-issued channel or user IDs from authenticated
+**Implemented on the 0.2.0 development branch; message capture remains forthcoming.**
+A binding both grants access to the installation and selects an existing Enso workspace.
+The key uses platform-issued channel or user IDs from authenticated
 transport events. Display names and identities claimed in message text never grant access.
 Transport authentication and connection identity checks still apply.
 Admission is decided before attachment download, provider work, or capture.
@@ -19,8 +20,9 @@ Admission is decided before attachment download, provider work, or capture.
 | Slack one-to-one DM | Sender's user ID | That explicitly bound person |
 | Telegram private chat | Sender's user ID | That explicitly bound person |
 
-Binding a channel trusts its audience to use the installation's capabilities and records
-eligible live human messages there. That audience includes later additions, guests, and
+Binding a channel trusts its audience to use the installation's capabilities and, once
+[capture](memory.md#conversation-capture) is implemented, records eligible live human messages
+there. That audience includes later additions, guests, and
 external Slack Connect participants. Channel membership does not grant DM access.
 `mention_required` and `thread_mention_required` control replies; they do not change access
 or [capture eligibility](memory.md#conversation-capture).
@@ -33,21 +35,22 @@ See [Configuration](configuration.md#bindings) for key syntax and validation.
 
 An unbound Slack channel receives one short canned notice when the bot is mentioned; an
 unbound Slack DM or Telegram private chat receives it on any human message. Otherwise an
-unbound channel stays silent. The notice says the conversation is not bound and contains no
-private configuration details. It is fixed text, requiring no provider call, attachment
-download, or capture. A binding naming a missing workspace is an error and never selects
-another workspace.
+unbound channel stays silent. The fixed notice is "This conversation is not bound to an
+available workspace." It contains no private configuration details and requires no provider
+call, attachment download, or capture. A binding naming a missing workspace logs a diagnostic
+and sends the same notice, without selecting another workspace. This admission check also
+applies to chat commands and repeats before deferred attachment preparation.
 
 Bindings are read for incoming messages. A queued turn retains the workspace selected on
-arrival; removing its binding withdraws access before it starts. Rebinding does not move
+arrival; removing its binding withdraws access before it starts. Its original workspace
+and the currently bound workspace must both still exist. Rebinding does not move
 past records or resume a session in a different workspace. Removing a binding preserves
 past captures and maintained memory.
 
 Only trusted configuration or operator-initiated pairing creates a binding. Preserve the
 short-lived challenge and acknowledgment described below. Pairing messages never become
 agent turns or memory captures; an unknown sender cannot authorize their own binding by
-asking Enso. In 0.2.0, Telegram pairing writes the explicit user binding and notification
-target without an `allowed_users` entry.
+asking Enso. Telegram pairing writes the explicit user binding and notification target.
 
 Several bindings can select one workspace; each named workspace must already exist:
 
@@ -75,8 +78,8 @@ bot messages, and events from another workspace do not pair an account. The resu
 Telegram needs the bot token created by [BotFather](https://t.me/BotFather) with `/newbot`.
 Setup verifies bot identity and refuses an existing webhook. A fresh `t.me` Start link
 carries a random challenge. Only the matching new private `/start` from a human account
-can pair the owner. Old, forwarded, group, and unrelated messages are ignored. In 0.1.x,
-setup records the owner in `allowed_users`, binds their private chat, and uses it for notifications.
+can pair the owner. Old, forwarded, group, and unrelated messages are ignored.
+Setup binds the owner's private chat and uses it for notifications.
 A Telegram `409` stops pairing and asks the user to stop the competing receiver. Setup never
 deletes a webhook or takes over another polling process automatically.
 

@@ -19,17 +19,17 @@ from telegram.error import BadRequest
 
 from enso import commands, db
 from enso.config import Config
+from enso.routing import UNBOUND_NOTICE
 from enso.runtime import MAX_QUEUE, ORIGIN_HEADER, Runtime, origin_block
 from enso.transports import Reply, Turn
 from enso.transports.telegram import (
-    UNBOUND_REPLY,
     TelegramReply,
     TelegramTransport,
     safe_filename,
 )
 
-ALLOWED = User(id=123, first_name="Gavin", last_name="V", is_bot=False)
-OTHER = User(id=456, first_name="Other", is_bot=False)  # allowed, chat not bound by default
+OWNER = User(id=123, first_name="Gavin", last_name="V", is_bot=False)
+OTHER = User(id=456, first_name="Other", is_bot=False)  # chat not bound by default
 STRANGER = User(id=999, first_name="Someone", is_bot=False)
 BOT = User(id=1, first_name="enso", is_bot=True)
 PRIVATE = Chat(id=123, type=Chat.PRIVATE)
@@ -95,7 +95,7 @@ class FakeRuntime:
 
 
 def message(
-    user: User = ALLOWED, chat: Chat = PRIVATE, message_id: int = 10, **fields: Any
+    user: User = OWNER, chat: Chat = PRIVATE, message_id: int = 10, **fields: Any
 ) -> Message:
     return Message(
         message_id=message_id, date=datetime.now(UTC), chat=chat, from_user=user, **fields
@@ -123,20 +123,85 @@ def _bot(transport: TelegramTransport) -> FakeBot:
     ("msg", "reply_text"),
     [
         (message(user=STRANGER, text="hi"), None),
+        (message(user=STRANGER, chat=Chat(id=999, type=Chat.PRIVATE), text="hi"), UNBOUND_NOTICE),
         (message(user=BOT, text="hi"), None),
-        # An allowed user in a group is rejected outright: not even a command runs.
+        (message(user=None, text="hi"), None),
+        # A bound user in a group is rejected outright: not even a command runs.
         (message(chat=GROUP, text="/clear"), None),
         (message(chat=Chat(id=-1005, type=Chat.SUPERGROUP), text="hi"), None),
-        (message(user=OTHER, chat=OTHER_PRIVATE, text="hi"), UNBOUND_REPLY),
+        (message(chat=Chat(id=-1005, type=Chat.CHANNEL), text="hi"), None),
+        (message(user=OTHER, chat=OTHER_PRIVATE, text="hi"), UNBOUND_NOTICE),
     ],
 )
-async def test_unauthorized_or_unbound_never_reaches_the_runtime(
-    transport: TelegramTransport, msg: Message, reply_text: str | None
+async def test_unsupported_or_unbound_never_prepares_or_dispatches(
+    transport: TelegramTransport, msg: Message, reply_text: str | None, monkeypatch
 ) -> None:
+    async def unexpected(*args, **kwargs):
+        pytest.fail("rejected input reached preparation or command dispatch")
+
+    monkeypatch.setattr(transport, "download", unexpected)
+    monkeypatch.setattr(commands, "dispatch", unexpected)
     await transport.handle_message(msg)
     assert _runtime(transport).handled == []
     sent = _bot(transport).sent
     assert [m["text"] for m in sent] == ([reply_text] if reply_text else [])
+
+
+@pytest.mark.parametrize("text", ["/restart", "bind me to default", ""])
+@pytest.mark.parametrize("missing_workspace", [False, True])
+async def test_unavailable_telegram_binding_rejects_commands_and_files(
+    transport, monkeypatch, text, missing_workspace
+):
+    runtime = _runtime(transport)
+    if missing_workspace:
+        runtime.config.paths.workspace("default").rename(runtime.config.paths.workspace("retired"))
+    else:
+        runtime.config = replace(runtime.config, bindings={})
+
+    async def unexpected(*args, **kwargs):
+        pytest.fail("rejected input downloaded an attachment or ran a command")
+
+    monkeypatch.setattr(transport, "download", unexpected)
+    monkeypatch.setattr(commands, "dispatch", unexpected)
+    await transport.handle_message(
+        message(caption=text, document=Document("f1", "u1", file_name="notes.txt"))
+    )
+    assert [m["text"] for m in _bot(transport).sent] == [UNBOUND_NOTICE]
+    assert runtime.handled == []
+    if missing_workspace:
+        assert not runtime.config.paths.workspace("default").exists()
+
+
+@pytest.mark.parametrize("workspace", ["default", "personal"])
+async def test_telegram_user_binding_selects_shared_or_personal_context(transport, workspace):
+    runtime = _runtime(transport)
+    runtime.config.paths.workspace(workspace).mkdir(exist_ok=True)
+    runtime.config = replace(
+        runtime.config, bindings={**runtime.config.bindings, "telegram:456": workspace}
+    )
+    await transport.handle_message(message(text="first"))
+    await transport.handle_message(message(user=OTHER, chat=OTHER_PRIVATE, text="second"))
+    assert [(turn.user_id, turn.channel, turn.workspace) for turn, _ in runtime.handled] == [
+        ("123", "123", "default"),
+        ("456", "456", workspace),
+    ]
+
+
+async def test_removed_binding_drops_deferred_telegram_attachment(transport, monkeypatch):
+    runtime = _runtime(transport)
+
+    async def defer(conversation, reply, text, prepare):
+        runtime.config = replace(runtime.config, bindings={})
+        assert await prepare() is None
+
+    async def unexpected(*args, **kwargs):
+        pytest.fail("removed binding reached attachment download")
+
+    monkeypatch.setattr(runtime, "defer", defer)
+    monkeypatch.setattr(transport, "download", unexpected)
+    await transport.handle_message(message(document=Document("f1", "u1", file_name="notes.txt")))
+    assert [m["text"] for m in _bot(transport).sent] == [UNBOUND_NOTICE]
+    assert runtime.handled == []
 
 
 async def test_text_turn_with_reply_context(transport: TelegramTransport) -> None:

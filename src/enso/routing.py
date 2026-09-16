@@ -5,11 +5,13 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from .config import Config
+from .config import Config, require_workspace
 from .providers import provider_class
 from .transport_registry import TRANSPORTS
 
 log = logging.getLogger(__name__)
+
+UNBOUND_NOTICE = "This conversation is not bound to an available workspace."
 
 
 @dataclass(frozen=True)
@@ -36,8 +38,24 @@ def conversation_key(
     return f"{transport}:{channel}:{thread}"
 
 
-def workspace_for(config: Config, key: str) -> str | None:
-    return config.bindings.get(key)
+def workspace_for(config: Config, key: str, *, workspace: str = "") -> str | None:
+    """Admit an existing binding, retaining a queued turn's original workspace.
+
+    Both the current binding and a previously selected workspace must still exist;
+    neither a broken binding nor a removed directory may select a fallback.
+    """
+    bound = config.bindings.get(key)
+    if bound is None:
+        log.info("dropping turn: %s is no longer bound", key)
+        return None
+    try:
+        require_workspace(config.paths, bound)
+        if workspace and workspace != bound:
+            require_workspace(config.paths, workspace)
+    except ValueError as exc:
+        log.warning("dropping turn: %s: %s", key, exc)
+        return None
+    return workspace or bound
 
 
 def clamp_effort(provider: str, model: str, effort: str) -> str:

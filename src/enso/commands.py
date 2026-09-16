@@ -153,9 +153,10 @@ async def dispatch(runtime: Runtime, turn: Turn, reply: Reply) -> bool:
     from .maintenance import paused
 
     key = routing.binding_key(turn.transport, turn.channel, is_dm=turn.is_dm, user_id=turn.user_id)
-    workspace = routing.workspace_for(runtime.config, key)
+    workspace = routing.workspace_for(runtime.config, key, workspace=turn.workspace)
     if workspace is None:
-        return False  # transports answer unbound locations themselves
+        await reply.send(routing.UNBOUND_NOTICE)
+        return True
     if paused(runtime.paths) and command.name not in {"status", "help", "stop"}:
         await reply.send("Enso is updating; wait for it to report ready before changing its state.")
         return True

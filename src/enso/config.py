@@ -253,7 +253,6 @@ class SlackConfig:
 @dataclass(frozen=True)
 class TelegramConfig:
     bot_token: str
-    allowed_users: tuple[str, ...] = ()
     notify: str = ""
 
 
@@ -518,7 +517,7 @@ PROJECT_KEYS = (
     "script_timeout",
 )
 SLACK_KEYS = ("bot_token", "app_token", "notify", "mention_required", "thread_mention_required")
-TELEGRAM_KEYS = ("bot_token", "allowed_users", "notify")
+TELEGRAM_KEYS = ("bot_token", "notify")
 PROVIDER_KEYS = ("path", "models", "args")
 AGENT_KEYS = ("provider", "model", "effort")
 WORKSPACE_KEYS = ("agent", "providers")
@@ -617,28 +616,19 @@ def _parse_telegram(raw: object, problems: list[str], unknown: list[str]) -> Tel
     if not isinstance(raw, dict):
         problems.append("transports.telegram must be an object")
         return None
-    _unknown_keys(raw, TELEGRAM_KEYS, "transports.telegram", unknown)
+    # Diagnose the removed field once, without inspecting or accepting its value.
+    _unknown_keys(raw, (*TELEGRAM_KEYS, "allowed_users"), "transports.telegram", unknown)
+    if "allowed_users" in raw:
+        unknown.append(
+            "transports.telegram.allowed_users was removed; remove it and use "
+            "explicit bindings such as telegram:123456 to grant access to an existing workspace"
+        )
     token = raw.get("bot_token")
     if not isinstance(token, str) or not token:
         problems.append("transports.telegram.bot_token is required")
         token = ""
-    users_raw = raw.get("allowed_users", [])
-    if not isinstance(users_raw, list):
-        problems.append("transports.telegram.allowed_users must be a list of user ids")
-        users_raw = []
-    users: list[str] = []
-    for entry in users_raw:
-        user = TRANSPORTS["telegram"].canonical_target(entry)
-        if user is None:
-            problems.append(
-                "transports.telegram.allowed_users must contain positive numeric "
-                f"Telegram user ids (got {entry!r})"
-            )
-            continue
-        users.append(user)
     return TelegramConfig(
         bot_token=token,
-        allowed_users=tuple(users),
         notify=_parse_notify(raw, "telegram", problems),
     )
 
