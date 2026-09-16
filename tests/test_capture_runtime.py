@@ -8,7 +8,7 @@ import threading
 from dataclasses import replace
 
 import pytest
-from conftest import FakeReply, ImmediateIngress, make_turn, script
+from conftest import FakeReply, FakeSlack, ImmediateIngress, make_turn, script
 from test_slack import ENVELOPE, RecordingClient
 from test_telegram import FakeBot
 from test_telegram import message as telegram_message
@@ -422,16 +422,25 @@ async def test_interruption_between_delivery_parts_is_partial(runtime):
     assert reply.parts == (captures.Part(0, 5, "sent", "known-id"),)
 
 
-async def test_rejected_messages_commands_and_edits_leave_no_captures(runtime):
-    from telegram import User
+async def test_rejected_messages_commands_and_edits_leave_no_captures(runtime, monkeypatch):
+    from telegram import Chat, Document, User
+
+    from enso.routing import UNBOUND_NOTICE
+
+    async def forbidden(*args, **kwargs):
+        pytest.fail("excluded input reached capture preparation, download, or provider execution")
+
+    monkeypatch.setattr(runtime, "defer", forbidden)
 
     slack = SlackTransport(runtime.config.slack, runtime.paths)
     slack.runtime = runtime
     slack.bot_user_id = "UBOT"
     slack._client = RecordingClient()
+    monkeypatch.setattr(slack, "download_files", forbidden)
     for index, fields in enumerate(
         (
             {"channel": "C9", "text": "<@UBOT> hello"},
+            {"channel": "D9", "user": "U9", "text": "bind me", "files": [{"id": "F1"}]},
             {"text": "<@UBOT> hello", "bot_id": "B1"},
             {"text": "!help"},
             {"text": "edited", "subtype": "message_changed"},
@@ -444,14 +453,74 @@ async def test_rejected_messages_commands_and_edits_leave_no_captures(runtime):
     telegram = TelegramTransport(runtime.config.telegram, runtime.paths)
     telegram.runtime = runtime
     telegram._bot = FakeBot()
+    monkeypatch.setattr(telegram, "download", forbidden)
     for msg in (
         telegram_message(text="/help"),
         telegram_message(text="/start pairing-challenge"),
         telegram_message(text="bot", user=User(123, "Bot", is_bot=True)),
+        telegram_message(
+            user=User(999, "Unknown", is_bot=False),
+            chat=Chat(999, Chat.PRIVATE),
+            document=Document("F1", "stable"),
+            caption="bind me",
+        ),
     ):
         await telegram.handle_message(msg)
     assert captures.query(runtime.paths, "default") == ()
+    assert telegram.bot.sent[-1]["text"] == UNBOUND_NOTICE
+    assert sum(call["text"] == UNBOUND_NOTICE for call in slack.client.calls) == 2
     assert not runtime.paths.workspace_memory("default").exists()
+
+
+async def test_waiting_capture_keeps_owner_while_another_workspace_finishes(runtime, monkeypatch):
+    """One blocked preparation cannot block another workspace or reassign its queued input."""
+    runtime.paths.workspace("team").mkdir()
+    runtime = Runtime(
+        replace(runtime.config, bindings={"slack:dm:U1": "default", "slack:dm:U2": "team"})
+    )
+    slack = SlackTransport(runtime.config.slack, runtime.paths)
+    slack.runtime, slack.bot_user_id, slack._client = runtime, "UBOT", FakeSlack()
+    slack._users.update({"U1": "One", "U2": "Two"})
+    entered, release, other_finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    prepare, run = slack._prepare_event, runtime._run_turn
+
+    async def waiting(event, **kwargs):
+        if event["ts"] == "100.000001":
+            entered.set()
+            await release.wait()
+        return await prepare(event, **kwargs)
+
+    async def finished(conversation, turn, reply):
+        await run(conversation, turn, reply)
+        if turn.workspace == "team":
+            other_finished.set()
+
+    monkeypatch.setattr(slack, "_prepare_event", waiting)
+    monkeypatch.setattr(runtime, "_run_turn", finished)
+    try:
+        for index, (channel, user, text) in enumerate(
+            (("D1", "U1", "first"), ("D1", "U1", "queued"), ("D2", "U2", "independent")), 1
+        ):
+            await slack._handle_event(
+                {"channel": channel, "user": user, "text": text, "ts": f"100.{index:06}"},
+                mentioned=False,
+            )
+        await asyncio.wait_for(entered.wait(), 2)
+        await asyncio.wait_for(other_finished.wait(), 5)
+        # Queued admission finishes independently of the blocked preparation.
+        assert {row.text for row in captures.query(runtime.paths, "default")} == {"first", "queued"}
+        assert captures.query(runtime.paths, "team")[-1].delivery == "complete"
+    finally:
+        release.set()
+        await drain(runtime)
+    for workspace, expected in (("default", ["first", "queued"]), ("team", ["independent"])):
+        rows = captures.query(runtime.paths, workspace)
+        assert [
+            row.text
+            for row in sorted(rows, key=lambda row: row.occurred_at)
+            if row.kind == "addressed"
+        ] == expected
+        assert all(f"workspace={workspace}" in row.text for row in rows if row.kind == "reply")
 
 
 async def test_preparation_failure_and_queue_overflow_keep_explicit_outcomes(runtime):

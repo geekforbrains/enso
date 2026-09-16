@@ -107,6 +107,55 @@ Use fake systems for automated tests. For managed-install upgrades and failure r
 see the [isolated upgrade checks](upgrade-testing.md). Building and validating a publishable
 bundle belongs to [Releases](releasing.md).
 
+### Workspace acceptance coverage
+
+The default suite checks the 0.2.0 workflow in disposable homes using synthetic messages,
+fake transport clients, and local provider executables:
+
+| Boundary | Evidence |
+| --- | --- |
+| Live addressed/ambient input → capture → checked memory job → fresh-session recall → deliberate knowledge promotion | `test_bundled_memory.py` runs the shipped hooks, rejects an escaping output path, repairs in the same session, reads the original ambient source through the CLI, and verifies a later quiet pass makes no provider call. |
+| Admission and trusted pairing | `test_slack.py`, `test_telegram.py`, `test_capture_runtime.py`, and `test_connection_transports.py` cover the binding matrix, a channel participant's rejected DM, excluded commands/bots/edits, attachment rejection before download, and fresh operator-initiated pairing challenges. |
+| Simultaneous workspace ownership | `test_capture_runtime.py` keeps queued captures with their owner while another workspace finishes; `test_runner.py` schedules same-named jobs with separate follow-up sessions, history, locks and restart recovery; `test_workflow_jobs.py` accepts simultaneous task handoffs in their owning projects. `test_heartbeat_runner.py` retains follow-up ownership and action receipts after restart. |
+| Invalid or interrupted writes | `test_memory.py`, `test_harvesting.py`, `test_knowledge_core.py`, and `test_capture_runtime.py` exercise malformed notes, unsafe paths, byte limits, stale edits, concurrent writers, partial delivery and interrupted publication without replaying completed inputs. |
+
+These checks establish routing, persistence and CLI contracts. Scripted summaries and answers
+do not demonstrate model judgment, factual accuracy, or resistance to every prompt injection;
+the shipped guidance treats captured instructions as evidence. Workspace ownership is not
+security isolation. Transport authentication against real accounts and native service managers
+remain separate acceptance checks described in [Upgrade tests](upgrade-testing.md).
+
+To check the actual wheel and bundled files without importing the source checkout, run from
+the repository root (the package version stays unchanged until release preparation):
+
+```bash
+ENSO_WHEEL_CHECK=$(mktemp -d /tmp/enso-wheel-check.XXXXXX)
+uv build --wheel --out-dir "$ENSO_WHEEL_CHECK/dist"
+uv export --locked --all-extras --no-emit-project --no-hashes \
+  --output-file "$ENSO_WHEEL_CHECK/requirements.txt" >/dev/null
+uv venv --python 3.14 "$ENSO_WHEEL_CHECK/venv"
+uv pip install --python "$ENSO_WHEEL_CHECK/venv/bin/python" \
+  -r "$ENSO_WHEEL_CHECK/requirements.txt" "$ENSO_WHEEL_CHECK"/dist/*.whl
+cp -R tests assets "$ENSO_WHEEL_CHECK/"
+printf '[pytest]\nasyncio_mode = auto\n' > "$ENSO_WHEEL_CHECK/pytest.ini"
+(
+  cd "$ENSO_WHEEL_CHECK"
+  unset PYTHONPATH VIRTUAL_ENV
+  export PATH="$ENSO_WHEEL_CHECK/venv/bin:$PATH"
+  python -c 'import enso; print(enso.__file__)'
+  python -m pytest -q -k 'not test_docs_link_only_to_pages_git_will_commit' \
+    tests/test_initialization.py tests/test_setup.py tests/test_connection_setup.py \
+    tests/test_connection_transports.py tests/test_bundled_*.py \
+    tests/test_capture_runtime.py tests/test_runner.py tests/test_workflow_jobs.py \
+    tests/test_heartbeat_runner.py
+)
+```
+
+The import must resolve inside the scratch `venv`, and the copied fixtures isolate both the
+Enso and user homes. The omitted Git/document check still runs in the full source suite.
+No command above installs a service or contacts a transport/provider account. This lane
+checks installed package behavior; it does not publish a release or convert an existing home.
+
 ### Installing an unreleased snapshot locally
 
 When the operator explicitly requests unreleased code on their active home, prefer a

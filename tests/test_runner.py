@@ -1114,7 +1114,10 @@ async def test_same_named_jobs_have_independent_execution_and_history(
             'printf "%s|%s|%s" "$PWD" "$ENSO_WORKSPACE" "$ENSO_JOB"'
         )
         (path.parent / "postrun.sh").write_text(
-            'cat > result.txt; printf "%s" "$ENSO_JOB" > owner.txt'
+            'cat > "result-$ENSO_RUN_ATTEMPT.txt"; printf "%s" "$ENSO_JOB" > owner.txt\n'
+            'if [ "$ENSO_RUN_ATTEMPT" = 1 ]; then\n'
+            '  printf "Finish %s in %s" "$ENSO_JOB" "$ENSO_WORKSPACE"; exit 10\n'
+            "fi\n"
         )
         job, problems = find_job(enso_home, fake_config, f"{workspace}:digest")
         assert job is not None and not problems
@@ -1133,7 +1136,13 @@ async def test_same_named_jobs_have_independent_execution_and_history(
     for job in selected:
         assert (job.job_dir / "owner.txt").read_text() == job.ref
         assert (
-            f"{job.job_dir}|{job.workspace}|{job.ref}" in (job.job_dir / "result.txt").read_text()
+            f"{job.job_dir}|{job.workspace}|{job.ref}" in (job.job_dir / "result-1.txt").read_text()
+        )
+        run = runs.list_runs(enso_home, job=job.ref)[0]
+        first, second = runs.attempts(enso_home, run.id)
+        assert first.session_id == second.session_id
+        assert (
+            f"workspace={job.workspace} prompt=Finish {job.ref} in {job.workspace}" in second.output
         )
         assert db.job_state(enso_home, job.ref).last_run == NOW.isoformat()
         assert len(runs.list_runs(enso_home, job=job.ref)) == 1
@@ -1160,9 +1169,9 @@ async def test_same_named_jobs_have_independent_execution_and_history(
         # Recovery checks the same qualified lock, including when another workspace has its name.
         orphan = runs.start(enso_home, selected[1], "manual", effort="high")
         busy = runs.start(enso_home, selected[0], "manual", effort="high")
-        assert runner.recover() == 1
+        assert JobRunner(fake_config).recover() == 1
         assert runs.get(enso_home, orphan).status == "error"
         assert runs.get(enso_home, busy).status == "running"
     finally:
         held.close()
-    assert runner.recover() == 1
+    assert JobRunner(fake_config).recover() == 1
