@@ -419,6 +419,20 @@ def progress(paths: Paths, workspace: str) -> int:
     return row[0] if row else 0
 
 
+def handled(paths: Paths, workspace: str, sources: tuple[int, ...]) -> bool:
+    """Whether every selected input has a completed receipt, including explicit no-memory."""
+    with db.reader(paths) as con:
+        count = con.execute(
+            "SELECT count(*) FROM _enso_captures c "
+            "JOIN _enso_memory_inputs i ON i.capture_id = c.id "
+            "JOIN _enso_memory_receipts r ON r.id = i.receipt_id "
+            "WHERE c.workspace = ? AND r.completed_at IS NOT NULL "
+            f"AND c.id IN ({','.join('?' for _ in sources)})",
+            (workspace, *sources),
+        ).fetchone()[0]
+    return count == len(sources)
+
+
 def complete_receipt(paths: Paths, workspace: str, receipt_id: str) -> None:
     """Acknowledge durable publication and advance only through contiguous handled captures."""
     with db.transaction(paths) as con:

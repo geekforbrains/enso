@@ -86,6 +86,10 @@ CREATE INDEX _enso_memory_inputs_receipt ON _enso_memory_inputs (receipt_id);
 CREATE TABLE _enso_memory_progress (
   workspace TEXT PRIMARY KEY, capture_id INTEGER NOT NULL
 );
+-- One current job batch per workspace; follow-ups keep the same source budget.
+CREATE TABLE _enso_memory_batches (
+  workspace TEXT PRIMARY KEY, run_id TEXT NOT NULL, sources TEXT NOT NULL
+);
 
 -- A provider session belongs to the workspace containing its transcript.
 CREATE TABLE sessions (

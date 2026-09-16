@@ -26,6 +26,11 @@ the qualified reference, and shared concurrency-group locks live in `runtime/.co
 
 Names beginning `enso-` are reserved for jobs Enso installs; `enso workspace audit` warns about one it did not. The bundled jobs are `default:enso-audit`, which reports nightly health problems and fixes nothing, and `default:enso-update`, which checks for releases and notifies without invoking a model or installing updates.
 
+Each workspace also has `<workspace>:memory`, enabled every 15 minutes to refine its own
+captured conversations using `enso-memory`. Its hooks pin one batch, validate the result,
+and skip the provider when quiet. Customize its agent or schedule normally; writing
+preferences belong in the memory skill.
+
 ## Workflow
 
 1. `enso job list` to see jobs in `ENSO_WORKSPACE`; select another with `--workspace NAME` or use `--all-workspaces` for the installation. Run lists use the same scope. `enso config show` lists providers and models, and `enso config check` validates configuration.

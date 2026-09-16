@@ -1,8 +1,8 @@
 # Memory
 
-Markdown memory, its CLI, live Slack/Telegram capture, and bounded harvesting are implemented
-for 0.2.0. The harvesting job, removal, and the `enso-memory` skill remain forthcoming; their
-sections below specify agreed contracts. These features are not available in 0.1.x.
+Markdown memory, its CLI, live Slack/Telegram capture, bounded harvesting, the workspace
+job, and `enso-memory` skill are implemented for 0.2.0. Removal remains forthcoming;
+its section below specifies the agreed contract. These features are not available in 0.1.x.
 
 ## Purpose and ownership
 
@@ -295,7 +295,7 @@ gap. Any persisted incomplete state remains explicit for later diagnostics and r
 ## Recall and maintenance
 
 When a user asks about earlier conversations, decisions, promises, or follow-ups, the agent
-uses the memory CLI and, once available, the `enso-memory` skill. Search the selected
+uses the memory CLI and the `enso-memory` skill. Search the selected
 workspace first, inspect relevant notes and their source context, and broaden deliberately
 if needed. A fresh provider session can find maintained memory through that lookup.
 
@@ -327,6 +327,13 @@ that exceeds the remaining budget continues in a later run; do not merge unrelat
 conversations or mark an omitted capture handled. Mark segment boundaries and incomplete
 context in harvesting input. Provider follow-ups share the run's input budget, not a new
 allowance each time.
+
+The job stores its selected IDs once for the run in `_enso_memory_batches`, keeping one
+current batch per workspace. Result checks require that exact batch, including on bounded
+provider follow-ups. They validate the final JSON and create the notes outside the provider
+turn. Invalid results request correction in the same session; failed or timed-out provider
+turns leave the inputs unprocessed. Job output, follow-up feedback, and notifications are
+operational records rather than new source conversations.
 
 For example, 130 short captures need at least two runs: at most 100 now and the remainder
 later. Two full-size text captures exhaust the text budget even though the count is below

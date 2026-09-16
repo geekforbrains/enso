@@ -179,7 +179,7 @@ user asks about an earlier discussion, the agent uses the memory CLI and `enso-m
 skill, starting in the selected workspace. People sharing a workspace share its maintained
 memory, while their DM conversations and live provider sessions remain distinct.
 [Memory](memory.md) owns capture, recall, and removal. Manual memory and live capture
-are implemented; harvesting and the skill remain forthcoming.
+are implemented, together with bounded workspace harvesting and the `enso-memory` skill.
 
 ## Agent
 
