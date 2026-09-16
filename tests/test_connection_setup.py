@@ -197,7 +197,11 @@ def test_finish_pairs_owner_and_repeating_lost_response_is_idempotent(enso_home,
     state = mark_paired(enso_home, child_process)
     result = setup.finish(enso_home, finish_payload(state))
     config = load_config(enso_home)
-    assert config.telegram.allowed_users == ("123",) and config.telegram.notify == "123"
+    assert config.raw["transports"]["telegram"] == {
+        "bot_token": TOKENS["bot_token"],
+        "notify": "123",
+    }
+    assert config.telegram.notify == "123"
     assert config.bindings == {"telegram:123": "default"}
     assert config.telegram.bot_token == TOKENS["bot_token"]
     assert result["config_valid"] and result["connection"]["state"] == "applied"

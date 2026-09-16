@@ -50,9 +50,11 @@ filesystem policy does not automatically limit remote tools or connected-account
 
 ## Access, credentials, and untrusted input
 
-Preserve transport authentication, explicit bindings, trusted pairing, and current
-transport admission checks. Unknown senders cannot grant themselves access by asking
-for a binding. Never treat a name in message text as an authenticated platform identity.
+Bindings both grant chat access and select an existing workspace. A bound Slack channel
+trusts its human participants; Slack DMs and Telegram private chats require explicit user
+bindings. Preserve transport authentication and trusted pairing. Unknown senders cannot
+grant themselves access by asking for a binding. Never treat a name in message text as an
+authenticated platform identity.
 
 `ENSO_WORKSPACE` is context, not authentication. It does not prevent `enso config` edits;
 those commands still validate input, detect conflicts, lock, and write atomically.

@@ -12,7 +12,27 @@ from conftest import FakeReply, make_turn
 from enso import commands, db
 from enso.commands import Command, parse
 from enso.config import Agent, Paths
+from enso.routing import UNBOUND_NOTICE
 from enso.runtime import Runtime
+
+
+@pytest.mark.parametrize("transport", ["slack", "telegram"])
+@pytest.mark.parametrize("workspace", ["", "missing"])
+async def test_commands_recheck_binding_and_pinned_workspace(
+    runtime, monkeypatch, transport, workspace
+):
+    turn = make_turn("!restart" if transport == "slack" else "/restart", transport=transport)
+    turn.workspace = workspace
+    if not workspace:
+        turn.user_id = "unknown"
+
+    async def unexpected(*args, **kwargs):
+        pytest.fail("rejected command ran")
+
+    monkeypatch.setattr(commands, "run", unexpected)
+    reply = FakeReply()
+    assert await commands.dispatch(runtime, turn, reply)
+    assert reply.sent == [UNBOUND_NOTICE]
 
 
 @pytest.mark.parametrize(
@@ -114,8 +134,9 @@ async def test_help_unknown_restart_and_passthrough(
     assert not await commands.dispatch(runtime, make_turn("just text"), reply)
     unbound = make_turn("!status")
     unbound.user_id = "U9"
-    assert not await commands.dispatch(runtime, unbound, reply)
-    assert len(reply.sent) == 4
+    assert await commands.dispatch(runtime, unbound, reply)
+    assert reply.sent[-1] == UNBOUND_NOTICE
+    assert len(reply.sent) == 5
 
 
 async def test_status_reads_sessions_off_loop(

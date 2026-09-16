@@ -17,9 +17,9 @@ from enso import db
 from enso.config import Config, LiveConfig, Paths, parse_config
 from enso.outbound import CONTRACT, FAILURE_NOTICE, OutboundMessage, TableBlock
 from enso.providers.claude import ClaudeProvider, project_dir
+from enso.routing import UNBOUND_NOTICE
 from enso.runtime import (
     ORIGIN_HEADER,
-    UNBOUND_NOTICE,
     Runtime,
     escape_origin_name,
     origin_block,
@@ -532,8 +532,32 @@ async def test_a_broken_edit_keeps_the_last_good_config(
     assert "workspace=other" in fixed.sent[0]
 
 
+@pytest.mark.parametrize("transport", ["slack", "telegram"])
+@pytest.mark.parametrize("workspace", ["default", "personal"])
+async def test_user_bindings_keep_conversations_and_sessions_distinct(
+    fake_config, transport, workspace
+):
+    fake_config.paths.workspace(workspace).mkdir(exist_ok=True)
+    user, channel, key = (
+        ("456", "456", "telegram:456") if transport == "telegram" else ("U2", "D2", "slack:dm:U2")
+    )
+    runtime = Runtime(replace(fake_config, bindings={**fake_config.bindings, key: workspace}))
+    first = make_turn("hello", transport=transport)
+    second = replace(first, user_id=user, channel=channel)
+    for turn, owner in ((first, "default"), (second, workspace)):
+        reply = FakeReply()
+        await runtime.handle(turn, reply)
+        assert reply.sent[0].startswith("new ") and f"workspace={owner}" in reply.sent[0]
+        (session,) = await runtime.sessions(f"{transport}:{turn.channel}")
+        assert session.workspace == owner
+    resumed = FakeReply()
+    await runtime.handle(first, resumed)
+    assert resumed.sent[0].startswith("resumed ") and "workspace=default" in resumed.sent[0]
+
+
+@pytest.mark.parametrize("transport", ["slack", "telegram"])
 async def test_a_queued_turn_whose_binding_was_removed_is_dropped_with_a_notice(
-    runtime: Runtime, enso_home: Paths
+    runtime: Runtime, enso_home: Paths, transport
 ) -> None:
     class Started(FakeReply):
         def __init__(self) -> None:
@@ -545,13 +569,13 @@ async def test_a_queued_turn_whose_binding_was_removed_is_dropped_with_a_notice(
             return await super().status_post(text)
 
     first, second = Started(), FakeReply()
-    drain = await runtime.submit(make_turn("hello"), first)
+    drain = await runtime.submit(make_turn("hello", transport=transport), first)
     assert drain is not None
-    assert await runtime.submit(make_turn("again"), second) is None
+    assert await runtime.submit(make_turn("again", transport=transport), second) is None
     assert second.sent == ["Queued (#1): again"]
     await first.started.wait()
     raw = copy.deepcopy(runtime.config.raw)
-    del raw["bindings"]["slack:dm:U1"]
+    del raw["bindings"]["telegram:123" if transport == "telegram" else "slack:dm:U1"]
     write_config(enso_home, raw)
     await drain
     assert first.sent[0].startswith("new ")
@@ -574,10 +598,12 @@ async def test_a_turn_runs_in_the_workspace_it_was_bound_to_when_it_arrived(
     assert "workspace=default" in reply.sent[0] and upload in reply.sent[0]
 
 
+@pytest.mark.parametrize("transport", ["slack", "telegram"])
 async def test_queued_turn_keeps_resolved_workspace_and_loads_its_current_settings(
     runtime,
     enso_home,
     monkeypatch,
+    transport,
 ):
     entered, release = asyncio.Event(), asyncio.Event()
     observed = []
@@ -590,12 +616,12 @@ async def test_queued_turn_keeps_resolved_workspace_and_loads_its_current_settin
 
     monkeypatch.setattr(runtime, "_turn", execute)
     before = runtime.config.provider_args("default", "claude")
-    drain = await runtime.submit(make_turn("first"), FakeReply())
+    drain = await runtime.submit(make_turn("first", transport=transport), FakeReply())
     await asyncio.wait_for(entered.wait(), 5)
-    assert await runtime.submit(make_turn("second"), FakeReply()) is None
+    assert await runtime.submit(make_turn("second", transport=transport), FakeReply()) is None
     enso_home.workspace("other").mkdir()
     raw = copy.deepcopy(runtime.config.raw)
-    raw["bindings"]["slack:dm:U1"] = "other"
+    raw["bindings"]["telegram:123" if transport == "telegram" else "slack:dm:U1"] = "other"
     write_config(enso_home, raw)
     write_workspace(enso_home, "default", {"providers": {"claude": {"args": []}}})
     release.set()
@@ -630,7 +656,7 @@ async def test_a_binding_removed_while_a_message_was_prepared_is_reported(
         write_config(enso_home, raw)
         return make_turn("hello"), reply
 
-    with caplog.at_level(logging.INFO, logger="enso.runtime"):
+    with caplog.at_level(logging.INFO, logger="enso.routing"):
         await runtime.defer("slack:D1", reply, "hello", prepare)
         ingress = runtime._ingress["slack:D1"].task
         assert ingress is not None

@@ -210,11 +210,12 @@ A **binding** maps a place to a workspace:
 { "slack:C0BP5BQF6UF": "meteor", "slack:dm:U0AETSSDDEF": "default", "telegram:123456": "default" }
 ```
 
-**Forthcoming in 0.2.0:** a binding also grants access to the installation. Bound channel
+A binding also grants access to the installation. Bound channel
 participants can use Enso there; each Slack DM or Telegram user needs an explicit binding.
 Unknown senders receive only the canned unbound notice in the circumstances defined by
 [Connections](connections.md#access-in-020). Mention/thread settings decide when Enso replies;
-eligible live human messages in bound conversations are captured even when Enso only observes.
+eligible live human messages in bound conversations will be captured even when Enso only
+observes, once the forthcoming [capture pipeline](memory.md#conversation-capture) is implemented.
 
 A **conversation** is finer-grained than a binding. In a Slack channel each top-level
 message starts its own thread and its own conversation; a DM or a Telegram chat is one

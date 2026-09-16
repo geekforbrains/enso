@@ -7,6 +7,10 @@ All notable changes to Enso are documented here, following
 
 ### Changed
 
+- Conversation bindings are the sole chat access rule. Telegram's `allowed_users` setting
+  is rejected; pairing writes only the user binding and notification target. Unbound
+  conversations receive one fixed notice, and missing workspaces cannot admit messages,
+  attachments, or chat commands.
 - Workspace agent and provider-argument overrides now live in optional `WORKSPACE.md`
   files, reloaded alongside installation settings; the old `workspaces` config block is
   rejected. Workspace scaffolding adds memory, job, and project directories while retaining

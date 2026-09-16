@@ -30,7 +30,7 @@ fresh like bindings. The formats are [WORKSPACE.md](#workspacemd-in-020) and
 The [workspace layout](workspaces.md#ownership-in-020) owns paths, project scripts, qualified
 `<workspace>:<job>` references, and installation-wide concurrency groups.
 
-Bindings become the sole chat access rule, including Telegram; `allowed_users` is removed.
+Bindings are the sole chat access rule, including Telegram; `allowed_users` is removed.
 The [connection access contract](connections.md#access-in-020) owns the audience trusted by
 a binding, the canned unbound notice, and trusted pairing. Missing bound workspaces are
 errors, with no fallback. [Workspace context](workspaces.md#context-selection-in-020) owns
@@ -229,7 +229,6 @@ which accepts strict JSON.
     },
     "telegram": {
       "bot_token": "…",
-      "allowed_users": ["123456"],          // exact numeric ids; anyone else is ignored
       "notify": "123456"
     }
   },
@@ -274,8 +273,9 @@ bind. When you apply the manifest to an existing app with more scopes, revoke it
 first and then reinstall — Slack never removes scopes from a live token, and the reinstall
 drops the bot from its channels, so invite it again.
 
-**Telegram** is private chats only. `allowed_users` are the numeric ids the bot answers;
-everyone else is ignored silently. An empty list admits nobody; a binding is also required.
+**Telegram** is private chats only. Each human sender needs an explicit
+`telegram:<user id>` binding. `allowed_users` is rejected with a diagnostic explaining how
+to replace it with bindings; even an empty or null value is invalid.
 
 `notify` is where job failure alerts and untargeted `enso message send` calls go. It is a
 conversation id (`C…`, `G…`, or `D…`; use `enso slack open-dm U…` for a person) or a
@@ -283,7 +283,7 @@ Telegram user id.
 
 ## Bindings
 
-A binding maps a place to a workspace. Keys are:
+A binding grants access and maps a conversation to an existing workspace. Keys are:
 
 | Key | Means |
 | --- | --- |
@@ -291,13 +291,9 @@ A binding maps a place to a workspace. Keys are:
 | `slack:dm:U…` or `slack:dm:W…` | A user's DM, as one continuous conversation. `W…` ids are Enterprise Grid org-wide user ids. |
 | `telegram:<user id>` | A Telegram private chat |
 
-**Forthcoming in 0.2.0:** these bindings both grant access and select workspace context,
-without Telegram's separate allowlist. [Connections](connections.md#access-in-020) owns the
-access and unbound-notice rules, pairing, and queued-turn behavior. Mention/thread settings
-control when Enso responds, independently of access and eligible live message capture.
-
-In 0.1.x, Slack already uses explicit channel and DM bindings, with an unbound notice when
-mentioned or messaged directly; Telegram additionally requires `allowed_users`.
+[Connections](connections.md#access-in-020) owns the access and unbound-notice rules,
+pairing, and queued-turn behavior. Mention/thread settings control when Enso responds,
+independently of access and forthcoming live message capture.
 [Applying configuration](#while-the-service-runs) describes live binding reads.
 
 The named workspace directory must exist. `config check` treats a binding pointing at a

@@ -34,7 +34,6 @@ log = logging.getLogger(__name__)
 TELEGRAM_TEXT_LIMIT = 4096
 FILE_DOWNLOAD_LIMIT = 20 * 1024 * 1024  # Bot API ceiling for getFile
 QUOTE_LIMIT = 500
-UNBOUND_REPLY = "This chat is not bound to a workspace."
 
 
 def _is_parse_error(exc: BadRequest) -> bool:
@@ -186,7 +185,7 @@ class TelegramReply(Reply):
 
 
 class TelegramTransport(Transport):
-    """Telegram bot over long polling; only ``allowed_users`` are heard."""
+    """Telegram bot over long polling; bindings admit private human conversations."""
 
     name = "telegram"
 
@@ -206,8 +205,6 @@ class TelegramTransport(Transport):
 
     async def start(self, runtime: Runtime) -> None:
         self.runtime = runtime
-        if not self.config.allowed_users:
-            log.warning("telegram: allowed_users is empty, every message will be ignored")
         app = Application.builder().token(self.config.bot_token).concurrent_updates(True).build()
         app.add_handler(MessageHandler(filters.UpdateType.MESSAGE, self._on_update))
         async with app:
@@ -282,30 +279,13 @@ class TelegramTransport(Transport):
         except Exception:
             log.exception("telegram message handling failed")
 
-    def _authorized(self, message: Message) -> bool:
-        user = message.from_user
-        if user is None or user.is_bot:
-            return False
-        # Telegram is one-to-one by design: an allowed user must not be able to drive Enso
-        # from a group or channel someone added the bot to. Team use goes through Slack.
-        if message.chat.type != ChatType.PRIVATE:
-            log.warning(
-                "ignoring telegram %s chat %s: only private chats are served",
-                message.chat.type,
-                message.chat.id,
-            )
-            return False
-        if str(user.id) not in self.config.allowed_users:
-            log.warning("ignoring telegram user %s (%s): not in allowed_users", user.id, user.name)
-            return False
-        return True
-
     async def handle_message(self, message: Message) -> None:
         assert self.runtime is not None
-        if not self._authorized(message):
-            return
         user = message.from_user
-        assert user is not None
+        if user is None or user.is_bot:
+            return
+        if message.chat.type != ChatType.PRIVATE or message.chat.id != user.id:
+            return
         chat_id = str(message.chat.id)
         conversation = routing.conversation_key("telegram", chat_id, None)
         reply = TelegramReply(
@@ -316,16 +296,15 @@ class TelegramTransport(Transport):
             user_name=user.full_name,
         )
         workspace = routing.workspace_for(
-            self.runtime.config, routing.binding_key("telegram", chat_id)
+            self.runtime.config, routing.binding_key("telegram", chat_id, user_id=str(user.id))
         )
         if workspace is None:
-            log.info("unbound telegram chat %s messaged by %s", chat_id, user.id)
-            await reply.send(UNBOUND_REPLY)
+            await reply.send(routing.UNBOUND_NOTICE)
             return
 
         text = (message.text or message.caption or "").strip()
         if commands.parse(text, "telegram") is not None and await commands.dispatch(
-            self.runtime, build_turn(message, text), reply
+            self.runtime, build_turn(message, text, workspace=workspace), reply
         ):
             return
 
@@ -341,6 +320,13 @@ class TelegramTransport(Transport):
     ) -> tuple[Turn, Reply] | None:
         """Resolve files and context for one message after its FIFO reservation."""
         assert self.runtime is not None
+        assert message.from_user is not None
+        key = routing.binding_key(
+            "telegram", str(message.chat.id), user_id=str(message.from_user.id)
+        )
+        if routing.workspace_for(self.runtime.config, key, workspace=workspace) is None:
+            await reply.send(routing.UNBOUND_NOTICE)
+            return None
         files = await self.download(message, workspace, reply)
         if files is None:
             return None
