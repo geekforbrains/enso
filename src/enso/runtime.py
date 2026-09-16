@@ -12,12 +12,12 @@ import uuid
 from asyncio.subprocess import Process
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from . import connection_setup, db, messages, outbound, routing
 from . import log as logctx
-from .config import Config, LiveConfig
+from .config import Config, LiveConfig, resolve_workspace
 from .execution import terminate_process_tree
 from .formatting import chunk_text, format_elapsed, format_error, preview, split_text, status_text
 from .outbound import OutboundMessage
@@ -330,12 +330,11 @@ class Runtime:
             turn.transport, turn.channel, turn.thread, is_dm=turn.is_dm
         )
         if conversation in self._ingress:
-            key = routing.binding_key(
-                turn.transport, turn.channel, is_dm=turn.is_dm, user_id=turn.user_id
-            )
             config = await asyncio.to_thread(self._live.current)
-            if routing.workspace_for(config, key) is None:
+            workspace = self._workspace_of(turn, config)
+            if workspace is None:
                 return None
+            turn = replace(turn, workspace=workspace)
 
             async def prepared() -> tuple[Turn, Reply]:
                 return turn, reply
@@ -348,11 +347,13 @@ class Runtime:
         self, turn: Turn, reply: Reply, *, announce: bool
     ) -> asyncio.Task[None] | None:
         config = await asyncio.to_thread(self._live.current)
-        if self._workspace_of(turn, config) is None:
+        workspace = self._workspace_of(turn, config)
+        if workspace is None:
             # The binding went away while the message was being prepared; the sender
             # gets the same notice a queued message gets.
             await reply.send(UNBOUND_NOTICE)
             return None
+        turn = replace(turn, workspace=workspace)
         conversation = routing.conversation_key(
             turn.transport, turn.channel, turn.thread, is_dm=turn.is_dm
         )
@@ -621,10 +622,11 @@ class Runtime:
         if bound is None:
             log.info("dropping turn: %s is no longer bound", key)
             return None
-        if turn.workspace and not self.paths.workspace(turn.workspace).is_dir():
-            log.info("dropping turn: workspace %s no longer exists", turn.workspace)
+        try:
+            return resolve_workspace(self.paths, turn.workspace or bound)
+        except ValueError as exc:
+            log.info("dropping turn: %s", exc)
             return None
-        return turn.workspace or bound
 
     async def _run_turn_inner(
         self, conversation: str, turn: Turn, reply: Reply, running: Running

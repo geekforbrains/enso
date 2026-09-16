@@ -15,7 +15,7 @@ from dataclasses import asdict
 from importlib import resources
 from pathlib import Path
 
-from .config import Agent, Paths, valid_workspace_name
+from .config import Agent, Paths, require_workspace, valid_workspace_name
 
 # ``src/enso/bundled/`` mirrors the home: ``AGENTS.md``, ``skills/<name>/SKILL.md``, and
 # ``jobs/<name>/`` (a ``JOB.md`` with its scripts) are copied to the same path under
@@ -51,7 +51,7 @@ RESERVED_PREFIX = "enso-"
 # The documented workspace layout (docs/workspaces.md § Layout): the directories, and the
 # links the home carries too. Link targets are relative to the link's own directory. The
 # provider CLIs find the skill links by walking up from the workspace to the Git root.
-WORKSPACE_DIRS = ("skills", "knowledge", "drafts", "uploads")
+WORKSPACE_DIRS = ("skills", "knowledge", "memory", "jobs", "projects", "drafts", "uploads")
 LINKS = (
     ("CLAUDE.md", "AGENTS.md"),
     (".claude/skills", "../skills"),
@@ -318,8 +318,12 @@ def ensure_links(root: Path) -> list[str]:
     the audit to report.
     """
     done: list[str] = []
+    if root.is_symlink():
+        return done
     for relative, target in LINKS:
         link = root / relative
+        if link.parent != root and link.parent.is_symlink():
+            continue
         if link.is_symlink():
             if os.readlink(link) == target:
                 continue
@@ -345,6 +349,8 @@ def ensure_layout(root: Path) -> list[str]:
     here, and nothing that exists is removed or rewritten. Safe to run on a live workspace.
     """
     done: list[str] = []
+    if any(path.is_symlink() for path in (root, root.parent, root.parent.parent)):
+        return done
     for name in WORKSPACE_DIRS:
         directory = root / name
         if not directory.exists() and not directory.is_symlink():
@@ -355,12 +361,12 @@ def ensure_layout(root: Path) -> list[str]:
 
 
 def list_workspaces(paths: Paths) -> list[str]:
-    if not paths.workspaces.is_dir():
+    if paths.home.is_symlink() or paths.workspaces.is_symlink() or not paths.workspaces.is_dir():
         return []
     return sorted(
         entry.name
         for entry in paths.workspaces.iterdir()
-        if entry.is_dir() and valid_workspace_name(entry.name)
+        if not entry.is_symlink() and entry.is_dir() and valid_workspace_name(entry.name)
     )
 
 
@@ -369,7 +375,9 @@ def create_workspace(paths: Paths, name: str) -> Path:
     if not valid_workspace_name(name):
         raise ValueError("workspace names are lowercase kebab-case (letters, digits, hyphens)")
     root = paths.workspace(name)
-    if root.exists():
+    if paths.home.is_symlink() or paths.workspaces.is_symlink():
+        raise ValueError("home and workspaces must be real directories, not symbolic links")
+    if root.exists() or root.is_symlink():
         raise FileExistsError(f"workspace {name} already exists at {root}")
     root.mkdir(parents=True)
     (root / "AGENTS.md").write_text(workspace_template(name), "utf-8")
@@ -379,6 +387,10 @@ def create_workspace(paths: Paths, name: str) -> Path:
 
 def new_uploads_dir(paths: Paths, workspace: str) -> Path:
     """A fresh ``<workspace>/uploads/<8 hex>/`` for one turn's attachments."""
-    directory = paths.workspace(workspace) / "uploads" / uuid.uuid4().hex[:8]
+    require_workspace(paths, workspace)
+    uploads = paths.workspace_uploads(workspace)
+    if uploads.is_symlink():
+        raise ValueError(f"{uploads}: uploads must be a real directory")
+    directory = uploads / uuid.uuid4().hex[:8]
     directory.mkdir(parents=True)
     return directory

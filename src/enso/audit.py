@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import skills, workspaces
-from .config import Config, Paths, valid_workspace_name
+from .config import Config, Paths, require_workspace, valid_workspace_name
 from .jobs import load_jobs
 from .skills import ERROR, WARNING
 
@@ -34,6 +34,8 @@ RESERVED = "reserved"  # an enso-* skill or job that Enso did not install
 EXPECTED_ENTRIES = frozenset(
     {
         "AGENTS.md",
+        "WORKSPACE.md",
+        "heartbeat",
         "worktrees",
         *workspaces.WORKSPACE_DIRS,
         *(link.split("/")[0] for link, _ in workspaces.LINKS),
@@ -192,6 +194,9 @@ def audit_home(
     """The Git root, links, instructions, skills, shared knowledge, jobs, and workspaces."""
     home = paths.home
     result = HomeAudit(path=home)
+    if home.is_symlink():
+        result.findings.append(Finding(DIRECTORY, ERROR, "home must not be a symbolic link"))
+        return result
     if fix:
         result.fixed.extend(workspaces.ensure_home(home))
     findings = result.findings
@@ -227,13 +232,15 @@ def audit_workspace(
     user_dirs: Sequence[Path] | None = None,
 ) -> WorkspaceAudit:
     """One workspace. ``bound`` is its binding keys, or None to skip the orphan check."""
-    root = paths.workspace(name)
+    root = paths.workspaces / name
     result = WorkspaceAudit(name=name, path=root, bindings=list(bound or ()), jobs=list(jobs))
     if not valid_workspace_name(name):
         result.findings.append(Finding(UNEXPECTED, ERROR, "names are lowercase kebab-case"))
         return result
-    if not root.is_dir():
-        result.findings.append(Finding(DIRECTORY, ERROR, f"{root} does not exist"))
+    try:
+        require_workspace(paths, name)
+    except ValueError as exc:
+        result.findings.append(Finding(DIRECTORY, ERROR, str(exc)))
         return result
     if fix:
         result.fixed.extend(workspaces.ensure_layout(root))
@@ -293,7 +300,10 @@ def tree_size(path: Path) -> int:
 
 def _check_dirs(root: Path) -> Iterator[Finding]:
     for name in workspaces.WORKSPACE_DIRS:
-        yield from _check_dir(root / name, name, allow_link=name != "knowledge")
+        yield from _check_dir(root / name, name, allow_link=name in {"skills", "drafts"})
+    heartbeat = root / "heartbeat"
+    if heartbeat.exists() or heartbeat.is_symlink():
+        yield from _check_dir(heartbeat, "heartbeat", allow_link=False)
 
 
 def _check_dir(path: Path, name: str, *, allow_link: bool) -> Iterator[Finding]:
@@ -313,9 +323,10 @@ def _check_links(root: Path) -> Iterator[Finding]:
     for relative, target in workspaces.LINKS:
         link = root / relative
         parent = link.parent
-        if parent != root and (parent.is_symlink() or parent.exists()) and not parent.is_dir():
+        if parent != root and (parent.is_symlink() or (parent.exists() and not parent.is_dir())):
             where = parent.relative_to(root)
-            yield Finding(LINK, ERROR, f"{where} is a file, not a directory; move it aside")
+            kind = "symbolic link" if parent.is_symlink() else "file"
+            yield Finding(LINK, ERROR, f"{where} is a {kind}, not a directory; move it aside")
         elif link.is_symlink():
             actual = os.readlink(link)
             if actual != target:
@@ -412,12 +423,17 @@ def _check_entries(root: Path) -> Iterator[Finding]:
 
 def _check_workspace_entries(paths: Paths) -> Iterator[Finding]:
     """Entries under ``workspaces/`` that are not workspaces, which Enso silently skips."""
+    if paths.workspaces.is_symlink():
+        yield Finding(DIRECTORY, ERROR, "workspaces/ must be a real directory, not a symbolic link")
+        return
     if not paths.workspaces.is_dir():
         return
     for entry in sorted(paths.workspaces.iterdir()):
         if entry.name in IGNORED_ENTRIES:
             continue
-        if not entry.is_dir():
+        if entry.is_symlink():
+            yield Finding(DIRECTORY, ERROR, f"workspaces/{entry.name} must not be a symbolic link")
+        elif not entry.is_dir():
             yield Finding(
                 UNEXPECTED, WARNING, f"workspaces/{entry.name} is a file, not a workspace"
             )

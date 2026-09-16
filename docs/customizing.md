@@ -293,7 +293,7 @@ Everything that is not instructions or skills is configuration:
 | What | Where |
 | --- | --- |
 | Which chat locations use which workspace | `bindings` in [`config.json`](configuration.md) |
-| Which agent a workspace or job uses | `defaults`, `workspaces.<name>.agent`, `JOB.md` |
+| Which agent a workspace or job uses | `defaults`, workspace `WORKSPACE.md`, `JOB.md` |
 | Provider permissions | [Provider-native controls](configuration.md#provider-permissions-and-installation-trust) and `providers.<name>.args` |
 | Environment for providers and scripts | `~/.enso/secrets/*.env` |
 | Scheduled work | [`JOB.md`](jobs.md) plus its prerun and postrun scripts |

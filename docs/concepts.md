@@ -56,7 +56,7 @@ and [context selection](workspaces.md#context-selection-in-020).
 
 ## Home
 
-Enso's current 0.1.x runtime state lives under one directory:
+Enso's runtime state lives under one directory:
 
 ```text
 ~/.enso/
@@ -100,7 +100,8 @@ Enso's current 0.1.x runtime state lives under one directory:
 [Connections](connections.md) owns the pairing lifecycle and private state. Prepared home,
 paired chat, valid configuration, and a successful provider reply are separate milestones.
 
-**Forthcoming in 0.2.0:** workspace settings, jobs, projects, memory, and Heartbeat scripts
+**Partly implemented for 0.2.0:** workspace settings now use `WORKSPACE.md`, and the new
+workspace directories are scaffolded. Jobs, projects, memory, and Heartbeat scripts will
 use the [workspace ownership layout](workspaces.md#ownership-in-020). Installation support
 files shown here keep their documented purpose and locations unless that layout explicitly
 changes them. Operational records stay in one home database; maintained knowledge and memory
@@ -152,7 +153,9 @@ layout is fixed and Enso keeps it that way; see [Workspaces](workspaces.md).
 
 Every conversation, job, and beat names exactly one workspace. That workspace becomes the
 provider's working directory. Its `AGENTS.md` adds workspace-specific context to Enso's
-home-level instructions and any user-level instructions the provider loads; see
+home-level instructions and any user-level instructions the provider loads. Optional
+`WORKSPACE.md` supplies settings as defined in
+[Configuration](configuration.md#workspacemd-in-020); see also
 [Customizing](customizing.md#instructions-agentsmd).
 
 ## Knowledge

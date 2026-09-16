@@ -562,7 +562,6 @@ def initial_config(
         "version": CONFIG_VERSION,
         "transports": {transport: spec.config_entry(credentials, owner)},
         "bindings": {binding: "default"},
-        "workspaces": {},
     }
 
 

@@ -11,15 +11,22 @@ rather than assembled by hand.
 
 ## Layout
 
-This is the currently implemented layout; the [0.2.0 ownership layout](#ownership-in-020) below is
-forthcoming.
+This layout is implemented on the 0.2.0 development branch. The directories for memory,
+jobs, and projects are prepared now; their feature implementations and the relocation of
+existing home-level jobs, project definitions, and Heartbeat scripts remain forthcoming,
+as detailed in the [ownership layout](#ownership-in-020).
 
 ```text
 ~/.enso/workspaces/<name>/
 ├── AGENTS.md          # purpose, scope, terms, approval rules for this workspace
+├── WORKSPACE.md       # optional agent triple and provider arguments
 ├── CLAUDE.md          # symlink -> AGENTS.md
 ├── skills/            # skills unique to this workspace
 ├── knowledge/         # durable reference material the agent should keep
+├── memory/            # dated memories (feature forthcoming)
+├── jobs/              # workspace jobs (relocation forthcoming)
+├── projects/          # workspace project definitions (relocation forthcoming)
+├── heartbeat/         # optional; workspace gate scripts (relocation forthcoming)
 ├── drafts/            # generated or editable output
 ├── uploads/           # chat attachments, one directory per turn
 ├── .claude/skills     # symlink -> ../skills, read by Claude Code and Grok
@@ -31,13 +38,21 @@ forthcoming.
 | Directory | What belongs there |
 | --- | --- |
 | `knowledge/` | Durable reference owned by this workspace: notes, facts, and research worth finding again. |
+| `memory/`, `jobs/`, `projects/` | Prepared roots for the forthcoming workspace-owned features below. |
+| `heartbeat/` | Optional root, created only when workspace gate scripts are used. |
+| `WORKSPACE.md` | Optional settings; [Configuration](configuration.md#workspacemd-in-020) owns its format and reload behavior. |
 | `drafts/` | Ordinary work product. Posts, reports, scratch analysis. Safe to delete. |
 | `uploads/` | Chat attachments. Enso writes here; nothing else should. |
 | `skills/` | Skills only this workspace needs. |
 | Policy files | Each CLI's own project-level permission file, in its own format. Optional; Enso neither checks nor enforces it. See [Provider permissions](configuration.md#provider-permissions-and-installation-trust). |
 
 Names are lowercase kebab-case (`meteor`, `blog-research`), at most 64 characters. The name
-is the directory name, and there is no other valid location.
+is the directory name, and there is no other valid location. The workspace and its
+`workspaces/` container must be real directories; a symbolic link cannot give a workspace
+a second identity. The scaffold creates `knowledge/`, `memory/`, `jobs/`, `projects/`,
+`drafts/`, `uploads/`, and `skills/`. The empty skills directory keeps the provider discovery
+links valid even before you add a workspace skill. It creates neither `WORKSPACE.md` nor
+`heartbeat/`; adding either later requires no restart.
 
 The home also has `~/.enso/knowledge/` (or `$ENSO_HOME/knowledge/`) for shared reference that
 belongs across workspaces. The viewer discovers existing workspace knowledge roots from
@@ -62,8 +77,10 @@ retains its separately documented repair behavior.
 
 ## Ownership in 0.2.0
 
-**Forthcoming in 0.2.0.** Workspace-owned files live under their workspace; the containing
-directory determines ownership. Installation settings remain in `config.json`, as described
+**Target for 0.2.0.** Workspace paths and settings are implemented; job/project relocation,
+workspace Heartbeat scripts, and memory behavior remain forthcoming. Workspace-owned files
+live under their workspace; the containing directory determines ownership. Installation
+settings remain in `config.json`, as described
 in [Configuration](configuration.md#configuration-ownership-in-020).
 
 ```text
@@ -88,7 +105,7 @@ $ENSO_HOME/
     ├── heartbeat/                # optional follow-up gate scripts and helpers
     ├── drafts/
     ├── uploads/
-    └── skills/                   # optional workspace-specific skills
+    └── skills/                   # scaffolded; workspace-specific skills are optional
 ```
 
 This is the content layout. Instruction links, provider discovery, private configuration,
@@ -134,8 +151,12 @@ and `team:memory`; those jobs process only their containing workspace.
 
 ## Context selection in 0.2.0
 
-**Forthcoming in 0.2.0.** A chat binding selects an existing workspace for a turn. Enso
-sets `ENSO_WORKSPACE` for its chat agents, jobs, and Heartbeat runs, and CLI calls they launch
+**Partly implemented on the 0.2.0 development branch.** A chat binding selects an existing
+workspace for a turn, which keeps that selection through preparation and queueing. The
+shared context resolver implements the precedence below; individual task/list/search and
+Heartbeat command changes remain forthcoming and are identified in
+[CLI](cli.md#workspace-context-in-020). Enso sets `ENSO_WORKSPACE` for its chat agents,
+jobs, and Heartbeat runs, and CLI calls they launch
 inherit it. Workspace-scoped CLI operations default to that value; an optional
 `--workspace` explicitly overrides it for that operation. This includes Heartbeat creation,
 which saves the resolved workspace for later scheduling and execution.
@@ -294,9 +315,9 @@ The audit checks layout and skill discovery. Optional provider policy files are 
 in the layout and preserved, with no policy or trust checks. An audit does not establish
 provider permissions or prove that access is confined.
 
-`--fix` only ever creates and repairs. It never deletes a file, never edits `AGENTS.md`, and
-never touches anything under `knowledge/`, `drafts/`, or `uploads/`. A real file or
-directory sitting where a link belongs, or a dangling symbolic link sitting where a
+`--fix` only ever creates and repairs directories and discovery links. It never deletes a
+file, edits `AGENTS.md` or `WORKSPACE.md`, or changes content inside workspace directories.
+A real file or directory sitting where a link belongs, or a dangling symbolic link sitting where a
 directory belongs, is reported and left for you to move aside. Fixes run first and the
 report shows what remains, so a second `--fix` finds nothing to do.
 
@@ -368,9 +389,10 @@ it while preserving their tasks. Inspect active and paused beats with
 to another workspace or explicitly close work that is ending. Pausing a beat keeps its
 workspace reference. Keep the directory while any of those dependents still needs it.
 
-Let running turns, jobs, and beats finish before moving files, and remove the retired
-workspace's configuration override when present. Run `enso config check` before and after
-archiving or deleting the directory; deletion needs the user's authorization. These changes
+Let running turns, jobs, and beats finish before moving files. Workspace overrides live
+with the directory in `WORKSPACE.md`, so there is no configuration override block to remove.
+Run `enso config check` before and after archiving or deleting the directory; deletion
+needs the user's authorization. These changes
 need no Enso restart. Configuration validation catches missing binding and project
 directories, but it does not inspect heartbeat state, so the beat review is a separate step.
 Enso does not delete a workspace for you.
@@ -383,11 +405,14 @@ your chat bridge down. The same goes for a workspace a job names, and for the ho
 `enso serve` logs one line per failing root, naming the errors, and points at
 `enso workspace audit`.
 
-The exception is a bound workspace directory that does not exist at all: `config check`
+Malformed `WORKSPACE.md` settings use the separate
+[configuration validation and reload rules](configuration.md#while-the-service-runs).
+
+The other exception is a bound workspace directory that does not exist at all: `config check`
 treats that as a problem and `enso serve` refuses to start. If a bound directory disappears
 while the service is running, the next read of `config.json` fails the same check: the
 service logs that once and keeps the last valid configuration, a turn bound to the missing
-directory fails when its provider cannot start there, and other conversations and jobs
+directory is dropped before provider startup, and other conversations and jobs
 continue. A missing directory named only
 by a job is a job validation problem: that job cannot run, while the service and other jobs
 can continue.

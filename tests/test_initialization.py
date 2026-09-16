@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from conftest import write_workspace
 from typer.testing import CliRunner
 
 from enso import connection_setup, initialization, workspaces
@@ -75,7 +76,14 @@ def test_init_rerun_preserves_active_config_instructions_jobs_and_skills(enso_ho
 
 
 @pytest.mark.parametrize(
-    "relative", ["CLAUDE.md", ".claude", "knowledge", "workspaces/default/.agents/skills"]
+    "relative",
+    [
+        "CLAUDE.md",
+        ".claude",
+        "knowledge",
+        "workspaces/default/.agents/skills",
+        "workspaces/default/memory",
+    ],
 )
 def test_init_reports_and_preserves_path_conflicts(enso_home, relative):
     conflict = enso_home.home / relative
@@ -88,7 +96,10 @@ def test_init_reports_and_preserves_path_conflicts(enso_home, relative):
     assert not enso_home.config_example.exists()
 
 
-@pytest.mark.parametrize("directory", ["skills", "knowledge"])
+@pytest.mark.parametrize(
+    "directory",
+    ["skills", "knowledge", "workspaces/default/memory", "workspaces/default/WORKSPACE.md"],
+)
 def test_init_rejects_symlink_escape_without_writing_outside_home(enso_home, tmp_path, directory):
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -344,8 +355,8 @@ def test_set_creates_a_nested_key_and_validates_the_result(enso_home, raw_config
     code, report = invoke(
         "config",
         "set",
-        "workspaces.meteor.providers.claude.args",
-        '["--permission-mode", "dontAsk"]',
+        "runs.keep",
+        "600",
         "--json",
         "--expected-hash",
         revision,
@@ -355,10 +366,7 @@ def test_set_creates_a_nested_key_and_validates_the_result(enso_home, raw_config
     assert report["restart_required"] is False
     assert report["config_hash"] == config_fingerprint(enso_home) != revision
     assert enso_home.config.stat().st_mode & 0o777 == 0o600
-    assert load_config(enso_home).provider_args("meteor", "claude") == (
-        "--permission-mode",
-        "dontAsk",
-    )
+    assert load_config(enso_home).runs.keep == 600
     assert (enso_home.jobs / "enso-audit" / "JOB.md").is_file()
 
 
@@ -437,7 +445,7 @@ def test_workspace_context_does_not_gate_provider_argument_edits(
 ):
     save_config(enso_home, raw_config)
     monkeypatch.setenv("ENSO_WORKSPACE", "default")
-    raw_config["workspaces"]["default"] = {"providers": {"claude": {"args": []}}}
+    write_workspace(enso_home, "default", {"providers": {"claude": {"args": []}}})
     raw_config["providers"]["claude"]["args"] = ["--permission-mode", "dontAsk"]
     if operation == "apply":
         report = initialization.apply_config(enso_home, raw_config)
@@ -445,7 +453,6 @@ def test_workspace_context_does_not_gate_provider_argument_edits(
         report = initialization.patch_config(
             enso_home,
             [
-                initialization.ConfigEdit("set", "workspaces.default.providers.claude.args", []),
                 initialization.ConfigEdit(
                     "set", "providers.claude.args", ["--permission-mode", "dontAsk"]
                 ),

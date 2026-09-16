@@ -1,4 +1,4 @@
-"""ENSO_HOME paths and the ``config.json`` schema: load, validate, save."""
+"""Home paths, workspace context, and configuration snapshots from JSON and WORKSPACE.md."""
 
 from __future__ import annotations
 
@@ -8,15 +8,16 @@ import logging
 import os
 import re
 import shutil
+import stat
 import tempfile
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
-from . import locks
+from . import frontmatter, locks
 from .providers import PROVIDER_CLASSES
 from .transport_registry import TRANSPORTS
 
@@ -48,7 +49,7 @@ STAGE_NAME_RE = re.compile(r"[a-z][a-z0-9-]{1,23}")
 
 
 class ConfigError(Exception):
-    """config.json cannot be used; ``problems`` lists every reason."""
+    """Installation or workspace settings cannot be used; ``problems`` lists every reason."""
 
     def __init__(self, problems: list[str]):
         super().__init__("; ".join(problems))
@@ -184,7 +185,36 @@ class Paths:
         return self.home / "secrets"
 
     def workspace(self, name: str) -> Path:
+        if not valid_workspace_name(name):
+            raise ValueError("workspace names are lowercase kebab-case, at most 64 characters")
         return self.workspaces / name
+
+    def workspace_settings(self, name: str) -> Path:
+        return self.workspace(name) / "WORKSPACE.md"
+
+    def workspace_knowledge(self, name: str) -> Path:
+        return self.workspace(name) / "knowledge"
+
+    def workspace_memory(self, name: str) -> Path:
+        return self.workspace(name) / "memory"
+
+    def workspace_jobs(self, name: str) -> Path:
+        return self.workspace(name) / "jobs"
+
+    def workspace_projects(self, name: str) -> Path:
+        return self.workspace(name) / "projects"
+
+    def workspace_heartbeat(self, name: str) -> Path:
+        return self.workspace(name) / "heartbeat"
+
+    def workspace_skills(self, name: str) -> Path:
+        return self.workspace(name) / "skills"
+
+    def workspace_drafts(self, name: str) -> Path:
+        return self.workspace(name) / "drafts"
+
+    def workspace_uploads(self, name: str) -> Path:
+        return self.workspace(name) / "uploads"
 
 
 @dataclass(frozen=True)
@@ -205,7 +235,7 @@ class ProviderConfig:
 
 @dataclass(frozen=True)
 class WorkspaceConfig:
-    """Per-workspace overrides; absent keys fall back to the global config."""
+    """Overrides read from a workspace's optional WORKSPACE.md in this snapshot."""
 
     agent: Agent | None = None
     provider_args: dict[str, tuple[str, ...]] = field(default_factory=dict)
@@ -358,7 +388,7 @@ class ProjectConfig:
 
 @dataclass(frozen=True)
 class Config:
-    """A validated config.json."""
+    """Validated installation and workspace settings for one unit of work."""
 
     paths: Paths
     raw: dict[str, Any]
@@ -424,17 +454,48 @@ def valid_workspace_name(name: object) -> bool:
     )
 
 
+def require_workspace(paths: Paths, name: str) -> Path:
+    """Require one real workspace directory; never create it or substitute another owner."""
+    root = paths.workspace(name)
+    if any(path.is_symlink() for path in (paths.home, paths.workspaces, root)):
+        raise ValueError(f"workspace directory {root} must not be a symbolic link")
+    if not root.is_dir():
+        raise ValueError(f"workspace directory {root} missing")
+    return root
+
+
+def resolve_workspace(
+    paths: Paths,
+    workspace: str | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> str:
+    """Explicit selection beats ENSO_WORKSPACE; neither cwd nor default supplies context.
+
+    This resolves a context hint, not an authenticated identity. Services pass an explicit
+    binding or recorded owner and keep that selection throughout the operation.
+    """
+    selected = (
+        workspace
+        if workspace is not None
+        else (os.environ if environ is None else environ).get("ENSO_WORKSPACE")
+    )
+    if selected is None:
+        raise ValueError("select a workspace with --workspace or ENSO_WORKSPACE")
+    require_workspace(paths, selected)
+    return selected
+
+
 # -- Parsing ------------------------------------------------------------------
 
 # Every closed object in the current schema, by the path it is reported under. Dynamic maps
-# are absent on purpose: bindings, workspaces, providers, and workspace provider overrides are
+# are absent on purpose: bindings, providers, and workspace provider overrides are
 # named by the user and validated by their own name rules, not by this table.
 ROOT_KEYS = (
     "version",
     "transports",
     "bindings",
     "defaults",
-    "workspaces",
     "providers",
     "agent",
     "logging",
@@ -661,50 +722,81 @@ def parse_agent(
     return Agent(**values)
 
 
-def _parse_workspaces(
-    raw: object,
+def _workspace_entries(paths: Paths) -> list[Path]:
+    """Discover workspace locations without following a linked workspace container."""
+    if paths.home.is_symlink() or paths.workspaces.is_symlink():
+        raise ValueError(f"{paths.workspaces}: workspace locations must not be symbolic links")
+    if not paths.workspaces.exists():
+        return []
+    return sorted(
+        entry
+        for entry in paths.workspaces.iterdir()
+        if valid_workspace_name(entry.name) and (entry.is_symlink() or entry.is_dir())
+    )
+
+
+def _read_workspace_settings(path: Path) -> dict[str, Any]:
+    """Read one regular settings file; missing means inheritance, other failures are errors."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return {}
+    with os.fdopen(fd, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ValueError("expected a regular file")
+        text = stream.read().decode("utf-8")
+    document, problem = frontmatter.parse(text)
+    if document is None:
+        raise ValueError(problem)
+    return document.fields
+
+
+def _load_workspaces(
+    paths: Paths,
     providers: dict[str, ProviderConfig],
     problems: list[str],
-    unknown: list[str],
 ) -> dict[str, WorkspaceConfig]:
     workspaces: dict[str, WorkspaceConfig] = {}
-    if raw is None:
+    try:
+        entries = _workspace_entries(paths)
+    except (OSError, ValueError) as exc:
+        problems.append(str(exc))
         return workspaces
-    if not isinstance(raw, dict):
-        problems.append("workspaces must be an object")
-        return workspaces
-    for name, entry in raw.items():
-        if not valid_workspace_name(name):
-            problems.append(f"workspaces.{name}: names are lowercase kebab-case")
+    for root in entries:
+        path = paths.workspace_settings(root.name)
+        where = str(path)
+        try:
+            require_workspace(paths, root.name)
+            entry = _read_workspace_settings(path)
+        except (OSError, UnicodeError, ValueError, RecursionError) as exc:
+            detail = (
+                "settings are nested too deeply" if isinstance(exc, RecursionError) else str(exc)
+            )
+            problems.append(f"{where}: {detail}")
             continue
-        if not isinstance(entry, dict):
-            problems.append(f"workspaces.{name} must be an object")
-            continue
-        _unknown_keys(entry, WORKSPACE_KEYS, f"workspaces.{name}", unknown)
+        _unknown_keys(entry, WORKSPACE_KEYS, where, problems)
         agent = None
         if "agent" in entry:
-            agent = parse_agent(
-                entry["agent"], f"workspaces.{name}.agent", providers, problems, unknown
-            )
+            agent = parse_agent(entry["agent"], f"{where}.agent", providers, problems, problems)
         provider_args: dict[str, tuple[str, ...]] = {}
         overrides = entry.get("providers", {})
         if not isinstance(overrides, dict):
-            problems.append(f"workspaces.{name}.providers must be an object")
+            problems.append(f"{where}.providers must be an object")
             overrides = {}
         for provider, override in overrides.items():
-            where = f"workspaces.{name}.providers.{provider}"
+            location = f"{where}.providers.{provider}"
             if provider not in providers:
-                problems.append(f"{where}: provider is not configured")
+                problems.append(f"{location}: provider is not configured")
                 continue
             args = None
             if isinstance(override, dict):
-                _unknown_keys(override, WORKSPACE_PROVIDER_KEYS, where, unknown)
+                _unknown_keys(override, WORKSPACE_PROVIDER_KEYS, location, problems)
                 args = _str_list(override.get("args"))
             if args is None:
-                problems.append(f"{where}.args must be a list of strings")
+                problems.append(f"{location}.args must be a list of strings")
             else:
                 provider_args[provider] = tuple(args)
-        workspaces[name] = WorkspaceConfig(agent=agent, provider_args=provider_args)
+        workspaces[root.name] = WorkspaceConfig(agent=agent, provider_args=provider_args)
     return workspaces
 
 
@@ -728,10 +820,10 @@ def _parse_bindings(
         if not valid_workspace_name(workspace):
             problems.append(f"bindings.{key}: workspace names are lowercase kebab-case")
             continue
-        if not paths.workspace(workspace).is_dir():
-            problems.append(
-                f"bindings.{key}: workspace directory {paths.workspace(workspace)} missing"
-            )
+        try:
+            require_workspace(paths, workspace)
+        except ValueError as exc:
+            problems.append(f"bindings.{key}: {exc}")
             continue
         if key.split(":", 1)[0] not in configured:
             warnings.append(f"bindings.{key}: transport {key.split(':', 1)[0]} is not configured")
@@ -887,8 +979,11 @@ def _parse_project(
     if not valid_workspace_name(workspace):
         problems.append(f"{where}.workspace must be a workspace name (lowercase kebab-case)")
         workspace = ""
-    elif not paths.workspace(str(workspace)).is_dir():
-        problems.append(f"{where}.workspace: directory {paths.workspace(str(workspace))} missing")
+    else:
+        try:
+            require_workspace(paths, str(workspace))
+        except ValueError as exc:
+            problems.append(f"{where}.workspace: {exc}")
     repo: Path | None = None
     repo_raw = entry.get("repo")
     if repo_raw is not None:
@@ -1007,7 +1102,7 @@ def parse_config(raw: object, paths: Paths) -> tuple[Config | None, list[str], l
 
     providers = _parse_providers(raw.get("providers"), problems, warnings, unknown)
     defaults = parse_agent(raw.get("defaults"), "defaults", providers, problems, unknown)
-    workspaces = _parse_workspaces(raw.get("workspaces"), providers, problems, unknown)
+    workspaces = _load_workspaces(paths, providers, problems)
     bindings = _parse_bindings(raw.get("bindings"), paths, configured, problems, warnings)
     projects = _parse_projects(raw.get("projects"), paths, problems, unknown)
 
@@ -1138,20 +1233,45 @@ def config_fingerprint(paths: Paths) -> str:
 
 # -- Live reload ---------------------------------------------------------------
 
-type _Signature = tuple[int, int, int] | Literal["missing"]
+type _Signature = tuple[int, int, int, int, int] | Literal["missing"]
 
 
-def _signature(path: Path) -> _Signature:
-    """What ``stat`` says about the file; every write changes at least one of these."""
+def _signature(path: Path, *, follow_symlinks: bool = False) -> _Signature:
+    """Track content, replacement, and permission changes without opening the file."""
     try:
-        status = os.stat(path)
+        status = path.stat(follow_symlinks=follow_symlinks)
     except OSError:
         return "missing"
-    return status.st_mtime_ns, status.st_size, status.st_ino
+    return status.st_mtime_ns, status.st_ctime_ns, status.st_size, status.st_ino, status.st_mode
+
+
+type _ConfigSignature = tuple[
+    _Signature, _Signature, tuple[tuple[str, _Signature, _Signature], ...]
+]
+
+
+def _configuration_signature(paths: Paths) -> _ConfigSignature:
+    """Watch workspace additions/removals and settings edits along with config.json."""
+    try:
+        entries = _workspace_entries(paths)
+    except OSError, ValueError:
+        entries = []  # The changed container signature still triggers validation.
+    return (
+        _signature(paths.config, follow_symlinks=True),
+        _signature(paths.workspaces),
+        tuple(
+            (
+                root.name,
+                _signature(root),
+                "missing" if root.is_symlink() else _signature(root / "WORKSPACE.md"),
+            )
+            for root in entries
+        ),
+    )
 
 
 class LiveConfig:
-    """The latest valid config.json, re-read only after the file on disk has changed.
+    """The latest valid installation/workspace snapshot, re-read when its files change.
 
     Long-running processes hold one of these and take a snapshot from ``current()`` at
     each unit of work. A revision that does not load is reported once and the last good
@@ -1165,16 +1285,16 @@ class LiveConfig:
         self._config = config
         # A config read from disk may have been edited between that read and now, so it
         # is checked on first use; one built in memory adopts the file as it is right now.
-        self._signature: _Signature | None = (
-            None if config.source_hash is not None else _signature(config.paths.config)
+        self._signature: _ConfigSignature | None = (
+            None if config.source_hash is not None else _configuration_signature(config.paths)
         )
-        self._rejected: _Signature | None = None
+        self._rejected: _ConfigSignature | None = None
         self._lock = threading.Lock()  # callers stat and read from threads and the loop
 
     def current(self) -> Config:
         """The configuration on disk when it is valid, else the last good one; never raises."""
         with self._lock:
-            signature = _signature(self.paths.config)
+            signature = _configuration_signature(self.paths)
             if signature in (self._signature, self._rejected):
                 return self._config
             try:
@@ -1187,7 +1307,7 @@ class LiveConfig:
             self._signature = signature
             self._rejected = None
             self._config = config
-            log.info("config.json reloaded")
+            log.info("configuration reloaded (config.json and workspace settings)")
             return config
 
 

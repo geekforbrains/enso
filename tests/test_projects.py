@@ -90,7 +90,7 @@ def test_project_problems_are_reported_together(
         "projects.LIST must be an object",
         "projects.P1.colour is not a recognized key",
         "projects.P1.name must be non-empty text",
-        f"projects.P1.workspace: directory {enso_home.workspace('missing')} missing",
+        f"projects.P1.workspace: workspace directory {enso_home.workspace('missing')} missing",
         f"projects.P1.repo {tmp_path / 'not-a-repo'} is not a directory holding a Git repository",
         "projects.P1.stages: 'Work' is not a stage name (lowercase, digits, hyphens, 2-24 chars)",
         "projects.P1.stages: 'x' is not a stage name (lowercase, digits, hyphens, 2-24 chars)",
@@ -257,7 +257,10 @@ def test_project_add_writes_config_atomically(
     missing_ws = runner.invoke(
         app, ["project", "add", "OPS", "--name", "Ops", "--workspace", "nope", "--flow", "basic"]
     )
-    assert missing_ws.exit_code == 1 and "projects.OPS.workspace: directory" in missing_ws.stderr
+    assert (
+        missing_ws.exit_code == 1
+        and "projects.OPS.workspace: workspace directory" in missing_ws.stderr
+    )
     assert list(load_config(enso_home).projects) == ["EN", "MKT"]
 
     listed = runner.invoke(app, ["project", "list"])

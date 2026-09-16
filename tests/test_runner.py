@@ -24,6 +24,7 @@ from conftest import (
     script,
     write_config,
     write_job,
+    write_workspace,
 )
 
 from enso import db, runs
@@ -1027,15 +1028,18 @@ async def test_scheduled_alerts_suppress_repeats_and_recover(
 async def test_jobs_preserve_provider_arguments_without_policy_prerequisites(
     enso_home, fake_config, transport, tmp_path, monkeypatch, args
 ):
-    from dataclasses import replace
-
-    from enso.config import WorkspaceConfig
-
     launch_log = tmp_path / "launches.jsonl"
     monkeypatch.setenv("FAKE_CLAUDE_LAUNCHES", str(launch_log))
-    config = replace(
-        fake_config, workspaces={"default": WorkspaceConfig(provider_args={"claude": args})}
+    write_workspace(
+        enso_home,
+        "default",
+        {
+            "agent": {"provider": "codex", "model": "sol", "effort": "high"},
+            "providers": {"claude": {"args": list(args)}},
+        },
     )
+    config, problems, _ = parse_config(fake_config.raw, enso_home)
+    assert config is not None, problems
     result = await JobRunner(config, {"slack": transport}).run(
         job(enso_home, config, prompt="hello"), trigger="schedule"
     )

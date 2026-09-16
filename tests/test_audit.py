@@ -25,6 +25,8 @@ def finish(root: Path) -> None:
 
 def break_workspace(root: Path, enso_home: Paths) -> None:
     """One of everything the audit reports; ``AGENTS.md`` is left missing."""
+    for name in ("memory", "jobs", "projects"):
+        (root / name).mkdir()
     (root / "CLAUDE.md").write_text("a copy, not a link")
     (root / ".claude" / "skills").mkdir(parents=True)
     (root / ".agents").mkdir()
@@ -37,6 +39,41 @@ def break_workspace(root: Path, enso_home: Paths) -> None:
     (root / "stray.txt").write_text("")
     (root / "notes").mkdir()
     (root / ".DS_Store").write_text("")  # OS noise, never reported
+
+
+@pytest.mark.parametrize("entry", ["memory", "jobs", "projects", "heartbeat", ".agents"])
+def test_fix_preserves_linked_workspace_paths_without_writing_through_them(
+    enso_home,
+    tmp_path,
+    entry,
+):
+    root = enso_home.workspace("default")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    marker = outside / "keep.md"
+    marker.write_text("User-owned content\n")
+    (root / entry).symlink_to(outside, target_is_directory=True)
+    settings = root / "WORKSPACE.md"
+    settings.write_text("---\n{}\n---\n\nKeep this explanation.\n")
+    report = audit.audit_workspace(enso_home, "default", fix=True, user_dirs=[])
+    assert not report.ok
+    assert (root / entry).is_symlink()
+    assert list(outside.iterdir()) == [marker]
+    assert marker.read_text() == "User-owned content\n"
+    assert settings.read_text().endswith("Keep this explanation.\n")
+    assert not any(f.check == "unexpected" for f in report.findings)
+
+
+def test_fix_never_scaffolds_a_linked_workspace(enso_home, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    root = enso_home.workspace("alias")
+    root.symlink_to(outside, target_is_directory=True)
+    report = audit.audit_workspace(enso_home, "alias", fix=True, user_dirs=[])
+    assert not report.ok and report.fixed == []
+    assert list(outside.iterdir()) == []
+    with pytest.raises(FileExistsError):
+        workspaces.create_workspace(enso_home, "alias")
 
 
 def test_a_clean_home_and_workspaces_pass(enso_home: Paths, config: Config) -> None:

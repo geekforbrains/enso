@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from conftest import write_workspace
 
 from enso.config import Paths, parse_config
 from enso.routing import binding_key, conversation_key, resolve_agent, workspace_for
@@ -34,9 +35,9 @@ def test_conversation_key() -> None:
 def test_workspace_and_agent_resolution(enso_home: Paths, raw_config: dict) -> None:
     (enso_home.workspaces / "meteor").mkdir()
     raw_config["bindings"]["slack:C2"] = "meteor"
-    raw_config["workspaces"]["meteor"] = {
-        "agent": {"provider": "codex", "model": "luna", "effort": "ultra"}
-    }
+    write_workspace(
+        enso_home, "meteor", {"agent": {"provider": "codex", "model": "luna", "effort": "ultra"}}
+    )
     raw_config["defaults"] = {"provider": "claude", "model": "sonnet", "effort": "max"}
     config, problems, _ = parse_config(raw_config, enso_home)
     assert config is not None, problems

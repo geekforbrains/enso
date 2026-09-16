@@ -45,9 +45,10 @@ def test_workspace_create_and_list(enso_home: Paths, raw_config: dict) -> None:
     assert (root / "AGENTS.md").read_text().startswith("# meteor\n")
     assert os.readlink(root / "CLAUDE.md") == "AGENTS.md"
     assert sorted(entry.name for entry in root.iterdir()) == [
-        ".agents", ".claude", "AGENTS.md", "CLAUDE.md", "drafts", "knowledge", "skills", "uploads",
+        ".agents", ".claude", "AGENTS.md", "CLAUDE.md", "drafts", "jobs", "knowledge",
+        "memory", "projects", "skills", "uploads",
     ]  # fmt: skip
-    assert all((root / name).is_dir() for name in ("skills", "knowledge", "drafts", "uploads"))
+    assert all((root / name).is_dir() for name in workspaces.WORKSPACE_DIRS)
     for link in (root / ".claude" / "skills", root / ".agents" / "skills"):
         assert os.readlink(link) == "../skills" and link.resolve() == (root / "skills").resolve()
     assert runner.invoke(app, ["workspace", "create", "meteor"]).exit_code == 1
@@ -57,7 +58,7 @@ def test_workspace_create_and_list(enso_home: Paths, raw_config: dict) -> None:
     assert result.exit_code == 0
     assert result.stdout.splitlines() == [
         "WORKSPACE  BINDINGS               JOBS  AUDIT",
-        "default    slack:C1, slack:dm:U1  -     8 errors",  # the fixture's bare directory
+        "default    slack:C1, slack:dm:U1  -     11 errors",  # the fixture's bare directory
         "meteor     -                      -     2 warnings",  # untouched template, orphan
     ]
     assert result.stderr.startswith("home: ")  # not seeded either
@@ -73,7 +74,7 @@ def test_workspace_audit_command(enso_home: Paths, raw_config: dict) -> None:
     broken = runner.invoke(app, ["workspace", "audit"])
     lines = broken.stdout.splitlines()
     assert broken.exit_code == 1 and lines[0] == f"home {enso_home.home}: ok"
-    assert lines[1:3] == ["default: 7 errors", "  bindings: slack:C1, slack:dm:U1"]
+    assert lines[1:3] == ["default: 10 errors", "  bindings: slack:C1, slack:dm:U1"]
     assert lines[3] == "  error: skills/ is missing (repairable with --fix)"
     assert runner.invoke(app, ["workspace", "audit", "meteor"]).exit_code == 1  # no such workspace
 
