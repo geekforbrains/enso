@@ -80,9 +80,8 @@ and outlines readable on light surfaces; bright status lamps use navy text. Stat
 dots expose their existing state as an accessible name and a tooltip, so their meaning is
 available without distinguishing the colours.
 
-The shared brand guide is `~/Notes/Projects/Enso/Enso brand guide.md`. This page owns how
-that guide applies to the viewer; marketing typography, taglines, and extra decoration do
-not replace the viewer's familiar density or interaction patterns.
+This page owns the viewer's visual language; marketing typography, taglines, and extra
+decoration do not replace the viewer's familiar density or interaction patterns.
 
 ## Layout
 
