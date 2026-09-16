@@ -12,8 +12,8 @@ from enso.config import Paths
 
 
 def test_sessions_round_trip_and_prune(enso_home: Paths) -> None:
-    db.migrate(enso_home)
-    db.migrate(enso_home)  # idempotent
+    db.initialize(enso_home)
+    db.initialize(enso_home)  # idempotent
     assert db.get_session(enso_home, "slack:D1", "claude") is None
     db.set_session(enso_home, "slack:D1", "claude", "s1", "default")
     db.set_session(enso_home, "slack:D1", "codex", "t1", "default")
@@ -34,9 +34,9 @@ def test_sessions_round_trip_and_prune(enso_home: Paths) -> None:
 
 
 def test_fresh_database_is_created_at_current_schema_version(enso_home: Paths) -> None:
-    db.migrate(enso_home)
+    db.initialize(enso_home)
     with db.transaction(enso_home) as con:
-        assert con.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION == 6
+        assert con.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION == 1
         objects = {
             row["name"]
             for row in con.execute(
@@ -69,87 +69,26 @@ def test_fresh_database_is_created_at_current_schema_version(enso_home: Paths) -
             " VALUES ('slack:D1', 'claude', 's1', ?, ?)",
             (stamp, stamp),
         )
-    db.migrate(enso_home)  # a database already at the current version is left alone
+    db.initialize(enso_home)  # a database already at the current version is left alone
     with db.transaction(enso_home) as con:
         assert con.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
 
 
-def test_v2_migration_is_atomic_and_preserves_v1_history(
-    enso_home: Paths, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    enso_home.home.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(enso_home.db) as con:
-        con.executescript(db._SCHEMA_V1)
-        con.execute(
-            """INSERT INTO runs
-                 (id, job, workspace, provider, model, effort, trigger, started_at,
-                  status, output, error)
-               VALUES ('old', 'nightly', 'default', 'claude', 'sonnet', 'high', 'manual',
-                       '2026-09-01T00:00:00+00:00', 'error', 'saved output', 'saved error')"""
-        )
-        con.execute("CREATE TABLE user_data (note TEXT)")
-        con.execute("INSERT INTO user_data VALUES ('preserved')")
-    schema = db._SCHEMA_V2
-    monkeypatch.setattr(db, "_SCHEMA_V2", schema + "\nTHIS IS INVALID SQL;\n")
-    with pytest.raises(sqlite3.OperationalError):
-        db.migrate(enso_home)
-    with db.reader(enso_home) as con:
-        assert con.execute("PRAGMA user_version").fetchone()[0] == 1
-        assert "session_id" not in {row["name"] for row in con.execute("PRAGMA table_info(runs)")}
-        assert con.execute("SELECT output, error FROM runs").fetchone()[:] == (
-            "saved output",
-            "saved error",
-        )
-    monkeypatch.setattr(db, "_SCHEMA_V2", schema)
-    db.migrate(enso_home)
-    db.migrate(enso_home)
-    with db.reader(enso_home) as con:
-        assert con.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
-        assert con.execute("SELECT output, error, session_id, postrun_error FROM runs").fetchone()[
-            :
-        ] == ("saved output", "saved error", None, None)
-        assert con.execute("SELECT note FROM user_data").fetchone()[0] == "preserved"
-        assert con.execute("SELECT count(*) FROM _enso_run_attempts").fetchone()[0] == 0
-
-
 def test_job_state_round_trip(enso_home: Paths) -> None:
-    db.migrate(enso_home)
-    assert db.job_state(enso_home, "nightly") == db.JobState("nightly")
-    db.set_last_run(enso_home, "nightly", "2026-09-01T09:00:00+00:00")
-    db.set_failure(enso_home, "nightly", "fp", "2026-09-01T09:01:00+00:00")
-    state = db.job_state(enso_home, "nightly")
+    db.initialize(enso_home)
+    assert db.job_state(enso_home, "default:nightly") == db.JobState("default", "nightly")
+    db.set_last_run(enso_home, "default:nightly", "2026-09-01T09:00:00+00:00")
+    db.set_failure(enso_home, "default:nightly", "fp", "2026-09-01T09:01:00+00:00")
+    state = db.job_state(enso_home, "default:nightly")
     assert (state.last_run, state.failure_fingerprint) == ("2026-09-01T09:00:00+00:00", "fp")
-    db.set_failure(enso_home, "nightly", None, None)
-    state = db.job_state(enso_home, "nightly")
+    db.set_failure(enso_home, "default:nightly", None, None)
+    state = db.job_state(enso_home, "default:nightly")
     assert (state.last_run, state.failure_fingerprint, state.failure_alerted_at) == (
         "2026-09-01T09:00:00+00:00",
         None,
         None,
     )
-    assert list(db.job_states(enso_home)) == ["nightly"]
-
-
-def test_v4_migration_rolls_back_atomically_and_preserves_existing_tables(
-    enso_home: Paths, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    with sqlite3.connect(enso_home.db) as con:
-        con.executescript(db._SCHEMA_V1 + db._SCHEMA_V2 + db._SCHEMA_V3)
-        con.execute("CREATE TABLE user_data (value TEXT)")
-        con.execute("INSERT INTO user_data VALUES ('keep me')")
-    schema = db._SCHEMA_V4
-    monkeypatch.setattr(db, "_SCHEMA_V4", schema + "\nINVALID SQL;\n")
-    with pytest.raises(sqlite3.OperationalError):
-        db.migrate(enso_home)
-    with db.reader(enso_home) as con:
-        assert con.execute("PRAGMA user_version").fetchone()[0] == 3
-        assert con.execute("SELECT value FROM user_data").fetchone()[0] == "keep me"
-        assert not con.execute("SELECT 1 FROM sqlite_master WHERE name = '_enso_beats'").fetchone()
-    monkeypatch.setattr(db, "_SCHEMA_V4", schema)
-    db.migrate(enso_home)
-    db.migrate(enso_home)
-    with db.reader(enso_home) as con:
-        assert con.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
-        assert con.execute("SELECT value FROM user_data").fetchone()[0] == "keep me"
+    assert list(db.job_states(enso_home)) == ["default:nightly"]
 
 
 def test_transaction_holds_the_write_lock_for_its_whole_body(enso_home: Paths) -> None:
@@ -158,7 +97,7 @@ def test_transaction_holds_the_write_lock_for_its_whole_body(enso_home: Paths) -
     Read-then-write callers depend on that: upgrading a deferred transaction under WAL
     fails with SQLITE_BUSY immediately, outside the busy timeout's protection.
     """
-    db.migrate(enso_home)
+    db.initialize(enso_home)
     with db.transaction(enso_home):
         other = sqlite3.connect(enso_home.db, timeout=0, isolation_level=None)
         try:
@@ -170,7 +109,7 @@ def test_transaction_holds_the_write_lock_for_its_whole_body(enso_home: Paths) -
 
 def test_failing_transaction_propagates_its_own_exception(enso_home: Paths) -> None:
     """A rollback that cannot run must not replace the failure that explains the problem."""
-    db.migrate(enso_home)
+    db.initialize(enso_home)
     with pytest.raises(RuntimeError, match="the real failure"), db.transaction(enso_home) as con:
         con.close()  # the rollback now fails too
         raise RuntimeError("the real failure")
@@ -191,6 +130,7 @@ def _newer_database(paths: Paths) -> dict[str, Any]:
             "CREATE INDEX later_note ON later (note);"
             "CREATE TRIGGER later_guard AFTER INSERT ON later BEGIN SELECT 1; END;"
             "INSERT INTO later (id, note) VALUES (1, 'from a newer enso');"
+            f"PRAGMA application_id = {db.APPLICATION_ID};"
             f"PRAGMA user_version = {db.SCHEMA_VERSION + 1};"
         )
     finally:
@@ -228,9 +168,9 @@ def test_a_newer_schema_is_refused_by_every_writable_path(enso_home: Paths) -> N
     for attempt in (
         opened,
         transacted,
-        lambda: db.migrate(enso_home),
+        lambda: db.initialize(enso_home),
         lambda: db.set_session(enso_home, "slack:D1", "claude", "s1", "default"),
-        lambda: db.set_last_run(enso_home, "nightly", "2026-09-01T09:00:00+00:00"),
+        lambda: db.set_last_run(enso_home, "default:nightly", "2026-09-01T09:00:00+00:00"),
         lambda: db.prune_sessions(enso_home),
         lambda: db.job_states(enso_home),
     ):
@@ -260,58 +200,65 @@ def test_a_newer_schema_stays_readable_for_inspection(enso_home: Paths) -> None:
         con.close()
 
 
-def test_version_5_renames_dandy_tables_and_keeps_their_rows(enso_home: Paths) -> None:
-    """A home written before the rename has ``_dandy_*`` tables; migrating keeps every row."""
-    enso_home.home.mkdir(parents=True, exist_ok=True)
-    legacy = "".join((db._SCHEMA_V1, db._SCHEMA_V2, db._SCHEMA_V3, db._SCHEMA_V4)).replace(
-        "_enso_", "_dandy_"
-    )
-    stamp = "2026-09-01T00:00:00+00:00"
+@pytest.mark.parametrize("version", range(7))
+def test_legacy_database_is_refused_without_modifying_it(enso_home, version):
+    from enso.config import LEGACY_HOME_MESSAGE
+
     with sqlite3.connect(enso_home.db) as con:
-        con.executescript(legacy)
-        con.execute(
-            """INSERT INTO runs
-                 (id, job, workspace, provider, model, effort, trigger, started_at, status)
-               VALUES ('r1', 'nightly', 'default', 'claude', 'sonnet', 'high', 'manual',
-                       ?, 'ok')""",
-            (stamp,),
+        con.executescript(
+            "CREATE TABLE preserved (value TEXT); INSERT INTO preserved VALUES ('keep');"
+            f"PRAGMA user_version = {version};"
         )
-        con.execute(
-            """INSERT INTO _dandy_run_attempts
-                 (run_id, number, status, exit_code, output, error, postrun_output, postrun_error)
-               VALUES ('r1', 0, 'ok', 0, '', '', '', '')"""
-        )
-        con.execute(
-            """INSERT INTO _dandy_tasks
-                 (project, number, ref, title, stage, entered_stage_at, created_at, updated_at)
-               VALUES ('DD', 1, 'DD-001', 'first', 'todo', ?, ?, ?)""",
-            (stamp, stamp, stamp),
-        )
-        con.execute(
-            """INSERT INTO _dandy_beats (definition, state, created_at, updated_at)
-               VALUES ('{}', 'active', ?, ?)""",
-            (stamp, stamp),
-        )
-        assert con.execute("PRAGMA user_version").fetchone()[0] == 4
+    before = enso_home.db.read_bytes()
+    with pytest.raises(db.UnsupportedDatabaseError, match=r"predates 0\.2\.0") as error:
+        db.initialize(enso_home)
+    assert str(error.value) == LEGACY_HOME_MESSAGE
+    with pytest.raises(db.UnreadableDatabaseError, match=r"predates 0\.2\.0"), db.reader(enso_home):
+        pass
+    assert enso_home.db.read_bytes() == before
+    assert not enso_home.db.with_name("enso.db-wal").exists()
 
-    db.migrate(enso_home)
-    db.migrate(enso_home)  # nothing left to rename
 
-    with db.transaction(enso_home) as con:
-        assert con.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
-        names = {
-            row["name"]
-            for row in con.execute("SELECT name FROM sqlite_master WHERE name LIKE '%dandy%'")
-        }
-        assert names == set()
-        assert con.execute("SELECT ref FROM _enso_tasks").fetchone()["ref"] == "DD-001"
-        assert con.execute("SELECT count(*) FROM _enso_run_attempts").fetchone()[0] == 1
-        # The AUTOINCREMENT high-water mark moved with the table.
-        assert (
-            con.execute("SELECT seq FROM sqlite_sequence WHERE name = '_enso_beats'").fetchone()[0]
-            == 1
-        )
-        # The recreated triggers protect the renamed tables.
-        con.execute("DELETE FROM runs WHERE id = 'r1'")
-        assert con.execute("SELECT count(*) FROM _enso_run_attempts").fetchone()[0] == 0
+def test_initialization_is_atomic_and_retryable(enso_home, monkeypatch):
+    schema = db._SCHEMA
+    monkeypatch.setattr(db, "_SCHEMA", schema + "\nINVALID SQL;\n")
+    with pytest.raises(sqlite3.OperationalError):
+        db.initialize(enso_home)
+    with sqlite3.connect(enso_home.db) as con:
+        assert not con.execute("SELECT 1 FROM sqlite_master").fetchone()
+        assert con.execute("PRAGMA application_id").fetchone()[0] == 0
+        assert con.execute("PRAGMA user_version").fetchone()[0] == 0
+    monkeypatch.setattr(db, "_SCHEMA", schema)
+    db.initialize(enso_home)
+    with db.reader(enso_home) as con:
+        assert con.execute("PRAGMA application_id").fetchone()[0] == db.APPLICATION_ID
+
+
+def test_old_job_directory_is_refused_before_creating_state(enso_home, raw_config):
+    from enso.config import LEGACY_HOME_MESSAGE, parse_config
+    from enso.initialization import initialize_home
+
+    (enso_home.home / "jobs").mkdir()
+    assert parse_config(raw_config, enso_home)[1] == [LEGACY_HOME_MESSAGE]
+    assert initialize_home(enso_home)["problems"] == [LEGACY_HOME_MESSAGE]
+    with pytest.raises(db.UnsupportedDatabaseError, match=r"predates 0\.2\.0"):
+        db.initialize(enso_home)
+    assert not enso_home.db.exists()
+
+
+def test_concurrent_initializers_share_one_fresh_schema(enso_home):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    barrier = Barrier(4)
+
+    def initialize():
+        barrier.wait(timeout=5)
+        db.initialize(enso_home)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(initialize) for _ in range(4)]
+        for future in futures:
+            future.result(timeout=10)
+    with db.reader(enso_home) as con:
         assert con.execute("PRAGMA integrity_check").fetchone()[0] == "ok"

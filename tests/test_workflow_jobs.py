@@ -27,7 +27,7 @@ def workflow_config(paths: Paths, raw: dict, stages: list, **project_fields: obj
     }
     config, problems, _ = parse_config(raw, paths)
     assert config is not None, problems
-    db.migrate(paths)
+    db.initialize(paths)
     return config
 
 
@@ -64,7 +64,7 @@ async def test_command_stage_needs_no_provider(
         stage="work",
         prompt="",
     )
-    job, problems = parse_job("work", path, config)
+    job, problems = parse_job(path, config)
     assert job is not None and not problems, problems
 
     def no_provider(*args: object, **kwargs: object) -> None:

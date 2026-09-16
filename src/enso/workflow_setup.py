@@ -53,7 +53,13 @@ def _job_text(path: Path, fields: dict[str, Any], prompt: str, config: Config) -
         "effort": "none",
         **fields,
     }
-    job = jobs.Job(dir_name=path.parent.name, path=path, prompt=prompt, **complete)
+    job = jobs.Job(
+        dir_name=path.parent.name,
+        workspace=path.parents[2].name,
+        path=path,
+        prompt=prompt,
+        **complete,
+    )
     problems = jobs.validate(job, config)
     if problems:
         raise ValueError("; ".join(problems))
@@ -116,7 +122,7 @@ def _plan(
     old_jobs = [job for job in all_jobs if job.project == key]
     if old_jobs and not migrate:
         raise ValueError("project has stage jobs; use --migrate to preserve and retire them")
-    if any(job.dir_name in faults for job in old_jobs):
+    if any(job.ref in faults for job in old_jobs):
         raise ValueError("repair invalid project jobs before migration")
     changes: dict[Path, Change] = {}
     for job in old_jobs:
@@ -147,14 +153,13 @@ def _plan(
         )
     targets = []
     for name in names:
-        path = paths.jobs / f"{key.lower()}-{name}" / "JOB.md"
+        path = paths.workspace_jobs(project.workspace) / f"{key.lower()}-{name}" / "JOB.md"
         if path.exists() and path not in {job.path for job in old_jobs}:
             raise ValueError(
                 f"preserving existing {path}; choose another job name or edit it directly"
             )
         fields = {
             "name": f"{project.name}: {name}",
-            "workspace": project.workspace,
             "project": key,
             "stage": name,
             "enabled": False,
@@ -281,7 +286,7 @@ def initialize(
     """Install one prevalidated plan; an interrupted plan resumes behind its admission gate."""
     workflows._operator()
     with maintenance.lock(paths), config_lock(paths), contextlib.ExitStack() as held:
-        db.migrate(paths)
+        db.initialize(paths)
         pending = _resume(paths, key)
         if pending is not None:
             directory, manifest = pending
@@ -301,10 +306,10 @@ def initialize(
             base=base,
             worktree_root=worktree_root,
         )
-        for job in sorted(old_jobs, key=lambda job: job.dir_name):
+        for job in sorted(old_jobs, key=lambda job: job.ref):
             lock = acquire_lock(job.job_dir)
             if lock is None:
-                raise ValueError(f"stop running project job {job.dir_name} before migration")
+                raise ValueError(f"stop running project job {job.ref} before migration")
             held.callback(lock.close)
         for task in _idle(paths, key):
             held.enter_context(worktrees.execution_context(paths, task.ref))

@@ -466,7 +466,7 @@ async def test_attachment_and_followup_reach_runtime_in_arrival_order(
     config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A follow-up is visibly queued while the earlier attachment is still downloading."""
-    db.migrate(config.paths)
+    db.initialize(config.paths)
     runtime = Runtime(config)
     assert config.slack is not None
     transport = SlackTransport(config.slack, config.paths)
@@ -564,7 +564,7 @@ async def test_commands_run_once_before_the_queue(
     config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A command is answered from the handler and never becomes a turn; prose skips dispatch."""
-    db.migrate(config.paths)
+    db.initialize(config.paths)
     runtime = Runtime(config)
     assert config.slack is not None
     transport = SlackTransport(config.slack, config.paths)
@@ -613,7 +613,7 @@ async def test_stop_cancels_blocked_preparation_and_flushes_followups(
     config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Slack stop bypasses preparation and prevents canceled raw turns from submitting."""
-    db.migrate(config.paths)
+    db.initialize(config.paths)
     runtime = Runtime(config)
     assert config.slack is not None
     transport = SlackTransport(config.slack, config.paths)

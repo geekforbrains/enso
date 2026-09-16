@@ -317,15 +317,17 @@ def _jobs(paths: Paths, config: Config | None) -> Section:
     if config is None:
         return _skipped("jobs")
     jobs, problems = load_jobs(paths, config)
-    enabled = [job.dir_name for job in jobs if job.enabled]
+    enabled = [job.ref for job in jobs if job.enabled]
     plural = "s" if len(jobs) != 1 else ""
     section = Section(
         "jobs",
         note=f"{len(jobs)} job{plural}, {len(enabled)} enabled" if jobs else "none yet",
-        details={"jobs": [job.dir_name for job in jobs], "enabled": enabled},
+        details={"jobs": [job.ref for job in jobs], "enabled": enabled},
     )
     for name, found in problems.items():
         # The file, not just the directory name: nothing here repairs a job, so the report
         # has to hand the operator the exact path to open.
-        section.problems.append(f"{name} ({paths.jobs / name / 'JOB.md'}): {'; '.join(found)}")
+        workspace, _, local = name.partition(":")
+        path = paths.workspace_jobs(workspace) / local / "JOB.md"
+        section.problems.append(f"{name} ({path}): {'; '.join(found)}")
     return section

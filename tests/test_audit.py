@@ -93,7 +93,7 @@ def test_a_clean_home_and_workspaces_pass(enso_home: Paths, config: Config) -> N
         "default", ["slack:C1", "slack:dm:U1"], [],
     )  # fmt: skip
     assert (found.name, found.bindings, found.jobs, found.uploads_bytes) == (
-        "meteor", [], ["nightly"], 1500,
+        "meteor", [], ["meteor:nightly"], 1500,
     )  # fmt: skip
     assert all(w.ok and w.status == "ok" and w.summary == "ok" for w in report.workspaces)
     assert json.loads(json.dumps(report.as_dict())) == {
@@ -115,7 +115,7 @@ def test_a_clean_home_and_workspaces_pass(enso_home: Paths, config: Config) -> N
                 "path": str(meteor),
                 "status": "ok",
                 "bindings": [],
-                "jobs": ["nightly"],
+                "jobs": ["meteor:nightly"],
                 "uploads_bytes": 1500,
                 "findings": [],
                 "fixed": [],
@@ -212,7 +212,7 @@ def test_untouched_template_and_orphan_are_warnings(enso_home: Paths, config: Co
     # A job naming it is enough.
     write_job(enso_home, workspace="lonely")
     (named,) = audit.audit(enso_home, ["lonely"], config=config, user_dirs=USER_DIRS).workspaces
-    assert named.jobs == ["nightly"] and [f.check for f in named.findings] == ["agents-md"]
+    assert named.jobs == ["lonely:nightly"] and [f.check for f in named.findings] == ["agents-md"]
 
 
 def test_a_relocated_opencode_root_reaches_the_collision_check(
@@ -411,7 +411,7 @@ def test_reserved_names_warn_unless_enso_installed_them(enso_home: Paths) -> Non
     assert all(workspaces.reserved(name) for name in bundled)
     assert [(f.check, f.severity, f.message) for f in report.home.findings] == [
         ("reserved", "warning", RESERVED.format("skills/enso-extra")),
-        ("reserved", "warning", RESERVED.format("jobs/enso-extra")),
+        ("reserved", "warning", RESERVED.format("workspaces/default/jobs/enso-extra")),
     ]
     (found,) = report.workspaces
     assert [(f.check, f.message) for f in found.findings] == [

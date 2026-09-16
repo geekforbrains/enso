@@ -119,7 +119,7 @@ def test_desktop_sidebar_and_mobile_more_reach_every_view_without_javascript():
         ("/heartbeats/HB-001", "/heartbeats", False),
         ("/runs/abc", "/runs", False),
         ("/knowledge/notes/abc", "/knowledge", True),
-        ("/jobs/nightly", "/jobs", True),
+        ("/jobs/default%3Anightly", "/jobs", True),
         ("/workspaces/default", "/workspaces", True),
         ("/skills/enso-heartbeat", "/workspaces", True),
         ("/health/log", "/health", True),

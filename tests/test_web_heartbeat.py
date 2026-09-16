@@ -268,7 +268,7 @@ async def test_mixed_runs_source_status_job_and_pagination_keep_bounded_summarie
     client, saved, monkeypatch
 ):
     monkeypatch.setattr(runs, "PAGE_SIZE", 2)
-    db.migrate(saved.paths)
+    db.initialize(saved.paths)
     write_job(saved.paths)
     job = load_job(saved.paths, saved)
     job_id = runs.start(saved.paths, job, "manual", effort="high")
@@ -288,10 +288,10 @@ async def test_mixed_runs_source_status_job_and_pagination_keep_bounded_summarie
     assert f'href="/heartbeats/runs/{second.id}"' in beats
     assert f'href="/heartbeats/runs/{first.id}"' not in beats
     assert "source=heartbeat" in beats and '<option value="error" selected' in beats
-    retained_job = await page(client, "/runs?source=heartbeat&job=nightly")
+    retained_job = await page(client, "/runs?source=heartbeat&job=default%3Anightly")
     assert f'href="/heartbeats/runs/{first.id}"' in retained_job
     assert 'name="job" disabled>' in retained_job
-    jobs = await page(client, "/runs?source=any&job=nightly")
+    jobs = await page(client, "/runs?source=any&job=default%3Anightly")
     assert f'href="/runs/{job_id}"' in jobs and "/heartbeats/runs/" not in jobs
     summary = reading.activity(saved.paths)[0]
     assert not hasattr(summary, "output") and len(summary.error_preview or "") <= runs.ERROR_PREVIEW
@@ -342,22 +342,6 @@ async def test_invalid_page_values_are_safe_for_both_lists(client, saved, value)
 async def test_missing_refs_and_sections_return_404(client, saved, path):
     beat(saved)
     assert (await client.get(path)).status == 404
-
-
-@pytest.mark.parametrize("older", [False, True])
-async def test_missing_and_older_database_reads_never_migrate_or_create(client, saved, older):
-    if older:
-        with sqlite3.connect(saved.paths.db) as con:
-            con.executescript(db._SCHEMA_V1 + db._SCHEMA_V2 + db._SCHEMA_V3)
-    before = saved.paths.db.read_bytes() if older else None
-    for path in ("/heartbeats", "/heartbeats?view=previous", "/runs", "/today", "/today/activity"):
-        assert (await client.get(path)).status == 200
-    assert (await client.get("/heartbeats/HB-001")).status == 404
-    assert (await client.get("/heartbeats/runs/missing")).status == 404
-    if older:
-        assert saved.paths.db.read_bytes() == before
-    else:
-        assert not saved.paths.db.exists()
 
 
 async def test_heartbeat_pages_are_get_only_and_do_not_change_persisted_state(client, saved):

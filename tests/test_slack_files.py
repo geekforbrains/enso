@@ -437,7 +437,7 @@ async def test_a_files_info_failure_is_logged_without_the_token_or_a_traceback(
 async def test_a_message_whose_only_file_is_rejected_still_says_so_in_the_prompt(
     config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    db.migrate(config.paths)
+    db.initialize(config.paths)
     runtime = Runtime(config)
     transport = transport_for(config)
     transport.runtime = runtime

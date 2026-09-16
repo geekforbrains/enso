@@ -152,7 +152,7 @@ def heartbeat_actor(actor: str | None) -> str:
     """Who acted, as a reader can use it.
 
     Actors are recorded as their origin: ``slack:U0AETSSDDEF`` or ``telegram:8140``
-    for a person in chat, ``job:nightly`` for a job run, ``beat:HB-002`` for the beat
+    for a person in chat, ``job:default:nightly`` for a job run, ``beat:HB-002`` for the beat
     acting under its own authority, ``user:gavin`` for this machine's CLI, and plain
     ``heartbeat`` for Enso itself. Only the chat forms need help: the member ID says
     nothing on a page, and what a reader wants is that a person did this from Slack.

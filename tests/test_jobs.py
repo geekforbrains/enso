@@ -37,7 +37,7 @@ NOW = datetime.fromisoformat("2026-09-01T09:00:30+00:00")
 
 def write_raw(enso_home: Paths, front: str, dir_name: str = "nightly") -> Path:
     """A JOB.md whose frontmatter is written verbatim, however malformed."""
-    path = enso_home.jobs / dir_name / "JOB.md"
+    path = enso_home.workspace_jobs("default") / dir_name / "JOB.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(f"---\n{front}\n---\n\nSay hi.\n")
     return path
@@ -70,7 +70,7 @@ def test_malformed_frontmatter_is_never_partly_recovered(
     The whole message is Enso's own. A syntax fault is reported as its location and
     nothing else, so PyYAML's wording can change without changing what a user reads.
     """
-    job, problems = parse_job("nightly", write_raw(enso_home, front))
+    job, problems = parse_job(write_raw(enso_home, front))
     assert job is None and problems == [problem]
 
 
@@ -90,14 +90,14 @@ def test_frontmatter_problems_quote_no_document_content(enso_home: Paths, front:
     text is repeated; a secret written anywhere in the block cannot come back out.
     """
     secret = "sk-live-must-never-be-echoed"
-    job, problems = parse_job("nightly", write_raw(enso_home, front.format(secret=secret)))
+    job, problems = parse_job(write_raw(enso_home, front.format(secret=secret)))
     assert job is None and secret not in " ".join(problems)
 
 
 def test_frontmatter_problems_stay_one_printable_line(enso_home: Paths) -> None:
     """A key is named, but escaped and bounded, so it cannot forge a line of output."""
     forged = 'name: "x"\n"a\\nenabled: true": 1'  # a newline smuggled into a key
-    job, problems = parse_job("nightly", write_raw(enso_home, forged))
+    job, problems = parse_job(write_raw(enso_home, forged))
     assert job is None and "\n" not in "".join(problems)
 
 
@@ -132,7 +132,6 @@ def test_frontmatter_problems_stay_one_printable_line(enso_home: Paths) -> None:
             [
                 "'extra' is not a recognized field",
                 "name is required",
-                "workspace is required",
                 "enabled must be true or false",
                 "timeout must be a positive integer",
                 "the prompt body is empty",
@@ -144,14 +143,14 @@ def test_parse_job_reports_problems(
     enso_home: Paths, fields: dict, omit: list[str], prompt: str, problems: list[str]
 ) -> None:
     path = write_job(enso_home, prompt=prompt, omit=omit, **fields)
-    job, found = parse_job("nightly", path)
+    job, found = parse_job(path)
     assert job is None and found == problems
 
 
 def test_parse_job_without_frontmatter(enso_home: Paths) -> None:
     path = write_job(enso_home)
     path.write_text("Just a prompt.\n")
-    assert parse_job("nightly", path) == (None, ["JOB.md needs a leading --- frontmatter block"])
+    assert parse_job(path) == (None, ["JOB.md needs a leading --- frontmatter block"])
 
 
 def test_parse_job_defaults_and_options(enso_home: Paths) -> None:
@@ -168,7 +167,7 @@ def test_parse_job_defaults_and_options(enso_home: Paths) -> None:
         notify="C9",
         timeout=60,
     )
-    job, problems = parse_job("nightly", path)
+    job, problems = parse_job(path)
     assert job is not None and problems == []  # every optional field, so the schema is covered
     assert (job.prerun, job.catch_up, job.notify, job.timeout) == ("prerun.sh", True, "C9", 60)
     assert (job.prerun_timeout, job.misfire_grace_seconds, job.enabled) == (45, 60, True)
@@ -176,17 +175,19 @@ def test_parse_job_defaults_and_options(enso_home: Paths) -> None:
     assert job.max_followups == 4
     assert job.concurrency_group == "dev-EN"
 
-    bare = parse_job("nightly", write_job(enso_home))[0]
+    bare = parse_job(write_job(enso_home))[0]
     assert bare is not None and (bare.prerun_timeout, bare.postrun_timeout) == (120, 120)
     assert (bare.timeout, bare.misfire_grace_seconds) == (900, 300)
     assert (bare.prerun, bare.postrun, bare.notify, bare.catch_up) == (None, None, None, False)
     assert bare.concurrency_group is None
     assert bare.max_followups == 2
-    assert bare.prompt == "Say hi." and bare.job_dir == enso_home.jobs / "nightly"
+    assert (
+        bare.prompt == "Say hi." and bare.job_dir == enso_home.workspace_jobs("default") / "nightly"
+    )
 
 
 def test_zero_followups_allows_validation_without_extra_turns(enso_home: Paths) -> None:
-    job, problems = parse_job("nightly", write_job(enso_home, max_followups=0))
+    job, problems = parse_job(write_job(enso_home, max_followups=0))
     assert problems == [] and job is not None and job.max_followups == 0
 
 
@@ -197,7 +198,6 @@ def test_zero_followups_allows_validation_without_extra_turns(enso_home: Paths) 
         ("provider", "gemini", "JOB.md.provider 'gemini' is not configured"),
         ("model", "gpt", "JOB.md.model 'gpt' is not in providers.claude.models"),
         ("effort", "ultra", "JOB.md.effort must be one of low, medium, high, xhigh, max"),
-        ("workspace", "missing", "workspace directory"),
         ("notify", "telegram:1", "notify: transport telegram is not configured"),
         (
             "notify",
@@ -210,7 +210,7 @@ def test_zero_followups_allows_validation_without_extra_turns(enso_home: Paths) 
 def test_validate_against_config(
     enso_home: Paths, config: Config, field: str, value: str, problem: str | None
 ) -> None:
-    job, _ = parse_job("nightly", write_job(enso_home, **{field: value}))
+    job, _ = parse_job(write_job(enso_home, **{field: value}))
     assert job is not None
     problems = validate(job, config)
     assert problems == [] if problem is None else problems[0].startswith(problem)
@@ -224,29 +224,26 @@ def test_schema_and_config_problems_are_reported_together(enso_home: Paths, conf
         timeout="60",
         schedule="* * * * * *",
         model="gpt",
-        workspace="missing",
         notify="telegram:1",
     )
-    job, problems = parse_job("nightly", path, config)
+    job, problems = parse_job(path, config)
 
-    assert job is None and len(problems) == 6
+    assert job is None and len(problems) == 5
     assert problems[0] == "'retries' is not a recognized field"
     assert problems[1] == "timeout must be a positive integer"
     assert problems[2].startswith(f"schedule '* * * * * *' {FIVE_FIELDS}")
     assert problems[3] == "JOB.md.model 'gpt' is not in providers.claude.models"
-    assert problems[4].startswith("workspace directory")
-    assert problems[5] == "notify: transport telegram is not configured"
+    assert problems[4] == "notify: transport telegram is not configured"
 
 
 def test_config_problems_skip_a_field_that_already_failed(enso_home: Paths, config: Config) -> None:
     """A missing or mistyped field is reported once, never again as what depends on it."""
     path = write_job(enso_home, omit=["schedule", "provider", "workspace"], notify=None)
-    job, problems = parse_job("nightly", path, config)
+    job, problems = parse_job(path, config)
 
     assert job is None and problems == [
         "schedule is required",
         "provider is required",
-        "workspace is required",
         "notify must be non-empty text",
     ]
 
@@ -254,14 +251,14 @@ def test_config_problems_skip_a_field_that_already_failed(enso_home: Paths, conf
 def test_agent_problems_are_reported_field_by_field(enso_home: Paths, config: Config) -> None:
     """Provider, model, and effort answer for themselves, so one never hides another."""
     both = write_job(enso_home, model="gpt", effort="ultra")
-    assert parse_job("nightly", both, config)[1] == [
+    assert parse_job(both, config)[1] == [
         "JOB.md.model 'gpt' is not in providers.claude.models",
         "JOB.md.effort must be one of low, medium, high, xhigh, max",
     ]
 
     # A missing effort is its own problem and leaves the model to be judged as usual.
     without_effort = write_job(enso_home, model="gpt", omit=["effort"])
-    assert parse_job("nightly", without_effort, config)[1] == [
+    assert parse_job(without_effort, config)[1] == [
         "effort is required",
         "JOB.md.model 'gpt' is not in providers.claude.models",
     ]
@@ -269,9 +266,7 @@ def test_agent_problems_are_reported_field_by_field(enso_home: Paths, config: Co
     # The provider names the lists a model and an effort are judged against, so an
     # unconfigured one leaves nothing to judge them by.
     unconfigured = write_job(enso_home, provider="gemini", model="gpt", effort="ultra")
-    assert parse_job("nightly", unconfigured, config)[1] == [
-        "JOB.md.provider 'gemini' is not configured"
-    ]
+    assert parse_job(unconfigured, config)[1] == ["JOB.md.provider 'gemini' is not configured"]
 
 
 def test_a_job_that_cannot_run_is_still_readable(enso_home: Paths, config: Config) -> None:
@@ -280,8 +275,8 @@ def test_a_job_that_cannot_run_is_still_readable(enso_home: Paths, config: Confi
     jobs, problems = load_jobs(enso_home, config)
 
     assert [job.dir_name for job in jobs] == ["hourly"]
-    assert len(problems["hourly"]) == 1
-    assert problems["hourly"][0].startswith(f"schedule '@hourly' {FIVE_FIELDS}")
+    assert len(problems["default:hourly"]) == 1
+    assert problems["default:hourly"][0].startswith(f"schedule '@hourly' {FIVE_FIELDS}")
 
 
 @pytest.mark.parametrize(
@@ -320,7 +315,7 @@ def test_create_job_writes_nothing_for_an_invalid_schedule(
             schedule="* * * * * *",
             workspace="default",
         )
-    assert not (enso_home.jobs / "every-second").exists()
+    assert not (enso_home.workspace_jobs("default") / "every-second").exists()
 
 
 def test_create_and_load_round_trip(enso_home: Paths, config: Config) -> None:
@@ -335,15 +330,15 @@ def test_create_and_load_round_trip(enso_home: Paths, config: Config) -> None:
         create_job(
             enso_home, config, name="Other", workspace="default", **{**kwargs, "model": "gpt"}
         )
-    assert not (enso_home.jobs / "other").exists()
+    assert not (enso_home.workspace_jobs("default") / "other").exists()
 
     write_job(enso_home, "broken", model="gpt")
     write_job(enso_home, "unparsed", enabled="maybe")
     jobs, problems = load_jobs(enso_home, config)
     assert [j.dir_name for j in jobs] == ["broken", "daily-review"]
-    assert set(problems) == {"broken", "unparsed"}
-    assert find_job(enso_home, config, "broken")[1] == problems["broken"]
-    assert find_job(enso_home, config, "nope") == (None, ["no job named nope"])
+    assert set(problems) == {"default:broken", "default:unparsed"}
+    assert find_job(enso_home, config, "default:broken")[1] == problems["default:broken"]
+    assert find_job(enso_home, config, "default:nope") == (None, ["no job named default:nope"])
 
 
 def test_generated_jobs_round_trip_through_the_strict_parser(enso_home: Paths) -> None:
@@ -366,7 +361,7 @@ def test_generated_jobs_round_trip_through_the_strict_parser(enso_home: Paths) -
     }
 
     path = write_job(enso_home, **awkward)
-    job, problems = parse_job("nightly", path)
+    job, problems = parse_job(path)
 
     assert job is not None and problems == []
     assert {key: getattr(job, key) for key in awkward} == awkward
@@ -404,7 +399,7 @@ def test_stage_job_validation(
     omit: list[str],
     problems: list[str],
 ) -> None:
-    _, found = parse_job("nightly", write_job(enso_home, omit=omit, **fields), project_config)
+    _, found = parse_job(write_job(enso_home, omit=omit, **fields), project_config)
     assert len(found) == len(problems)
     assert all(got.startswith(want) for got, want in zip(found, problems, strict=True))
 
@@ -413,7 +408,7 @@ def test_stage_job_only_uses_an_explicit_resource_group(
     enso_home: Paths, project_config: Config
 ) -> None:
     job, problems = parse_job(
-        "todo", write_job(enso_home, "todo", project="EN", stage="todo", omit=["schedule"])
+        write_job(enso_home, "todo", project="EN", stage="todo", omit=["schedule"])
     )
     assert job is not None and problems == []
     assert (job.schedule, job.project, job.stage, job.group) == (None, "EN", "todo", None)
@@ -421,11 +416,10 @@ def test_stage_job_only_uses_an_explicit_resource_group(
     with pytest.raises(ValueError, match="has no schedule"):
         job.next_run(datetime.now().astimezone())
     named = parse_job(
-        "todo",
         write_job(enso_home, "todo", project="EN", stage="todo", concurrency_group="shared"),
     )[0]
     assert named is not None and named.group == "shared"
-    plain = parse_job("nightly", write_job(enso_home))[0]
+    plain = parse_job(write_job(enso_home))[0]
     assert plain is not None and plain.group is None
 
 
@@ -441,7 +435,7 @@ def test_create_job_for_a_stage_needs_no_schedule(enso_home: Paths, project_conf
         **kwargs,
     )
     assert (job.schedule, job.project, job.stage) == (None, "EN", "todo")
-    loaded, problems = find_job(enso_home, project_config, "dev-todo")
+    loaded, problems = find_job(enso_home, project_config, "default:dev-todo")
     assert loaded == job and problems == []
     with pytest.raises(ValueError, match="--schedule is required unless"):
         create_job(enso_home, project_config, name="Plain", schedule=None, **kwargs)
@@ -457,7 +451,7 @@ def test_create_job_for_a_stage_needs_no_schedule(enso_home: Paths, project_conf
             stage="approve",
             **kwargs,
         )
-    assert not (enso_home.jobs / "approve").exists()
+    assert not (enso_home.workspace_jobs("default") / "approve").exists()
 
 
 @pytest.fixture
@@ -473,7 +467,7 @@ def stage_config(enso_home: Paths, raw_config_both: dict, fake_claude: str, repo
     raw_config_both["agent"]["timeout"] = 5
     config, problems, _ = parse_config(raw_config_both, enso_home)
     assert config is not None, problems
-    db.migrate(enso_home)
+    db.initialize(enso_home)
     return config
 
 
@@ -496,12 +490,12 @@ async def test_a_stage_job_without_a_schedule_fires_only_when_a_task_is_ready(
     stage_job(enso_home, stage_config)
     await runner.tick(NOW)
     assert runner.running() == [] and runs.list_runs(enso_home) == []
-    assert db.job_state(enso_home, "dev").last_run is None  # nothing to anchor a slot to
+    assert db.job_state(enso_home, "default:dev").last_run is None  # nothing to anchor a slot to
     tasks.create(enso_home, stage_config, "EN", "Fix fences", actor="user:gavin")
 
     await runner.tick(NOW)
-    assert runner.running() == ["dev"]
-    result = await runner._running["dev"]
+    assert runner.running() == ["default:dev"]
+    result = await runner._running["default:dev"]
     (run,) = runs.list_runs(enso_home)
     assert (result.status, result.task, run.trigger) == ("error", "EN-001", "ready")
     # A provider response is not a handoff: the transaction blocks for a person's look.
@@ -517,17 +511,17 @@ async def test_a_scheduled_stage_job_skips_its_slot_when_nothing_is_ready(
 ) -> None:
     runner = JobRunner(stage_config, {"slack": FakeTransport()})
     stage_job(enso_home, stage_config, schedule="* * * * *", misfire_grace_seconds=300)
-    db.set_last_run(enso_home, "dev", "2026-09-01T08:59:00+00:00")
+    db.set_last_run(enso_home, "default:dev", "2026-09-01T08:59:00+00:00")
     await runner.tick(NOW)
     assert runner.running() == [] and runs.list_runs(enso_home) == []
-    assert db.job_state(enso_home, "dev").last_run == NOW.isoformat()  # the slot is spent
+    assert db.job_state(enso_home, "default:dev").last_run == NOW.isoformat()  # the slot is spent
     tasks.create(enso_home, stage_config, "EN", "Fix fences", actor="user:gavin")
     await runner.tick(NOW)
     assert runner.running() == []  # the next slot has not come
-    db.set_last_run(enso_home, "dev", "2026-09-01T08:59:00+00:00")
+    db.set_last_run(enso_home, "default:dev", "2026-09-01T08:59:00+00:00")
     await runner.tick(NOW)
-    assert runner.running() == ["dev"]
-    result = await runner._running["dev"]
+    assert runner.running() == ["default:dev"]
+    result = await runner._running["default:dev"]
     assert result.status == "error" and runs.list_runs(enso_home)[0].trigger == "schedule"
 
 
@@ -579,7 +573,7 @@ async def test_a_stage_run_frames_the_task_and_its_project_instructions(
     assert "workspace=default prompt=" in result.output
     (env,) = seen
     assert (env["ENSO_TASK"], env["ENSO_TASK_DIR"]) == ("EN-001", str(worktree))
-    assert (env["ENSO_JOB"], env["ENSO_RUN_ID"]) == ("dev", result.run_id)
+    assert (env["ENSO_JOB"], env["ENSO_RUN_ID"]) == ("default:dev", result.run_id)
     assert "ENSO_TASK" not in os.environ
 
 
@@ -614,7 +608,7 @@ async def test_a_handoff_keeps_the_claim_released_and_sweeps_a_finished_task(
             stage_config,
             env["ENSO_TASK"],  # type: ignore[index]
             "advance",
-            actor="job:dev",
+            actor="job:default:dev",
             run_id=env["ENSO_RUN_ID"],  # type: ignore[index]
             message="landed",
         )
@@ -739,7 +733,7 @@ async def test_recover_releases_the_claims_of_runs_that_never_ended(
     job = stage_job(enso_home, stage_config)
     tasks.create(enso_home, stage_config, "EN", "Fix fences", actor="user:gavin")
     dead = runs.start(enso_home, job, "ready", effort=job.effort)
-    assert tasks.take(enso_home, stage_config, "EN", "triage", run_id=dead, actor="job:dev")
+    assert tasks.take(enso_home, stage_config, "EN", "triage", run_id=dead, actor="job:default:dev")
     assert not tasks.ready(enso_home, stage_config, "EN", "triage")
 
     assert runner.recover() == 1
@@ -792,20 +786,93 @@ def test_job_create_and_run_from_the_terminal_for_a_stage(
     assert result.exit_code == 1 and "--schedule is required unless" in result.stderr
     listed = cli.invoke(app, ["job", "list"])
     assert listed.exit_code == 0 and "dev-todo  ready (EN/todo)  claude/opus/high" in listed.stdout
-    shown = cli.invoke(app, ["job", "show", "dev-todo", "--json"])
+    shown = cli.invoke(app, ["job", "show", "default:dev-todo", "--json"])
     assert shown.exit_code == 0 and json.loads(shown.stdout)["next_run"] is None
 
-    job_file = enso_home.jobs / "dev-todo" / "JOB.md"
+    job_file = enso_home.workspace_jobs("default") / "dev-todo" / "JOB.md"
     job_file.write_text(job_file.read_text().replace("enabled: false", "enabled: true"))
-    ran = cli.invoke(app, ["job", "run", "dev-todo"])
+    ran = cli.invoke(app, ["job", "run", "default:dev-todo"])
     assert ran.exit_code == 0
     assert ran.stdout == "no work (no task is ready in EN/todo); the provider was not run\n"
     tasks.create(enso_home, stage_config, "EN", "Fix fences", actor="user:gavin")
     tasks.move(
         enso_home, stage_config, "EN-001", "advance", actor="user:gavin", run_id=None, message="m"
     )
-    ran = cli.invoke(app, ["job", "run", "dev-todo", "--json"])
+    ran = cli.invoke(app, ["job", "run", "default:dev-todo", "--json"])
     assert ran.exit_code == 1, ran.output
     payload = json.loads(ran.stdout)
     assert (payload["ok"], payload["status"], payload["task"]) == (False, "error", "EN-001")
     assert tasks.TASK_HEADER in payload["output"]
+
+
+def test_workspace_job_creation_and_explicit_references(enso_home, config, raw_config, monkeypatch):
+    write_config(enso_home, raw_config)
+    enso_home.workspace("team").mkdir()
+    monkeypatch.setenv("ENSO_WORKSPACE", "team")
+    cli = CliRunner()
+    arguments = [
+        "job",
+        "create",
+        "--name",
+        "Digest",
+        "--provider",
+        "claude",
+        "--model",
+        "opus",
+        "--effort",
+        "high",
+        "--schedule",
+        "0 9 * * *",
+        "--json",
+    ]
+    created = cli.invoke(app, arguments)
+    assert created.exit_code == 0, created.output
+    assert json.loads(created.stdout)["ref"] == "team:digest"
+    created = cli.invoke(app, [*arguments, "--workspace", "default"])
+    assert created.exit_code == 0, created.output
+    assert json.loads(created.stdout)["ref"] == "default:digest"
+    assert "workspace:" not in enso_home.job("team:digest").read_text()
+    assert not (enso_home.home / "jobs").exists()
+    shown = cli.invoke(app, ["job", "show", "default:digest", "--json"])
+    assert json.loads(shown.stdout)["workspace"] == "default"
+    assert cli.invoke(app, ["job", "show", "digest"]).exit_code == 1
+    monkeypatch.delenv("ENSO_WORKSPACE")
+    assert cli.invoke(app, arguments).exit_code == 1
+    found, faults = load_jobs(enso_home, config)
+    assert not faults and {job.ref for job in found} == {"default:digest", "team:digest"}
+
+
+@pytest.mark.parametrize(
+    "reference", ["digest", "../default:digest", "default:../digest", "default:x:y"]
+)
+def test_job_references_cannot_escape_the_workspace(enso_home, config, reference):
+    job, problems = find_job(enso_home, config, reference)
+    assert job is None and "<workspace>:<job>" in problems[0]
+
+
+def test_job_frontmatter_cannot_reassign_ownership(enso_home, config):
+    path = write_job(enso_home)
+    path.write_text(path.read_text().replace("enabled: true", "workspace: team\nenabled: true"))
+    job, problems = parse_job(path, config)
+    assert job is None and problems == ["'workspace' is not a recognized field"]
+
+
+def test_job_creation_and_reading_refuse_linked_directories(enso_home, config, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    enso_home.workspace_jobs("default").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError, match="symbolic links"):
+        create_job(
+            enso_home,
+            config,
+            name="Digest",
+            workspace="default",
+            provider="claude",
+            model="opus",
+            effort="high",
+            schedule="0 9 * * *",
+        )
+    assert not list(outside.iterdir())
+    (outside / "digest").mkdir()
+    (outside / "digest/JOB.md").write_text("must not be read")
+    assert "symbolic links" in find_job(enso_home, config, "default:digest")[1][0]

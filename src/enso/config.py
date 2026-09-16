@@ -119,10 +119,6 @@ class Paths:
         return self.home / "knowledge"
 
     @property
-    def jobs(self) -> Path:
-        return self.home / "jobs"
-
-    @property
     def heartbeat(self) -> Path:
         """Beat gate scripts and execution locks, separate from scheduled job files."""
         return self.home / "heartbeat"
@@ -200,6 +196,10 @@ class Paths:
 
     def workspace_jobs(self, name: str) -> Path:
         return self.workspace(name) / "jobs"
+
+    def job(self, reference: str) -> Path:
+        workspace, name = split_job_ref(reference)
+        return self.workspace_jobs(workspace) / name / "JOB.md"
 
     def workspace_projects(self, name: str) -> Path:
         return self.workspace(name) / "projects"
@@ -451,6 +451,18 @@ def valid_workspace_name(name: object) -> bool:
     return (
         isinstance(name, str) and len(name) <= 64 and WORKSPACE_NAME_RE.fullmatch(name) is not None
     )
+
+
+def split_job_ref(reference: str) -> tuple[str, str]:
+    """Require an explicit workspace and a local job slug, including for retained history."""
+    workspace, separator, name = reference.partition(":")
+    if (
+        not separator
+        or not valid_workspace_name(workspace)
+        or not WORKSPACE_NAME_RE.fullmatch(name)
+    ):
+        raise ValueError("use a job reference <workspace>:<job>, such as team:digest")
+    return workspace, name
 
 
 def require_workspace(paths: Paths, name: str) -> Path:
@@ -1066,7 +1078,11 @@ def parse_config(raw: object, paths: Paths) -> tuple[Config | None, list[str], l
     if not isinstance(raw, dict):
         return None, ["config.json must contain a JSON object"], warnings
     version = raw.get("version")
-    if type(version) is int and version == 1:
+    if (
+        (type(version) is int and version == 1)
+        or (paths.home / "jobs").exists()
+        or (paths.home / "jobs").is_symlink()
+    ):
         return None, [LEGACY_HOME_MESSAGE], warnings
     version_ok = type(version) is int and version == CONFIG_VERSION
     if not version_ok:

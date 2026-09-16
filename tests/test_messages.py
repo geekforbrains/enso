@@ -97,7 +97,7 @@ def test_source_from_env(env: dict[str, str], source: str) -> None:
 def test_take_background_matching(
     enso_home: Paths, row: tuple[str, str | None], turn: tuple[str, str | None], heard: bool
 ) -> None:
-    db.migrate(enso_home)
+    db.initialize(enso_home)
     send(enso_home, *row)
     found = messages.take_background(enso_home, "slack", *turn, exclude_source="turn:x")
     assert [m.target for m in found] == ([row[0]] if heard else [])
@@ -106,7 +106,7 @@ def test_take_background_matching(
 
 
 def test_take_background_skips_own_sends_failures_and_other_transports(enso_home: Paths) -> None:
-    db.migrate(enso_home)
+    db.initialize(enso_home)
     send(enso_home, "C1", source="turn:slack:C1:5.0", text="mine")
     send(enso_home, "C1", status="failed", text="lost")
     send(enso_home, "C1", transport="telegram", text="elsewhere")
@@ -121,7 +121,7 @@ def test_take_background_skips_own_sends_failures_and_other_transports(enso_home
 
 
 async def test_deliver_records_success_and_failure(enso_home: Paths) -> None:
-    db.migrate(enso_home)
+    db.initialize(enso_home)
 
     async def ok() -> str:
         return "9.9"
@@ -158,7 +158,7 @@ async def test_background_is_injected_once_and_own_sends_retire(
 
 
 def test_render_lines(enso_home: Paths) -> None:
-    db.migrate(enso_home)
+    db.initialize(enso_home)
     row = send(enso_home, "C1", source="job:nightly", text="two\nlines")
     rendered = messages.render([row])
     assert rendered.startswith(f"{messages.HEADER}\n[") and rendered.endswith(

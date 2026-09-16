@@ -184,7 +184,7 @@ effect on readiness; it only matters while blocked.
 
 Claims belong to runs. When a stage job fires, Enso takes the ready task in that stage with
 the highest priority, then the oldest, in one immediate transaction, so two runs can never
-hold the same task. The claim is the run id and the actor `job:<name>`; it is what stops a
+hold the same task. The claim is the run id and the actor `job:<workspace>:<job>`; it is what stops a
 second job or a person from moving the task underneath the run.
 
 While a task is claimed, a move, a `release`, or an edit of the title or body by anyone but
@@ -214,7 +214,7 @@ Actor identity is derived from the environment, never passed:
 
 | Where | Actor |
 | --- | --- |
-| A job run (`ENSO_JOB` set) | `job:<name>` |
+| A job run (`ENSO_JOB` set) | `job:<workspace>:<job>` |
 | A chat turn (`ENSO_ORIGIN_TRANSPORT` set) | `slack:U0AETSSDDEF` or `telegram:123456`; `unknown` when the id is empty |
 | A terminal | `user:<login>` |
 

@@ -159,10 +159,10 @@
   {% if reliability %}
   <div class="panel rows">
     {% for entry in reliability %}
-    <a class="row entity" href="/jobs/{{ entry.row.dir_name|urlencode }}">
+    <a class="row entity" href="/jobs/{{ entry.row.ref|urlencode }}">
       <span class="pin {{ 'error' if entry.failed else 'ok' }}"></span>
       <span class="body">
-        <span class="title">{{ entry.row.dir_name }}</span>
+        <span class="title">{{ entry.row.ref }}</span>
         <span class="detail">
           {% if entry.row.job and not entry.row.job.schedule %}<span>when work is ready</span>{% else %}<span class="mono">{{ entry.row.job.schedule if entry.row.job else '-' }}</span>{% endif %}
           <span>{{ entry.row.job.workspace if entry.row.job else '-' }}</span>

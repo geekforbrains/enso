@@ -172,6 +172,7 @@ def test_a_newer_database_stops_startup_before_any_transport(
     """An older Enso against a newer home reports it and stops, rather than migrating it."""
     write_config(enso_home, raw_config)
     con = sqlite3.connect(enso_home.db, isolation_level=None)
+    con.execute(f"PRAGMA application_id = {db.APPLICATION_ID}")
     con.execute(f"PRAGMA user_version = {db.SCHEMA_VERSION + 1}")
     con.close()
     before = enso_home.db.read_bytes()
@@ -186,7 +187,7 @@ def test_a_newer_database_stops_startup_before_any_transport(
         assert result.exit_code == 1, command
         assert "Traceback" not in result.stderr and result.stdout == ""
         assert result.stderr.splitlines()[-1].endswith(
-            f"knows up to {db.SCHEMA_VERSION}: upgrade Enso to the version that wrote it"
+            f"knows {db.SCHEMA_VERSION}: upgrade Enso to the version that wrote it"
         )
     assert enso_home.db.read_bytes() == before  # no schema, no WAL, no run or message row
 
@@ -195,8 +196,8 @@ def test_a_newer_database_stops_startup_before_any_transport(
     "command",
     [
         ["job", "list"],
-        ["job", "show", "missing"],
-        ["job", "run", "missing"],
+        ["job", "show", "default:missing"],
+        ["job", "run", "default:missing"],
         [
             "job",
             "create",
@@ -261,6 +262,7 @@ def test_loading_errors_respect_output_mode(
         expected = "could not read"
     elif failure == "newer_database":
         with sqlite3.connect(enso_home.db) as con:
+            con.execute(f"PRAGMA application_id = {db.APPLICATION_ID}")
             con.execute(f"PRAGMA user_version = {db.SCHEMA_VERSION + 1}")
         expected = "upgrade Enso to the version that wrote it"
     elif failure == "corrupt_database":
@@ -286,8 +288,8 @@ def test_loading_errors_respect_output_mode(
 @pytest.mark.parametrize(
     ("command", "error"),
     [
-        (["job", "show", "missing"], "no job named missing"),
-        (["job", "run", "missing"], "no job named missing"),
+        (["job", "show", "default:missing"], "no job named default:missing"),
+        (["job", "run", "default:missing"], "no job named default:missing"),
         (["runs", "show", "missing"], "no run matches missing"),
     ],
 )
@@ -306,7 +308,7 @@ def test_json_job_commands_report_malformed_frontmatter(
 ) -> None:
     write_config(enso_home, raw_config)
     write_job(enso_home, enabled="yes", timeout=0)
-    result = CliRunner().invoke(app, ["job", command, "nightly", "--json"])
+    result = CliRunner().invoke(app, ["job", command, "default:nightly", "--json"])
     assert result.exit_code == 1 and result.stderr == ""
     assert json.loads(result.stdout) == {
         "ok": False,
@@ -326,13 +328,14 @@ def test_job_and_runs_commands(enso_home: Paths, raw_config: dict, fake_claude: 
     made = runner.invoke(app, [*create, "--json"])
     job = json.loads(made.stdout)
     assert made.exit_code == 0 and job["dir_name"] == "nightly-digest" and job["enabled"] is False
-    assert job["path"] == str(enso_home.jobs / "nightly-digest" / "JOB.md")
+    assert job["path"] == str(enso_home.workspace_jobs("default") / "nightly-digest" / "JOB.md")
     assert runner.invoke(app, create).exit_code == 1  # exists (text mode)
     duplicate = runner.invoke(app, [*create, "--json"])
     assert duplicate.exit_code == 1 and duplicate.stderr == ""
     assert json.loads(duplicate.stdout) == {
         "ok": False,
-        "error": f"job nightly-digest already exists at {enso_home.jobs / 'nightly-digest'}",
+        "error": "job default:nightly-digest already exists at "
+        f"{enso_home.workspace_jobs('default') / 'nightly-digest'}",
     }
     bad = runner.invoke(app, [*create[:7], "gpt", *create[8:], "--json"])
     assert bad.exit_code == 1 and bad.stderr == ""
@@ -344,19 +347,25 @@ def test_job_and_runs_commands(enso_home: Paths, raw_config: dict, fake_claude: 
     ]
     assert "nightly-digest  0 9 * * *" in runner.invoke(app, ["job", "list"]).stdout
 
-    ran = runner.invoke(app, ["job", "run", "nightly-digest", "--json"])
+    ran = runner.invoke(app, ["job", "run", "default:nightly-digest", "--json"])
     payload = json.loads(ran.stdout)
     assert ran.exit_code == 0 and payload["ok"] and payload["status"] == "ok"
-    assert "job=nightly-digest" in payload["output"]
-    assert runner.invoke(app, ["job", "run", "missing"]).exit_code == 1
+    assert "job=default:nightly-digest" in payload["output"]
+    assert runner.invoke(app, ["job", "run", "default:missing"]).exit_code == 1
 
-    shown = json.loads(runner.invoke(app, ["job", "show", "nightly-digest", "--json"]).stdout)
+    shown = json.loads(
+        runner.invoke(app, ["job", "show", "default:nightly-digest", "--json"]).stdout
+    )
     assert shown["last_run"]["status"] == "ok" and shown["next_run"] and shown["problems"] == []
 
     history = json.loads(runner.invoke(app, ["runs", "list", "--json"]).stdout)
     assert [run["id"] for run in history] == [payload["run_id"]]
     one = runner.invoke(app, ["runs", "show", payload["run_id"][:6]])
-    assert one.exit_code == 0 and "status: ok" in one.stdout and "job=nightly-digest" in one.stdout
+    assert (
+        one.exit_code == 0
+        and "status: ok" in one.stdout
+        and "job=default:nightly-digest" in one.stdout
+    )
     assert runner.invoke(app, ["runs", "show", "zzz"]).exit_code == 1
 
 
@@ -371,16 +380,16 @@ def test_job_create_refuses_an_invalid_schedule(enso_home: Paths, raw_config: di
         ])  # fmt: skip
         assert made.exit_code == 1 and made.stdout == ""
         assert "must be exactly five fields" in made.stderr
-        assert not (enso_home.jobs / "odd-hours").exists()
+        assert not (enso_home.workspace_jobs("default") / "odd-hours").exists()
 
 
 def test_job_show_and_list_carry_a_schedule_problem(enso_home: Paths, raw_config: dict) -> None:
     write_config(enso_home, raw_config)
     write_job(enso_home, "hourly", schedule="@hourly")
-    db.migrate(enso_home)
+    db.initialize(enso_home)
     runner = CliRunner()
 
-    shown = runner.invoke(app, ["job", "show", "hourly", "--json"])
+    shown = runner.invoke(app, ["job", "show", "default:hourly", "--json"])
     payload = json.loads(shown.stdout)
     assert shown.exit_code == 0 and payload["next_run"] is None
     assert payload["problems"] == [
@@ -390,8 +399,8 @@ def test_job_show_and_list_carry_a_schedule_problem(enso_home: Paths, raw_config
     ]
     listed = json.loads(runner.invoke(app, ["job", "list", "--json"]).stdout)
     assert [entry["problems"] for entry in listed] == [payload["problems"]]
-    assert runner.invoke(app, ["job", "run", "hourly"]).exit_code == 1
-    refused = runner.invoke(app, ["job", "run", "hourly", "--json"])
+    assert runner.invoke(app, ["job", "run", "default:hourly"]).exit_code == 1
+    refused = runner.invoke(app, ["job", "run", "default:hourly", "--json"])
     assert refused.exit_code == 1 and refused.stderr == ""
     assert json.loads(refused.stdout) == {"ok": False, "error": "; ".join(payload["problems"])}
     assert runs.list_runs(enso_home) == []
@@ -436,12 +445,12 @@ def test_job_run_reports_failing_postrun_for_every_outcome(
             lock = acquire_group_lock(enso_home, "cli-test")
             assert lock is not None
             stack.enter_context(lock)
-        ran = runner.invoke(app, ["job", "run", "nightly"])
+        ran = runner.invoke(app, ["job", "run", "default:nightly"])
         assert ran.exit_code == exit_code
         assert ran.stderr.count("postrun failed: example hook failure\n") == 1
         if status in ("ok", "no_work", "skipped"):
             assert ran.stderr == "postrun failed: example hook failure\n"
-        serialized = runner.invoke(app, ["job", "run", "nightly", "--json"])
+        serialized = runner.invoke(app, ["job", "run", "default:nightly", "--json"])
         assert serialized.exit_code == exit_code and serialized.stderr == ""
         payload = json.loads(serialized.stdout)
         final_status = "error" if status in ("ok", "no_work", "skipped") else status
@@ -462,11 +471,11 @@ def test_job_run_reports_a_failing_postrun(
     raw_config["providers"]["claude"]["path"] = fake_claude
     write_config(enso_home, raw_config)
     write_job(enso_home, postrun="postrun.sh")
-    (enso_home.jobs / "nightly" / "postrun.sh").write_text("exit 2")
+    (enso_home.workspace_jobs("default") / "nightly" / "postrun.sh").write_text("exit 2")
     runner = CliRunner()
-    ran = runner.invoke(app, ["job", "run", "nightly"])
+    ran = runner.invoke(app, ["job", "run", "default:nightly"])
     assert ran.exit_code == 1 and ran.stderr == "postrun failed: postrun exited with status 2\n"
-    payload = json.loads(runner.invoke(app, ["job", "run", "nightly", "--json"]).stdout)
+    payload = json.loads(runner.invoke(app, ["job", "run", "default:nightly", "--json"]).stdout)
     assert (payload["status"], payload["postrun_error"]) == (
         "error",
         "postrun exited with status 2",
@@ -477,7 +486,7 @@ def test_runs_show_includes_attempts_without_loading_them_in_lists(
     enso_home: Paths, config: Config, raw_config: dict
 ) -> None:
     write_config(enso_home, raw_config)
-    db.migrate(enso_home)
+    db.initialize(enso_home)
     write_job(enso_home)
     run_id = runs.start(enso_home, load_job(enso_home, config), "manual", effort="high")
     runs.record_attempt(
@@ -952,7 +961,8 @@ def test_message_attach_and_telegram_send(
 
 def test_logs_filters_across_rotated_files(enso_home: Paths) -> None:
     enso_home.log.with_name("enso.log.1").write_text(
-        "10:00:00 INFO  slack     [t:abc] older\n10:00:01 INFO  runner    [j:nightly] job line\n"
+        "10:00:00 INFO  slack     [t:abc] older\n"
+        "10:00:01 INFO  runner    [j:default:nightly] job line\n"
     )
     enso_home.log.write_text(
         "10:00:02 INFO  runtime   [t:abc] spawn\n10:00:03 INFO  runtime   [t:def] other\n"
@@ -967,7 +977,7 @@ def test_logs_filters_across_rotated_files(enso_home: Paths) -> None:
         line[-5:] for line in runner.invoke(app, ["logs", "--turn", "abc"]).stdout.splitlines()
     ] == ["older", "spawn", " done"]
     assert (
-        runner.invoke(app, ["logs", "--job", "nightly", "--grep", "job"])
+        runner.invoke(app, ["logs", "--job", "default:nightly", "--grep", "job"])
         .stdout.strip()
         .endswith("job line")
     )

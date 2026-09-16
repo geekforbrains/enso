@@ -15,22 +15,27 @@ disable the job when its period ends. `JOB.md` has no expiry field; do not inven
 
 ## How Enso sets it up
 
-A job is `$ENSO_HOME/jobs/<name>/JOB.md` (`~/.enso` is the default home): YAML frontmatter plus a prompt, beside any prerun and postrun scripts. The Enso service reads every `JOB.md` and the current valid configuration once a minute. Job edits take effect on the next scheduler tick without a restart; a running job keeps its original definition and configuration. The `enso` skill covers configuration reloads and their restart exceptions. Enso runs enabled jobs whose cron slot has passed, or whose stage has a task ready, in the workspace each names, with the provider, model, and effort it declares. A run is the same agent under the same `AGENTS.md` and skills as a chat turn; only nobody is waiting. Each trigger starts fresh; postrun can request up to two follow-up messages in that same session by default. Every run leaves a row in `enso.db`. Failures alert the job's `notify` target (else the transport's default), and success is silent unless the prompt sends a message itself.
+A job is `$ENSO_HOME/workspaces/<workspace>/jobs/<job>/JOB.md` (`~/.enso` is the default home): YAML frontmatter plus a prompt, beside any prerun and postrun scripts. The Enso service reads every `JOB.md` and the current valid configuration once a minute. Job edits take effect on the next scheduler tick without a restart; a running job keeps its original definition and configuration. The `enso` skill covers configuration reloads and their restart exceptions. Enso runs enabled jobs whose cron slot has passed, or whose stage has a task ready, in their containing workspace, with the provider, model, and effort it declares. A run is the same agent under the same `AGENTS.md` and skills as a chat turn; only nobody is waiting. Each trigger starts fresh; postrun can request up to two follow-up messages in that same session by default. Every run leaves a row in `enso.db`. Failures alert the job's `notify` target (else the transport's default), and success is silent unless the prompt sends a message itself.
 
 A job's `notify` only routes runner-generated alerts; it does not become the destination of commands inside the prompt. Scheduled jobs have no originating conversation, so an untargeted `enso message send "text"` uses the first configured transport's notify target. To send a successful result somewhere specific, name it explicitly: `enso message send --to slack:C0BP5BQF6UF "text"`.
 
-Names beginning `enso-` are reserved for jobs Enso installs; `enso workspace audit` warns about one it did not. The bundled jobs are `enso-audit`, which reports nightly health problems and fixes nothing, and `enso-update`, which checks for releases and notifies without invoking a model or installing updates.
+Use `<workspace>:<job>` for every job reference, for example `team:digest`.
+`job create` selects its workspace from `--workspace` or `ENSO_WORKSPACE`; neither defaults
+to `default`. Job and run lists currently cover the installation. `ENSO_JOB` contains
+the qualified reference, and shared concurrency-group locks live in `runtime/.concurrency/`.
+
+Names beginning `enso-` are reserved for jobs Enso installs; `enso workspace audit` warns about one it did not. The bundled jobs are `default:enso-audit`, which reports nightly health problems and fixes nothing, and `default:enso-update`, which checks for releases and notifies without invoking a model or installing updates.
 
 ## Workflow
 
 1. `enso job list` to see what exists; `enso config show` for the configured providers and models, and `enso config check` to validate the configuration.
 2. `enso job create --name "Name" --provider claude --model sonnet --effort high --schedule "0 9 * * *" --workspace default` scaffolds a disabled job.
 3. Write the prompt in the `JOB.md` body; add a prerun script if the job should gate itself or gather data, and a postrun script to check completion, request a correction, or process the output.
-4. `enso job show <name>` to check the definition without running it. Check shell syntax with `bash -n` and test scripts against fixtures or stub services where real effects would be premature.
-5. Use `enso job run <name>` only when executing its actions now is safe and within the request. It runs even when disabled; it is not a dry run. A request for a scheduled send or publication does not by itself authorize sending or publishing during setup.
+4. `enso job show <workspace>:<job>` to check the definition without running it. Check shell syntax with `bash -n` and test scripts against fixtures or stub services where real effects would be premature.
+5. Use `enso job run <workspace>:<job>` only when executing its actions now is safe and within the request. It runs even when disabled; it is not a dry run. A request for a scheduled send or publication does not by itself authorize sending or publishing during setup.
 6. Once validation and appropriate testing pass, set `enabled: true`. The scheduler picks it up on its next minute tick. Report what was tested and any live execution left untested.
 
-`enso job show <name>` prints the fields, problems, next and last run, and the prompt. `enso runs list [--job NAME]` and `enso runs show ID` read run history; final output, hook errors and ordered attempts are kept in the database. `runs show --json` adds an `attempts` array with each turn and postrun result; `runs list --json` keeps the final run rows without attempt bodies.
+`enso job show <workspace>:<job>` prints the fields, problems, next and last run, and the prompt. `enso runs list [--job WORKSPACE:JOB]` and `enso runs show ID` read run history; final output, hook errors and ordered attempts are kept in the database. `runs show --json` adds an `attempts` array with each turn and postrun result; `runs list --json` keeps the final run rows without attempt bodies.
 
 ## JOB.md
 
@@ -41,7 +46,6 @@ schedule: "0 14 * * *"        # required: five-field cron, local time
 provider: claude              # required for agent stages; omit for command/integration
 model: sonnet                 # required with provider
 effort: high                  # required with provider
-workspace: meteor             # required: ~/.enso/workspaces/<name> must exist
 project: EN                   # optional, with stage: a stage job for that project
 stage: todo                   # optional, with project: one of its agent stages
 concurrency_group: project-x  # optional: serialize provider work and postrun checks
@@ -74,7 +78,7 @@ notify: "12345"           # a bare Telegram id is an integer
 timeout: 600              # never quoted: this one really is a number
 ```
 
-Fix a reported problem by editing the file; `enso job show <name>` and `enso doctor` name the line and column of a syntax fault, and never quote the block back at you. Enso never rewrites a `JOB.md`.
+Fix a reported problem by editing the file; `enso job show <workspace>:<job>` and `enso doctor` name the line and column of a syntax fault, and never quote the block back at you. Enso never rewrites a `JOB.md`.
 
 Cron is exactly five fields, `minute hour day-of-month month day-of-week`. `0 9 * * *` daily at 09:00, `30 6 * * 1-5` weekdays at 06:30, `*/15 * * * *` every 15 minutes, `0 9 * * 1` Mondays at 09:00. Enso checks jobs once a minute, so a sixth seconds or year field and aliases such as `@daily` are rejected. An invalid schedule stops `job create` before it writes anything, and in an existing `JOB.md` it is a problem that `job show`, `enso doctor` and the web viewer report against that file; edit the file by hand, since Enso never guesses what the schedule meant.
 

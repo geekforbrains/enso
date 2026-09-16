@@ -88,29 +88,33 @@ def digest(path):
 
 
 def inject_migration(original: str, *, fail: bool = False) -> str:
-    """Insert a synthetic next migration without assuming the current schema's symbol."""
+    """Add a synthetic upgrade only to a smoke-test candidate, never production code."""
     version = re.search(r"^SCHEMA_VERSION = (\d+)$", original, re.MULTILINE)
-    if version is None:
-        raise AssertionError("Smoke fixture cannot locate SCHEMA_VERSION")
+    if version is None or "def initialize(paths: Paths) -> None:" not in original:
+        raise AssertionError("Smoke fixture requires SCHEMA_VERSION and initialize")
     current = int(version.group(1))
     target = current + 1
-    anchor = re.compile(rf"^([ \t]+)\({current}, [A-Za-z_][A-Za-z_0-9]*\),$", re.MULTILINE)
-    if len(list(anchor.finditer(original))) != 1:
-        raise AssertionError(
-            f"Smoke fixture must find exactly one schema {current} migration tuple"
-        )
-    statement = f"CREATE TABLE smoke_migrated_v{target} (value TEXT);"
-    if fail:
-        statement += "\nTHIS IS INVALID SQL;"
-    replacement = f'_SCHEMA_V{target} = """\n{statement}\nPRAGMA user_version = {target};\n"""\n\n'
-    updated = original.replace(version.group(0), f"SCHEMA_VERSION = {target}\n\n{replacement}", 1)
-    updated, count = anchor.subn(
-        lambda match: f"{match.group(0)}\n{match.group(1)}({target}, _SCHEMA_V{target}),",
-        updated,
-        count=1,
+    updated = original.replace(version.group(0), f"SCHEMA_VERSION = {target}", 1)
+    fault = '            con.execute("THIS IS INVALID SQL")' if fail else ""
+    return (
+        updated
+        + f"""
+
+_smoke_initialize_v{target} = initialize
+
+
+def initialize(paths: Paths) -> None:
+    if paths.db.exists():
+        with sqlite3.connect(paths.db) as con:
+            con.execute("BEGIN IMMEDIATE")
+            if (con.execute("PRAGMA application_id").fetchone()[0] == APPLICATION_ID
+                    and con.execute("PRAGMA user_version").fetchone()[0] == {current}):
+                con.execute("CREATE TABLE smoke_migrated_v{target} (value TEXT)")
+                con.execute("PRAGMA user_version = {target}")
+{fault}
+    _smoke_initialize_v{target}(paths)
+"""
     )
-    assert count == 1, "Smoke fixture failed to insert its synthetic migration"
-    return updated
 
 
 def build_release(

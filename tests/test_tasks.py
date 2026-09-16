@@ -900,7 +900,7 @@ def test_render_task_block_omits_what_does_not_apply(
 
 def test_tasks_survive_a_fresh_migration(enso_home: Paths, project_config: Config) -> None:
     add(enso_home, project_config)
-    db.migrate(enso_home)  # idempotent: the v3 tables and their rows are untouched
+    db.initialize(enso_home)  # idempotent: the v3 tables and their rows are untouched
     assert tasks.get(enso_home, "EN-001").title == "Fix fences"
 
 

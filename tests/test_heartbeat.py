@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
@@ -141,21 +140,6 @@ def test_gate_size_and_directory_symlinks_are_rejected(config, definition, tmp_p
     directory.symlink_to(tmp_path, target_is_directory=True)
     with pytest.raises(heartbeat.HeartbeatError, match="symlinks"):
         heartbeat.resume(config, beat.ref)
-
-
-def test_reads_leave_missing_and_older_databases_untouched(config, definition):
-    paths = config.paths
-    assert heartbeat.get(paths, "HB-001") is None
-    assert heartbeat.list_beats(paths) == heartbeat.history(paths, "HB-001") == []
-    assert heartbeat.context(paths, "HB-001") == {}
-    assert not paths.db.exists()
-    with sqlite3.connect(paths.db) as con:
-        con.executescript(db._SCHEMA_V1 + db._SCHEMA_V2 + db._SCHEMA_V3)
-    before = paths.db.read_bytes()
-    assert heartbeat.list_beats(paths) == heartbeat.list_runs(paths, "HB-001") == []
-    assert heartbeat.history(paths, "HB-001", unhandled=True) == []
-    assert heartbeat.context(paths, "HB-001") == {}
-    assert paths.db.read_bytes() == before
 
 
 def test_check_history_records_transitions_without_per_poll_rows(config, definition, clock):

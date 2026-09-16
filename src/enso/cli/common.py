@@ -59,7 +59,7 @@ def load(paths: Paths, *, as_json: bool = False) -> Config:
     except ConfigError as exc:
         fail(exc.problems, as_json=as_json)
     try:
-        db.migrate(paths)
+        db.initialize(paths)
     except (db.UnsupportedDatabaseError, OSError, sqlite3.Error) as exc:
         fail([str(exc)], as_json=as_json)
     return config

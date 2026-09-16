@@ -91,11 +91,8 @@ def _load_run(con: sqlite3.Connection, run_id: str) -> BeatRun:
 def _reader(paths: Paths) -> Iterator[sqlite3.Connection | None]:
     try:
         with db.reader(paths) as con:
-            if con.execute("PRAGMA user_version").fetchone()[0] < 4:
-                yield None
-            else:
-                con.execute("BEGIN")
-                yield con
+            con.execute("BEGIN")
+            yield con
     except db.MissingDatabaseError:
         yield None
 
@@ -247,7 +244,7 @@ def create(config: Config, data: object, *, actor: str = "user", paused: bool = 
             raise HeartbeatError("create a gated beat paused, write its gate.sh, then resume it")
     stamp = db.now()
     due_at = next_check(definition, stamp)
-    db.migrate(config.paths)
+    db.initialize(config.paths)
     with db.transaction(config.paths) as con:
         cursor = con.execute(
             """INSERT INTO _enso_beats

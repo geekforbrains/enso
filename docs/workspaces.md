@@ -11,10 +11,9 @@ rather than assembled by hand.
 
 ## Layout
 
-This layout is implemented on the 0.2.0 development branch. The directories for memory,
-jobs, and projects are prepared now; their feature implementations and the relocation of
-existing home-level jobs, project definitions, and Heartbeat scripts remain forthcoming,
-as detailed in the [ownership layout](#ownership-in-020).
+This layout is implemented on the 0.2.0 development branch, including workspace jobs.
+Memory behavior and the relocation of project definitions and Heartbeat scripts remain
+forthcoming, as detailed in the [ownership layout](#ownership-in-020).
 
 ```text
 ~/.enso/workspaces/<name>/
@@ -24,7 +23,7 @@ as detailed in the [ownership layout](#ownership-in-020).
 ├── skills/            # skills unique to this workspace
 ├── knowledge/         # durable reference material the agent should keep
 ├── memory/            # dated memories (feature forthcoming)
-├── jobs/              # workspace jobs (relocation forthcoming)
+├── jobs/              # scheduled and stage jobs
 ├── projects/          # workspace project definitions (relocation forthcoming)
 ├── heartbeat/         # optional; workspace gate scripts (relocation forthcoming)
 ├── drafts/            # generated or editable output
@@ -38,7 +37,8 @@ as detailed in the [ownership layout](#ownership-in-020).
 | Directory | What belongs there |
 | --- | --- |
 | `knowledge/` | Durable reference owned by this workspace: notes, facts, and research worth finding again. |
-| `memory/`, `jobs/`, `projects/` | Prepared roots for the forthcoming workspace-owned features below. |
+| `jobs/` | Scheduled and stage jobs, identified as `<workspace>:<job>`. |
+| `memory/`, `projects/` | Prepared roots for the forthcoming workspace-owned features below. |
 | `heartbeat/` | Optional root, created only when workspace gate scripts are used. |
 | `WORKSPACE.md` | Optional settings; [Configuration](configuration.md#workspacemd-in-020) owns its format and reload behavior. |
 | `drafts/` | Ordinary work product. Posts, reports, scratch analysis. Safe to delete. |
@@ -77,7 +77,7 @@ retains its separately documented repair behavior.
 
 ## Ownership in 0.2.0
 
-**Target for 0.2.0.** Workspace paths and settings are implemented; job/project relocation,
+**Target for 0.2.0.** Workspace paths, settings, and jobs are implemented; project relocation,
 workspace Heartbeat scripts, and memory behavior remain forthcoming. Workspace-owned files
 live under their workspace; the containing directory determines ownership. Installation
 settings remain in `config.json`, as described
@@ -131,7 +131,7 @@ Every job is referenced as `<workspace>:<job>`, including commands, scheduling, 
 alerts, task-claim actors, `ENSO_JOB`, and viewer routes. For example, `team:digest` and
 `personal:digest` identify separate jobs in their respective workspace directories. A job's
 frontmatter does not repeat its workspace. Per-job locks live with the job; concurrency
-groups remain installation-wide, with locks under the home runtime directory. Jobs in
+groups remain installation-wide, with locks under `runtime/.concurrency/` in the home. Jobs in
 different workspaces using the same group still serialize.
 
 A project's key and workspace come from `projects/<KEY>/PROJECT.md`'s location, rather than
@@ -145,7 +145,7 @@ Fresh setup keeps the name `default` and places installation-maintenance jobs th
 `workspaces/default/jobs/enso-audit/JOB.md` and
 `workspaces/default/jobs/enso-update/JOB.md`, referenced as `default:enso-audit` and
 `default:enso-update`. `default` is an ordinary workspace, not a privileged role or an
-implicit fallback for missing CLI context. Each workspace also owns its own
+implicit fallback for missing CLI context. Each workspace will also own its own forthcoming
 [memory harvesting job](jobs.md#workspace-memory-job-in-020), including `default:memory`
 and `team:memory`; those jobs process only their containing workspace.
 

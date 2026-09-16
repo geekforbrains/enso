@@ -26,7 +26,7 @@ Paths below show the default home; use `ENSO_HOME` instead of `~/.enso` when it 
     ├── skills/               # skills unique to this workspace
     ├── knowledge/            # durable reference owned by this workspace
     ├── memory/               # prepared for workspace memory (forthcoming)
-    ├── jobs/                 # prepared for job relocation (forthcoming)
+    ├── jobs/                 # scheduled and stage jobs
     ├── projects/             # prepared for project relocation (forthcoming)
     ├── drafts/               # generated or editable output
     ├── uploads/              # chat attachments, one directory per turn

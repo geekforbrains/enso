@@ -37,7 +37,7 @@ class StageRun:
 
 
 def actor(job: Job) -> str:
-    return f"job:{job.dir_name}"
+    return f"job:{job.ref}"
 
 
 async def _join_worker[T](worker: asyncio.Task[T]) -> T:
@@ -115,9 +115,7 @@ def _prepare(
             if info.dirty:
                 recovery = "uncommitted changes in " + ", ".join(info.dirty)
     workflows.start(paths, config, task.ref, run_id)
-    ctx = tasks.context(
-        paths, config, task.ref, env={"ENSO_RUN_ID": run_id, "ENSO_JOB": job.dir_name}
-    )
+    ctx = tasks.context(paths, config, task.ref, env={"ENSO_RUN_ID": run_id, "ENSO_JOB": job.ref})
     parts = [
         tasks.render_task_block(
             ctx,

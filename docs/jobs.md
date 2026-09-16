@@ -5,7 +5,9 @@ Use [Heartbeat](heartbeat.md) for one future action or a particular situation fo
 resolved. Repeated checking can serve a beat; a recurring digest remains a job even with
 an end date. Both systems use the same scheduling and execution infrastructure.
 
-A job is `~/.enso/jobs/<name>/JOB.md`: YAML frontmatter and a prompt. The service checks
+A job is `~/.enso/workspaces/<workspace>/jobs/<job>/JOB.md`: YAML frontmatter and a prompt.
+Its workspace and local job name come from its location; its reference is `<workspace>:<job>`,
+such as `meteor:forum-watch`. Different workspaces can each own a job named `digest`. The service checks
 every job once a minute and runs the ones whose cron slot has passed, or, for a
 [stage job](#stage-jobs), whose stage has a task ready.
 
@@ -21,7 +23,6 @@ schedule: "0 14 * * *"        # required unless stage is set: five-field cron, i
 provider: claude              # required
 model: sonnet                 # required
 effort: high                  # required
-workspace: meteor             # required: ~/.enso/workspaces/meteor must exist
 project: EN                   # optional, with stage: the project this job serves
 stage: todo                   # optional, with project: one of its agent stages
 concurrency_group: meteor     # optional: serialize provider work and postrun checks
@@ -61,7 +62,7 @@ controlled by `max_concurrency` (default 1); raise it to allow different tasks i
 stages concurrently. Each task worktree still has one execution owner. Use an explicit
 group for jobs sharing another resource, such as a test database. Jobs in the same group run their preruns independently, but Enso admits only one
 selected run through provider execution and postrun checks at a time. It uses an advisory
-file lock under `jobs/.concurrency/`, shared with manual runs, so the operating system
+file lock under `runtime/.concurrency/`, shared with manual runs, so the operating system
 releases it if a process or the service dies; a stale database flag cannot strand a group.
 The group lock stays held through postrun and every follow-up, so another grouped job cannot
 change the workspace between the work and its check. A group collision produces `skipped`
@@ -87,9 +88,9 @@ and nothing is coerced, so a `JOB.md` says exactly one thing or it says nothing:
 | The prompt body is not empty | `the prompt body is empty` |
 
 Every one of those a file breaks is reported together, alongside everything `config.json`
-can see about the fields it did get right — an unusable schedule, an unconfigured agent, a
-missing workspace directory, a notify target that resolves to nothing — so one pass fixes
-the file. A field that is absent or the wrong type is reported once and not again as
+can see about the fields it did get right — an unusable schedule, an unconfigured agent,
+a notify target that resolves to nothing — so one pass fixes the file. A field that is
+absent or the wrong type is reported once and not again as
 whatever depended on it. A present-but-empty field is a problem, not an omission: `effort:`
 with nothing after it is YAML null, and `catch_up: ""` is empty text where a boolean
 belongs. A file with any problem never runs; it stays visible in `job show`, `job list`,
@@ -116,13 +117,18 @@ value is the thing being rejected, as an unusable schedule is.
 ```bash
 enso job create --name "Meteor Forum Watch" --provider claude --model sonnet \
   --effort high --schedule "0 14 * * *" --workspace meteor
-$EDITOR ~/.enso/jobs/meteor-forum-watch/JOB.md
-enso job show meteor-forum-watch         # fields, problems, next and last run, prompt
-enso job run meteor-forum-watch          # execute now, only when its effects are intended
+nvim ~/.enso/workspaces/meteor/jobs/meteor-forum-watch/JOB.md
+enso job show meteor:meteor-forum-watch         # fields, problems, next and last run, prompt
+enso job run meteor:meteor-forum-watch          # execute now, only when its effects are intended
 ```
 
-`job create` writes a disabled scaffold under a slug of the name. Inspect it with `job show`,
-check shell syntax with `bash -n`, and test scripts with fixtures or stub services when real
+`job create` writes a disabled scaffold under a slug of the name in the selected workspace.
+`--workspace` overrides `ENSO_WORKSPACE`; one must supply an existing workspace. Show, run,
+and run-history filters require the full reference, even when `ENSO_WORKSPACE` is set.
+Job and run lists currently cover the installation. The file cannot repeat `workspace`
+in its frontmatter; linked job paths are refused.
+Inspect it with `job show`, check shell syntax with `bash -n`, and test scripts with
+fixtures or stub services when real
 effects would be premature. `job run` executes immediately even while disabled and uses both
 job and group locks; it is not a dry run. The runner sends no alerts, but the prompt and
 scripts can send messages or perform other actions. A request for scheduled work does not
@@ -206,12 +212,11 @@ the last agent stage. Worktrees do not isolate shared services or ports.
 
 ## Bundled jobs
 
-The installation paths below describe current 0.1.x behavior. In 0.2.0, the maintenance
-jobs belong to [the default workspace](workspaces.md#ownership-in-020), and each workspace
-also has the forthcoming [memory job](#workspace-memory-job-in-020).
+Maintenance jobs belong to [the default workspace](workspaces.md#ownership-in-020).
+Each workspace will also have the forthcoming [memory job](#workspace-memory-job-in-020).
 
 `enso setup` and `enso config apply` install `enso-audit` and `enso-update` into
-`~/.enso/jobs/` when their directories are missing. `enso init` prepares the home but does
+`~/.enso/workspaces/default/jobs/` when their directories are missing. `enso init` prepares the home but does
 not install jobs. Existing job directories and their agent choices are preserved.
 
 ### Nightly health audit
@@ -252,7 +257,7 @@ including removal of the whole bundle. Historical job directories without baseli
 untouched. [Customizing](customizing.md#the-bundled-skills) owns these rules. To keep a job off,
 set `enabled: false` in `JOB.md`; a later explicit setup or config apply can reinstall a
 deleted directory. Try the audit with
-`enso job run enso-audit`, which prints `no work` on a healthy home; with the service
+`enso job run default:enso-audit`, which prints `no work` on a healthy home; with the service
 installed but stopped the doctor reports that, so expect a summary then. The service's
 `PATH` includes the `enso` binary, so the prerun calls plain `enso`; under a unit written
 by hand without it, the run alerts `prerun failed` with
@@ -270,7 +275,7 @@ A managed install checks its saved release feed and sends one notice per newer s
 version to the default notification target. It records the version only after delivery
 succeeds. Unchanged releases, missing feeds, unmanaged checkouts, offline checks, and delivery
 failures remain quiet; the next scheduled check retries. A manual
-`enso job run enso-update` also uses the default notification target rather than a calling
+`enso job run default:enso-update` also uses the default notification target rather than a calling
 chat's origin.
 
 The job never upgrades Enso. The operator asks in chat or runs `enso update apply` when
@@ -321,7 +326,7 @@ including when postrun later requests follow-ups.
 
 Only a `ENSO_ERROR: <summary>` line on stderr reaches the alert (collapsed to one line, at
 most 500 characters); stdout never does. The same failure alerts once per 24 hours, and the
-next healthy prerun sends one `✅ [<name>] prerun recovered`. Map command failures to exit 2
+next healthy prerun sends one `✅ [<workspace>:<job>] prerun recovered`. Map command failures to exit 2
 deliberately, since Python's default exit 1 reads as "no work".
 
 ```bash
@@ -454,7 +459,7 @@ in history and should be treated as sensitive job data.
 - Catch-up runs once when a missed slot is found; it does not replay every missed slot.
   The scheduler stamps its dispatch time before launching and leaves that timestamp
   unchanged when the run finishes. A manual run does not move this scheduling anchor.
-- The per-job lock is `jobs/<name>/.run.lock`, shared with `enso job run` in another
+- The per-job lock is `workspaces/<workspace>/jobs/<job>/.run.lock`, shared with `enso job run` in another
   process.
 
 Cron is exactly five fields, `minute hour day-of-month month day-of-week`: `0 9 * * *`
@@ -473,12 +478,17 @@ A successful or quiet run can still send a prerun recovery notice. A failed post
 the run a failure. Prompts and scripts can send messages themselves with
 `enso message send`, including during manual runs.
 
-- provider exit `N`: `⚠️ [<name> (exit N)]` plus the output tail
-- timeout: `⚠️ [<name>] timed out after Ns` plus the tail
-- prerun failure: `⚠️ [<name>] prerun failed` plus the diagnostic
-- postrun failure: `⚠️ [<name>] postrun failed` plus the diagnostic
+- provider exit `N`: `⚠️ [<workspace>:<job> (exit N)]` plus the output tail
+- timeout: `⚠️ [<workspace>:<job>] timed out after Ns` plus the tail
+- prerun failure: `⚠️ [<workspace>:<job>] prerun failed` plus the diagnostic
+- postrun failure: `⚠️ [<workspace>:<job>] postrun failed` plus the diagnostic
 
 ## Run history
+
+Run and scheduler-state tables store the workspace and local job name separately.
+CLI/JSON history, alerts, task actors, `ENSO_JOB`, and viewer links use the qualified
+reference. Moving a job directory creates a different identity; old history is retained
+under its original reference.
 
 Every trigger that passes the per-job lock creates a row in `enso.db`, including `no_work`,
 `prerun_error`, and concurrency-group `skipped` outcomes (a stage job with nothing ready is
@@ -490,7 +500,7 @@ Provider turns start at 1; a reaction hook when no provider ran uses attempt 0. 
 collision returns `skipped` without a run id or row. Manual runs exit 1 for either kind of `skipped` result.
 
 ```bash
-enso runs list [--job NAME] [-n N]
+enso runs list [--job WORKSPACE:JOB] [-n N]
 enso runs show ID            # a unique id prefix is enough
 ```
 

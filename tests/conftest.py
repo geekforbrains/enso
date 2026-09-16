@@ -219,11 +219,11 @@ def raw_config_projects(raw_config: dict) -> dict:
 
 @pytest.fixture
 def project_config(enso_home: Paths, raw_config_projects: dict) -> Config:
-    """A config with the two projects, the schema migrated, and the file written."""
+    """A config with the two projects, the schema initialized, and the file written."""
     config, problems, _ = parse_config(raw_config_projects, enso_home)
     assert config is not None, problems
     write_config(enso_home, raw_config_projects)
-    db.migrate(enso_home)
+    db.initialize(enso_home)
     return config
 
 
@@ -281,7 +281,7 @@ def fake_config(enso_home: Paths, raw_config_both: dict, fake_claude: str) -> Co
     raw_config_both["agent"]["timeout"] = 5
     config, problems, _ = parse_config(raw_config_both, enso_home)
     assert config is not None, problems
-    db.migrate(enso_home)
+    db.initialize(enso_home)
     return config
 
 
@@ -305,7 +305,6 @@ JOB_FIELDS: dict[str, object] = {
     "provider": "claude",
     "model": "opus",
     "effort": "high",
-    "workspace": "default",
     "enabled": True,
 }
 
@@ -315,10 +314,11 @@ def write_job(
     dir_name: str = "nightly",
     *,
     prompt: str = "Say hi.",
+    workspace: str = "default",
     omit: Iterable[str] = (),
     **fields: object,
 ) -> Path:
-    """Write ``jobs/<dir_name>/JOB.md`` with sensible fields, overridden by ``fields``.
+    """Write a workspace ``jobs/<dir_name>/JOB.md`` with sensible fields, overridden by ``fields``.
 
     The frontmatter is rendered as YAML, so a value's Python type is the type the parser
     sees: pass ``enabled=False`` for the boolean and ``timeout="60"`` for the quoted string
@@ -327,14 +327,14 @@ def write_job(
     """
     given = {**JOB_FIELDS, **fields}
     front = {key: value for key, value in given.items() if key not in set(omit)}
-    path = paths.jobs / dir_name / "JOB.md"
+    path = paths.workspace_jobs(workspace) / dir_name / "JOB.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(render(front, prompt))
     return path
 
 
 def load_job(paths: Paths, config: Config, dir_name: str = "nightly") -> Job:
-    job, problems = find_job(paths, config, dir_name)
+    job, problems = find_job(paths, config, dir_name if ":" in dir_name else f"default:{dir_name}")
     assert job is not None and not problems, problems
     return job
 

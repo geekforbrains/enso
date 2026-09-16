@@ -27,17 +27,17 @@
   <div class="panel rows">
     {% for row in rows %}
     {% set job = row.job %}
-    {% set history = recent.get(row.dir_name, []) %}
+    {% set history = recent.get(row.ref, []) %}
     {% set failed = history|selectattr('status', 'in', ['error', 'timeout', 'prerun_error'])|list %}
     {% set state = 'error' if row.problems or failed else ('muted' if job and not job.enabled else 'ok') %}
-    <a class="row entity" href="/jobs/{{ row.dir_name|urlencode }}" data-row
+    <a class="row entity" href="/jobs/{{ row.ref|urlencode }}" data-row
        data-enabled="{{ 'yes' if job and job.enabled else 'no' }}"
        data-status="{{ 'error' if state == 'error' else 'ok' }}"
-       data-text="{{ (row.dir_name ~ ' ' ~ (job.name if job else '') ~ ' ' ~ (job.workspace if job else '') ~ ' ' ~ (job.provider ~ ' ' ~ job.model ~ ' ' ~ job.effort if job else ''))|lower }}">
+       data-text="{{ (row.ref ~ ' ' ~ (job.name if job else '') ~ ' ' ~ (job.workspace if job else '') ~ ' ' ~ (job.provider ~ ' ' ~ job.model ~ ' ' ~ job.effort if job else ''))|lower }}">
       {% set state_label = 'failing or broken' if state == 'error' else ('disabled' if state == 'muted' else 'healthy') %}
       <span class="pin {{ state }}" role="img" aria-label="{{ state_label }}" title="{{ state_label }}"></span>
       <span class="body">
-        <span class="title">{{ row.dir_name }}</span>
+        <span class="title">{{ row.ref }}</span>
         {# Equal columns, so timing, workspace and agent each keep one axis down the list.
            That only holds while every row spends the same three slots, so a job whose file
            will not parse dashes the two it cannot answer rather than dropping them. #}

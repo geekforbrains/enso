@@ -52,7 +52,7 @@ main()
     assert json.loads(run.stdout)["ok"]
     assert not enso_home.config.exists() and not enso_home.db.exists()
     assert json.loads(enso_home.config_example.read_text())["version"] == 2
-    assert not list(enso_home.jobs.iterdir())
+    assert not list(enso_home.workspace_jobs("default").iterdir())
     assert (enso_home.home / ".git").is_dir()
 
 
@@ -64,7 +64,7 @@ def test_init_rerun_preserves_active_config_instructions_jobs_and_skills(enso_ho
         enso_home.config_example,
         enso_home.skills / "enso" / "SKILL.md",
         enso_home.workspace("default") / "AGENTS.md",
-        enso_home.jobs / "enso-audit" / "JOB.md",
+        enso_home.workspace_jobs("default") / "enso-audit" / "JOB.md",
     ]
     for path in personal:
         path.write_text("personal content\n")
@@ -166,7 +166,7 @@ def test_apply_invalid_input_aggregates_and_preserves_active_config(enso_home, r
     code, report = invoke("config", "apply", "--file", "-", "--json", input=json.dumps(raw_config))
     assert code == 1 and not report["applied"] and len(report["problems"]) == 3
     assert enso_home.config.read_bytes() == previous
-    assert not enso_home.jobs.exists()
+    assert not enso_home.workspace_jobs("default").exists()
 
 
 @pytest.mark.parametrize(
@@ -247,7 +247,7 @@ def test_apply_model_text_cannot_change_bundled_job_frontmatter(enso_home, raw_c
     raw_config["defaults"]["model"] = model
     code, report = invoke("config", "apply", "--file", "-", "--json", input=json.dumps(raw_config))
     assert code == 0 and report["ok"]
-    job, problems = find_job(enso_home, load_config(enso_home), "enso-audit")
+    job, problems = find_job(enso_home, load_config(enso_home), "default:enso-audit")
     assert not problems and job.model == model and job.enabled
 
 
@@ -279,17 +279,17 @@ def test_apply_job_failure_is_reported_and_retryable_without_partial_job(
     monkeypatch.setattr(workspaces, "write_missing", fail_script)
     report = initialization.apply_config(enso_home, raw_config, expected_hash="missing")
     assert report["applied"] and not report["ok"] and not report["jobs_complete"]
-    assert not (enso_home.jobs / "enso-audit").exists()
+    assert not (enso_home.workspace_jobs("default") / "enso-audit").exists()
     monkeypatch.setattr(workspaces, "write_missing", original)
     retried = initialization.apply_config(
         enso_home, raw_config, expected_hash=report["config_hash"]
     )
     assert retried["ok"] and retried["jobs_complete"]
-    assert (enso_home.jobs / "enso-audit" / "prerun.sh").is_file()
-    before = (enso_home.jobs / "enso-audit" / "JOB.md").read_bytes()
+    assert (enso_home.workspace_jobs("default") / "enso-audit" / "prerun.sh").is_file()
+    before = (enso_home.workspace_jobs("default") / "enso-audit" / "JOB.md").read_bytes()
     raw_config["defaults"]["effort"] = "low"
     assert initialization.apply_config(enso_home, raw_config)["ok"]
-    assert (enso_home.jobs / "enso-audit" / "JOB.md").read_bytes() == before
+    assert (enso_home.workspace_jobs("default") / "enso-audit" / "JOB.md").read_bytes() == before
 
 
 def test_check_reports_revision_of_the_validated_snapshot(enso_home, raw_config, monkeypatch):
@@ -367,7 +367,7 @@ def test_set_creates_a_nested_key_and_validates_the_result(enso_home, raw_config
     assert report["config_hash"] == config_fingerprint(enso_home) != revision
     assert enso_home.config.stat().st_mode & 0o777 == 0o600
     assert load_config(enso_home).runs.keep == 600
-    assert (enso_home.jobs / "enso-audit" / "JOB.md").is_file()
+    assert (enso_home.workspace_jobs("default") / "enso-audit" / "JOB.md").is_file()
 
 
 def test_set_stores_text_that_is_not_json_as_a_string(enso_home, raw_config):

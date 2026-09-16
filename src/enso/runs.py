@@ -88,7 +88,8 @@ class RunSummary:
         return asdict(self)
 
 
-_SUMMARY_SELECT = f"""SELECT id, job, workspace, provider, model, effort, trigger, started_at,
+_SUMMARY_SELECT = f"""SELECT id, workspace || ':' || job AS job, workspace,
+        provider, model, effort, trigger, started_at,
         ended_at, duration_ms, status, exit_code,
         substr(error, 1, {ERROR_PREVIEW}) AS error_preview,
         output IS NOT NULL AS has_output
@@ -96,9 +97,8 @@ _SUMMARY_SELECT = f"""SELECT id, job, workspace, provider, model, effort, trigge
 
 
 def _run(row: sqlite3.Row) -> Run:
-    # The read-only viewer must also inspect v1 history without migrating the home.
-    columns = row.keys()
-    return Run(**{key: row[key] for key in Run.__dataclass_fields__ if key in columns})
+    fields = {key: row[key] for key in Run.__dataclass_fields__}
+    return Run(**{**fields, "job": f"{row['workspace']}:{row['job']}"})
 
 
 def _summary(row: sqlite3.Row) -> RunSummary:
@@ -108,11 +108,13 @@ def _summary(row: sqlite3.Row) -> RunSummary:
 
 def _filters(
     job: str | None, status: str | None, statuses: Sequence[str] | None = None
-) -> tuple[str, list]:
-    clauses, params = [], []
+) -> tuple[str, list[object]]:
+    clauses: list[str] = []
+    params: list[object] = []
     if job:
-        clauses.append("job = ?")
-        params.append(job)
+        workspace, _, name = job.partition(":")
+        clauses.append("workspace = ? AND job = ?")
+        params.extend((workspace, name))
     if status:
         clauses.append("status = ?")
         params.append(status)
@@ -239,11 +241,9 @@ def record_attempt(
 
 
 def attempts(paths: Paths, run_id: str) -> list[RunAttempt]:
-    """Completed attempts in order; absent or v1 history has none, without creating state."""
+    """Completed attempts in order, without creating state."""
     try:
         with db.reader(paths) as con:
-            if con.execute("PRAGMA user_version").fetchone()[0] < 2:
-                return []
             rows = con.execute(
                 "SELECT * FROM _enso_run_attempts WHERE run_id = ? ORDER BY number", (run_id,)
             ).fetchall()
@@ -278,8 +278,8 @@ def get(paths: Paths, run_id: str) -> Run | None:
 
 def list_runs(paths: Paths, *, job: str | None = None, limit: int = 20) -> list[Run]:
     """Newest first, optionally for one job."""
-    where = "WHERE job = ?" if job else ""
-    params: tuple = (job, limit) if job else (limit,)
+    where, params = _filters(job, None)
+    params.append(limit)
     with db.transaction(paths) as con:
         rows = con.execute(
             f"SELECT * FROM runs {where} ORDER BY started_at DESC, rowid DESC LIMIT ?", params
@@ -291,9 +291,10 @@ def latest(paths: Paths) -> dict[str, Run]:
     """The most recent run of every job."""
     with db.transaction(paths) as con:
         rows = con.execute(
-            "SELECT * FROM runs WHERE rowid IN (SELECT max(rowid) FROM runs GROUP BY job)"
+            "SELECT * FROM runs WHERE rowid IN "
+            "(SELECT max(rowid) FROM runs GROUP BY workspace, job)"
         ).fetchall()
-    return {row["job"]: _run(row) for row in rows}
+    return {run.job: run for run in map(_run, rows)}
 
 
 # -- Summaries: read-only, never touching ``output`` --------------------------
@@ -345,7 +346,8 @@ def latest_summaries(paths: Paths) -> dict[str, RunSummary]:
     try:
         with db.reader(paths) as con:
             rows = con.execute(
-                f"{_SUMMARY_SELECT} WHERE rowid IN (SELECT max(rowid) FROM runs GROUP BY job)"
+                f"{_SUMMARY_SELECT} WHERE rowid IN "
+                "(SELECT max(rowid) FROM runs GROUP BY workspace, job)"
             ).fetchall()
     except db.MissingDatabaseError:
         return {}
@@ -356,7 +358,9 @@ def job_names(paths: Paths) -> list[str]:
     """Every job that has ever run, for a filter; the job directory may be long gone."""
     try:
         with db.reader(paths) as con:
-            rows = con.execute("SELECT DISTINCT job FROM runs ORDER BY job").fetchall()
+            rows = con.execute(
+                "SELECT DISTINCT workspace || ':' || job AS job FROM runs ORDER BY job"
+            ).fetchall()
     except db.MissingDatabaseError:
         return []
     return [row["job"] for row in rows]

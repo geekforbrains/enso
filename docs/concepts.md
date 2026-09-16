@@ -73,8 +73,6 @@ Enso's runtime state lives under one directory:
 ├── .claude/skills       # symlink -> ../skills, discovered by the provider CLIs
 ├── .agents/skills       # symlink -> ../skills
 ├── workspaces/<name>/   # one directory per workspace
-├── jobs/<name>/JOB.md   # scheduled and stage jobs
-├── jobs/.concurrency/   # advisory locks for job concurrency groups
 ├── heartbeat/<HB-ref>/  # optional gate.sh and helpers for one beat
 ├── worktrees/           # legacy task worktrees retained during migration; new defaults live by the repo
 ├── secrets/*.env        # KEY=value files exported into the service environment
@@ -83,6 +81,7 @@ Enso's runtime state lives under one directory:
 ├── web.log, web.pid     # the web viewer's output and lock, while it runs
 ├── launchd-web.log      # stdout/stderr when the optional viewer service runs
 ├── runtime/
+│   ├── .concurrency/    # installation-wide job concurrency-group locks
 │   ├── releases/<version>-<hash>/  # immutable managed Python environments
 │   ├── current -> releases/...    # selected release behind the stable launcher
 │   ├── install.json     # installed package version, feed, extras, integration settings
@@ -101,8 +100,9 @@ Enso's runtime state lives under one directory:
 paired chat, valid configuration, and a successful provider reply are separate milestones.
 
 **Partly implemented for 0.2.0:** workspace settings now use `WORKSPACE.md`, and the new
-workspace directories are scaffolded. Jobs, projects, memory, and Heartbeat scripts will
-use the [workspace ownership layout](workspaces.md#ownership-in-020). Installation support
+workspace directories are scaffolded. Jobs now use the workspace paths; projects, memory,
+and Heartbeat scripts will use the [workspace ownership layout](workspaces.md#ownership-in-020).
+Installation support
 files shown here keep their documented purpose and locations unless that layout explicitly
 changes them. Operational records stay in one home database; maintained knowledge and memory
 stay in Markdown.
@@ -125,9 +125,11 @@ those.
 
 `enso.db` carries its schema version, and `config.json`'s `version` identifies its config
 format. Neither is the application release version: that comes from package metadata and,
-for managed installs, `runtime/install.json`. Enso migrates the database forward and
-refuses an unsupported newer schema. An incomplete managed update can restore its
-pre-migration snapshot together with the previous code; see [Upgrading](install.md#upgrading).
+for managed installs, `runtime/install.json`. The 0.2.0 database starts a new schema line
+at `user_version = 1`, identified by SQLite `application_id = 0x454E534F` (`ENSO`). It refuses
+0.1.x databases and unsupported newer schemas without altering them; it never migrates
+an old home. An incomplete managed update can restore its pre-update snapshot together
+with the previous code; see [Upgrading](install.md#upgrading).
 
 Managed updates stage verified releases before pausing new work. An independent helper
 waits for accepted turns, jobs, and ordinary CLI operations, then snapshots affected state,
@@ -225,12 +227,11 @@ valid only in the workspace it was created in.
 
 ## Job and run
 
-A job is a directory under `~/.enso/jobs/` containing a `JOB.md`: YAML frontmatter naming
-the schedule, agent, and workspace, plus a prompt body. The scheduler wakes once a minute
-and fires the jobs whose cron slot has passed.
-
-**Forthcoming in 0.2.0:** jobs live inside their workspace and use `<workspace>:<job>`
-references, as defined in [Workspaces](workspaces.md#ownership-in-020).
+A job is a workspace directory `jobs/<job>/` containing a `JOB.md`: YAML frontmatter
+naming the schedule and agent, plus a prompt body. Its workspace comes from its location;
+its reference is `<workspace>:<job>`, as defined in
+[Workspaces](workspaces.md#ownership-in-020). The scheduler wakes once a minute and fires
+the jobs whose cron slot has passed.
 
 A job may have a **prerun** script that gates it (nothing is spent when there is nothing to
 do) and a **postrun** script that checks or reacts to the outcome, optionally sending a

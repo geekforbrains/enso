@@ -119,7 +119,7 @@ class WorkspaceAudit(_Root):
     name: str
     path: Path
     bindings: list[str] = field(default_factory=list)  # binding keys pointing here
-    jobs: list[str] = field(default_factory=list)  # job directory names naming it
+    jobs: list[str] = field(default_factory=list)  # qualified references of jobs owned by it
     uploads_bytes: int = 0
     findings: list[Finding] = field(default_factory=list)
     fixed: list[str] = field(default_factory=list)
@@ -173,7 +173,7 @@ def audit(
     jobs, _ = load_jobs(paths)
     named: dict[str, list[str]] = {}
     for job in jobs:
-        named.setdefault(job.workspace, []).append(job.dir_name)
+        named.setdefault(job.workspace, []).append(job.ref)
     if names is None:
         names = workspaces.list_workspaces(paths)
     found = []
@@ -404,12 +404,16 @@ def _check_jobs(paths: Paths) -> Iterator[Finding]:
     Exempt by name, as for skills: a bundled name is Enso's whoever wrote the copy, since
     nothing records who did.
     """
-    if not paths.jobs.is_dir():
-        return
-    for entry in sorted(paths.jobs.iterdir()):
-        installed = entry.name in workspaces.BUNDLED_JOBS
-        if entry.is_dir() and workspaces.reserved(entry.name) and not installed:
-            yield Finding(RESERVED, WARNING, _reserved_message("jobs", entry.name))
+    for workspace in workspaces.list_workspaces(paths):
+        root = paths.workspace_jobs(workspace)
+        if root.is_symlink() or not root.is_dir():
+            continue
+        for entry in sorted(root.iterdir()):
+            installed = workspace == "default" and entry.name in workspaces.BUNDLED_JOBS
+            if entry.is_dir() and workspaces.reserved(entry.name) and not installed:
+                yield Finding(
+                    RESERVED, WARNING, _reserved_message(f"workspaces/{workspace}/jobs", entry.name)
+                )
 
 
 def _check_entries(root: Path) -> Iterator[Finding]:

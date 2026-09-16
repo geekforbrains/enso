@@ -64,10 +64,12 @@ def home(enso_home: Paths, raw_config: dict) -> Home:
         enso_home, prompt="Say hi to <b>everyone</b>.\n\n{{prerun_output}}", prerun="check.sh"
     )
     write_job(enso_home, "broken", model="gpt")
-    (enso_home.jobs / "garbled").mkdir()
-    (enso_home.jobs / "garbled" / "JOB.md").write_text("no frontmatter at all\n")
+    (enso_home.workspace_jobs("default") / "garbled").mkdir()
+    (enso_home.workspace_jobs("default") / "garbled" / "JOB.md").write_text(
+        "no frontmatter at all\n"
+    )
     config = load_config(enso_home)
-    db.migrate(enso_home)
+    db.initialize(enso_home)
     job = load_job(enso_home, config)
     failed = runs.start(enso_home, job, "manual", effort="high")
     runs.finish(
@@ -168,7 +170,7 @@ async def test_no_link_nests_inside_another_link(client: TestClient, home: Home)
         "/today/activity",
         "/today/reliability",
         "/jobs",
-        "/jobs/nightly",
+        "/jobs/default%3Anightly",
         "/runs",
         "/runs?view=all",
         "/tasks",
@@ -214,7 +216,7 @@ async def test_health_reports_every_section_database_and_log(
     for name in doctor.SECTIONS:
         assert f'id="section-{name}"' in body
     assert ">Viewer service</h2>" in body
-    job_file = home.paths.jobs / "broken" / "JOB.md"
+    job_file = home.paths.workspace_jobs("default") / "broken" / "JOB.md"
     assert f"broken ({job_file}): JOB.md.model &#39;gpt&#39; is not in providers" in body
     assert "the service is not installed" in body
     assert "readable" in body and "enso.db " in body
@@ -554,8 +556,8 @@ async def test_skills_include_a_relocated_opencode_root(
 
 async def test_jobs_list_and_detail(client: TestClient, home: Home) -> None:
     body = await page(client, "/jobs")
-    assert 'href="/jobs/nightly"' in body and 'href="/jobs/broken"' in body
-    assert 'href="/jobs/garbled"' in body
+    assert 'href="/jobs/default%3Anightly"' in body and 'href="/jobs/default%3Abroken"' in body
+    assert 'href="/jobs/default%3Agarbled"' in body
     assert "<code>0 9 * * *</code>" in body and "<code>claude</code>" in body
     # A row says something is wrong with its dot; the job's page says what.
     assert "JOB.md.model &#39;gpt&#39; is not in providers.claude.models" not in body
@@ -568,7 +570,9 @@ async def test_jobs_list_and_detail(client: TestClient, home: Home) -> None:
     # the same three slots in the same order, so a job whose file will not parse dashes the
     # two it cannot answer instead of dropping them and sliding the column.
     assert body.count('<span class="detail columns">') == body.count('<a class="row entity"')
-    garbled_row = re.search(r'<a class="row entity" href="/jobs/garbled".*?</a>', body, re.DOTALL)
+    garbled_row = re.search(
+        r'<a class="row entity" href="/jobs/default%3Agarbled".*?</a>', body, re.DOTALL
+    )
     assert garbled_row is not None
     assert '<span class="err">unreadable</span>' in garbled_row.group(0)
     assert garbled_row.group(0).count("<span>-</span>") == 2
@@ -578,25 +582,28 @@ async def test_jobs_list_and_detail(client: TestClient, home: Home) -> None:
     spark = re.search(r'<svg class="spark"[^>]*>', body)
     assert spark is not None and 'preserveAspectRatio="xMaxYMid meet"' in spark.group(0)
 
-    detail = await page(client, "/jobs/nightly")
-    assert title(detail) == "Job nightly · Enso"
+    detail = await page(client, "/jobs/default%3Anightly")
+    assert title(detail) == "Job default:nightly · Enso"
     assert '<div class="markdown">' in detail  # the prompt is JOB.md's body, rendered
     assert "<p>Say hi to &lt;b&gt;everyone&lt;/b&gt;.</p>" in detail
     assert "{{prerun_output}}" in detail
     assert "<code>check.sh</code> (120s timeout)" in detail and "Postrun" in detail
     assert "900s" in detail and "transport default" in detail
     assert f'href="/runs/{home.ok_run}"' in detail and f'href="/runs/{home.failed_run}"' in detail
-    assert 'href="/runs?job=nightly' in detail and "provider exited 1 &lt;script&gt;" in detail
+    assert (
+        'href="/runs?job=default%3Anightly' in detail
+        and "provider exited 1 &lt;script&gt;" in detail
+    )
     assert "<button" not in detail.split("<main")[1].split("Recent runs")[0]
 
-    broken = await page(client, "/jobs/broken")
+    broken = await page(client, "/jobs/default%3Abroken")
     assert "problems</span>" in broken and "not in providers.claude.models" in broken
     assert "not while it has problems" in broken
-    garbled = await page(client, "/jobs/garbled")
+    garbled = await page(client, "/jobs/default%3Agarbled")
     assert (
         "needs a leading --- frontmatter block" in garbled and "This job has never run" in garbled
     )
-    assert "Not found" in await page(client, "/jobs/nope", 404)
+    assert "Not found" in await page(client, "/jobs/default%3Anope", 404)
 
 
 async def test_a_job_prompt_renders_as_markdown_with_its_html_escaped(
@@ -612,7 +619,7 @@ async def test_a_job_prompt_renders_as_markdown_with_its_html_escaped(
         ),
     )
 
-    detail = await page(client, "/jobs/marked")
+    detail = await page(client, "/jobs/default%3Amarked")
     assert '<div class="markdown">' in detail
     assert "<h1>Heading</h1>" in detail and "<li>one</li>" in detail
     assert '<code class="language-sh">ls -la' in detail
@@ -626,15 +633,15 @@ async def test_a_bad_schedule_stays_visible(client: TestClient, home: Home) -> N
     write_job(home.paths, "hourly", schedule="@hourly")
 
     listed = await page(client, "/jobs")
-    assert 'href="/jobs/hourly"' in listed and "@hourly" in listed
+    assert 'href="/jobs/default%3Ahourly"' in listed and "@hourly" in listed
 
-    detail = await page(client, "/jobs/hourly")
+    detail = await page(client, "/jobs/default%3Ahourly")
     assert "problems</span>" in detail and "must be exactly five fields" in detail
     assert "not while it has problems" in detail
 
     home.paths.config.write_text("{broken")
     listed = await page(client, "/jobs")
-    assert 'href="/jobs/nightly"' in listed and "See Health" in listed
+    assert 'href="/jobs/default%3Anightly"' in listed and "See Health" in listed
     assert "Config-dependent checks are skipped" in listed
 
 
@@ -737,11 +744,11 @@ def test_today_ghosts_fill_forward_strip_with_a_per_lane_cap(home: Home, today_c
         ("quarter-hour", range(15, 181, 15)),
         ("every-minute", range(1, 41)),
     ):
-        assert lanes[name].ghosts == [
+        assert lanes[f"default:{name}"].ghosts == [
             round(chart["now_x"] + minute / (8 * 60) * chart["width"], 2) for minute in minutes
         ]
     rows, _ = views._job_rows(home.paths, home.config, today_clock.fixed)
-    scheduled = next(row for row in rows if row.dir_name == "quarter-hour")
+    scheduled = next(row for row in rows if row.ref == "default:quarter-hour")
     stage = replace(scheduled, job=replace(scheduled.job, schedule=None))
     no_next = replace(scheduled, next_run=None)
     empty = views._chart(
@@ -826,10 +833,12 @@ async def test_reliability_uses_one_sample_within_the_global_scan(
     assert "Up to 30 latest runs per job" in body
     assert "Bars, counts, and averages use each job's latest runs" in body
     assert "newest 400 runs across all jobs, including runs older than the schedule window" in body
-    assert 'href="/jobs/outside-scan"' not in body
-    assert 'href="/jobs/removed-job"' not in body
+    assert 'href="/jobs/default%3Aoutside-scan"' not in body
+    assert 'href="/jobs/default%3Aremoved-job"' not in body
 
-    nightly = re.search(r'<a class="row entity" href="/jobs/nightly">.*?</a>', body, re.DOTALL)
+    nightly = re.search(
+        r'<a class="row entity" href="/jobs/default%3Anightly">.*?</a>', body, re.DOTALL
+    )
     assert nightly is not None
     row = nightly.group(0)
     assert row.count("<rect ") == 30
@@ -840,7 +849,7 @@ async def test_reliability_uses_one_sample_within_the_global_scan(
     assert "avg 2s" in row
 
     occasional = re.search(
-        r'<a class="row entity" href="/jobs/occasional">.*?</a>', body, re.DOTALL
+        r'<a class="row entity" href="/jobs/default%3Aoccasional">.*?</a>', body, re.DOTALL
     )
     assert occasional is not None
     row = occasional.group(0)
@@ -919,7 +928,10 @@ async def test_runs_list_filters_and_pages_without_loading_output(
     assert "xxxxxxxxxx" not in first  # a list never loads output
     assert "<time datetime=" in first
     assert '<form class="toolbar" method="get" action="/runs"' in first
-    assert '<option value="nightly" selected' not in first and '<option value="nightly"' in first
+    assert (
+        '<option value="default:nightly" selected' not in first
+        and '<option value="default:nightly"' in first
+    )
     second = await page(client, "/runs?view=all&page=2")
     assert f"Showing {runs.PAGE_SIZE + 1}\u2013{total} of {total} runs" in second
     assert "Page 2 of 2" in second
@@ -927,19 +939,19 @@ async def test_runs_list_filters_and_pages_without_loading_output(
     assert f"Showing {runs.PAGE_SIZE + 1}\u2013{total}" in beyond
     assert "Showing 1\u2013" in await page(client, "/runs?view=all&page=abc")
 
-    filtered = await page(client, "/runs?job=nightly&status=error")
+    filtered = await page(client, "/runs?job=default%3Anightly&status=error")
     assert "Showing 1\u20131 of 1 run matching the filter" in filtered
     assert f'href="/runs/{home.failed_run}"' in filtered
     assert 'role="img" aria-label="error" title="error"' in filtered
     assert "provider exited 1 &lt;script&gt;x&lt;/script&gt;" in filtered
     assert (
         '<option value="error" selected' in filtered
-        and '<option value="nightly" selected' in filtered
+        and '<option value="default:nightly" selected' in filtered
     )
     no_work = await page(client, "/runs?status=no_work")
     assert 'role="img" aria-label="no work" title="no work"' in no_work
     assert f"of {(runs.PAGE_SIZE + 3) // 2} runs matching" in no_work
-    assert "No run matches the filter" in await page(client, "/runs?job=other")
+    assert "No run matches the filter" in await page(client, "/runs?job=default%3Aother")
     # An unknown status is ignored rather than a 400, leaving the default view.
     assert f"of {total - quiet} runs" in await page(client, "/runs?status=bogus")
     monkeypatch.undo()
@@ -970,7 +982,7 @@ async def test_run_detail_shows_everything_including_a_megabyte(
     body = await page(client, f"/runs/{home.failed_run}")
     assert title(body) == f"Run {home.failed_run} · Enso"
     assert 'tag-error">error</span>' in body and "<dt>Exit code</dt><dd>1</dd>" in body
-    assert 'href="/jobs/nightly"' in body and 'href="/workspaces/default"' in body
+    assert 'href="/jobs/default%3Anightly"' in body and 'href="/workspaces/default"' in body
     assert "provider exited 1 &lt;script&gt;x&lt;/script&gt;" in body
     assert '<span class="why">exit code 1 · ' in body
     assert "<script>x</script>" not in body
@@ -1050,7 +1062,7 @@ async def test_nothing_writes(client: TestClient, home: Home) -> None:
         "/workspaces/default/files/knowledge/notes.md",
         "/skills",
         "/jobs",
-        "/jobs/nightly",
+        "/jobs/default%3Anightly",
         "/runs",
         f"/runs/{home.ok_run}",
     ):
@@ -1062,3 +1074,19 @@ async def test_nothing_writes(client: TestClient, home: Home) -> None:
     }
     assert after == before
     assert runs.count(home.paths) == 2
+
+
+async def test_same_named_jobs_link_to_their_own_history(client, home):
+    write_job(home.paths, "nightly", workspace="team", prompt="Only the team workspace")
+    job = load_job(home.paths, home.config, "team:nightly")
+    team_run = runs.start(home.paths, job, "manual", effort="high")
+    runs.finish(home.paths, team_run, status="ok", output="Team result")
+    listing = await page(client, "/jobs")
+    assert 'href="/jobs/team%3Anightly"' in listing
+    assert 'href="/jobs/default%3Anightly"' in listing
+    team = await page(client, "/jobs/team:nightly")
+    default = await page(client, "/jobs/default:nightly")
+    assert "Only the team workspace" in team and "Only the team workspace" not in default
+    assert f'href="/runs/{team_run}"' in team and home.ok_run not in team
+    assert f'href="/runs/{home.ok_run}"' in default and team_run not in default
+    await page(client, "/jobs/nightly", status=404)

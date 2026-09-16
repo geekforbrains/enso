@@ -9,12 +9,12 @@ import typer
 
 from .. import jobs, runs
 from .. import log as logsetup
-from ..config import Paths
+from ..config import Paths, resolve_workspace, split_job_ref
 from ..formatting import format_elapsed
 from ..jobs.runner import JobRunner, RunResult
 from .common import JSON_FLAG, ago, columns, echo_json, fail, load, seconds
 
-job_app = typer.Typer(no_args_is_help=True, help="Scheduled jobs under $ENSO_HOME/jobs.")
+job_app = typer.Typer(no_args_is_help=True, help="Workspace-owned scheduled jobs.")
 runs_app = typer.Typer(no_args_is_help=True, help="Job run history.")
 
 
@@ -41,10 +41,10 @@ def job_list(as_json: bool = JSON_FLAG) -> None:
     found, problems = jobs.load_jobs(paths, config)
     last = runs.latest(paths)
     if as_json:
-        parsed = {job.dir_name for job in found}
+        parsed = {job.ref for job in found}
         echo_json(
-            [_job_summary(j, problems.get(j.dir_name, []), last.get(j.dir_name)) for j in found]
-            + [{"dir_name": n, "problems": p} for n, p in problems.items() if n not in parsed]
+            [_job_summary(j, problems.get(j.ref, []), last.get(j.ref)) for j in found]
+            + [{"ref": n, "problems": p} for n, p in problems.items() if n not in parsed]
         )
         return
     if not found and not problems:
@@ -52,10 +52,10 @@ def job_list(as_json: bool = JSON_FLAG) -> None:
         return
     rows = [["JOB", "SCHEDULE", "AGENT", "WORKSPACE", "ENABLED", "LAST RUN"]]
     for job in found:
-        run = last.get(job.dir_name)
+        run = last.get(job.ref)
         rows.append(
             [
-                job.dir_name,
+                job.ref,
                 _schedule(job),
                 f"{job.provider}/{job.model}/{job.effort}",
                 job.workspace,
@@ -77,7 +77,7 @@ def job_create(
     schedule: str | None = typer.Option(
         None, "--schedule", help="Cron, local time, e.g. '0 9 * * *'; optional with --stage."
     ),
-    workspace: str = typer.Option(..., "--workspace"),
+    workspace: str | None = typer.Option(None, "--workspace", help="Defaults to ENSO_WORKSPACE."),
     project: str | None = typer.Option(None, "--project", help="Serve a task board project."),
     stage: str | None = typer.Option(None, "--stage", help="The project's agent stage to serve."),
     as_json: bool = JSON_FLAG,
@@ -94,7 +94,7 @@ def job_create(
             model=model,
             effort=effort,
             schedule=schedule,
-            workspace=workspace,
+            workspace=resolve_workspace(paths, workspace),
             project=project,
             stage=stage,
         )
@@ -103,11 +103,14 @@ def job_create(
     if as_json:
         echo_json(job.as_dict())
         return
-    typer.echo(f"created {job.path} (disabled)")
+    typer.echo(f"created {job.ref}: {job.path} (disabled)")
 
 
 @job_app.command("show")
-def job_show(name: str, as_json: bool = JSON_FLAG) -> None:
+def job_show(
+    name: str = typer.Argument(..., help="Qualified reference, e.g. team:digest."),
+    as_json: bool = JSON_FLAG,
+) -> None:
     """Print one job's fields, problems, next and last run, and prompt."""
     paths = Paths.from_env()
     config = load(paths, as_json=as_json)
@@ -135,7 +138,10 @@ def job_show(name: str, as_json: bool = JSON_FLAG) -> None:
 
 
 @job_app.command("run")
-def job_run(name: str, as_json: bool = JSON_FLAG) -> None:
+def job_run(
+    name: str = typer.Argument(..., help="Qualified reference, e.g. team:digest."),
+    as_json: bool = JSON_FLAG,
+) -> None:
     """Run a job now; prints the result and never sends alerts."""
     paths = Paths.from_env()
     config = load(paths, as_json=as_json)
@@ -177,13 +183,20 @@ def _duration(run: runs.Run) -> str:
 
 @runs_app.command("list")
 def runs_list(
-    job: str | None = typer.Option(None, "--job", help="Only this job's runs."),
+    job: str | None = typer.Option(
+        None, "--job", help="Only this qualified job's runs, e.g. team:digest."
+    ),
     limit: int = typer.Option(20, "-n", help="How many, newest first."),
     as_json: bool = JSON_FLAG,
 ) -> None:
     """List recent runs."""
     paths = Paths.from_env()
     load(paths, as_json=as_json)
+    if job is not None:
+        try:
+            split_job_ref(job)
+        except ValueError as exc:
+            fail([str(exc)], as_json=as_json)
     found = runs.list_runs(paths, job=job, limit=limit)
     if as_json:
         echo_json([run.as_dict() for run in found])

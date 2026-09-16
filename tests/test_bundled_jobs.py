@@ -20,7 +20,7 @@ from typer.testing import CliRunner
 from enso import db, doctor, runs, workspaces
 from enso.cli import app
 from enso.config import Config, Paths
-from enso.jobs import Job, parse_job, schedule_problem, validate
+from enso.jobs import Job, schedule_problem, validate
 from enso.jobs.runner import JobRunner
 
 BUNDLED = Path(workspaces.__file__).parent / "bundled" / "jobs" / "enso-audit"
@@ -92,10 +92,6 @@ def prerun(job: Job, paths: Paths, *, path: str | None = None) -> subprocess.Com
 
 
 def test_template_parses_and_validates(enso_home: Paths, config: Config, raw_config: dict) -> None:
-    raw, problems = parse_job("enso-audit", BUNDLED / "JOB.md")
-    assert raw is not None and problems == []  # the quoted placeholders keep the YAML valid
-    assert (raw.provider, raw.model, raw.effort) == ("{{provider}}", "{{model}}", "{{effort}}")
-
     job = seeded(enso_home, config)  # load_job asserts there are no problems
 
     assert validate(job, config) == [] and schedule_problem(job.schedule) is None
@@ -112,8 +108,8 @@ def test_template_parses_and_validates(enso_home: Paths, config: Config, raw_con
     assert "JOB.md" in job.prompt and "never guessed or rewritten" in job.prompt
 
     write_config(enso_home, raw_config)
-    db.migrate(enso_home)
-    shown = CliRunner().invoke(app, ["job", "show", "enso-audit"])
+    db.initialize(enso_home)
+    shown = CliRunner().invoke(app, ["job", "show", "default:enso-audit"])
     assert shown.exit_code == 0, shown.output
     assert "problem:" not in shown.output and "enabled: True" in shown.output
     listed = CliRunner().invoke(app, ["job", "list"])
@@ -190,6 +186,6 @@ async def test_seeded_job_runs_end_to_end(
     failed = await runner.run(job, trigger="schedule")
     assert (failed.status, failed.error) == ("prerun_error", f"{DOCTOR_FAILED} 2")
     assert transport.sent == [  # each distinct prerun failure is alerted once
-        ("C1", f"⚠️ [Enso audit] prerun failed\n{DOCTOR_FAILED} 1 without a report"),
-        ("C1", f"⚠️ [Enso audit] prerun failed\n{DOCTOR_FAILED} 2"),
+        ("C1", f"⚠️ [default:enso-audit] prerun failed\n{DOCTOR_FAILED} 1 without a report"),
+        ("C1", f"⚠️ [default:enso-audit] prerun failed\n{DOCTOR_FAILED} 2"),
     ]

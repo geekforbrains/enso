@@ -217,7 +217,7 @@ def repo_config(enso_home: Paths, raw_config_projects: dict, repo: Path) -> Conf
     raw_config_projects["projects"]["EN"]["repo"] = str(repo)
     write_config(enso_home, raw_config_projects)
     config = load_config(enso_home)
-    db.migrate(enso_home)
+    db.initialize(enso_home)
     return config
 
 

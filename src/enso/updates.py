@@ -32,7 +32,7 @@ from .maintenance import (
 )
 
 TERMINAL = frozenset({"succeeded", "failed", "rolled_back", "recovery_failed", "deferred"})
-# Only these files can be changed by release preparation/migrations. Workspaces,
+# Only these files can be changed by release preparation. Other workspace content,
 # repositories, browser profiles and provider sessions are never restored over.
 MIGRATION_PATHS = (
     "config.json",
@@ -40,7 +40,7 @@ MIGRATION_PATHS = (
     "enso.db-wal",
     "enso.db-shm",
     "skills",
-    "jobs",
+    "workspaces/default/jobs",
     "AGENTS.md",
     ".bundles.json",
     "slack",
@@ -418,6 +418,7 @@ def _drain(paths: Paths, state: dict[str, Any]) -> None:
 
 
 def _copy(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
     if source.is_symlink():
         destination.symlink_to(os.readlink(source))
     elif source.is_dir():
@@ -426,7 +427,14 @@ def _copy(source: Path, destination: Path) -> None:
         shutil.copy2(source, destination)
 
 
+def _check_snapshot_parents(paths: Paths) -> None:
+    for parent in (paths.home, paths.workspaces, paths.workspace("default")):
+        if parent.is_symlink():
+            raise UpdateError(f"{parent} must not be a symbolic link during a managed update")
+
+
 def _snapshot(paths: Paths, state: dict[str, Any]) -> None:
+    _check_snapshot_parents(paths)
     for name in ("config.json", "enso.db", "enso.db-wal", "enso.db-shm"):
         if (paths.home / name).is_symlink():
             raise UpdateError(f"{name} must not be a symbolic link during a managed update")
@@ -467,6 +475,7 @@ def _sync_snapshot(root: Path) -> None:
 
 
 def _restore(paths: Paths, state: dict[str, Any]) -> None:
+    _check_snapshot_parents(paths)
     directory = _operation_dir(paths, state["id"])
     backup = directory / "backup"
     snapshot = read_json(backup / "snapshot.json")
@@ -477,7 +486,9 @@ def _restore(paths: Paths, state: dict[str, Any]) -> None:
     for name in MIGRATION_PATHS:
         current = paths.home / name
         if current.exists() or current.is_symlink():
-            os.replace(current, failed / name)
+            destination = failed / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(current, destination)
         if name in snapshot["paths"]:
             _copy(backup / name, current)
             _sync_snapshot(current)
@@ -492,7 +503,7 @@ def prepare_home(paths: Paths) -> None:
     with service_receiver(paths):
         if paths.config.exists():
             config = load_config(paths)
-            db.migrate(paths)
+            db.initialize(paths)
             workspaces.reconcile_bundles(paths, config.defaults)
 
 

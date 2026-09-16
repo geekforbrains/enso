@@ -44,7 +44,8 @@ Product behaviour belongs in its owning page under `docs/`, starting with
   and mixed-run reads; `files.py` owns safe file browsing and Markdown rendering. Shared
   helpers do not import page models.
 - `src/enso/bundled/` — content shipped to an Enso home, not development instructions.
-  Files are laid out as they land and listed in
+  Shared files mirror their home paths; job and workspace templates land in their owning
+  workspace. Shipped files are listed in
   [`src/enso/workspaces.py`](../src/enso/workspaces.py). Add new shipped files in both places;
   keep their installation and update behaviour covered by tests.
 - `tests/` — automated tests; shared fixtures live in
