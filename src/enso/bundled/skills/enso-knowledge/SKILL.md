@@ -8,7 +8,7 @@ description: Find, create, update, organize, or import durable Markdown notes in
 Enso keeps knowledge in ordinary Markdown files. The viewer browses and links those files
 read-only; the agent writes them through the CLI. Use this skill for durable notes and
 reference material. Dated conversations and experiences belong in workspace memory, not
-knowledge; the forthcoming memory CLI handles historical recall. Promote a confirmed
+knowledge; the memory CLI handles historical recall. Promote a confirmed
 lasting fact into its owning knowledge note deliberately, keeping source context beside it.
 Workspace setup and bindings belong to `enso-workspace`; structured
 records belong to `enso-tables`.

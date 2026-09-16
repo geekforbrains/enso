@@ -12,8 +12,8 @@ rather than assembled by hand.
 ## Layout
 
 This layout is implemented on the 0.2.0 development branch, including workspace jobs.
-Heartbeat scripts also use their owning workspace; memory behavior remains forthcoming,
-as detailed in the [ownership layout](#ownership-in-020).
+Heartbeat scripts and Markdown memory also use their owning workspace; capture and
+harvesting remain forthcoming, as detailed in the [ownership layout](#ownership-in-020).
 
 ```text
 ~/.enso/workspaces/<name>/
@@ -22,7 +22,7 @@ as detailed in the [ownership layout](#ownership-in-020).
 ├── CLAUDE.md          # symlink -> AGENTS.md
 ├── skills/            # skills unique to this workspace
 ├── knowledge/         # durable reference material the agent should keep
-├── memory/            # dated memories (feature forthcoming)
+├── memory/            # dated Markdown memories
 ├── jobs/              # scheduled and stage jobs
 ├── projects/          # workspace project definitions and scripts
 ├── heartbeat/<REF>/   # optional; a beat's gate.sh and helpers
@@ -38,7 +38,7 @@ as detailed in the [ownership layout](#ownership-in-020).
 | --- | --- |
 | `knowledge/` | Durable reference owned by this workspace: notes, facts, and research worth finding again. |
 | `jobs/` | Scheduled and stage jobs, identified as `<workspace>:<job>`. |
-| `memory/` | Prepared root for forthcoming maintained memory. |
+| `memory/` | Dated Markdown conversations and experiences, maintained with `enso memory`. |
 | `projects/` | Project definitions and scripts, each under `<KEY>/`; see [Tasks](tasks.md#projects-and-stages). |
 | `heartbeat/` | Optional root, created only when workspace gate scripts are used. |
 | `WORKSPACE.md` | Optional settings; [Configuration](configuration.md#workspacemd-in-020) owns its format and reload behavior. |
@@ -79,9 +79,9 @@ retains its separately documented repair behavior.
 ## Ownership in 0.2.0
 
 **Target for 0.2.0.** Workspace paths, settings, projects, jobs, and Heartbeat scripts are
-implemented; memory behavior remains forthcoming. Workspace-owned files
-live under their workspace; the containing directory determines ownership. Installation
-settings remain in `config.json`, as described
+implemented, including manual Markdown memory; capture and harvesting remain forthcoming.
+Workspace-owned files live under their workspace; the containing directory determines
+ownership. Installation settings remain in `config.json`, as described
 in [Configuration](configuration.md#configuration-ownership-in-020).
 
 ```text
@@ -157,9 +157,9 @@ through preparation and queueing. Removing
 its binding or losing its workspace drops it before execution; the
 [connection access contract](connections.md#access-in-020) owns admission and notices. The
 shared resolver is used by task, project, workflow, job creation, Heartbeat creation,
-message sends, operational list commands, and knowledge. Knowledge adds `--shared` for
-explicit home-level reference; memory lookup remains forthcoming as identified in
-[CLI](cli.md#workspace-context-in-020). Enso sets `ENSO_WORKSPACE`
+message sends, operational list commands, knowledge, and memory. Knowledge adds `--shared`
+for explicit home-level reference; memory belongs only to a workspace.
+[CLI](cli.md#workspace-context-in-020) owns command syntax. Enso sets `ENSO_WORKSPACE`
 for its chat agents, jobs, and Heartbeat runs, and CLI calls they launch inherit it.
 Workspace-scoped CLI operations default to that value; an optional
 `--workspace` explicitly overrides it for that operation. This includes Heartbeat creation,

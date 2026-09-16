@@ -101,7 +101,8 @@ paired chat, valid configuration, and a successful provider reply are separate m
 
 **Partly implemented for 0.2.0:** workspace settings now use `WORKSPACE.md`, and the new
 workspace directories are scaffolded. Jobs, projects, and Heartbeat scripts now use the
-[workspace ownership layout](workspaces.md#ownership-in-020); memory behavior is forthcoming.
+[workspace ownership layout](workspaces.md#ownership-in-020). Workspace Markdown memory and
+its manual CLI are implemented; capture and harvesting remain forthcoming.
 Installation support
 files shown here keep their documented purpose and locations unless that layout explicitly
 changes them. Operational records stay in one home database; maintained knowledge and memory

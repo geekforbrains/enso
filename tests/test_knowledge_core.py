@@ -10,9 +10,9 @@ import pytest
 from typer.testing import CliRunner
 
 from enso import frontmatter, knowledge, locks
+from enso import note_storage as storage
 from enso.cli import app
 from enso.config import Paths
-from enso.knowledge import writing
 
 
 def put(paths, path, body, scope="general"):
@@ -200,7 +200,7 @@ def test_edit_refuses_to_write_an_update_before_document_creation(tmp_path, monk
     note = knowledge.create_note(paths, "general", "Page.md", "Original")
     target = paths.knowledge / note.path
     original = target.read_bytes()
-    monkeypatch.setattr(writing, "_timestamp", lambda: "2000-01-01T00:00:00Z")
+    monkeypatch.setattr(storage, "timestamp", lambda: "2000-01-01T00:00:00Z")
     with pytest.raises(knowledge.KnowledgeError, match="earlier than created"):
         knowledge.update_note(paths, "general", note.id, "Changed", expected_hash=note.sha256)
     assert target.read_bytes() == original
@@ -238,7 +238,7 @@ def test_publication_detects_a_direct_edit_during_write(tmp_path, monkeypatch):
     note = knowledge.create_note(paths, "general", "Page.md", "Original")
     target = paths.knowledge / note.path
     edited = target.read_text().replace("Original", "Human correction")
-    original_hash_at = writing._hash_at
+    original_hash_at = storage.hash_at
     calls = 0
 
     def concurrent_hash(directory, name):
@@ -248,7 +248,7 @@ def test_publication_detects_a_direct_edit_during_write(tmp_path, monkeypatch):
             target.write_text(edited)
         return original_hash_at(directory, name)
 
-    monkeypatch.setattr(writing, "_hash_at", concurrent_hash)
+    monkeypatch.setattr(storage, "hash_at", concurrent_hash)
     with pytest.raises(knowledge.KnowledgeError, match="changed during write"):
         knowledge.update_note(paths, "general", note.id, "Agent edit", expected_hash=note.sha256)
     assert target.read_text() == edited
@@ -380,7 +380,7 @@ def test_captured_root_cannot_follow_replaced_workspace_ancestor_on_read_or_writ
     with pytest.raises((OSError, knowledge.KnowledgeError)):
         knowledge.safe_path(root, "Note.md")
     with pytest.raises((OSError, knowledge.KnowledgeError)):
-        writing._publish(root, "Injected.md", "Unsafe", expected_hash=None)
+        storage.publish(root, "Injected.md", "Unsafe", expected_hash=None)
     assert secret.read_text() == "Outside data"
     assert not (outside / "knowledge/Injected.md").exists()
 
@@ -533,7 +533,7 @@ def test_failed_move_rolls_back_without_losing_notes(tmp_path, monkeypatch):
         put(paths, "Target.md", "Target"),
     ]
     originals = {file: file.read_bytes() for file in files}
-    publish = writing._publish
+    publish = storage.publish
     failed = False
 
     def fail_one(root, relative, text, *, expected_hash):
@@ -543,7 +543,7 @@ def test_failed_move_rolls_back_without_losing_notes(tmp_path, monkeypatch):
             raise OSError("simulated disk failure")
         publish(root, relative, text, expected_hash=expected_hash)
 
-    monkeypatch.setattr(writing, "_publish", fail_one)
+    monkeypatch.setattr(storage, "publish", fail_one)
     with pytest.raises(OSError, match="simulated"):
         knowledge.move_note(paths, "general", "Target", "Moved.md")
     assert all(file.read_bytes() == original for file, original in originals.items())
