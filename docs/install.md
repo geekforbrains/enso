@@ -139,12 +139,13 @@ after a crash. Everything else is in `~/.enso/enso.log`:
 
 ```bash
 enso logs -f
-enso logs --job meteor-forum-watch
+enso logs --job meteor:meteor-forum-watch
 enso logs --turn a1b2c3
 ```
 
-Editing `WORKSPACE.md` needs no restart. Editing `config.json` needs no restart for
-`bindings`, `defaults`, `providers`, `projects`, `agent`, `runs`, and `heartbeat`: the service reads the file again
+Editing workspace `WORKSPACE.md` or project `PROJECT.md` needs no restart.
+Editing `config.json` needs no restart for `bindings`, `defaults`, `providers`, `agent`,
+`runs`, and `heartbeat`: the service reads the file again
 for its next chat turn and scheduler tick, the same way `JOB.md` files are reloaded every
 minute. `transports` and `logging` are read when `enso serve` starts, so a change there
 needs `!restart` in chat or `enso service restart`; `web` is read when the viewer starts,

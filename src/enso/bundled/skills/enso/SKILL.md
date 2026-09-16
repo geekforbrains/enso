@@ -27,12 +27,15 @@ Enso's normal runtime state lives under one directory, `~/.enso` (or `$ENSO_HOME
 ├── .claude/skills -> ../skills
 ├── .agents/skills -> ../skills
 ├── workspaces/<name>/   # one directory per workspace: the agent's cwd and context
+│   ├── WORKSPACE.md     # optional agent and provider-argument overrides
+│   ├── knowledge/      # current reference owned by the workspace
+│   ├── memory/         # dated history owned by the workspace
+│   ├── projects/<KEY>/PROJECT.md # project definition and sibling scripts
 │   ├── jobs/<job>/JOB.md # workspace jobs, referenced as <workspace>:<job>
 │   └── heartbeat/<REF>/ # a beat's optional gate.sh and helpers
 ├── heartbeat/.locks/   # stable per-beat execution locks
-├── worktrees/<KEY>/<REF>/  # one Git worktree per task of a repo project
 ├── secrets/*.env        # KEY=value files exported into the service environment
-├── enso.db             # runs, messages, sessions, jobs, tasks, beats, registered tables
+├── enso.db             # captures, processing receipts, runs, messages, sessions, tasks, beats, tables
 ├── enso.log            # rotating log
 ├── runtime/             # managed releases, current link, installation receipt, update recovery
 └── cache/
@@ -41,6 +44,10 @@ Enso's normal runtime state lives under one directory, `~/.enso` (or `$ENSO_HOME
 ```
 
 The release installer writes a stable command into its selected bin directory. `enso service install` and `enso web install` write the operating system's user service units, and Antigravity may register a workspace in its own project catalog. `enso models` may reuse `$XDG_CACHE_HOME/opencode/models.json` (or `~/.cache/opencode/models.json` when that variable is unset or empty), but it only reads that external OpenCode cache and writes refreshes to Enso's own `cache/models.json`. Enso never modifies user-level instruction or skill files.
+
+New repository tasks use `<repo>/.worktrees/<REF>` unless their `PROJECT.md` selects another
+`worktree_root`; existing tasks retain their recorded paths. Read `enso-tasks` before preparing
+or managing task worktrees.
 
 The installed Enso release version is package metadata, also recorded in `runtime/install.json` for managed installs. It is separate from config and database schema versions. `runtime/current` selects the managed release; `runtime/update.json`, `runtime/operations/`, and the maintenance gate belong to the updater and must not be edited by hand.
 
@@ -64,6 +71,7 @@ Adding or editing a skill needs no Enso restart. The provider discovers skills t
 | --- | --- |
 | `enso-workspace` | The workspace layout, where files and skills go, bindings, the audit |
 | `enso-knowledge` | Shared and workspace Markdown notes, links, imports, and consistent user-defined formatting |
+| `enso-memory` | Earlier conversations, dated experiences, source captures, and deliberate corrections |
 | `enso-browser` | Persistent Chrome profiles, human login, and attaching browser tools |
 | `enso-skills` | Finding and installing official optional skills; authoring manual skills and choosing scope |
 | `enso-security` | Installation trust, provider permissions, credential handling, and untrusted input |
@@ -91,13 +99,14 @@ enso task add|list|show|advance|return|block|resume|release|edit|note|ref|land|s
 enso project list|add
 enso workspace list|create|audit     # see enso-workspace
 enso knowledge roots|list|search|show|audit|create|adopt|update|move  # see enso-knowledge
+enso memory list|search|show|source|create|update|audit|remove  # see enso-memory
 enso skill list [--available]        # installed home skills, or the official catalog
 enso skill show|install <name>       # see enso-skills; only geekforbrains/enso-skills
 enso config show|check|set|unset     # set PATH VALUE or unset PATH edits one key; see reload rules below
 enso models [--all] [--json]         # copy-ready OpenRouter model ids for OpenCode
-enso doctor                          # config, home, workspaces, providers, transports, services, jobs, heartbeat
+enso doctor                          # installation health, including knowledge and memory audits
 enso update check|apply|status|recover [--json]  # see enso-update before requesting an upgrade
-enso logs [-f] [--turn ID] [--job NAME]
+enso logs [-f] [--turn ID] [--job WORKSPACE:JOB]
 ```
 
 Message sends and job, run, message, Heartbeat, task, and project lists default to

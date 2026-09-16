@@ -360,6 +360,8 @@ is visible before it surprises you. Its own page carries the rest: what is bound
 that name it, its upload size, and every audit finding — which required directories exist,
 whether `CLAUDE.md` and the skill links are correct, whether any skill name collides.
 
+A workspace and its parent container must be real directories, matching CLI ownership;
+linked workspaces return 404. Directory summaries do not scan roots that escape the workspace.
 A workspace's `knowledge/` card opens its scope in [Knowledge](#knowledge). The existing
 file browser remains available over `knowledge/`, `drafts/`, and `uploads/`, with text and Markdown rendered
 in place. This is the "what files is the agent reading" view: it shows what is actually on
@@ -496,12 +498,15 @@ miserable to read in a chat message and fine to read in a browser.
 
 Every section of [`enso doctor`](cli.md): config validity, the home and workspace audits,
 provider paths and whether they resolve, transport extras, agent and optional viewer
-service state, every `JOB.md`, and current Heartbeat health. Heartbeat checks inspect
-saved state; they do not execute gates
-or start an assessment.
+service state, every `JOB.md`, current Heartbeat health, and knowledge/memory audits.
+Note findings include paths, counts, and commands for detailed scoped audits; they check
+structure and source validity, not factual truth. Heartbeat checks inspect saved state;
+they do not execute gates or start an assessment. Memory has no dedicated viewer page;
+recall and corrections use the [memory CLI](cli.md#memory).
 
 Every section gets the same block, problems first: a heading with its verdict, and a panel of
-what it found. A section with nothing to report says `No issues found` on a green row rather
+what it found. Sections retain their context line even when findings exist, including note
+counts and detailed audit commands. A section with nothing to report says `No issues found` on a green row rather
 than disappearing, so it is clear it was checked; what it checked — which providers, which
 workspaces — is the detail line on that row.
 

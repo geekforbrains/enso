@@ -123,11 +123,6 @@ class Paths:
         return self.home / "heartbeat"
 
     @property
-    def worktrees(self) -> Path:
-        """Per-task Git worktrees for repo projects: ``worktrees/<KEY>/<REF>``."""
-        return self.home / "worktrees"
-
-    @property
     def cache(self) -> Path:
         return self.home / "cache"
 

@@ -14,7 +14,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from conftest import load_job, write_config, write_job
 
-from enso import db, doctor, runs, service, workspaces
+from enso import db, doctor, memory, runs, service, workspaces
 from enso.config import Config, Paths, load_config
 from enso.web import Bind, files, views
 from enso.web.server import create_app
@@ -212,6 +212,9 @@ async def test_health_reports_every_section_database_and_log(
     client: TestClient, home: Home
 ) -> None:
     home.paths.log.write_text("".join(f"line {i}\n" for i in range(250)))
+    note = memory.create_note(
+        home.paths, "default", "Recall.md", "[Missing source](Missing.md)", occurred=None
+    )
     body = await page(client, "/health")
     for name in doctor.SECTIONS:
         assert f'id="section-{name}"' in body
@@ -249,6 +252,10 @@ async def test_health_reports_every_section_database_and_log(
     installed = section(body, "service")
     assert "<dd>no</dd>" in installed and '<dd><span class="muted">none</span></dd>' in installed
     assert "True" not in body and "False" not in body
+    notes = section(body, "memory")
+    assert str(home.paths.workspace_memory("default") / note.path) in notes
+    assert "missing link" in notes and "enso memory audit" in notes
+    assert "1 notes, 1 findings" in notes
 
 
 async def test_health_diagnoses_a_broken_config_and_database(
@@ -303,6 +310,32 @@ async def test_workspaces_list_and_detail(client: TestClient, home: Home) -> Non
     assert "Not found" in await page(client, "/workspaces/Bad%20Name", 404)
     assert views.workspace_model(home.paths, "..") is None  # clients normalise the URL
     assert views.workspace_model(home.paths, "../default") is None
+
+
+async def test_workspace_routes_refuse_linked_owners_and_do_not_scan_escaping_roots(
+    client, home, tmp_path, monkeypatch
+):
+    outside = tmp_path / "outside"
+    (outside / "knowledge").mkdir(parents=True)
+    (outside / "knowledge" / "Private.md").write_text("Outside the workspace")
+    home.paths.workspace("linked").symlink_to(outside, target_is_directory=True)
+    await page(client, "/workspaces/linked", 404)
+    await page(client, "/workspaces/linked/files/knowledge/Private.md", 404)
+
+    root = home.paths.workspace("default") / "uploads"
+    root.rmdir()
+    root.symlink_to(outside, target_is_directory=True)
+    scanned = []
+    original = files.tree_summary
+
+    def summary(path):
+        scanned.append(path)
+        return original(path)
+
+    monkeypatch.setattr(files, "tree_summary", summary)
+    await page(client, "/workspaces/default")
+    assert root not in scanned and outside not in scanned
+    await page(client, "/workspaces/default/files/uploads/knowledge/Private.md", 404)
 
 
 async def test_file_browser_lists_dotfiles_and_renders_safely(

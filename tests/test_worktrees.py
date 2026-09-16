@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import replace
 from pathlib import Path
 
@@ -265,27 +266,64 @@ def test_configured_roots_are_ignored_and_identity_survives_config_changes(
     assert worktrees.lookup(enso_home, "EN-001")["repo"] == str(repo)
 
 
-def test_legacy_registration_is_adopted_in_place_and_branch_mismatches_refused(
+def test_configured_registration_is_adopted_in_place_and_branch_mismatches_refused(
     enso_home: Paths,
     project_config: Config,
     repo: Path,
 ) -> None:
-    project = project_for(project_config, repo, base="main")
-    legacy = enso_home.worktrees / "EN" / "EN-001"
-    git(repo, "worktree", "add", "-b", "enso/EN-001", str(legacy), "main")
-    commit_file(legacy, "retained.py", "x = 2\n", "feat: retained")
+    project = project_for(project_config, repo, worktree_root="task-worktrees", base="main")
+    configured = repo / "task-worktrees" / "EN-001"
+    git(repo, "worktree", "add", "-b", "enso/EN-001", str(configured), "main")
+    commit_file(configured, "retained.py", "x = 2\n", "feat: retained")
     info = worktrees.prepare(enso_home, project, "EN-001")
-    assert info.path == legacy and not info.created
-    assert worktrees.lookup(enso_home, "EN-001")["path"] == str(legacy)
-    git(legacy, "checkout", "-q", "-b", "unrelated")
+    assert info.path == configured and not info.created
+    assert worktrees.lookup(enso_home, "EN-001")["path"] == str(configured)
+    git(configured, "checkout", "-q", "-b", "unrelated")
     with pytest.raises(WorktreeError, match="not the registered"):
         worktrees.prepare(enso_home, project, "EN-001")
-    assert (legacy / "retained.py").exists()
-    second = repo / ".worktrees" / "EN-002"
+    assert (configured / "retained.py").exists()
+    second = repo / "task-worktrees" / "EN-002"
     git(repo, "worktree", "add", "-b", "other-work", str(second), "main")
     with pytest.raises(WorktreeError, match="different branch"):
         worktrees.prepare(enso_home, project, "EN-002")
     assert worktrees.lookup(enso_home, "EN-002") is None
+
+
+def test_legacy_worktree_is_not_selected_adopted_or_removed(
+    enso_home: Paths, project_config: Config, repo: Path
+) -> None:
+    project = project_for(project_config, repo, base="main")
+    tasks.create(enso_home, project_config, "EN", "old task", actor=USER)
+    tasks.move(
+        enso_home, project_config, "EN-001", "drop", actor=USER, run_id=None, message="cancelled"
+    )
+    legacy = enso_home.home / "worktrees" / "EN" / "EN-001"
+    git(repo, "worktree", "add", "-b", "enso/EN-001", str(legacy), "main")
+    before = (legacy / "README.md").read_bytes()
+
+    assert worktrees.worktree_path(enso_home, project, "EN-001") == repo / ".worktrees" / "EN-001"
+    assert worktrees.sweep(enso_home, project) == []
+    with pytest.raises(WorktreeError, match="already checked out elsewhere"):
+        worktrees.prepare(enso_home, project, "EN-001")
+    assert worktrees.lookup(enso_home, "EN-001") is None
+    assert (legacy / "README.md").read_bytes() == before
+    assert str(legacy) in worktree_list(repo)
+
+
+def test_worktree_readers_refuse_an_obsolete_database_without_writes(
+    enso_home: Paths, project_config: Config, repo: Path
+) -> None:
+    old = Paths(enso_home.home / "old")
+    old.home.mkdir()
+    with sqlite3.connect(old.db) as con:
+        con.execute("CREATE TABLE preserved (value TEXT)")
+        con.execute("INSERT INTO preserved VALUES ('keep')")
+    before = old.db.read_bytes()
+    with pytest.raises(db.UnreadableDatabaseError, match=r"predates 0\.2\.0"):
+        worktrees.lookup(old, "EN-001")
+    with pytest.raises(db.UnreadableDatabaseError, match=r"predates 0\.2\.0"):
+        worktrees.sweep(old, project_for(project_config, repo))
+    assert old.db.read_bytes() == before
 
 
 def test_setup_context_and_ignored_copy_exclusions_with_fallback(

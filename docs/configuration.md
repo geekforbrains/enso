@@ -43,10 +43,6 @@ one message: "This Enso home predates 0.2.0; see the migration guide:" followed 
 changing the version number alone is not a migration. An old database or home-level
 `jobs/` directory is also refused with that message.
 
-Workspace job ownership and binding-only Telegram access are implemented. Project
-relocation remains forthcoming.
-The examples below describe the currently implemented schema until those tasks land.
-
 ### WORKSPACE.md in 0.2.0
 
 **Implemented on the 0.2.0 development branch.** The optional file contains YAML

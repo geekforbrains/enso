@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 from markdown_it import MarkdownIt
 from markupsafe import Markup
 
-from ..config import Paths, valid_workspace_name
+from ..config import Paths, require_workspace
 
 ROOTS = ("knowledge", "drafts", "uploads")
 MAX_FILE_PREVIEW_BYTES = 2 * 1024 * 1024
@@ -96,11 +96,14 @@ def resolve(paths: Paths, workspace: str, root: str, relative: str) -> Resolved:
     Raises ``PathRejectedError`` for anything outside, and ``FileNotFoundError`` when the
     workspace or the root does not exist. The target itself may be missing.
     """
-    if not valid_workspace_name(workspace) or root not in ROOTS:
+    if root not in ROOTS:
         raise PathRejectedError(f"{workspace}/{root}")
     parts = split_relative(relative)
-    workspace_dir = paths.workspace(workspace).resolve(strict=True)
-    root_dir = (paths.workspace(workspace) / root).resolve(strict=True)
+    try:
+        workspace_dir = require_workspace(paths, workspace).resolve(strict=True)
+    except ValueError as exc:
+        raise PathRejectedError(str(exc)) from exc
+    root_dir = (workspace_dir / root).resolve(strict=True)
     if not root_dir.is_relative_to(workspace_dir):
         raise PathRejectedError(f"{root}/ leaves the workspace")
     target = root_dir.joinpath(*parts).resolve(strict=False)

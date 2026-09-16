@@ -225,14 +225,14 @@ async def test_detail_count_failures_remain_visible(client, saved, monkeypatch, 
 async def test_history_names_the_actor_and_keeps_the_recorded_value(client, saved):
     current = beat(saved)
     heartbeat.note(saved, current.ref, "A person asked", actor="slack:U0AETSSDDEF")
-    heartbeat.note(saved, current.ref, "A job looked", actor="job:nightly")
+    heartbeat.note(saved, current.ref, "A job looked", actor="job:default:nightly")
     heartbeat.record_check(saved, current.ref, "error", error="Source login expired")
     body = await page(client, f"/heartbeats/{current.ref}/history")
     # The summary says a person did this from Slack; the member ID is meaningless there.
     assert "<span>via Slack</span>" in body
     assert "<span>slack:U0AETSSDDEF</span>" not in body
     # Other origins already read, so they are shown exactly as recorded.
-    assert "<span>job:nightly</span>" in body and "<span>heartbeat</span>" in body
+    assert "<span>job:default:nightly</span>" in body and "<span>heartbeat</span>" in body
     # The expanded body is the record: it keeps the raw value.
     assert "<dt>Actor</dt><dd>slack:U0AETSSDDEF</dd>" in body
     Anchors().feed(body)

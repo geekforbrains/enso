@@ -32,7 +32,7 @@
 {% set passing = report.sections|selectattr('status', 'equalto', 'ok')|list %}
 
 {% if not failing %}
-{{ m.verdict('ok', '✓', 'Every check passes', 'config, home, workspaces, providers, transports, service, and jobs') }}
+{{ m.verdict('ok', '✓', 'Every check passes', report.sections|map(attribute='name')|join(', ')|replace('_', ' ')) }}
 {% endif %}
 
 {# Every section gets the same block, problems first: a heading with its verdict and a
@@ -47,13 +47,16 @@
   <div class="shead">
     <h2 id="section-{{ entry.name }}">{{ entry.name|replace('_', ' ')|capitalize }}</h2>
     <span class="right{{ ' bad' if entry.status == 'error' }}{{ ' warn' if entry.status == 'warning' }}">
-      {% if found %}{{ found }} {{ entry.status }}{{ 's' if found != 1 }}{% else %}ok{% endif %}
+      {{ entry.summary }}
     </span>
   </div>
   <div class="panel rows">
     {% if found %}
     {% for problem in entry.problems %}{{ m.finding_row('error', problem) }}{% endfor %}
     {% for warning in entry.warnings %}{{ m.finding_row('warning', warning) }}{% endfor %}
+    {% if entry.note %}
+    <div class="row entity"><span class="pin"></span><span class="body"><span class="detail">{{ entry.note }}</span></span></div>
+    {% endif %}
     {% elif entry.skipped %}
     {{ m.finding_row('warning', 'Skipped until config.json is valid.') }}
     {% else %}

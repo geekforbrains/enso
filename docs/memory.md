@@ -314,6 +314,18 @@ when asked what the team discussed, Enso finds that note and does not present th
 as a confirmed launch date. A confirmed current date can be deliberately promoted into the
 owning knowledge note, retaining its source context.
 
+Common requests do not require storage terminology:
+
+- “What did we say about the launch?” searches memory and checks the relevant sources,
+  even in a fresh chat session.
+- “Remember that we agreed to Friday” records the dated agreement, keeping a proposal
+  distinct from a confirmed decision; a lasting current date can also update knowledge.
+- “That recollection is wrong” adds a correction with its context instead of changing
+  the original occurrence to today.
+- “Remove that memory” previews the specific note and requires confirmation before
+  removing it; source captures and completed processing receipts remain, so a later sweep
+  does not recreate it. See [Retention and removal](#retention-and-removal).
+
 ### Harvesting schedule and bounds
 
 Every workspace has an enabled job named **`memory`**, referenced as `<workspace>:memory`,

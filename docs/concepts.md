@@ -74,7 +74,6 @@ Enso's runtime state lives under one directory:
 ├── .agents/skills       # symlink -> ../skills
 ├── workspaces/<name>/   # one directory per workspace
 ├── heartbeat/.locks/   # stable per-beat execution locks
-├── worktrees/           # legacy task worktrees retained during migration; new defaults live by the repo
 ├── secrets/*.env        # KEY=value files exported into the service environment
 ├── enso.db             # captures, runs, messages, sessions, jobs, tasks, beats, user tables
 ├── enso.log            # rotating log
@@ -99,11 +98,11 @@ Enso's runtime state lives under one directory:
 [Connections](connections.md) owns the pairing lifecycle and private state. Prepared home,
 paired chat, valid configuration, and a successful provider reply are separate milestones.
 
-**Partly implemented for 0.2.0:** workspace settings now use `WORKSPACE.md`, and the new
+**Implemented for 0.2.0:** workspace settings use `WORKSPACE.md`, and the
 workspace directories are scaffolded. Jobs, projects, and Heartbeat scripts now use the
 [workspace ownership layout](workspaces.md#ownership-in-020). Workspace Markdown memory and
-its manual CLI and live conversation capture are implemented; harvesting remains
-forthcoming. Installation support files shown here keep their documented purpose and
+its manual CLI, live conversation capture, and harvesting follow that ownership.
+Installation support files shown here keep their documented purpose and
 locations unless that layout explicitly changes them. Operational records stay in one home
 database; maintained knowledge and memory stay in Markdown.
 

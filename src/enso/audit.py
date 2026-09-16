@@ -36,7 +36,6 @@ EXPECTED_ENTRIES = frozenset(
         "AGENTS.md",
         "WORKSPACE.md",
         "heartbeat",
-        "worktrees",
         *workspaces.WORKSPACE_DIRS,
         *(link.split("/")[0] for link, _ in workspaces.LINKS),
         ".codex",

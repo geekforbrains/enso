@@ -36,7 +36,7 @@ def test_doctor_facts_are_drawn_as_what_they_are() -> None:
     [
         ("slack:U0AETSSDDEF", "via Slack"),
         ("telegram:8140", "via Telegram"),
-        ("job:nightly", "job:nightly"),
+        ("job:default:nightly", "job:default:nightly"),
         ("beat:HB-001", "beat:HB-001"),
         ("user:gavin", "user:gavin"),
         ("heartbeat", "heartbeat"),

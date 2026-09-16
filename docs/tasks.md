@@ -423,10 +423,11 @@ Change the configuration between active runs; already-created tasks keep their r
 path, while new tasks use the new root.
 
 Changing the project configuration does not move, forget, or retarget an existing task's
-worktree. Registered legacy directories under `~/.enso/worktrees/<KEY>/<REF>` are adopted
-in place, preserving branches and local files. A registration on a different branch or an
-unregistered directory with content is refused, with the directory left untouched. Missing
-worktrees can reattach their recorded branch at the recorded path.
+worktree. Preparation can record an existing registration at the configured path when its
+branch matches the task. A registration on a different branch or an unregistered directory
+with content is refused, with the directory left untouched. Missing worktrees can reattach
+their recorded branch at the recorded path. Enso does not search or adopt old home-level
+worktree locations.
 
 ### Preparation
 
