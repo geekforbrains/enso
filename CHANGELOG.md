@@ -7,6 +7,11 @@ All notable changes to Enso are documented here, following
 
 ### Changed
 
+- Heartbeat gates and helpers now live under their saved workspace's `heartbeat/<REF>/`.
+  Creation requires `--workspace` or `ENSO_WORKSPACE`; JSON `workspace` fields and transfers
+  of existing beats are rejected. Scheduling, run history, action receipts, and script
+  cleanup retain the recorded owner through restarts and context changes.
+
 - Projects now live in workspace `projects/<KEY>/PROJECT.md` files; duplicate keys and the
   old `projects` config block are rejected. Setup, checks, command stages, and lifecycle
   scripts run beside the definition, with task code in `ENSO_TASK_DIR`. Task commands select

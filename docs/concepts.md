@@ -73,7 +73,7 @@ Enso's runtime state lives under one directory:
 ├── .claude/skills       # symlink -> ../skills, discovered by the provider CLIs
 ├── .agents/skills       # symlink -> ../skills
 ├── workspaces/<name>/   # one directory per workspace
-├── heartbeat/<HB-ref>/  # optional gate.sh and helpers for one beat
+├── heartbeat/.locks/   # stable per-beat execution locks
 ├── worktrees/           # legacy task worktrees retained during migration; new defaults live by the repo
 ├── secrets/*.env        # KEY=value files exported into the service environment
 ├── enso.db             # runs, messages, sessions, jobs, tasks, beats, registered tables
@@ -100,8 +100,8 @@ Enso's runtime state lives under one directory:
 paired chat, valid configuration, and a successful provider reply are separate milestones.
 
 **Partly implemented for 0.2.0:** workspace settings now use `WORKSPACE.md`, and the new
-workspace directories are scaffolded. Jobs and projects now use the workspace paths; memory
-and Heartbeat scripts will use the [workspace ownership layout](workspaces.md#ownership-in-020).
+workspace directories are scaffolded. Jobs, projects, and Heartbeat scripts now use the
+[workspace ownership layout](workspaces.md#ownership-in-020); memory behavior is forthcoming.
 Installation support
 files shown here keep their documented purpose and locations unless that layout explicitly
 changes them. Operational records stay in one home database; maintained knowledge and memory

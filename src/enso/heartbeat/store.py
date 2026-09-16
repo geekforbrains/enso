@@ -319,6 +319,8 @@ def update(
         raise HeartbeatError(f"no beat {ref}")
     _open(current)
     _revision(current, expected_revision)
+    if "workspace" in patch and patch["workspace"] != current.workspace:
+        raise HeartbeatError("a beat's recorded workspace cannot be changed")
     raw = current.definition.as_dict()
     raw.update(patch)
     definition = validate_definition(
@@ -1248,8 +1250,8 @@ def notice_outbox(paths: Paths, source: str) -> int | None:
         return row["id"] if row else None
 
 
-def prune(config: Config, *, now: datetime | None = None) -> list[str]:
-    """Prune closed history under its beat locks; return directory names for safe cleanup."""
+def prune(config: Config, *, now: datetime | None = None) -> list[Beat]:
+    """Prune closed history under its locks, retaining owners for script cleanup."""
     if not config.heartbeat.enabled:
         return []
     stamp = datetime.fromisoformat(utc(now)) - timedelta(days=config.heartbeat.retention_days)
@@ -1257,11 +1259,11 @@ def prune(config: Config, *, now: datetime | None = None) -> list[str]:
         if con is None:
             return []
         rows = con.execute(
-            """SELECT id FROM _enso_beats WHERE state IN ('fulfilled', 'cancelled', 'expired')
+            """SELECT * FROM _enso_beats WHERE state IN ('fulfilled', 'cancelled', 'expired')
                AND closed_at < ? AND claim_run_id IS NULL ORDER BY id""",
             (utc(stamp),),
         ).fetchall()
-    removed: list[str] = []
+    removed: list[Beat] = []
     for row in rows:
         ref = f"HB-{row['id']:03d}"
         lock = acquire_lock(config.paths, ref)
@@ -1274,5 +1276,5 @@ def prune(config: Config, *, now: datetime | None = None) -> list[str]:
                 (row["id"], utc(stamp)),
             )
             if deleted.rowcount:
-                removed.append(ref)
+                removed.append(_beat(row))
     return removed

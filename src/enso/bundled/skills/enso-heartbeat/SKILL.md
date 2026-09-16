@@ -25,8 +25,10 @@ Do not make the user choose between internal system names. Resolve relative date
 user's timezone and the current time.
 
 Create with `enso heartbeat create --file FILE --json`; `--file -` reads JSON from stdin.
-Required fields are `title`, `instructions`, `completion`, and `allowed_actions`; `workspace`
-defaults to the current workspace. Choose exactly one time source:
+The workspace comes from `ENSO_WORKSPACE`, with optional `--workspace` overriding it; it
+must exist. Missing context is an error. Do not put `workspace` in JSON definitions or
+updates. Required fields are `title`, `instructions`, `completion`, and `allowed_actions`.
+Choose exactly one time source:
 
 - `at`: a timestamp with an explicit UTC offset for one future action.
 - `schedule`: five-field cron for repeated checks, with the user's IANA `timezone`.
@@ -50,8 +52,10 @@ to choose a complete configured provider/model/effort triple. Optional `followup
 first `at` time. Include a deadline when the action would
 become inappropriate after that time.
 
-Creation is paused and returns its reference and directory. Create that directory and write
-`gate.sh` and any helpers there. Verify source access with a read-only probe; do not send
+Creation is paused and returns its reference and directory under
+`$ENSO_HOME/workspaces/<workspace>/heartbeat/<REF>/`. Create that directory only when adding
+`gate.sh` and helpers. The saved workspace owns the beat for its lifetime; updates cannot
+transfer it. Verify source access with a read-only probe; do not send
 tomorrow's email as a creation test. `enso heartbeat resume REF --json` validates the
 definition and shell syntax without executing the gate or proving account access.
 

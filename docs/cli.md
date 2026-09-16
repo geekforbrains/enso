@@ -284,16 +284,15 @@ it never deletes. The command exits 1 while any error remains; warnings alone ex
 
 ### Workspace context in 0.2.0
 
-**Partly implemented in 0.2.0.** Job creation and task, project, and workflow commands use
-the shared resolver; adoption by Heartbeat and other context-sensitive commands remains forthcoming.
+**Partly implemented in 0.2.0.** Job and Heartbeat creation and task, project, and workflow
+commands use the shared resolver; other context-sensitive lists and searches remain forthcoming.
 Workspace-scoped commands use `ENSO_WORKSPACE`,
 inherited from the Enso chat agent, job, or Heartbeat run calling them. Optional `--workspace` overrides it
 for that operation. The [context contract](workspaces.md#context-selection-in-020) owns
 validation and recorded ownership; there is no directory inference or implicit `default`.
 Installation-wide commands retain their installation scope.
 
-For an agent running with `ENSO_WORKSPACE=team`, task commands select context as shown
-below; Heartbeat creation remains forthcoming:
+For an agent running with `ENSO_WORKSPACE=team`, commands select context as shown below:
 
 ```bash
 enso task list                         # team
@@ -305,8 +304,7 @@ enso heartbeat create --file beat.json --workspace personal
 An explicit invalid workspace errors instead of falling back to the environment; absent
 context errors when an operation needs a workspace. `--workspace` does not change the
 caller's environment or transfer an existing record. It introduces no special admin role.
-These examples become executable as the corresponding commands are updated; current
-command syntax is listed below and in runtime help.
+Command syntax is listed below and in runtime help.
 
 ## Knowledge
 
@@ -419,7 +417,7 @@ contract at the top of this page; they never run code from the catalog.
 
 ```bash
 enso heartbeat status [--json]
-enso heartbeat create --file FILE [--json]
+enso heartbeat create --file FILE [--workspace W] [--json]
 enso heartbeat update REF --file FILE [--if-revision N] [--json]
 enso heartbeat list [--all] [--state STATE] [--workspace W] [--limit N] [--offset N] [--json]
 enso heartbeat show REF [--json]
@@ -435,8 +433,10 @@ enso heartbeat action-result REF KEY --status STATUS --message TEXT [--receipt T
 
 Heartbeat handles finite deferred work. [Heartbeat](heartbeat.md) owns its definition fields,
 lifecycle, gate convention, history, and retention. JSON definition files can be read from
-stdin with `--file -`. Creation is paused; the agent writes and validates any gate before
-`resume`. No creation or validation command performs the future action.
+stdin with `--file -`. Creation resolves `--workspace` or `ENSO_WORKSPACE` and saves that
+owner; `workspace` is rejected in JSON definitions and updates. Creation is paused; the
+agent writes and validates any gate in the returned workspace directory before `resume`.
+No creation or validation command performs the future action.
 
 Current instructions live in the beat record. `history` is paginated; a normal page is newest
 first, while `--after` and `--unhandled` read forward. `show` includes a history pointer and

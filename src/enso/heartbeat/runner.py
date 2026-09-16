@@ -18,7 +18,7 @@ from functools import partial
 from typing import Any
 
 from .. import db, execution, messages, routing
-from ..config import Config, ConfigError, load_config
+from ..config import Config, ConfigError, load_config, require_workspace
 from ..providers import make_provider
 from ..transports import Transport
 from . import store
@@ -375,7 +375,7 @@ class HeartbeatRunner:
             env.pop("ENV", None)
             stdout, stderr, code, timed_out = await execution.run_process(
                 ["/bin/bash", "--noprofile", "--norc", "gate.sh"],
-                cwd=self.paths.heartbeat / beat.ref,
+                cwd=self.paths.workspace_heartbeat(beat.workspace) / beat.ref,
                 env=env,
                 timeout=beat.gate_timeout,
                 merge_stderr=False,
@@ -547,9 +547,17 @@ class HeartbeatRunner:
                 return
 
     def _prune(self, config: Config, now: datetime) -> None:
-        for ref in store.prune(config, now=now):
-            root = self.paths.heartbeat
-            directory = root / ref
+        for beat in store.prune(config, now=now):
+            root = self.paths.workspace_heartbeat(beat.workspace)
+            directory = root / beat.ref
+            try:
+                require_workspace(self.paths, beat.workspace)
+            except ValueError:
+                log.warning(
+                    "heartbeat %s retained scripts in an unavailable workspace during pruning",
+                    beat.ref,
+                )
+                continue
             if not directory.exists():
                 continue
             if (
@@ -557,9 +565,9 @@ class HeartbeatRunner:
                 or directory.is_symlink()
                 or directory.resolve().parent != root.resolve()
             ):
-                log.warning("heartbeat %s retained an unsafe script path during pruning", ref)
+                log.warning("heartbeat %s retained an unsafe script path during pruning", beat.ref)
                 continue
             try:
                 shutil.rmtree(directory)
             except OSError:
-                log.warning("heartbeat %s could not remove its old script directory", ref)
+                log.warning("heartbeat %s could not remove its old script directory", beat.ref)
