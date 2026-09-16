@@ -3,14 +3,22 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import json
 import os
 from datetime import datetime
 from pathlib import Path
 
 import pytest
-from conftest import PROJECTS, FakeTransport, git, load_job, write_config, write_job
+from conftest import (
+    PROJECTS,
+    FakeTransport,
+    edit_project,
+    git,
+    load_job,
+    write_config,
+    write_job,
+    write_project,
+)
 from typer.testing import CliRunner
 
 from enso import db, runs, tasks, worktrees
@@ -457,12 +465,11 @@ def test_create_job_for_a_stage_needs_no_schedule(enso_home: Paths, project_conf
 @pytest.fixture
 def stage_config(enso_home: Paths, raw_config_both: dict, fake_claude: str, repo: Path) -> Config:
     """Both projects with ``EN`` bound to a real repository, the fake CLI, and the schema ready."""
-    raw_config_both["projects"] = copy.deepcopy(PROJECTS)
-    raw_config_both["projects"]["EN"] |= {
-        "repo": str(repo),
-        "copy": [".env"],
-        "setup": "echo ran > setup.txt",
-    }
+    for key, fields in PROJECTS.items():
+        write_project(enso_home, key, fields)
+    edit_project(
+        enso_home, repo=str(repo), copy=[".env"], setup='echo ran > "$ENSO_TASK_DIR/setup.txt"'
+    )
     raw_config_both["providers"]["claude"]["path"] = fake_claude
     raw_config_both["agent"]["timeout"] = 5
     config, problems, _ = parse_config(raw_config_both, enso_home)
@@ -640,7 +647,7 @@ async def test_a_handoff_keeps_the_claim_released_and_sweeps_a_finished_task(
 async def test_a_worktree_that_cannot_be_prepared_fails_the_run_and_releases(
     enso_home: Paths, stage_config: Config, raw_config_both: dict
 ) -> None:
-    raw_config_both["projects"]["EN"]["setup"] = "echo broken >&2; exit 3"
+    edit_project(enso_home, setup="echo broken >&2; exit 3")
     config, problems, _ = parse_config(raw_config_both, enso_home)
     assert config is not None, problems
     runner = JobRunner(config, {"slack": FakeTransport()})
@@ -685,7 +692,7 @@ async def test_stopping_a_stage_run_during_setup_keeps_ownership_until_setup_sto
     # The setup blocks until the test says so: a cancel cannot stop the thread it runs in,
     # and the loop's teardown would otherwise wait for a fixed sleep to end.
     go = enso_home.home / "setup-may-finish"
-    raw_config_both["projects"]["EN"]["setup"] = f"while [ ! -e {go} ]; do sleep 0.05; done"
+    edit_project(enso_home, setup=f"while [ ! -e {go} ]; do sleep 0.05; done")
     config, problems, _ = parse_config(raw_config_both, enso_home)
     assert config is not None, problems
     runner = JobRunner(config, {"slack": FakeTransport()})

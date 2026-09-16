@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 import pytest
-from conftest import commit_file, write_config
+from conftest import commit_file, edit_project
 
 from enso import tasks, workflows, worktrees
 from enso.config import Config, Paths, load_config
@@ -15,21 +15,16 @@ from enso.config import Config, Paths, load_config
 
 @pytest.fixture
 def repo_config(enso_home, project_config, repo):
-    raw = project_config.raw.copy()
-    raw["projects"] = {**raw["projects"], "EN": {**raw["projects"]["EN"], "repo": str(repo)}}
-    write_config(enso_home, raw)
+    edit_project(enso_home, repo=str(repo))
     return load_config(enso_home)
 
 
 def configure(paths: Paths, config: Config, *, checks=(), max_repairs=2, hooks=None, stages=None):
-    raw = config.raw.copy()
-    raw["projects"] = {**raw["projects"]}
-    raw["projects"]["EN"] = {
-        **raw["projects"]["EN"],
-        "stages": stages or [{"name": "work", "checks": list(checks), "max_repairs": max_repairs}],
-        "hooks": hooks or {},
-    }
-    write_config(paths, raw)
+    edit_project(
+        paths,
+        stages=stages or [{"name": "work", "checks": list(checks), "max_repairs": max_repairs}],
+        hooks=hooks or {},
+    )
     return load_config(paths)
 
 
@@ -66,7 +61,9 @@ async def test_simple_non_git_submission_waits_for_acceptance(enso_home, project
 @pytest.mark.asyncio
 async def test_real_failure_repairs_and_records_each_candidate(enso_home, repo_config):
     config = configure(
-        enso_home, repo_config, checks=[{"name": "unit", "command": "test -f feature.py"}]
+        enso_home,
+        repo_config,
+        checks=[{"name": "unit", "command": 'test -f "$ENSO_TASK_DIR/feature.py"'}],
     )
     task = held(enso_home, config)
     submit(enso_home, config, task.ref)
@@ -162,7 +159,9 @@ async def test_failed_budget_survives_run_restart_and_manual_resume(enso_home, p
 @pytest.mark.asyncio
 async def test_changed_candidate_during_check_is_not_accepted(enso_home, repo_config):
     config = configure(
-        enso_home, repo_config, checks=[{"name": "mutator", "command": "echo changed >> README.md"}]
+        enso_home,
+        repo_config,
+        checks=[{"name": "mutator", "command": 'echo changed >> "$ENSO_TASK_DIR/README.md"'}],
     )
     task = held(enso_home, config)
     submit(enso_home, config, task.ref)
@@ -244,7 +243,7 @@ async def test_lifecycle_is_durable_blocks_next_stage_and_has_stable_event_id(
     failed = workflows.event_history(enso_home, task.ref)[0]
     assert failed["status"] == "failed" and failed["output"] == before["event_id"]
     assert tasks.get(enso_home, task.ref).stage == "review"
-    (enso_home.workspace("default") / "ready").touch()
+    (enso_home.project("default", "EN") / "ready").touch()
     await workflows.drain_events(enso_home, config)
     done = workflows.event_history(enso_home, task.ref)[0]
     assert done["event_id"] == before["event_id"] and done["status"] == "delivered"

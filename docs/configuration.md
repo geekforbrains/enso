@@ -4,15 +4,14 @@ Enso's configuration and normal runtime state live under one home directory, `~/
 unless `ENSO_HOME` is set. See [Concepts](concepts.md#home) for the layout and the
 integration-specific user-level state Enso may inspect or create.
 
-`enso config check` validates installation and workspace settings and lists every problem
-at once; `enso serve` refuses to start on a problem. `enso config show` prints `config.json`
+`enso config check` validates installation, workspace, and project settings and lists every
+problem at once; `enso serve` refuses to start on a problem. `enso config show` prints `config.json`
 with tokens redacted.
 
 ## Configuration ownership in 0.2.0
 
-**Partly implemented on the 0.2.0 development branch.** Workspace settings now live in
-`WORKSPACE.md`; `config.json` retains installation settings and, temporarily, project
-definitions. Jobs also live in their workspaces; project relocation remains forthcoming.
+Workspace settings live in `WORKSPACE.md`, projects in `PROJECT.md`, and jobs in `JOB.md`.
+`config.json` contains installation settings only.
 
 | Setting | Owning file in 0.2.0 |
 | --- | --- |
@@ -23,8 +22,7 @@ definitions. Jobs also live in their workspaces; project relocation remains fort
 
 For example, `workspaces/team/WORKSPACE.md` holds `team`'s agent override, while
 `"bindings": { "slack:C0123": "team" }` stays in `config.json`. The `workspaces` and `projects`
-blocks are removed from config in 0.2.0; `workspaces` is already rejected. `WORKSPACE.md` is
-optional: without it the workspace uses the installation defaults. Its settings are read
+blocks are rejected in `config.json`. `WORKSPACE.md` is optional: without it the workspace uses the installation defaults. Its settings are read
 fresh like bindings. The formats are [WORKSPACE.md](#workspacemd-in-020) and
 [PROJECT.md](#projectmd-in-020) below.
 The [workspace layout](workspaces.md#ownership-in-020) owns paths, project scripts, qualified
@@ -96,9 +94,8 @@ Configuration checks read settings from every discovered workspace, including un
 
 ### PROJECT.md in 0.2.0
 
-**Forthcoming in 0.2.0.** YAML frontmatter contains the existing [project fields](#projects)
-except `workspace`: `name`, `repo`, `stages`, `base`, `worktree_root`, `setup`, `copy`,
-`max_concurrency`, `hooks`, and `script_timeout`. `name` and `stages` are required; the
+YAML frontmatter contains the [project fields](#projects): `name`, `repo`, `stages`, `base`,
+`worktree_root`, `setup`, `copy`, `max_concurrency`, `hooks`, and `script_timeout`. `name` and `stages` are required; the
 remaining fields retain their existing optionality and defaults. Stage and check objects
 retain the fields, validation, and defaults in that section. There is no additional
 `key`, `workspace`, or schema-version field. Unknown fields are errors.
@@ -164,7 +161,7 @@ in an update's snapshot.
 
 `enso config set PATH VALUE` stores one value in the current `config.json` and
 `enso config unset PATH` removes one key. `PATH` is dotted: each segment is an object key,
-so a provider, binding, or project name is just a segment, and `set` creates
+so a provider or binding name is just a segment, and `set` creates
 the objects on the way when they are missing. `VALUE` is JSON; text that is not valid JSON
 is stored as a string, so `enso config set defaults.model opus` and
 `enso config set providers.claude.args '[]'` both do what they look like. Quote a
@@ -178,11 +175,11 @@ path. Neither command prints the document or a value.
 
 ### While the service runs
 
-`enso serve` checks `config.json` and workspace settings before each chat turn, each job
+`enso serve` checks `config.json`, workspace settings, and project definitions before each chat turn, each job
 scheduler tick, and whenever a transport or chat command resolves a binding. Files are
 parsed again when they change, including creation, replacement, or removal of
-`WORKSPACE.md`. Thus `bindings`, `defaults`, `providers`, `projects`, `agent`, `runs`,
-`heartbeat`, and workspace overrides take effect on the next turn or tick without a
+`WORKSPACE.md` or `PROJECT.md`. Thus `bindings`, `defaults`, `providers`, `agent`, `runs`,
+`heartbeat`, workspace overrides, and project definitions take effect on the next turn or tick without a
 restart, however the file was written. A turn or
 job run keeps the snapshot it started with; a queued message runs in the workspace it was
 bound to when it arrived, and is dropped with a notice if that binding is removed before it
@@ -251,10 +248,6 @@ which accepts strict JSON.
                 "args": ["--dangerously-skip-permissions"] },
     "opencode": { "path": "opencode", "models": ["openrouter/deepseek/deepseek-v4-flash"],
                   "args": ["--auto"] }
-  },
-  "projects": {                             // task board projects; see Tasks
-    "EN": { "name": "Enso", "workspace": "dev", "repo": "~/Projects/enso",
-            "stages": ["triage", "todo", "review"], "setup": ".dev/prepare", "copy": [".env"] }
   },
   "agent":   { "timeout": 3600 },           // seconds per interactive turn
   "logging": { "level": "INFO", "max_bytes": 10485760, "backups": 5 },
@@ -470,64 +463,31 @@ workspace — so it is yours to add, not Enso's.
 
 ## Projects
 
-`projects` declares the [task board's projects](tasks.md), keyed by the prefixes used in
-references (`EN` gives `EN-001`). The section is optional. `enso project add` creates a
-project; `enso workflow init` configures a preset and jobs. Both validate configuration
-and use its atomic writer. Direct file edits use the same schema.
+Projects are discovered as `workspaces/<workspace>/projects/<KEY>/PROJECT.md` and keyed by
+installation-unique prefixes (`EN` gives `EN-001`). `enso project add` creates a definition;
+`enso workflow init` edits it and creates disabled stage jobs. Both validate before writing
+atomically under the shared configuration writer lock. Direct edits use the same schema.
+Neither command rewrites `config.json`; unknown fields, unreadable files, unsafe paths, and
+duplicate keys are reported with their source paths by `config check` and `doctor`.
+Project edits and additions are reloaded with workspace settings for the next turn or tick.
 
-A minimal non-Git project is:
+A minimal non-Git `PROJECT.md` is:
 
-```json
-"projects": {
-  "EX": { "name": "Example", "workspace": "default", "stages": ["work"] }
-}
+```yaml
+---
+name: Example
+stages: [work]
+---
 ```
 
-Checks and Git are optional. A development project can use:
-
-```json
-"projects": {
-  "APP": {
-    "name": "Application",
-    "workspace": "dev",
-    "repo": "~/Projects/app",
-    "base": "main",
-    "worktree_root": ".worktrees",
-    "max_concurrency": 3,
-    "setup": "npm ci",
-    "stages": [
-      { "name": "plan", "worktree": false },
-      {
-        "name": "implement",
-        "max_repairs": 2,
-        "checks": [
-          { "name": "lint", "command": "npm run lint", "timeout": 600 },
-          { "name": "tests", "command": "npm test", "timeout": 600 }
-        ]
-      },
-      { "name": "review", "return_to": "implement", "max_returns": 2 },
-      {
-        "name": "integrate", "integrate": true,
-        "checks": [
-          { "name": "lint", "command": "npm run lint", "timeout": 600 },
-          { "name": "tests", "command": "npm test", "timeout": 600 }
-        ]
-      }
-    ],
-    "hooks": { "after:done": "./scripts/task-done" },
-    "script_timeout": 600
-  }
-}
-```
-
-Choose commands that the project actually provides; the example is not installed as an
-active project. The development preset requires explicit lint and test commands.
+See [PROJECT.md](#projectmd-in-020) for a checked repository example. The development preset
+requires explicit lint and test commands. All commands start beside `PROJECT.md`; scripts
+that inspect repository code must explicitly enter `ENSO_TASK_DIR`.
 
 | Project field | Contract |
 | --- | --- |
-| key | 2–10 uppercase letters/digits, starting with a letter |
+| Directory key | 2–10 uppercase letters/digits, starting with a letter; unique across workspaces |
 | `name` | Nonempty display name |
-| `workspace` | Existing lowercase kebab-case Enso workspace |
 | `repo` | Optional Git repository directory; `~` expands |
 | `stages` | Nonempty ordered list of unique stage names or objects |
 | `base` | Optional target branch; recorded for each task worktree, never silently retargeted |
@@ -555,14 +515,14 @@ A string stage is `"work"` or `"approve:human"`. An object stage accepts:
 Choose at most one of `human`, `command`, and `integrate`. Other stages use an agent job.
 Each check requires unique nonempty `name` and `command`, accepts positive `timeout`
 seconds (default 600), and optional `protect` repository-relative path patterns. Enso
-executes checks with bash in the task execution directory and records bounded output and
+executes checks with bash beside `PROJECT.md` and records bounded output and
 exit status. Checks do not consume model tokens or require a report format. Existing
 validation inputs are protected from candidate changes; intentional rule changes require
 operator review. [Tasks](tasks.md#stage-transactions-and-checks) owns acceptance, evidence,
 repair, and the trust boundary.
 
 Unknown fields, invalid types, duplicate names, invalid return destinations, or contradictory
-execution kinds are reported with their configuration paths. Stage instructions belong in
+execution kinds are reported with their `PROJECT.md` paths. Stage instructions belong in
 agent jobs' prompts; execution/check rules belong here. Worktree creation, stable metadata,
 copy semantics and safe cleanup are defined in [Tasks](tasks.md#worktrees).
 

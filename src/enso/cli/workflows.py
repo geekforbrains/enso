@@ -9,7 +9,7 @@ import typer
 from .. import maintenance, tasks, workflow_setup, workflows
 from ..config import ConfigError, Paths
 from .common import JSON_FLAG, echo_json, fail, load
-from .tasks import _text
+from .tasks import WORKSPACE, _scope, _text
 
 workflow_app = typer.Typer(
     no_args_is_help=True, help="Configure workflows and inspect engine acceptance."
@@ -80,8 +80,11 @@ def init_workflow(
     base: str | None = typer.Option(None, "--base"),
     worktree_root: str | None = typer.Option(None, "--worktree-root"),
     migrate: bool = typer.Option(
-        False, "--migrate", help="Map triage/todo to plan/implement and retire old stage jobs."
+        False,
+        "--migrate",
+        help="Preserve and retire existing stage jobs when replacing the workflow.",
     ),
+    workspace: str | None = WORKSPACE,
     as_json: bool = JSON_FLAG,
 ) -> None:
     """Configure an existing project and create disabled, editable stage jobs."""
@@ -100,6 +103,7 @@ def init_workflow(
             migrate=migrate,
             base=base,
             worktree_root=worktree_root,
+            workspace=workspace,
         )
     except (ValueError, tasks.TaskError, OSError, maintenance.UpdateError, ConfigError) as exc:
         fail([str(exc)], as_json=as_json)
@@ -114,10 +118,11 @@ def init_workflow(
 
 
 @workflow_app.command("show")
-def show(ref: str, as_json: bool = JSON_FLAG) -> None:
+def show(ref: str, workspace: str | None = WORKSPACE, as_json: bool = JSON_FLAG) -> None:
     """Show persistent acceptance/check and lifecycle evidence for a task."""
     paths = Paths.from_env()
-    load(paths, as_json=as_json)
+    config = load(paths, as_json=as_json)
+    _scope(paths, config, workspace, ref=ref, as_json=as_json)
     try:
         ref = tasks.get(paths, ref).ref
         result = {
@@ -141,9 +146,10 @@ def show(ref: str, as_json: bool = JSON_FLAG) -> None:
             typer.echo(f"{event['name']}: {event['status']} ({event['event_id']})")
 
 
-def _recovery(ref: str, message: str, action: str, as_json: bool) -> None:
+def _recovery(ref: str, message: str, action: str, as_json: bool, workspace: str | None) -> None:
     paths = Paths.from_env()
     config = load(paths, as_json=as_json)
+    _scope(paths, config, workspace, ref=ref, as_json=as_json)
     text = _text(message, as_json=as_json) or ""
     try:
         ref = tasks.get(paths, ref).ref
@@ -166,23 +172,32 @@ def _recovery(ref: str, message: str, action: str, as_json: bool) -> None:
 
 @workflow_app.command("verify")
 def verify(
-    ref: str, message: str = typer.Option(..., "--message"), as_json: bool = JSON_FLAG
+    ref: str,
+    message: str = typer.Option(..., "--message"),
+    workspace: str | None = WORKSPACE,
+    as_json: bool = JSON_FLAG,
 ) -> None:
     """Run the current stage checks and accept an operator handoff; no model or bypass."""
-    _recovery(ref, message, "verify", as_json)
+    _recovery(ref, message, "verify", as_json, workspace)
 
 
 @workflow_app.command("retry")
 def retry(
-    ref: str, message: str = typer.Option(..., "--message"), as_json: bool = JSON_FLAG
+    ref: str,
+    message: str = typer.Option(..., "--message"),
+    workspace: str | None = WORKSPACE,
+    as_json: bool = JSON_FLAG,
 ) -> None:
     """Record a reason to replenish budgets and retry failed lifecycle delivery."""
-    _recovery(ref, message, "retry", as_json)
+    _recovery(ref, message, "retry", as_json, workspace)
 
 
 @workflow_app.command("approve-rules")
 def approve_rules(
-    ref: str, message: str = typer.Option(..., "--message"), as_json: bool = JSON_FLAG
+    ref: str,
+    message: str = typer.Option(..., "--message"),
+    workspace: str | None = WORKSPACE,
+    as_json: bool = JSON_FLAG,
 ) -> None:
     """Record operator review of changed acceptance inputs; checks still must pass."""
-    _recovery(ref, message, "approve-rules", as_json)
+    _recovery(ref, message, "approve-rules", as_json, workspace)

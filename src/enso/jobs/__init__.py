@@ -12,8 +12,6 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
-import yaml
-
 from .. import frontmatter
 from ..config import Config, Paths, require_workspace, split_job_ref, valid_workspace_name
 from ..providers import PROVIDER_CLASSES
@@ -110,16 +108,10 @@ class Job:
         return {**asdict(self), "ref": self.ref, "path": str(self.path), "group": self.group}
 
 
-# -- Frontmatter --------------------------------------------------------------
-
-
-def render(fields: dict[str, object], prompt: str) -> str:
-    """A JOB.md whose frontmatter parses back to ``fields`` under the same strict rules."""
-    front = yaml.safe_dump(fields, sort_keys=False, allow_unicode=True).strip()
-    return f"---\n{front}\n---\n\n{prompt.strip()}\n"
-
-
 # -- Parsing and validation ---------------------------------------------------
+
+
+render = frontmatter.render
 
 
 def _holds(kind: str, value: object) -> bool:
@@ -204,7 +196,7 @@ def parse_job(path: Path, config: Config | None = None) -> tuple[Job | None, lis
         problems.append("the prompt body is empty")
     schema_holds = not problems
     if config is not None:
-        problems += _config_problems(fields, config)
+        problems += _config_problems(fields, config, workspace)
     if not schema_holds:
         return None, problems
     given = {key: fields[key] for key in FIELDS if key in fields}
@@ -290,8 +282,8 @@ def _stage_problems(fields: Mapping[str, object], config: Config) -> list[str]:
     return []
 
 
-def _config_problems(fields: Mapping[str, object], config: Config) -> list[str]:
-    """Everything config.json can say about whichever fields a file did get right.
+def _config_problems(fields: Mapping[str, object], config: Config, workspace: str) -> list[str]:
+    """Everything the configuration snapshot can say about usable fields.
 
     Each check stands alone and reads only usable values, so a file with an unknown field or
     a mistyped timeout still reports its unrunnable schedule, agent, workspace, and notify
@@ -311,12 +303,18 @@ def _config_problems(fields: Mapping[str, object], config: Config) -> list[str]:
             config.resolve_target(notify)
         except ValueError as exc:
             problems.append(f"notify: {exc}")
+    project = config.projects.get(_usable(fields, "project") or "")
+    if project is not None and workspace != project.workspace:
+        problems.append(
+            f"JOB.md.project {project.key} belongs to workspace {project.workspace}; "
+            "stage jobs must share its workspace"
+        )
     return problems
 
 
 def validate(job: Job, config: Config) -> list[str]:
-    """Everything that must hold against config.json before a job may run."""
-    problems = _config_problems({key: getattr(job, key) for key in FIELDS}, config)
+    """Validate a job against installation, workspace, and project settings."""
+    problems = _config_problems({key: getattr(job, key) for key in FIELDS}, config, job.workspace)
     try:
         if job.path != _job_path(config.paths, job.ref):
             raise ValueError("job path does not match its owning workspace")

@@ -6,7 +6,7 @@ import asyncio
 import threading
 
 import pytest
-from conftest import load_job, write_config, write_job
+from conftest import edit_project, git, load_job, write_config, write_job, write_project
 
 from enso import db, maintenance, runs, tasks, workflows
 from enso.config import Config, Paths, load_config, parse_config
@@ -17,14 +17,7 @@ from enso.jobs.runner import JobRunner, acquire_project_slot
 
 
 def workflow_config(paths: Paths, raw: dict, stages: list, **project_fields: object) -> Config:
-    raw["projects"] = {
-        "EN": {
-            "name": "Example",
-            "workspace": "default",
-            "stages": stages,
-            **project_fields,
-        }
-    }
+    write_project(paths, "EN", {"name": "Example", "stages": stages, **project_fields})
     config, problems, _ = parse_config(raw, paths)
     assert config is not None, problems
     db.initialize(paths)
@@ -75,7 +68,7 @@ async def test_command_stage_needs_no_provider(
     result = await JobRunner(config).run(job, trigger="manual")
     assert result.status == "ok", result.error
     assert tasks.get(enso_home, task.ref).stage == "done"
-    assert (enso_home.workspace("default") / "output.txt").read_text() == "ready"
+    assert (enso_home.project("default", "EN") / "output.txt").read_text() == "ready"
     assert workflows.history(enso_home, task.ref)[0]["status"] == "accepted"
 
 
@@ -96,7 +89,7 @@ async def test_submission_waits_for_provider_and_external_check(
         pending = tasks.get(enso_home, task.ref)
         assert pending.stage == "work" and pending.claim_run_id == env["ENSO_RUN_ID"]
         assert not tasks.ready(enso_home, config, "EN", "work")
-        (enso_home.workspace("default") / "finished.txt").touch()
+        (enso_home.project("default", "EN") / "finished.txt").touch()
         return ProviderTurn("ok", output="I passed everything", exit_code=0)
 
     monkeypatch.setattr(runner_module.execution, "execute_turn", turn)
@@ -136,7 +129,7 @@ async def test_failed_check_repairs_with_actual_feedback_before_acceptance(
             assert "repair-required" in prompt
             assert "Task: EN-001" in prompt
             assert tasks.get(enso_home, task.ref).stage == "work"
-            (enso_home.workspace("default") / "fixed.txt").touch()
+            (enso_home.project("default", "EN") / "fixed.txt").touch()
         env = kwargs["env"]
         assert isinstance(env, dict)
         submit(enso_home, config, env)
@@ -224,7 +217,7 @@ async def test_explicit_block_keeps_reason_and_writer_until_provider_stops(
     assert transaction["error"] == transaction["message"] == reason
     assert transaction["move"] == "block" and transaction["to_stage"] == "blocked"
     assert transaction["checks"] == [] and transaction["attempts"] == 0
-    assert not (enso_home.workspace("default") / "check-ran").exists()
+    assert not (enso_home.project("default", "EN") / "check-ran").exists()
     assert not any(event.kind == "accepted" for event in tasks.events(enso_home, task.ref))
     assert result.run_id is not None
     attempts = runs.attempts(enso_home, result.run_id)
@@ -380,7 +373,7 @@ async def test_queued_stage_cannot_run_a_definition_retired_by_migration(
     assert tasks.get(enso_home, task.ref).claim_run_id is None
 
 
-async def test_queued_stage_cannot_use_configuration_from_before_migration(
+async def test_queued_stage_cannot_use_configuration_from_before_project_edit(
     enso_home: Paths, raw_config: dict
 ) -> None:
     workflow_config(enso_home, raw_config, ["work"])
@@ -388,8 +381,73 @@ async def test_queued_stage_cannot_use_configuration_from_before_migration(
     config = load_config(enso_home)
     tasks.create(enso_home, config, "EN", "Use current config", actor="user:test")
     queued = stage_job(enso_home, config)
-    raw_config["projects"]["EN"]["max_concurrency"] = 2
-    write_config(enso_home, raw_config)
+    edit_project(enso_home, max_concurrency=2)
     result = await JobRunner(config).run(queued, trigger="ready")
     assert result.status == "skipped" and "configuration changed" in result.error
     assert runs.list_runs(enso_home) == []
+
+
+async def test_project_scripts_and_stage_run_keep_their_workspace(enso_home, raw_config, repo):
+    """Real shell scripts, a local Git candidate, and lifecycle cleanup; no provider/network."""
+    fields = {
+        "name": "Team project",
+        "repo": str(repo),
+        "setup": "bash setup.sh",
+        "stages": [
+            {
+                "name": "work",
+                "command": "bash work.sh",
+                "checks": [{"name": "check", "command": "bash check.sh"}],
+            }
+        ],
+        "hooks": {"after:done": "bash done.sh", "teardown": "bash teardown.sh"},
+    }
+    definition = write_project(enso_home, "TEAM", fields, "team")
+    directory = definition.parent
+    for name, command in {
+        "setup": 'test -d "$ENSO_TASK_DIR/.git" || test -f "$ENSO_TASK_DIR/.git"',
+        "work": (
+            'cd "$ENSO_TASK_DIR"; echo candidate > feature.py; '
+            "git add feature.py; git commit -qm candidate"
+        ),
+        "check": 'test -f "$ENSO_TASK_DIR/feature.py"',
+        "done": 'test -f "$ENSO_TASK_DIR/feature.py"',
+        "teardown": 'test -d "$ENSO_TASK_DIR"',
+    }.items():
+        (directory / f"{name}.sh").write_text(
+            'set -eu\ntest "$ENSO_WORKSPACE" = team\ntest "$PWD" = "'
+            + str(directory)
+            + '"\n'
+            + f'printf "{name}\\n" >> trace\n'
+            + command
+            + "\n"
+        )
+    write_config(enso_home, raw_config)
+    config = load_config(enso_home)
+    db.initialize(enso_home)
+    task = tasks.create(enso_home, config, "TEAM", "Run in team", actor="user:test")
+    write_job(enso_home, "work", workspace="team", project="TEAM", stage="work", omit=["schedule"])
+    good = load_job(enso_home, config, "team:work")
+    bad_path = write_job(enso_home, "work", project="TEAM", stage="work", omit=["schedule"])
+    _, problems = parse_job(bad_path, config)
+    assert any("stage jobs must share its workspace" in problem for problem in problems)
+    result = await JobRunner(config).run(good, trigger="manual")
+    assert result.status == "ok", result.error
+    assert tasks.get(enso_home, task.ref).workspace == "team"
+    assert tasks.get(enso_home, task.ref).stage == "done"
+    tx = workflows.history(enso_home, task.ref)[0]
+    assert tx["status"] == "accepted" and tx["checks"][0]["status"] == "passed"
+    assert workflows.event_history(enso_home, task.ref)[0]["status"] == "delivered"
+    # The unmerged candidate is retained; teardown still runs from its owning project.
+    from enso import worktrees
+
+    record = worktrees.lookup(enso_home, task.ref)
+    assert (
+        record is not None
+        and worktrees.worktree_path(enso_home, config.projects["TEAM"], task.ref).exists()
+    )
+    assert (directory / "trace").read_text().splitlines()[:4] == ["setup", "work", "check", "done"]
+    git(repo, "merge", "--ff-only", f"enso/{task.ref}")
+    assert worktrees.sweep(enso_home, config.projects["TEAM"]) == [task.ref]
+    assert (directory / "trace").read_text().splitlines()[-1] == "teardown"
+    assert not (enso_home.workspace("default") / "trace").exists()

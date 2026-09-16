@@ -1,4 +1,4 @@
-"""``enso project``: the ``projects`` section of config.json, listed and extended."""
+"""``enso project``: workspace-owned project definitions, listed and created."""
 
 from __future__ import annotations
 
@@ -6,9 +6,18 @@ from pathlib import Path
 
 import typer
 
-from .. import tasks
-from ..config import ConfigError, Paths, parse_config, parse_stages, read_raw_config, save_config
+from .. import frontmatter, maintenance, tasks
+from ..config import (
+    ConfigError,
+    Paths,
+    config_lock,
+    load_config,
+    parse_project,
+    parse_stages,
+    resolve_workspace,
+)
 from .common import JSON_FLAG, columns, echo_json, fail, load
+from .tasks import ALL_WORKSPACES, WORKSPACE, _scope
 
 project_app = typer.Typer(no_args_is_help=True, help="Projects that tasks belong to.")
 REPO = typer.Option(None, "--repo", help="A Git checkout; its tasks get worktrees.")
@@ -16,14 +25,24 @@ COPY = typer.Option([], "--copy", help="A path copied into new worktrees; repeat
 
 
 @project_app.command("list")
-def project_list(as_json: bool = JSON_FLAG) -> None:
+def project_list(
+    workspace: str | None = WORKSPACE,
+    all_workspaces: bool = ALL_WORKSPACES,
+    as_json: bool = JSON_FLAG,
+) -> None:
     """List projects with their workspace, repository, and stages."""
     paths = Paths.from_env()
     config = load(paths, as_json=as_json)
+    selected = _scope(paths, config, workspace, all_workspaces=all_workspaces, as_json=as_json)
+    projects = [
+        project
+        for project in config.projects.values()
+        if selected is None or project.workspace == selected
+    ]
     if as_json:
-        echo_json([project.as_dict() for project in config.projects.values()])
+        echo_json([project.as_dict() for project in projects])
         return
-    if not config.projects:
+    if not projects:
         typer.echo("no projects yet; run `enso project add`")
         return
     rows = [["KEY", "NAME", "WORKSPACE", "REPO", "STAGES"]]
@@ -35,7 +54,7 @@ def project_list(as_json: bool = JSON_FLAG) -> None:
             str(project.repo) if project.repo else "-",
             ", ".join(f"{s.name}:human" if s.human else s.name for s in project.stages),
         ]
-        for project in config.projects.values()
+        for project in projects
     )
     typer.echo(columns(rows))
 
@@ -44,17 +63,19 @@ def project_list(as_json: bool = JSON_FLAG) -> None:
 def project_add(
     key: str,
     name: str = typer.Option(..., "--name"),
-    workspace: str = typer.Option(..., "--workspace", help="Where its stage jobs run."),
+    workspace: str | None = WORKSPACE,
     repo: Path | None = REPO,
     stages: str | None = typer.Option(None, "--stages", help="Comma-separated: a,b,c:human."),
     flow: str | None = typer.Option(None, "--flow", help=f"A preset: {', '.join(tasks.FLOWS)}."),
-    setup: str | None = typer.Option(None, "--setup", help="Bash command run in a new worktree."),
+    setup: str | None = typer.Option(
+        None, "--setup", help="Bash command beside PROJECT.md to prepare ENSO_TASK_DIR."
+    ),
     copy: list[str] = COPY,
     as_json: bool = JSON_FLAG,
 ) -> None:
-    """Add a project to config.json; validated first, written atomically."""
+    """Create PROJECT.md in the selected workspace; validate before writing."""
     paths = Paths.from_env()
-    load(paths, as_json=as_json)  # the current file must be sound before it is rewritten
+    load(paths, as_json=as_json)
     if (stages is None) == (flow is None):
         fail(["give --stages or --flow, not both and not neither"], as_json=as_json)
     if flow == "dev":
@@ -76,30 +97,36 @@ def project_add(
     parse_stages(names, "--stages", problems)
     if problems:
         fail(problems, as_json=as_json)
-    try:
-        raw = read_raw_config(paths)
-    except ConfigError as exc:
-        fail(exc.problems, as_json=as_json)
-    projects = raw.setdefault("projects", {})
-    if not isinstance(projects, dict):
-        fail(["projects in config.json is not an object"], as_json=as_json)
-    if key in projects:
-        fail([f"project {key} already exists; edit {paths.config} to change it"], as_json=as_json)
-    entry: dict[str, object] = {"name": name, "workspace": workspace, "stages": names}
+    entry: dict[str, object] = {"name": name, "stages": names}
     if repo is not None:
-        # A relative path is only meaningful from this cwd; config.json is read from anywhere.
+        # A relative path is only meaningful from this cwd; PROJECT.md is read from anywhere.
         entry["repo"] = str(repo if repo.expanduser().is_absolute() else repo.resolve())
     if setup is not None:
         entry["setup"] = setup
     if copy:
         entry["copy"] = list(copy)
-    projects[key] = entry
-    config, problems, _warnings = parse_config(raw, paths)
-    if config is None:
-        fail(problems, as_json=as_json)
-    save_config(paths, raw)
-    project = config.projects[key]
+    try:
+        with config_lock(paths):
+            config = load_config(paths)
+            selected = resolve_workspace(paths, workspace)
+            if key in config.projects:
+                raise ValueError(f"project {key} already exists; edit its PROJECT.md")
+            project = parse_project(paths, selected, key, entry, problems)
+            if problems:
+                raise ConfigError(problems)
+            directory = paths.project(selected, key)
+            if directory.parent.is_symlink():
+                raise ValueError(f"{directory.parent}: expected a real projects directory")
+            directory.mkdir(parents=True)  # Refuse existing directories, including orphans.
+            path = directory / "PROJECT.md"
+            try:
+                maintenance.write_bytes(path, frontmatter.render(entry, "").encode())
+            except OSError:
+                directory.rmdir()
+                raise
+    except (ConfigError, ValueError, OSError) as exc:
+        fail(exc.problems if isinstance(exc, ConfigError) else [str(exc)], as_json=as_json)
     if as_json:
         echo_json(project.as_dict())
         return
-    typer.echo(f"added project {key} ({', '.join(project.stage_names)}) to {paths.config}")
+    typer.echo(f"added project {key} ({', '.join(project.stage_names)}) to {path}")

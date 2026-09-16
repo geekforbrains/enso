@@ -2,24 +2,21 @@
 
 from __future__ import annotations
 
-import copy
 import os
 from pathlib import Path
 
 import pytest
-from conftest import commit_file, git, write_config
+from conftest import commit_file, edit_project, git
 
 from enso import tasks, workflows, worktrees
 from enso.config import Config, Paths, load_config
 
 
 def configured(paths: Paths, config: Config, stages: list, *, repo=None, hooks=None) -> Config:
-    raw = copy.deepcopy(config.raw)
-    raw["projects"]["EN"]["stages"] = stages
-    raw["projects"]["EN"]["hooks"] = hooks or {}
+    fields = {"stages": stages, "hooks": hooks or {}}
     if repo is not None:
-        raw["projects"]["EN"]["repo"] = str(repo)
-    write_config(paths, raw)
+        fields["repo"] = str(repo)
+    edit_project(paths, **fields)
     return load_config(paths)
 
 
@@ -215,8 +212,8 @@ async def test_lifecycle_failure_defers_later_events_for_the_same_task(
     await workflows.drain_events(enso_home, config)
     events = workflows.event_history(enso_home, task.ref)
     assert [event["status"] for event in events] == ["failed", "pending"]
-    assert not (enso_home.workspace("default") / "second").exists()
-    (enso_home.workspace("default") / "ready").touch()
+    assert not (enso_home.project("default", "EN") / "second").exists()
+    (enso_home.project("default", "EN") / "ready").touch()
     await workflows.drain_events(enso_home, config)
     assert [event["status"] for event in workflows.event_history(enso_home, task.ref)] == [
         "delivered",
@@ -471,7 +468,7 @@ async def test_missing_tools_and_signals_are_infrastructure_failures(
         [{"name": "work", "checks": [{"name": "check", "command": command}]}],
     )
     if code == 126:
-        executable = enso_home.workspace("default") / "not-executable"
+        executable = enso_home.project("default", "EN") / "not-executable"
         executable.write_text("#!/bin/sh\nexit 0\n")
         executable.chmod(0o600)
     task = tasks.create(enso_home, config, "EN", "Bad infrastructure", actor="user:test")
@@ -487,7 +484,7 @@ async def test_missing_tools_and_signals_are_infrastructure_failures(
 
 
 @pytest.mark.asyncio
-async def test_lifecycle_after_worktree_removal_uses_workspace_and_keeps_audit_identity(
+async def test_lifecycle_after_worktree_removal_uses_project_directory_and_keeps_audit_identity(
     enso_home: Paths,
     project_config: Config,
     repo: Path,
@@ -516,7 +513,7 @@ async def test_lifecycle_after_worktree_removal_uses_workspace_and_keeps_audit_i
     await workflows.drain_events(enso_home, config)
     event = workflows.event_history(enso_home, task.ref)[0]
     assert event["status"] == "delivered"
-    assert event["output"].strip() == str(enso_home.workspace(project.workspace))
+    assert event["output"].strip() == str(enso_home.project(project.workspace, project.key))
 
 
 @pytest.mark.asyncio
@@ -538,9 +535,7 @@ async def test_configuration_changed_during_landing_cannot_accept_old_rules(
 
     def changed_definition(*args, **kwargs):
         result = original(*args, **kwargs)
-        raw = copy.deepcopy(config.raw)
-        raw["projects"]["EN"]["max_concurrency"] = 2
-        write_config(enso_home, raw)
+        edit_project(enso_home, max_concurrency=2)
         return result
 
     monkeypatch.setattr(worktrees, "finish_land", changed_definition)
@@ -550,3 +545,23 @@ async def test_configuration_changed_during_landing_cannot_accept_old_rules(
     assert tx["integration"]["phase"] == "applied"
     assert tx["status"] == "blocked" and tasks.get(enso_home, task.ref).stage == "integrate"
     assert git(repo, "rev-parse", "HEAD").strip() == head
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_missing_project_records_failure_without_changing_owner(
+    enso_home, project_config
+):
+    config = configured(
+        enso_home, project_config, ["work"], hooks={"after:done": "touch misplaced"}
+    )
+    task = tasks.create(enso_home, config, "EN", "Keep lifecycle owner", actor="user:test")
+    tasks.move(
+        enso_home, config, task.ref, "advance", actor="user:test", run_id=None, message="Done"
+    )
+    directory = enso_home.project("default", "EN")
+    directory.rename(enso_home.home / "removed-project")
+    await workflows.drain_events(enso_home, config)
+    event = workflows.event_history(enso_home, task.ref)[0]
+    assert event["status"] == "failed" and str(directory) in event["error"]
+    assert event["workspace"] == "default" and event["attempts"] == 1
+    assert not (enso_home.workspace("default") / "misplaced").exists()

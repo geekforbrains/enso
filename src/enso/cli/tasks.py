@@ -14,7 +14,7 @@ from pathlib import Path
 import typer
 
 from .. import tasks, worktrees
-from ..config import Paths
+from ..config import Config, Paths, resolve_workspace
 from .common import (
     JSON_FLAG,
     InputError,
@@ -34,6 +34,42 @@ MESSAGE_HELP = "The handoff: what changed, the evidence, what comes next; - read
 FORCE_HELP = "Override another run's claim (a person only, never inside a run)."
 BODY_FILE = typer.Option(None, "--body-file", help="The spec from a file, or - for stdin.")
 REFS = typer.Option([], "--ref", help="Evidence as KIND:VALUE; repeatable.")
+
+WORKSPACE = typer.Option(None, "--workspace", help="Owner; defaults to ENSO_WORKSPACE.")
+ALL_WORKSPACES = typer.Option(False, "--all-workspaces", help="List across the installation.")
+
+
+def _scope(
+    paths: Paths,
+    config: Config,
+    workspace: str | None,
+    *,
+    as_json: bool,
+    ref: str | None = None,
+    project: str | None = None,
+    all_workspaces: bool = False,
+) -> str | None:
+    """Select CLI context; explicit dependency refs are resolved separately across projects."""
+    try:
+        if all_workspaces:
+            if workspace is not None:
+                raise ValueError("give --workspace or --all-workspaces, not both")
+            selected = None
+        else:
+            selected = resolve_workspace(paths, workspace)
+        if ref is not None:
+            task = tasks.get(paths, ref, workspace=selected)
+            tasks._project(config, task.project, task.workspace)
+        if project is not None:
+            found = tasks._project(config, project.strip().upper())
+            if selected is not None and found.workspace != selected:
+                raise ValueError(
+                    f"project {found.key} belongs to workspace {found.workspace}; "
+                    "select it with --workspace"
+                )
+        return selected
+    except (ValueError, tasks.TaskError) as exc:
+        fail([str(exc)], as_json=as_json)
 
 
 def _read(source: str | Path, *, as_json: bool, literal: bool = False) -> str:
@@ -83,6 +119,7 @@ def _move(
     ref: str,
     move_id: str,
     *,
+    workspace: str | None,
     message: str | None,
     as_json: bool,
     to: str | None = None,
@@ -92,6 +129,7 @@ def _move(
 ) -> None:
     paths = Paths.from_env()
     config = load(paths, as_json=as_json)
+    _scope(paths, config, workspace, ref=ref, as_json=as_json)
     try:
         task = tasks.move(
             paths,
@@ -126,11 +164,13 @@ def task_add(
         None, "--after", help="Start blocked on this task; resumed when it is done."
     ),
     from_ref: str | None = typer.Option(None, "--from", help="The task this was found in."),
+    workspace: str | None = WORKSPACE,
     as_json: bool = JSON_FLAG,
 ) -> None:
     """Create a task in the project's first stage (or its backlog)."""
     paths = Paths.from_env()
     config = load(paths, as_json=as_json)
+    _scope(paths, config, workspace, project=project, as_json=as_json)
     if body is not None and body_file is not None:
         fail(["give --body or --body-file, not both"], as_json=as_json)
     try:
@@ -164,11 +204,16 @@ def task_list(
     attention: bool = typer.Option(False, "--attention", help="Flagged for a person."),
     show_all: bool = typer.Option(False, "--all", help="Include done and cancelled."),
     idle_for: str | None = typer.Option(None, "--idle-for", help="In its stage this long: 2h."),
+    all_workspaces: bool = ALL_WORKSPACES,
+    workspace: str | None = WORKSPACE,
     as_json: bool = JSON_FLAG,
 ) -> None:
     """List tasks; finished ones are hidden unless --all or --stage names them."""
     paths = Paths.from_env()
     config = load(paths, as_json=as_json)
+    selected = _scope(
+        paths, config, workspace, project=project, all_workspaces=all_workspaces, as_json=as_json
+    )
     found = tasks.list_tasks(
         paths,
         project=project,
@@ -179,6 +224,7 @@ def task_list(
         all=show_all,
         idle_for=_duration(idle_for, as_json=as_json),
         config=config,
+        workspace=selected,
     )
     if as_json:
         echo_json([task.as_dict() for task in found])
@@ -202,10 +248,11 @@ def task_list(
 
 
 @task_app.command("show")
-def task_show(ref: str, as_json: bool = JSON_FLAG) -> None:
+def task_show(ref: str, workspace: str | None = WORKSPACE, as_json: bool = JSON_FLAG) -> None:
     """One task: its fields, the moves and why, refs, and the timeline."""
     paths = Paths.from_env()
     config = load(paths, as_json=as_json)
+    _scope(paths, config, workspace, ref=ref, as_json=as_json)
     try:
         ctx = tasks.context(paths, config, ref, env=os.environ)
         history = tasks.events(paths, ref)
@@ -251,10 +298,19 @@ def task_advance(
     message: str = typer.Option(..., "--message", help=MESSAGE_HELP),
     refs: list[str] = REFS,
     force: bool = typer.Option(False, "--force", help=FORCE_HELP),
+    workspace: str | None = WORKSPACE,
     as_json: bool = JSON_FLAG,
 ) -> None:
     """Hand the task to the next stage (or finish it from the last one)."""
-    _move(ref, "advance", message=message, as_json=as_json, force=force, refs=refs)
+    _move(
+        ref,
+        "advance",
+        workspace=workspace,
+        message=message,
+        as_json=as_json,
+        force=force,
+        refs=refs,
+    )
 
 
 @task_app.command("return")
@@ -262,10 +318,11 @@ def task_return(
     ref: str,
     message: str = typer.Option(..., "--message", help=MESSAGE_HELP),
     force: bool = typer.Option(False, "--force", help=FORCE_HELP),
+    workspace: str | None = WORKSPACE,
     as_json: bool = JSON_FLAG,
 ) -> None:
     """Send the task back to the previous stage."""
-    _move(ref, "return", message=message, as_json=as_json, force=force)
+    _move(ref, "return", workspace=workspace, message=message, as_json=as_json, force=force)
 
 
 @task_app.command("block")
@@ -274,10 +331,19 @@ def task_block(
     message: str = typer.Option(..., "--message", help="What is needed and what unblocks it."),
     after: str | None = typer.Option(None, "--after", help="Resume when this task is done."),
     force: bool = typer.Option(False, "--force", help=FORCE_HELP),
+    workspace: str | None = WORKSPACE,
     as_json: bool = JSON_FLAG,
 ) -> None:
     """Stop on the task until a person decides or another task finishes."""
-    _move(ref, "block", message=message, as_json=as_json, after=after, force=force)
+    _move(
+        ref,
+        "block",
+        workspace=workspace,
+        message=message,
+        as_json=as_json,
+        after=after,
+        force=force,
+    )
 
 
 @task_app.command("resume")
@@ -285,20 +351,22 @@ def task_resume(
     ref: str,
     message: str | None = typer.Option(None, "--message", help="Optional; - reads stdin."),
     to: str | None = typer.Option(None, "--to", help="A project stage; default is where it left."),
+    workspace: str | None = WORKSPACE,
     as_json: bool = JSON_FLAG,
 ) -> None:
     """Put a blocked task back into its pipeline."""
-    _move(ref, "resume", message=message, as_json=as_json, to=to)
+    _move(ref, "resume", workspace=workspace, message=message, as_json=as_json, to=to)
 
 
 @task_app.command("drop")
 def task_drop(
     ref: str,
     message: str = typer.Option(..., "--message", help="Why it will not be done."),
+    workspace: str | None = WORKSPACE,
     as_json: bool = JSON_FLAG,
 ) -> None:
     """Cancel a task; a person only."""
-    _move(ref, "drop", message=message, as_json=as_json)
+    _move(ref, "drop", workspace=workspace, message=message, as_json=as_json)
 
 
 @task_app.command("release")
@@ -306,11 +374,13 @@ def task_release(
     ref: str,
     message: str = typer.Option(..., "--message", help="Why the claim is let go."),
     force: bool = typer.Option(False, "--force", help=FORCE_HELP),
+    workspace: str | None = WORKSPACE,
     as_json: bool = JSON_FLAG,
 ) -> None:
     """Clear the claim without moving: the claiming run, or a person with --force."""
     paths = Paths.from_env()
-    load(paths, as_json=as_json)
+    config = load(paths, as_json=as_json)
+    _scope(paths, config, workspace, ref=ref, as_json=as_json)
     try:
         task = tasks.release(
             paths,
@@ -336,11 +406,13 @@ def task_edit(
         None, "--after", help="A task to wait on while blocked; '' clears it."
     ),
     force: bool = typer.Option(False, "--force", help=FORCE_HELP),
+    workspace: str | None = WORKSPACE,
     as_json: bool = JSON_FLAG,
 ) -> None:
     """Change the title, spec, priority, or dependency; old values stay in the timeline."""
     paths = Paths.from_env()
-    load(paths, as_json=as_json)
+    config = load(paths, as_json=as_json)
+    _scope(paths, config, workspace, ref=ref, as_json=as_json)
     try:
         task = tasks.edit(
             paths,
@@ -363,11 +435,13 @@ def task_note(
     ref: str,
     text: str = typer.Argument(..., help="The note; - reads stdin."),
     attention: bool = typer.Option(False, "--attention", help="Flag it for a person."),
+    workspace: str | None = WORKSPACE,
     as_json: bool = JSON_FLAG,
 ) -> None:
     """Add to the timeline without moving the task."""
     paths = Paths.from_env()
-    load(paths, as_json=as_json)
+    config = load(paths, as_json=as_json)
+    _scope(paths, config, workspace, ref=ref, as_json=as_json)
     try:
         event = tasks.note(
             paths,
@@ -386,10 +460,13 @@ def task_note(
 
 
 @task_app.command("ref")
-def task_ref(ref: str, kind: str, value: str, as_json: bool = JSON_FLAG) -> None:
+def task_ref(
+    ref: str, kind: str, value: str, workspace: str | None = WORKSPACE, as_json: bool = JSON_FLAG
+) -> None:
     """Attach evidence: a commit, path, url, page, or anything else worth finding again."""
     paths = Paths.from_env()
-    load(paths, as_json=as_json)
+    config = load(paths, as_json=as_json)
+    _scope(paths, config, workspace, ref=ref, as_json=as_json)
     try:
         attached = tasks.add_ref(
             paths,
@@ -408,13 +485,14 @@ def task_ref(ref: str, kind: str, value: str, as_json: bool = JSON_FLAG) -> None
 
 
 @task_app.command("land")
-def task_land(ref: str, as_json: bool = JSON_FLAG) -> None:
+def task_land(ref: str, workspace: str | None = WORKSPACE, as_json: bool = JSON_FLAG) -> None:
     """Rebase the task's branch onto its base and fast-forward the main checkout.
 
     Inside a run, only the project's last agent stage lands; a person may land from anywhere.
     """
     paths = Paths.from_env()
     config = load(paths, as_json=as_json)
+    _scope(paths, config, workspace, ref=ref, as_json=as_json)
     try:
         task = tasks.get(paths, ref)
     except tasks.TaskError as exc:
@@ -447,12 +525,25 @@ def task_land(ref: str, as_json: bool = JSON_FLAG) -> None:
 @task_app.command("sweep")
 def task_sweep(
     project: str | None = typer.Option(None, "--project", help="One project; default all."),
+    all_workspaces: bool = ALL_WORKSPACES,
+    workspace: str | None = WORKSPACE,
     as_json: bool = JSON_FLAG,
 ) -> None:
     """Remove the worktrees of finished, clean tasks and their merged branches."""
     paths = Paths.from_env()
     config = load(paths, as_json=as_json)
-    keys = [project.strip().upper()] if project else list(config.projects)
+    selected = _scope(
+        paths, config, workspace, project=project, all_workspaces=all_workspaces, as_json=as_json
+    )
+    keys = (
+        [project.strip().upper()]
+        if project
+        else [
+            key
+            for key, item in config.projects.items()
+            if selected is None or item.workspace == selected
+        ]
+    )
     removed: dict[str, list[str]] = {}
     for key in keys:
         found = config.projects.get(key)

@@ -52,8 +52,8 @@ even when the job requested less; see [Configuration](configuration.md#antigravi
 configured; without it, alerts go to the first configured transport with a `notify` target
 (Slack before Telegram). A `schedule` is exactly five cron fields
 (see [Scheduling](#scheduling)). `project` and `stage` come together or not at all: `project`
-must be a key in `config.json`'s [`projects`](configuration.md#projects) and `stage` one of
-that project's agent stages (`approve is a human stage; a job cannot serve it`). With a
+must name a discovered [`PROJECT.md`](configuration.md#projects) in the same workspace,
+and `stage` one of that project's agent stages (`approve is a human stage; a job cannot serve it`). With a
 `stage`, `schedule` is optional, and still validated when present. Command and integration
 stages omit the provider triple and execute their project-defined work without a model.
 

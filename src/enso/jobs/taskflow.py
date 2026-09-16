@@ -142,6 +142,8 @@ async def begin(
     actual setup worker stops before releasing ownership.
     """
     assert job.project is not None and job.stage is not None
+    if config.projects[job.project].workspace != job.workspace:
+        raise tasks.TaskError("stage job and project must belong to the same workspace")
     task = await _reserve(paths, config, job, run_id)
     if task is None:
         return None

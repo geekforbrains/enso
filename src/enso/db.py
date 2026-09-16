@@ -78,6 +78,7 @@ END;
 -- Task history is append-only; tasks.py maintains its relationships.
 CREATE TABLE _enso_tasks (
   id INTEGER PRIMARY KEY,
+  workspace TEXT NOT NULL,
   project TEXT NOT NULL,
   number INTEGER NOT NULL CHECK (number > 0),
   ref TEXT NOT NULL UNIQUE,

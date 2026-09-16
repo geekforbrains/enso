@@ -1,4 +1,4 @@
-"""Home paths, workspace context, and configuration snapshots from JSON and WORKSPACE.md."""
+"""Home paths, workspace context, and configuration snapshots from JSON and workspace Markdown."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ import logging
 import os
 import re
 import shutil
-import stat
 import tempfile
 import threading
 from collections.abc import Iterator, Mapping
@@ -204,6 +203,13 @@ class Paths:
     def workspace_projects(self, name: str) -> Path:
         return self.workspace(name) / "projects"
 
+    def project(self, workspace: str, key: str) -> Path:
+        if not PROJECT_KEY_RE.fullmatch(key):
+            raise ValueError(
+                "project keys are 2-10 uppercase letters or digits, starting with a letter"
+            )
+        return self.workspace_projects(workspace) / key
+
     def workspace_heartbeat(self, name: str) -> Path:
         return self.workspace(name) / "heartbeat"
 
@@ -312,14 +318,14 @@ class Stage:
 
 @dataclass(frozen=True)
 class ProjectConfig:
-    """One ``projects`` entry: where its tasks are worked and the stages they pass through."""
+    """One workspace PROJECT.md and its derived ownership."""
 
     key: str
     name: str
     workspace: str
     repo: Path | None
     stages: tuple[Stage, ...]
-    setup: str | None = None  # bash command run once inside a fresh worktree
+    setup: str | None = None  # command beside PROJECT.md, preparing ENSO_TASK_DIR
     copy: tuple[str, ...] = ()  # relative paths copied from the main checkout into a worktree
     worktree_root: str | None = None
     base: str | None = None
@@ -512,12 +518,10 @@ ROOT_KEYS = (
     "logging",
     "runs",
     "web",
-    "projects",
     "heartbeat",
 )
 PROJECT_KEYS = (
     "name",
-    "workspace",
     "repo",
     "stages",
     "setup",
@@ -738,19 +742,11 @@ def _workspace_entries(paths: Paths) -> list[Path]:
 
 
 def _read_workspace_settings(path: Path) -> dict[str, Any]:
-    """Read one regular settings file; missing means inheritance, other failures are errors."""
+    """Missing workspace settings inherit defaults; malformed/unsafe files are errors."""
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        return frontmatter.read(path).fields
     except FileNotFoundError:
         return {}
-    with os.fdopen(fd, "rb") as stream:
-        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-            raise ValueError("expected a regular file")
-        text = stream.read().decode("utf-8")
-    document, problem = frontmatter.parse(text)
-    if document is None:
-        raise ValueError(problem)
-    return document.fields
 
 
 def _load_workspaces(
@@ -968,24 +964,16 @@ def _project_workflow_options(
     return extra
 
 
-def _parse_project(
-    key: str, entry: dict, paths: Paths, problems: list[str], unknown: list[str]
+def parse_project(
+    paths: Paths, workspace: str, key: str, entry: dict, problems: list[str]
 ) -> ProjectConfig:
-    where = f"projects.{key}"
-    _unknown_keys(entry, PROJECT_KEYS, where, unknown)
+    """Validate PROJECT.md fields with ownership supplied only by its location."""
+    where = str(paths.project(workspace, key) / "PROJECT.md")
+    _unknown_keys(entry, PROJECT_KEYS, where, problems)
     name = entry.get("name")
     if not isinstance(name, str) or not name.strip():
         problems.append(f"{where}.name must be non-empty text")
         name = key
-    workspace = entry.get("workspace")
-    if not valid_workspace_name(workspace):
-        problems.append(f"{where}.workspace must be a workspace name (lowercase kebab-case)")
-        workspace = ""
-    else:
-        try:
-            require_workspace(paths, str(workspace))
-        except ValueError as exc:
-            problems.append(f"{where}.workspace: {exc}")
     repo: Path | None = None
     repo_raw = entry.get("repo")
     if repo_raw is not None:
@@ -1019,26 +1007,49 @@ def _parse_project(
     )
 
 
-def _parse_projects(
-    raw: object, paths: Paths, problems: list[str], unknown: list[str]
+def project_directory(paths: Paths, workspace: str, key: str) -> Path:
+    """Require the recorded project location; never follow or invent another owner."""
+    require_workspace(paths, workspace)
+    directory = paths.project(workspace, key)
+    for path in (directory.parent, directory):
+        if path.is_symlink() or not path.is_dir():
+            raise ValueError(f"{path}: expected a real project directory")
+    return directory
+
+
+def _load_projects(
+    paths: Paths, workspaces: Mapping[str, WorkspaceConfig], problems: list[str]
 ) -> dict[str, ProjectConfig]:
     projects: dict[str, ProjectConfig] = {}
-    if raw is None:
-        return projects
-    if not isinstance(raw, dict):
-        problems.append("projects must be an object")
-        return projects
-    for key, entry in raw.items():
-        if not PROJECT_KEY_RE.fullmatch(key):
-            problems.append(
-                f"projects.{_key_text(key)}: keys are 2-10 uppercase letters or digits, "
-                "starting with a letter"
-            )
+    seen: dict[str, Path] = {}
+    for workspace in workspaces:
+        root = paths.workspace_projects(workspace)
+        try:
+            if root.is_symlink() or (root.exists() and not root.is_dir()):
+                raise ValueError(f"{root}: expected a real projects directory")
+            entries = sorted(root.iterdir()) if root.exists() else []
+        except (OSError, ValueError) as exc:
+            problems.append(str(exc))
             continue
-        if not isinstance(entry, dict):
-            problems.append(f"projects.{key} must be an object")
-            continue
-        projects[key] = _parse_project(key, entry, paths, problems, unknown)
+        for directory in entries:
+            path = directory / "PROJECT.md"
+            try:
+                if directory.is_symlink():
+                    raise ValueError("project directory must not be a symbolic link")
+                if not directory.is_dir():
+                    continue
+                key = directory.name
+                if not PROJECT_KEY_RE.fullmatch(key):
+                    raise ValueError(
+                        "keys are 2-10 uppercase letters or digits, starting with a letter"
+                    )
+                if key in seen:
+                    raise ValueError(f"duplicate project {key}; also defined at {seen[key]}")
+                seen[key] = path
+                document = frontmatter.read(path)
+                projects[key] = parse_project(paths, workspace, key, document.fields, problems)
+            except (OSError, UnicodeError, ValueError, RecursionError) as exc:
+                problems.append(f"{path}: {exc}")
     return projects
 
 
@@ -1110,7 +1121,7 @@ def parse_config(raw: object, paths: Paths) -> tuple[Config | None, list[str], l
     defaults = parse_agent(raw.get("defaults"), "defaults", providers, problems, unknown)
     workspaces = _load_workspaces(paths, providers, problems)
     bindings = _parse_bindings(raw.get("bindings"), paths, configured, problems, warnings)
-    projects = _parse_projects(raw.get("projects"), paths, problems, unknown)
+    projects = _load_projects(paths, workspaces, problems)
 
     settings: dict[str, dict] = {}
     for key, allowed in SETTINGS_KEYS.items():
@@ -1251,28 +1262,28 @@ def _signature(path: Path, *, follow_symlinks: bool = False) -> _Signature:
     return status.st_mtime_ns, status.st_ctime_ns, status.st_size, status.st_ino, status.st_mode
 
 
-type _ConfigSignature = tuple[
-    _Signature, _Signature, tuple[tuple[str, _Signature, _Signature], ...]
-]
+type _ConfigSignature = tuple[tuple[str, _Signature], ...]
 
 
 def _configuration_signature(paths: Paths) -> _ConfigSignature:
-    """Watch workspace additions/removals and settings edits along with config.json."""
+    """Watch installation settings and workspace/project additions, removals, and edits."""
+    watched = [paths.config, paths.workspaces]
     try:
-        entries = _workspace_entries(paths)
+        for root in _workspace_entries(paths):
+            watched.append(root)
+            if root.is_symlink():
+                continue
+            watched.extend((root / "WORKSPACE.md", root / "projects"))
+            projects = root / "projects"
+            if projects.is_dir() and not projects.is_symlink():
+                for directory in sorted(projects.iterdir()):
+                    watched.append(directory)
+                    if directory.is_dir() and not directory.is_symlink():
+                        watched.append(directory / "PROJECT.md")
     except OSError, ValueError:
-        entries = []  # The changed container signature still triggers validation.
-    return (
-        _signature(paths.config, follow_symlinks=True),
-        _signature(paths.workspaces),
-        tuple(
-            (
-                root.name,
-                _signature(root),
-                "missing" if root.is_symlink() else _signature(root / "WORKSPACE.md"),
-            )
-            for root in entries
-        ),
+        pass  # Changed container signatures still trigger validation.
+    return tuple(
+        (str(path), _signature(path, follow_symlinks=path == paths.config)) for path in watched
     )
 
 
@@ -1313,7 +1324,7 @@ class LiveConfig:
             self._signature = signature
             self._rejected = None
             self._config = config
-            log.info("configuration reloaded (config.json and workspace settings)")
+            log.info("configuration reloaded (installation, workspace, and project settings)")
             return config
 
 

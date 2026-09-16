@@ -12,8 +12,11 @@ frontmatter values and its body are both untrusted text a user or an agent wrote
 
 from __future__ import annotations
 
+import os
+import stat
 from collections.abc import Hashable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import yaml
@@ -126,3 +129,20 @@ def _bounded(text: str) -> str:
     """One line of diagnostic text: printable, single-line, and length-bounded."""
     cleaned = "".join(char if char.isprintable() else " " for char in text).strip()
     return f"{cleaned[:_KEY_LIMIT].rstrip()}…" if len(cleaned) > _KEY_LIMIT else cleaned
+
+
+def render(fields: dict[str, object], body: str) -> str:
+    """Render validated fields and a Markdown body in the shared frontmatter syntax."""
+    front = yaml.safe_dump(fields, sort_keys=False, allow_unicode=True).strip()
+    return f"---\n{front}\n---\n\n{body.strip()}\n"
+
+
+def read(path: Path) -> Document:
+    """Read one regular UTF-8 document without following a file symlink or blocking on a FIFO."""
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ValueError("expected a regular file")
+        document, problem = parse(stream.read().decode("utf-8"))
+    if document is None:
+        raise ValueError(problem)
+    return document
