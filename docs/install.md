@@ -50,6 +50,8 @@ enso setup
 
 The wizard is linear and requires `config.json` to be absent. A home prepared with `init`
 can use it too; existing scaffold content is preserved.
+Both commands refuse an obsolete configuration, database, or home-level `jobs/` before
+seeding files, with a migration-guide pointer. Moving the old config aside is not conversion.
 
 1. Detects which provider CLIs are on `PATH` and records their model lists and unattended
    flags.
@@ -59,6 +61,8 @@ can use it too; existing scaffold content is preserved.
 4. Connects one transport. Slack checks both tokens and asks you to send a fresh code in
    the bot's private chat. Telegram supplies a Start link with a fresh code. The wizard
    discovers your identity and notification target automatically; see [Connections](connections.md).
+   Pairing creates an explicit user binding to `default`; it does not grant wildcard access.
+   Setup explains shared memory and channel audience trust before pairing.
 5. Writes `config.json`, seeds the `enso-audit` and `enso-update` jobs in `default` and a
    `memory` job in each workspace with its effective agent, sends a test message, and
    offers to install the background service.

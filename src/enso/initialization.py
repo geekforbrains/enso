@@ -12,7 +12,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from . import __version__, workspaces
+from . import __version__, db, workspaces
 from .config import (
     CONFIG_VERSION,
     LEGACY_HOME_MESSAGE,
@@ -145,6 +145,30 @@ def _layout_problems(paths: Paths) -> list[str]:
     return problems
 
 
+def home_problems(paths: Paths) -> list[str]:
+    """Refuse incompatible homes before onboarding can seed content or request credentials."""
+    if problems := _layout_problems(paths):
+        return problems
+    for path in (paths.config, paths.db):
+        if path.is_symlink():
+            return [f"{path}: expected a file, not a symbolic link; existing path was preserved"]
+    try:
+        raw = json.loads(paths.config.read_text("utf-8"))
+    except OSError, ValueError:
+        pass  # Existing invalid config is preserved; config check owns its diagnostics.
+    else:
+        if isinstance(raw, dict) and raw.get("version") == 1:
+            return [LEGACY_HOME_MESSAGE]
+    try:
+        with db.reader(paths):
+            pass
+    except db.MissingDatabaseError:
+        pass
+    except db.UnreadableDatabaseError as exc:
+        return [str(exc)]
+    return []
+
+
 def initialize_home(paths: Paths) -> dict[str, Any]:
     """Prepare a resumable home without credentials, active config, database, or service."""
     changes: list[str] = []
@@ -156,7 +180,7 @@ def initialize_home(paths: Paths) -> dict[str, Any]:
         "problems": [],
     }
     try:
-        if problems := _layout_problems(paths):
+        if problems := home_problems(paths):
             result["problems"] = problems
             return result
         with config_lock(paths):

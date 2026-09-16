@@ -732,6 +732,8 @@ async def test_lock_overlap_recovery_and_pruning_preserve_owned_boundaries(runti
     clock[0] += timedelta(days=31)
     await runner.tick(clock[0])
     await drain(runner)
+    # A notice can hold the beat lock during tick's prune; retry after its owner finishes.
+    runner._prune(config, clock[0])
     assert heartbeat.get(config.paths, beat.ref) is None
     assert not (config.paths.workspace_heartbeat(beat.workspace) / beat.ref).exists()
     assert heartbeat.get(config.paths, other.ref).state == "active"
@@ -746,6 +748,7 @@ async def test_lock_overlap_recovery_and_pruning_preserve_owned_boundaries(runti
     clock[0] += timedelta(days=31)
     await runner.tick(clock[0])
     await drain(runner)
+    runner._prune(config, clock[0])
     assert marker.read_text() == "user data" and directory.is_symlink()
 
 

@@ -19,6 +19,9 @@
 
 ## Files
 
-- `knowledge/` — durable reference material
+- `knowledge/` — current facts and reference material; load `enso-knowledge` and use `enso knowledge` to find or maintain it
+- `memory/` — dated conversations and experiences; load `enso-memory`, search with `enso memory search`, and inspect sources before recalling earlier work
 - `drafts/` — generated and editable output
 - `uploads/` — chat attachments, written by Enso
+
+Shared reference belongs in `$ENSO_HOME/knowledge/`; use `--shared` on knowledge commands to select it. Memory belongs to this workspace. People sharing it share maintained memory; separate workspaces do not promise confidentiality within this installation.

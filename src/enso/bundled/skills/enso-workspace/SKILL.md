@@ -41,6 +41,9 @@ Keep `AGENTS.md` small: what the workspace is for, what ambiguous terms mean, an
 Load `enso-knowledge` to find, write, import, organize, or link durable notes, or change their
 formatting. It owns shared versus workspace placement and the common formatting rules;
 the viewer discovers these knowledge roots automatically and stays read-only.
+Knowledge is current reference; dated conversations and experiences belong in `memory/`.
+For earlier work, load `enso-memory`, search with `enso memory search`, and read relevant
+notes and sources before answering. People sharing this workspace share its maintained memory.
 
 ## Commands
 

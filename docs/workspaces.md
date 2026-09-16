@@ -69,6 +69,9 @@ source of truth, generated links everywhere else. Keep `AGENTS.md` short — wha
 workspace is for, what ambiguous terms mean, and any rule that must be visible on every
 single turn. Detail belongs in `knowledge/`, referenced by path. See
 [Customizing](customizing.md).
+The template directs current reference requests to `enso-knowledge` and `enso knowledge`,
+and earlier events to `enso-memory` and `enso memory`. Workspace memory is shared context,
+including when several separate DM bindings select it; it is not a confidentiality boundary.
 
 `enso init` prepares this layout for `default`, filling missing instructions and links
 without changing existing files. It reports conflicting files, directories, and links

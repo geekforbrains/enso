@@ -4,6 +4,10 @@
 Hosted setup can use the same receivers through `enso connect`. Neither flow logs into a
 provider account or starts a provider during pairing. Provider subscription login remains
 manual; see [Install](install.md).
+When configuring a connection, explain that the explicit binding grants access and selects
+context: people sharing a workspace share its maintained memory, and a personal DM does not
+make its workspace confidential. Before binding a channel, explain the audience and capture
+rules below. Native setup includes this explanation before pairing.
 
 ## Access in 0.2.0
 
