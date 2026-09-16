@@ -25,6 +25,8 @@ Product behaviour belongs in its owning page under `docs/`, starting with
   helpers here; this module does not load runtime, routing, or database code.
 - `src/enso/note_storage.py` — shared bounded file reads, safe paths, timestamp validation,
   writer locks, and atomic publication for knowledge and memory.
+- `src/enso/captures.py` — normalized conversation history, reply delivery checkpoints, and
+  processing receipts in the home database; Markdown remains the maintained memory.
 - `src/enso/memory.py` — workspace-only dated Markdown, occurrence/placement validation,
   source metadata, relative links, and manual corrections; capture/harvesting remain separate.
 - `src/enso/knowledge/` — Markdown discovery, core metadata, link resolution, and note writes.

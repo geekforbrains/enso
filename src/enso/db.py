@@ -17,6 +17,7 @@ request cannot change Enso state even by accident, and a WAL reader never blocks
 from __future__ import annotations
 
 import sqlite3
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
@@ -47,8 +48,46 @@ CREATE TABLE messages (
   consumed_at TEXT);
 CREATE INDEX messages_target ON messages (workspace, transport, target, consumed_at, thread);
 
--- A session belongs to the workspace it was created in: Claude and Grok keep the
--- transcript under that directory even when the session is resumed elsewhere.
+-- Captures are permanent history; reply identity is its addressed parent, not a send ID.
+CREATE TABLE _enso_captures (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  transport TEXT NOT NULL, workspace TEXT NOT NULL, conversation TEXT NOT NULL,
+  channel TEXT NOT NULL, thread TEXT, message_id TEXT,
+  sender_id TEXT NOT NULL, sender_name TEXT NOT NULL, occurred_at TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('addressed', 'ambient', 'reply')),
+  parent_id INTEGER UNIQUE,
+  text TEXT NOT NULL, truncated INTEGER NOT NULL CHECK (truncated IN (0, 1)),
+  attachments TEXT NOT NULL DEFAULT '[]',
+  outcome TEXT NOT NULL CHECK (outcome IN
+    ('pending', 'completed', 'failed', 'cancelled', 'timed_out', 'dropped', 'empty',
+     'interrupted')),
+  delivery TEXT NOT NULL CHECK (delivery IN
+    ('unattempted', 'sending', 'complete', 'partial', 'failed', 'uncertain')),
+  parts TEXT NOT NULL DEFAULT '[]',
+  finalized INTEGER NOT NULL CHECK (finalized IN (0, 1)),
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  CHECK ((kind = 'reply' AND parent_id IS NOT NULL AND message_id IS NULL)
+    OR (kind != 'reply' AND parent_id IS NULL AND message_id IS NOT NULL)),
+  UNIQUE (transport, channel, message_id)
+);
+CREATE INDEX _enso_captures_workspace ON _enso_captures (workspace, id);
+CREATE INDEX _enso_captures_conversation
+  ON _enso_captures (workspace, conversation, id);
+
+-- A receipt reserves its sources before Markdown publication. Completion is separate.
+CREATE TABLE _enso_memory_receipts (
+  id TEXT PRIMARY KEY, workspace TEXT NOT NULL, outputs TEXT NOT NULL,
+  completed_at TEXT, created_at TEXT NOT NULL
+);
+CREATE TABLE _enso_memory_inputs (
+  capture_id INTEGER PRIMARY KEY, receipt_id TEXT NOT NULL
+);
+CREATE INDEX _enso_memory_inputs_receipt ON _enso_memory_inputs (receipt_id);
+CREATE TABLE _enso_memory_progress (
+  workspace TEXT PRIMARY KEY, capture_id INTEGER NOT NULL
+);
+
+-- A provider session belongs to the workspace containing its transcript.
 CREATE TABLE sessions (
   conversation TEXT NOT NULL, provider TEXT NOT NULL, session_id TEXT NOT NULL,
   workspace TEXT NOT NULL, created_at TEXT NOT NULL, last_active TEXT NOT NULL,
@@ -254,7 +293,17 @@ def connect(paths: Paths) -> sqlite3.Connection:
     try:
         con.row_factory = sqlite3.Row
         _version(con)
-        con.execute("PRAGMA journal_mode=WAL")
+        # Concurrent first opens can collide while changing the journal mode. SQLite may
+        # reject that lock upgrade immediately, without invoking its busy timeout.
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                con.execute("PRAGMA journal_mode=WAL")
+                break
+            except sqlite3.OperationalError as exc:
+                if exc.sqlite_errorcode != sqlite3.SQLITE_BUSY or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.01)
         con.execute("PRAGMA busy_timeout=30000")
     except BaseException:
         con.close()

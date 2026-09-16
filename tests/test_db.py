@@ -49,6 +49,10 @@ def test_fresh_database_is_created_at_current_schema_version(enso_home: Paths) -
             "sessions",
             "job_state",
             "_enso_tables",
+            "_enso_captures",
+            "_enso_memory_receipts",
+            "_enso_memory_inputs",
+            "_enso_memory_progress",
             "_enso_run_attempts",
             "_enso_tasks",
             "_enso_task_events",
@@ -267,5 +271,27 @@ def test_concurrent_initializers_share_one_fresh_schema(enso_home):
         futures = [pool.submit(initialize) for _ in range(4)]
         for future in futures:
             future.result(timeout=10)
+    with db.reader(enso_home) as con:
+        assert con.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+
+def test_journal_mode_retries_only_busy_lock_upgrades(enso_home, monkeypatch):
+    original = sqlite3.connect
+    calls = []
+
+    class Contended(sqlite3.Connection):
+        def execute(self, sql, *args):
+            if sql == "PRAGMA journal_mode=WAL":
+                calls.append(sql)
+                if len(calls) == 1:
+                    error = sqlite3.OperationalError("database is locked")
+                    error.sqlite_errorcode = sqlite3.SQLITE_BUSY
+                    raise error
+            return super().execute(sql, *args)
+
+    monkeypatch.setattr(sqlite3, "connect", lambda *a, **k: original(*a, **k, factory=Contended))
+    monkeypatch.setattr(db.time, "sleep", lambda _: None)
+    db.initialize(enso_home)
+    assert len(calls) == 2
     with db.reader(enso_home) as con:
         assert con.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
