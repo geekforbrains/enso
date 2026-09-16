@@ -277,7 +277,34 @@ wiring, and whether each workspace is bound or used by a job. `--fix` creates an
 it never deletes. The command exits 1 while any error remains; warnings alone exit 0. See
 [Workspaces](workspaces.md).
 
+### Workspace context in 0.2.0
+
+**Forthcoming in 0.2.0.** Workspace-scoped commands use `ENSO_WORKSPACE`, inherited from the
+Enso chat agent, job, or Heartbeat run calling them. Optional `--workspace` overrides it
+for that operation. The [context contract](workspaces.md#context-selection-in-020) owns
+validation and recorded ownership; there is no directory inference or implicit `default`.
+Installation-wide commands retain their installation scope.
+
+For an agent running with `ENSO_WORKSPACE=team`, these forthcoming examples select context:
+
+```bash
+enso task list                         # team
+enso task list --workspace personal    # deliberate lookup in personal
+enso heartbeat create --file beat.json # save team as the new follow-up's workspace
+enso heartbeat create --file beat.json --workspace personal
+```
+
+An explicit invalid workspace errors instead of falling back to the environment; absent
+context errors when an operation needs a workspace. `--workspace` does not change the
+caller's environment or transfer an existing record. It introduces no special admin role.
+These examples become executable as the corresponding commands are updated; current
+command syntax is listed below and in runtime help.
+
 ## Knowledge
+
+**Forthcoming in 0.2.0:** relevant knowledge lookup starts in the selected workspace, with
+deliberate shared or broader lookup when needed; see [Knowledge](knowledge.md#knowledge-and-memory-in-020).
+The signatures and scope defaults below describe the current 0.1.x CLI.
 
 ```text
 enso knowledge roots [--json]
@@ -315,6 +342,14 @@ create/adopt/update return `{ok: true, ...note}`. `move` returns
 Moves preserve note identity and rewrite only the resolved links the move would change or
 break, in the moved note and in others; they refuse ambiguous inbound targets, stale
 contents, and existing destinations.
+
+## Memory
+
+**Forthcoming in 0.2.0.** The memory CLI and `enso-memory` skill let agents find and maintain
+dated workspace history when a user asks about past conversations or experiences. Start in
+the [selected workspace](#workspace-context-in-020). [Memory](memory.md) owns capture,
+recall, retention, and explicit note removal; its command syntax will be documented when
+specified and implemented. Resetting a provider session does not remove memory or captures.
 
 ## Skills
 
@@ -382,6 +417,10 @@ refused; reconcile uncertain outcomes before retrying. Actor and run identity co
 Enso's environment, never from the JSON definition or CLI flags.
 
 ## Jobs and runs
+
+**Forthcoming in 0.2.0:** jobs use `<workspace>:<job>` references, such as `team:digest`,
+throughout commands, runs, and `ENSO_JOB`; [Workspaces](workspaces.md#ownership-in-020) owns
+the new locations and identity. The signatures below still describe 0.1.x.
 
 ```text
 enso job list [--json]
@@ -591,7 +630,7 @@ Re-registering it updates its description and display name; it does not change t
 | Variable | Set for | Value |
 | --- | --- | --- |
 | `ENSO_HOME` | everything | The home directory |
-| `ENSO_WORKSPACE` | everything | The workspace name; the provider's cwd is its directory |
+| `ENSO_WORKSPACE` | Enso-launched chat agents, jobs, and beats | The workspace name; the provider's cwd is its directory |
 | `ENSO_ORIGIN_TRANSPORT` | chat turns | `slack` or `telegram` |
 | `ENSO_ORIGIN_USER_ID` / `_USER_NAME` | chat turns | Who sent the message |
 | `ENSO_ORIGIN_CHANNEL` / `_CHANNEL_NAME` | chat turns | Where it came from (`dm` for direct messages) |

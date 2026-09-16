@@ -4,6 +4,26 @@ Knowledge is a collection of ordinary Markdown files maintained through conversa
 Enso. The [web viewer](web.md) provides read-only folder browsing, search, and linked note
 reading. Files remain usable outside Enso; the viewer is not an editor or the source of truth.
 
+## Knowledge and memory in 0.2.0
+
+**Forthcoming in 0.2.0.** Knowledge holds current maintained facts and useful reference
+material. [Memory](memory.md) holds dated conversations and experiences in the workspace
+where they happened. Both remain ordinary Markdown and are authoritative for their maintained
+content; operational records, including source message captures, live in the home database.
+
+When a user asks for a current fact or reference, agents use the knowledge CLI and
+`enso-knowledge` skill, starting with relevant knowledge in the selected workspace and
+consulting shared knowledge where applicable. Questions about earlier discussions, decisions,
+promises, and follow-ups use the memory CLI and forthcoming `enso-memory` skill. Broaden a
+lookup deliberately when needed; selecting a workspace organizes context rather than
+enforcing confidentiality. [Workspaces](workspaces.md#context-selection-in-020) owns selection.
+
+For example, the currently agreed support hours belong in a maintained knowledge note.
+The conversation on September 16 that proposed changing those hours belongs in the team's
+dated memory. Promote a confirmed lasting fact into its owning knowledge note deliberately,
+with source context; do not copy every memory into knowledge. Removing that memory later
+does not automatically remove a fact already promoted into knowledge.
+
 ## Locations and context
 
 - `$ENSO_HOME/knowledge/` is shared knowledge, addressed as `general`.

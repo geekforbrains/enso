@@ -9,6 +9,12 @@ whatever you're into next. It runs on your own machine, and you talk to it in Sl
 or Telegram. Choose the agent CLI that powers it, give it some context, and give it
 something to work on.
 
+**Forthcoming in 0.2.0:** one installation serves a person or a small trusted team.
+Workspaces organize context and ownership; everyone using the installation trusts the
+same environment. Teams needing separation run separate installations on separate machines
+or VPSs, with their own credentials and chat connections. See the
+[installation trust model](docs/concepts.md#installation-trust-model).
+
 Plan a weekend away. Turn rough notes into a plan. Keep an eye on a release. Enso
 can work on a schedule and follow up after the conversation ends. Work lives in
 ordinary files on your machine, and a read-only web viewer shows what's happening,
@@ -74,6 +80,7 @@ The pages here own technical behavior, configuration contracts, and development 
 - [Configuration](docs/configuration.md) and [workspaces](docs/workspaces.md) —
   providers, chat routing, permissions, and layout.
 - [Knowledge](docs/knowledge.md) — shared Markdown, folders, links, formatting, and imports.
+- [Memory](docs/memory.md) — forthcoming workspace history and conversation capture in 0.2.0.
 - [Jobs](docs/jobs.md), [Heartbeat](docs/heartbeat.md), and [tasks](docs/tasks.md) —
   scheduled work, follow-ups, and project boards.
 - [Customization and skills](docs/customizing.md) and [browser setup](docs/browser.md) —

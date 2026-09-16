@@ -11,6 +11,9 @@ rather than assembled by hand.
 
 ## Layout
 
+This is the current 0.1.x layout; the [0.2.0 ownership layout](#ownership-in-020) below is
+forthcoming.
+
 ```text
 ~/.enso/workspaces/<name>/
 ├── AGENTS.md          # purpose, scope, terms, approval rules for this workspace
@@ -56,6 +59,95 @@ without changing existing files. It reports conflicting files, directories, and 
 instead of replacing them. This also makes an interrupted initial scaffold safe to rerun;
 see [Non-interactive setup](install.md#non-interactive-setup). The ordinary workspace audit
 retains its separately documented repair behavior.
+
+## Ownership in 0.2.0
+
+**Forthcoming in 0.2.0.** Workspace-owned files live under their workspace; the containing
+directory determines ownership. Installation settings remain in `config.json`, as described
+in [Configuration](configuration.md#configuration-ownership-in-020).
+
+```text
+$ENSO_HOME/
+├── config.json
+├── AGENTS.md
+├── enso.db
+├── knowledge/                    # shared current reference material
+├── skills/                       # shared skills
+└── workspaces/<name>/
+    ├── AGENTS.md                 # purpose and working conventions for the agent
+    ├── WORKSPACE.md              # optional agent triple and provider arguments
+    ├── knowledge/                # current reference owned by this workspace
+    ├── memory/                   # dated conversations and experiences
+    ├── jobs/<job>/
+    │   ├── JOB.md
+    │   ├── prerun.sh             # optional
+    │   └── postrun.sh            # optional
+    ├── projects/<KEY>/
+    │   ├── PROJECT.md
+    │   └── *.sh                  # optional project scripts
+    ├── heartbeat/                # optional follow-up gate scripts and helpers
+    ├── drafts/
+    ├── uploads/
+    └── skills/                   # optional workspace-specific skills
+```
+
+This is the content layout. Instruction links, provider discovery, private configuration,
+locks, logs, caches, and managed runtime support still have the documented homes in
+[Concepts](concepts.md#home) and [Skills](#skills). Provider authentication remains with the
+provider CLI on the machine. A provider's optional workspace policy files remain its own;
+Enso's restriction mode is removed without silently changing provider arguments.
+
+| Resource | Source of truth | Owner |
+| --- | --- | --- |
+| Installation settings and bindings | Home `config.json` | Installation |
+| Shared guidance, knowledge, and skills | Home `AGENTS.md`, `knowledge/`, and `skills/` | Installation |
+| Workspace guidance, knowledge, memory, drafts, uploads, and skills | Files in the workspace | Containing workspace |
+| Workspace agent and provider arguments | `WORKSPACE.md` | Containing workspace |
+| Jobs and their supporting scripts | `jobs/<job>/` in the workspace | Containing workspace |
+| Project definitions and scripts | `projects/<KEY>/` in the workspace | Containing workspace |
+| Heartbeat gate scripts and helpers | `heartbeat/` in the workspace | The follow-up's recorded workspace |
+| Captures, sessions, tasks, runs, follow-ups, and outbox records | One home `enso.db` | Workspace recorded or unambiguously linked in the record |
+| Registered user tables | The same home `enso.db` | Installation |
+| Service, scheduling, updates, health, and concurrency-group locks | Host runtime and home operational state | Installation |
+
+Every job is referenced as `<workspace>:<job>`, including commands, scheduling, history,
+alerts, task-claim actors, `ENSO_JOB`, and viewer routes. For example, `team:digest` and
+`personal:digest` identify separate jobs in their respective workspace directories. A job's
+frontmatter does not repeat its workspace. Per-job locks live with the job; concurrency
+groups remain installation-wide, with locks under the home runtime directory. Jobs in
+different workspaces using the same group still serialize.
+
+A project's key and workspace come from `projects/<KEY>/PROJECT.md`'s location, rather than
+repeating them as ownership fields. Project scripts live alongside the definition and run
+from that directory. External source repositories can remain at their configured paths.
+Internal records still retain the ownership needed to query and recover work correctly;
+moving a directory must not silently reassign recorded work. Missing or ambiguous ownership
+is an error. There is no required privileged workspace type; installation-maintenance jobs
+can belong to an ordinary workspace.
+
+## Context selection in 0.2.0
+
+**Forthcoming in 0.2.0.** A chat binding selects an existing workspace for a turn. Enso
+sets `ENSO_WORKSPACE` for its chat agents, jobs, and Heartbeat runs, and CLI calls they launch
+inherit it. Workspace-scoped CLI operations default to that value; an optional
+`--workspace` explicitly overrides it for that operation. This includes Heartbeat creation,
+which saves the resolved workspace for later scheduling and execution.
+
+For example, an agent running with `ENSO_WORKSPACE=team` operates on `team` by default.
+Adding `--workspace personal` deliberately selects `personal` for that CLI operation. A
+later command without the flag still uses `team`. The CLI does not infer context from its
+current directory or fall back to `default`. Missing context, an invalid selected workspace,
+or ambiguous ownership is an error; an invalid explicit selection never falls back to the
+environment. An operation on an existing record respects that record's stored ownership;
+selecting another context does not transfer it.
+
+Environment variables are context hints, not authenticated identities. Cross-workspace
+selection is a deliberate context choice, available within the installation's trust model;
+it introduces no admin role or privilege boundary. Installation-wide operations keep their
+installation scope. Relevant lists and searches start in the selected workspace, with
+intentional broader lookup available where supported. [CLI](cli.md#workspace-context-in-020)
+shows examples; [Knowledge](knowledge.md#knowledge-and-memory-in-020) and [Memory](memory.md)
+own recall and maintenance guidance.
 
 ## Uploads
 
