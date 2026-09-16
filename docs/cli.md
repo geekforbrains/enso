@@ -294,8 +294,8 @@ it never deletes. The command exits 1 while any error remains; warnings alone ex
 ### Workspace context in 0.2.0
 
 Job and Heartbeat creation, message sends, operational lists, and task, project, and workflow
-commands use the shared resolver. Knowledge and memory lookup changes remain forthcoming
-under their sections below.
+commands and knowledge use the shared resolver. Memory lookup remains forthcoming
+under its section below.
 Workspace-scoped commands use `ENSO_WORKSPACE`,
 inherited from the Enso chat agent, job, or Heartbeat run calling them. Optional `--workspace` overrides it
 for that operation. The [context contract](workspaces.md#context-selection-in-020) owns
@@ -325,29 +325,38 @@ inventory, and installation health checks retain their installation-wide scope.
 
 ## Knowledge
 
-**Forthcoming in 0.2.0:** relevant knowledge lookup starts in the selected workspace, with
-deliberate shared or broader lookup when needed; see [Knowledge](knowledge.md#knowledge-and-memory-in-020).
-The signatures and scope defaults below describe the current 0.1.x CLI.
+Knowledge starts in the selected workspace. `--workspace NAME` overrides `ENSO_WORKSPACE`;
+`--shared` explicitly selects the home knowledge root and ignores the environment.
+`--workspace` and `--shared` are mutually exclusive. Missing workspace context without
+`--shared`, or an invalid explicit workspace, is an error; shared knowledge is never a
+fallback. These selectors apply to reads and writes, including UUID lookup.
 
 ```text
 enso knowledge roots [--json]
-enso knowledge list [--scope S] [--folder PATH] [--limit N] [--offset N] [--json]
-enso knowledge search QUERY [--scope S] [--folder PATH] [--limit N] [--offset N] [--json]
-enso knowledge show REF [--scope general] [--json]
-enso knowledge audit [--scope S] [--json]
-enso knowledge create PATH --file FILE|- [--scope general] [--json]
-enso knowledge adopt PATH [--scope general] [--expected-hash SHA] [--json]
-enso knowledge update REF --file FILE|- --expected-hash SHA [--scope general] [--json]
-enso knowledge move REF DEST [--scope general] [--to-scope S] [--expected-hash SHA] [--json]
+enso knowledge list [--workspace NAME | --shared] [--folder PATH] [--limit N] [--offset N] [--json]
+enso knowledge search QUERY [--workspace NAME | --shared] [--folder PATH] [--limit N] [--offset N] [--json]
+enso knowledge show REF [--workspace NAME | --shared] [--json]
+enso knowledge audit [--workspace NAME | --shared] [--json]
+enso knowledge create PATH --file FILE|- [--workspace NAME | --shared] [--json]
+enso knowledge adopt PATH [--workspace NAME | --shared] [--expected-hash SHA] [--json]
+enso knowledge update REF --file FILE|- --expected-hash SHA [--workspace NAME | --shared] [--json]
+enso knowledge move REF DEST [--workspace NAME | --shared] [--to-workspace NAME | --to-shared] [--expected-hash SHA] [--json]
 ```
 
-Scopes are `general` and `workspace:<name>`. `REF` is a UUID or an exact path inside the
-selected scope; UUIDs identify a note globally. New/destination paths must end in `.md`.
-`--folder` includes descendants. Listing/search defaults to all scopes and 50 notes, with
+`REF` is a UUID or an exact path inside the selected root. IDs remain globally unique;
+a UUID belonging to another root errors and requires an explicit selection. New/destination
+paths must end in `.md`. Moves stay in the source root unless `--to-workspace` or
+`--to-shared` selects another destination; those destination flags are mutually exclusive.
+
+`--folder` includes descendants. Listing/search returns up to 50 notes by default, with
 `--limit` from 1 to 500 and a nonnegative `--offset`. Search matches every whitespace-separated
-term against paths and bodies, case insensitively. No command loads transport configuration
-or initializes the database. [Knowledge](knowledge.md) owns the filesystem, metadata,
-link-resolution, adoption, and write-safety contracts.
+term against paths and bodies, case insensitively. There is no `--scope` or all-roots search
+flag: broaden deliberately with another search using `--shared` or `--workspace NAME`.
+`roots` inventories all roots without requiring context. Internal root identifiers remain
+`general` and `workspace:<name>` in JSON results and cross-root links.
+No command loads transport configuration or initializes the database.
+[Knowledge](knowledge.md) owns the filesystem, metadata, link-resolution, adoption, and
+write-safety contracts.
 
 With `--json`, `roots` returns `[{scope, label, path}]`. Listing/search returns
 `{total, offset, limit, notes, problems}`. Each note contains

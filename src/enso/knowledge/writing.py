@@ -43,6 +43,8 @@ def _timestamp() -> str:
 
 
 def _document(fields: dict[str, str], body: str) -> str:
+    if problems := metadata_problems({"schema": SCHEMA, **fields}):
+        raise KnowledgeError("; ".join(problems))
     # These four values have fixed scalar syntax; quoting timestamps avoids YAML date coercion.
     lines = ["---", f"schema: {SCHEMA}", f"id: {fields['id']}"]
     for key in ("created", "updated"):
@@ -51,12 +53,8 @@ def _document(fields: dict[str, str], body: str) -> str:
     return "\n".join([*lines, "---", "", body.lstrip("\r\n")]).rstrip("\r\n") + "\n"
 
 
-def normalize_text(text: str, *, now: str | None = None) -> str:
-    """Adopt a copy without inventing dates or discarding original unfamiliar metadata.
-
-    ``now`` is accepted for callers' uniform migration APIs; an import timestamp is never
-    substituted for a note's creation or substantive update time.
-    """
+def normalize_text(text: str) -> str:
+    """Adopt a copy without inventing dates or discarding original unfamiliar metadata."""
     document, _ = frontmatter.parse(text)
     old = document.fields if document else {}
     fields = {"schema": SCHEMA, "id": valid_id(old.get("id")) or str(uuid4())}
@@ -194,7 +192,9 @@ def adopt_note(
 ) -> Note:
     """Normalize one existing copied note; preserve unfamiliar frontmatter in its body."""
     with _writer(paths):
-        note = scan(paths).get(relative, scope)
+        catalog = scan(paths)
+        note = catalog.get(relative, scope)
+        catalog.require_unique(note)
         expected = _expected(note, expected_hash)
         text = read_bytes(note.root, note.path).decode("utf-8")
         if hashlib.sha256(text.encode()).hexdigest() != expected:
@@ -209,7 +209,9 @@ def update_note(paths: Paths, scope: str, ref: str, body: str, *, expected_hash:
     """Replace a managed note's body using its last read hash, preserving identity/creation."""
     _body_only(body)
     with _writer(paths):
-        note = scan(paths).get(ref, scope)
+        catalog = scan(paths)
+        note = catalog.get(ref, scope)
+        catalog.require_unique(note)
         _expected(note, expected_hash)
         if note.problems or not note.id:
             raise KnowledgeError("adopt the note's metadata before updating it")
@@ -330,6 +332,7 @@ def move_note(
     with _writer(paths):
         catalog = scan(paths)
         moved = catalog.get(ref, scope)
+        catalog.require_unique(moved)
         _expected(moved, expected_hash)
         target_root = catalog.root(to_scope or moved.scope)
         safe_path(target_root, destination)
@@ -352,6 +355,7 @@ def move_note(
         for note in catalog.notes:
             body = _relinked_body(catalog, after, note, moved, moved_after)
             if note is moved or body != note.body:
+                catalog.require_unique(note)
                 raw = read_bytes(note.root, note.path).decode("utf-8")
                 if hashlib.sha256(raw.encode()).hexdigest() != note.sha256:
                     raise KnowledgeError("a linked note changed; retry the move")

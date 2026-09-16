@@ -157,8 +157,9 @@ through preparation and queueing. Removing
 its binding or losing its workspace drops it before execution; the
 [connection access contract](connections.md#access-in-020) owns admission and notices. The
 shared resolver is used by task, project, workflow, job creation, Heartbeat creation,
-message sends, and operational list commands. Knowledge and memory lookup changes remain
-forthcoming as identified in [CLI](cli.md#workspace-context-in-020). Enso sets `ENSO_WORKSPACE`
+message sends, operational list commands, and knowledge. Knowledge adds `--shared` for
+explicit home-level reference; memory lookup remains forthcoming as identified in
+[CLI](cli.md#workspace-context-in-020). Enso sets `ENSO_WORKSPACE`
 for its chat agents, jobs, and Heartbeat runs, and CLI calls they launch inherit it.
 Workspace-scoped CLI operations default to that value; an optional
 `--workspace` explicitly overrides it for that operation. This includes Heartbeat creation,
