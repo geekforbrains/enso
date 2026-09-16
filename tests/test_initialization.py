@@ -53,9 +53,26 @@ main()
     assert json.loads(run.stdout)["ok"]
     assert not enso_home.config.exists() and not enso_home.db.exists()
     assert not (enso_home.home / "worktrees").exists()
-    assert json.loads(enso_home.config_example.read_text())["version"] == 2
+    example = json.loads(enso_home.config_example.read_text())
+    assert example["version"] == 2
     assert not list(enso_home.workspace_jobs("default").iterdir())
     assert (enso_home.home / ".git").is_dir()
+    # Filling the emitted example must work without deleting obsolete settings first.
+    example["transports"]["slack"].update(bot_token="xoxb-test", app_token="xapp-test", notify="C1")
+    example["providers"]["claude"]["path"] = sys.executable
+    example["bindings"]["slack:dm:U1"] = "default"
+    code, applied = invoke(
+        "config",
+        "apply",
+        "--file",
+        "-",
+        "--expected-hash",
+        "missing",
+        "--json",
+        input=json.dumps(example),
+    )
+    assert code == 0 and applied["ok"], applied
+    assert load_config(enso_home).projects == {}
 
 
 @pytest.mark.parametrize("legacy", ["config", "database", "jobs"])
