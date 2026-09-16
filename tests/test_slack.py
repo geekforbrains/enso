@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import replace
 
 import pytest
+from conftest import ImmediateIngress
 
 from enso import commands, db
 from enso.config import Agent, Config
@@ -177,7 +178,7 @@ async def test_removed_binding_drops_deferred_slack_attachment(admission_transpo
     transport = admission_transport
     runtime = transport.runtime
 
-    async def defer(conversation, reply, text, prepare):
+    async def defer(conversation, reply, text, prepare, *, capture=None):
         runtime.config = replace(runtime.config, bindings={})
         assert await prepare() is None
 
@@ -206,7 +207,7 @@ async def test_followup_in_running_user_thread_reaches_runtime(
 ) -> None:
     conversation = "slack:C1:100.001"
 
-    class FakeRuntime:
+    class FakeRuntime(ImmediateIngress):
         def __init__(self) -> None:
             self.config = config
             self.handled: list[tuple[Turn, Reply]] = []
@@ -228,21 +229,6 @@ async def test_followup_in_running_user_thread_reaches_runtime(
 
         async def submit(self, turn: Turn, reply: Reply) -> None:
             self.handled.append((turn, reply))
-
-        async def defer(
-            self,
-            conversation: str,
-            queue_reply: Reply,
-            raw_text: str,
-            prepare: Callable[[], Awaitable[tuple[Turn, Reply] | None]],
-        ) -> None:
-            del conversation, queue_reply, raw_text
-            prepared = await prepare()
-            if prepared is not None:
-                await self.submit(*prepared)
-
-        async def handle(self, turn: Turn, reply: Reply) -> None:
-            await self.submit(turn, reply)
 
     async def no_context(*args: object, **kwargs: object) -> str:
         return ""
@@ -292,7 +278,7 @@ async def test_thread_context_uses_selected_provider_session(
     conversation = "slack:C1:200.001"
     codex_config = replace(config, defaults=Agent("codex", "sol", "xhigh"))
 
-    class FakeRuntime:
+    class FakeRuntime(ImmediateIngress):
         def __init__(self) -> None:
             self.config = codex_config
             self.handled: list[tuple[Turn, Reply]] = []
@@ -315,21 +301,6 @@ async def test_thread_context_uses_selected_provider_session(
 
         async def submit(self, turn: Turn, reply: Reply) -> None:
             self.handled.append((turn, reply))
-
-        async def defer(
-            self,
-            conversation: str,
-            queue_reply: Reply,
-            raw_text: str,
-            prepare: Callable[[], Awaitable[tuple[Turn, Reply] | None]],
-        ) -> None:
-            del conversation, queue_reply, raw_text
-            prepared = await prepare()
-            if prepared is not None:
-                await self.submit(*prepared)
-
-        async def handle(self, turn: Turn, reply: Reply) -> None:
-            await self.submit(turn, reply)
 
     context_calls: list[bool] = []
 
@@ -404,7 +375,7 @@ async def test_thread_context_decodes_entities_exactly_once(
 async def test_channel_top_level_turn_gets_channel_access_pointer(
     config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    class FakeRuntime:
+    class FakeRuntime(ImmediateIngress):
         def __init__(self) -> None:
             self.config = config
             self.handled: list[tuple[Turn, Reply]] = []
@@ -423,21 +394,6 @@ async def test_channel_top_level_turn_gets_channel_access_pointer(
 
         async def submit(self, turn: Turn, reply: Reply) -> None:
             self.handled.append((turn, reply))
-
-        async def defer(
-            self,
-            conversation: str,
-            queue_reply: Reply,
-            raw_text: str,
-            prepare: Callable[[], Awaitable[tuple[Turn, Reply] | None]],
-        ) -> None:
-            del conversation, queue_reply, raw_text
-            prepared = await prepare()
-            if prepared is not None:
-                await self.submit(*prepared)
-
-        async def handle(self, turn: Turn, reply: Reply) -> None:
-            await self.submit(turn, reply)
 
     runtime = FakeRuntime()
     assert config.slack is not None
@@ -506,7 +462,7 @@ async def test_attachment_and_followup_reach_runtime_in_arrival_order(
     monkeypatch.setattr(runtime, "_run_turn", run_turn)
     monkeypatch.setattr(transport, "thread_context", no_context)
 
-    async def blocking_download(files: list[dict], workspace: str) -> list[str]:
+    async def blocking_download(files: list[dict], workspace: str, *, capture=None) -> list[str]:
         assert files == [{"id": "F1", "name": "notes.txt"}]
         assert workspace == "default"
         download_started.set()
@@ -642,7 +598,7 @@ async def test_stop_cancels_blocked_preparation_and_flushes_followups(
     async def run_turn(conversation: str, turn: Turn, reply: Reply) -> None:
         handled.append(turn.text)
 
-    async def blocking_download(files: list[dict], workspace: str) -> list[str]:
+    async def blocking_download(files: list[dict], workspace: str, *, capture=None) -> list[str]:
         assert files == [{"id": "F2", "name": "notes.txt"}]
         assert workspace == "default"
         download_started.set()
@@ -714,7 +670,7 @@ async def test_cleared_thread_stays_active_once_enso_has_replied(
 ) -> None:
     """A user-rooted thread Enso spoke in keeps admitting unmentioned replies after !clear."""
 
-    class FakeRuntime:
+    class FakeRuntime(ImmediateIngress):
         def __init__(self) -> None:
             self.config = config
             self.handled: list[str] = []
@@ -733,21 +689,6 @@ async def test_cleared_thread_stays_active_once_enso_has_replied(
 
         async def submit(self, turn: Turn, reply: Reply) -> None:
             self.handled.append(turn.text)
-
-        async def defer(
-            self,
-            conversation: str,
-            queue_reply: Reply,
-            raw_text: str,
-            prepare: Callable[[], Awaitable[tuple[Turn, Reply] | None]],
-        ) -> None:
-            del conversation, queue_reply, raw_text
-            prepared = await prepare()
-            if prepared is not None:
-                await self.submit(*prepared)
-
-        async def handle(self, turn: Turn, reply: Reply) -> None:
-            await self.submit(turn, reply)
 
     class FakeClient:
         def __init__(self) -> None:
@@ -860,6 +801,8 @@ async def test_threaded_dm_reply_joins_the_dm_conversation(
             queue_reply: Reply,
             raw_text: str,
             prepare: Callable[[], Awaitable[tuple[Turn, Reply] | None]],
+            *,
+            capture=None,
         ) -> None:
             del queue_reply, raw_text
             self.deferred.append(key)
@@ -896,7 +839,7 @@ async def test_threaded_dm_reply_joins_the_dm_conversation(
     assert turn.text == "also add tests"
 
 
-class _OriginRuntime:
+class _OriginRuntime(ImmediateIngress):
     """Enough runtime for ``_handle_event`` to prepare and submit one turn."""
 
     def __init__(self, config: Config) -> None:
@@ -911,21 +854,6 @@ class _OriginRuntime:
 
     async def submit(self, turn: Turn, reply: Reply) -> None:
         self.handled.append((turn, reply))
-
-    async def defer(
-        self,
-        conversation: str,
-        queue_reply: Reply,
-        raw_text: str,
-        prepare: Callable[[], Awaitable[tuple[Turn, Reply] | None]],
-    ) -> None:
-        del conversation, queue_reply, raw_text
-        prepared = await prepare()
-        if prepared is not None:
-            await self.submit(*prepared)
-
-    async def handle(self, turn: Turn, reply: Reply) -> None:
-        await self.submit(turn, reply)
 
 
 THREAD_CONTEXT = "[Thread context]\n@gavin: earlier"

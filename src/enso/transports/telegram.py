@@ -9,19 +9,22 @@ import os
 import re
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 try:
     from telegram import Bot, BotCommand, Message, ReplyParameters, Update
     from telegram.constants import ChatAction, ChatType, ParseMode
-    from telegram.error import BadRequest
+    from telegram.error import BadRequest, Forbidden, RetryAfter
     from telegram.ext import Application, ContextTypes, MessageHandler, filters
 except ImportError as exc:  # pragma: no cover - import guard
     raise ImportError(
         f"Telegram transport dependencies are missing ({exc.name}); install enso[telegram]"
     ) from exc
 
-from .. import commands, routing, workspaces
+from .. import captures, commands, routing, workspaces
+from ..capture_runtime import CaptureWriter
 from ..config import Paths, TelegramConfig
 from ..formatting import md_to_html
 from . import Reply, Transport, Turn
@@ -154,6 +157,9 @@ class TelegramReply(Reply):
     async def send(self, text: str) -> str:
         return str(await send_html(self._bot, self._chat_id, text, reply_to=self._reply_to))
 
+    def delivery_rejected(self, error: Exception) -> bool:
+        return isinstance(error, (BadRequest, Forbidden, RetryAfter))
+
     async def send_file(self, path: str, caption: str = "") -> str:
         with open(path, "rb") as handle:
             message = await self._bot.send_document(self._chat_id, handle, caption=caption or None)
@@ -193,6 +199,8 @@ class TelegramTransport(Transport):
         self.config = config
         self.paths = paths
         self.runtime: Runtime | None = None
+        self.bot_user_id = ""
+        self.bot_name = "Enso"
         self._bot: Bot | None = None
 
     @property
@@ -210,6 +218,7 @@ class TelegramTransport(Transport):
         async with app:
             self._bot = app.bot
             me = await app.bot.get_me()
+            self.bot_user_id, self.bot_name = str(me.id), me.full_name
             await app.bot.set_my_commands([BotCommand(n, d) for n, d in commands.COMMANDS])
             log.info("telegram connected as @%s (%s)", me.username, me.id)
             await app.start()
@@ -295,6 +304,7 @@ class TelegramTransport(Transport):
             user_id=str(user.id),
             user_name=user.full_name,
         )
+        reply.sender_id, reply.sender_name = self.bot_user_id, self.bot_name
         workspace = routing.workspace_for(
             self.runtime.config, routing.binding_key("telegram", chat_id, user_id=str(user.id))
         )
@@ -308,15 +318,44 @@ class TelegramTransport(Transport):
         ):
             return
 
+        resolved = resolve_file(message)
+        attachments: tuple[captures.Attachment, ...] = ()
+        if resolved is not None:
+            file_obj = resolved[0]
+            attachments = (
+                captures.Attachment(
+                    file_obj.file_unique_id,
+                    getattr(file_obj, "file_name", None) or "",
+                    getattr(file_obj, "mime_type", None),
+                    getattr(file_obj, "file_size", None),
+                ),
+            )
+        capture = CaptureWriter.start(
+            self.paths,
+            captures.Message(
+                transport="telegram",
+                workspace=workspace,
+                conversation=conversation,
+                channel=chat_id,
+                thread=None,
+                message_id=str(message.message_id),
+                sender_id=str(user.id),
+                sender_name=user.full_name,
+                occurred_at=message.date.isoformat(),
+                text=message.text or message.caption or "",
+                attachments=attachments,
+            ),
+        )
         await self.runtime.defer(
             conversation,
             reply,
             text,
-            lambda: self._prepare_message(message, reply, workspace),
+            lambda: self._prepare_message(message, reply, workspace, capture),
+            capture=capture,
         )
 
     async def _prepare_message(
-        self, message: Message, reply: Reply, workspace: str
+        self, message: Message, reply: Reply, workspace: str, capture: CaptureWriter
     ) -> tuple[Turn, Reply] | None:
         """Resolve files and context for one message after its FIFO reservation."""
         assert self.runtime is not None
@@ -327,7 +366,21 @@ class TelegramTransport(Transport):
         if routing.workspace_for(self.runtime.config, key, workspace=workspace) is None:
             await reply.send(routing.UNBOUND_NOTICE)
             return None
-        files = await self.download(message, workspace, reply)
+        files = None
+        try:
+            files = await self.download(message, workspace, reply)
+        finally:
+            if capture.message and capture.message.attachments:
+                reference = capture.message.attachments[0]
+                if files:
+                    reference = replace(
+                        reference,
+                        status="downloaded",
+                        path=Path(files[0]).relative_to(self.paths.workspace(workspace)).as_posix(),
+                    )
+                else:
+                    reference = replace(reference, status="failed")
+                await capture.attachments((reference,))
         if files is None:
             return None
         text = (message.text or message.caption or "").strip()

@@ -76,7 +76,7 @@ Enso's runtime state lives under one directory:
 ├── heartbeat/.locks/   # stable per-beat execution locks
 ├── worktrees/           # legacy task worktrees retained during migration; new defaults live by the repo
 ├── secrets/*.env        # KEY=value files exported into the service environment
-├── enso.db             # runs, messages, sessions, jobs, tasks, beats, registered tables
+├── enso.db             # captures, runs, messages, sessions, jobs, tasks, beats, user tables
 ├── enso.log            # rotating log
 ├── web.log, web.pid     # the web viewer's output and lock, while it runs
 ├── launchd-web.log      # stdout/stderr when the optional viewer service runs
@@ -102,12 +102,10 @@ paired chat, valid configuration, and a successful provider reply are separate m
 **Partly implemented for 0.2.0:** workspace settings now use `WORKSPACE.md`, and the new
 workspace directories are scaffolded. Jobs, projects, and Heartbeat scripts now use the
 [workspace ownership layout](workspaces.md#ownership-in-020). Workspace Markdown memory and
-its manual CLI and SQLite capture storage are implemented; live capture and harvesting
-remain forthcoming.
-Installation support
-files shown here keep their documented purpose and locations unless that layout explicitly
-changes them. Operational records stay in one home database; maintained knowledge and memory
-stay in Markdown.
+its manual CLI and live conversation capture are implemented; harvesting remains
+forthcoming. Installation support files shown here keep their documented purpose and
+locations unless that layout explicitly changes them. Operational records stay in one home
+database; maintained knowledge and memory stay in Markdown.
 
 Enso keeps its runtime state inside its home. The release installer writes a stable
 launcher in the selected bin directory; `enso service install` and `enso web install`
@@ -180,8 +178,8 @@ in one workspace's `memory/`. Knowledge holds current facts and reference materi
 user asks about an earlier discussion, the agent uses the memory CLI and `enso-memory`
 skill, starting in the selected workspace. People sharing a workspace share its maintained
 memory, while their DM conversations and live provider sessions remain distinct.
-[Memory](memory.md) owns capture, recall, and removal. Manual memory and capture storage
-are implemented; transport integration, harvesting, and the skill remain forthcoming.
+[Memory](memory.md) owns capture, recall, and removal. Manual memory and live capture
+are implemented; harvesting and the skill remain forthcoming.
 
 ## Agent
 
@@ -219,8 +217,8 @@ A binding also grants access to the installation. Bound channel
 participants can use Enso there; each Slack DM or Telegram user needs an explicit binding.
 Unknown senders receive only the canned unbound notice in the circumstances defined by
 [Connections](connections.md#access-in-020). Mention/thread settings decide when Enso replies;
-eligible live human messages in bound conversations will be captured even when Enso only
-observes, once the forthcoming [capture pipeline](memory.md#conversation-capture) is implemented.
+eligible live human messages in bound conversations are [captured](memory.md#conversation-capture)
+even when Enso only observes.
 
 A **conversation** is finer-grained than a binding. In a Slack channel each top-level
 message starts its own thread and its own conversation; a DM or a Telegram chat is one
@@ -335,19 +333,23 @@ from SQLite itself. Workspace selection is not a database permission boundary.
 3. Its location resolves to a binding key. No binding, no work.
 4. The location and thread resolve to a conversation key.
 5. Commands (`!stop`, `!clear`, `!status`, `!help`, `!restart`) are handled here and stop.
-6. Attachments download into `<workspace>/uploads/<id>/` under [names the transport
+6. The original human message is captured in its resolved workspace before asynchronous
+   preparation, including while queued. Eligible unaddressed messages are captured as ambient
+   discussion without a provider call or attachment download. Commands and setup traffic are
+   excluded; capture failures are logged without blocking ordinary handling.
+7. Attachments download into `<workspace>/uploads/<id>/` under [names the transport
    decides](workspaces.md#uploads); Slack fetches only from its own file-download endpoint,
    so metadata naming anywhere else is refused without a request. A message whose
    attachments all fail says so in the prompt. A message that cannot be prepared is answered
    with the error and dropped; the ones queued behind it still run.
-7. The turn takes the conversation lock, or queues behind whatever holds it.
-8. The agent triple resolves: workspace override, else `defaults`. Effort is normalized for
+8. The turn takes the conversation lock, or queues behind whatever holds it.
+9. The agent triple resolves: workspace override, else `defaults`. Effort is normalized for
    that provider.
-9. The prompt is assembled: the [chat-origin block](#chat-origin), background messages,
-   transport context, attachment paths, the user's text, and — on Slack — the rich-format
-   contract.
-10. The provider CLI runs in the workspace directory, resuming its session if there is one.
-11. Its stdout stream drives a live status message, whose header uses the same compact model
+10. The prompt is assembled: the [chat-origin block](#chat-origin), background messages,
+    transport context, attachment paths, the user's text, and — on Slack — the rich-format
+    contract.
+11. The provider CLI runs in the workspace directory, resuming its session if there is one.
+12. Its stdout stream drives a live status message, whose header uses the same compact model
     label as the chat `status` command; the final text is delivered, split to the transport's
     limit. When Enso translates ordinary Markdown for Slack, it keeps HTTP, HTTPS, email, and
     Slack deep links clickable; a link to anything else is shown as its inline-code target
@@ -356,7 +358,9 @@ from SQLite itself. Workspace selection is not a database permission boundary.
     its first line; an unlabelled fence stays a plain code block, and a block Slack refuses
     falls back to the translated text. The Slack prompt asks the agent to name local files with
     workspace-relative inline-code paths such as `drafts/report.md`.
-12. The validated session ID is stored against the conversation and workspace once a
+    The final reply is captured separately with generation and per-part delivery outcomes;
+    progress, diagnostics, injected context, and formatting-repair turns are excluded.
+13. The validated session ID is stored against the conversation and workspace once a
     recognized provider event establishes it. Invalid or conflicting IDs fail the turn
     without replacing its original session. Chat, jobs with postrun, and Heartbeat share the
     [session identity rules](configuration.md#session-identity).

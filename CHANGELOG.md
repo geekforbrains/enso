@@ -68,12 +68,16 @@ All notable changes to Enso are documented here, following
 
 - SQLite capture storage with permanent transport message identities, separate reply and
   delivery outcomes, bounded workspace queries, recoverable processing receipts, and
-  workspace-checked memory source references. Live transport integration is forthcoming.
+  workspace-checked memory source references. Slack and Telegram capture admitted human
+  messages before preparation, including unaddressed Slack discussion, and retain final
+  replies with rich-text fallback and per-part delivery outcomes. Retries keep their first
+  workspace, stopped/dropped turns retain their outcome, and capture failures leave normal
+  handling available without resending work.
 
 - Workspace Markdown memory with explicit event dates, UTC date folders, undated imports,
   stable IDs, relative links, and conflict-checked corrections. `enso memory` lists, searches,
-  reads, creates, updates, and audits manual notes without a database; capture and harvesting
-  remain forthcoming.
+  reads, creates, updates, and audits manual notes without a database; automated harvesting
+  remains forthcoming.
 
 - Shared `knowledge/` and automatically discovered workspace knowledge, with a read-only
   folder and search viewer, stable note URLs, Markdown and wiki links, and backlinks.

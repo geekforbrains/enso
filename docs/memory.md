@@ -1,8 +1,8 @@
 # Memory
 
-Markdown memory, its manual CLI, and SQLite capture storage are implemented for 0.2.0.
-Live transport capture, harvesting, removal, and the `enso-memory` skill remain forthcoming;
-the sections below specify their agreed contracts. These features are not available in 0.1.x.
+Markdown memory, its manual CLI, and live Slack/Telegram capture are implemented for 0.2.0.
+Harvesting, removal, and the `enso-memory` skill remain forthcoming; their sections below
+specify agreed contracts. These features are not available in 0.1.x.
 
 ## Purpose and ownership
 
@@ -152,7 +152,7 @@ modification time, and change time. [CLI](cli.md#memory) owns exact signatures a
 
 ## Conversation capture
 
-**Storage implemented; live transport integration forthcoming.**
+**Implemented for Slack and Telegram in 0.2.0.**
 
 Enso captures eligible live human messages it receives while running in a bound
 conversation, after resolving its workspace. This includes messages that do not address
@@ -163,6 +163,10 @@ owns admission; mention/thread settings affect replies rather than capture eligi
 Captures are operational records in the single home SQLite database. Every transport
 supplies the same normalized record: stable identity, transport, workspace, conversation,
 thread, sender ID and display name, timestamp, text, attachment references, and kind.
+Slack retains the original event text, including platform mention markup; Telegram retains
+the original text or caption. A display name unavailable at admission is empty, never an
+invented identity. Replies retain the authenticated bot's ID and name when available.
+Timestamp and message identity come from the authenticated transport.
 
 | Kind | Meaning |
 | --- | --- |
@@ -187,12 +191,15 @@ time, and attachment metadata remain unchanged; normal preparation can update at
 download status and workspace-relative paths.
 
 Addressed inputs remain pending until their reply handling finishes. Outcomes distinguish
-completed, failed, cancelled, timed-out, dropped, empty, and interrupted handling. A reply
+completed, failed, cancelled, timed-out, dropped, empty, and interrupted handling. The
+addressed record describes handling; its reply describes generation. A stop after generation
+can therefore retain a completed answer with cancelled handling and partial delivery. A reply
 checkpoints generation separately from delivery; `finalized` says whether its delivery
 attempt has ended. Each delivery part records its character range, known message ID, and
 sending/sent/failed/uncertain state. Ranges refer to the full representation and may extend
 beyond a truncated stored prefix. Service-start recovery can mark unfinished inputs
 interrupted and in-flight sends uncertain; it never starts work or sends messages.
+A request captured before a process interruption may have no reply record at all.
 
 Storage queries require a workspace, optionally a conversation, and return stable capture-ID
 order (receipt chronology) after a cursor. Source timestamps preserve event time separately.
@@ -219,9 +226,10 @@ keeps its first 65,536 bytes with `truncated: true`; a claim beyond that prefix 
 to memory, not evidence that the claim was absent from the original message.
 
 Final replies use readable Markdown representing the user-facing content. Ordinary text
-stays text; rich Markdown blocks remain Markdown, tables retain their headings and cells,
-and charts become a caption and a Markdown table of their labels and values. Preserve
-block order. Do not store the `enso-message` JSON envelope or formatting-repair dialogue
+stays text; transport-sized pieces are separated by blank lines, with per-piece ranges and
+acknowledgments. Empty splitting artifacts are not sent. Rich Markdown blocks remain
+Markdown, tables retain their headings and cells, and charts become a caption and a Markdown
+table of their labels and values. Preserve block order. Do not store the `enso-message` JSON envelope or formatting-repair dialogue
 as the answer. If the transport sends a text fallback instead, capture that fallback as
 the delivered representation. For example, a chart titled "Signups" with Monday 4 and
 Tuesday 7 becomes that title and those two rows, not a claim that an image was retained.
@@ -247,8 +255,9 @@ into several transport messages. Record generation outcome separately from deliv
 completed generation is not proof the user received it. Preserve known delivery message
 IDs and which parts were sent; distinguish complete, partial, failed, unattempted, and
 uncertain delivery. For example, if the first of two pieces sends and the second fails,
-record partial delivery, not a successful complete reply. A timeout with an unknown send
-result remains uncertain, never assumed sent or retried just for capture.
+record partial delivery, not a successful complete reply. The stored representation may
+include unsent content; only acknowledged parts establish what the user received. A timeout
+with an unknown send result remains uncertain, never assumed sent or retried just for capture.
 
 Stopped, failed, timed-out, or dropped turns retain their known outcome. With no final
 user-facing response, record that no final reply was produced or delivered rather than

@@ -397,8 +397,8 @@ chooses its folder from the required occurrence, assigns a UUID, and sets docume
 `VALUE` is a quoted date or timezone-aware timestamp, or `unknown`; manual notes use
 `sources: []` and describe other provenance in their body. Commands require neither
 transport configuration nor an initialized database.
-Until capture storage lands, nonempty capture references are reported as unverifiable and
-managed updates refuse them without changing the original sources.
+Nonempty source lists are validated against the capture database: missing or differently
+owned captures prevent managed updates, preserving the original sources.
 
 ```bash
 enso memory create launch-proposal.md --workspace team --occurred 2026-09-16 --file proposal.md

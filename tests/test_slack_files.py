@@ -12,7 +12,8 @@ from aiohttp.test_utils import TestServer
 from conftest import FakeSlack
 from yarl import URL
 
-from enso import db
+from enso import captures, db
+from enso.capture_runtime import CaptureWriter
 from enso.config import Config
 from enso.runtime import Runtime
 from enso.transports import Reply, Turn
@@ -256,9 +257,37 @@ async def test_a_valid_download_is_authenticated_and_streamed(
     config: Config, server: Server
 ) -> None:
     transport = transport_for(config)
-    files = [{"id": "F1", "name": "notes.txt", "url_private_download": server.url("file")}]
+    files = [
+        {"id": "F1", "name": "notes.txt", "url_private_download": server.url("file")},
+        {"id": "F2", "name": "missing.txt", "url_private_download": "https://example.test"},
+    ]
 
-    (path,) = await transport.download_files(files, "default")
+    db.initialize(config.paths)
+    writer = CaptureWriter.start(
+        config.paths,
+        captures.Message(
+            "slack",
+            "default",
+            "slack:C1:1",
+            "C1",
+            "1",
+            "1",
+            "U1",
+            "Person",
+            "2026-09-16T12:00:00Z",
+            "",
+            attachments=transport._attachment_refs({"files": files}),
+        ),
+    )
+    await writer.ready()
+    (path,) = await transport.download_files(files, "default", capture=writer)
+    captured = captures.get(config.paths, "default", writer.id)
+    attachment, missing = captured.attachments
+    assert missing.status == "failed" and missing.path is None
+    assert attachment.status == "downloaded"
+    assert attachment.path == Path(path).relative_to(config.paths.workspace("default")).as_posix()
+    assert attachment.id == "F1" and attachment.filename == "notes.txt"
+    assert "http" not in repr(captured)
 
     assert server.requests == [("/file", "Bearer xoxb-test")]
     assert Path(path).read_bytes() == server.body

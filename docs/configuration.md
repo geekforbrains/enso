@@ -288,7 +288,7 @@ A binding grants access and maps a conversation to an existing workspace. Keys a
 
 [Connections](connections.md#access-in-020) owns the access and unbound-notice rules,
 pairing, and queued-turn behavior. Mention/thread settings control when Enso responds,
-independently of access and forthcoming live message capture.
+independently of access and [live message capture](memory.md#conversation-capture).
 [Applying configuration](#while-the-service-runs) describes live binding reads.
 
 The named workspace directory must exist. `config check` treats a binding pointing at a

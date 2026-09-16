@@ -79,7 +79,7 @@ retains its separately documented repair behavior.
 ## Ownership in 0.2.0
 
 **Target for 0.2.0.** Workspace paths, settings, projects, jobs, and Heartbeat scripts are
-implemented, including manual Markdown memory; capture and harvesting remain forthcoming.
+implemented, including manual Markdown memory and live capture; harvesting remains forthcoming.
 Workspace-owned files live under their workspace; the containing directory determines
 ownership. Installation settings remain in `config.json`, as described
 in [Configuration](configuration.md#configuration-ownership-in-020).
