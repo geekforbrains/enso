@@ -42,6 +42,12 @@ building containers, permission brokers, or a second security policy system into
 product. Provider permissions can remain configurable, and Enso must still control who
 can use the installation, protect credentials, handle untrusted input, and preserve user data.
 
+Conversation mappings can also grant access. Mapping a Slack channel means trusting its
+human participants to use this Enso; mapping a Slack DM or Telegram user means trusting that
+person. Each mapping selects a workspace, so a separate list granting the same access adds
+configuration without a useful distinction. We will remove that duplication while keeping
+explicit mappings and trusted setup.
+
 Files that people and agents maintain should be ordinary Markdown. Knowledge describes
 current facts and useful reference material. Memory records dated experiences and context.
 Knowledge can belong to the installation or a workspace. Memory belongs only to a workspace.
@@ -109,6 +115,45 @@ There is no required privileged workspace type. Installation-maintenance jobs ca
 an ordinary default workspace. External source repositories can stay at their existing
 paths; workspace ownership does not require moving a code repository into the Enso home.
 
+## Conversation mappings and access
+
+A binding is an explicit mapping that both grants access and selects an existing workspace.
+Use platform-issued channel/user IDs from authenticated transport events, never display
+names or identities claimed in message text. Keep transport authentication and connection
+identity checks. Do not add a separate user/role permission system.
+
+| Conversation | Access requirement | Workspace selection |
+| --- | --- | --- |
+| Slack channel | Bot is present and the channel has a binding; human participants can use it | Channel's binding |
+| Slack one-to-one DM | The sender has an explicit DM binding | User's DM binding |
+| Telegram private chat | The sender has an explicit Telegram binding | User's binding |
+
+Several bindings may select the same workspace, or each person may have their own. There
+is no wildcard DM access or fallback workspace for an unknown sender. Telegram remains
+private-chat-only; one user and one workspace is the simplest setup, not a platform limit.
+Keep unsupported group conversations and bot-originated messages out of agent dispatch.
+
+Channel membership manages who can use Enso there, including later additions, guests, and
+external Slack Connect participants. Binding a channel trusts that audience to use the
+installation's capabilities. Mention/thread settings control when Enso responds, not who
+is trusted. Separate personal workspaces do not guarantee confidentiality within an
+installation. People sharing a workspace share its maintained memory, while their DM
+conversations and live provider sessions remain distinct.
+
+For an unbound Slack channel, stay silent unless the bot is mentioned, then send a short
+setup notice without starting an agent. Silently ignore unbound Slack DMs and Telegram
+senders. Check admission before downloading attachments, queuing agent work, or storing
+conversation captures. A broken binding must never fall back to another workspace.
+
+Create bindings through trusted configuration or operator-initiated pairing. Preserve the
+existing short-lived pairing challenge and acknowledgment as a setup-only exception to
+unbound-DM silence; pairing messages never become agent turns or memory captures. An
+unknown sender cannot grant themselves access by asking Enso to create a binding.
+
+Remove Telegram's redundant `allowed_users` setting: its explicit user bindings become
+the single access list. Removing a binding withdraws access for new messages and queued
+turns that have not started; it does not silently delete past captures or memory.
+
 ## Scope and design limits
 
 - Keep the normal experience conversational. Workspace selection usually comes from routing,
@@ -120,6 +165,8 @@ paths; workspace ownership does not require moving a code repository into the En
   or replacing the user's provider arguments with blanket bypass flags.
 - Preserve installation access checks, input validation, safe file operations, bounded
   subprocesses, cancellation, conflict detection, and explicit authorization for external actions.
+- Use conversation bindings for chat access and routing. Remove duplicate allowlists while
+  retaining transport authentication, trusted pairing, and rejection before agent work or capture.
 - Default lookup to the relevant workspace where appropriate. Broader installation-wide
   lookup remains available and is a context choice, not a privilege escalation.
 - Scope database queries for correctness. A workspace filter is not a security boundary.
@@ -175,7 +222,8 @@ record rather than a competing permanent product specification.
 **Depends on:** review of this draft.
 
 **Owning docs:** [Concepts](docs/concepts.md), [Configuration](docs/configuration.md),
-[Workspaces](docs/workspaces.md), [Knowledge](docs/knowledge.md), new `docs/memory.md`.
+[Connections](docs/connections.md), [Workspaces](docs/workspaces.md),
+[Knowledge](docs/knowledge.md), new `docs/memory.md`.
 
 ### P1.1 — Define installation trust and workspace ownership
 
@@ -185,14 +233,18 @@ record rather than a competing permanent product specification.
   - Document one installation as one trusted environment and separate machines/VPSs as the
     deployment model for teams requiring separation. The host and its administrators remain trusted.
   - Define workspaces as context and ownership, with no confidential compartment claim.
+  - Document the conversation mapping/access contract above, including trusted channel
+    audiences, explicit private-user bindings, and removal of duplicate allowlists.
   - Specify how channel bindings, explicit CLI selection, and the current workspace select
-    context. Missing or ambiguous ownership must produce a useful error instead of guessing.
+    context. Missing or ambiguous ownership must never guess or fall back; distinguish
+    operator diagnostics from the agreed silence/setup notice for unmapped chat sources.
   - Set the default workspace name for fresh setup and the default home for maintenance jobs.
   - Define job references as workspace plus local job name. Choose and document project
     reference rules; prefer keeping globally unique project keys and existing simple task
     references unless review establishes a need for another namespace.
 - **Validation:** Walk through a personal default workspace, two team channels in one instance,
-  and two entirely separate team installations. Every resource in the ownership table has one owner.
+  shared versus personal DM workspaces, an unknown sender, and two separate team installations.
+  Every resource in the ownership table has one owner.
   Clearly mark proposed contracts as forthcoming until their implementation tasks are complete.
 - **Notes:** —
 
@@ -241,7 +293,8 @@ record rather than a competing permanent product specification.
     change invocation privileges as an incidental consequence of removing the flag.
   - Define clear handling of an obsolete `restricted` property during configuration loading;
     document the intentional format change without building a legacy policy subsystem.
-  - Preserve transport pairing, allowed-sender/channel checks, and handling of unauthorized input.
+  - Preserve transport authentication, pairing, and rejection of unauthorized input while
+    removing workspace restriction gates; P2.3 separately consolidates access into bindings.
   - Update affected security guidance to describe the installation trust model accurately.
 - **Validation:** Configuration and launch tests cover chat, jobs, and Heartbeat without the
   removed gates; unauthorized incoming messages still cannot start work.
@@ -262,6 +315,33 @@ record rather than a competing permanent product specification.
   - Preserve safe path traversal, symlink handling, and user-authored files during setup/audit.
 - **Validation:** Scratch-home setup, workspace creation, context ambiguity, path safety,
   and shared/workspace skill discovery behave according to the new layout.
+- **Notes:** —
+
+### P2.3 — Make conversation bindings the single chat access rule
+
+- **Status:** pending
+- **Commit:** —
+- **Requirements:**
+  - Implement the conversation mapping/access contract above for Slack channels, Slack DMs,
+    and Telegram private chats. Reuse existing binding behavior wherever it already matches.
+  - Remove Telegram `allowed_users` from configuration, validation, runtime checks, setup,
+    pairing, examples, and guidance. Pairing creates the explicit user binding and notification
+    target; obsolete configuration gets an actionable diagnostic rather than being ignored.
+  - Preserve authenticated transport identities, connection checks, and pairing challenges.
+    Only trusted setup/configuration can establish a binding; normal unknown messages cannot.
+  - Apply admission consistently to messages and chat commands before attachment download,
+    provider work, and later capture. Keep the unbound-channel notice free of provider calls
+    or private configuration details; unbound DMs stay silent outside active pairing.
+  - Require an existing mapped workspace; do not create personal workspaces or choose a
+    default automatically for unknown senders. Continue ignoring unsupported chat types and bots.
+  - Recheck binding presence before queued work starts. Removed bindings prevent that work
+    from starting; rebindings follow P3.4's pinned ownership and session rules.
+  - Keep mention/thread behavior independent of authorization. Do not add channel user
+    allowlists or promise that a mapped personal workspace protects data from other agents.
+- **Validation:** Fake transports cover mapped and unmapped channel/DM/private-chat sources,
+  channel participants without individual DM access, shared versus distinct workspace mappings,
+  wrong connection identity, bots, unsupported groups, setup pairing, missing workspaces,
+  and binding removal while queued. Rejected input causes no attachment download or agent work.
 - **Notes:** —
 
 ## Phase 3 — Consolidate jobs, projects, and operational ownership
@@ -337,6 +417,8 @@ record rather than a competing permanent product specification.
     explicitly where needed. Do not duplicate an authoritative relationship without a use.
   - Freeze the workspace for each accepted turn and execution. Later binding changes must
     not move existing records or resume a provider session in the wrong workspace.
+  - Keep each person's DM conversation and provider session distinct even when several
+    people share a workspace. Workspace memory remains shared context, not a private DM store.
   - Define background-message handling across binding changes so old context does not
     accidentally appear as work belonging to a newly selected workspace.
   - Make ordinary context-sensitive lists/searches use the selected workspace; provide
@@ -344,7 +426,8 @@ record rather than a competing permanent product specification.
   - Keep operational database access shared and treat output, error, and debug content as
     potentially private to the installation.
 - **Validation:** Interleaved conversations in two workspaces, queueing, rebinding, and
-  out-of-band replies retain the correct ownership and session behavior.
+  out-of-band replies retain the correct ownership and session behavior. Two users bound
+  to one workspace do not resume each other's DM sessions.
 - **Notes:** —
 
 ## Phase 4 — Define reliable Markdown knowledge and memory
@@ -424,6 +507,8 @@ record rather than a competing permanent product specification.
 - **Requirements:**
   - Capture only accepted, authorized messages after their workspace is resolved, early enough
     to preserve requests waiting in the queue. Follow the agreed behavior if durable capture fails.
+  - Exclude unmapped/rejected input, pairing messages, and setup notices from conversation
+    captures and memory. Use P2.3's admission decision instead of a second user allowlist.
   - Capture the original user request, not the assembled provider prompt. Exclude injected
     history, background context, system guidance, tool calls/results, progress messages, and
     internal formatting-repair turns.
@@ -437,6 +522,7 @@ record rather than a competing permanent product specification.
     transport's ability to retrieve historical messages.
 - **Validation:** Fake-transport/provider tests cover normal and rich replies, retries, queued
   turns, stop, timeout, provider errors, empty replies, delivery failure, and changed bindings.
+  Rejected input and setup-only exchanges leave no conversation captures or harvested memories.
 - **Notes:** —
 
 ## Phase 6 — Turn captures into useful, recoverable memory
@@ -513,6 +599,7 @@ record rather than a competing permanent product specification.
 **Depends on:** Phases 2–6.
 
 **Owning docs:** [Install](docs/install.md), [Workspaces](docs/workspaces.md),
+[Connections](docs/connections.md), [Configuration](docs/configuration.md),
 [Customization](docs/customizing.md), [Knowledge](docs/knowledge.md), new `docs/memory.md`,
 [CLI](docs/cli.md), [Web viewer](docs/web.md), [README](README.md).
 
@@ -542,6 +629,9 @@ record rather than a competing permanent product specification.
 - **Requirements:**
   - Fresh setup and workspace creation produce the target layout and the selected default
     workspace, with appropriate jobs installed in actual workspace directories.
+  - Verify packaged setup and pairing create explicit user bindings without `allowed_users`.
+    Explain channel audience trust and shared workspace memory when configuring connections;
+    mapping a person's DM must not imply that their workspace is confidential.
   - Adapt bundled audit/update jobs, installation manifests, and managed bundle paths to the
     new ownership scheme. Preserve disabled/customized files according to the documented rules.
   - Update shared/workspace instructions and affected skills so the agent can carry out
@@ -559,7 +649,8 @@ record rather than a competing permanent product specification.
 - **Commit:** —
 - **Requirements:**
   - Sweep README, owning docs, CLI help/JSON examples, bundled skills, setup text, and tests for
-    obsolete global-job paths, redundant ownership fields, and workspace-isolation claims.
+    obsolete global-job paths, redundant ownership fields/allowlists, and workspace-isolation
+    claims. Replace obsolete unbound-DM replies with the silence and pairing rules from P2.3.
   - Ensure existing viewer pages can still read jobs, tasks, follow-ups, workspaces, and
     knowledge through their updated models and references. Limit UI changes to correctness.
   - Document capture/memory commands and common conversational workflows in their owning pages.
@@ -590,6 +681,9 @@ record rather than a competing permanent product specification.
     correct through scheduling, queueing, task workflows, follow-ups, and restart recovery.
   - Exercise unauthorized input, malformed notes, untrusted captured instructions, unsafe paths,
     output limits, interruptions, and concurrent changes at the boundaries introduced here.
+  - Verify the binding access matrix end to end: channel membership does not grant DM access,
+    unknown private senders stay silent, and rejected input triggers no download, agent, or
+    capture. Verify the unbound-channel setup notice and trusted pairing exceptions separately.
   - Verify packaged installation behavior in a scratch home and keep real credentials,
     external messages, provider accounts, and system service management out of automated tests.
   - Run the complete documented check suite and address concrete failures. Record the
@@ -606,6 +700,9 @@ record rather than a competing permanent product specification.
   - Prepare a short manual runbook for Gavin's installation: backup, stop/drain, adapt config,
     move job/project/follow-up files, preserve disabled jobs and user edits, and verify data.
     Keep a machine-specific inventory and sensitive details outside the repository.
+  - Review Telegram bindings against the old `allowed_users` before removing it. A previously
+    mapped but disallowed user must not gain access accidentally; retain only the intended
+    effective access unless Gavin explicitly chooses to grant more. Verify Slack DM bindings too.
   - Specify a consistent SQLite backup together with the necessary files and configuration,
     a usable rollback, and reconciliation rules that protect work accepted after the backup.
   - Preserve existing knowledge and useful runtime data. Treat any import from the archived
@@ -641,6 +738,8 @@ implementation commit recorded, and the following are true:
 
 - The product consistently describes one trusted installation with workspaces for focused work.
 - Enso has no `restricted` workspace mode; installation access and other retained safeguards work.
+- Explicit conversation bindings grant chat access and select workspaces without duplicate
+  allowlists; trusted pairing, unknown-sender silence, and admission before capture work as specified.
 - Jobs and other workspace-owned definitions live in their workspace and avoid redundant ownership input.
 - Operational state uses one database; knowledge and maintained memory use validated Markdown.
 - Accepted conversations can be captured without fetching transport history, and memory
