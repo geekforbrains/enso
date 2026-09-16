@@ -641,6 +641,7 @@ async def test_notice_retry_repairs_known_outbox_receipt_without_duplicate_send(
     with db.transaction(config.paths) as con:
         row = con.execute("SELECT * FROM messages WHERE status = 'sent'").fetchone()
     assert row["thread"] == "123.456" and row["consumed_at"] is None
+    assert row["workspace"] == beat.workspace
     assert row["source"].startswith(f"beat:{beat.ref}:notice:")
 
 

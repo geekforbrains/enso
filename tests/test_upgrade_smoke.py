@@ -27,6 +27,7 @@ async def test_smoke_transport_supports_cli_delivery(config, tmp_path, upload):
         transport,
         "C1",
         "100.1",
+        workspace="default",
         text="Report",
         file=attachment if upload else None,
     )

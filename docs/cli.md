@@ -74,6 +74,8 @@ extras, the service pid, job names, and beat counts and attention references).
 terminal. `--debug` adds the full prompt and every raw provider event. Each chat turn is
 tagged `[t:<id>]` and each job run `[j:<workspace>:<job>]`, which `enso logs --turn` and `--job`
 filter on; `-f` follows across rotations.
+Logs, debug prompts, run output, and errors may contain private installation data;
+workspace filters organize context and do not restrict database or log access.
 
 `serve`, `setup`, and the job, run-history, task, project, messaging, Slack, Telegram, and
 table commands initialize `enso.db`. They reject a pre-0.2.0 database or a newer database
@@ -97,8 +99,8 @@ The [installation and update lifecycle](install.md#upgrading) owns the behavior;
 ```text
 enso update install --manifest SOURCE [--bin-dir DIR] [--extras slack,telegram,web]
                      [--token-file FILE] [--feed URL] [--viewer-service NAME] [--adopt] [--json]
-enso update check [--manifest SOURCE] [--notify] [--quiet] [--json]
-enso update apply [--manifest SOURCE] [--drain-timeout SECONDS] [--startup-timeout SECONDS] [--json]
+enso update check [--manifest SOURCE] [--notify] [--workspace W] [--quiet] [--json]
+enso update apply [--manifest SOURCE] [--workspace W] [--drain-timeout SECONDS] [--startup-timeout SECONDS] [--json]
 enso update status [--json]
 enso update recover [--json]
 ```
@@ -118,6 +120,9 @@ does not inherit a calling job or chat's destination. `--quiet` suppresses ordin
 and expected check/delivery failures; a later check retries. `--json` always emits a report,
 including an error when quiet checking fails. A check without a feed on an unmanaged
 checkout succeeds with `managed: false`, `available: null`, and no available update.
+`--notify` requires `--workspace` or `ENSO_WORKSPACE` for the outbox owner, even with
+`--quiet`; missing or invalid context fails before checking the feed. A read-only check
+needs no workspace.
 
 `apply` queues an independent updater and returns before the upgrade finishes. An equal
 release is a no-op; downgrades, reused release versions with different code, and a second
@@ -126,6 +131,10 @@ pending operation are refused. Managed releases use stable `major.minor.patch` v
 seconds (1–600). The updater defers when accepted work or another ordinary CLI command is
 still using the home at the drain deadline. Commands retain that access while waiting for
 stdin, so an update cannot migrate underneath a pending `--file -` operation.
+`apply` requires `--workspace` or `ENSO_WORKSPACE` before queuing work. It records the
+resolved workspace for the eventual completion notification, preserving that owner
+through service restarts or chat binding changes. An explicit flag overrides the
+environment; no workspace defaults to `default`. Recovery uses the saved owner.
 
 `status` reports the installed receipt, recent running-daemon version when available, and
 the latest operation. `recover` retries an interrupted operation's recovery using its
@@ -284,8 +293,9 @@ it never deletes. The command exits 1 while any error remains; warnings alone ex
 
 ### Workspace context in 0.2.0
 
-**Partly implemented in 0.2.0.** Job and Heartbeat creation and task, project, and workflow
-commands use the shared resolver; other context-sensitive lists and searches remain forthcoming.
+Job and Heartbeat creation, message sends, operational lists, and task, project, and workflow
+commands use the shared resolver. Knowledge and memory lookup changes remain forthcoming
+under their sections below.
 Workspace-scoped commands use `ENSO_WORKSPACE`,
 inherited from the Enso chat agent, job, or Heartbeat run calling them. Optional `--workspace` overrides it
 for that operation. The [context contract](workspaces.md#context-selection-in-020) owns
@@ -299,12 +309,19 @@ enso task list                         # team
 enso task list --workspace personal    # deliberate lookup in personal
 enso heartbeat create --file beat.json # save team as the new follow-up's workspace
 enso heartbeat create --file beat.json --workspace personal
+enso job list --all-workspaces         # intentional installation-wide lookup
+enso message send "Report ready" --workspace personal --to slack:C0123456789
 ```
 
 An explicit invalid workspace errors instead of falling back to the environment; absent
 context errors when an operation needs a workspace. `--workspace` does not change the
 caller's environment or transfer an existing record. It introduces no special admin role.
 Command syntax is listed below and in runtime help.
+
+Job, run, message, Heartbeat, task, and project lists accept `--all-workspaces` to ignore
+`ENSO_WORKSPACE` and include the installation. It cannot be combined with `--workspace`.
+Filtering happens before result limits. The viewer, registered-table catalog, workspace
+inventory, and installation health checks retain their installation-wide scope.
 
 ## Knowledge
 
@@ -419,7 +436,7 @@ contract at the top of this page; they never run code from the catalog.
 enso heartbeat status [--json]
 enso heartbeat create --file FILE [--workspace W] [--json]
 enso heartbeat update REF --file FILE [--if-revision N] [--json]
-enso heartbeat list [--all] [--state STATE] [--workspace W] [--limit N] [--offset N] [--json]
+enso heartbeat list [--all] [--state STATE] [--workspace W] [--all-workspaces] [--limit N] [--offset N] [--json]
 enso heartbeat show REF [--json]
 enso heartbeat history REF [--limit N] [--before ID] [--after ID] [--unhandled] [--kind KIND] [--json]
 enso heartbeat pause|resume REF [--message TEXT] [--json]
@@ -454,14 +471,15 @@ Enso's environment, never from the JSON definition or CLI flags.
 Jobs use `<workspace>:<job>` references, such as `team:digest`, throughout commands, runs,
 and `ENSO_JOB`; [Workspaces](workspaces.md#ownership-in-020) owns their locations and identity.
 Show, run, and `runs list --job` require a qualified reference; bare names are errors.
-Job and run lists currently cover the installation.
+Job and run lists use the [selected workspace](#workspace-context-in-020), with
+`--all-workspaces` for installation-wide history. `--job` further narrows that selection.
 
 ```text
-enso job list [--json]
+enso job list [--workspace W] [--all-workspaces] [--json]
 enso job create --name N --provider P --model M --effort E [--workspace W] [--schedule S] [--project KEY --stage NAME] [--json]
 enso job show WORKSPACE:JOB [--json]
 enso job run WORKSPACE:JOB [--json]
-enso runs list [--job WORKSPACE:JOB] [-n N] [--json]
+enso runs list [--job WORKSPACE:JOB] [--workspace W] [--all-workspaces] [-n N] [--json]
 enso runs show ID [--json]
 ```
 
@@ -578,9 +596,9 @@ a managed update is pending; retry afterward. See
 ## Messages
 
 ```text
-enso message send TEXT|--file F|- [--to T] [--action-key KEY] [--json]
-enso message attach FILE [CAPTION] [--to T] [--action-key KEY] [--json]
-enso message list [-n N] [--json]
+enso message send TEXT|--file F|- [--to T] [--workspace W] [--action-key KEY] [--json]
+enso message attach FILE [CAPTION] [--to T] [--workspace W] [--action-key KEY] [--json]
+enso message list [--workspace W] [--all-workspaces] [-n N] [--json]
 ```
 
 `message send` and `message attach` use explicit `--to` first, then the current beat's saved
@@ -589,6 +607,13 @@ notification destination/thread, then the conversation that started the current 
 target (Slack before Telegram). `--to` is `slack:C…`, `telegram:123`, or a bare id when one
 transport is configured. An explicit target does not inherit the current Slack thread;
 use `enso slack send -c C… -t TS` to target a particular thread.
+
+Every CLI send or upload requires an existing workspace: `--workspace` overrides
+`ENSO_WORKSPACE`, and neither being set is an error before connecting or sending. This
+selects the new outbox record's owner; it does not select a channel, change a binding,
+or move the calling job, beat, or chat. To send context for another workspace to a different
+chat, supply both `--workspace` and `--to` (or Slack's `--channel`). Runner-generated job
+and Heartbeat alerts use their recorded owner's workspace.
 
 Native sends and uploads require a stable `--action-key` inside a heartbeat run, and reject
 that flag outside one. They reserve the action before connecting and record the result and
@@ -600,17 +625,24 @@ See [Heartbeat](heartbeat.md) for handling uncertainty and other external action
 Text comes from exactly one of the argument, `--file`, or stdin (`-`); files and stdin
 avoid having to shell-quote the message body.
 
-Every out-of-band send is recorded. At the start of a turn, rows sent into that
-conversation since its last turn are shown to the agent as `[Background messages]` and
-marked consumed. A DM or Telegram chat hears everything sent to it; a channel thread hears
-sends to the channel itself and to that thread. Rows the turn's own agent sent are retired
-when the turn ends.
+Every out-of-band send is recorded with its workspace, including failed sends. At the start
+of a turn, successful unread rows for that conversation and the turn's workspace are shown
+as `[Background messages]` and marked consumed. Within that workspace, a DM or Telegram
+chat hears everything sent to it; a channel thread hears sends to the channel itself and
+to that thread. Rows the turn's own agent sent in its workspace are retired when the turn
+ends; explicit sends owned by another workspace remain unread for that workspace.
+
+Changing a binding never reassigns outbox records. For example, after a chat changes from
+`work` to `personal`, unread `work` messages wait until that chat uses `work` again. A queued
+turn still uses its workspace from arrival. Session reset does not delete or consume the
+outbox. `message list --json` includes `workspace` alongside the source, destination, send
+status, and consumption timestamp.
 
 ## Slack
 
 ```text
-enso slack send   -c C [-t TS] (TEXT | --file F | - | --rich F) [--action-key KEY] [--json]
-enso slack upload -c C [-t TS] FILE [--caption TEXT] [--action-key KEY] [--json]
+enso slack send   -c C [-t TS] (TEXT | --file F | - | --rich F) [--workspace W] [--action-key KEY] [--json]
+enso slack upload -c C [-t TS] FILE [--caption TEXT] [--workspace W] [--action-key KEY] [--json]
 enso slack edit   -c C --ts TS (TEXT | --file F | -) [--json]
 enso slack delete -c C --ts TS [--json]
 enso slack react  -c C --ts TS EMOJI [--json]
@@ -618,8 +650,8 @@ enso slack unreact -c C --ts TS EMOJI [--json]
 enso slack thread C TS [-n N] [--all] [--json]
 enso slack history C [--since 24h] [-n N] [--all] [--json]
 enso slack lookup-user Q | lookup-channel Q | whois U | open-dm U|Q | refresh [--users|--channels] [--json]
-enso telegram send TEXT|--file F|- [--to CHAT] [--action-key KEY] [--json]
-enso telegram attach FILE [CAPTION] [--to CHAT] [--action-key KEY] [--json]
+enso telegram send TEXT|--file F|- [--to CHAT] [--workspace W] [--action-key KEY] [--json]
+enso telegram attach FILE [CAPTION] [--to CHAT] [--workspace W] [--action-key KEY] [--json]
 ```
 
 `--rich F` posts a `enso-message` envelope file (fenced or bare JSON) as native blocks.

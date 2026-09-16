@@ -152,15 +152,15 @@ and `team:memory`; those jobs process only their containing workspace.
 
 ## Context selection in 0.2.0
 
-**Partly implemented on the 0.2.0 development branch.** A chat binding selects an existing
-workspace for a turn, which keeps that selection through preparation and queueing. Removing
+A chat binding selects an existing workspace for a turn, which keeps that selection
+through preparation and queueing. Removing
 its binding or losing its workspace drops it before execution; the
 [connection access contract](connections.md#access-in-020) owns admission and notices. The
-shared resolver is used by task, project, workflow, job creation, and Heartbeat creation
-commands. Other context-sensitive lists and searches remain forthcoming and are identified in
-[CLI](cli.md#workspace-context-in-020). Enso sets `ENSO_WORKSPACE` for its chat agents,
-jobs, and Heartbeat runs, and CLI calls they launch
-inherit it. Workspace-scoped CLI operations default to that value; an optional
+shared resolver is used by task, project, workflow, job creation, Heartbeat creation,
+message sends, and operational list commands. Knowledge and memory lookup changes remain
+forthcoming as identified in [CLI](cli.md#workspace-context-in-020). Enso sets `ENSO_WORKSPACE`
+for its chat agents, jobs, and Heartbeat runs, and CLI calls they launch inherit it.
+Workspace-scoped CLI operations default to that value; an optional
 `--workspace` explicitly overrides it for that operation. This includes Heartbeat creation,
 which saves the resolved workspace for later scheduling and execution.
 

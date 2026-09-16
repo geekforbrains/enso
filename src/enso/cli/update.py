@@ -9,7 +9,7 @@ import typer
 from .. import releases, updates
 from ..config import Paths
 from ..maintenance import UpdateError
-from .common import JSON_FLAG, echo_json, fail
+from .common import JSON_FLAG, WORKSPACE, echo_json, fail, workspace_scope
 
 update_app = typer.Typer(
     no_args_is_help=True, help="Check, install and safely apply Enso releases."
@@ -70,14 +70,16 @@ def check(
     quiet: bool = typer.Option(
         False, "--quiet", help="Stay silent, including when offline or unmanaged."
     ),
+    workspace: str | None = WORKSPACE,
     as_json: bool = JSON_FLAG,
 ) -> None:
     """Check the selected release feed without installing anything."""
+    paths = Paths.from_env()
+    selected = workspace_scope(paths, workspace, as_json=as_json) if notify else None
     try:
-        paths = Paths.from_env()
         result = updates.check(paths, manifest)
-        if notify:
-            result["notified"] = updates.notify_available(paths, result)
+        if selected is not None:
+            result["notified"] = updates.notify_available(paths, result, workspace=selected)
     except (UpdateError, releases.ReleaseError, OSError, ValueError) as exc:
         if quiet and not as_json:
             return
@@ -99,6 +101,7 @@ def check(
 @update_app.command("apply")
 def apply(
     manifest: str | None = typer.Option(None, "--manifest"),
+    workspace: str | None = WORKSPACE,
     drain_timeout: float = typer.Option(300, "--drain-timeout", min=1, max=3600),
     startup_timeout: float = typer.Option(60, "--startup-timeout", min=1, max=600),
     as_json: bool = JSON_FLAG,
@@ -106,7 +109,11 @@ def apply(
     """Queue an independent updater; wait for active work and restart safely."""
     try:
         result = updates.request_apply(
-            Paths.from_env(), manifest, drain_timeout=drain_timeout, startup_timeout=startup_timeout
+            Paths.from_env(),
+            manifest,
+            workspace=workspace,
+            drain_timeout=drain_timeout,
+            startup_timeout=startup_timeout,
         )
     except (UpdateError, releases.ReleaseError, OSError, ValueError) as exc:
         _error(exc, as_json)

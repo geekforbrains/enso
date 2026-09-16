@@ -27,7 +27,7 @@ from conftest import (
     write_workspace,
 )
 
-from enso import db, runs
+from enso import db, messages, runs
 from enso.config import Config, Paths, parse_config
 from enso.jobs import Job
 from enso.jobs import runner as runner_module
@@ -1021,6 +1021,7 @@ async def test_scheduled_alerts_suppress_repeats_and_recover(
     await runner.run(nightly, trigger="schedule")
     await runner.run(nightly, trigger="schedule")
     assert transport.sent == [("C1", "⚠️ [default:nightly] prerun failed\nfeed down")]
+    assert messages.list_messages(enso_home, 1)[0].workspace == nightly.workspace
     (nightly.job_dir / "prerun.sh").write_text("exit 3")
     await runner.run(nightly, trigger="schedule")
     assert transport.sent[-1] == (

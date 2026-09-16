@@ -100,6 +100,12 @@ enso update check|apply|status|recover [--json]  # see enso-update before reques
 enso logs [-f] [--turn ID] [--job NAME]
 ```
 
+Message sends and job, run, message, Heartbeat, task, and project lists default to
+`ENSO_WORKSPACE`; use `--workspace NAME` to select another existing workspace. Missing
+context is an error. These lists accept `--all-workspaces` for an installation-wide view.
+For sends, the selected workspace owns the outbox message; `--to` or `--channel` chooses
+its destination. A chat loads background messages only for the workspace it is using.
+
 `enso setup`, `enso serve`, `enso service …`, and viewer lifecycle commands (`enso web install|uninstall|start|stop`) are the operator's; do not run them from a turn. `enso web status` is read-only. The viewer has an optional user service, independent of the agent; see [Viewer installation](https://github.com/geekforbrains/enso/blob/main/docs/install.md#the-viewer).
 
 Change configuration with `enso config set PATH VALUE` or `enso config unset PATH`; use `enso config apply --file FILE` for a complete document. Edit workspace overrides in `WORKSPACE.md` and projects in workspace `projects/<KEY>/PROJECT.md`; they are not config.json blocks. Bindings, agents, providers, workspace/project files, run retention, and heartbeat settings take effect on the next turn or scheduler tick without restarting Enso. A running turn or job keeps the configuration it started with.

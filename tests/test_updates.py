@@ -20,6 +20,7 @@ from enso.maintenance import UpdateError, read_json, write_json
 @pytest.fixture
 def managed(enso_home, monkeypatch):
     paths = enso_home
+    monkeypatch.setenv("ENSO_WORKSPACE", "default")
     maintenance.prepare(paths)
     old = paths.runtime_dir / "releases/0.1.0-aaaaaaaaaaaa"
     (old / "bin").mkdir(parents=True)
@@ -92,16 +93,71 @@ def test_queue_pins_artifacts_and_origin_and_serializes_requests(managed, monkey
     monkeypatch.setenv("ENSO_ORIGIN_TRANSPORT", "slack")
     monkeypatch.setenv("ENSO_ORIGIN_CHANNEL", "C123")
     monkeypatch.setenv("ENSO_ORIGIN_THREAD_TS", "123.456")
+    monkeypatch.setenv("ENSO_WORKSPACE", "team")
+    managed.paths.workspace("team").mkdir()
     state = queue(managed)
     assert state["manifest"]["wheel"]["url"] == (
         "https://releases.example.test/v0.2.0/enso-0.2.0-py3-none-any.whl"
     )
-    assert state["origin"] == {"transport": "slack", "channel": "C123", "thread": "123.456"}
+    assert state["origin"] == {
+        "transport": "slack",
+        "channel": "C123",
+        "thread": "123.456",
+        "workspace": "team",
+    }
     with pytest.raises(UpdateError, match="pending"):
         updates.request_apply(managed.paths)
     assert read_json(managed.paths.update_state)["id"] == state["id"]
     assert [name for name, _ in managed.events].count("launch") == 1
     assert not maintenance.paused(managed.paths)
+
+
+@pytest.mark.parametrize("command", [["apply"], ["check", "--notify"]])
+def test_update_notifications_require_workspace_and_save_explicit_override(
+    managed, monkeypatch, command
+):
+    monkeypatch.delenv("ENSO_WORKSPACE")
+    cli = CliRunner()
+    feed_calls = []
+
+    def release(*args):
+        feed_calls.append(args)
+        return managed.release
+
+    monkeypatch.setattr(updates, "_release", release)
+    args = ["update", *command, "--json"]
+    absent = cli.invoke(app, args)
+    assert absent.exit_code == 1
+    assert "select a workspace" in json.loads(absent.stdout)["error"]
+    if command[0] == "check":
+        quiet = cli.invoke(app, ["update", *command, "--quiet"])
+        assert quiet.exit_code == 1 and "select a workspace" in quiet.stderr
+    monkeypatch.setenv("ENSO_WORKSPACE", "default")
+    invalid = cli.invoke(app, [*args, "--workspace", "missing"])
+    assert invalid.exit_code == 1 and "missing" in json.loads(invalid.stdout)["error"]
+    assert not feed_calls and not managed.events and not managed.paths.update_state.exists()
+
+    managed.paths.workspace("team").mkdir()
+    sent = []
+    monkeypatch.setattr(
+        update_services, "run_command", lambda args, **kwargs: sent.append(kwargs["env"]) or ""
+    )
+    selected = cli.invoke(app, [*args, "--workspace", "team"])
+    assert selected.exit_code == 0, selected.output
+    if command[0] == "apply":
+        state = read_json(managed.paths.update_state)
+        assert state["origin"]["workspace"] == "team"
+        managed.paths.config.write_text("configured")
+        monkeypatch.delenv("ENSO_WORKSPACE")  # independent helper after a restart
+        updates._notify_outcome(managed.paths, state | {"status": "succeeded"})
+    assert [env["ENSO_WORKSPACE"] for env in sent] == ["team"]
+
+
+def test_read_only_update_check_needs_no_workspace(managed, monkeypatch):
+    monkeypatch.delenv("ENSO_WORKSPACE")
+    result = CliRunner().invoke(app, ["update", "check", "--json"])
+    assert result.exit_code == 0 and json.loads(result.stdout)["update_available"]
+    assert not managed.events and not managed.paths.update_state.exists()
 
 
 def test_same_release_is_noop_and_downgrade_or_reused_version_is_refused(managed, monkeypatch):
@@ -355,10 +411,10 @@ def test_notification_receipt_advances_only_after_send_and_retries(managed, monk
 
     monkeypatch.setattr(updates, "_send", send)
     with pytest.raises(UpdateError, match="temporarily"):
-        updates.notify_available(managed.paths, result)
+        updates.notify_available(managed.paths, result, workspace="default")
     assert not (managed.paths.runtime_dir / "notification.json").exists()
-    assert updates.notify_available(managed.paths, result)
-    assert not updates.notify_available(managed.paths, result)
+    assert updates.notify_available(managed.paths, result, workspace="default")
+    assert not updates.notify_available(managed.paths, result, workspace="default")
     assert len(attempts) == 2
 
 
@@ -366,18 +422,23 @@ def test_outcome_origin_is_preserved_but_nightly_notification_uses_default(manag
     calls = []
     monkeypatch.setenv("ENSO_ORIGIN_CHANNEL", "unrelated-channel")
     monkeypatch.setenv("ENSO_JOB", "enso-update")
+    monkeypatch.setenv("ENSO_WORKSPACE", "default")
     monkeypatch.setattr(
         update_services, "run_command", lambda args, **kwargs: calls.append((args, kwargs)) or ""
     )
     updates._send(
-        managed.paths, "update completed", {"transport": "slack", "channel": "C1", "thread": "1.2"}
+        managed.paths,
+        "update completed",
+        {"transport": "slack", "channel": "C1", "thread": "1.2", "workspace": "team"},
     )
     env = calls[0][1]["env"]
     assert env["ENSO_ORIGIN_CHANNEL"] == "C1"
     assert env["ENSO_ORIGIN_THREAD_TS"] == "1.2"
+    assert env["ENSO_WORKSPACE"] == "team"
     assert "ENSO_JOB" not in env
-    updates._send(managed.paths, "new release available")
+    updates._send(managed.paths, "new release available", {"workspace": "default"})
     assert not any(key.startswith("ENSO_ORIGIN_") for key in calls[1][1]["env"])
+    assert calls[1][1]["env"]["ENSO_WORKSPACE"] == "default"
 
 
 def test_gate_fails_closed_for_broken_symlink_and_state_parse_errors(enso_home, tmp_path):

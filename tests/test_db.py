@@ -58,9 +58,10 @@ def test_fresh_database_is_created_at_current_schema_version(enso_home: Paths) -
             "_enso_beat_runs",
         }
         assert objects >= {"runs_job", "messages_target"}
-        columns = {row["name"]: row for row in con.execute("PRAGMA table_info(sessions)")}
-        assert columns["workspace"]["notnull"] == 1
-        assert columns["workspace"]["dflt_value"] is None
+        for table in ("sessions", "messages"):
+            columns = {row["name"]: row for row in con.execute(f"PRAGMA table_info({table})")}
+            assert columns["workspace"]["notnull"] == 1
+            assert columns["workspace"]["dflt_value"] is None
     # No default means nothing can manufacture a session row without a workspace.
     stamp = "2026-01-01T00:00:00+00:00"
     with pytest.raises(sqlite3.IntegrityError), db.transaction(enso_home) as con:
@@ -68,6 +69,12 @@ def test_fresh_database_is_created_at_current_schema_version(enso_home: Paths) -
             "INSERT INTO sessions (conversation, provider, session_id, created_at, last_active)"
             " VALUES ('slack:D1', 'claude', 's1', ?, ?)",
             (stamp, stamp),
+        )
+    with pytest.raises(sqlite3.IntegrityError), db.transaction(enso_home) as con:
+        con.execute(
+            "INSERT INTO messages (created_at, transport, target, text, source, status) "
+            "VALUES (?, 'slack', 'C1', 'hello', 'cli', 'sent')",
+            (stamp,),
         )
     db.initialize(enso_home)  # a database already at the current version is left alone
     with db.transaction(enso_home) as con:

@@ -2,18 +2,101 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
 
 import pytest
-from conftest import write_config, write_workspace
+from conftest import load_job, write_config, write_job, write_workspace
 from typer.testing import CliRunner
 
-from enso import initialization, workspaces
+from enso import db, heartbeat, initialization, messages, runs, workspaces
 from enso.cli import app
 from enso.config import ConfigError, LiveConfig, load_config, parse_config, resolve_workspace
 from enso.routing import resolve_agent
+
+
+@pytest.mark.parametrize("command", ["job", "runs", "message", "heartbeat"])
+def test_operational_lists_select_workspace_before_limiting(
+    enso_home, raw_config, monkeypatch, command
+):
+    write_config(enso_home, raw_config)
+    enso_home.workspace("team").mkdir()
+    config = load_config(enso_home)
+    db.initialize(enso_home)
+    for owner in ("default", "team"):
+        write_job(enso_home, workspace=owner)
+        runs.start(
+            enso_home, load_job(enso_home, config, f"{owner}:nightly"), "manual", effort="high"
+        )
+        messages.record(
+            enso_home,
+            workspace=owner,
+            transport="slack",
+            target="C1",
+            thread=None,
+            text=owner,
+            source="cli",
+            status="sent",
+            message_id="1.0",
+        )
+        heartbeat.create(
+            config,
+            {
+                "title": owner,
+                "workspace": owner,
+                "instructions": "Send a reminder.",
+                "completion": "Reminder sent.",
+                "allowed_actions": "Send the reminder.",
+                "at": "2030-01-01T10:00:00+00:00",
+            },
+        )
+    # Malformed jobs stay visible only in their owning workspace's list.
+    write_job(enso_home, "broken", workspace="team", provider=None)
+    cli = CliRunner()
+    args = [command, "list", "--json"]
+    absent = cli.invoke(app, args)
+    assert absent.exit_code == 1 and "select a workspace" in json.loads(absent.stdout)["error"]
+    monkeypatch.setenv("ENSO_WORKSPACE", "default")
+    for flags, expected in (
+        ([], {"default"}),
+        (["--workspace", "team"], {"team"}),
+        (["--all-workspaces"], {"default", "team"}),
+    ):
+        result = cli.invoke(app, [*args, *flags])
+        assert result.exit_code == 0, result.output
+        rows = json.loads(result.stdout)
+        assert {
+            row.get("workspace", row.get("ref", "").partition(":")[0]) for row in rows
+        } == expected
+        if command == "job":
+            assert any(row.get("ref") == "team:broken" for row in rows) == ("team" in expected)
+    if command != "job":
+        limit = "--limit" if command == "heartbeat" else "-n"
+        result = cli.invoke(app, [*args, limit, "1"])
+        assert [row["workspace"] for row in json.loads(result.stdout)] == ["default"]
+    for flags in (["--workspace", "missing"], ["--workspace", "team", "--all-workspaces"]):
+        result = cli.invoke(app, [*args, *flags])
+        assert result.exit_code == 1 and json.loads(result.stdout)["ok"] is False
+    monkeypatch.delenv("ENSO_WORKSPACE")
+    assert cli.invoke(app, [*args, "--all-workspaces"]).exit_code == 0
+
+
+def test_registered_table_catalog_remains_shared(enso_home, raw_config, monkeypatch):
+    write_config(enso_home, raw_config)
+    db.initialize(enso_home)
+    with db.transaction(enso_home) as con:
+        con.execute("CREATE TABLE invoices (amount INTEGER)")
+    cli = CliRunner()
+    registered = cli.invoke(
+        app, ["table", "register", "invoices", "-d", "Invoice amounts", "--json"]
+    )
+    assert registered.exit_code == 0, registered.output
+    for selected in ("default", "team"):
+        monkeypatch.setenv("ENSO_WORKSPACE", selected)
+        listed = cli.invoke(app, ["table", "list", "--json"])
+        assert [row["table_name"] for row in json.loads(listed.stdout)] == ["invoices"]
 
 
 def test_workspace_settings_inherit_and_replace_complete_values(enso_home, raw_config):

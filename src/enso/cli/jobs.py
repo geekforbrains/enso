@@ -12,7 +12,18 @@ from .. import log as logsetup
 from ..config import Paths, resolve_workspace, split_job_ref
 from ..formatting import format_elapsed
 from ..jobs.runner import JobRunner, RunResult
-from .common import JSON_FLAG, ago, columns, echo_json, fail, load, seconds
+from .common import (
+    ALL_WORKSPACES,
+    JSON_FLAG,
+    WORKSPACE,
+    ago,
+    columns,
+    echo_json,
+    fail,
+    load,
+    seconds,
+    workspace_scope,
+)
 
 job_app = typer.Typer(no_args_is_help=True, help="Workspace-owned scheduled jobs.")
 runs_app = typer.Typer(no_args_is_help=True, help="Job run history.")
@@ -34,11 +45,21 @@ def _job_summary(job: jobs.Job, problems: list[str], last: runs.Run | None) -> d
 
 
 @job_app.command("list")
-def job_list(as_json: bool = JSON_FLAG) -> None:
+def job_list(
+    workspace: str | None = WORKSPACE,
+    all_workspaces: bool = ALL_WORKSPACES,
+    as_json: bool = JSON_FLAG,
+) -> None:
     """List jobs with their schedule, agent, workspace, and last run."""
     paths = Paths.from_env()
     config = load(paths, as_json=as_json)
+    selected = workspace_scope(paths, workspace, all_workspaces=all_workspaces, as_json=as_json)
     found, problems = jobs.load_jobs(paths, config)
+    if selected is not None:
+        found = [job for job in found if job.workspace == selected]
+        problems = {
+            ref: issues for ref, issues in problems.items() if ref.startswith(f"{selected}:")
+        }
     last = runs.latest(paths)
     if as_json:
         parsed = {job.ref for job in found}
@@ -187,17 +208,20 @@ def runs_list(
         None, "--job", help="Only this qualified job's runs, e.g. team:digest."
     ),
     limit: int = typer.Option(20, "-n", help="How many, newest first."),
+    workspace: str | None = WORKSPACE,
+    all_workspaces: bool = ALL_WORKSPACES,
     as_json: bool = JSON_FLAG,
 ) -> None:
     """List recent runs."""
     paths = Paths.from_env()
     load(paths, as_json=as_json)
+    selected = workspace_scope(paths, workspace, all_workspaces=all_workspaces, as_json=as_json)
     if job is not None:
         try:
             split_job_ref(job)
         except ValueError as exc:
             fail([str(exc)], as_json=as_json)
-    found = runs.list_runs(paths, job=job, limit=limit)
+    found = runs.list_runs(paths, job=job, limit=limit, workspace=selected)
     if as_json:
         echo_json([run.as_dict() for run in found])
         return

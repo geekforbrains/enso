@@ -14,9 +14,11 @@ from pathlib import Path
 import typer
 
 from .. import tasks, worktrees
-from ..config import Config, Paths, resolve_workspace
+from ..config import Config, Paths
 from .common import (
+    ALL_WORKSPACES,
     JSON_FLAG,
+    WORKSPACE,
     InputError,
     ago,
     columns,
@@ -26,6 +28,7 @@ from .common import (
     parse_duration,
     read_input,
     seconds,
+    workspace_scope,
 )
 
 task_app = typer.Typer(no_args_is_help=True, help="Tasks: the board stage jobs work from.")
@@ -34,9 +37,6 @@ MESSAGE_HELP = "The handoff: what changed, the evidence, what comes next; - read
 FORCE_HELP = "Override another run's claim (a person only, never inside a run)."
 BODY_FILE = typer.Option(None, "--body-file", help="The spec from a file, or - for stdin.")
 REFS = typer.Option([], "--ref", help="Evidence as KIND:VALUE; repeatable.")
-
-WORKSPACE = typer.Option(None, "--workspace", help="Owner; defaults to ENSO_WORKSPACE.")
-ALL_WORKSPACES = typer.Option(False, "--all-workspaces", help="List across the installation.")
 
 
 def _scope(
@@ -51,12 +51,7 @@ def _scope(
 ) -> str | None:
     """Select CLI context; explicit dependency refs are resolved separately across projects."""
     try:
-        if all_workspaces:
-            if workspace is not None:
-                raise ValueError("give --workspace or --all-workspaces, not both")
-            selected = None
-        else:
-            selected = resolve_workspace(paths, workspace)
+        selected = workspace_scope(paths, workspace, all_workspaces=all_workspaces, as_json=as_json)
         if ref is not None:
             task = tasks.get(paths, ref, workspace=selected)
             tasks._project(config, task.project, task.workspace)

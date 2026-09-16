@@ -23,11 +23,12 @@ IDENTITY_PREFIXES = ("ENSO_ORIGIN_", "ENSO_BEAT", "ENSO_RUN_")
 class Message:
     id: int
     created_at: str
+    workspace: str
     transport: str
     target: str
     thread: str | None
     text: str
-    source: str  # cli | beat:<ref> | job:<dir> | turn:<conversation>
+    source: str  # cli | beat:<ref> | job:<workspace>:<job> | turn:<conversation>
     status: str  # sent | failed
     message_id: str | None
     consumed_at: str | None
@@ -79,6 +80,7 @@ def source_from_env(env: Mapping[str, str]) -> str:
 def record(
     paths: Paths,
     *,
+    workspace: str,
     transport: str,
     target: str,
     thread: str | None,
@@ -90,9 +92,10 @@ def record(
     with db.transaction(paths) as con:
         cursor = con.execute(
             """INSERT INTO messages
-                 (created_at, transport, target, thread, text, source, status, message_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (db.now(), transport, target, thread, text, source, status, message_id),
+                 (created_at, workspace, transport, target, thread,
+                  text, source, status, message_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (db.now(), workspace, transport, target, thread, text, source, status, message_id),
         )
         row = con.execute("SELECT * FROM messages WHERE id = ?", (cursor.lastrowid,)).fetchone()
     return _message(row)
@@ -102,6 +105,7 @@ async def deliver(
     paths: Paths,
     send: Awaitable[str],
     *,
+    workspace: str,
     transport: str,
     target: str,
     thread: str | None,
@@ -113,6 +117,7 @@ async def deliver(
     def note(status: str, message_id: str | None) -> Message:
         return record(
             paths,
+            workspace=workspace,
             transport=transport,
             target=target,
             thread=thread,
@@ -131,17 +136,17 @@ async def deliver(
 
 
 def take_background(
-    paths: Paths, transport: str, target: str, thread: str | None, *, exclude_source: str
+    paths: Paths, transport: str, target: str, thread: str | None, *, workspace: str
 ) -> list[Message]:
-    """Unread sends into a conversation by anyone but its own agent, marked consumed.
+    """Unread sends owned by the turn's workspace, marked consumed.
 
     ``thread`` None (a DM or Telegram chat) hears everything sent to the target;
     a channel thread hears what was sent to the channel itself or to that thread.
     """
     where = (
-        "transport = ? AND target = ? AND status = 'sent' AND consumed_at IS NULL AND source != ?"
+        "workspace = ? AND transport = ? AND target = ? AND status = 'sent' AND consumed_at IS NULL"
     )
-    params: list[object] = [transport, target, exclude_source]
+    params: list[object] = [workspace, transport, target]
     if thread is not None:
         where += " AND (thread IS NULL OR thread = ?)"
         params.append(thread)
@@ -156,19 +161,24 @@ def take_background(
     return [_message(row) for row in rows]
 
 
-def consume_own(paths: Paths, source: str) -> None:
-    """Retire a turn's own sends: the agent already knows what it sent."""
+def consume_own(paths: Paths, source: str, *, workspace: str) -> None:
+    """Retire a turn's own sends in its workspace; cross-workspace sends remain unread."""
     with db.transaction(paths) as con:
         con.execute(
-            "UPDATE messages SET consumed_at = ? WHERE source = ? AND consumed_at IS NULL",
-            (db.now(), source),
+            "UPDATE messages SET consumed_at = ? "
+            "WHERE workspace = ? AND source = ? AND consumed_at IS NULL",
+            (db.now(), workspace, source),
         )
 
 
-def list_messages(paths: Paths, limit: int) -> list[Message]:
-    """Newest first."""
+def list_messages(paths: Paths, limit: int, *, workspace: str | None = None) -> list[Message]:
+    """Newest first, optionally within one workspace."""
+    where = "WHERE workspace = ?" if workspace is not None else ""
+    params = (workspace, limit) if workspace is not None else (limit,)
     with db.transaction(paths) as con:
-        rows = con.execute("SELECT * FROM messages ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        rows = con.execute(
+            f"SELECT * FROM messages {where} ORDER BY id DESC LIMIT ?", params
+        ).fetchall()
     return [_message(row) for row in rows]
 
 

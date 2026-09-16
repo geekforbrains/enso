@@ -8,8 +8,8 @@ import typer
 
 from .. import maintenance, tasks, workflow_setup, workflows
 from ..config import ConfigError, Paths
-from .common import JSON_FLAG, echo_json, fail, load
-from .tasks import WORKSPACE, _scope, _text
+from .common import JSON_FLAG, WORKSPACE, echo_json, fail, load
+from .tasks import _scope, _text
 
 workflow_app = typer.Typer(
     no_args_is_help=True, help="Configure workflows and inspect engine acceptance."

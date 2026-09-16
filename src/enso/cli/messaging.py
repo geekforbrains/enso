@@ -15,7 +15,9 @@ from ..transport_registry import TRANSPORTS
 from ..transports import Transport
 from .common import (
     ACTION_KEY,
+    ALL_WORKSPACES,
     JSON_FLAG,
+    WORKSPACE,
     body,
     columns,
     deliver,
@@ -25,6 +27,7 @@ from .common import (
     report,
     run,
     seconds,
+    workspace_scope,
 )
 
 message_app = typer.Typer(
@@ -110,6 +113,7 @@ def message_send(
     file: Path | None = FILE,
     to: str | None = TO,
     action_key: str | None = ACTION_KEY,
+    workspace: str | None = WORKSPACE,
     as_json: bool = JSON_FLAG,
 ) -> None:
     """Send text; it also reaches the next turn there as background context."""
@@ -118,7 +122,15 @@ def message_send(
     content = body(text, file, as_json=as_json)
     transport, target, thread = _resolve(config, to, transport=None, as_json=as_json)
     result = run(
-        deliver(paths, transport, target, thread, text=content, action_key=action_key),
+        deliver(
+            paths,
+            transport,
+            target,
+            thread,
+            text=content,
+            action_key=action_key,
+            workspace=workspace,
+        ),
         as_json=as_json,
     )
     report(result, as_json=as_json)
@@ -130,6 +142,7 @@ def message_attach(
     caption: str = CAPTION,
     to: str | None = TO,
     action_key: str | None = ACTION_KEY,
+    workspace: str | None = WORKSPACE,
     as_json: bool = JSON_FLAG,
 ) -> None:
     """Send a file with an optional caption."""
@@ -139,7 +152,14 @@ def message_attach(
     transport, target, thread = _resolve(config, to, transport=None, as_json=as_json)
     result = run(
         deliver(
-            paths, transport, target, thread, file=file, caption=caption, action_key=action_key
+            paths,
+            transport,
+            target,
+            thread,
+            file=file,
+            caption=caption,
+            action_key=action_key,
+            workspace=workspace,
         ),
         as_json=as_json,
     )
@@ -149,19 +169,22 @@ def message_attach(
 @message_app.command("list")
 def message_list(
     limit: int = typer.Option(20, "-n", help="How many, newest first."),
+    workspace: str | None = WORKSPACE,
+    all_workspaces: bool = ALL_WORKSPACES,
     as_json: bool = JSON_FLAG,
 ) -> None:
     """Recent out-of-band sends; an unread one reaches the next turn in its conversation."""
     paths = Paths.from_env()
     load(paths, as_json=as_json)
-    found = messages.list_messages(paths, limit)
+    selected = workspace_scope(paths, workspace, all_workspaces=all_workspaces, as_json=as_json)
+    found = messages.list_messages(paths, limit, workspace=selected)
     if as_json:
         echo_json([message.as_dict() for message in found])
         return
     if not found:
         typer.echo("no messages yet")
         return
-    rows = [["ID", "CREATED", "STATUS", "TARGET", "SOURCE", "READ", "TEXT"]]
+    rows = [["ID", "CREATED", "WORKSPACE", "STATUS", "TARGET", "SOURCE", "READ", "TEXT"]]
     for message in found:
         target = f"{message.transport}:{message.target}"
         if message.thread:
@@ -170,6 +193,7 @@ def message_list(
             [
                 str(message.id),
                 seconds(message.created_at),
+                message.workspace,
                 message.status,
                 target,
                 message.source,
@@ -189,6 +213,7 @@ def telegram_send(
     file: Path | None = FILE,
     to: str | None = CHAT,
     action_key: str | None = ACTION_KEY,
+    workspace: str | None = WORKSPACE,
     as_json: bool = JSON_FLAG,
 ) -> None:
     """Send text to a Telegram chat."""
@@ -198,7 +223,15 @@ def telegram_send(
     transport, target, _ = _resolve(config, to, transport="telegram", as_json=as_json)
     report(
         run(
-            deliver(paths, transport, target, None, text=content, action_key=action_key),
+            deliver(
+                paths,
+                transport,
+                target,
+                None,
+                text=content,
+                action_key=action_key,
+                workspace=workspace,
+            ),
             as_json=as_json,
         ),
         as_json=as_json,
@@ -211,6 +244,7 @@ def telegram_attach(
     caption: str = CAPTION,
     to: str | None = CHAT,
     action_key: str | None = ACTION_KEY,
+    workspace: str | None = WORKSPACE,
     as_json: bool = JSON_FLAG,
 ) -> None:
     """Send a file to a Telegram chat."""
@@ -219,7 +253,16 @@ def telegram_attach(
     _check_file(file, as_json=as_json)
     transport, target, _ = _resolve(config, to, transport="telegram", as_json=as_json)
     result = run(
-        deliver(paths, transport, target, None, file=file, caption=caption, action_key=action_key),
+        deliver(
+            paths,
+            transport,
+            target,
+            None,
+            file=file,
+            caption=caption,
+            action_key=action_key,
+            workspace=workspace,
+        ),
         as_json=as_json,
     )
     report(result, as_json=as_json)

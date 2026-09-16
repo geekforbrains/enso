@@ -993,6 +993,7 @@ class JobRunner:
             await messages.deliver(
                 self.paths,
                 transport.send(target[1], text),
+                workspace=job.workspace,
                 transport=target[0],
                 target=target[1],
                 thread=None,
