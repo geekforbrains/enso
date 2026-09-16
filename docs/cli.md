@@ -92,8 +92,9 @@ table commands initialize `enso.db`. They reject a pre-0.2.0 database or a newer
 schema with an `error:` line and exit 1 before modifying that database or starting a
 transport or job. This also means some CLI
 reads can initialize a missing database. Filesystem-only operations such as `workspace create`
-and service-unit management do not use this guard, and setup seeds files before it checks
-the database; see [Upgrading](install.md#upgrading).
+and service-unit management do not use this guard. `init` and `setup` check for obsolete
+configuration, database, and home-level jobs before seeding files; see
+[Setup](install.md#setup).
 
 `service install` writes `~/Library/LaunchAgents/com.enso.agent.plist` (macOS) or
 `~/.config/systemd/user/enso.service` (Linux) for the `enso` on `PATH`, with a `PATH`
