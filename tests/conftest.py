@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -87,6 +88,23 @@ class FakeReply(Reply):
 
     def origin_env(self) -> dict[str, str]:
         return {"ENSO_ORIGIN_TRANSPORT": "slack"}
+
+
+class ImmediateIngress:
+    """Transport-test runtime mixin: prepare immediately, without a provider or FIFO."""
+
+    async def defer(self, conversation, queue_reply, raw_text, prepare, *, capture=None):
+        if capture is not None and not await capture.ready():
+            return
+        prepared = await prepare()
+        if prepared is not None:
+            turn, reply = prepared
+            await self.submit(replace(turn, capture=capture), reply)
+        elif capture is not None:
+            await capture.finish("dropped")
+
+    async def handle(self, turn, reply):
+        await self.submit(turn, reply)
 
 
 class FakeTransport(Transport):

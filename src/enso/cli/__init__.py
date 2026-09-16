@@ -263,6 +263,13 @@ def _serve_home(paths: Paths, debug: bool) -> None:
         fail([str(exc)])  # nothing has started yet, so nothing has to be unwound
     if pruned:
         log.info("pruned %d idle sessions", pruned)
+    from .. import captures
+
+    try:
+        if interrupted := captures.recover(paths):
+            log.info("closed %d interrupted captures", interrupted)
+    except Exception:
+        log.warning("capture recovery failed; conversation handling will continue")
     transports = build_transports(config)
     if not transports:
         fail(["no transport is configured (or its extra is not installed)"])

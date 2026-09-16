@@ -194,6 +194,9 @@ def reply(
     *,
     text: str = "",
     outcome: Outcome,
+    handling_outcome: Outcome | None = None,
+    sender_id: str = "",
+    sender_name: str = "Enso",
     delivery: Delivery = "unattempted",
     parts: tuple[Part, ...] = (),
     final: bool = True,
@@ -213,7 +216,7 @@ def reply(
             "INSERT INTO _enso_captures (transport, workspace, conversation, channel, thread, "
             "sender_id, sender_name, occurred_at, kind, parent_id, text, truncated, outcome, "
             "delivery, parts, finalized, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, '', 'Enso', ?, 'reply', ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'reply', ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (parent_id) DO UPDATE SET text = excluded.text, "
             "truncated = excluded.truncated, outcome = excluded.outcome, "
             "delivery = excluded.delivery, parts = excluded.parts, finalized = excluded.finalized, "
@@ -224,6 +227,8 @@ def reply(
                 parent["conversation"],
                 parent["channel"],
                 parent["thread"],
+                sender_id,
+                sender_name,
                 now,
                 parent_id,
                 text,
@@ -239,7 +244,7 @@ def reply(
         if final:
             con.execute(
                 "UPDATE _enso_captures SET outcome = ?, finalized = 1, updated_at = ? WHERE id = ?",
-                (outcome, now, parent_id),
+                (handling_outcome or outcome, now, parent_id),
             )
         row = con.execute(
             "SELECT * FROM _enso_captures WHERE parent_id = ?", (parent_id,)

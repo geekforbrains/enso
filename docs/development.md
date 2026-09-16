@@ -27,6 +27,13 @@ Product behaviour belongs in its owning page under `docs/`, starting with
   writer locks, and atomic publication for knowledge and memory.
 - `src/enso/captures.py` — normalized conversation history, reply delivery checkpoints, and
   processing receipts in the home database; Markdown remains the maintained memory.
+  `capture_runtime.py` owns best-effort live writes. Transports supply `captures.Message`
+  after admission/command exclusion, start a `CaptureWriter`, and pass it through `defer`
+  before awaiting preparation. Ambient input only awaits its capture. The runtime awaits
+  admission before preparation and skips duplicates; every pending reservation starts its
+  own durable write, so slow preparation does not postpone capture of queued messages.
+  `Reply.deliver` checkpoints every final send and fallback through the writer; transports
+  identify definite rejections separately from unknown network outcomes.
 - `src/enso/memory.py` — workspace-only dated Markdown, occurrence/placement validation,
   source metadata, relative links, and manual corrections; capture/harvesting remain separate.
 - `src/enso/knowledge/` — Markdown discovery, core metadata, link resolution, and note writes.

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,6 +10,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from conftest import ImmediateIngress
 
 pytest.importorskip("telegram")
 
@@ -70,28 +70,13 @@ class FakeBot:
         return FakeFile(self.files[file_id])
 
 
-class FakeRuntime:
+class FakeRuntime(ImmediateIngress):
     def __init__(self, config: Config):
         self.config = config
         self.handled: list[tuple[Turn, Reply]] = []
 
     async def submit(self, turn: Turn, reply: Reply) -> None:
         self.handled.append((turn, reply))
-
-    async def defer(
-        self,
-        conversation: str,
-        queue_reply: Reply,
-        raw_text: str,
-        prepare: Callable[[], Awaitable[tuple[Turn, Reply] | None]],
-    ) -> None:
-        del conversation, queue_reply, raw_text
-        prepared = await prepare()
-        if prepared is not None:
-            await self.submit(*prepared)
-
-    async def handle(self, turn: Turn, reply: Reply) -> None:
-        await self.submit(turn, reply)
 
 
 def message(
@@ -190,7 +175,7 @@ async def test_telegram_user_binding_selects_shared_or_personal_context(transpor
 async def test_removed_binding_drops_deferred_telegram_attachment(transport, monkeypatch):
     runtime = _runtime(transport)
 
-    async def defer(conversation, reply, text, prepare):
+    async def defer(conversation, reply, text, prepare, *, capture=None):
         runtime.config = replace(runtime.config, bindings={})
         assert await prepare() is None
 

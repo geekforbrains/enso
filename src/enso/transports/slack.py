@@ -8,6 +8,8 @@ import logging
 import re
 import time
 import uuid
+from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import SplitResult, unquote, urlsplit
@@ -23,7 +25,8 @@ except ImportError as exc:  # pragma: no cover - import guard
         f"Slack transport dependencies are missing ({exc.name}); install enso[slack]"
     ) from exc
 
-from .. import commands, routing, slack_cache, slack_text, workspaces
+from .. import captures, commands, outbound, routing, slack_cache, slack_text, workspaces
+from ..capture_runtime import CaptureWriter
 from ..config import Paths, SlackConfig
 from ..formatting import has_slack_code_language, md_to_mrkdwn
 from ..outbound import ChartBlock, Column, MarkdownBlock, OutboundMessage, TableBlock
@@ -278,23 +281,40 @@ async def _post_blocks(
     text: str,
     blocks: list[dict[str, Any]],
     fallback: str,
+    capture: CaptureWriter | None = None,
+    representation: str = "",
+    fallback_representation: str = "",
 ) -> str:
     """Post *blocks*; when Slack refuses the blocks themselves, post *fallback* as text."""
+
+    async def post(*, fallback_only: bool = False) -> str:
+        kwargs = {"text": fallback} if fallback_only else {"text": text, "blocks": blocks}
+        result = await client.chat_postMessage(channel=channel, thread_ts=thread, **kwargs)
+        return str(result["ts"])
+
     try:
-        result = await client.chat_postMessage(
-            channel=channel, thread_ts=thread, text=text, blocks=blocks
-        )
+        if capture is None:
+            return await post()
+        return await capture.send(representation, post)
     except SlackApiError as exc:
         code = str(exc.response.get("error", ""))
         if code not in BLOCK_ERRORS:
             raise
         log.warning("slack rejected the message blocks (%s); sending the fallback text", code)
-        result = await client.chat_postMessage(channel=channel, thread_ts=thread, text=fallback)
-    return str(result["ts"])
+        if capture is None:
+            return await post(fallback_only=True)
+        return await capture.send(
+            fallback_representation, lambda: post(fallback_only=True), fallback=True
+        )
 
 
 async def post_rich(
-    client: AsyncWebClient, channel: str, thread: str | None, message: OutboundMessage
+    client: AsyncWebClient,
+    channel: str,
+    thread: str | None,
+    message: OutboundMessage,
+    *,
+    capture: CaptureWriter | None = None,
 ) -> str:
     """Post an envelope as blocks; when Slack refuses the blocks, post the fallback text."""
     return await _post_blocks(
@@ -304,6 +324,9 @@ async def post_rich(
         text=message.fallback_text,
         blocks=render_blocks(message),
         fallback=md_to_mrkdwn(message.fallback_text),
+        capture=capture,
+        representation=outbound.markdown(message),
+        fallback_representation=message.fallback_text,
     )
 
 
@@ -363,6 +386,26 @@ class SlackReply(Reply):
 
     async def send_rich(self, message: OutboundMessage) -> str:
         return await post_rich(self._client, self._channel, self._thread, message)
+
+    def delivery_rejected(self, error: Exception) -> bool:
+        return isinstance(error, SlackApiError) and error.response.get("error") not in {
+            None,
+            "",
+            "internal_error",
+            "fatal_error",
+            "request_timeout",
+        }
+
+    async def deliver(
+        self,
+        text: str,
+        message: OutboundMessage | None,
+        capture: CaptureWriter,
+    ) -> None:
+        if message is None:
+            await super().deliver(text, message, capture)
+        else:
+            await post_rich(self._client, self._channel, self._thread, message, capture=capture)
 
     async def send_file(self, path: str, caption: str = "") -> str:
         result = await self._client.files_upload_v2(
@@ -664,7 +707,35 @@ class SlackTransport(Transport):
             # The session row, a running turn, and a bot-authored root all say "not
             # ours" after !clear or a restart; Slack itself still knows Enso spoke here.
             decision = "run"
+        queue_text = slack_text.flatten_mentions(
+            slack_text.unescape(raw_text),
+            bot_user_id=self.bot_user_id,
+            lookup=lambda uid: self._users.get(uid, ""),
+            strip_addressing=True,
+        ).strip()
+        command = commands.parse(queue_text, "slack")
+        capture = None
+        if workspace is not None and command is None:
+            capture = CaptureWriter.start(
+                self.paths,
+                captures.Message(
+                    transport="slack",
+                    workspace=workspace,
+                    conversation=conversation,
+                    channel=channel,
+                    thread=reply_thread,
+                    message_id=ts,
+                    sender_id=user,
+                    sender_name=self._users.get(user, ""),
+                    occurred_at=datetime.fromtimestamp(float(ts), UTC).isoformat(),
+                    text=raw_text,
+                    kind="ambient" if decision == "ignore" else "addressed",
+                    attachments=self._attachment_refs(event),
+                ),
+            )
         if decision == "ignore":
+            if capture is not None:
+                await capture.ready()
             log.debug(
                 "ignoring slack %s/%s: in_thread=%s mentioned=%s bound=%s thread_active=%s",
                 channel,
@@ -695,13 +766,7 @@ class SlackTransport(Transport):
         # Commands run here, before any Slack lookup or the FIFO reservation, so !stop
         # can cancel a blocked turn. Cached names suffice: only the leading prefix
         # matters, and _prepare_event flattens again with resolved names for the prompt.
-        queue_text = slack_text.flatten_mentions(
-            slack_text.unescape(raw_text),
-            bot_user_id=self.bot_user_id,
-            lookup=lambda uid: self._users.get(uid, ""),
-            strip_addressing=True,
-        ).strip()
-        if commands.parse(queue_text, "slack") is not None:
+        if command is not None:
             command_turn = Turn(
                 transport="slack",
                 channel=channel,
@@ -730,7 +795,24 @@ class SlackTransport(Transport):
                 reply_thread=reply_thread,
                 workspace=workspace,
                 session_providers=session_providers,
+                capture=capture,
             ),
+            capture=capture,
+        )
+
+    @staticmethod
+    def _attachment_refs(event: dict) -> tuple[captures.Attachment, ...]:
+        files = (event.get("files") or []) + slack_text.attachment_files(
+            event.get("attachments") or []
+        )
+        return tuple(
+            captures.Attachment(
+                str(info.get("id") or ""),
+                str(info.get("name") or info.get("title") or ""),
+                info.get("mimetype") if isinstance(info.get("mimetype"), str) else None,
+                info["size"] if type(info.get("size")) is int and info["size"] >= 0 else None,
+            )
+            for info in files
         )
 
     async def _prepare_event(
@@ -742,6 +824,7 @@ class SlackTransport(Transport):
         reply_thread: str | None,
         workspace: str,
         session_providers: frozenset[str],
+        capture: CaptureWriter | None = None,
     ) -> tuple[Turn, Reply] | None:
         """Resolve context and files for one event after its FIFO reservation."""
         assert self.runtime is not None
@@ -762,6 +845,7 @@ class SlackTransport(Transport):
             user_name=user_name,
             channel_name=channel_name,
         )
+        reply.sender_id, reply.sender_name = self.bot_user_id, self.bot_name
         provider = routing.resolve_agent(self.runtime.config, workspace).provider
         provider_has_session = provider in session_providers
         text = (await self._flatten(raw_text, strip_addressing=True)).strip()
@@ -775,7 +859,7 @@ class SlackTransport(Transport):
         elif not is_dm:
             context = channel_access(channel, channel_name, ts)
         files = (event.get("files") or []) + slack_text.attachment_files(attachments)
-        downloaded = await self.download_files(files, workspace) if files else []
+        downloaded = await self.download_files(files, workspace, capture=capture) if files else []
         if files and not downloaded:
             shared = "\n\n".join(
                 p for p in (shared, "A file was attached but could not be downloaded.") if p
@@ -844,7 +928,13 @@ class SlackTransport(Transport):
         hydrated = result.get("file") or {}
         return {**file_info, **hydrated} if isinstance(hydrated, dict) else file_info
 
-    async def download_files(self, files: list[dict], workspace: str) -> list[str]:
+    async def download_files(
+        self,
+        files: list[dict],
+        workspace: str,
+        *,
+        capture: CaptureWriter | None = None,
+    ) -> list[str]:
         """Download every file into ``<workspace>/uploads/<8 hex>/``; returns local paths.
 
         Every value here comes from the event, so none of it is trusted: the local name is
@@ -858,10 +948,13 @@ class SlackTransport(Transport):
         root = directory.resolve()
         paths: list[str] = []
         created: list[Path] = []
+        references = list(capture.message.attachments) if capture and capture.message else []
         auth = {"Authorization": f"Bearer {self.config.bot_token}"}
         try:
             async with aiohttp.ClientSession() as session:
-                for raw in files:
+                for index, raw in enumerate(files):
+                    if references:
+                        references[index] = replace(references[index], status="failed")
                     file_info = await self._hydrate(raw)
                     url = _download_url(file_info)
                     if not url:
@@ -897,11 +990,26 @@ class SlackTransport(Transport):
                             _discard(root, destination)
                         continue
                     paths.append(str(directory / destination.name))
+                    if references:
+                        references[index] = replace(
+                            references[index],
+                            status="downloaded",
+                            path=(directory / destination.name)
+                            .relative_to(self.paths.workspace(workspace))
+                            .as_posix(),
+                        )
                     log.info("downloaded %s (%d bytes)", destination.name, written)
         except asyncio.CancelledError:
             for destination in created:
                 _discard(root, destination)
             with contextlib.suppress(OSError):
                 directory.rmdir()
+            references = [
+                replace(a, status="failed", path=None) if a.status == "downloaded" else a
+                for a in references
+            ]
             raise
+        finally:
+            if capture is not None and references:
+                await capture.attachments(tuple(references))
         return paths

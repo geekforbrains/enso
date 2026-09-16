@@ -7,7 +7,7 @@ manual; see [Install](install.md).
 
 ## Access in 0.2.0
 
-**Implemented on the 0.2.0 development branch; message capture remains forthcoming.**
+**Implemented on the 0.2.0 development branch.**
 A binding both grants access to the installation and selects an existing Enso workspace.
 The key uses platform-issued channel or user IDs from authenticated
 transport events. Display names and identities claimed in message text never grant access.
@@ -20,10 +20,9 @@ Admission is decided before attachment download, provider work, or capture.
 | Slack one-to-one DM | Sender's user ID | That explicitly bound person |
 | Telegram private chat | Sender's user ID | That explicitly bound person |
 
-Binding a channel trusts its audience to use the installation's capabilities and, once
-[capture](memory.md#conversation-capture) is implemented, records eligible live human messages
-there. That audience includes later additions, guests, and
-external Slack Connect participants. Channel membership does not grant DM access.
+Binding a channel trusts its audience to use the installation's capabilities and
+[captures eligible live human messages](memory.md#conversation-capture) there. That audience
+includes later additions, guests, and external Slack Connect participants. Channel membership does not grant DM access.
 `mention_required` and `thread_mention_required` control replies; they do not change access
 or [capture eligibility](memory.md#conversation-capture).
 
