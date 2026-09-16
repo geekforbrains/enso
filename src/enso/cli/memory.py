@@ -305,3 +305,37 @@ def update(
     except (OSError, ValueError, InputError, NoteError) as exc:
         fail([str(exc)], as_json=as_json)
     _written(note, as_json)
+
+
+@memory_app.command("remove")
+def remove(
+    ref: str,
+    workspace: str | None = WORKSPACE,
+    yes: bool = typer.Option(False, "--yes", help="Remove the reported note; otherwise preview."),
+) -> None:
+    """Preview or remove exactly one memory, retaining its captures and processing receipts."""
+    try:
+        if any(char in ref for char in "*?[]"):
+            raise NoteError("removal requires one UUID or exact path, without wildcards")
+        paths = Paths.from_env()
+        selected = resolve_workspace(paths, workspace)
+        catalog = memory.scan(paths, selected)
+        note = catalog.get(ref, f"workspace:{selected}")
+        catalog.require_unique(note)
+        typer.echo(f"{'Removing' if yes else 'Preview'}: {selected}:{note.path}")
+        typer.echo(f"id: {note.id or 'missing/invalid'}")
+        sources = note.metadata.get("sources")
+        source_text = (
+            (", ".join(map(str, sources)) or "none") if isinstance(sources, list) else "unavailable"
+        )
+        typer.echo(f"sources: {source_text}")
+        for problem in note.problems:
+            typer.echo(f"problem: {problem}")
+        typer.echo("Source captures, processing records, and knowledge are retained.")
+        if yes:
+            memory.remove_note(paths, selected, note.path, expected_hash=note.sha256)
+            typer.echo("Removed.")
+        else:
+            typer.echo("No changes made. Use --yes to remove this note.")
+    except _HARVEST_ERRORS as exc:
+        fail([str(exc)])

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from dataclasses import replace
 from datetime import date, datetime
@@ -264,3 +265,25 @@ def update_note(
         fields["updated"] = storage.timestamp()
         storage.publish(note.root, note.path, document(fields, body), expected_hash=expected_hash)
         return scan(paths, workspace).get(note.path, scope)
+
+
+def remove_note(paths: Paths, workspace: str, path: str, *, expected_hash: str) -> None:
+    """Remove exactly the reported file revision, preserving captures and processing state."""
+    with storage.writer(paths, "memory"):
+        catalog = scan(paths, workspace)
+        note = catalog.get(path, f"workspace:{workspace}")
+        catalog.require_unique(note)
+        if note.sha256 != expected_hash:
+            raise NoteError("note changed since the removal report; read it again")
+        if captures.pending_note(paths, workspace, note.id, note.path):
+            raise NoteError(
+                "note creation is still being recorded; run enso memory batch to recover first"
+            )
+        directory, name = storage.open_parent(note.root, note.path)
+        try:
+            if storage.hash_at(directory, name) != expected_hash:
+                raise NoteError("note changed during removal; read it again")
+            os.unlink(name, dir_fd=directory)
+            os.fsync(directory)
+        finally:
+            os.close(directory)

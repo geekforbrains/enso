@@ -433,6 +433,23 @@ def handled(paths: Paths, workspace: str, sources: tuple[int, ...]) -> bool:
     return count == len(sources)
 
 
+def pending_note(paths: Paths, workspace: str, ident: str | None, path: str) -> bool:
+    """A note scheduled for unfinished publication must be reconciled before removal."""
+    try:
+        with db.reader(paths) as con:
+            return any(
+                output.get("path") == path or (ident is not None and output.get("id") == ident)
+                for row in con.execute(
+                    "SELECT outputs FROM _enso_memory_receipts "
+                    "WHERE workspace = ? AND completed_at IS NULL",
+                    (workspace,),
+                )
+                for output in json.loads(row["outputs"])
+            )
+    except db.MissingDatabaseError:
+        return False
+
+
 def complete_receipt(paths: Paths, workspace: str, receipt_id: str) -> None:
     """Acknowledge durable publication and advance only through contiguous handled captures."""
     with db.transaction(paths) as con:
