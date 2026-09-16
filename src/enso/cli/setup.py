@@ -90,7 +90,14 @@ def _send_test(paths: Paths, config: Config) -> None:
         return
     try:
         asyncio.run(
-            deliver(paths, transport, target[1], None, text=f"Enso {__version__} is set up.")
+            deliver(
+                paths,
+                transport,
+                target[1],
+                None,
+                workspace="default",
+                text=f"Enso {__version__} is set up.",
+            )
         )
         typer.echo(f"sent a test message to {target[0]}:{target[1]}")
     except Exception:

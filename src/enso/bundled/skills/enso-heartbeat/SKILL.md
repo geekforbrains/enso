@@ -16,6 +16,9 @@ parallel status file or edit internal tables.
 
 ## Arrange future work
 
+`enso heartbeat list` defaults to `ENSO_WORKSPACE`; `--workspace NAME` overrides it and
+`--all-workspaces` includes the installation. `--all` separately includes closed beats.
+
 Check `enso heartbeat status --json` and inspect existing beats before creating a duplicate.
 Respect disabled heartbeat; explain that it is unavailable instead of replacing it with a job.
 

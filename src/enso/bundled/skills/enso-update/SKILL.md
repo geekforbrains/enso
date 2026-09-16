@@ -14,6 +14,11 @@ waits for this turn and other accepted work to complete. It then backs up affect
 state, switches releases, restarts Enso and any running viewer, checks readiness,
 and sends the result to the originating conversation.
 
+`apply` and `check --notify` require the inherited `ENSO_WORKSPACE` or an explicit
+`--workspace NAME`. The flag overrides the environment; missing or invalid context is an
+error. The update retains that workspace for its completion notification after restart,
+and recovery uses the saved owner. A read-only check needs no workspace.
+
 Use `enso update status --json` for progress or the final outcome. If a helper or
 host was interrupted and no update is running, `enso update recover --json` retries
 the original operation's recovery. Never remove the maintenance gate, edit runtime

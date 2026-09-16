@@ -16,8 +16,8 @@ from ..config import (
     parse_stages,
     resolve_workspace,
 )
-from .common import JSON_FLAG, columns, echo_json, fail, load
-from .tasks import ALL_WORKSPACES, WORKSPACE, _scope
+from .common import ALL_WORKSPACES, JSON_FLAG, WORKSPACE, columns, echo_json, fail, load
+from .tasks import _scope
 
 project_app = typer.Typer(no_args_is_help=True, help="Projects that tasks belong to.")
 REPO = typer.Option(None, "--repo", help="A Git checkout; its tasks get worktrees.")

@@ -7,6 +7,13 @@ All notable changes to Enso are documented here, following
 
 ### Changed
 
+- Background messages retain their sending workspace through chat binding changes. CLI
+  sends and operational lists require `--workspace` or `ENSO_WORKSPACE`; sends can explicitly
+  select another workspace, and lists offer `--all-workspaces`. Registered tables and the
+  read-only viewer remain installation-wide.
+  Update requests and release notifications require the same workspace selection;
+  completion notifications retain their recorded workspace through restarts.
+
 - Heartbeat gates and helpers now live under their saved workspace's `heartbeat/<REF>/`.
   Creation requires `--workspace` or `ENSO_WORKSPACE`; JSON `workspace` fields and transfers
   of existing beats are rejected. Scheduling, run history, action receipts, and script

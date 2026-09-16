@@ -36,6 +36,10 @@ Add `--json` for arrays instead of the `time  name (id)  ts=…` headers.
 
 ## Write
 
+Sends and uploads require `ENSO_WORKSPACE` or an explicit `--workspace NAME`. The selected
+workspace owns the outbox message; `--channel` or `--to` still chooses its destination.
+Use both options when sending context for another workspace to a different chat.
+
 ```bash
 enso slack send -c C0123456789 "text"              # returns channel, ts, permalink
 enso slack send -c C… -t <thread_ts> --file notes.md

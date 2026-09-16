@@ -13,7 +13,18 @@ import typer
 
 from .. import heartbeat, tasks
 from ..config import Config, Paths, resolve_workspace
-from .common import JSON_FLAG, InputError, columns, echo_json, fail, load, read_input
+from .common import (
+    ALL_WORKSPACES,
+    JSON_FLAG,
+    WORKSPACE,
+    InputError,
+    columns,
+    echo_json,
+    fail,
+    load,
+    read_input,
+    workspace_scope,
+)
 
 heartbeat_app = typer.Typer(no_args_is_help=True, help="Finite actions and temporary watches.")
 DEFINITION = typer.Option(..., "--file", help="JSON definition or update; - reads stdin.")
@@ -186,7 +197,8 @@ def heartbeat_update(
 @heartbeat_app.command("list")
 def heartbeat_list(
     state: str | None = typer.Option(None, "--state"),
-    workspace: str | None = typer.Option(None, "--workspace"),
+    workspace: str | None = WORKSPACE,
+    all_workspaces: bool = ALL_WORKSPACES,
     show_all: bool = typer.Option(False, "--all", help="Include closed beats."),
     limit: int = typer.Option(100, "--limit"),
     offset: int = typer.Option(0, "--offset"),
@@ -194,10 +206,13 @@ def heartbeat_list(
 ) -> None:
     """List current beats, or include recent closed beats with --all."""
     with _using(as_json=as_json) as config:
+        selected = workspace_scope(
+            config.paths, workspace, all_workspaces=all_workspaces, as_json=as_json
+        )
         found = heartbeat.list_beats(
             config.paths,
             state=state,
-            workspace=workspace,
+            workspace=selected,
             include_closed=show_all,
             limit=limit,
             offset=offset,

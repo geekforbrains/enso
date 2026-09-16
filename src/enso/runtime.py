@@ -631,7 +631,9 @@ class Runtime:
         finally:
             # The agent knows what it sent; those rows must not return as context.
             with contextlib.suppress(Exception):
-                await asyncio.to_thread(messages.consume_own, self.paths, f"turn:{conversation}")
+                await asyncio.to_thread(
+                    messages.consume_own, self.paths, f"turn:{conversation}", workspace=workspace
+                )
 
     async def _turn(
         self, conversation: str, workspace: str, turn: Turn, reply: Reply, running: Running
@@ -648,7 +650,7 @@ class Runtime:
             turn.transport,
             turn.channel,
             None if turn.is_dm else turn.thread,
-            exclude_source=f"turn:{conversation}",
+            workspace=workspace,
         )
         prompt = self.assemble_prompt(
             turn, background=messages.render(background), rich=reply.rich_format

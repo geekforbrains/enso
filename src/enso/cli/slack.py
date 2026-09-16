@@ -18,6 +18,7 @@ from ..outbound import FENCE, EnvelopeError, OutboundMessage, parse_outbound_mes
 from .common import (
     ACTION_KEY,
     JSON_FLAG,
+    WORKSPACE,
     InputError,
     body,
     deliver,
@@ -88,6 +89,7 @@ def slack_send(
     file: Path | None = FILE,
     rich: Path | None = RICH,
     action_key: str | None = ACTION_KEY,
+    workspace: str | None = WORKSPACE,
     as_json: bool = JSON_FLAG,
 ) -> None:
     """Post Markdown text, or a table/chart envelope with --rich."""
@@ -107,7 +109,16 @@ def slack_send(
     else:
         content = body(text, file, as_json=as_json)
     result = run(
-        deliver(paths, slack, channel, thread, text=content, rich=envelope, action_key=action_key),
+        deliver(
+            paths,
+            slack,
+            channel,
+            thread,
+            text=content,
+            rich=envelope,
+            action_key=action_key,
+            workspace=workspace,
+        ),
         as_json=as_json,
     )
     report(result, as_json=as_json)
@@ -120,6 +131,7 @@ def slack_upload(
     thread: str | None = THREAD,
     caption: str = typer.Option("", "--caption", help="Text posted with the file."),
     action_key: str | None = ACTION_KEY,
+    workspace: str | None = WORKSPACE,
     as_json: bool = JSON_FLAG,
 ) -> None:
     """Upload a file, optionally with a caption."""
@@ -128,7 +140,16 @@ def slack_upload(
     if not file.is_file():
         fail([f"{file} is not a file"], as_json=as_json)
     result = run(
-        deliver(paths, slack, channel, thread, file=file, caption=caption, action_key=action_key),
+        deliver(
+            paths,
+            slack,
+            channel,
+            thread,
+            file=file,
+            caption=caption,
+            action_key=action_key,
+            workspace=workspace,
+        ),
         as_json=as_json,
     )
     report(result, as_json=as_json)

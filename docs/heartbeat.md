@@ -33,6 +33,11 @@ does not reassign existing definitions, runs, or action receipts. Commands using
 operate on that recorded beat. Per-beat execution locks retain their installation-level
 location at `$ENSO_HOME/heartbeat/.locks/`, outside the prunable script directories.
 
+`enso heartbeat list` uses `--workspace` or `ENSO_WORKSPACE`; `--all-workspaces` explicitly
+includes the installation. `--all` separately includes closed beats. Runner notifications
+keep the beat's workspace in the [message outbox](cli.md#messages), even if a chat's binding
+has changed.
+
 ## Creation and management
 
 The user asks in ordinary language. The agent loads the bundled `enso-heartbeat` skill and

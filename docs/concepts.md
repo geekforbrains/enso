@@ -308,10 +308,11 @@ with the application. [Customizing](customizing.md#official-optional-skills) own
 ## Message
 
 Anything Enso sends outside the normal reply — a job alert, a `enso message send` from a
-running agent — is recorded in an outbox. At the start of the next turn in that
-conversation, unread rows are shown to the agent as `[Background messages]` and marked
-consumed. A turn's own sends are retired when it ends, because the agent already knows what
-it said.
+running agent — is recorded in an outbox with its workspace. A turn loads unread messages
+for its conversation and workspace as `[Background messages]`, then marks them consumed.
+A turn's own sends in that workspace are retired when it ends. Changing the chat's workspace
+never transfers old messages; [CLI § Messages](cli.md#messages) owns cross-workspace sends
+and unread-message handling.
 
 This is what lets a long job report progress into a chat and have the next human message
 land in a conversation that knows what happened.
@@ -319,8 +320,9 @@ land in a conversation that knows what happened.
 ## Table
 
 Registered tables are ordinary SQLite tables in `enso.db`, catalogued so an agent can
-discover them. Enso's own state tables are reserved. The catalog holds only metadata —
-schemas are always read back from SQLite itself.
+discover them across the installation, regardless of the selected workspace. Enso's own
+state tables are reserved. The catalog holds only metadata — schemas are always read back
+from SQLite itself. Workspace selection is not a database permission boundary.
 
 ## How a chat turn flows
 

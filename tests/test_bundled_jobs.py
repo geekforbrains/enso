@@ -112,7 +112,7 @@ def test_template_parses_and_validates(enso_home: Paths, config: Config, raw_con
     shown = CliRunner().invoke(app, ["job", "show", "default:enso-audit"])
     assert shown.exit_code == 0, shown.output
     assert "problem:" not in shown.output and "enabled: True" in shown.output
-    listed = CliRunner().invoke(app, ["job", "list"])
+    listed = CliRunner().invoke(app, ["job", "list", "--workspace", "default"])
     assert listed.exit_code == 0 and "enso-audit" in listed.output
 
 

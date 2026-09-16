@@ -109,7 +109,7 @@ def test_native_commands_record_receipts_and_refuse_duplicate_sends(
         args += ["--to", to]
     if command[0] == "slack":
         args += ["--channel", "C3", "--thread", "7.0"]
-    args += ["--action-key", "dinner-final-notice", "--json"]
+    args += ["--action-key", "dinner-final-notice", "--workspace", "team", "--json"]
     result = CliRunner().invoke(app, args)
     assert result.exit_code == 0, (result.stdout, result.stderr, result.exception)
     assert json.loads(result.stdout)["ok"] is True
@@ -124,6 +124,7 @@ def test_native_commands_record_receipts_and_refuse_duplicate_sends(
         "file": is_file,
     }
     (message,) = messages.list_messages(config.paths, 10)
+    assert message.workspace == "team"
     assert message.source == f"beat:{beat.ref}" and message.consumed_at is None
     refused = CliRunner().invoke(app, args)
     assert refused.exit_code == 1 and "succeeded" in json.loads(refused.stdout)["error"]

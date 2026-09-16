@@ -40,11 +40,12 @@ CREATE INDEX runs_job ON runs (workspace, job, started_at DESC);
 
 CREATE TABLE messages (
   id INTEGER PRIMARY KEY, created_at TEXT NOT NULL,
+  workspace TEXT NOT NULL,
   transport TEXT NOT NULL, target TEXT NOT NULL, thread TEXT,
   text TEXT NOT NULL, source TEXT NOT NULL,
   status TEXT NOT NULL, message_id TEXT,
   consumed_at TEXT);
-CREATE INDEX messages_target ON messages (transport, target, thread, consumed_at);
+CREATE INDEX messages_target ON messages (workspace, transport, target, consumed_at, thread);
 
 -- A session belongs to the workspace it was created in: Claude and Grok keep the
 -- transcript under that directory even when the session is resumed elsewhere.
@@ -57,6 +58,7 @@ CREATE TABLE job_state (
   workspace TEXT NOT NULL, job TEXT NOT NULL, last_run TEXT,
   failure_fingerprint TEXT, failure_alerted_at TEXT, PRIMARY KEY (workspace, job));
 
+-- Registered user tables are installation-wide; their schemas stay in SQLite itself.
 CREATE TABLE _enso_tables (
   table_name TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL,
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL);

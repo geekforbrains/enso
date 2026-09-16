@@ -125,8 +125,8 @@ enso job run meteor:meteor-forum-watch          # execute now, only when its eff
 `job create` writes a disabled scaffold under a slug of the name in the selected workspace.
 `--workspace` overrides `ENSO_WORKSPACE`; one must supply an existing workspace. Show, run,
 and run-history filters require the full reference, even when `ENSO_WORKSPACE` is set.
-Job and run lists currently cover the installation. The file cannot repeat `workspace`
-in its frontmatter; linked job paths are refused.
+Job and run lists use the selected workspace; `--all-workspaces` explicitly covers the
+installation. The file cannot repeat `workspace` in its frontmatter; linked job paths are refused.
 Inspect it with `job show`, check shell syntax with `bash -n`, and test scripts with
 fixtures or stub services when real
 effects would be premature. `job run` executes immediately even while disabled and uses both
@@ -500,7 +500,7 @@ Provider turns start at 1; a reaction hook when no provider ran uses attempt 0. 
 collision returns `skipped` without a run id or row. Manual runs exit 1 for either kind of `skipped` result.
 
 ```bash
-enso runs list [--job WORKSPACE:JOB] [-n N]
+enso runs list [--job WORKSPACE:JOB] [--workspace W] [--all-workspaces] [-n N]
 enso runs show ID            # a unique id prefix is enough
 ```
 

@@ -28,7 +28,7 @@ Names beginning `enso-` are reserved for jobs Enso installs; `enso workspace aud
 
 ## Workflow
 
-1. `enso job list` to see what exists; `enso config show` for the configured providers and models, and `enso config check` to validate the configuration.
+1. `enso job list` to see jobs in `ENSO_WORKSPACE`; select another with `--workspace NAME` or use `--all-workspaces` for the installation. Run lists use the same scope. `enso config show` lists providers and models, and `enso config check` validates configuration.
 2. `enso job create --name "Name" --provider claude --model sonnet --effort high --schedule "0 9 * * *" --workspace default` scaffolds a disabled job.
 3. Write the prompt in the `JOB.md` body; add a prerun script if the job should gate itself or gather data, and a postrun script to check completion, request a correction, or process the output.
 4. `enso job show <workspace>:<job>` to check the definition without running it. Check shell syntax with `bash -n` and test scripts against fixtures or stub services where real effects would be premature.

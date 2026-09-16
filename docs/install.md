@@ -207,7 +207,7 @@ version comes from installed package metadata and the runtime receipt; `config.j
 
 ```bash
 enso update check --json
-enso update apply --json
+enso update apply --workspace default --json
 enso update status --json
 ```
 
@@ -215,6 +215,10 @@ Checking does not authorize installation. The bundled nightly check announces ea
 release once to the configured notification target and stays quiet when unchanged, offline,
 or unmanaged. It spends no provider tokens and never installs an update. You can ask in chat
 whether an upgrade is available, then ask Enso to upgrade itself when ready.
+
+Update requests and checks with `--notify` require `ENSO_WORKSPACE` or `--workspace NAME`;
+choose an existing workspace in a terminal. The update saves this owner for its completion
+notification after restart. See [CLI § Updates](cli.md#updates) for the command contract.
 
 `apply` queues an independent updater under launchd or user systemd and returns immediately.
 An agent requesting the update finishes its current turn instead of waiting inside it.

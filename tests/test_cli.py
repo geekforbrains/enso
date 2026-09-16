@@ -19,7 +19,7 @@ from conftest import FakeSlack, FakeTransport, load_job, write_config, write_job
 from slack_sdk.errors import SlackApiError
 from typer.testing import CliRunner
 
-from enso import db, runs, workspaces
+from enso import db, messages, runs, workspaces
 from enso.cli import _serve, app, build_transports
 from enso.cli.common import INPUT_LIMIT, InputError, read_input
 from enso.config import Config, Paths
@@ -341,11 +341,16 @@ def test_job_and_runs_commands(enso_home: Paths, raw_config: dict, fake_claude: 
     assert bad.exit_code == 1 and bad.stderr == ""
     assert json.loads(bad.stdout)["ok"] is False and "gpt" in json.loads(bad.stdout)["error"]
 
-    listed = json.loads(runner.invoke(app, ["job", "list", "--json"]).stdout)
+    listed = json.loads(
+        runner.invoke(app, ["job", "list", "--workspace", "default", "--json"]).stdout
+    )
     assert [(j["dir_name"], j["enabled"], j["last_run"]) for j in listed] == [
         ("nightly-digest", False, None)
     ]
-    assert "nightly-digest  0 9 * * *" in runner.invoke(app, ["job", "list"]).stdout
+    assert (
+        "nightly-digest  0 9 * * *"
+        in runner.invoke(app, ["job", "list", "--workspace", "default"]).stdout
+    )
 
     ran = runner.invoke(app, ["job", "run", "default:nightly-digest", "--json"])
     payload = json.loads(ran.stdout)
@@ -358,7 +363,9 @@ def test_job_and_runs_commands(enso_home: Paths, raw_config: dict, fake_claude: 
     )
     assert shown["last_run"]["status"] == "ok" and shown["next_run"] and shown["problems"] == []
 
-    history = json.loads(runner.invoke(app, ["runs", "list", "--json"]).stdout)
+    history = json.loads(
+        runner.invoke(app, ["runs", "list", "--workspace", "default", "--json"]).stdout
+    )
     assert [run["id"] for run in history] == [payload["run_id"]]
     one = runner.invoke(app, ["runs", "show", payload["run_id"][:6]])
     assert (
@@ -397,7 +404,9 @@ def test_job_show_and_list_carry_a_schedule_problem(enso_home: Paths, raw_config
         "minute hour day-of-month month day-of-week; Enso schedules at minute resolution, "
         "so a seconds or year field and aliases such as @daily are not accepted"
     ]
-    listed = json.loads(runner.invoke(app, ["job", "list", "--json"]).stdout)
+    listed = json.loads(
+        runner.invoke(app, ["job", "list", "--workspace", "default", "--json"]).stdout
+    )
     assert [entry["problems"] for entry in listed] == [payload["problems"]]
     assert runner.invoke(app, ["job", "run", "default:hourly"]).exit_code == 1
     refused = runner.invoke(app, ["job", "run", "default:hourly", "--json"])
@@ -534,7 +543,7 @@ def test_runs_show_includes_attempts_without_loading_them_in_lists(
     text = cli.invoke(app, ["runs", "show", run_id])
     assert text.exit_code == 0 and "Attempt 1: ok" in text.stdout and "Attempt 2: ok" in text.stdout
     assert "Commit these changes." in text.stdout and "Initial answer" in text.stdout
-    listed = cli.invoke(app, ["runs", "list", "--json"])
+    listed = cli.invoke(app, ["runs", "list", "--workspace", "default", "--json"])
     assert "attempts" not in json.loads(listed.stdout)[0]
     assert "Initial answer" not in listed.stdout
 
@@ -618,6 +627,7 @@ def test_json_transport_import_failure(
 def slack(monkeypatch: pytest.MonkeyPatch, enso_home: Paths, raw_config: dict) -> FakeSlack:
     """Config on disk plus one fake Slack client behind every SlackTransport."""
     write_config(enso_home, raw_config)
+    monkeypatch.setenv("ENSO_WORKSPACE", "default")
     fake = FakeSlack()
     monkeypatch.setattr(SlackTransport, "client", property(lambda self: fake))
     return fake
@@ -798,7 +808,8 @@ def test_slack_writes_follow_the_json_contract_and_fill_the_outbox(
     ]
     assert all(r["source"] == "cli" and r["consumed_at"] is None for r in rows)
     listed = runner.invoke(app, ["message", "list", "-n", "1"]).stdout.splitlines()
-    assert listed[0].startswith("ID  CREATED") and listed[1].split()[2:5] == [
+    assert listed[0].startswith("ID  CREATED") and listed[1].split()[2:6] == [
+        "default",
         "failed",
         "slack:C9",
         "cli",
@@ -906,6 +917,49 @@ def test_message_send_without_destination_fails(
     assert slack.calls == []
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["message", "send"],
+        ["message", "attach"],
+        ["telegram", "send"],
+        ["telegram", "attach"],
+        ["slack", "send", "-c", "C1"],
+        ["slack", "upload", "-c", "C1"],
+    ],
+)
+def test_native_sends_require_context_and_allow_workspace_override(
+    enso_home, raw_config_both, monkeypatch, tmp_path, command
+):
+    from enso.cli import messaging, slack
+
+    write_config(enso_home, raw_config_both)
+    enso_home.workspace("team").mkdir()
+    sender = FakeTransport()
+    monkeypatch.setattr(messaging, "_sender", lambda *a, **kw: sender)
+    monkeypatch.setattr(slack, "transport", lambda *a, **kw: sender)
+    attachment = tmp_path / "note.txt"
+    attachment.write_text("note")
+    args = [*command, str(attachment), "--json"]
+    cli = CliRunner()
+    missing = cli.invoke(app, args)
+    assert missing.exit_code == 1
+    assert (
+        json.loads(missing.stdout)["error"]
+        == "select a workspace with --workspace or ENSO_WORKSPACE"
+    )
+    assert messages.list_messages(enso_home, 20) == []
+    monkeypatch.setenv("ENSO_WORKSPACE", "default")
+    for flags, owner in (([], "default"), (["--workspace", "team"], "team")):
+        sent = cli.invoke(app, [*args, *flags])
+        assert sent.exit_code == 0, sent.output
+        assert messages.list_messages(enso_home, 1)[0].workspace == owner
+        assert os.environ["ENSO_WORKSPACE"] == "default"
+    bad = cli.invoke(app, [*args, "--workspace", "missing"])
+    assert bad.exit_code == 1 and "missing" in json.loads(bad.stdout)["error"]
+    assert len(messages.list_messages(enso_home, 20)) == 2
+
+
 @pytest.mark.parametrize("as_json", [False, True])
 def test_telegram_send_without_the_transport_configured_fails_cleanly(
     enso_home: Paths, raw_config: dict, as_json: bool
@@ -928,6 +982,7 @@ def test_message_attach_and_telegram_send(
     enso_home: Paths, raw_config_both: dict, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     write_config(enso_home, raw_config_both)
+    monkeypatch.setenv("ENSO_WORKSPACE", "default")
     bot = FakeBot()
 
     @contextlib.asynccontextmanager

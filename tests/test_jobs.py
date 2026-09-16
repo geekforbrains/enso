@@ -791,7 +791,7 @@ def test_job_create_and_run_from_the_terminal_for_a_stage(
          "--effort", "high", "--workspace", "default"],
     )  # fmt: skip
     assert result.exit_code == 1 and "--schedule is required unless" in result.stderr
-    listed = cli.invoke(app, ["job", "list"])
+    listed = cli.invoke(app, ["job", "list", "--workspace", "default"])
     assert listed.exit_code == 0 and "dev-todo  ready (EN/todo)  claude/opus/high" in listed.stdout
     shown = cli.invoke(app, ["job", "show", "default:dev-todo", "--json"])
     assert shown.exit_code == 0 and json.loads(shown.stdout)["next_run"] is None

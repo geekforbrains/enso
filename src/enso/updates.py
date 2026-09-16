@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__, db, messages, releases, update_services, web, workspaces
-from .config import Paths, load_config
+from .config import Paths, load_config, resolve_workspace
 from .connection_setup import receiver_active, service_receiver
 from .maintenance import (
     UpdateError,
@@ -333,14 +333,12 @@ def install(
         }
 
 
-def _origin() -> dict[str, str]:
+def _origin(workspace: str) -> dict[str, str]:
     return {
-        key: os.environ.get(f"ENSO_ORIGIN_{env}", "")
-        for key, env in (
-            ("transport", "TRANSPORT"),
-            ("channel", "CHANNEL"),
-            ("thread", "THREAD_TS"),
-        )
+        "transport": os.environ.get("ENSO_ORIGIN_TRANSPORT", ""),
+        "channel": os.environ.get("ENSO_ORIGIN_CHANNEL", ""),
+        "thread": os.environ.get("ENSO_ORIGIN_THREAD_TS", ""),
+        "workspace": workspace,
     }
 
 
@@ -348,9 +346,11 @@ def request_apply(
     paths: Paths,
     source: str | None = None,
     *,
+    workspace: str | None = None,
     drain_timeout: float = 300,
     startup_timeout: float = 60,
 ) -> dict[str, Any]:
+    selected = resolve_workspace(paths, workspace)
     with lock(paths), lock(paths, "worker"):
         receipt = installed(paths)
         if not receipt:
@@ -386,7 +386,7 @@ def request_apply(
             "source": str(release.source),
             "previous_install": receipt,
             "services": services,
-            "origin": _origin(),
+            "origin": _origin(selected),
             "drain_timeout": drain_timeout,
             "startup_timeout": startup_timeout,
         }
@@ -662,12 +662,13 @@ def recover(paths: Paths) -> dict[str, Any]:
         return {"ok": True, "operation": _public(state)}
 
 
-def _send(paths: Paths, text: str, origin: dict[str, str] | None = None) -> None:
+def _send(paths: Paths, text: str, origin: dict[str, str]) -> None:
     receipt = installed(paths)
     binary = paths.runtime_dir / "releases" / receipt["release_id"] / "bin" / "enso"
     command = [str(binary), "message", "send", text, "--json"]
     env = messages.without_identity(os.environ)
-    if origin and origin.get("transport") and origin.get("channel"):
+    env["ENSO_WORKSPACE"] = origin["workspace"]
+    if origin.get("transport") and origin.get("channel"):
         env.update(
             {
                 "ENSO_ORIGIN_TRANSPORT": origin["transport"],
@@ -693,7 +694,7 @@ def _notify_outcome(paths: Paths, state: dict[str, Any]) -> None:
     else:
         text = f"Enso update to {state['to_version']} {state['status']}. {state.get('error', '')}"
     try:
-        _send(paths, text, state.get("origin"))
+        _send(paths, text, state["origin"])
         _save(paths, state, outcome_notified=True)
     except Exception:
         _save(
@@ -703,7 +704,7 @@ def _notify_outcome(paths: Paths, state: dict[str, Any]) -> None:
         )
 
 
-def notify_available(paths: Paths, result: dict[str, Any]) -> bool:
+def notify_available(paths: Paths, result: dict[str, Any], *, workspace: str) -> bool:
     """Notify once per available release, advancing the receipt only after a successful send."""
     if not result["update_available"] or not result["managed"]:
         return False
@@ -718,6 +719,6 @@ def notify_available(paths: Paths, result: dict[str, Any]) -> bool:
         )
         if result.get("release_notes_url"):
             text += f" Release notes: {result['release_notes_url']}"
-        _send(paths, text)
+        _send(paths, text, {"workspace": workspace})
         write_json(receipt_path, {"version": result["available"], "sent_at": time.time()})
         return True

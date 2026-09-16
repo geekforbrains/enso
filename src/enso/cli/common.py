@@ -18,12 +18,14 @@ from typing import Any, NoReturn
 import typer
 
 from .. import db, heartbeat, messages
-from ..config import Config, ConfigError, Paths, load_config
+from ..config import Config, ConfigError, Paths, load_config, resolve_workspace
 from ..formatting import format_elapsed
 from ..outbound import OutboundMessage
 from ..transports import Transport
 
 JSON_FLAG = typer.Option(False, "--json", help="Print JSON instead of text.")
+WORKSPACE = typer.Option(None, "--workspace", help="Owner; defaults to ENSO_WORKSPACE.")
+ALL_WORKSPACES = typer.Option(False, "--all-workspaces", help="List across the installation.")
 ACTION_KEY = typer.Option(
     None, "--action-key", help="Stable purpose key; required for sends inside a heartbeat run."
 )
@@ -63,6 +65,20 @@ def load(paths: Paths, *, as_json: bool = False) -> Config:
     except (db.UnsupportedDatabaseError, OSError, sqlite3.Error) as exc:
         fail([str(exc)], as_json=as_json)
     return config
+
+
+def workspace_scope(
+    paths: Paths, workspace: str | None, *, all_workspaces: bool = False, as_json: bool
+) -> str | None:
+    """Resolve CLI context or an intentional installation-wide view."""
+    try:
+        if all_workspaces:
+            if workspace is not None:
+                raise ValueError("give --workspace or --all-workspaces, not both")
+            return None
+        return resolve_workspace(paths, workspace)
+    except ValueError as exc:
+        fail([str(exc)], as_json=as_json)
 
 
 @dataclass(frozen=True)
@@ -127,6 +143,7 @@ async def deliver(
     target: str,
     thread: str | None,
     *,
+    workspace: str | None = None,
     text: str = "",
     rich: OutboundMessage | None = None,
     file: Path | None = None,
@@ -134,6 +151,7 @@ async def deliver(
     action_key: str | None = None,
 ) -> dict:
     """Send and keep the outbox and any heartbeat receipt, even during interruption."""
+    selected = resolve_workspace(paths, workspace)
     source = messages.source_from_env(os.environ)
     if file is not None:
         text = f"[file {file.name}] {caption}".strip()
@@ -175,6 +193,7 @@ async def deliver(
             message = await messages.deliver(
                 paths,
                 send(),
+                workspace=selected,
                 transport=transport.name,
                 target=target,
                 thread=thread,

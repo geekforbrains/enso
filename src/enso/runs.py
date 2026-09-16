@@ -107,14 +107,21 @@ def _summary(row: sqlite3.Row) -> RunSummary:
 
 
 def _filters(
-    job: str | None, status: str | None, statuses: Sequence[str] | None = None
+    job: str | None,
+    status: str | None,
+    statuses: Sequence[str] | None = None,
+    *,
+    workspace: str | None = None,
 ) -> tuple[str, list[object]]:
     clauses: list[str] = []
     params: list[object] = []
+    if workspace is not None:
+        clauses.append("workspace = ?")
+        params.append(workspace)
     if job:
-        workspace, _, name = job.partition(":")
+        owner, _, name = job.partition(":")
         clauses.append("workspace = ? AND job = ?")
-        params.extend((workspace, name))
+        params.extend((owner, name))
     if status:
         clauses.append("status = ?")
         params.append(status)
@@ -276,9 +283,11 @@ def get(paths: Paths, run_id: str) -> Run | None:
     return _run(rows[0]) if len(rows) == 1 else None
 
 
-def list_runs(paths: Paths, *, job: str | None = None, limit: int = 20) -> list[Run]:
-    """Newest first, optionally for one job."""
-    where, params = _filters(job, None)
+def list_runs(
+    paths: Paths, *, job: str | None = None, limit: int = 20, workspace: str | None = None
+) -> list[Run]:
+    """Newest first, optionally for one workspace and/or job."""
+    where, params = _filters(job, None, workspace=workspace)
     params.append(limit)
     with db.transaction(paths) as con:
         rows = con.execute(

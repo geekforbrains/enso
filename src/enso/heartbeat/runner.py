@@ -528,6 +528,7 @@ class HeartbeatRunner:
                         delivered = await messages.deliver(
                             self.paths,
                             transport.send(target, text, thread=beat.notify_thread),
+                            workspace=beat.workspace,
                             transport=transport_name,
                             target=target,
                             thread=beat.notify_thread,
