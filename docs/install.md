@@ -207,6 +207,10 @@ a change. This page owns installing and operating Enso, not contributor workflow
 
 ## Upgrading
 
+**0.1.x → 0.2.0 requires the [manual migration guide](migration.md#01x--020).** Do not use
+the old managed updater or the adoption command below for that conversion. Keep the old
+code and database together until the rebuilt home has been verified.
+
 Enso is in pre-1.0 beta. Managed updates follow published
 `major.minor.patch` releases, not changes to the repository's default branch. The package
 version comes from installed package metadata and the runtime receipt; `config.json`'s
@@ -276,6 +280,9 @@ mode; there is no backward migration. Follow release-specific instructions for i
 data recovery and retain independent backups of your home.
 
 ### Adopt an existing installation
+
+This procedure requires a home already compatible with the selected release; it does not
+convert a 0.1.x home to 0.2.0. Follow [Migration](migration.md) first for that version step.
 
 An editable checkout or `uv tool` install is unmanaged and never changes itself. For the
 one-time move, stop its daemon and viewer, then run the release installer with `--adopt` and
