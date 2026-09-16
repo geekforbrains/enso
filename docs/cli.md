@@ -72,13 +72,14 @@ extras, the service pid, job names, and beat counts and attention references).
 
 `serve` logs to `~/.enso/enso.log` (rotating) and, when stderr is a terminal, to the
 terminal. `--debug` adds the full prompt and every raw provider event. Each chat turn is
-tagged `[t:<id>]` and each job run `[j:<name>]`, which `enso logs --turn` and `--job`
+tagged `[t:<id>]` and each job run `[j:<workspace>:<job>]`, which `enso logs --turn` and `--job`
 filter on; `-f` follows across rotations.
 
 `serve`, `setup`, and the job, run-history, task, project, messaging, Slack, Telegram, and
-table commands initialize `enso.db`. They reject a newer database schema with an `error:` line and exit 1
-before modifying that database or starting a transport or job. This also means some CLI
-reads can create or migrate a database. Filesystem-only operations such as `workspace create`
+table commands initialize `enso.db`. They reject a pre-0.2.0 database or a newer database
+schema with an `error:` line and exit 1 before modifying that database or starting a
+transport or job. This also means some CLI
+reads can initialize a missing database. Filesystem-only operations such as `workspace create`
 and service-unit management do not use this guard, and setup seeds files before it checks
 the database; see [Upgrading](install.md#upgrading).
 
@@ -283,8 +284,9 @@ it never deletes. The command exits 1 while any error remains; warnings alone ex
 
 ### Workspace context in 0.2.0
 
-**Forthcoming command behavior in 0.2.0.** The shared resolver is implemented; individual
-command adoption remains forthcoming. Workspace-scoped commands use `ENSO_WORKSPACE`,
+**Partly implemented in 0.2.0.** Job creation uses the shared resolver; adoption by
+task, Heartbeat, and other context-sensitive commands remains forthcoming.
+Workspace-scoped commands use `ENSO_WORKSPACE`,
 inherited from the Enso chat agent, job, or Heartbeat run calling them. Optional `--workspace` overrides it
 for that operation. The [context contract](workspaces.md#context-selection-in-020) owns
 validation and recorded ownership; there is no directory inference or implicit `default`.
@@ -448,20 +450,22 @@ Enso's environment, never from the JSON definition or CLI flags.
 
 ## Jobs and runs
 
-**Forthcoming in 0.2.0:** jobs use `<workspace>:<job>` references, such as `team:digest`,
-throughout commands, runs, and `ENSO_JOB`; [Workspaces](workspaces.md#ownership-in-020) owns
-the new locations and identity. The signatures below still describe 0.1.x.
+Jobs use `<workspace>:<job>` references, such as `team:digest`, throughout commands, runs,
+and `ENSO_JOB`; [Workspaces](workspaces.md#ownership-in-020) owns their locations and identity.
+Show, run, and `runs list --job` require a qualified reference; bare names are errors.
+Job and run lists currently cover the installation.
 
 ```text
 enso job list [--json]
-enso job create --name N --provider P --model M --effort E --workspace W [--schedule S] [--project KEY --stage NAME] [--json]
-enso job show NAME [--json]
-enso job run NAME [--json]
-enso runs list [--job NAME] [-n N] [--json]
+enso job create --name N --provider P --model M --effort E [--workspace W] [--schedule S] [--project KEY --stage NAME] [--json]
+enso job show WORKSPACE:JOB [--json]
+enso job run WORKSPACE:JOB [--json]
+enso runs list [--job WORKSPACE:JOB] [-n N] [--json]
 enso runs show ID [--json]
 ```
 
-`job create` needs `--name --provider --model --effort --workspace` and either `--schedule`
+`job create` needs `--name --provider --model --effort`, a workspace selected by
+`--workspace` or `ENSO_WORKSPACE`, and either `--schedule`
 (five-field cron) or `--project KEY --stage NAME`, which make a [stage job](jobs.md#stage-jobs)
 and leave `--schedule` optional. It creates no job files when one of them is invalid. Like
 the other job commands, it initializes the database before validating the job.
@@ -477,7 +481,11 @@ database initialization, job validation, and lookup failures use the error objec
 above. `JOB.md` can override the default two postrun follow-ups with `max_followups`;
 see [Jobs](jobs.md#postrun-scripts).
 
-`runs list --json` returns the retained run rows, including final `session_id` and
+`job create`, `job show`, and parsed entries in `job list --json` include `ref`
+(the qualified reference), `workspace`, and `dir_name` (the local name). Unparsed entries
+carry `ref` and `problems`.
+
+`runs list --json` returns the retained run rows, with qualified `job`, including final `session_id` and
 `postrun_error` (null when absent). `runs show --json` adds an ordered `attempts` array,
 whose entries carry `number`, `status`, `exit_code`, `output`, `error`, `session_id`,
 `duration_ms`, `postrun_exit_code`, `postrun_output`, and `postrun_error`. Provider turns
@@ -513,7 +521,7 @@ enso workflow approve-rules REF --message TEXT [--json]
 The board, its moves, the claim rules, and what each command prints are in
 [Tasks](tasks.md#the-cli). A refused move exits 1 with the reason, or with `--json` the error
 object described above. The actor is derived from the environment, never passed: a job run
-acts as `job:<name>`, a chat turn as its sender, a terminal as the local user. `--force`,
+acts as `job:<workspace>:<job>`, a chat turn as its sender, a terminal as the local user. `--force`,
 is refused inside a run and cannot override a live execution claim or required checks; `drop` is only offered
 outside one; and a run may move, release, edit, or land only the task it holds. `--message -` and `--body-file -` read stdin. `project add` takes exactly one of
 `--stages` and `--flow` (`basic`, `support`, `marketing`), validates the whole
@@ -665,7 +673,7 @@ Re-registering it updates its description and display name; it does not change t
 | `ENSO_ORIGIN_USER_ID` / `_USER_NAME` | chat turns | Who sent the message |
 | `ENSO_ORIGIN_CHANNEL` / `_CHANNEL_NAME` | chat turns | Where it came from (`dm` for direct messages) |
 | `ENSO_ORIGIN_THREAD_TS` | chat turns | The Slack thread, when there is one |
-| `ENSO_JOB` / `ENSO_RUN_ID` | jobs | The job's directory name and this run's id |
+| `ENSO_JOB` / `ENSO_RUN_ID` | jobs | The qualified job reference (e.g. `team:digest`) and this run's id |
 | `ENSO_TASK` | stage jobs | The reference of the task claimed for this run, such as `EN-041` |
 | `ENSO_TASK_DIR` | stages using a worktree | The recorded task worktree; the provider's cwd is still the workspace |
 | `ENSO_PROJECT_REPO` | repo stage jobs and lifecycle scripts | The regular repository path for context |

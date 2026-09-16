@@ -288,7 +288,7 @@ async def test_attachment_and_followup_reach_runtime_in_arrival_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A follow-up is visibly queued while the earlier attachment is still downloading."""
-    db.migrate(config_both.paths)
+    db.initialize(config_both.paths)
     runtime = Runtime(config_both)
     transport.runtime = runtime
     _bot(transport).files["f1"] = b"hello"
@@ -353,7 +353,7 @@ async def test_preparation_queue_applies_runtime_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Raw follow-ups cannot evade the same ten-message cap while a download is pending."""
-    db.migrate(config_both.paths)
+    db.initialize(config_both.paths)
     runtime = Runtime(config_both)
     transport.runtime = runtime
     bot = _bot(transport)
@@ -421,7 +421,7 @@ async def test_commands_run_once_before_the_queue(
     transport: TelegramTransport, config_both: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A command is answered from the handler and never becomes a turn; prose skips dispatch."""
-    db.migrate(config_both.paths)
+    db.initialize(config_both.paths)
     runtime = Runtime(config_both)
     transport.runtime = runtime
     dispatched: list[str] = []
@@ -456,7 +456,7 @@ async def test_stop_cancels_blocked_preparation_and_flushes_followups(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A stop command bypasses preparation and prevents canceled raw turns from submitting."""
-    db.migrate(config_both.paths)
+    db.initialize(config_both.paths)
     runtime = Runtime(config_both)
     transport.runtime = runtime
     bot = _bot(transport)
@@ -522,7 +522,7 @@ async def test_independent_chats_prepare_in_parallel(
         config_both,
         bindings={**config_both.bindings, "telegram:456": "default"},
     )
-    db.migrate(config.paths)
+    db.initialize(config.paths)
     runtime = Runtime(config)
     transport.runtime = runtime
     bot = _bot(transport)

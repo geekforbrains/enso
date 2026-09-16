@@ -4,7 +4,6 @@ schedule: "30 3 * * *"
 provider: "{{provider}}"
 model: "{{model}}"
 effort: "{{effort}}"
-workspace: default
 enabled: true
 prerun: prerun.sh
 catch_up: true

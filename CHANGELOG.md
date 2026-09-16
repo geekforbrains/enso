@@ -7,6 +7,12 @@ All notable changes to Enso are documented here, following
 
 ### Changed
 
+- Jobs now live under `workspaces/<workspace>/jobs/` and use `workspace:job` references
+  across commands, runs, alerts, task claims, and the viewer. Setup and managed bundle
+  refresh use the same paths, preserving customization. Concurrency groups remain shared
+  across workspaces. The database starts a new schema line; old databases and home-level
+  jobs are refused without conversion.
+
 - Conversation bindings are the sole chat access rule. Telegram's `allowed_users` setting
   is rejected; pairing writes only the user binding and notification target. Unbound
   conversations receive one fixed notice, and missing workspaces cannot admit messages,

@@ -14,7 +14,7 @@ from enso.config import Config, Paths
 def test_attempt_history_is_durable_bounded_and_retained_with_its_run(
     enso_home: Paths, config: Config
 ) -> None:
-    db.migrate(enso_home)
+    db.initialize(enso_home)
     write_job(enso_home)
     run_id = runs.start(enso_home, load_job(enso_home, config), "manual", effort="high")
     attempt = {
@@ -68,7 +68,7 @@ def test_attempt_history_is_durable_bounded_and_retained_with_its_run(
 
 
 def test_attempt_zero_and_plain_sqlite_deletion(enso_home: Paths, config: Config) -> None:
-    db.migrate(enso_home)
+    db.initialize(enso_home)
     write_job(enso_home)
     run_id = runs.start(enso_home, load_job(enso_home, config), "manual", effort="high")
     runs.record_attempt(
@@ -90,28 +90,8 @@ def test_attempt_zero_and_plain_sqlite_deletion(enso_home: Paths, config: Config
         assert con.execute("SELECT count(*) FROM _enso_run_attempts").fetchone()[0] == 0
 
 
-def test_v1_history_can_be_read_without_migration(enso_home: Paths) -> None:
-    assert runs.attempts(enso_home, "old") == [] and not enso_home.db.exists()
-    enso_home.home.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(enso_home.db) as con:
-        con.executescript(db._SCHEMA_V1)
-        con.execute(
-            """INSERT INTO runs
-                 (id, job, workspace, provider, model, effort, trigger, started_at, status, output)
-               VALUES ('old', 'nightly', 'default', 'claude', 'sonnet', 'high', 'manual',
-                       '2026-09-01T00:00:00+00:00', 'ok', 'saved output')"""
-        )
-    old = runs.get(enso_home, "old")
-    assert old is not None and old.output == "saved output"
-    assert old.session_id is None and old.postrun_error is None
-    assert runs.attempts(enso_home, "old") == []
-    assert runs.list_summaries(enso_home)[0].id == "old"
-    with db.reader(enso_home) as con:
-        assert con.execute("PRAGMA user_version").fetchone()[0] == 1
-
-
 def test_run_lifecycle_and_retention(enso_home: Paths, config: Config) -> None:
-    db.migrate(enso_home)
+    db.initialize(enso_home)
     write_job(enso_home)
     job = load_job(enso_home, config)
 
@@ -144,9 +124,9 @@ def test_run_lifecycle_and_retention(enso_home: Paths, config: Config) -> None:
     assert errored is not None and errored.duration_ms == 0
     assert not runs.abandon(enso_home, second, "late")  # a closed row keeps its outcome
     assert [r.id for r in runs.list_runs(enso_home)] == [second, first]
-    assert [r.id for r in runs.list_runs(enso_home, job="nightly", limit=1)] == [second]
-    assert runs.list_runs(enso_home, job="other") == []
-    assert runs.latest(enso_home)["nightly"].id == second
+    assert [r.id for r in runs.list_runs(enso_home, job="default:nightly", limit=1)] == [second]
+    assert runs.list_runs(enso_home, job="default:other") == []
+    assert runs.latest(enso_home)["default:nightly"].id == second
     assert runs.get(enso_home, "nope") is None
 
     running = runs.start(enso_home, job, "schedule", effort=job.effort)
@@ -167,7 +147,7 @@ def test_run_lifecycle_and_retention(enso_home: Paths, config: Config) -> None:
 
 def test_prefix_lookup_treats_wildcards_as_literal(enso_home: Paths, config: Config) -> None:
     """An id is matched as literal text: ``%``, ``_``, and ``\\`` are never wildcards."""
-    db.migrate(enso_home)
+    db.initialize(enso_home)
     write_job(enso_home)
     job = load_job(enso_home, config)
 

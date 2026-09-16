@@ -143,7 +143,7 @@ def setup_wizard() -> None:
         )
     config = load_config(paths)
     try:
-        db.migrate(paths)
+        db.initialize(paths)
     except db.UnsupportedDatabaseError as exc:
         fail([str(exc)])
     _send_test(paths, config)

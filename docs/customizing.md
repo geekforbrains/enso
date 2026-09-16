@@ -201,7 +201,8 @@ Enso installs these into `~/.enso/skills/`:
 Each one says how Enso sets its subject up, then how the agent uses it. `enso init` and
 `enso setup` write a bundled skill or home-level `AGENTS.md` only when missing. A workspace
 `AGENTS.md` is created from its template, stamped with the workspace name, and never refreshed.
-A bundled job is stamped with the default agent during setup or config apply; those commands
+A bundled maintenance job is installed in `workspaces/default/jobs/` and stamped with
+the default agent during setup or config apply; those commands
 leave an existing job directory alone, including missing scripts.
 
 Managed upgrades use `.bundles.json`, which records hashes when Enso seeds files. A bundled

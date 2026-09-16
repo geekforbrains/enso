@@ -21,10 +21,11 @@ prewarmed uv cache and a release feed on the container's loopback interface.
 
 The harness builds synthetic versions from temporary source copies. It replaces
 Slack with a local socket transport and Claude with the existing fake provider;
-the installed CLI, runtime, updater, database migrations and uv environments are
+the installed CLI, runtime, updater, database preparation and uv environments are
 real. Temporary candidate releases contain deliberately broken dependencies,
-migrations or startup code. These faults never enter production source or the
-working checkout's version metadata.
+a synthetic schema upgrade or startup code. Production 0.2.0 refuses pre-0.2.0 homes;
+the injected upgrade exercises updater recovery within scratch homes only. These faults
+never enter production source or the working checkout's version metadata.
 
 The cases check:
 

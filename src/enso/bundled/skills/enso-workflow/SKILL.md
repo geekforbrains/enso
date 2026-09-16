@@ -80,7 +80,7 @@ Do not recursively move the task from a lifecycle script.
 
 ## Validate and recover
 
-Run `enso config check` and inspect each generated `enso job show NAME` before enabling it.
+Run `enso config check` and inspect each generated `enso job show WORKSPACE:JOB` before enabling it.
 Use a scratch task/home for checks with side effects unless a real trial is authorized.
 Exercise one failing check, a repair, acceptance, and a retained worktree; verify the web
 task page shows the same outcome as `enso workflow show REF --json`. A manual `enso job run`

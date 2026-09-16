@@ -123,7 +123,7 @@ def test_reader_is_strictly_read_only(enso_home: Paths, config: Config) -> None:
     assert runs.get(enso_home, "abc") is None
     assert not enso_home.db.exists()
 
-    db.migrate(enso_home)
+    db.initialize(enso_home)
     with db.reader(enso_home) as con:
         assert con.execute("PRAGMA query_only").fetchone()[0] == 1
         assert con.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
@@ -149,7 +149,7 @@ def test_reader_is_strictly_read_only(enso_home: Paths, config: Config) -> None:
 
 
 def test_run_summaries_never_carry_output(enso_home: Paths, config: Config) -> None:
-    db.migrate(enso_home)
+    db.initialize(enso_home)
     write_job(enso_home)
     write_job(enso_home, "other")
     job = load_job(enso_home, config)
@@ -167,14 +167,17 @@ def test_run_summaries_never_carry_output(enso_home: Paths, config: Config) -> N
     assert failed.error_preview == "e" * runs.ERROR_PREVIEW and failed.has_output
     assert (failed.status, failed.exit_code, failed.trigger) == ("error", 2, "manual")
     assert not summaries[0].has_output and summaries[0].error_preview is None
-    assert [s.id for s in runs.list_summaries(enso_home, job="nightly")] == [second, first]
+    assert [s.id for s in runs.list_summaries(enso_home, job="default:nightly")] == [second, first]
     assert [s.id for s in runs.list_summaries(enso_home, status="ok")] == [second]
     assert [s.id for s in runs.list_summaries(enso_home, limit=1, offset=1)] == [second]
-    assert runs.count(enso_home) == 3 and runs.count(enso_home, job="nightly") == 2
-    assert runs.count(enso_home, job="nightly", status="error") == 1
+    assert runs.count(enso_home) == 3 and runs.count(enso_home, job="default:nightly") == 2
+    assert runs.count(enso_home, job="default:nightly", status="error") == 1
     latest = runs.latest_summaries(enso_home)
-    assert {name: s.id for name, s in latest.items()} == {"nightly": second, "other": third}
-    assert runs.job_names(enso_home) == ["nightly", "other"]
+    assert {name: s.id for name, s in latest.items()} == {
+        "default:nightly": second,
+        "default:other": third,
+    }
+    assert runs.job_names(enso_home) == ["default:nightly", "default:other"]
     full = runs.get(enso_home, first[:6])
     assert full is not None and full.output == "x" * 5000 and full.error == "e" * 500
     assert runs.STATUSES[0] == "running" and runs.PAGE_SIZE == 500
@@ -183,7 +186,7 @@ def test_run_summaries_never_carry_output(enso_home: Paths, config: Config) -> N
 async def test_run_detail_shows_attempts_and_escapes_feedback(
     client: TestClient, enso_home: Paths, config: Config
 ) -> None:
-    db.migrate(enso_home)
+    db.initialize(enso_home)
     write_job(enso_home)
     run_id = runs.start(enso_home, load_job(enso_home, config), "manual", effort="high")
     runs.record_attempt(

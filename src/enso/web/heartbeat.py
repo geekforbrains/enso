@@ -6,7 +6,6 @@ loads provider output into list pages, or migrates the home it is inspecting.
 
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -52,25 +51,20 @@ class BeatRow:
         return f"HB-{self.id:03d}"
 
 
-def _has_beats(con: sqlite3.Connection) -> bool:
-    return con.execute("PRAGMA user_version").fetchone()[0] >= 4
-
-
-def _activity_query(con: sqlite3.Connection) -> str:
-    query = f"""SELECT id, job, workspace, provider, model, effort, trigger, started_at,
+_ACTIVITY_SELECT = f"""SELECT id, workspace || ':' || job AS job, workspace,
+        provider, model, effort, trigger, started_at,
         ended_at, duration_ms, status, exit_code,
         substr(error, 1, {runs.ERROR_PREVIEW}) AS error_preview,
-        output IS NOT NULL AS has_output, 'jobs' AS source, job AS title FROM runs"""
-    if _has_beats(con):
-        query += f""" UNION ALL SELECT id, printf('HB-%03d', beat_id),
-            json_extract(definition, '$.workspace'),
-            json_extract(definition, '$.agent.provider'),
-            json_extract(definition, '$.agent.model'),
-            json_extract(definition, '$.agent.effort'),
-            trigger, started_at, ended_at, duration_ms, status, exit_code,
-            substr(error, 1, {runs.ERROR_PREVIEW}), output != '', 'heartbeat',
-            substr(json_extract(definition, '$.title'), 1, 240) FROM _enso_beat_runs"""
-    return query
+        output IS NOT NULL AS has_output, 'jobs' AS source, workspace || ':' || job AS title
+        FROM runs
+        UNION ALL SELECT id, printf('HB-%03d', beat_id),
+        json_extract(definition, '$.workspace'),
+        json_extract(definition, '$.agent.provider'),
+        json_extract(definition, '$.agent.model'),
+        json_extract(definition, '$.agent.effort'),
+        trigger, started_at, ended_at, duration_ms, status, exit_code,
+        substr(error, 1, {runs.ERROR_PREVIEW}), output != '', 'heartbeat',
+        substr(json_extract(definition, '$.title'), 1, 240) FROM _enso_beat_runs"""
 
 
 def _run_filters(
@@ -115,7 +109,7 @@ def activity(
     try:
         with db.reader(paths) as con:
             rows = con.execute(
-                f"SELECT * FROM ({_activity_query(con)}) WHERE {where} "
+                f"SELECT * FROM ({_ACTIVITY_SELECT}) WHERE {where} "
                 "ORDER BY started_at DESC, source, id DESC LIMIT ? OFFSET ?",
                 (*values, limit, offset),
             ).fetchall()
@@ -137,7 +131,7 @@ def activity_count(
     try:
         with db.reader(paths) as con:
             return con.execute(
-                f"SELECT count(*) FROM ({_activity_query(con)}) WHERE {where}", values
+                f"SELECT count(*) FROM ({_ACTIVITY_SELECT}) WHERE {where}", values
             ).fetchone()[0]
     except db.MissingDatabaseError:
         return 0
@@ -168,8 +162,6 @@ def beat_count(
     where, values = _beat_filter(view, state, attention, False)
     try:
         with db.reader(paths) as con:
-            if not _has_beats(con):
-                return 0
             return con.execute(
                 f"SELECT count(*) FROM _enso_beats WHERE {where}", values
             ).fetchone()[0]
@@ -199,8 +191,6 @@ def beat_rows(
     )
     try:
         with db.reader(paths) as con:
-            if not _has_beats(con):
-                return []
             rows = con.execute(
                 f"""SELECT id, substr(json_extract(definition, '$.title'), 1, 240) AS title,
                     json_extract(definition, '$.workspace') AS workspace, state, attention,
@@ -224,8 +214,6 @@ def events(
     """One history page, including receipts; long event data is visibly clipped for the viewer."""
     try:
         with db.reader(paths) as con:
-            if not _has_beats(con):
-                return 0, []
             where = "beat_id = ?"
             total = con.execute(
                 f"SELECT count(*) FROM _enso_beat_events WHERE {where}", (beat_id,)

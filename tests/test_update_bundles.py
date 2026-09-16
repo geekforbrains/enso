@@ -22,7 +22,7 @@ def bundle_home(enso_home, tmp_path, monkeypatch):
         "skills/enso/SKILL.md": "Core skill one\n",
         "jobs/enso-audit/JOB.md": (
             "---\nname: enso-audit\nenabled: true\nschedule: '0 3 * * *'\n"
-            'workspace: default\nprovider: "{{provider}}"\nmodel: "{{model}}"\n'
+            'provider: "{{provider}}"\nmodel: "{{model}}"\n'
             'effort: "{{effort}}"\n---\nAudit prompt one\n'
         ),
         "jobs/enso-audit/prerun.sh": "#!/bin/sh\nprintf old\n",
@@ -54,7 +54,7 @@ def test_untouched_bundles_refresh_and_keep_original_job_agent(bundle_home):
     assert "AGENTS.md" in changed
     assert (home.paths.home / "AGENTS.md").read_text() == "Home instructions two\n"
     assert (home.paths.home / "skills/enso/SKILL.md").read_text() == "Core skill two\n"
-    job = (home.paths.jobs / "enso-audit/JOB.md").read_text()
+    job = (home.paths.workspace_jobs("default") / "enso-audit/JOB.md").read_text()
     assert "Audit prompt two" in job
     assert 'provider: "claude"' in job and 'model: "opus"' in job and 'effort: "high"' in job
     receipt = read_json(home.paths.home / ".bundles.json")
@@ -68,7 +68,7 @@ def test_operator_edits_disabled_jobs_and_deleted_bundles_survive(bundle_home):
     instructions.write_text("My instructions\n")
     skill = home.paths.home / "skills/enso/SKILL.md"
     skill.unlink()
-    job = home.paths.jobs / "enso-audit/JOB.md"
+    job = home.paths.workspace_jobs("default") / "enso-audit/JOB.md"
     customized = job.read_text().replace("enabled: true", "enabled: false")
     job.write_text(customized)
     (home.bundled / "AGENTS.md").write_text("New shipped instructions\n")
@@ -87,7 +87,7 @@ def test_historical_existing_bundle_is_preserved_and_new_bundle_names_are_seeded
     home = bundle_home
     instructions = home.paths.home / "AGENTS.md"
     instructions.write_text("Historical instructions without a receipt\n")
-    job = home.paths.jobs / "enso-audit/JOB.md"
+    job = home.paths.workspace_jobs("default") / "enso-audit/JOB.md"
     job.parent.mkdir(parents=True)
     historical = workspaces._stamp(
         (home.bundled / "jobs/enso-audit/JOB.md").read_text(),
@@ -108,12 +108,14 @@ def test_historical_existing_bundle_is_preserved_and_new_bundle_names_are_seeded
 def test_new_helper_is_added_to_tracked_job_but_deleted_old_helper_stays_deleted(bundle_home):
     home = bundle_home
     seed(home)
-    deleted = home.paths.jobs / "enso-audit/prerun.sh"
+    deleted = home.paths.workspace_jobs("default") / "enso-audit/prerun.sh"
     deleted.unlink()
     (home.bundled / "jobs/enso-audit/new-helper.sh").write_text("#!/bin/sh\nprintf new\n")
     workspaces.reconcile_bundles(home.paths, home.agent)
     assert not deleted.exists()
-    assert (home.paths.jobs / "enso-audit/new-helper.sh").read_text() == "#!/bin/sh\nprintf new\n"
+    assert (
+        home.paths.workspace_jobs("default") / "enso-audit/new-helper.sh"
+    ).read_text() == "#!/bin/sh\nprintf new\n"
 
 
 def test_reconcile_does_not_follow_user_skill_symlinks(bundle_home, tmp_path):
@@ -138,13 +140,13 @@ def test_historical_job_without_receipt_retains_missing_script_across_repeated_u
     seed(home)
     # Simulate an older Enso home created before baseline receipts existed.
     (home.paths.home / ".bundles.json").unlink()
-    script = home.paths.jobs / "enso-audit/prerun.sh"
+    script = home.paths.workspace_jobs("default") / "enso-audit/prerun.sh"
     script.unlink()
     for _ in range(2):
         workspaces.reconcile_bundles(home.paths, home.agent)
         assert not script.exists()
     baseline = json.loads((home.paths.home / ".bundles.json").read_text())
-    assert "jobs/enso-audit/JOB.md" not in baseline["files"]
+    assert "workspaces/default/jobs/enso-audit/JOB.md" not in baseline["files"]
 
 
 def test_skill_support_files_seed_refresh_and_preserve_edits_and_deletions(

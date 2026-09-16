@@ -797,7 +797,7 @@ async def test_an_announced_session_id_outside_the_contract_is_never_stored(
     }
     config, problems, _ = parse_config(raw_config_both, enso_home)
     assert config is not None, problems
-    db.migrate(enso_home)
+    db.initialize(enso_home)
 
     reply = FakeReply()
     await Runtime(config).handle(make_turn("hello"), reply)
@@ -1064,7 +1064,7 @@ async def test_agy_turn_pins_the_workspace_and_resumes(
     }
     config, problems, _ = parse_config(raw_config_both, enso_home)
     assert config is not None, problems
-    db.migrate(enso_home)
+    db.initialize(enso_home)
     runtime = Runtime(config)
 
     # The first turn runs long enough for the status ticker to render a tool event.
@@ -1113,7 +1113,7 @@ def opencode_runtime(enso_home: Paths, raw_config_both: dict, fake_opencode: str
     }
     config, problems, _ = parse_config(raw_config_both, enso_home)
     assert config is not None, problems
-    db.migrate(enso_home)
+    db.initialize(enso_home)
     return Runtime(config)
 
 

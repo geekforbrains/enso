@@ -14,7 +14,7 @@ from enso.config import Paths
 
 
 def _create(paths: Paths, sql: str) -> None:
-    db.migrate(paths)
+    db.initialize(paths)
     con = db.connect(paths)
     con.executescript(sql)
     con.close()

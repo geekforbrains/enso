@@ -62,7 +62,7 @@ def test_development_preset_requires_commands_before_any_project_mutation(
     result = invoke("init", "EN", "--preset", "dev", "--lint", "true")
     assert result.exit_code == 1 and "--test" in json.loads(result.stdout)["error"]
     assert enso_home.config.read_bytes() == original
-    assert not enso_home.jobs.exists()
+    assert not enso_home.workspace_jobs("default").exists()
     assert not maintenance.paused(enso_home)
 
 
@@ -143,7 +143,7 @@ def test_partial_io_failure_keeps_admission_closed_and_same_command_resumes(
 ) -> None:
     task = tasks.create(enso_home, repo_config, "EN", "Existing", actor="user:test")
     original_write = maintenance.write_bytes
-    broken_path = enso_home.jobs / "en-implement" / "JOB.md"
+    broken_path = enso_home.workspace_jobs("default") / "en-implement" / "JOB.md"
 
     def broken(path: Path, data: bytes, mode: int = 0o600) -> None:
         if path == broken_path:

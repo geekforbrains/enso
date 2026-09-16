@@ -27,7 +27,7 @@ Enso's normal runtime state lives under one directory, `~/.enso` (or `$ENSO_HOME
 ├── .claude/skills -> ../skills
 ├── .agents/skills -> ../skills
 ├── workspaces/<name>/   # one directory per workspace: the agent's cwd and context
-├── jobs/<name>/JOB.md   # scheduled and stage jobs, with their prerun and postrun scripts
+│   └── jobs/<job>/JOB.md # workspace jobs, referenced as <workspace>:<job>
 ├── heartbeat/<REF>/    # a beat's optional gate.sh and helpers
 ├── worktrees/<KEY>/<REF>/  # one Git worktree per task of a repo project
 ├── secrets/*.env        # KEY=value files exported into the service environment

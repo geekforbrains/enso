@@ -15,6 +15,7 @@ from typing import Any, Literal
 from . import __version__, workspaces
 from .config import (
     CONFIG_VERSION,
+    LEGACY_HOME_MESSAGE,
     ConfigConflictError,
     ConfigError,
     Paths,
@@ -96,12 +97,13 @@ def example_config() -> dict[str, Any]:
 
 def _layout_problems(paths: Paths) -> list[str]:
     """Preflight the scaffold before creating anything; existing content is never replaced."""
+    if (paths.home / "jobs").exists() or (paths.home / "jobs").is_symlink():
+        return [LEGACY_HOME_MESSAGE]
     default = paths.workspace("default")
     directories = {
         paths.home,
         paths.workspaces,
         default,
-        paths.jobs,
         paths.heartbeat,
         paths.worktrees,
         paths.cache,
@@ -160,7 +162,6 @@ def initialize_home(paths: Paths) -> dict[str, Any]:
         with config_lock(paths):
             for directory in (
                 paths.workspaces,
-                paths.jobs,
                 paths.heartbeat,
                 paths.worktrees,
                 paths.cache,

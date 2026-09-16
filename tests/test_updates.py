@@ -248,7 +248,7 @@ def test_failed_migration_restores_database_config_bundles_and_wal_but_keeps_wor
         "enso.db-wal": b"old wal",
         "AGENTS.md": b"old instructions",
         ".bundles.json": b'{"files":{}}',
-        "jobs/user/JOB.md": b"custom job",
+        "workspaces/default/jobs/user/JOB.md": b"custom job",
         "skills/user/SKILL.md": b"custom skill",
         "slack/manifest.json": b"old slack manifest",
     }
@@ -450,3 +450,21 @@ def test_service_command_cleans_descendants_even_when_parent_exits(tmp_path):
         if child_pid is not None:
             with suppress(ProcessLookupError):
                 os.kill(child_pid, signal.SIGKILL)
+
+
+def test_snapshot_and_restore_refuse_linked_workspace_parents(managed, tmp_path):
+    state = queue(managed)
+    paths = managed.paths
+    paths.config.write_text("before config")
+    updates._snapshot(paths, state)
+    before = paths.config.read_bytes()
+    root = paths.workspace("default")
+    root.rename(tmp_path / "original-workspace")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    root.symlink_to(outside, target_is_directory=True)
+    for operation in (updates._snapshot, updates._restore):
+        with pytest.raises(UpdateError, match="symbolic link"):
+            operation(paths, state)
+    assert paths.config.read_bytes() == before
+    assert not list(outside.iterdir())

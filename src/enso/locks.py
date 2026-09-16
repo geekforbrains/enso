@@ -1,7 +1,7 @@
 """Advisory file locks: one hardened open for every lock file Enso takes.
 
-A lock file may sit in a directory the operator edits by hand (``jobs/<name>/``) or that a
-crashed process left behind (``web.pid``), so it is opened without following a symbolic link
+A lock file may sit in a job directory the operator edits by hand or that a crashed
+process left behind (``web.pid``), so it is opened without following a symbolic link
 and refused unless it is a regular file. Callers own what contention means: they map
 ``BlockingIOError`` to their own result or error and close the descriptor when they are done,
 which releases the lock. This module imports no other Enso module.

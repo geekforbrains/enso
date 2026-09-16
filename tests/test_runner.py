@@ -81,9 +81,9 @@ def job(
     """A ``nightly`` job; ``script`` becomes ``prerun.sh`` and ``hook`` becomes ``postrun.sh``."""
     write_job(paths, **fields)
     if script is not None:
-        (paths.jobs / "nightly" / "prerun.sh").write_text(script)
+        (paths.workspace_jobs("default") / "nightly" / "prerun.sh").write_text(script)
     if hook is not None:
-        (paths.jobs / "nightly" / "postrun.sh").write_text(hook)
+        (paths.workspace_jobs("default") / "nightly" / "postrun.sh").write_text(hook)
     return load_job(paths, config)
 
 
@@ -103,7 +103,7 @@ async def test_manual_run_records_the_run_and_stays_quiet(
     result = await runner.run(job(enso_home, fake_config, prompt="hello"), trigger="manual")
     assert (result.status, result.exit_code) == ("ok", 0) and result.run_id
     assert result.output.endswith(
-        f"batch job=nightly run={result.run_id} workspace=default prompt=hello"
+        f"batch job=default:nightly run={result.run_id} workspace=default prompt=hello"
     )
     run = runs.get(enso_home, result.run_id)
     assert run is not None and (run.status, run.trigger, run.output) == (
@@ -111,7 +111,7 @@ async def test_manual_run_records_the_run_and_stays_quiet(
         "manual",
         result.output,
     )
-    assert db.job_state(enso_home, "nightly").last_run is None
+    assert db.job_state(enso_home, "default:nightly").last_run is None
     assert transport.sent == []
 
 
@@ -123,7 +123,7 @@ async def test_a_job_prompt_never_gains_a_chat_origin(
     result = await runner.run(job(enso_home, fake_config, prompt="hello"), trigger="manual")
     assert result.status == "ok"
     assert result.output.endswith(
-        f"batch job=nightly run={result.run_id} workspace=default prompt=hello"
+        f"batch job=default:nightly run={result.run_id} workspace=default prompt=hello"
     )
     assert ORIGIN_HEADER not in result.output
     # A turn builds its child environment from a copy, so nothing chat-shaped is left behind.
@@ -177,7 +177,7 @@ async def test_agy_job_pins_the_workspace_project(
     raw_config_both["providers"]["agy"] = {"path": fake_agy, "models": [model]}
     config, problems, _ = parse_config(raw_config_both, enso_home)
     assert config is not None, problems
-    db.migrate(enso_home)
+    db.initialize(enso_home)
 
     nightly = job(enso_home, config, provider="agy", model=model, effort=effort)
     result = await JobRunner(config, {"slack": transport}).run(nightly, trigger="manual")
@@ -218,7 +218,7 @@ async def test_opencode_job_extracts_the_answer_from_jsonl(
     }
     config, problems, _ = parse_config(raw_config_both, enso_home)
     assert config is not None, problems
-    db.migrate(enso_home)
+    db.initialize(enso_home)
 
     nightly = job(
         enso_home,
@@ -231,7 +231,7 @@ async def test_opencode_job_extracts_the_answer_from_jsonl(
     result = await JobRunner(config, {"slack": transport}).run(nightly, trigger="manual")
     assert result.status == "ok" and result.run_id
     assert result.output == (
-        f"batch job=nightly run={result.run_id} workspace=default "
+        f"batch job=default:nightly run={result.run_id} workspace=default "
         f"root={workspace.resolve()} prompt=hello"
     )
     assert not result.output.startswith("{")
@@ -372,7 +372,7 @@ async def test_failing_postrun_marks_the_run_failed_and_alerts_once(
         diagnostic,
         diagnostic,
     )
-    assert transport.sent == [("C1", f"⚠️ [Nightly] postrun failed\n{diagnostic}")]
+    assert transport.sent == [("C1", f"⚠️ [default:nightly] postrun failed\n{diagnostic}")]
     manual = await runner.run(nightly, trigger="manual")
     assert manual.postrun_error == diagnostic and len(transport.sent) == 1
 
@@ -677,6 +677,8 @@ async def test_postrun_keeps_both_locks_and_run_row_until_followups_finish(
         postrun="postrun.sh",
         concurrency_group="shared",
     )
+    write_job(enso_home, workspace="team", concurrency_group="shared")
+    teammate = load_job(enso_home, fake_config, "team:nightly")
     task = runner.start(nightly, trigger="manual")
     try:
         await asyncio.wait_for(checking.wait(), 3)
@@ -686,6 +688,8 @@ async def test_postrun_keeps_both_locks_and_run_row_until_followups_finish(
         assert acquire_group_lock(enso_home, "shared") is None
         (attempt,) = runs.attempts(enso_home, active.id)
         assert attempt.status == "ok" and attempt.postrun_exit_code is None
+        assert (await runner.run(teammate, trigger="manual")).status == "skipped"
+        assert (enso_home.runtime_dir / runner_module.GROUP_LOCK_DIRNAME).is_dir()
     finally:
         proceed.set()
         result = await task
@@ -693,6 +697,7 @@ async def test_postrun_keeps_both_locks_and_run_row_until_followups_finish(
     held = acquire_group_lock(enso_home, "shared")
     assert held is not None
     held.close()
+    assert (await runner.run(teammate, trigger="manual")).status == "ok"
 
 
 async def test_cancel_during_postrun_preserves_completed_attempt_and_closes_row(
@@ -830,11 +835,11 @@ async def test_overlapping_trigger_is_skipped(
     assert runs.list_runs(enso_home) == []
     held.close()
 
-    db.set_last_run(enso_home, "nightly", "2026-09-01T08:59:00+00:00")
+    db.set_last_run(enso_home, "default:nightly", "2026-09-01T08:59:00+00:00")
     task = runner.start(nightly, trigger="schedule")
     await asyncio.sleep(0.05)
     await runner.tick(datetime.fromisoformat("2026-09-01T09:00:30+00:00"))  # due, but running
-    assert runner.running() == ["nightly"]
+    assert runner.running() == ["default:nightly"]
     assert (await task).status == "ok"
     assert len(runs.list_runs(enso_home)) == 1
 
@@ -951,16 +956,21 @@ async def test_tick_fires_due_jobs_only(
     write_job(enso_home, "broken", model="gpt")
     write_job(enso_home, "hourly", schedule="@hourly")  # invalid: never due, never dispatched
     await runner.tick(NOW)  # first sighting: remembered, not fired
-    assert runner.running() == [] and db.job_state(enso_home, "nightly").last_run == NOW.isoformat()
-    assert db.job_state(enso_home, "off").last_run is None
-    assert db.job_state(enso_home, "hourly").last_run is None
-    db.set_last_run(enso_home, "nightly", "2026-09-01T08:59:00+00:00")
-    db.set_last_run(enso_home, "hourly", "2026-09-01T08:59:00+00:00")
+    assert (
+        runner.running() == []
+        and db.job_state(enso_home, "default:nightly").last_run == NOW.isoformat()
+    )
+    assert db.job_state(enso_home, "default:off").last_run is None
+    assert db.job_state(enso_home, "default:hourly").last_run is None
+    db.set_last_run(enso_home, "default:nightly", "2026-09-01T08:59:00+00:00")
+    db.set_last_run(enso_home, "default:hourly", "2026-09-01T08:59:00+00:00")
     await runner.tick(NOW)
-    assert runner.running() == ["nightly"]  # a broken neighbour does not hold up a due job
+    assert runner.running() == ["default:nightly"]  # a broken neighbour does not hold up a due job
     await asyncio.gather(*runner._running.values())
-    assert runs.latest(enso_home)["nightly"].status == "ok"
-    assert db.job_state(enso_home, "nightly").last_run == NOW.isoformat()  # the dispatch stamp
+    assert runs.latest(enso_home)["default:nightly"].status == "ok"
+    assert (
+        db.job_state(enso_home, "default:nightly").last_run == NOW.isoformat()
+    )  # the dispatch stamp
 
 
 async def test_a_scheduled_run_keeps_its_dispatch_stamp(
@@ -974,29 +984,33 @@ async def test_a_scheduled_run_keeps_its_dispatch_stamp(
         misfire_grace_seconds=30,
         prompt="sleep 1",
     )
-    db.set_last_run(enso_home, "nightly", "2026-09-01T08:59:30+00:00")
+    db.set_last_run(enso_home, "default:nightly", "2026-09-01T08:59:30+00:00")
     await runner.tick(NOW)  # the 09:00 slot is exactly 30s old: at the grace edge, so it fires
-    assert runner.running() == ["nightly"]
+    assert runner.running() == ["default:nightly"]
     await runner.tick(datetime.fromisoformat("2026-09-01T09:01:30+00:00"))  # the 09:01 slot; busy
     await asyncio.gather(*runner._running.values())
-    assert db.job_state(enso_home, "nightly").last_run == NOW.isoformat()  # not the finish time
+    assert (
+        db.job_state(enso_home, "default:nightly").last_run == NOW.isoformat()
+    )  # not the finish time
     await runner.tick(datetime.fromisoformat("2026-09-01T09:01:40+00:00"))
-    assert db.job_state(enso_home, "nightly").last_run == "2026-09-01T09:01:40+00:00"  # misfired
+    assert (
+        db.job_state(enso_home, "default:nightly").last_run == "2026-09-01T09:01:40+00:00"
+    )  # misfired
 
 
 async def test_a_tick_reads_config_changes_without_a_restart(
     runner: JobRunner, enso_home: Paths, fake_config: Config
 ) -> None:
     write_job(enso_home, model="gpt")  # not one of claude's models, so the job is invalid
-    db.set_last_run(enso_home, "nightly", "2026-09-01T08:59:00+00:00")
+    db.set_last_run(enso_home, "default:nightly", "2026-09-01T08:59:00+00:00")
     await runner.tick(NOW)
     assert runner.running() == []
     raw = copy.deepcopy(fake_config.raw)
     raw["providers"]["claude"]["models"].append("gpt")
     write_config(enso_home, raw)
     await runner.tick(NOW)
-    assert runner.running() == ["nightly"]
-    assert (await runner._running["nightly"]).status == "ok"
+    assert runner.running() == ["default:nightly"]
+    assert (await runner._running["default:nightly"]).status == "ok"
 
 
 async def test_scheduled_alerts_suppress_repeats_and_recover(
@@ -1006,21 +1020,24 @@ async def test_scheduled_alerts_suppress_repeats_and_recover(
     nightly = job(enso_home, fake_config, script=broken, prerun="prerun.sh")
     await runner.run(nightly, trigger="schedule")
     await runner.run(nightly, trigger="schedule")
-    assert transport.sent == [("C1", "⚠️ [Nightly] prerun failed\nfeed down")]
+    assert transport.sent == [("C1", "⚠️ [default:nightly] prerun failed\nfeed down")]
     (nightly.job_dir / "prerun.sh").write_text("exit 3")
     await runner.run(nightly, trigger="schedule")
-    assert transport.sent[-1] == ("C1", "⚠️ [Nightly] prerun failed\nprerun exited with status 3")
+    assert transport.sent[-1] == (
+        "C1",
+        "⚠️ [default:nightly] prerun failed\nprerun exited with status 3",
+    )
     (nightly.job_dir / "prerun.sh").write_text("exit 1")
     await runner.run(nightly, trigger="schedule")
-    assert transport.sent[-1] == ("C1", "✅ [Nightly] prerun recovered")
-    assert db.job_state(enso_home, "nightly").failure_fingerprint is None
+    assert transport.sent[-1] == ("C1", "✅ [default:nightly] prerun recovered")
+    assert db.job_state(enso_home, "default:nightly").failure_fingerprint is None
     await runner.run(nightly, trigger="schedule")
     assert len(transport.sent) == 3
 
     failing = job(enso_home, fake_config, prompt="fail " + "x" * NOTIFY_LIMIT, notify="slack:C9")
     await runner.run(failing, trigger="schedule")
     target, text = transport.sent[-1]
-    assert target == "C9" and text.startswith("⚠️ [Nightly (exit 1)]\n…")
+    assert target == "C9" and text.startswith("⚠️ [default:nightly (exit 1)]\n…")
     assert text.endswith("fake: boom") and len(text) == NOTIFY_LIMIT
 
 
@@ -1064,8 +1081,87 @@ def test_job_locks_refuse_symbolic_links(
     (nightly.job_dir / runner_module.LOCK_FILENAME).symlink_to(outside / "run.lock")
     with pytest.raises(LockPathError, match="symbolic link"):
         acquire_lock(nightly.job_dir)
-    groups = enso_home.jobs / runner_module.GROUP_LOCK_DIRNAME
+    groups = enso_home.runtime_dir / runner_module.GROUP_LOCK_DIRNAME
+    groups.parent.mkdir(parents=True, exist_ok=True)
     groups.symlink_to(outside, target_is_directory=True)
     with pytest.raises(LockPathError, match="symbolic link"):
         acquire_group_lock(enso_home, "shared")
     assert sorted(entry.name for entry in outside.iterdir()) == ["run.lock"]
+
+
+async def test_same_named_jobs_have_independent_execution_and_history(
+    enso_home, fake_config, monkeypatch, tmp_path
+):
+    """Both schedulers and manual runs use the owner in every persisted/visible identity."""
+    from enso.jobs import find_job
+    from enso.web import heartbeat as activity
+
+    enso_home.workspace("team").mkdir()
+    calls = tmp_path / "calls.jsonl"
+    monkeypatch.setenv("FAKE_CLAUDE_LAUNCHES", str(calls))
+    selected = []
+    for workspace in ("default", "team"):
+        path = write_job(
+            enso_home,
+            "digest",
+            workspace=workspace,
+            prerun="prerun.sh",
+            postrun="postrun.sh",
+            prompt="{{prerun_output}}",
+        )
+        (path.parent / "prerun.sh").write_text(
+            'printf "%s|%s|%s" "$PWD" "$ENSO_WORKSPACE" "$ENSO_JOB"'
+        )
+        (path.parent / "postrun.sh").write_text(
+            'cat > result.txt; printf "%s" "$ENSO_JOB" > owner.txt'
+        )
+        job, problems = find_job(enso_home, fake_config, f"{workspace}:digest")
+        assert job is not None and not problems
+        selected.append(job)
+        db.set_last_run(enso_home, job.ref, "2026-09-01T08:59:00+00:00")
+    runner = JobRunner(fake_config)
+    await runner.tick(NOW)
+    active = list(runner._running.values())
+    assert runner.running() == ["default:digest", "team:digest"]
+    results = await asyncio.gather(*active)
+    assert all(result.status == "ok" for result in results)
+    assert {json.loads(line)["cwd"] for line in calls.read_text().splitlines()} == {
+        str(enso_home.workspace("default")),
+        str(enso_home.workspace("team")),
+    }
+    for job in selected:
+        assert (job.job_dir / "owner.txt").read_text() == job.ref
+        assert (
+            f"{job.job_dir}|{job.workspace}|{job.ref}" in (job.job_dir / "result.txt").read_text()
+        )
+        assert db.job_state(enso_home, job.ref).last_run == NOW.isoformat()
+        assert len(runs.list_runs(enso_home, job=job.ref)) == 1
+        assert runs.count(enso_home, job=job.ref) == 1
+    assert (
+        set(runs.latest(enso_home))
+        == set(runs.latest_summaries(enso_home))
+        == {"default:digest", "team:digest"}
+    )
+    assert runs.job_names(enso_home) == ["default:digest", "team:digest"]
+    assert [row.job for row in activity.activity(enso_home, job="team:digest")] == ["team:digest"]
+    db.set_failure(enso_home, "default:digest", "failure", db.now())
+    assert db.job_state(enso_home, "team:digest").failure_fingerprint is None
+    with db.reader(enso_home) as con:
+        assert {tuple(row) for row in con.execute("SELECT workspace, job FROM runs")} == {
+            ("default", "digest"),
+            ("team", "digest"),
+        }
+    held = acquire_lock(selected[0].job_dir)
+    assert held is not None
+    try:
+        assert (await runner.run(selected[0], trigger="manual")).status == "skipped"
+        assert (await runner.run(selected[1], trigger="manual")).status == "ok"
+        # Recovery checks the same qualified lock, including when another workspace has its name.
+        orphan = runs.start(enso_home, selected[1], "manual", effort="high")
+        busy = runs.start(enso_home, selected[0], "manual", effort="high")
+        assert runner.recover() == 1
+        assert runs.get(enso_home, orphan).status == "error"
+        assert runs.get(enso_home, busy).status == "running"
+    finally:
+        held.close()
+    assert runner.recover() == 1

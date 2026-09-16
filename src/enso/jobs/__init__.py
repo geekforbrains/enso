@@ -15,7 +15,7 @@ from pathlib import Path
 import yaml
 
 from .. import frontmatter
-from ..config import Config, Paths, require_workspace
+from ..config import Config, Paths, require_workspace, split_job_ref, valid_workspace_name
 from ..providers import PROVIDER_CLASSES
 from ..scheduling import CRON_FIELDS as CRON_FIELDS
 from ..scheduling import next_cron
@@ -30,7 +30,6 @@ FIELDS: dict[str, str] = {
     "provider": TEXT,
     "model": TEXT,
     "effort": TEXT,
-    "workspace": TEXT,
     "project": TEXT,
     "stage": TEXT,
     "concurrency_group": TEXT,
@@ -46,7 +45,7 @@ FIELDS: dict[str, str] = {
     "misfire_grace_seconds": INTEGER,
 }
 # ``schedule`` is required unless the job serves a stage, whose readiness is its own trigger.
-REQUIRED = ("name", "schedule", "provider", "model", "effort", "workspace", "enabled")
+REQUIRED = ("name", "schedule", "provider", "model", "effort", "enabled")
 _TYPE_PROBLEMS = {
     TEXT: "must be non-empty text",
     INTEGER: "must be a positive integer",
@@ -63,7 +62,7 @@ PLACEHOLDER_PROMPT = "Your prompt here. {{prerun_output}} is replaced with the p
 
 @dataclass(frozen=True)
 class Job:
-    """One ``jobs/<dir_name>/JOB.md``."""
+    """One ``workspaces/<workspace>/jobs/<dir_name>/JOB.md``."""
 
     dir_name: str
     path: Path
@@ -89,6 +88,10 @@ class Job:
     misfire_grace_seconds: int = DEFAULT_MISFIRE_GRACE
 
     @property
+    def ref(self) -> str:
+        return f"{self.workspace}:{self.dir_name}"
+
+    @property
     def job_dir(self) -> Path:
         return self.path.parent
 
@@ -100,11 +103,11 @@ class Job:
     def next_run(self, after: datetime) -> datetime:
         """The first slot after ``after`` as a local instant; slots are wall-clock times."""
         if self.schedule is None:
-            raise ValueError(f"job {self.dir_name} has no schedule; it fires when work is ready")
+            raise ValueError(f"job {self.ref} has no schedule; it fires when work is ready")
         return next_cron(self.schedule, after)
 
     def as_dict(self) -> dict:
-        return {**asdict(self), "path": str(self.path), "group": self.group}
+        return {**asdict(self), "ref": self.ref, "path": str(self.path), "group": self.group}
 
 
 # -- Frontmatter --------------------------------------------------------------
@@ -133,9 +136,17 @@ def _holds(kind: str, value: object) -> bool:
     return isinstance(value, bool)
 
 
-def parse_job(
-    dir_name: str, path: Path, config: Config | None = None
-) -> tuple[Job | None, list[str]]:
+def _job_path(paths: Paths, reference: str) -> Path:
+    """Validate ownership before reading definitions, publishing files, or opening locks."""
+    workspace, _ = split_job_ref(reference)
+    require_workspace(paths, workspace)
+    path = paths.job(reference)
+    if any(part.is_symlink() for part in (path, path.parent, path.parent.parent)):
+        raise ValueError("job path must not contain symbolic links")
+    return path
+
+
+def parse_job(path: Path, config: Config | None = None) -> tuple[Job | None, list[str]]:
     """Read one JOB.md: the job when its schema is whole, and everything wrong with it.
 
     Frontmatter syntax is settled first and alone, because a block that is unusable or
@@ -146,6 +157,21 @@ def parse_job(
     back with its problems beside it, so the CLI, doctor, and the web viewer can show what
     the file says next to what is wrong with it. Neither one is ever scheduled.
     """
+    if (
+        len(path.parents) < 5
+        or path.parents[3].name != "workspaces"
+        or path.parent.parent.name != "jobs"
+        or path.name != "JOB.md"
+    ):
+        return None, ["job must be workspaces/<workspace>/jobs/<job>/JOB.md"]
+    workspace = path.parents[2].name
+    reference = f"{workspace}:{path.parent.name}"
+    try:
+        paths = config.paths if config is not None else Paths(path.parents[4])
+        if path != _job_path(paths, reference):
+            raise ValueError("job path does not match its owning workspace")
+    except ValueError as exc:
+        return None, [str(exc)]
     try:
         text = path.read_text("utf-8")
     except (OSError, UnicodeError) as exc:
@@ -187,7 +213,9 @@ def parse_job(
         given.setdefault("provider", "command")
         given.setdefault("model", "command")
         given.setdefault("effort", "none")
-    return Job(dir_name=dir_name, path=path, prompt=document.body, **given), problems
+    return Job(
+        dir_name=path.parent.name, workspace=workspace, path=path, prompt=document.body, **given
+    ), problems
 
 
 def _usable(fields: Mapping[str, object], key: str) -> str | None:
@@ -277,12 +305,6 @@ def _config_problems(fields: Mapping[str, object], config: Config) -> list[str]:
             problems.append(problem)
     problems += _agent_problems(fields, config)
     problems += _stage_problems(fields, config)
-    workspace = _usable(fields, "workspace")
-    if workspace is not None:
-        try:
-            require_workspace(config.paths, workspace)
-        except ValueError as exc:
-            problems.append(str(exc))
     notify = _usable(fields, "notify")
     if notify is not None:
         try:
@@ -294,34 +316,49 @@ def _config_problems(fields: Mapping[str, object], config: Config) -> list[str]:
 
 def validate(job: Job, config: Config) -> list[str]:
     """Everything that must hold against config.json before a job may run."""
-    return _config_problems({key: getattr(job, key) for key in FIELDS}, config)
+    problems = _config_problems({key: getattr(job, key) for key in FIELDS}, config)
+    try:
+        if job.path != _job_path(config.paths, job.ref):
+            raise ValueError("job path does not match its owning workspace")
+    except ValueError as exc:
+        problems.append(str(exc))
+    return problems
 
 
 def load_jobs(paths: Paths, config: Config | None = None) -> tuple[list[Job], dict[str, list[str]]]:
-    """Every ``jobs/*/JOB.md`` that parsed, plus problems by directory (parse and config)."""
+    """Discover workspace jobs, with problems keyed by their qualified reference."""
     jobs: list[Job] = []
     problems: dict[str, list[str]] = {}
-    if not paths.jobs.is_dir():
+    if not paths.workspaces.is_dir() or paths.workspaces.is_symlink():
         return jobs, problems
-    for entry in sorted(paths.jobs.iterdir()):
-        job_file = entry / "JOB.md"
-        if not job_file.is_file():
+    for workspace in sorted(paths.workspaces.iterdir()):
+        if not valid_workspace_name(workspace.name) or not workspace.is_dir():
             continue
-        job, found = parse_job(entry.name, job_file, config)
-        if job is not None:
-            jobs.append(job)
-        if found:
-            problems[entry.name] = found
+        root = paths.workspace_jobs(workspace.name)
+        if workspace.is_symlink() or root.is_symlink() or not root.is_dir():
+            continue
+        for entry in sorted(root.iterdir()):
+            path = entry / "JOB.md"
+            if not path.exists() and not path.is_symlink():
+                continue
+            reference = f"{workspace.name}:{entry.name}"
+            job, found = parse_job(path, config)
+            if job is not None:
+                jobs.append(job)
+            if found:
+                problems[reference] = found
     return jobs, problems
 
 
 def find_job(paths: Paths, config: Config, name: str) -> tuple[Job | None, list[str]]:
-    """A job by directory name and its problems; ``(None, [...])`` when there is no such job."""
-    jobs, problems = load_jobs(paths, config)
-    for job in jobs:
-        if job.dir_name == name:
-            return job, problems.get(name, [])
-    return None, problems.get(name, [f"no job named {name}"])
+    """Read exactly one qualified job; never fall back to another workspace."""
+    try:
+        path = paths.job(name)
+    except ValueError as exc:
+        return None, [str(exc)]
+    if not path.exists() and not path.is_symlink():
+        return None, [f"no job named {name}"]
+    return parse_job(path, config)
 
 
 def create_job(
@@ -347,7 +384,7 @@ def create_job(
         raise ValueError("--schedule is required unless --project and --stage are given")
     job = Job(
         dir_name=dir_name,
-        path=paths.jobs / dir_name / "JOB.md",
+        path=paths.job(f"{workspace}:{dir_name}"),
         name=name,
         schedule=schedule,
         provider=provider,
@@ -363,7 +400,7 @@ def create_job(
     if problems:
         raise ValueError("; ".join(problems))
     if job.job_dir.exists():
-        raise FileExistsError(f"job {dir_name} already exists at {job.job_dir}")
+        raise FileExistsError(f"job {job.ref} already exists at {job.job_dir}")
     job.job_dir.mkdir(parents=True)
     fields: dict[str, object] = {"name": name}
     if schedule is not None:
@@ -372,7 +409,6 @@ def create_job(
         "provider": provider,
         "model": model,
         "effort": effort,
-        "workspace": workspace,
     }
     if project is not None and stage is not None:
         fields |= {"project": project, "stage": stage}

@@ -9,7 +9,7 @@ description: Work an Enso task from a stage job or move one from chat; read the 
 
 A task is one unit of work on a board Enso keeps in `enso.db`: a reference such as `EN-041`, a project, a title and a spec, a stage, a priority, and an append-only timeline of who did what. A project declares its stages in order (`plan, implement, review, integrate`, for example); each is agent work served by a job, an engine-run command/integration stage, or a human checkpoint. Every project also has `backlog`, `blocked`, `done`, and `cancelled`. A job bound to a stage fires when a task is ready there, and Enso claims the highest-priority one for that run before you start. Nothing is ever pruned: a finished task is the record of how it got there.
 
-Actor identity is derived from the environment, never passed. In a run you are `job:<name>`; in a chat turn, `slack:U…` or `telegram:<id>`; in a terminal, `user:<login>`. The rules that follow (no `drop`, no `--force`, a run moves only the task it holds) are read from `ENSO_RUN_ID` and `ENSO_JOB` in your own environment; they are guardrails, not a boundary you should look for a way around. Never clear or change those variables, and never act as another run.
+Actor identity is derived from the environment, never passed. In a run you are `job:<workspace>:<job>`; in a chat turn, `slack:U…` or `telegram:<id>`; in a terminal, `user:<login>`. The rules that follow (no `drop`, no `--force`, a run moves only the task it holds) are read from `ENSO_RUN_ID` and `ENSO_JOB` in your own environment; they are guardrails, not a boundary you should look for a way around. Never clear or change those variables, and never act as another run.
 
 ## Reading the Task block
 

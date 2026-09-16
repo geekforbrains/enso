@@ -42,10 +42,10 @@ def test_seed_home_writes_once_and_refreshes_skills_with_a_backup(enso_home: Pat
 
 
 def test_seed_jobs_stamps_the_agent_and_writes_once(enso_home: Paths) -> None:
-    job_dir = enso_home.jobs / "enso-audit"
+    job_dir = enso_home.workspace_jobs("default") / "enso-audit"
     done = workspaces.seed_jobs(enso_home, Agent("claude", "opus", "high"))
     assert done == [
-        f"wrote {enso_home.jobs / job / name}"
+        f"wrote {enso_home.workspace_jobs('default') / job / name}"
         for job in workspaces.BUNDLED_JOBS
         for name in ("JOB.md", "prerun.sh")
     ]
@@ -89,6 +89,7 @@ def test_bundled_content_mirrors_the_home(enso_home: Paths) -> None:
         if relative.parts[0] == "jobs":
             for placeholder, value in stamps.items():
                 expected = expected.replace(placeholder, value)
+            relative = Path("workspaces/default") / relative
         assert (enso_home.home / relative).read_text() == expected
         assert set(re.findall(r"\{\{\w+\}\}", expected)) <= {"{{prerun_output}}"}
     stamped = (bundled / template).read_text().replace("{{workspace_name}}", "meteor")
@@ -177,7 +178,7 @@ def test_setup_wizard_slack_path(enso_home: Paths, monkeypatch: pytest.MonkeyPat
     assert config.slack is not None and config.slack.app_token == "xapp-1"
     assert config.slack.notify == "D1" and tested == [("slack", "D1")]
     assert enso_home.agents_md.exists()
-    job, problems = find_job(enso_home, config, "enso-audit")
+    job, problems = find_job(enso_home, config, "default:enso-audit")
     assert job is not None and problems == []
     # Audit notifications use the private chat just paired.
     summary = next(

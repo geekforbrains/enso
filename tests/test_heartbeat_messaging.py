@@ -21,7 +21,7 @@ from enso.config import load_config
 def active(enso_home, raw_config_both, monkeypatch):
     write_config(enso_home, raw_config_both)
     config = load_config(enso_home)
-    db.migrate(enso_home)
+    db.initialize(enso_home)
     beat = heartbeat.create(
         config,
         {

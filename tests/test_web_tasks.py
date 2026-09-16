@@ -292,7 +292,7 @@ async def test_task_search_keeps_unicode_uppercase_reference_matches(
     config, problems, _ = parse_config(raw_config_projects, enso_home)
     assert config is not None, problems
     write_config(enso_home, raw_config_projects)
-    db.migrate(enso_home)
+    db.initialize(enso_home)
     task = tasks.create(enso_home, config, "ID", "Handle ticket", actor=USER)
     # Dotless i is outside the reference grammar, but uppercases to the stored ASCII ID.
     for finished in (False, True):
@@ -379,7 +379,7 @@ async def test_task_page_worktree_panel(
     config, problems, _ = parse_config(raw_config_projects, enso_home)
     assert config is not None, problems
     write_config(enso_home, raw_config_projects)
-    db.migrate(enso_home)
+    db.initialize(enso_home)
     task = tasks.create(enso_home, config, "EN", "With a branch", actor=USER)
     assert "Worktree" not in await html(client, f"/tasks/{task.ref}")  # nothing prepared yet
 
@@ -677,7 +677,7 @@ async def test_stage_job_pages_say_when_work_is_ready(client: TestClient, board:
     assert "<span>when work is ready</span>" in listing
     assert "<code>when work is ready</code>" not in listing
     assert "<code>0 9 * * *</code>" in listing  # the scheduled dev-todo row keeps its literal
-    page = await html(client, "/jobs/dev-triage")
+    page = await html(client, "/jobs/default%3Adev-triage")
     assert "None" not in page  # the missing cron line never leaks as Python's None
     assert "a stage job: it claims a ready task there" in page  # the Stage row
     assert "none; it fires when work is ready" in page

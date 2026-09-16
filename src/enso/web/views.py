@@ -181,8 +181,8 @@ def today_model(
     recent = _by_job(history)
     upcoming: list[dict[str, Any]] = [
         {
-            "title": row.dir_name,
-            "href": "/jobs/" + quote(row.dir_name, safe=""),
+            "title": row.ref,
+            "href": "/jobs/" + quote(row.ref, safe=""),
             "next_run": row.next_run,
             "timing": _schedule_note(row.job),
             "workspace": row.job.workspace if row.job else "-",
@@ -232,7 +232,7 @@ def today_model(
                 "average": _average(summaries),
             }
             for row in rows
-            if (summaries := recent.get(row.dir_name, [])[: filters.BAR_RUNS])
+            if (summaries := recent.get(row.ref, [])[: filters.BAR_RUNS])
         ],
         "upcoming": upcoming[:UP_NEXT],
         "beat_attention": beat_attention or [],
@@ -276,7 +276,7 @@ def _chart(
     lanes = []
     for row in rows:
         events = []
-        for summary in recent.get(row.dir_name, []):
+        for summary in recent.get(row.ref, []):
             moment = filters.parse_time(summary.started_at)
             if moment is None or moment.astimezone() < start:
                 continue
@@ -303,8 +303,8 @@ def _chart(
         if events or ghosts:
             lanes.append(
                 ChartLane(
-                    row.dir_name,
-                    row.dir_name,
+                    row.ref,
+                    row.ref,
                     _schedule_note(row.job),
                     events,
                     ghosts,
@@ -634,7 +634,7 @@ def skill_status(skill: skills.Skill) -> str:
 class JobRow:
     """A job directory as listed: parsed or not, with its latest run and next slot."""
 
-    dir_name: str
+    ref: str
     job: Job | None
     problems: list[str]
     last: runs.RunSummary | None
@@ -660,21 +660,21 @@ def _job_rows(
     latest = summaries or {}
     rows = [
         JobRow(
-            job.dir_name,
+            job.ref,
             job,
-            job_problems.get(job.dir_name, []),
-            latest.get(job.dir_name),
-            _next_run(job, job_problems.get(job.dir_name, []), now),
+            job_problems.get(job.ref, []),
+            latest.get(job.ref),
+            _next_run(job, job_problems.get(job.ref, []), now),
         )
         for job in found
     ]
-    parsed = {job.dir_name for job in found}
+    parsed = {job.ref for job in found}
     rows.extend(
         JobRow(name, None, found_problems, latest.get(name), None)
         for name, found_problems in job_problems.items()
         if name not in parsed
     )
-    return sorted(rows, key=lambda row: row.dir_name), error
+    return sorted(rows, key=lambda row: row.ref), error
 
 
 def jobs_model(paths: Paths) -> dict[str, Any]:
@@ -701,7 +701,7 @@ def job_model(paths: Paths, name: str, section: str = "overview") -> dict[str, A
     config, problems = common.read_config(paths)
     loaded, error = common.attempt(partial(load_jobs, paths, config))
     found, job_problems = loaded if loaded is not None else ([], {})
-    job = next((candidate for candidate in found if candidate.dir_name == name), None)
+    job = next((candidate for candidate in found if candidate.ref == name), None)
     if job is None and name not in job_problems:
         return None
     limit = runs.PAGE_SIZE if section == "history" else RECENT_RUNS
@@ -1063,5 +1063,5 @@ def _job_timeout(paths: Paths, config: Config | None, name: str) -> int | None:
     """The job's allowed seconds, when its JOB.md is still there and readable."""
     loaded, _error = common.attempt(partial(load_jobs, paths, config))
     found, _problems = loaded if loaded is not None else ([], {})
-    job = next((candidate for candidate in found if candidate.dir_name == name), None)
+    job = next((candidate for candidate in found if candidate.ref == name), None)
     return job.timeout if job else None

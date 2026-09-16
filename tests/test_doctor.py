@@ -88,7 +88,10 @@ def test_a_healthy_home_is_ok_everywhere(enso_home: Paths, raw_config: dict, uni
     assert payload["sections"][5]["details"] == {
         "platform": "launchd", "unit": str(unit), "installed": True, "loaded": True, "pid": 42,
     }  # fmt: skip
-    assert payload["sections"][7]["details"] == {"jobs": ["nightly"], "enabled": ["nightly"]}
+    assert payload["sections"][7]["details"] == {
+        "jobs": ["default:nightly"],
+        "enabled": ["default:nightly"],
+    }
 
 
 def test_codex_astra_is_available_with_ultra_effort(
@@ -211,7 +214,7 @@ def test_a_degraded_home_names_each_problem(
         f"the unit does not run {BINARY}; run `enso service install` after an upgrade"
     ]
     assert report.section("jobs").problems == [
-        f"broken ({enso_home.jobs / 'broken' / 'JOB.md'}): "
+        f"default:broken ({enso_home.workspace_jobs('default') / 'broken' / 'JOB.md'}): "
         "JOB.md.model 'gpt' is not in providers.claude.models"
     ]
     assert report.section("jobs").note == "1 job, 1 enabled"
@@ -239,7 +242,7 @@ def test_a_bad_schedule_names_its_file_and_changes_nothing(
     section = doctor.run(enso_home).section("jobs")
 
     assert section.problems == [
-        f"hourly ({path}): schedule '@hourly' must be exactly five fields, "
+        f"default:hourly ({path}): schedule '@hourly' must be exactly five fields, "
         "minute hour day-of-month month day-of-week; Enso schedules at minute resolution, "
         "so a seconds or year field and aliases such as @daily are not accepted"
     ]

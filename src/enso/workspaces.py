@@ -17,9 +17,9 @@ from pathlib import Path
 
 from .config import Agent, Paths, require_workspace, valid_workspace_name
 
-# ``src/enso/bundled/`` mirrors the home: ``AGENTS.md``, ``skills/<name>/SKILL.md``, and
-# ``jobs/<name>/`` (a ``JOB.md`` with its scripts) are copied to the same path under
-# ``$ENSO_HOME`` when missing. ``bundled/workspace/AGENTS.md`` is the per-workspace template,
+# Shared files in ``src/enso/bundled/`` keep their relative paths under ``$ENSO_HOME``.
+# ``jobs/<name>/`` (a ``JOB.md`` with its scripts) seeds the default workspace.
+# ``bundled/workspace/AGENTS.md`` is the per-workspace template,
 # stamped by ``create_workspace``; a job is stamped with the agent chosen at setup.
 # Managed updates refresh only bundle files matching their recorded baseline. What
 # Enso installs says so in its name: ``enso`` and
@@ -180,19 +180,21 @@ def seed_jobs(paths: Paths, agent: Agent) -> list[str]:
     at setup, so the job runs with what the operator picked rather than a guess of ours.
     """
     done: list[str] = []
-    if paths.jobs.is_symlink():
+    require_workspace(paths, "default")
+    jobs_root = paths.workspace_jobs("default")
+    if jobs_root.is_symlink():
         raise OSError("jobs directory must not be a symbolic link")
     # The job template wraps these fields in YAML double quotes. JSON escaping preserves
     # arbitrary configured model ids as one scalar rather than injecting frontmatter.
     stamps = {key: json.dumps(value)[1:-1] for key, value in asdict(agent).items()}
     for name in BUNDLED_JOBS:
-        if (paths.jobs / name).exists():
+        if (jobs_root / name).exists():
             continue
-        paths.jobs.mkdir(parents=True, exist_ok=True)
+        jobs_root.mkdir(parents=True, exist_ok=True)
         bundled = resources.files("enso").joinpath("bundled", "jobs", name)
         # Publish the whole job at once: an interrupted install cannot leave an owned-looking
         # partial directory which future setup correctly refuses to repair over user edits.
-        with tempfile.TemporaryDirectory(dir=paths.jobs, prefix=".seed-") as staging:
+        with tempfile.TemporaryDirectory(dir=jobs_root, prefix=".seed-") as staging:
             staged = Path(staging) / name
             staged.mkdir()
             names = []
@@ -201,26 +203,34 @@ def seed_jobs(paths: Paths, agent: Agent) -> list[str]:
                     write_missing(staged / entry.name, _stamp(entry.read_text("utf-8"), stamps))
                     names.append(entry.name)
             try:
-                os.rename(staged, paths.jobs / name)
+                os.rename(staged, jobs_root / name)
             except FileExistsError:
                 continue
-            done.extend(f"wrote {paths.jobs / name / filename}" for filename in names)
+            done.extend(f"wrote {jobs_root / name / filename}" for filename in names)
             for filename in names:
                 _record_bundle(
                     paths,
-                    f"jobs/{name}/{filename}",
-                    (paths.jobs / name / filename).read_text("utf-8"),
+                    f"workspaces/default/jobs/{name}/{filename}",
+                    (jobs_root / name / filename).read_text("utf-8"),
                 )
     return done
+
+
+def _bundle_root(relative: str) -> str | None:
+    if relative.startswith("skills/"):
+        return "/".join(relative.split("/")[:2])
+    if relative.startswith("workspaces/default/jobs/"):
+        return "/".join(relative.split("/")[:4])
+    return None
 
 
 def _new_bundle_file(relative: str, previous: dict[str, str], existing: set[str]) -> bool:
     """Distinguish a new helper from a deleted file or an untracked historical bundle."""
     if relative in previous:
         return False
-    if not relative.startswith(("skills/", "jobs/")):
+    bundle = _bundle_root(relative)
+    if bundle is None:
         return True
-    bundle = "/".join(relative.split("/")[:2])
     tracked = any(item.startswith(bundle + "/") for item in previous)
     return tracked == (bundle in existing)
 
@@ -244,7 +254,7 @@ def reconcile_bundles(paths: Paths, agent: Agent) -> list[str]:
     contents.update({relative: _bundled(relative) for relative in bundled_skill_files()})
     for name in BUNDLED_JOBS:
         values = asdict(agent)
-        job = paths.jobs / name / "JOB.md"
+        job = paths.workspace_jobs("default") / name / "JOB.md"
         if job.is_file() and not job.is_symlink():
             try:
                 header = yaml.safe_load(job.read_text("utf-8").split("---", 2)[1])
@@ -256,13 +266,14 @@ def reconcile_bundles(paths: Paths, agent: Agent) -> list[str]:
         stamps = {key: json.dumps(value)[1:-1] for key, value in values.items()}
         for entry in resources.files("enso").joinpath("bundled", "jobs", name).iterdir():
             if entry.is_file():
-                contents[f"jobs/{name}/{entry.name}"] = _stamp(entry.read_text("utf-8"), stamps)
+                contents[f"workspaces/default/jobs/{name}/{entry.name}"] = _stamp(
+                    entry.read_text("utf-8"), stamps
+                )
     changed: list[str] = []
     preexisting_bundles = {
-        "/".join(relative.split("/")[:2])
+        bundle
         for relative in contents
-        if relative.startswith(("skills/", "jobs/"))
-        and (paths.home / "/".join(relative.split("/")[:2])).exists()
+        if (bundle := _bundle_root(relative)) is not None and (paths.home / bundle).exists()
     }
     for relative, text in contents.items():
         target = paths.home / relative

@@ -20,7 +20,7 @@ from ..execution import alert_text, enso_error
 from ..locks import LockPathError, acquire_file_lock
 from ..providers import make_provider
 from ..transports import Transport
-from . import Job, command_stage, load_jobs, parse_job, taskflow
+from . import Job, _job_path, command_stage, load_jobs, parse_job, taskflow
 
 log = logging.getLogger(__name__)
 
@@ -102,8 +102,8 @@ def acquire_group_lock(paths: Paths, group: str) -> IO[str] | None:
     a database flag that would need expiry and recovery rules.  The filename is a digest so a
     user-authored group name can never escape Enso's private runtime directory.
     """
-    directory = paths.jobs / GROUP_LOCK_DIRNAME
-    if directory.is_symlink():
+    directory = paths.runtime_dir / GROUP_LOCK_DIRNAME
+    if paths.runtime_dir.is_symlink() or directory.is_symlink():
         raise LockPathError(f"group lock directory must not be a symbolic link: {directory}")
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     name = hashlib.sha256(group.encode()).hexdigest()
@@ -161,7 +161,7 @@ class JobRunner:
         for job in jobs:
             if paused(self.paths):
                 return
-            if not job.enabled or job.dir_name in problems or job.dir_name in self._running:
+            if not job.enabled or job.ref in problems or job.ref in self._running:
                 continue
             if job.schedule is None:
                 # A stage job without a schedule fires when a task waits; an idle stage
@@ -169,21 +169,21 @@ class JobRunner:
                 if await self._ready(job, config):
                     self.start(job, trigger="ready", config=config)
                 continue
-            state = states.get(job.dir_name)
+            state = states.get(job.ref)
             decision = decide(job, _parse_stamp(state.last_run if state else None), now)
-            log.debug("%s: %s", job.dir_name, decision)
+            log.debug("%s: %s", job.ref, decision)
             if decision == "wait":
                 continue
-            await asyncio.to_thread(db.set_last_run, self.paths, job.dir_name, _stamp(now))
+            await asyncio.to_thread(db.set_last_run, self.paths, job.ref, _stamp(now))
             if decision == "misfire":
                 log.warning(
                     "%s missed its slot by more than %ss; skipping (catch_up is off)",
-                    job.dir_name,
+                    job.ref,
                     job.misfire_grace_seconds,
                 )
             elif decision == "fire":
                 if job.stage is not None and not await self._ready(job, config):
-                    log.debug("%s: slot passed but no task is ready", job.dir_name)
+                    log.debug("%s: slot passed but no task is ready", job.ref)
                     continue
                 self.start(job, trigger="schedule", config=config)
         for key, project in config.projects.items():
@@ -201,7 +201,7 @@ class JobRunner:
         try:
             return await asyncio.to_thread(tasks.ready, self.paths, config, job.project, job.stage)
         except tasks.TaskError as exc:
-            log.warning("%s: %s", job.dir_name, exc)
+            log.warning("%s: %s", job.ref, exc)
             return False
 
     def start(
@@ -209,15 +209,15 @@ class JobRunner:
     ) -> asyncio.Task[RunResult]:
         """Run a job in the background, remembering it until it finishes."""
         task = asyncio.create_task(
-            self.run(job, trigger=trigger, config=config), name=f"job:{job.dir_name}"
+            self.run(job, trigger=trigger, config=config), name=f"job:{job.ref}"
         )
-        self._running[job.dir_name] = task
+        self._running[job.ref] = task
 
         def forget(done: asyncio.Task[RunResult]) -> None:
-            if self._running.get(job.dir_name) is done:
-                del self._running[job.dir_name]
+            if self._running.get(job.ref) is done:
+                del self._running[job.ref]
             if not done.cancelled() and done.exception() is not None:
-                log.error("job %s crashed", job.dir_name, exc_info=done.exception())
+                log.error("job %s crashed", job.ref, exc_info=done.exception())
 
         task.add_done_callback(forget)
         return task
@@ -236,7 +236,10 @@ class JobRunner:
         """Close ``running`` rows whose owner is gone; returns how many."""
         closed = 0
         for run in runs.unfinished(self.paths):
-            job_dir = self.paths.jobs / run.job
+            job_dir = self.paths.job(run.job).parent
+            if any(path.is_symlink() for path in (job_dir, *job_dir.parents)):
+                log.warning("cannot recover %s: its job path contains a symbolic link", run.job)
+                continue
             if job_dir.is_dir():
                 lock = acquire_lock(job_dir)
                 if lock is None:
@@ -269,7 +272,7 @@ class JobRunner:
         if config.source_hash is not None and config_fingerprint(self.paths) != config.source_hash:
             return "project configuration changed before the stage run started; trigger it again"
         if job.path.exists():
-            current, problems = parse_job(job.dir_name, job.path, config)
+            current, problems = parse_job(job.path, config)
             if problems or current != job:
                 return "stage job definition changed before the run started; trigger it again"
         return ""
@@ -280,7 +283,12 @@ class JobRunner:
         ``config`` is the snapshot the whole run reads: the one its tick loaded, else the
         one this runner was built with, which is what validated ``job``.
         """
-        with logctx.context(f"j:{job.dir_name}"):
+        with logctx.context(f"j:{job.ref}"):
+            try:
+                if _job_path(self.paths, job.ref) != job.path:
+                    raise ValueError("job path does not match its owning workspace")
+            except ValueError as exc:
+                return RunResult("skipped", error=str(exc))
             lock = await asyncio.to_thread(acquire_lock, job.job_dir)
             if lock is None:
                 log.info("already running (lock held); skipping this trigger")
@@ -501,7 +509,7 @@ class JobRunner:
                 env=self._env(job, run_id),
                 timeout=job.timeout,
                 merge_stderr=False,
-                label=f"stage command {job.dir_name}",
+                label=f"stage command {job.ref}",
                 output_keep=POSTRUN_FEEDBACK_LIMIT,
             )
             if timed_out or exit_code != 0:
@@ -658,7 +666,7 @@ class JobRunner:
     def _env(self, job: Job, run_id: str) -> dict[str, str]:
         return {
             **os.environ,
-            "ENSO_JOB": job.dir_name,
+            "ENSO_JOB": job.ref,
             "ENSO_RUN_ID": run_id,
             "ENSO_WORKSPACE": job.workspace,
             "ENSO_HOME": str(self.paths.home),
@@ -680,7 +688,7 @@ class JobRunner:
                 env=self._env(job, run_id),
                 timeout=job.prerun_timeout,
                 merge_stderr=False,
-                label=f"prerun {job.dir_name}",
+                label=f"prerun {job.ref}",
             )
         except OSError as exc:
             return Prerun("error", diagnostic=f"could not start prerun: {exc}")
@@ -728,7 +736,7 @@ class JobRunner:
             cwd=cwd,
             env=self._env(job, run_id),
             timeout=job.timeout,
-            label=f"job {job.dir_name}",
+            label=f"job {job.ref}",
         )
         return RunResult(
             turn.status, run_id, output=turn.output, error=turn.error, exit_code=turn.exit_code
@@ -883,7 +891,7 @@ class JobRunner:
                 env=env,
                 timeout=job.postrun_timeout,
                 merge_stderr=False,
-                label=f"postrun {job.dir_name}",
+                label=f"postrun {job.ref}",
                 stdin=result.output.encode(),
                 # Keep one sentinel byte so an oversized message can never be silently
                 # shortened into different instructions for the next provider turn.
@@ -920,25 +928,25 @@ class JobRunner:
         await self._recovered(job, config=config)
         if result.status == "timeout":
             body = "\n".join(part for part in (result.postrun_error, result.output) if part)
-            await self._send(job, f"⚠️ [{job.name}] {result.error}", body, config=config)
+            await self._send(job, f"⚠️ [{job.ref}] {result.error}", body, config=config)
         elif result.status == "error":
             if result.postrun_error and result.error == result.postrun_error:
                 await self._send(
-                    job, f"⚠️ [{job.name}] postrun failed", result.postrun_error, config=config
+                    job, f"⚠️ [{job.ref}] postrun failed", result.postrun_error, config=config
                 )
             else:
                 label = f"exit {result.exit_code}" if result.exit_code not in (None, 0) else "error"
                 body = "\n".join(
                     part for part in (result.postrun_error, result.output or result.error) if part
                 )
-                await self._send(job, f"⚠️ [{job.name} ({label})]", body, config=config)
+                await self._send(job, f"⚠️ [{job.ref} ({label})]", body, config=config)
 
     async def _alert_prerun(self, job: Job, prerun: Prerun, *, config: Config) -> None:
         """Alert once per distinct prerun failure, again after a day of the same one."""
         fingerprint = hashlib.sha256(
             f"{prerun.exit_code}\0{prerun.diagnostic}".encode()
         ).hexdigest()
-        state = await asyncio.to_thread(db.job_state, self.paths, job.dir_name)
+        state = await asyncio.to_thread(db.job_state, self.paths, job.ref)
         alerted = _parse_stamp(state.failure_alerted_at)
         if (
             state.failure_fingerprint == fingerprint
@@ -947,16 +955,16 @@ class JobRunner:
         ):
             log.info("same prerun failure already alerted; suppressed")
             return
-        if await self._send(job, f"⚠️ [{job.name}] prerun failed", prerun.diagnostic, config=config):
-            await asyncio.to_thread(db.set_failure, self.paths, job.dir_name, fingerprint, db.now())
+        if await self._send(job, f"⚠️ [{job.ref}] prerun failed", prerun.diagnostic, config=config):
+            await asyncio.to_thread(db.set_failure, self.paths, job.ref, fingerprint, db.now())
 
     async def _recovered(self, job: Job, *, config: Config) -> None:
         """One notice when a prerun works again after an alerted failure."""
-        state = await asyncio.to_thread(db.job_state, self.paths, job.dir_name)
+        state = await asyncio.to_thread(db.job_state, self.paths, job.ref)
         if state.failure_fingerprint is None:
             return
-        if await self._send(job, f"✅ [{job.name}] prerun recovered", config=config):
-            await asyncio.to_thread(db.set_failure, self.paths, job.dir_name, None, None)
+        if await self._send(job, f"✅ [{job.ref}] prerun recovered", config=config):
+            await asyncio.to_thread(db.set_failure, self.paths, job.ref, None, None)
 
     async def _send(self, job: Job, headline: str, body: str = "", *, config: Config) -> bool:
         """Deliver to the job's ``notify`` target, else the transport default; never raises."""
@@ -981,7 +989,7 @@ class JobRunner:
                 target=target[1],
                 thread=None,
                 text=text,
-                source=f"job:{job.dir_name}",
+                source=f"job:{job.ref}",
             )
         except Exception:
             log.warning("alert not sent", exc_info=True)

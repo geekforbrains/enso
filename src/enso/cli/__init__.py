@@ -255,7 +255,7 @@ def _serve_home(paths: Paths, debug: bool) -> None:
     if loaded:
         log.info("loaded %s from %s", ", ".join(loaded), paths.secrets)
     try:
-        db.migrate(paths)
+        db.initialize(paths)
         pruned = db.prune_sessions(paths)
     except db.UnsupportedDatabaseError as exc:
         fail([str(exc)])  # nothing has started yet, so nothing has to be unwound

@@ -435,7 +435,7 @@ Lists and history use pages of 50 under the [Runs](#runs) range rule. Long event
 for the full record; opening a run shows its retained provider output.
 
 The viewer cannot pause, edit, fulfill, or otherwise run a beat; those changes happen through
-the agent and CLI. Viewing an older database never upgrades it.
+the agent and CLI. Viewing an incompatible database reports its error without upgrading it.
 
 ### Runs
 
@@ -446,6 +446,9 @@ Run history, newest first. Three views:
 | Acted | `/runs` | everything except `no_work` and `skipped` outcomes; the default |
 | Failed | `/runs?view=failed` | errors, timeouts, prerun failures, and interrupted heartbeat assessments |
 | All | `/runs?view=all` | the whole retained history, consecutive `no_work` and `skipped` outcomes folded |
+
+Job links and filters use qualified references: `/jobs/team:digest` and
+`/runs?job=team:digest` (the colon may be URL-encoded as `%3A`).
 
 The source filter selects all work, jobs, or heartbeats. `job` and `status` narrow any view
 and still apply to the whole history; an explicit `status` overrides the view. `page` pages

@@ -12,7 +12,7 @@ with tokens redacted.
 
 **Partly implemented on the 0.2.0 development branch.** Workspace settings now live in
 `WORKSPACE.md`; `config.json` retains installation settings and, temporarily, project
-definitions. Project and job relocation remain forthcoming.
+definitions. Jobs also live in their workspaces; project relocation remains forthcoming.
 
 | Setting | Owning file in 0.2.0 |
 | --- | --- |
@@ -42,9 +42,11 @@ workspace restriction mode is removed, and workspace settings load from `WORKSPA
 trust contract. Version 1 is refused without parsing its fields, using
 one message: "This Enso home predates 0.2.0; see the migration guide:" followed by the
 [guide's repository URL](migration.md). Existing homes require deliberate manual conversion;
-changing the version number alone is not a migration.
+changing the version number alone is not a migration. An old database or home-level
+`jobs/` directory is also refused with that message.
 
-Project/job relocation and binding-only Telegram access above remain forthcoming.
+Workspace job ownership and binding-only Telegram access are implemented. Project
+relocation remains forthcoming.
 The examples below describe the currently implemented schema until those tasks land.
 
 ### WORKSPACE.md in 0.2.0
