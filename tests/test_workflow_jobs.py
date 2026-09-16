@@ -240,36 +240,66 @@ def test_project_slots_enforce_capacity_without_serializing_every_stage(enso_hom
         second.close()
 
 
-async def test_two_stages_can_run_different_tasks_concurrently(
-    enso_home: Paths, raw_config: dict, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("separate_workspaces", [False, True])
+async def test_stages_keep_task_ownership_during_simultaneous_work(
+    enso_home: Paths, raw_config: dict, monkeypatch: pytest.MonkeyPatch, separate_workspaces
 ) -> None:
     config = workflow_config(enso_home, raw_config, ["work", "review"], max_concurrency=2)
     first = tasks.create(enso_home, config, "EN", "First", actor="user:test")
-    tasks.move(
-        enso_home, config, first.ref, "advance", actor="user:test", run_id=None, message="Review"
-    )
-    second = tasks.create(enso_home, config, "EN", "Second", actor="user:test")
+    if separate_workspaces:
+        write_project(enso_home, "TEAM", {"name": "Team", "stages": ["work"]}, "team")
+        config, problems, _ = parse_config(raw_config, enso_home)
+        assert config is not None, problems
+        second = tasks.create(enso_home, config, "TEAM", "Second", actor="user:test")
+        write_job(
+            enso_home, "work", workspace="team", project="TEAM", stage="work", omit=["schedule"]
+        )
+        jobs = [stage_job(enso_home, config), load_job(enso_home, config, "team:work")]
+    else:
+        tasks.move(
+            enso_home,
+            config,
+            first.ref,
+            "advance",
+            actor="user:test",
+            run_id=None,
+            message="Review",
+        )
+        second = tasks.create(enso_home, config, "EN", "Second", actor="user:test")
+        jobs = [stage_job(enso_home, config), stage_job(enso_home, config, name="review")]
     entered: set[str] = set()
     together = asyncio.Event()
 
     async def turn(*args: object, **kwargs: object) -> ProviderTurn:
         env = kwargs["env"]
         assert isinstance(env, dict)
+        task = tasks.get(enso_home, env["ENSO_TASK"])
+        assert env["ENSO_WORKSPACE"] == task.workspace
+        assert kwargs["cwd"] == enso_home.workspace(task.workspace)
         entered.add(env["ENSO_TASK"])
         if len(entered) == 2:
             together.set()
         await asyncio.wait_for(together.wait(), 2)
-        submit(enso_home, config, env)
+        tasks.move(
+            enso_home,
+            config,
+            task.ref,
+            "advance",
+            actor=f"job:{env['ENSO_JOB']}",
+            run_id=env["ENSO_RUN_ID"],
+            message="Candidate ready",
+        )
         return ProviderTurn("ok", output="finished", exit_code=0)
 
     monkeypatch.setattr(runner_module.execution, "execute_turn", turn)
     runner = JobRunner(config)
-    results = await asyncio.gather(
-        runner.run(stage_job(enso_home, config), trigger="manual"),
-        runner.run(stage_job(enso_home, config, name="review"), trigger="manual"),
-    )
+    results = await asyncio.gather(*(runner.run(job, trigger="manual") for job in jobs))
     assert [r.status for r in results] == ["ok", "ok"]
     assert entered == {first.ref, second.ref}
+    for task in (first, second):
+        saved = tasks.get(enso_home, task.ref)
+        assert saved.workspace == task.workspace and saved.claim_run_id is None
+        assert workflows.history(enso_home, task.ref)[0]["status"] == "accepted"
 
 
 async def test_next_stage_defers_when_previous_accepted_run_still_owns_worktree(
