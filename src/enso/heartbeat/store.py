@@ -1,4 +1,4 @@
-"""Short transactional heartbeat operations, isolated from scripts and provider execution.
+"""Short transactional heartbeat operations and closed-beat retention, apart from execution.
 
 Definitions, pending observations, action receipts, and execution claims have one durable home.
 Reads never migrate an older database; writes use revision checks so an agent cannot finish
@@ -8,12 +8,16 @@ work against instructions that were changed or cancelled while it was running.
 from __future__ import annotations
 
 import json
+import os
+import re
+import shutil
 import sqlite3
 import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import replace
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import IO, Any
 
 from .. import db
@@ -212,17 +216,36 @@ def _no_uncertain_actions(con: sqlite3.Connection, beat: Beat) -> None:
         )
 
 
-def acquire_lock(paths: Paths, ref: str) -> IO[str] | None:
-    """Take a stable per-beat lock kept outside the prunable gate directory."""
-    canonical = f"HB-{parse_ref(ref):03d}"
+def _lock_path(paths: Paths, ref: str) -> Path:
     directory = paths.heartbeat / ".locks"
     if paths.heartbeat.is_symlink() or directory.is_symlink():
         raise HeartbeatError("heartbeat lock paths must not be symlinks")
+    return directory / f"HB-{parse_ref(ref):03d}.lock"
+
+
+def acquire_lock(paths: Paths, ref: str) -> IO[str] | None:
+    """Take a stable per-beat lock kept outside the prunable gate directory.
+
+    Pruning unlinks a lock file while holding it, so a lock taken on an inode that no longer
+    sits at the path is stale: it is released and reported as contended for a later retry.
+    """
+    path = _lock_path(paths, ref)
     try:
-        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        return acquire_file_lock(directory / f"{canonical}.lock")
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        lock = acquire_file_lock(path)
+        if lock is None:
+            return None
+        try:
+            current = os.stat(path, follow_symlinks=False)
+        except FileNotFoundError:
+            current = None
+        held = os.fstat(lock.fileno())
     except OSError as exc:
-        raise HeartbeatError(f"could not lock {canonical}: {exc}") from exc
+        raise HeartbeatError(f"could not lock {path.stem}: {exc}") from exc
+    if current is None or (current.st_dev, current.st_ino) != (held.st_dev, held.st_ino):
+        lock.close()
+        return None
+    return lock
 
 
 def _next_existing(beat: Beat, definition: Definition, stamp: str) -> str | None:
@@ -1176,31 +1199,38 @@ def resolve_action(
         return event
 
 
-def pending_notices(paths: Paths, *, ref: str | None = None, limit: int = 100) -> list[BeatEvent]:
-    """Transitions stay pending independently of gate/run state until delivery is recorded."""
-    _limit(limit)
+def _pending_notices(
+    con: sqlite3.Connection, *, beat_id: int | None = None, limit: int = 100
+) -> list[BeatEvent]:
     clauses = [
         f"e.kind IN ({','.join('?' for _ in NOTICE_KINDS)})",
         "COALESCE(json_extract(e.payload, '$.notify'), 1) != 0",
     ]
     values: list[object] = list(NOTICE_KINDS)
-    if ref is not None:
+    if beat_id is not None:
         clauses.append("e.beat_id = ?")
-        values.append(parse_ref(ref))
+        values.append(beat_id)
     clauses.append(
         "NOT EXISTS (SELECT 1 FROM _enso_beat_events delivered "
         "WHERE delivered.beat_id = e.beat_id AND delivered.kind = 'notice_delivered' "
         "AND json_extract(delivered.payload, '$.notice_id') = e.id)"
     )
+    rows = con.execute(
+        f"SELECT e.* FROM _enso_beat_events e WHERE {' AND '.join(clauses)} ORDER BY e.id LIMIT ?",
+        (*values, limit),
+    ).fetchall()
+    return [_event(row) for row in rows]
+
+
+def pending_notices(paths: Paths, *, ref: str | None = None, limit: int = 100) -> list[BeatEvent]:
+    """Transitions stay pending independently of gate/run state until delivery is recorded."""
+    _limit(limit)
     with _reader(paths) as con:
         if con is None:
             return []
-        rows = con.execute(
-            f"SELECT e.* FROM _enso_beat_events e WHERE {' AND '.join(clauses)} "
-            "ORDER BY e.id LIMIT ?",
-            (*values, limit),
-        ).fetchall()
-        return [_event(row) for row in rows]
+        return _pending_notices(
+            con, beat_id=parse_ref(ref) if ref is not None else None, limit=limit
+        )
 
 
 def notice_delivered(config: Config, event: BeatEvent, outbox_id: int) -> None:
@@ -1234,31 +1264,116 @@ def notice_outbox(paths: Paths, source: str) -> int | None:
         return row["id"] if row else None
 
 
-def prune(config: Config, *, now: datetime | None = None) -> list[Beat]:
-    """Prune closed history under its locks, retaining owners for script cleanup."""
-    if not config.heartbeat.enabled:
-        return []
-    stamp = datetime.fromisoformat(utc(now)) - timedelta(days=config.heartbeat.retention_days)
+def _retained(con: sqlite3.Connection, beat: Beat) -> str | None:
+    """Evidence that must outlive retention: unreconciled actions and undelivered notices."""
+    reasons = []
+    if actions := _actions(con, beat, unresolved=True):
+        reasons.append(f"{len(actions)} unresolved action(s)")
+    if beat.notify is not None and (notices := _pending_notices(con, beat_id=beat.id)):
+        reasons.append(f"{len(notices)} undelivered notification(s)")
+    return " and ".join(reasons) or None
+
+
+def _remove_scripts(paths: Paths, beat: Beat) -> str | None:
+    """Remove the gate directory, or say why it stays; a missing workspace has nothing to remove."""
+    root = paths.workspace_heartbeat(beat.workspace)
+    directory = root / beat.ref
+    chain = (paths.home, paths.workspaces, paths.workspace(beat.workspace), root, directory)
+    try:
+        if any(path.is_symlink() for path in chain):
+            return "its script path is a symbolic link"
+        if directory.is_dir():
+            shutil.rmtree(directory)
+    except OSError as exc:
+        return f"its script directory could not be removed ({type(exc).__name__})"
+    return None
+
+
+def _unlink_lock(paths: Paths, ref: str) -> None:
+    """Unlink a held lock file; a concurrent acquirer of the old inode sees it is stale."""
+    # A failed unlink leaves an orphan that the next pass reclaims.
+    with suppress(OSError):
+        os.unlink(_lock_path(paths, ref))
+
+
+def _remove(config: Config, number: int, cutoff: str) -> str | None:
+    """Under the beat lock: scripts, then the record, then the lock file; or why it stays."""
+    ref = f"HB-{number:03d}"
     with _reader(config.paths) as con:
         if con is None:
-            return []
-        rows = con.execute(
-            """SELECT * FROM _enso_beats WHERE state IN ('fulfilled', 'cancelled', 'expired')
-               AND closed_at < ? AND claim_run_id IS NULL ORDER BY id""",
-            (utc(stamp),),
-        ).fetchall()
-    removed: list[Beat] = []
-    for row in rows:
-        ref = f"HB-{row['id']:03d}"
-        lock = acquire_lock(config.paths, ref)
+            return None
+        row = con.execute("SELECT * FROM _enso_beats WHERE id = ?", (number,)).fetchone()
+        if row is None:
+            return None  # another daemon finished first
+        beat = _beat(row)
+        reason = _retained(con, beat)
+    if reason is None:
+        reason = _remove_scripts(config.paths, beat)
+    if reason is None:
+        with db.transaction(config.paths) as con:
+            # A receipt or notice recorded since the check above must survive the delete.
+            reason = _retained(con, _load(con, ref))
+            if reason is None:
+                con.execute(
+                    "DELETE FROM _enso_beats WHERE id = ? AND claim_run_id IS NULL "
+                    "AND state IN ('fulfilled', 'cancelled', 'expired') AND closed_at < ?",
+                    (number, cutoff),
+                )
+    if reason is None:
+        _unlink_lock(config.paths, ref)
+    return reason
+
+
+def _reclaim_locks(paths: Paths, known: set[int]) -> None:
+    """Remove lock files this Enso wrote for beats that no longer exist; touch nothing else."""
+    try:
+        names = sorted(path.name for path in (paths.heartbeat / ".locks").iterdir())
+    except OSError:
+        return
+    for name in names:
+        match = re.fullmatch(r"HB-([0-9]+)\.lock", name)
+        if match is None or int(match[1]) in known:
+            continue
+        ref = f"HB-{int(match[1]):03d}"
+        if name != f"{ref}.lock":
+            continue
+        lock = acquire_lock(paths, ref)
+        if lock is not None:
+            with lock:
+                if get(paths, ref) is None:
+                    _unlink_lock(paths, ref)
+
+
+def prune(config: Config, *, now: datetime | None = None) -> dict[str, str]:
+    """Remove every closed beat past retention, or say why one stays.
+
+    Scripts go first and the record last, so an interrupted pass leaves a record that the next
+    pass finishes; the lock file follows the record. Lock files whose beat no longer exists are
+    reclaimed too. Returns the beats kept past retention with the reason for each.
+    """
+    if not config.heartbeat.enabled:
+        return {}
+    cutoff = utc(datetime.fromisoformat(utc(now)) - timedelta(days=config.heartbeat.retention_days))
+    with _reader(config.paths) as con:
+        if con is None:
+            return {}
+        known = {row["id"] for row in con.execute("SELECT id FROM _enso_beats")}
+        eligible = [
+            row["id"]
+            for row in con.execute(
+                """SELECT id FROM _enso_beats WHERE state IN ('fulfilled', 'cancelled', 'expired')
+                   AND closed_at < ? AND claim_run_id IS NULL ORDER BY id""",
+                (cutoff,),
+            )
+        ]
+    retained: dict[str, str] = {}
+    for number in eligible:
+        lock = acquire_lock(config.paths, f"HB-{number:03d}")
         if lock is None:
             continue
-        with lock, db.transaction(config.paths) as con:
-            deleted = con.execute(
-                "DELETE FROM _enso_beats WHERE id = ? AND claim_run_id IS NULL "
-                "AND state IN ('fulfilled', 'cancelled', 'expired') AND closed_at < ?",
-                (row["id"], utc(stamp)),
-            )
-            if deleted.rowcount:
-                removed.append(_beat(row))
-    return removed
+        with lock:
+            reason = _remove(config, number, cutoff)
+        if reason is not None:
+            retained[f"HB-{number:03d}"] = reason
+    _reclaim_locks(config.paths, known)
+    return retained

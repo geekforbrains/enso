@@ -22,6 +22,13 @@ All notable changes to Enso are documented here, following
 - Simplify memory viewer rows to a status dot, readable note name, source count, and relative
   occurrence time. Memory titles omit generated UUID suffixes in lists and detail views.
 
+### Fixed
+
+- Heartbeat retention now removes a closed beat's script directory, record, and lock file
+  together, removes the record last so an interrupted pass is retried, reclaims lock files
+  left by earlier pruning, and keeps a beat with an unreconciled action or undelivered
+  notification, logging why.
+
 ## [0.2.0] - 2026-09-17
 
 ### Breaking

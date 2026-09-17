@@ -137,7 +137,8 @@ it. Arbitrary external tools cannot promise exactly-once execution.
 
 If the outcome cannot be established, report the blocker and pause the beat with a reason,
 leaving the action uncertain. Both `wait` and `complete` refuse unresolved actions; do not
-label one failed merely to get past that check.
+label one failed merely to get past that check. A closed beat keeps its record until every
+action has a recorded outcome, so record one from the conversation once it is known.
 
 Send meaningful findings or blockers explicitly; final output is run history, not a
 notification. Stay quiet while nothing needs the user's attention. Save requested permanent
