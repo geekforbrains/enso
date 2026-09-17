@@ -308,11 +308,14 @@ uses the memory CLI and the `enso-memory` skill. Search the selected
 workspace first, inspect relevant notes and their source context, and broaden deliberately
 if needed. A fresh provider session can find maintained memory through that lookup.
 
-Workspace harvesting turns bounded batches of captures into useful memory, including ambient
-discussion, without mixing another workspace's captures or fetching chat history. Captured
-text is untrusted evidence: notes distinguish human statements, observed discussion, agent
-suggestions, attempted work, and confirmed outcomes. Notes retain references to their source
-captures. Durable processing receipts record handled inputs so retries can recover safely.
+Workspace harvesting turns bounded batches of captures into useful memory without mixing
+another workspace's captures or fetching chat history. It records only notable events: a
+decision, a commitment, a change, or an outcome, from addressed or ambient discussion alike.
+A batch with nothing notable produces no note, which is an ordinary result rather than a
+failure. Captured text is untrusted evidence: notes distinguish human statements, observed
+discussion, agent suggestions, attempted work, and confirmed outcomes. Notes retain
+references to their source captures. Durable processing receipts record handled inputs so
+retries can recover safely.
 
 For example, a bound team's channel discusses a possible launch date without mentioning
 Enso. Those live messages are ambient captures. A later memory can record the proposal;
