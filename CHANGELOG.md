@@ -5,6 +5,10 @@ All notable changes to Enso are documented here, following
 
 ## [Unreleased]
 
+### Changed
+
+- Reduce the default `enso-memory` job schedule from every 15 minutes to hourly.
+
 ## [0.2.0] - 2026-09-17
 
 ### Breaking

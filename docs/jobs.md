@@ -301,8 +301,8 @@ installs it when configuration is valid; otherwise it reports that job installat
 deferred until config is applied. Managed bundle refresh also covers all workspaces.
 References are
 `default:enso-memory`, `team:enso-memory`, and so on. It is enabled by default, with
-`schedule: "*/15 * * * *"`; use the normal scheduler's local-time cron rules. Note folders
-use UTC independently of the scheduler's timezone.
+`schedule: "0 * * * *"` (hourly, at the top of the hour); use the normal scheduler's
+local-time cron rules. Note folders use UTC independently of the scheduler's timezone.
 
 The job follows the normal explicit-agent contract: its initial triple is the owning
 workspace's effective agent at installation, saved in `JOB.md`. Subsequent default-agent

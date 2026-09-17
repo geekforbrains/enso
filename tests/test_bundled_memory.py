@@ -295,14 +295,14 @@ def test_apply_installs_each_workspace_job_with_its_agent_and_preserves_customiz
     assert load_job(enso_home, config, "enso-audit").model == config.defaults.model
     team = load_job(enso_home, config, "team:enso-memory")
     assert (team.provider, team.model, team.effort) == ("claude", "sonnet", "high")
-    assert default.schedule == team.schedule == "*/15 * * * *"
+    assert default.schedule == team.schedule == "0 * * * *"
     assert team.enabled and team.prerun == "prerun.sh" and team.postrun == "postrun.sh"
     assert sorted(p.name for p in enso_home.workspace_jobs("team").iterdir()) == ["enso-memory"]
     target = team.job_dir / "JOB.md"
     edited = (
         target.read_text()
         .replace("enabled: true", "enabled: false")
-        .replace("*/15 * * * *", "0 9 * * *")
+        .replace("0 * * * *", "0 9 * * *")
     )
     target.write_text(edited)
     (team.job_dir / "postrun.sh").unlink()
