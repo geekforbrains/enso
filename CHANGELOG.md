@@ -13,13 +13,18 @@ These changes are planned for 0.2.0 and have not been published.
   `<workspace>:enso-memory`. Unreleased development homes with the old bundled `memory`
   job must retire it when installing the new job to avoid duplicate harvests; an operator's
   separate `memory` job is preserved.
-- 0.2.0 does not read a 0.1.x home, configuration, or database. Conversion is manual, from
-  backups, following the [migration guide](docs/migration.md); the managed
-  0.1.x updater does not perform this conversion.
+- 0.2.0 does not read a 0.1.x home, configuration, or database. Automatic migrations
+  start at 0.2.0; conversion from older versions is unsupported.
 - Automatic discovery and adoption of old home-level worktrees are removed. Task worktrees
   use their configured root or recorded path; existing files elsewhere remain untouched.
 
 ### Changed
+
+- The official installer keeps its own uv executable and defaults to GitHub releases,
+  including local-bundle installs. Update checks also work for unmanaged installations
+  and explain adoption; terminal `enso update apply` needs no workspace argument.
+- Home migrations have ordered, cumulative revisions for database, configuration, and
+  file changes; fresh homes record the latest revision directly.
 
 - The audit now covers installation hygiene from one core layout definition shared by
   setup, the scaffold, and `enso workspace audit`. It classifies each top-level entry as

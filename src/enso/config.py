@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 
 CONFIG_VERSION = 2
 LEGACY_HOME_MESSAGE = (
-    "This Enso home predates 0.2.0; see the migration guide: "
+    "This Enso home predates 0.2.0; automatic migration is unsupported: "
     "https://github.com/geekforbrains/enso/blob/develop/docs/migration.md"
 )
 WORKSPACE_NAME_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")

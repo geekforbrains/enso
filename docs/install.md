@@ -2,8 +2,8 @@
 
 ## Requirements
 
-- The release installer supplies **Python 3.14** and [uv](https://docs.astral.sh/uv/)
-  when needed; `curl` is required to bootstrap uv.
+- The release installer supplies **Python 3.14** and keeps its own copy of
+  [uv](https://docs.astral.sh/uv/) in the home; `curl` is required to bootstrap uv.
 - **At least one agent CLI**, installed and already authenticated: `claude`, `codex`,
   `grok`, `agy`, or `opencode`. Enso drives them; it does not manage their credentials.
 - **A transport**: a Slack app in Socket Mode, or a Telegram bot token.
@@ -38,7 +38,8 @@ pass installer options after `sh -s --` when piping the download to the shell.
 The default extras are `slack,telegram,web`; use `--extras slack,web` to select features, or
 `--extras ''` for the base CLI. Without `web`, the base CLI and `enso web status|stop|uninstall`
 still work; `enso web start` and `install` explain the missing feature. A local installation
-can save its future HTTPS update source with `--feed URL`; otherwise it keeps the manifest source.
+can save its future update source with `--feed URL`; otherwise it follows the official GitHub
+feed, even when the manifest was a downloaded local file.
 Private feeds use `--token-file FILE`, whose bearer token is copied privately into the
 runtime. It is never placed in a URL or forwarded to a different origin.
 
@@ -51,7 +52,7 @@ enso setup
 The wizard is linear and requires `config.json` to be absent. A home prepared with `init`
 can use it too; existing scaffold content is preserved.
 Both commands refuse an obsolete configuration, database, or home-level `jobs/` before
-seeding files, with a migration-guide pointer. Moving the old config aside is not conversion.
+seeding files. Automatic migrations support 0.2.0 onward; older layouts are unsupported.
 
 1. Detects which provider CLIs are on `PATH` and records their model lists and unattended
    flags.
@@ -207,28 +208,25 @@ a change. This page owns installing and operating Enso, not contributor workflow
 
 ## Upgrading
 
-**0.1.x → 0.2.0 requires the [manual migration guide](migration.md#01x--020).** Do not use
-the old managed updater or the adoption command below for that conversion. Keep the old
-code and database together until the rebuilt home has been verified.
-
-Enso is in pre-1.0 beta. Managed updates follow published
+This upgrade flow supports homes created by 0.2.0 onward. Enso is in pre-1.0 beta. Managed updates follow published
 `major.minor.patch` releases, not changes to the repository's default branch. The package
 version comes from installed package metadata and the runtime receipt; `config.json`'s
 `version` and the database schema version remain independent format versions.
 
 ```bash
-enso update check --json
-enso update apply --workspace default --json
-enso update status --json
+enso update check
+enso update apply
+enso update status
 ```
 
 Checking does not authorize installation. The bundled nightly check announces each new
-release once to the configured notification target and stays quiet when unchanged, offline,
-or unmanaged. It spends no provider tokens and never installs an update. You can ask in chat
+release once to the configured notification target and stays quiet when unchanged or offline.
+An unmanaged installation also gets one notice explaining adoption. The check spends no
+provider tokens and never installs an update. You can ask in chat
 whether an upgrade is available, then ask Enso to upgrade itself when ready.
 
-Update requests and checks with `--notify` require `ENSO_WORKSPACE` or `--workspace NAME`;
-choose an existing workspace in a terminal. The update saves this owner for its completion
+Update requests and checks with `--notify` use `--workspace NAME`, then `ENSO_WORKSPACE`,
+then `default` for terminal use. The update saves this owner for its completion
 notification after restart. See [CLI § Updates](cli.md#updates) for the command contract.
 
 `apply` queues an independent updater under launchd or user systemd and returns immediately.
@@ -281,8 +279,7 @@ data recovery and retain independent backups of your home.
 
 ### Adopt an existing installation
 
-This procedure requires a home already compatible with the selected release; it does not
-convert a 0.1.x home to 0.2.0. Follow [Migration](migration.md) first for that version step.
+This procedure requires a 0.2.0-or-newer home compatible with the selected release.
 
 An editable checkout or `uv tool` install is unmanaged and never changes itself. For the
 one-time move, stop its daemon and viewer, then run the release installer with `--adopt` and
@@ -293,11 +290,16 @@ legacy daemon or viewer.
 ```bash
 enso service stop
 enso web stop
-sh /path/to/release/install.sh --manifest /path/to/release/release.json --adopt
+enso update install --adopt
 enso init --json
 enso config apply --file ~/.enso/config.json --json
 enso service install
 ```
+
+The default source is the official GitHub feed. Use the release shell installer with
+`--adopt` instead if uv needs bootstrapping, and reinstall `enso web install` if the viewer
+was supervised. `--manifest` selects a specific release; `--feed` chooses its future update
+source. A development version ahead of the feed reports that state without recommending a downgrade.
 
 Use the actual home path if it is customized. `init` adds missing bundled skills and
 instructions; applying the existing valid configuration seeds missing bundled jobs, including

@@ -107,6 +107,7 @@ HOME: tuple[Entry, ...] = (
     # Every shipped file outside skills/ lands under here; see workspaces.BUNDLED_FILES.
     Entry("slack", MANAGED, "the packaged Slack app manifest"),
     Entry(".bundles.json", MANAGED, "the record of what Enso installed"),
+    Entry(".migrations.json", MANAGED, "the last completed home migration", private=True),
     Entry(".config.lock", MANAGED, "the configuration writer lock"),
     Entry(".skills.lock", MANAGED, "the skill publication lock"),
     Entry(".knowledge.lock", MANAGED, "the shared knowledge writer lock"),
