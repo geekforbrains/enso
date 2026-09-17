@@ -89,6 +89,22 @@ These are local, manual checks; no GitHub Actions workflow or Git hook runs them
 `uv lock`, review `uv.lock`, then run the checks. Run relevant targeted tests while working,
 then the complete suite before finishing the change.
 
+For a fresh local installation from this checkout, install the CLI with the locked runtime
+dependencies, then run the first-time setup wizard:
+
+```bash
+uv export --locked --all-extras --no-dev --no-emit-project --no-hashes \
+  --output-file /tmp/enso-local-constraints.txt
+uv tool install --python 3.14 --constraints /tmp/enso-local-constraints.txt \
+  '.[slack,telegram,web]'
+enso setup
+```
+
+This installs an unmanaged copy of the checkout, independent of later source edits. Reinstall
+the tool to pick up a newer commit. Use the pinned development installation below when
+replacing an existing managed home, and [adopt a compatible release](install.md#adopt-an-existing-installation)
+before using managed updates.
+
 Manual application checks use a new scratch home by default. Answer **no** when `setup`
 offers to install the background service: its service unit lives outside `ENSO_HOME`, so
 changing the home alone does not isolate it. The viewer's `web install` has the same

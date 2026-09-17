@@ -5,12 +5,13 @@ All notable changes to Enso are documented here, following
 
 ## [Unreleased]
 
+These changes are planned for 0.2.0 and have not been published.
+
 ### Breaking
 
 - 0.2.0 does not read a 0.1.x home, configuration, or database. Conversion is manual, from
   backups, following the [migration guide](docs/migration.md); the managed
-  0.1.x updater does not perform this conversion. Version assignment and publication
-  remain separate release work.
+  0.1.x updater does not perform this conversion.
 - Automatic discovery and adoption of old home-level worktrees are removed. Task worktrees
   use their configured root or recorded path; existing files elsewhere remain untouched.
 
