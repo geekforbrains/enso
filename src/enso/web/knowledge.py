@@ -143,8 +143,8 @@ def _folder_rows(catalog: kb.Catalog, scope: str, folder: str) -> list[dict[str,
 
 def _crumbs(root: kb.Root | None, folder: str) -> list[tuple[str, str]]:
     if root is None:
-        return [("Knowledge", browse_url())]
-    return [("Knowledge", browse_url()), (root.label, browse_url(scope=root.scope))] + [
+        return [("Index", browse_url())]
+    return [("Index", browse_url()), (root.label, browse_url(scope=root.scope))] + [
         (label, browse_url(scope=root.scope, folder=path)) for label, path in files.crumbs(folder)
     ]
 

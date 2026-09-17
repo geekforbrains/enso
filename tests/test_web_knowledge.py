@@ -54,8 +54,10 @@ async def test_mixed_folders_pagination_and_scoped_search(client, enso_home):
     response = await client.get("/knowledge")
     assert response.status == 200
     html = await response.text()
+    assert '<span aria-current="page">Index</span>' in html
+    assert html.index("Recently updated") < html.index('href="/knowledge?scope=general"')
     rows = knowledge_rows(html)
-    assert [row.text.strip().splitlines()[0].strip() for row in rows[:2]] == [
+    assert [row.text.strip().splitlines()[0].strip() for row in rows[-2:]] == [
         "General",
         "autodiscovered",
     ]
@@ -63,7 +65,9 @@ async def test_mixed_folders_pagination_and_scoped_search(client, enso_home):
     assert "Recently updated" in html and "Deep" in html
 
     response = await client.get("/knowledge?scope=general&folder=Mixed")
-    rows = knowledge_rows(await response.text())
+    html = await response.text()
+    assert '<a href="/knowledge">Index</a>' in html
+    rows = knowledge_rows(html)
     assert len(rows) == 2 and "Nested" in rows[0].text and "Overview" in rows[1].text
 
     first = await client.get("/knowledge?scope=general&folder=Large")
