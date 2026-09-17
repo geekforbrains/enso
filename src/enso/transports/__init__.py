@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import contextlib
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
+from collections.abc import AsyncIterator, Sequence
+from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING
 
@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from ..runtime import Runtime
 
 
-@dataclass
+@dataclass(frozen=True)
 class Turn:
     """An inbound message the runtime should act on."""
 
@@ -29,7 +29,7 @@ class Turn:
     user_id: str
     user_name: str
     text: str
-    files: list[str] = field(default_factory=list)  # local paths of downloaded attachments
+    files: Sequence[str] = ()  # local paths of downloaded attachments
     is_dm: bool = False
     mentioned: bool = False
     # Transport-rendered, untrusted history (thread context, forwarded messages)
@@ -40,6 +40,9 @@ class Turn:
     # its uploads; the runtime resolves the binding itself when this is empty.
     workspace: str = ""
     capture: CaptureWriter | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "files", tuple(self.files))
 
 
 class Reply(ABC):

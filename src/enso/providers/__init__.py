@@ -53,7 +53,7 @@ def session_path(root: Path, name: str) -> Path:
     return candidate
 
 
-@dataclass
+@dataclass(frozen=True)
 class StreamEvent:
     """Unified event emitted by every provider's stdout parser."""
 

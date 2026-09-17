@@ -497,6 +497,6 @@ async def test_a_message_whose_only_file_is_rejected_still_says_so_in_the_prompt
     await asyncio.wait_for(ran.wait(), 5)
 
     (turn,) = turns
-    assert turn.files == []
+    assert turn.files == ()
     assert "A file was attached but could not be downloaded." in turn.text
     assert list(turn_dir(config).iterdir()) == []
