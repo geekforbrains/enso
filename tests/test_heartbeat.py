@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
@@ -396,10 +397,15 @@ def test_recovery_and_pruning_skip_live_locks_and_never_reuse_ids(config, defini
     assert heartbeat.recover(config) == []
     heartbeat.cancel(config, beat.ref)
     future = clock + timedelta(days=40)
+    lock_file = config.paths.heartbeat / ".locks" / f"{beat.ref}.lock"
     lock = heartbeat.acquire_lock(config.paths, beat.ref)
     with lock:
-        assert heartbeat.prune(config, now=future) == []
-    assert [beat.ref for beat in heartbeat.prune(config, now=future)] == [beat.ref]
+        assert heartbeat.prune(config, now=future) == {}
+        assert heartbeat.get(config.paths, beat.ref) is not None
+    assert heartbeat.prune(config, now=future) == {beat.ref: "1 undelivered notification(s)"}
+    heartbeat.notice_delivered(config, heartbeat.pending_notices(config.paths)[0], 1)
+    assert heartbeat.prune(config, now=future) == {}
+    assert heartbeat.get(config.paths, beat.ref) is None and not lock_file.exists()
     assert heartbeat.history(config.paths, beat.ref) == beat_runs(config.paths, beat.ref) == []
     assert heartbeat.create(config, definition).ref == "HB-002"
 
@@ -416,8 +422,91 @@ def test_disabled_heartbeat_preserves_records_and_blocks_execution(config, defin
     with pytest.raises(heartbeat.HeartbeatError, match="disabled"):
         heartbeat.resume(disabled, beat.ref)
     heartbeat.cancel(disabled, beat.ref)
-    assert heartbeat.prune(disabled, now=clock + timedelta(days=60)) == []
+    heartbeat.acquire_lock(config.paths, beat.ref).close()
+    assert heartbeat.prune(disabled, now=clock + timedelta(days=60)) == {}
     assert heartbeat.get(config.paths, beat.ref).state == "cancelled"
+    assert (config.paths.heartbeat / ".locks" / f"{beat.ref}.lock").is_file()
+
+
+def test_pruning_keeps_unreconciled_actions_and_undelivered_notices(config, definition, clock):
+    future = clock + timedelta(days=40)
+    acted = active(config, definition)
+    run = heartbeat.start_run(config, acted.ref)
+    heartbeat.begin_action(config, acted.ref, "send-email", "Sending", run_id=run.id)
+    heartbeat.cancel(config, acted.ref)
+    heartbeat.finish_run(config, run.id, status="cancelled")
+    expired = heartbeat.expire(config, active(config, definition).ref)
+    quiet = replace(config, slack=replace(config.slack, notify=""))
+    unaddressed = heartbeat.expire(quiet, active(quiet, definition).ref)
+    assert unaddressed.notify is None
+    assert heartbeat.prune(config, now=future) == {
+        acted.ref: "1 unresolved action(s) and 1 undelivered notification(s)",
+        expired.ref: "1 undelivered notification(s)",
+    }
+    assert heartbeat.get(config.paths, unaddressed.ref) is None
+    heartbeat.resolve_action(config, acted.ref, "send-email", "failed", "The email never left")
+    assert heartbeat.prune(config, now=future) == {
+        acted.ref: "1 undelivered notification(s)",
+        expired.ref: "1 undelivered notification(s)",
+    }
+    for outbox_id, notice in enumerate(heartbeat.pending_notices(config.paths), start=1):
+        heartbeat.notice_delivered(config, notice, outbox_id)
+    assert heartbeat.prune(config, now=future) == {}
+    assert heartbeat.list_beats(config.paths, include_closed=True) == []
+
+
+def test_pruning_removes_scripts_before_records_and_reclaims_orphan_locks(
+    config, definition, clock, monkeypatch
+):
+    from enso.heartbeat import store
+
+    future = clock + timedelta(days=40)
+    gated = heartbeat.create(config, {**definition, "gate": "gate.sh"})
+    directory = config.paths.workspace_heartbeat(gated.workspace) / gated.ref
+    directory.mkdir(parents=True)
+    (directory / "gate.sh").write_text("exit 1\n")
+    heartbeat.cancel(config, heartbeat.resume(config, gated.ref).ref)
+    config.paths.workspace("team").mkdir()
+    homeless = active(config, {**definition, "workspace": "team"})
+    heartbeat.cancel(config, homeless.ref)
+    shutil.rmtree(config.paths.workspace("team"))
+    locks = config.paths.heartbeat / ".locks"
+    locks.mkdir(parents=True)
+    for name in ("HB-042.lock", "HB-7.lock", "notes.txt"):
+        (locks / name).write_text("")
+
+    def refused(path):
+        raise PermissionError(path)
+
+    monkeypatch.setattr(store.shutil, "rmtree", refused)
+    assert heartbeat.prune(config, now=future) == {
+        gated.ref: "its script directory could not be removed (PermissionError)"
+    }
+    assert heartbeat.get(config.paths, gated.ref).state == "cancelled"
+    assert (directory / "gate.sh").is_file() and (locks / f"{gated.ref}.lock").is_file()
+    assert heartbeat.get(config.paths, homeless.ref) is None
+    monkeypatch.undo()
+    assert heartbeat.prune(config, now=future) == {}
+    assert heartbeat.get(config.paths, gated.ref) is None and not directory.exists()
+    assert sorted(path.name for path in locks.iterdir()) == ["HB-7.lock", "notes.txt"]
+
+
+def test_lock_taken_on_an_unlinked_inode_is_stale(config, monkeypatch):
+    from enso.heartbeat import store
+
+    real = store.acquire_file_lock
+
+    def raced(path):
+        lock = real(path)
+        path.unlink()  # pruning removed the file between this open and its flock
+        return lock
+
+    monkeypatch.setattr(store, "acquire_file_lock", raced)
+    assert heartbeat.acquire_lock(config.paths, "HB-001") is None
+    monkeypatch.undo()
+    lock = heartbeat.acquire_lock(config.paths, "HB-001")
+    assert lock is not None
+    lock.close()
 
 
 def test_expiry_is_not_fulfillment_and_requires_attention(config, definition, clock):
