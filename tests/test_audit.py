@@ -550,6 +550,17 @@ def test_the_layout_table_covers_everything_the_scaffold_writes(enso_home: Paths
     }
 
 
+def test_the_home_repository_is_the_operators_to_use(enso_home: Paths, config: Config) -> None:
+    """Enso creates the Git root and never commits; what the operator keeps there is theirs."""
+    workspaces.seed_home(enso_home)
+    finish(enso_home.workspace("default"))
+    (enso_home.home / ".gitignore").write_text("/secrets/\n/enso.db*\n")
+
+    report = audit.audit(enso_home, config=config, user_dirs=USER_DIRS)
+
+    assert report.home.findings == [] and report.home.layout[".gitignore"] == "user"
+
+
 def test_managed_roots_are_classified_not_searched(enso_home: Paths, config: Config) -> None:
     """Private operating state stays private: no recursion, no findings about what is in it."""
     workspaces.seed_home(enso_home)

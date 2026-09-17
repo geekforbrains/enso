@@ -106,6 +106,9 @@ HOME: tuple[Entry, ...] = (
     Entry(".memory.lock", MANAGED, "the memory writer lock"),
     Entry(".workflow-locks", MANAGED, "workflow lifecycle delivery locks"),
     Entry("secrets", USER, "*.env files loaded into the service environment", private=True),
+    # Enso runs ``git init`` here and never commits, but the repository it made is the
+    # operator's to use, and a repository's ignore file belongs beside it.
+    Entry(".gitignore", USER, "what the operator keeps out of the home's own history"),
 )
 
 
