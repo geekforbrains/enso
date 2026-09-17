@@ -12,6 +12,22 @@ from . import files
 if TYPE_CHECKING:
     from .. import runs
 
+MONTH_ABBR = (
+    "",
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+)
+
 
 def human_bytes(size: int | None) -> str:
     """``0 B``, ``12 KB``, ``1.2 MB``: enough precision to decide whether to clean up."""
@@ -64,6 +80,27 @@ def ago(stamp: str | datetime | None) -> str:
     if moment is None:
         return "-"
     return since(stamp) + " ago"
+
+
+def knowledge_age(stamp: str | datetime | None, *, now: datetime | None = None) -> str:
+    """Compact note age through seven days, then an unambiguous local calendar date."""
+    moment = parse_time(stamp)
+    if moment is None:
+        return "-"
+    current = now or datetime.now(UTC)
+    seconds = max(0, int((current.astimezone(UTC) - moment.astimezone(UTC)).total_seconds()))
+    if seconds < 60:
+        return f"{seconds}s ago"
+    if seconds < 3600:
+        return f"{seconds // 60}m ago"
+    if seconds < 86400:
+        return f"{seconds // 3600}h ago"
+    if seconds <= 7 * 86400:
+        return f"{seconds // 86400}d ago"
+    local = moment.astimezone()
+    day = local.day
+    suffix = "th" if 11 <= day % 100 <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
+    return f"{MONTH_ABBR[local.month]} {day}{suffix}, {local.year}"
 
 
 def since(stamp: str | datetime | None) -> str:
@@ -281,6 +318,7 @@ FILTERS: dict[str, Callable] = {
     "clock": clock,
     "iso": iso,
     "ago": ago,
+    "knowledge_age": knowledge_age,
     "since": since,
     "until": until,
     "heartbeat_next": heartbeat_next,

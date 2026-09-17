@@ -1,8 +1,43 @@
 """Presentation rules without a database, HTTP server, or page fixtures."""
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from enso.web import filters
+
+
+@pytest.mark.parametrize(
+    ("age", "shown"),
+    [
+        (timedelta(seconds=5), "5s ago"),
+        (timedelta(minutes=12), "12m ago"),
+        (timedelta(hours=2), "2h ago"),
+        (timedelta(days=2), "2d ago"),
+        (timedelta(days=7), "7d ago"),
+    ],
+)
+def test_knowledge_age_uses_compact_relative_time_through_seven_days(age, shown):
+    now = datetime(2026, 9, 17, 12, tzinfo=UTC)
+    assert filters.knowledge_age(now - age, now=now) == shown
+
+
+@pytest.mark.parametrize(
+    ("day", "suffix"),
+    [(1, "st"), (2, "nd"), (3, "rd"), (4, "th"), (11, "th"), (12, "th"), (13, "th"), (21, "st")],
+)
+def test_knowledge_age_uses_local_calendar_dates_after_seven_days(day, suffix):
+    local = datetime.now().astimezone().tzinfo
+    moment = datetime(2025, 1, day, 12, tzinfo=local)
+    assert filters.knowledge_age(moment, now=moment + timedelta(days=7, seconds=1)) == (
+        f"Jan {day}{suffix}, 2025"
+    )
+
+
+def test_knowledge_age_handles_missing_and_future_dates():
+    now = datetime(2026, 9, 17, 12, tzinfo=UTC)
+    assert filters.knowledge_age(None, now=now) == "-"
+    assert filters.knowledge_age(now + timedelta(minutes=1), now=now) == "0s ago"
 
 
 def test_doctor_facts_are_drawn_as_what_they_are() -> None:
