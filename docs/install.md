@@ -58,8 +58,9 @@ seeding files. Automatic migrations support 0.2.0 onward; older layouts are unsu
    flags.
 2. Asks for the default agent — provider, model, effort.
 3. Prepares the home and `default` workspace, including instructions, skills, links,
-   an editable config example, the packaged Slack manifest, and an empty Git root.
-4. Connects one transport. Slack checks both tokens and asks you to send a fresh code in
+   an editable config example, and an empty Git root.
+4. Connects one transport. For Slack, create the app from the JSON printed by
+   `enso slack manifest`; the wizard checks both tokens and asks you to send a fresh code in
    the bot's private chat. Telegram supplies a Start link with a fresh code. The wizard
    discovers your identity and notification target automatically; see [Connections](connections.md).
    Pairing creates an explicit user binding to `default`; it does not grant wildcard access.

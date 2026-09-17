@@ -61,7 +61,6 @@ Enso's runtime state lives under one directory:
 ├── config.example.json  # editable, incomplete template prepared by init
 ├── .config.lock         # shared advisory lock for configuration writers
 ├── .bundles.json        # hashes of the bundled files Enso installed
-├── slack/manifest.json  # initial copy of the packaged Slack app manifest
 ├── AGENTS.md            # instructions for every turn and job (CLAUDE.md links to it)
 ├── CLAUDE.md -> AGENTS.md
 ├── skills/              # enso-wide skills, available in every workspace

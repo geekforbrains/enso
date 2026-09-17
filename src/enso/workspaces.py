@@ -19,7 +19,8 @@ from . import frontmatter
 from .config import Agent, Paths, require_workspace, valid_workspace_name
 from .layout import LINKS, WORKSPACE_DIRS
 
-# Shared files in ``src/enso/bundled/`` keep their relative paths under ``$ENSO_HOME``.
+# Home-copied files in ``src/enso/bundled/`` keep their relative paths under ``$ENSO_HOME``.
+# The Slack manifest stays packaged for ``enso slack manifest`` but is not home-copied.
 # ``jobs/<name>/`` seeds maintenance jobs in default and memory in every workspace.
 # ``bundled/workspace/AGENTS.md`` is the per-workspace template,
 # stamped by ``create_workspace``; a job is stamped with the agent chosen at setup.
@@ -47,7 +48,7 @@ BUNDLED_SKILL_SUPPORT = {
     "enso-knowledge": ("references/formatting.md", "scripts/lint.py"),
 }
 BUNDLED_JOBS: tuple[str, ...] = ("enso-audit", "enso-update", "enso-memory")
-BUNDLED_FILES = ("slack/manifest.json",)
+BUNDLED_FILES: tuple[str, ...] = ()
 RESERVED_PREFIX = "enso-"
 
 
