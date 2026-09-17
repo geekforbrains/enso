@@ -76,6 +76,7 @@ Enso's runtime state lives under one directory:
 ├── heartbeat/.locks/   # stable per-beat execution locks
 ├── secrets/*.env        # KEY=value files exported into the service environment
 ├── enso.db             # captures, runs, messages, sessions, jobs, tasks, beats, user tables
+├── .migrations.json    # last completed home migration revision
 ├── enso.log            # rotating log
 ├── web.log, web.pid     # the web viewer's output and lock, while it runs
 ├── launchd-web.log      # stdout/stderr when the optional viewer service runs
@@ -126,9 +127,11 @@ those.
 format. Neither is the application release version: that comes from package metadata and,
 for managed installs, `runtime/install.json`. The 0.2.0 database starts a new schema line
 at `user_version = 1`, identified by SQLite `application_id = 0x454E534F` (`ENSO`). It refuses
-0.1.x databases and unsupported newer schemas without altering them; it never migrates
-an old home. An incomplete managed update can restore its pre-update snapshot together
-with the previous code; see [Upgrading](install.md#upgrading).
+0.1.x databases and unsupported schemas without altering them. From 0.2.0 onward, the
+updater runs pending [home migrations](migration.md) before normal readers start.
+`.migrations.json` records that sequence independently of the database schema version.
+An incomplete managed update can restore its pre-update snapshot together with the previous
+code; see [Upgrading](install.md#upgrading).
 
 Managed updates stage verified releases before pausing new work. An independent helper
 waits for accepted turns, jobs, and ordinary CLI operations, then snapshots affected state,

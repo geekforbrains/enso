@@ -9,7 +9,7 @@ import typer
 from .. import releases, updates
 from ..config import Paths
 from ..maintenance import UpdateError
-from .common import JSON_FLAG, WORKSPACE, echo_json, fail, workspace_scope
+from .common import JSON_FLAG, WORKSPACE, echo_json, fail
 
 update_app = typer.Typer(
     no_args_is_help=True, help="Check, install and safely apply Enso releases."
@@ -25,7 +25,9 @@ def _error(exc: Exception, as_json: bool) -> None:
 
 @update_app.command("install")
 def install(
-    manifest: str = typer.Option(..., "--manifest", help="Local or HTTPS release manifest."),
+    manifest: str | None = typer.Option(
+        None, "--manifest", help="Local or HTTPS release manifest."
+    ),
     bin_dir: Path = BIN_DIR,
     extras: str = typer.Option("slack,telegram,web", "--extras"),
     token_file: Path | None = TOKEN_FILE,
@@ -68,15 +70,15 @@ def check(
         False, "--notify", help="Announce a new release once to your notify target."
     ),
     quiet: bool = typer.Option(
-        False, "--quiet", help="Stay silent, including when offline or unmanaged."
+        False, "--quiet", help="Suppress terminal text, including expected network errors."
     ),
     workspace: str | None = WORKSPACE,
     as_json: bool = JSON_FLAG,
 ) -> None:
     """Check the selected release feed without installing anything."""
     paths = Paths.from_env()
-    selected = workspace_scope(paths, workspace, as_json=as_json) if notify else None
     try:
+        selected = updates.update_workspace(paths, workspace) if notify else None
         result = updates.check(paths, manifest)
         if selected is not None:
             result["notified"] = updates.notify_available(paths, result, workspace=selected)
@@ -88,14 +90,7 @@ def check(
     if as_json:
         echo_json(result)
     elif not quiet:
-        if result["update_available"]:
-            typer.echo(f"Enso {result['available']} is available; installed {result['current']}.")
-        elif not result["managed"]:
-            typer.echo(
-                "This is an unmanaged/development install; use the release installer for updates."
-            )
-        else:
-            typer.echo(f"Enso {result['current']} is up to date.")
+        typer.echo(updates.check_message(result))
 
 
 @update_app.command("apply")

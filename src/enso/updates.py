@@ -11,10 +11,12 @@ import os
 import re
 import shlex
 import shutil
+import sys
 import time
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from . import __version__, db, messages, releases, update_services, web, workspaces
 from .config import Paths, load_config, resolve_workspace, valid_workspace_name
@@ -91,6 +93,7 @@ def _validate_install(receipt: dict[str, Any]) -> None:
             and Path(receipt["bin_dir"]).is_absolute()
             and isinstance(receipt.get("viewer_service", ""), str)
             and (receipt.get("token_file") is None or isinstance(receipt["token_file"], str))
+            and (receipt.get("token_origin") is None or isinstance(receipt["token_origin"], str))
         )
     except KeyError, TypeError, ValueError:
         valid = False
@@ -167,17 +170,31 @@ def status(paths: Paths) -> dict[str, Any]:
     }
 
 
-def _token(receipt: dict[str, Any]) -> Path | None:
+def _token_origin(source: str) -> str | None:
+    parsed = urlsplit(releases.normalize_source(source))
+    if not parsed.scheme:
+        return None
+    host = f"[{parsed.hostname}]" if ":" in (parsed.hostname or "") else parsed.hostname
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    return f"{parsed.scheme}://{host}:{port}"
+
+
+def _token(receipt: dict[str, Any], source: str) -> Path | None:
+    """Use a saved credential only at its installation origin, including explicit overrides."""
     value = receipt.get("token_file")
-    return Path(value) if value else None
+    if not value:
+        return None
+    # Receipts predating origin persistence used their manifest as the saved feed.
+    authorized = (
+        receipt["token_origin"] if "token_origin" in receipt else _token_origin(receipt["feed"])
+    )
+    return Path(value) if authorized and _token_origin(source) == authorized else None
 
 
 def _release(paths: Paths, source: str | None = None) -> releases.Release:
     receipt = installed(paths)
-    selected = source or receipt.get("feed")
-    if not selected:
-        raise UpdateError("no release feed is configured; supply --manifest")
-    return releases.load_release(selected, token_file=_token(receipt))
+    selected = source or receipt.get("feed") or releases.DEFAULT_FEED
+    return releases.load_release(selected, token_file=_token(receipt, selected))
 
 
 def _version_key(value: str) -> tuple[int, int, int]:
@@ -191,17 +208,16 @@ def _version_key(value: str) -> tuple[int, int, int]:
 
 def check(paths: Paths, source: str | None = None) -> dict[str, Any]:
     receipt = installed(paths)
-    if not receipt and not source:
-        return {
-            "ok": True,
-            "managed": False,
-            "current": __version__,
-            "available": None,
-            "update_available": False,
-        }
     release = _release(paths, source)
     current = receipt.get("version", __version__)
-    available = _version_key(release.version) > _version_key(current)
+    latest = _version_key(release.version)
+    try:
+        current_key: tuple[int, int, int] | None = _version_key(current)
+    except UpdateError:
+        if receipt:
+            raise
+        current_key = None
+    available = current_key is not None and latest > current_key
     if release.version == current and receipt and release.commit != receipt["commit"]:
         raise UpdateError("release version was reused for different code; publish a new version")
     return {
@@ -211,7 +227,43 @@ def check(paths: Paths, source: str | None = None) -> dict[str, Any]:
         "available": release.version,
         "update_available": available,
         "release_notes_url": release.to_dict().get("release_notes_url"),
+        "adoption_required": not bool(receipt),
+        "development": current_key is None,
     }
+
+
+def check_message(result: dict[str, Any]) -> str:
+    """Describe release availability and the installation's next action together."""
+    if result.get("development"):
+        return (
+            f"Enso {result['current']} is an unmanaged development install; "
+            f"the latest published release is {result['available']}. "
+            "Adopt a compatible published release when ready."
+        )
+    if result["update_available"]:
+        text = f"Enso {result['available']} is available (you have {result['current']})."
+    elif _version_key(result["current"]) > _version_key(result["available"]):
+        text = f"Enso {result['current']} is ahead of the latest release, {result['available']}."
+    else:
+        text = f"Enso {result['current']} is up to date."
+    if result["managed"]:
+        if result["update_available"]:
+            text += " Run enso update apply, or ask me to upgrade when ready."
+    elif _version_key(result["current"]) <= _version_key(result["available"]):
+        text += (
+            " This installation is unmanaged. Stop its services, then run "
+            "enso update install --adopt and reinstall the service with enso service install."
+        )
+    else:
+        text += (
+            " This installation is unmanaged; adopt a compatible published release when available."
+        )
+    return text
+
+
+def update_workspace(paths: Paths, workspace: str | None = None) -> str:
+    """Home updates use default for terminal notifications; chat keeps its owner."""
+    return resolve_workspace(paths, workspace or os.environ.get("ENSO_WORKSPACE") or "default")
 
 
 def _candidate(paths: Paths, release: releases.Release, receipt: dict[str, Any]) -> Path:
@@ -221,8 +273,8 @@ def _candidate(paths: Paths, release: releases.Release, receipt: dict[str, Any])
         release,
         target,
         extras=tuple(receipt["extras"]),
-        token_file=_token(receipt),
-        uv=str(private_uv) if private_uv.is_file() else "uv",
+        token_file=_token(receipt, release.source),
+        uv=str(private_uv),
     )
 
 
@@ -270,7 +322,7 @@ def _launcher(paths: Paths, bin_dir: Path, *, adopt: bool) -> None:
 
 def install(
     paths: Paths,
-    source: str,
+    source: str | None = None,
     *,
     bin_dir: Path,
     extras: tuple[str, ...],
@@ -289,9 +341,9 @@ def install(
             raise UpdateError("stop legacy Enso and its viewer before the one-time migration")
         if paused(paths):
             raise UpdateError("an interrupted update needs recovery before installation")
-        release = releases.load_release(source, token_file=token_file)
+        release = releases.load_release(source or releases.DEFAULT_FEED, token_file=token_file)
         _version_key(release.version)
-        release_feed = releases.normalize_source(feed) if feed else release.source
+        release_feed = releases.normalize_source(feed or releases.DEFAULT_FEED)
         if not set(extras) <= {"slack", "telegram", "web"}:
             raise UpdateError("extras must be slack, telegram or web")
         # Test the external launcher location before doing a network installation.
@@ -316,10 +368,12 @@ def install(
             saved_token = paths.runtime_dir / "release.token"
             write_bytes(saved_token, token)
             receipt["token_file"] = str(saved_token)
+            receipt["token_origin"] = _token_origin(release.source)
         target = paths.runtime_dir / "releases" / release.release_id
         if prepared_release is not None and prepared_release.resolve() != target.resolve():
             raise UpdateError("prepared release must be this home's exact versioned runtime path")
         # prepare_release validates its receipt and installed metadata even when reused.
+        releases.ensure_uv(paths.runtime_dir)
         target = _candidate(paths, release, receipt)
         _select(paths, target)
         _launcher(paths, Path(receipt["bin_dir"]), adopt=adopt)
@@ -349,12 +403,13 @@ def request_apply(
     drain_timeout: float = 300,
     startup_timeout: float = 60,
 ) -> dict[str, Any]:
-    selected = resolve_workspace(paths, workspace)
+    selected = update_workspace(paths, workspace)
     with lock(paths), lock(paths, "worker"):
         receipt = installed(paths)
         if not receipt:
             raise UpdateError(
-                "this is an unmanaged/development install; use the release installer first"
+                "this installation is unmanaged; stop its services, run enso update install "
+                "--adopt, then enso service install"
             )
         previous = _operation(paths)
         if previous and (previous["status"] not in TERMINAL or paused(paths)):
@@ -693,8 +748,12 @@ def recover(paths: Paths) -> dict[str, Any]:
 
 def _send(paths: Paths, text: str, origin: dict[str, str]) -> None:
     receipt = installed(paths)
-    binary = paths.runtime_dir / "releases" / receipt["release_id"] / "bin" / "enso"
-    command = [str(binary), "message", "send", text, "--json"]
+    command = (
+        [str(paths.runtime_dir / "releases" / receipt["release_id"] / "bin" / "enso")]
+        if receipt
+        else [sys.executable, "-m", "enso.cli"]
+    )
+    command.extend(["message", "send", text, "--json"])
     env = messages.without_identity(os.environ)
     env["ENSO_WORKSPACE"] = origin["workspace"]
     if origin.get("transport") and origin.get("channel"):
@@ -734,20 +793,18 @@ def _notify_outcome(paths: Paths, state: dict[str, Any]) -> None:
 
 
 def notify_available(paths: Paths, result: dict[str, Any], *, workspace: str) -> bool:
-    """Notify once per available release, advancing the receipt only after a successful send."""
-    if not result["update_available"] or not result["managed"]:
+    """Announce each release or unmanaged state once, recording successful delivery."""
+    if result["managed"] and not result["update_available"]:
         return False
     with lock(paths, "notification"):
         receipt_path = paths.runtime_dir / "notification.json"
         receipt = read_json(receipt_path)
-        if receipt.get("version") == result["available"]:
+        notice = {"version": result["available"], "managed": result["managed"]}
+        if all(receipt.get(key) == value for key, value in notice.items()):
             return False
-        text = (
-            f"Enso {result['available']} is available (you have {result['current']}). "
-            "Ask me to upgrade when you are ready."
-        )
+        text = check_message(result)
         if result.get("release_notes_url"):
             text += f" Release notes: {result['release_notes_url']}"
         _send(paths, text, {"workspace": workspace})
-        write_json(receipt_path, {"version": result["available"], "sent_at": time.time()})
+        write_json(receipt_path, {**notice, "sent_at": time.time()})
         return True

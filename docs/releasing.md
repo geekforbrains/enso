@@ -132,9 +132,12 @@ Omit it to build a self-contained local bundle using relative URLs.
 With `--artifact-base-url`, the generated installer defaults to `release.json` in that
 version directory. `--feed-url` embeds the stable HTTPS feed for later update checks and
 requires `--artifact-base-url`. Explicit installer arguments override the embedded defaults.
-Without a feed, installs save the manifest source; without an artifact base, the installer
-still requires `--manifest`. Build the public bundle for `geekforbrains/enso` with both URL
-options so users can install and check future releases without supplying either URL.
+Without a feed, installs use `DEFAULT_FEED` from `src/enso/releases.py`, the official
+`https://github.com/geekforbrains/enso/releases/latest/download/release.json` endpoint.
+This also applies to local bundles. Without an artifact base, the installer still requires
+`--manifest`. Build the public bundle with a version-pinned artifact base; `--feed-url`
+is available for private/staging feeds. A recorded feed always wins over the default on
+future checks and upgrades.
 
 Before upload, the remote URLs will not exist. Make a temporary local manifest for the exact
 published artifacts, preserving their hashes and leaving the original manifest untouched:
@@ -251,7 +254,7 @@ checksums detect partial or modified downloads, but do not replace the HTTPS ori
 to publish releases.
 
 Serve the generated `install.sh` from the trusted release host. The shell installer requires
-`curl` only when uv is missing, provisions uv without modifying shell profiles, and lets uv
+`curl` only when uv is missing, keeps uv at `runtime/tools/uv` without modifying shell profiles, and lets uv
 install Python 3.14. uv tools, Python, caches, and environments live inside the selected Enso
 home. A separately selected bin directory receives the stable `enso` launcher.
 
@@ -276,7 +279,9 @@ features; pass `--extras ''` for the base CLI. See [Install](install.md) for ado
 For private beta downloads, pass `--token-file /path/to/private-token` rather than putting a
 credential in a URL or command argument. The file contains one bearer token. Enso sends it
 only to the manifest's origin, including its port; it is removed permanently when a redirect
-crosses origins, and never forwarded to an artifact CDN. Downloads and subprocess output are
+crosses origins, and never forwarded to an artifact CDN. The saved credential remains bound
+to that initial origin on later checks, including explicit manifest overrides; choosing a
+different future feed does not authorize sending it there. Downloads and subprocess output are
 bounded, failures omit URLs and installer diagnostics that might contain credentials, and a
 failed preparation removes only the newly created candidate environment.
 

@@ -29,6 +29,7 @@ from email.parser import BytesParser
 from pathlib import Path
 from typing import Any
 
+DEFAULT_FEED = "https://github.com/geekforbrains/enso/releases/latest/download/release.json"
 MANIFEST_LIMIT = 64 * 1024
 CONSTRAINTS_LIMIT = 2 * 1024 * 1024
 WHEEL_LIMIT = 80 * 1024 * 1024
@@ -510,6 +511,31 @@ def _kill_installer_group(process: subprocess.Popen[bytes]) -> None:
         except PermissionError:
             raise denied from None
         raise denied
+
+
+def ensure_uv(runtime: Path, source: str = "uv") -> str:
+    """Keep an executable copy of uv in the home, independent of a service's PATH."""
+    tools = runtime / "tools"
+    destination = tools / "uv"
+    if tools.is_symlink() or destination.is_symlink():
+        raise ReleaseError("The managed uv directory and executable must not be symbolic links.")
+    if destination.exists():
+        if not destination.is_file() or not os.access(destination, os.X_OK):
+            raise ReleaseError("The managed uv executable is not an executable file.")
+        return str(destination)
+    found = shutil.which(source)
+    if not found:
+        raise ReleaseError("uv is unavailable; rerun the release installer to bootstrap it.")
+    executable = Path(found).resolve(strict=True)
+    if not executable.is_file():
+        raise ReleaseError("The uv executable must resolve to a regular file.")
+    tools.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with tempfile.TemporaryDirectory(prefix=".uv-", dir=tools) as temporary:
+        staged = Path(temporary) / "uv"
+        shutil.copyfile(executable, staged)
+        staged.chmod(0o700)
+        staged.replace(destination)
+    return str(destination)
 
 
 def _receipt(release: Release, extras: tuple[str, ...]) -> dict[str, Any]:

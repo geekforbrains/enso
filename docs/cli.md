@@ -123,7 +123,7 @@ The [installation and update lifecycle](install.md#upgrading) owns the behavior;
 [release format](releasing.md) owns artifact validation and authenticated downloads.
 
 ```text
-enso update install --manifest SOURCE [--bin-dir DIR] [--extras slack,telegram,web]
+enso update install [--manifest SOURCE] [--bin-dir DIR] [--extras slack,telegram,web]
                      [--token-file FILE] [--feed URL] [--viewer-service NAME] [--adopt] [--json]
 enso update check [--manifest SOURCE] [--notify] [--workspace W] [--quiet] [--json]
 enso update apply [--manifest SOURCE] [--workspace W] [--drain-timeout SECONDS] [--startup-timeout SECONDS] [--json]
@@ -140,15 +140,22 @@ user service owning a hosted viewer. `--adopt` preserves and replaces a previous
 the old daemon and viewer must be stopped. It does not configure chat or install services.
 An already managed home uses `apply` instead.
 
+Without `--manifest`, commands use the recorded feed, or the official GitHub release feed
+when no receipt exists. An explicit manifest overrides the source for that command only;
+`--feed` on installation records a different future feed. Local-bundle installs also default
+to the official feed. Both install routes keep uv at `runtime/tools/uv` for future upgrades.
+
 `check` is read-only unless `--notify` is given. That flag announces an available release
 once to the default notify target and records delivery only after a successful send. It
 does not inherit a calling job or chat's destination. `--quiet` suppresses ordinary text
 and expected check/delivery failures; a later check retries. `--json` always emits a report,
-including an error when quiet checking fails. A check without a feed on an unmanaged
-checkout succeeds with `managed: false`, `available: null`, and no available update.
-`--notify` requires `--workspace` or `ENSO_WORKSPACE` for the outbox owner, even with
-`--quiet`; missing or invalid context fails before checking the feed. A read-only check
-needs no workspace.
+including an error when quiet checking fails. An unmanaged check still reads the feed and
+reports `managed: false`, `adoption_required: true`, and the actual available version.
+Its notice explains adoption. A nonstable development version reports `development: true`
+and `update_available: false`, since its version is not compared with stable releases.
+Notifications are recorded separately for managed and unmanaged states.
+`--notify` uses `--workspace`, then `ENSO_WORKSPACE`, then `default` for the outbox owner;
+invalid context fails before checking the feed. A read-only check needs no workspace.
 
 `apply` queues an independent updater and returns before the upgrade finishes. An equal
 release is a no-op; downgrades, reused release versions with different code, and a second
@@ -157,10 +164,10 @@ pending operation are refused. Managed releases use stable `major.minor.patch` v
 seconds (1–600). The updater defers when accepted work or another ordinary CLI command is
 still using the home at the drain deadline. Commands retain that access while waiting for
 stdin, so an update cannot migrate underneath a pending `--file -` operation.
-`apply` requires `--workspace` or `ENSO_WORKSPACE` before queuing work. It records the
+`apply` records the
 resolved workspace for the eventual completion notification, preserving that owner
 through service restarts or chat binding changes. An explicit flag overrides the
-environment; no workspace defaults to `default`. Recovery uses the saved owner.
+environment; without either it uses `default`. Recovery uses the saved owner.
 
 `status` reports the installed receipt, recent running-daemon version when available, and
 the latest operation. `recover` retries an interrupted operation's recovery using its
@@ -171,7 +178,7 @@ single-object JSON error contract.
 | Command | Successful JSON fields |
 | --- | --- |
 | `install` | `ok`, `managed`, `installed_version`, `binary` |
-| `check` | `ok`, `managed`, `current`, `available`, `update_available`, optional `release_notes_url`; `notified` when requested |
+| `check` | `ok`, `managed`, `current`, `available`, `update_available`, `adoption_required`, `development`, optional `release_notes_url`; `notified` when requested |
 | `apply` | `ok`, `operation`; a no-op also includes `current`, `update_available: false` and has `operation: null` |
 | `status` | `ok`, `managed`, `installed_version`, `installed_commit`, `running_version`, `operation` |
 | `recover` | `ok`, `operation` |

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from enso.releases import ReleaseError, download_artifact, load_release
+from enso.releases import DEFAULT_FEED, ReleaseError, download_artifact, load_release
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -92,14 +92,18 @@ def test_installer_passes_paths_and_private_token_file_without_shell_evaluation(
     assert recorded["python"] == str(home / "runtime/python")
     assert str(token_file) in recorded["args"]
     assert str(bin_dir) in recorded["args"]
+    managed_uv = home / "runtime/tools/uv"
+    assert recorded["args"][recorded["args"].index("--uv") + 1] == str(managed_uv)
+    assert managed_uv.read_bytes() == fake_uv.read_bytes()
+    assert not managed_uv.is_symlink()
     assert not (tmp_path / "not-authorized").exists()
     assert not list((home / "runtime").glob(".bootstrap.*"))
 
 
-@pytest.mark.parametrize("override", [False, True])
-def test_piped_installer_uses_release_defaults_and_accepts_overrides(tmp_path, override):
+@pytest.mark.parametrize("mode", ["embedded", "override", "official"])
+def test_piped_installer_uses_release_defaults_and_accepts_overrides(tmp_path, mode):
     manifest = "https://example.test/releases/v0.1.0/release.json"
-    feed = "https://example.test/releases/latest/release.json"
+    feed = None if mode == "official" else "https://example.test/releases/latest/release.json"
     installer = standalone(tmp_path, manifest=manifest, feed=feed)
     tools = tmp_path / "tools"
     tools.mkdir()
@@ -126,7 +130,7 @@ def test_piped_installer_uses_release_defaults_and_accepts_overrides(tmp_path, o
         PATH=str(tools) + os.pathsep + os.environ["PATH"],
     )
     args = ["sh", "-s", "--"]
-    if override:
+    if mode == "override":
         manifest = str(tmp_path / "local release.json")
         feed = "https://mirror.example.test/stable/release.json"
         args.extend(["--manifest", manifest, "--feed", feed, "--extras", ""])
@@ -142,10 +146,26 @@ def test_piped_installer_uses_release_defaults_and_accepts_overrides(tmp_path, o
     assert result.returncode == 0, result.stderr
     command = json.loads(result.stdout)
     assert command[command.index("--manifest") + 1] == manifest
-    assert command[command.index("--feed") + 1] == feed
+    assert command[command.index("--feed") + 1] == (feed or DEFAULT_FEED)
     assert command[command.index("--bin-dir") + 1] == str(home / ".local/bin")
-    assert command[command.index("--extras") + 1] == ("" if override else "slack,telegram,web")
+    assert command[command.index("--extras") + 1] == (
+        "" if mode == "override" else "slack,telegram,web"
+    )
     assert not list((home / "runtime").glob(".bootstrap.*"))
+
+    # A later invocation keeps the home's uv even when the shell finds another copy first.
+    fake_uv.write_text("#!/bin/sh\nexit 99\n")
+    repeated = subprocess.run(
+        args,
+        input=installer.read_text(),
+        env=env,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert repeated.returncode == 0, repeated.stderr
+    assert json.loads(repeated.stdout) == command
 
 
 def test_local_bundle_still_requires_manifest_without_preparing_home(tmp_path):
@@ -320,7 +340,8 @@ def test_builder_rejects_invalid_installer_feeds_before_building(
     assert not output.exists()
 
 
-def test_bootstrap_normalizes_feed_before_changing_to_install_home(tmp_path, monkeypatch):
+@pytest.mark.parametrize("feed", [None, "./stable/release.json"])
+def test_bootstrap_defaults_or_normalizes_feed_before_changing_home(tmp_path, monkeypatch, feed):
     namespace = runpy.run_path(str(ROOT / "scripts/install-release.py"))
     main = namespace["install_main"]
     monkeypatch.chdir(tmp_path)
@@ -330,6 +351,9 @@ def test_bootstrap_normalizes_feed_before_changing_to_install_home(tmp_path, mon
     )
     monkeypatch.setitem(main.__globals__, "load_release", lambda *args, **kwargs: release)
     monkeypatch.setitem(main.__globals__, "prepare_release", lambda *args, **kwargs: None)
+    monkeypatch.setitem(
+        main.__globals__, "ensure_uv", lambda runtime, source: str(runtime / "tools/uv")
+    )
     monkeypatch.setitem(
         main.__globals__, "run_bounded", lambda args, **kwargs: calls.append((args, kwargs)) or "{}"
     )
@@ -345,14 +369,16 @@ def test_bootstrap_normalizes_feed_before_changing_to_install_home(tmp_path, mon
             str(home),
             "--bin-dir",
             str(tmp_path / "bin"),
-            "--feed",
-            "./stable/release.json",
-        ],
+        ]
+        + (["--feed", feed] if feed else []),
     )
     assert main() == 0
     command, options = calls[0]
-    assert command[command.index("--feed") + 1] == str(tmp_path / "stable/release.json")
+    assert command[command.index("--feed") + 1] == (
+        str(tmp_path / "stable/release.json") if feed else DEFAULT_FEED
+    )
     assert options["cwd"] == home
+    assert options["env"]["PATH"].split(os.pathsep)[0] == str(home / "runtime/tools")
 
 
 def test_bootstrap_rejects_invalid_feed_before_downloading_release(tmp_path, monkeypatch, capsys):

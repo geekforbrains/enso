@@ -55,6 +55,8 @@ def managed(enso_home, monkeypatch):
         "viewer_port": None,
     }
     events = []
+    real_release = updates._release
+    real_candidate = updates._candidate
     monkeypatch.setattr(updates, "_release", lambda *args, **kwargs: release)
     monkeypatch.setattr(update_services, "discover", lambda *args: dict(services))
     monkeypatch.setattr(update_services, "launch", lambda *args: events.append(("launch", args)))
@@ -79,7 +81,14 @@ def managed(enso_home, monkeypatch):
 
     monkeypatch.setattr(updates, "_candidate", candidate)
     return SimpleNamespace(
-        paths=paths, old=old, receipt=receipt, release=release, services=services, events=events
+        paths=paths,
+        old=old,
+        receipt=receipt,
+        release=release,
+        services=services,
+        events=events,
+        real_release=real_release,
+        real_candidate=real_candidate,
     )
 
 
@@ -113,7 +122,7 @@ def test_queue_pins_artifacts_and_origin_and_serializes_requests(managed, monkey
 
 
 @pytest.mark.parametrize("command", [["apply"], ["check", "--notify"]])
-def test_update_notifications_require_workspace_and_save_explicit_override(
+def test_update_notifications_default_to_default_and_save_explicit_override(
     managed, monkeypatch, command
 ):
     monkeypatch.delenv("ENSO_WORKSPACE")
@@ -126,13 +135,6 @@ def test_update_notifications_require_workspace_and_save_explicit_override(
 
     monkeypatch.setattr(updates, "_release", release)
     args = ["update", *command, "--json"]
-    absent = cli.invoke(app, args)
-    assert absent.exit_code == 1
-    assert "select a workspace" in json.loads(absent.stdout)["error"]
-    if command[0] == "check":
-        quiet = cli.invoke(app, ["update", *command, "--quiet"])
-        assert quiet.exit_code == 1 and "select a workspace" in quiet.stderr
-    monkeypatch.setenv("ENSO_WORKSPACE", "default")
     invalid = cli.invoke(app, [*args, "--workspace", "missing"])
     assert invalid.exit_code == 1 and "missing" in json.loads(invalid.stdout)["error"]
     assert not feed_calls and not managed.events and not managed.paths.update_state.exists()
@@ -148,9 +150,21 @@ def test_update_notifications_require_workspace_and_save_explicit_override(
         state = read_json(managed.paths.update_state)
         assert state["origin"]["workspace"] == "team"
         managed.paths.config.write_text("configured")
-        monkeypatch.delenv("ENSO_WORKSPACE")  # independent helper after a restart
         updates._notify_outcome(managed.paths, state | {"status": "succeeded"})
     assert [env["ENSO_WORKSPACE"] for env in sent] == ["team"]
+
+
+@pytest.mark.parametrize("command", [["apply"], ["check", "--notify", "--quiet"]])
+def test_update_commands_work_without_workspace_arguments(managed, monkeypatch, command):
+    monkeypatch.delenv("ENSO_WORKSPACE")
+    sent = []
+    monkeypatch.setattr(updates, "_send", lambda paths, text, origin: sent.append(origin))
+    result = CliRunner().invoke(app, ["update", *command, "--json"])
+    assert result.exit_code == 0, result.output
+    if command[0] == "apply":
+        assert read_json(managed.paths.update_state)["origin"]["workspace"] == "default"
+    else:
+        assert sent == [{"workspace": "default"}]
 
 
 def test_read_only_update_check_needs_no_workspace(managed, monkeypatch):
@@ -255,17 +269,26 @@ def test_new_request_waits_for_previous_worker_to_finish_notification(managed):
     assert read_json(managed.paths.update_state)["id"] == state["id"]
 
 
-def test_direct_install_persists_a_canonical_feed(enso_home, monkeypatch, tmp_path):
-    source = tmp_path / "release.json"
+@pytest.mark.parametrize("feed", [None, "https://private.example.test/stable/release.json"])
+@pytest.mark.parametrize(
+    "manifest", [None, "release.json", "https://private.example.test/release.json"]
+)
+def test_direct_install_persists_default_or_explicit_feed(
+    enso_home, monkeypatch, tmp_path, feed, manifest
+):
+    source = manifest or releases.DEFAULT_FEED
     selected = releases.Release(
         "0.2.0",
         "a" * 40,
         ">=3.14",
         releases.Artifact("enso-0.2.0-py3-none-any.whl", "b" * 64),
         releases.Artifact("constraints.txt", "c" * 64),
-        str(source),
+        source,
     )
-    monkeypatch.setattr(releases, "load_release", lambda *args, **kwargs: selected)
+    sources = []
+    monkeypatch.setattr(
+        releases, "load_release", lambda source, **kwargs: sources.append(source) or selected
+    )
     monkeypatch.setattr(updates, "receiver_active", lambda paths: False)
     monkeypatch.setattr(updates.web, "status", lambda paths: SimpleNamespace(running=False))
 
@@ -276,9 +299,132 @@ def test_direct_install_persists_a_canonical_feed(enso_home, monkeypatch, tmp_pa
         return target
 
     monkeypatch.setattr(updates, "_candidate", candidate)
+    monkeypatch.setattr(releases, "ensure_uv", lambda runtime: str(runtime / "tools/uv"))
     monkeypatch.chdir(tmp_path)
-    updates.install(enso_home, "release.json", bin_dir=tmp_path / "bin", extras=())
-    assert updates.installed(enso_home)["feed"] == str(source)
+    token = tmp_path / "private-token"
+    token.write_text("private-value")
+    updates.install(
+        enso_home, manifest, bin_dir=tmp_path / "bin", extras=(), feed=feed, token_file=token
+    )
+    assert sources == [manifest or releases.DEFAULT_FEED]
+    receipt = updates.installed(enso_home)
+    assert receipt["feed"] == (feed or releases.DEFAULT_FEED)
+    assert receipt["token_origin"] == (
+        None
+        if manifest == "release.json"
+        else "https://private.example.test:443"
+        if manifest
+        else "https://github.com:443"
+    )
+
+
+@pytest.mark.parametrize("version", ["0.2.0.dev1", "0.3.0rc1", "0.2.0+local"])
+def test_unmanaged_development_check_reports_versions_without_upgrade_order(
+    enso_home, monkeypatch, version
+):
+    monkeypatch.setattr(updates, "__version__", version)
+    selected = releases.Release(
+        "0.2.0",
+        "a" * 40,
+        ">=3.14",
+        releases.Artifact("enso.whl", "b" * 64),
+        releases.Artifact("constraints.txt", "c" * 64),
+        releases.DEFAULT_FEED,
+    )
+    monkeypatch.setattr(releases, "load_release", lambda *args, **kwargs: selected)
+    result = updates.check(enso_home)
+    assert result["current"] == version and result["available"] == "0.2.0"
+    assert result["development"] and result["adoption_required"]
+    assert not result["update_available"]
+    text = updates.check_message(result)
+    assert version in text and "0.2.0" in text and "compatible published release" in text
+    assert "ahead" not in text and "up to date" not in text and "--adopt" not in text
+    monkeypatch.setattr(
+        releases, "load_release", lambda *args, **kwargs: replace(selected, version="0.2.1rc1")
+    )
+    with pytest.raises(UpdateError, match="stable"):
+        updates.check(enso_home)
+
+
+@pytest.mark.parametrize("version", ["0.2.0", "0.2.1", "0.1.9"])
+def test_unmanaged_checks_default_feed_and_reports_adoption(enso_home, monkeypatch, version):
+    monkeypatch.setattr(updates, "__version__", "0.2.0")
+    selected = releases.Release(
+        version,
+        "a" * 40,
+        ">=3.14",
+        releases.Artifact("enso.whl", "b" * 64),
+        releases.Artifact("constraints.txt", "c" * 64),
+        releases.DEFAULT_FEED,
+    )
+    sources = []
+    monkeypatch.setattr(
+        releases, "load_release", lambda source, **kwargs: sources.append(source) or selected
+    )
+    result = updates.check(enso_home)
+    assert sources == [releases.DEFAULT_FEED]
+    assert result["available"] == version
+    assert result["update_available"] is (version == "0.2.1")
+    assert result["adoption_required"] and not result["managed"]
+    text = updates.check_message(result)
+    assert "unmanaged" in text
+    assert ("enso update install --adopt" in text) is (version != "0.1.9")
+    sent = []
+    monkeypatch.setattr(updates, "_send", lambda *args: sent.append(args))
+    assert updates.notify_available(enso_home, result, workspace="default")
+    assert not updates.notify_available(enso_home, result, workspace="default")
+    assert len(sent) == 1
+
+
+def test_recorded_feed_wins_and_manifest_override_does_not_replace_it(managed, monkeypatch):
+    sources = []
+    monkeypatch.setattr(
+        releases, "load_release", lambda source, **kwargs: sources.append(source) or managed.release
+    )
+    # Restore the real resolver that the managed fixture replaces for transaction tests.
+    resolver = managed.real_release
+    resolver(managed.paths)
+    resolver(managed.paths, "https://staging.example.test/release.json")
+    assert sources == [managed.receipt["feed"], "https://staging.example.test/release.json"]
+    assert updates.installed(managed.paths)["feed"] == managed.receipt["feed"]
+
+
+@pytest.mark.parametrize("origin_recorded", [True, False])
+def test_saved_release_token_stays_at_install_origin_for_feed_and_candidate(
+    managed, monkeypatch, origin_recorded
+):
+    receipt = dict(managed.receipt, token_file=str(managed.paths.runtime_dir / "release.token"))
+    if origin_recorded:
+        receipt.update(feed=releases.DEFAULT_FEED, token_origin="https://releases.example.test:443")
+    write_json(managed.paths.runtime_dir / "install.json", receipt)
+    sent = []
+    monkeypatch.setattr(
+        releases,
+        "load_release",
+        lambda source, **kwargs: sent.append((source, kwargs["token_file"])) or managed.release,
+    )
+    managed.real_release(managed.paths)
+    assert sent[-1][1] == (None if origin_recorded else managed.paths.runtime_dir / "release.token")
+    for source, authorized in (
+        ("https://releases.example.test:443/another/release.json", True),
+        ("https://releases.example.test:444/release.json", False),
+        ("https://staging.example.test/release.json", False),
+        (str(managed.paths.home / "release.json"), False),
+    ):
+        managed.real_release(managed.paths, source)
+        assert sent[-1] == (
+            source,
+            managed.paths.runtime_dir / "release.token" if authorized else None,
+        )
+        monkeypatch.setattr(
+            releases,
+            "prepare_release",
+            lambda release, target, **kwargs: sent.append((release.source, kwargs["token_file"])),
+        )
+        # The managed fixture replaces candidate; call the production function retained below.
+        candidate = managed.real_candidate
+        candidate(managed.paths, replace(managed.release, source=source), receipt)
+        assert sent[-1][1] == (managed.paths.runtime_dir / "release.token" if authorized else None)
 
 
 def test_upgrade_reuses_bootstrapped_uv_without_requiring_it_on_path(enso_home, monkeypatch):
@@ -289,7 +435,7 @@ def test_upgrade_reuses_bootstrapped_uv_without_requiring_it_on_path(enso_home, 
     monkeypatch.setattr(
         releases, "prepare_release", lambda release, target, **kwargs: captured.append(kwargs)
     )
-    selected = SimpleNamespace(release_id="0.2.0-" + "a" * 12)
+    selected = SimpleNamespace(release_id="0.2.0-" + "a" * 12, source=releases.DEFAULT_FEED)
     updates._candidate(enso_home, selected, {"extras": ["slack"], "token_file": None})
     assert captured[0]["uv"] == str(private_uv)
 

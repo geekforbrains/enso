@@ -7,7 +7,9 @@ from pathlib import Path
 if "ReleaseError" not in globals():
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
     from enso.releases import (
+        DEFAULT_FEED,
         ReleaseError,
+        ensure_uv,
         load_release,
         normalize_source,
         prepare_release,
@@ -21,7 +23,7 @@ def install_main() -> int:
     parser.add_argument("--home", required=True)
     parser.add_argument("--bin-dir", required=True)
     parser.add_argument("--token-file")
-    parser.add_argument("--feed")
+    parser.add_argument("--feed", default=DEFAULT_FEED)
     parser.add_argument("--viewer-service")
     parser.add_argument("--extras", default="slack,telegram,web")
     parser.add_argument("--adopt", action="store_true")
@@ -30,9 +32,9 @@ def install_main() -> int:
     home = Path(args.home).expanduser().resolve()
     bin_dir = Path(args.bin_dir).expanduser().resolve()
     try:
-        if args.feed is not None:
-            args.feed = normalize_source(args.feed)
+        args.feed = normalize_source(args.feed)
         release = load_release(args.manifest, token_file=args.token_file)
+        args.uv = ensure_uv(home / "runtime", args.uv)
         release_dir = home / "runtime" / "releases" / release.release_id
         extras = tuple(item.strip() for item in args.extras.split(",") if item.strip())
         prepare_release(release, release_dir, extras=extras, uv=args.uv, token_file=args.token_file)
