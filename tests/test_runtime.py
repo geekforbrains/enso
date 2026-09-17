@@ -7,7 +7,7 @@ import copy
 import json
 import logging
 import threading
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 
 import pytest
@@ -52,6 +52,16 @@ class RichReply(FakeReply):
     async def send_rich(self, message: OutboundMessage) -> str:
         self.rich.append(message)
         return "r"
+
+
+def test_turn_keeps_its_inbound_payload_after_construction() -> None:
+    files = ["/u/a.png"]
+    turn = replace(make_turn("read it"), files=files)
+    files.append("/u/b.png")
+
+    assert turn.files == ("/u/a.png",)
+    with pytest.raises(FrozenInstanceError):
+        turn.channel = "other"
 
 
 async def test_session_is_created_then_resumed(runtime: Runtime, enso_home: Paths) -> None:

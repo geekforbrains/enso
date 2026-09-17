@@ -22,9 +22,9 @@ async def test_commands_recheck_binding_and_pinned_workspace(
     runtime, monkeypatch, transport, workspace
 ):
     turn = make_turn("!restart" if transport == "slack" else "/restart", transport=transport)
-    turn.workspace = workspace
+    turn = replace(turn, workspace=workspace)
     if not workspace:
-        turn.user_id = "unknown"
+        turn = replace(turn, user_id="unknown")
 
     async def unexpected(*args, **kwargs):
         pytest.fail("rejected command ran")
@@ -132,8 +132,7 @@ async def test_help_unknown_restart_and_passthrough(
     assert restarts == [1]
 
     assert not await commands.dispatch(runtime, make_turn("just text"), reply)
-    unbound = make_turn("!status")
-    unbound.user_id = "U9"
+    unbound = replace(make_turn("!status"), user_id="U9")
     assert await commands.dispatch(runtime, unbound, reply)
     assert reply.sent[-1] == UNBOUND_NOTICE
     assert len(reply.sent) == 5

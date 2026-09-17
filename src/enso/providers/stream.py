@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import AsyncGenerator
+from dataclasses import replace
 
 from . import BaseProvider, SessionIdError, StreamEvent
 
@@ -59,7 +60,7 @@ class ProviderStream:
             self.events += len(events)
             if self.expected_id and not self.session_id:
                 self.session_id = self.expected_id
-            for event in events:
+            for index, event in enumerate(events):
                 if event.kind == "session" and event.session_id is not None:
                     announced = self.provider.check_session_id(event.session_id)
                     if self.expected_id is not None and announced != self.expected_id:
@@ -69,10 +70,10 @@ class ProviderStream:
                         )
                     self.expected_id = self.session_id = announced
                 elif event.kind == "error":
-                    event.text = (
+                    self.error = (
                         text_tail(event.text, DIAGNOSTIC_KEEP) or "provider reported an error"
                     )
-                    self.error = event.text
+                    events[index] = replace(event, text=self.error)
             return events
         except SessionIdError as exc:
             raise ProtocolError(str(exc)) from exc

@@ -26,6 +26,7 @@ from enso.providers.claude import ClaudeProvider, project_dir
 from enso.providers.codex import CodexProvider
 from enso.providers.grok import GrokProvider, sessions_dir
 from enso.providers.opencode import CLEAR_SESSION_TIMEOUT, OpenCodeProvider
+from enso.providers.stream import DIAGNOSTIC_KEEP, ProviderStream
 
 
 def _recorded(name: str) -> list[tuple[dict, list]]:
@@ -53,6 +54,22 @@ def test_parse_line_skips_non_json_noise() -> None:
         "message": "x",
     }
     assert provider.parse_line("[1, 2]") is None
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [("", "provider reported an error"), ("x" * (DIAGNOSTIC_KEEP + 1), "x" * DIAGNOSTIC_KEEP)],
+)
+def test_stream_normalizes_error_without_changing_parser_event(monkeypatch, text, expected) -> None:
+    provider = CodexProvider("codex")
+    parsed = StreamEvent(kind="error", text=text)
+    monkeypatch.setattr(provider, "parse_event", lambda _event: [parsed])
+    stream = ProviderStream(provider, None, new_session=False)
+
+    [emitted] = stream.feed(b'{"type":"error"}')
+
+    assert emitted.text == stream.error == expected
+    assert parsed.text == text
 
 
 def test_claude_commands() -> None:
