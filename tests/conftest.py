@@ -17,6 +17,8 @@ import yaml
 
 from enso import db, frontmatter
 from enso.config import Config, Paths, parse_config
+from enso.heartbeat import store
+from enso.heartbeat.models import BeatRun
 from enso.jobs import Job, find_job, render
 from enso.runtime import Runtime, origin_block
 from enso.transports import Reply, Transport, Turn
@@ -57,6 +59,21 @@ PROJECTS: dict = {
         "stages": ["draft", "approve:human", "release"],
     },
 }
+
+
+def session_for(paths: Paths, conversation: str, provider: str) -> db.Session | None:
+    """Select one session through the same read API used by the runtime."""
+    return next((s for s in db.get_sessions(paths, conversation) if s.provider == provider), None)
+
+
+def beat_runs(paths: Paths, ref: str) -> list[BeatRun]:
+    """Inspect persisted beat runs without adding a production query just for tests."""
+    with db.reader(paths) as con:
+        rows = con.execute(
+            "SELECT * FROM _enso_beat_runs WHERE beat_id = ? ORDER BY started_at DESC, id DESC",
+            (int(ref[3:]),),
+        ).fetchall()
+    return [store._run(row) for row in rows]
 
 
 class FakeReply(Reply):

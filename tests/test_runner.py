@@ -29,11 +29,10 @@ from conftest import (
 
 from enso import db, messages, runs
 from enso.config import Config, Paths, parse_config
-from enso.execution import ProviderTurn
+from enso.execution import NOTIFY_LIMIT, ProviderTurn
 from enso.jobs import Job
 from enso.jobs import runner as runner_module
 from enso.jobs.runner import (
-    NOTIFY_LIMIT,
     POSTRUN_FEEDBACK_LIMIT,
     JobRunner,
     Postrun,

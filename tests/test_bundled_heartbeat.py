@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 import re
 
+from conftest import beat_runs
 from typer.testing import CliRunner
 
-from enso import heartbeat, skills, workspaces
+from enso import skills, workspaces
 from enso.cli import app
 from enso.config import save_config
 
@@ -42,4 +43,4 @@ def test_shipped_definition_example_creates_a_paused_beat(config):
         beat = json.loads(result.stdout)
         assert beat["state"] == "paused" and beat["gate"] == "gate.sh"
         assert beat["directory"] == str(paths.workspace_heartbeat("default") / beat["ref"])
-        assert heartbeat.list_runs(paths, beat["ref"]) == []
+        assert beat_runs(paths, beat["ref"]) == []

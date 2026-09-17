@@ -15,7 +15,6 @@ from typing import IO, Literal
 from .. import db, execution, messages, routing, runs, scheduling, tasks, workflows
 from .. import log as logctx
 from ..config import Config, LiveConfig, Paths, check_config, project_directory
-from ..execution import NOTIFY_LIMIT as NOTIFY_LIMIT
 from ..execution import alert_text, enso_error
 from ..locks import LockPathError, acquire_file_lock
 from ..providers import make_provider

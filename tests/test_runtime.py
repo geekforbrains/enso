@@ -11,7 +11,15 @@ from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 
 import pytest
-from conftest import FakeReply, chat_prompt, make_turn, script, write_config, write_workspace
+from conftest import (
+    FakeReply,
+    chat_prompt,
+    make_turn,
+    script,
+    session_for,
+    write_config,
+    write_workspace,
+)
 
 from enso import db
 from enso.config import Config, LiveConfig, Paths, parse_config
@@ -67,7 +75,7 @@ def test_turn_keeps_its_inbound_payload_after_construction() -> None:
 async def test_session_is_created_then_resumed(runtime: Runtime, enso_home: Paths) -> None:
     first, second = FakeReply(), FakeReply()
     await runtime.handle(make_turn("hello"), first)
-    session = db.get_session(enso_home, "slack:D1", "claude")
+    session = session_for(enso_home, "slack:D1", "claude")
     assert session is not None
     assert first.sent == [
         f"new {session.session_id} workspace=default prompt={chat_prompt('hello')}"
@@ -97,7 +105,7 @@ async def test_provider_error_after_output_is_reported(runtime: Runtime, enso_ho
     await runtime.handle(make_turn("fail please"), reply)
     assert reply.sent == ["Error: fake: boom"]
     # The CLI produced output first, so the session it announced is kept.
-    assert db.get_session(enso_home, "slack:D1", "claude") is not None
+    assert session_for(enso_home, "slack:D1", "claude") is not None
 
 
 async def test_messages_queue_fifo_per_conversation(runtime: Runtime) -> None:
@@ -437,7 +445,7 @@ async def test_clear_excludes_turns_admitted_during_the_delete(
     runtime: Runtime, enso_home: Paths, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     await runtime.handle(make_turn("hello"), FakeReply())
-    old = db.get_session(enso_home, "slack:D1", "claude")
+    old = session_for(enso_home, "slack:D1", "claude")
     assert old is not None
 
     # Hold the delete open (a contended write or a saturated executor) while a turn arrives.
@@ -461,7 +469,7 @@ async def test_clear_excludes_turns_admitted_during_the_delete(
     gate.set()
     assert (await clearing).startswith("Cleared.")
     await turn
-    new = db.get_session(enso_home, "slack:D1", "claude")
+    new = session_for(enso_home, "slack:D1", "claude")
     assert new is not None and new.session_id != old.session_id
     assert reply.sent == [f"new {new.session_id} workspace=default prompt={chat_prompt('again')}"]
 
@@ -472,7 +480,7 @@ async def _transcript_in_default(
     """Run one turn in ``default`` and plant its Claude transcript where the CLI keeps it."""
     monkeypatch.setenv("HOME", str(home))
     await runtime.handle(make_turn("hello"), FakeReply())
-    session = db.get_session(enso_home, "slack:D1", "claude")
+    session = session_for(enso_home, "slack:D1", "claude")
     assert session is not None and session.workspace == "default"
     transcript = project_dir(str(enso_home.workspace("default"))) / f"{session.session_id}.jsonl"
     transcript.parent.mkdir(parents=True)
@@ -717,7 +725,7 @@ async def test_rebound_conversation_starts_fresh(
     old, transcript = await _transcript_in_default(runtime, enso_home, tmp_path, monkeypatch)
     reply = FakeReply()
     await _rebound(runtime, enso_home, "other").handle(make_turn("again"), reply)
-    new = db.get_session(enso_home, "slack:D1", "claude")
+    new = session_for(enso_home, "slack:D1", "claude")
     assert new is not None and new.session_id != old.session_id and new.workspace == "other"
     assert reply.sent == [f"new {new.session_id} workspace=other prompt={chat_prompt('again')}"]
     assert not transcript.exists()
@@ -747,7 +755,7 @@ async def test_a_stored_session_id_outside_the_contract_is_dropped(
 
     reply = FakeReply()
     await runtime.handle(make_turn("again"), reply)
-    session = db.get_session(enso_home, "slack:D1", "claude")
+    session = session_for(enso_home, "slack:D1", "claude")
     assert session is not None and ClaudeProvider.valid_session_id(session.session_id)
     assert reply.sent == [
         f"new {session.session_id} workspace=default prompt={chat_prompt('again')}"
@@ -761,12 +769,12 @@ async def test_conflicting_session_fails_without_replacing_the_original(
 ) -> None:
     if resume:
         await runtime.handle(make_turn("hello"), FakeReply())
-    original = db.get_session(enso_home, "slack:D1", "claude")
+    original = session_for(enso_home, "slack:D1", "claude")
     announced = "11111111-2222-4333-8444-555555555555"
     monkeypatch.setenv("FAKE_SESSION_ID", announced)
     reply = FakeReply()
     await runtime.handle(make_turn("again"), reply)
-    session = db.get_session(enso_home, "slack:D1", "claude")
+    session = session_for(enso_home, "slack:D1", "claude")
     assert session is not None and session.session_id != announced
     if original is not None:
         assert session.session_id == original.session_id
@@ -830,7 +838,7 @@ async def test_invalid_envelope_is_corrected_in_the_same_session(
     script(tmp_path, monkeypatch, EMPTY_BLOCKS)
     reply = RichReply()
     await runtime.handle(make_turn("again"), reply)
-    session = db.get_session(enso_home, "slack:D1", "claude")
+    session = session_for(enso_home, "slack:D1", "claude")
     assert session is not None and reply.rich == []
     assert reply.sent == [
         f"resumed {session.session_id} workspace=default prompt=Enso could not deliver your "
@@ -1019,7 +1027,7 @@ async def test_a_resumed_turn_restates_the_thread_it_arrived_in(
     first, second = FakeReply(), FakeReply()
     await runtime.handle(make_turn("hello"), first)
     await runtime.handle(make_turn("in thread", thread="1788400000.000100"), second)
-    session = db.get_session(enso_home, "slack:D1", "claude")
+    session = session_for(enso_home, "slack:D1", "claude")
     assert session is not None
     assert second.sent == [
         f"resumed {session.session_id} workspace=default "
@@ -1080,7 +1088,7 @@ async def test_agy_turn_pins_the_workspace_and_resumes(
     # The first turn runs long enough for the status ticker to render a tool event.
     first, second = FakeReply(), FakeReply()
     await runtime.handle(make_turn("sleep 1.2"), first)
-    session = db.get_session(enso_home, "slack:D1", "agy")
+    session = session_for(enso_home, "slack:D1", "agy")
     # agy mints its own id and announces it; Enso never assigns one up front.
     assert session is not None and session.session_id == "11111111-1111-1111-1111-111111111111"
     assert first.sent == [
@@ -1147,7 +1155,7 @@ async def test_opencode_turn_mints_a_session_and_resumes(
 
     first, second = FakeReply(), FakeReply()
     await runtime.handle(make_turn("sleep 1.2"), first)
-    session = db.get_session(enso_home, "slack:D1", "opencode")
+    session = session_for(enso_home, "slack:D1", "opencode")
     assert session is not None and session.session_id == OPENCODE_SESSION
     root = workspace.resolve()
     assert first.sent == [
@@ -1197,7 +1205,7 @@ async def test_opencode_keeps_the_session_an_early_error_announced(
     await runtime.handle(make_turn("earlyfail"), failed)
     assert failed.sent == ["Error: fake: no credentials"]
     # The error was the only event that named the session OpenCode had already created.
-    session = db.get_session(enso_home, "slack:D1", "opencode")
+    session = session_for(enso_home, "slack:D1", "opencode")
     assert session is not None and session.session_id == OPENCODE_SESSION
 
     resumed = FakeReply()

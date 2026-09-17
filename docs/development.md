@@ -364,6 +364,9 @@ implementation detail, duplicated assertions, large snapshots, speculative cases
 arbitrary coverage targets. Keep the default suite fast and maintainable; add slower or
 broader checks only when their demonstrated value warrants the cost.
 
+Use existing read APIs for persisted-state assertions when they fit; keep queries needed
+only by tests in `tests/conftest.py` rather than adding production exports for them.
+
 ## Agent and maintainer work
 
 Follow [Contributing § Branches](../CONTRIBUTING.md#branches) for the `main`/`develop`

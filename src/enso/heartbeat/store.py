@@ -414,22 +414,6 @@ def get_run(paths: Paths, run_id: str) -> BeatRun | None:
         return _run(row) if row is not None else None
 
 
-def list_runs(paths: Paths, ref: str, *, limit: int = 100, offset: int = 0) -> list[BeatRun]:
-    _limit(limit)
-    number = parse_ref(ref)
-    if type(offset) is not int or offset < 0:
-        raise HeartbeatError("offset must be a nonnegative integer")
-    with _reader(paths) as con:
-        if con is None:
-            return []
-        rows = con.execute(
-            "SELECT * FROM _enso_beat_runs WHERE beat_id = ? "
-            "ORDER BY started_at DESC, id DESC LIMIT ? OFFSET ?",
-            (number, limit, offset),
-        ).fetchall()
-        return [_run(row) for row in rows]
-
-
 def context(paths: Paths, ref: str, *, run_id: str | None = None) -> dict[str, Any]:
     """A compact current packet; a run can acknowledge only its frozen input cutoff."""
     with _reader(paths) as con:

@@ -6,6 +6,7 @@ import sqlite3
 from typing import Any
 
 import pytest
+from conftest import session_for
 
 from enso import db
 from enso.config import Paths
@@ -14,11 +15,11 @@ from enso.config import Paths
 def test_sessions_round_trip_and_prune(enso_home: Paths) -> None:
     db.initialize(enso_home)
     db.initialize(enso_home)  # idempotent
-    assert db.get_session(enso_home, "slack:D1", "claude") is None
+    assert session_for(enso_home, "slack:D1", "claude") is None
     db.set_session(enso_home, "slack:D1", "claude", "s1", "default")
     db.set_session(enso_home, "slack:D1", "codex", "t1", "default")
     db.set_session(enso_home, "slack:D1", "claude", "s2", "other")
-    session = db.get_session(enso_home, "slack:D1", "claude")
+    session = session_for(enso_home, "slack:D1", "claude")
     assert session is not None and (session.session_id, session.workspace) == ("s2", "other")
     assert [s.provider for s in db.get_sessions(enso_home, "slack:D1")] == ["claude", "codex"]
     assert db.prune_sessions(enso_home, max_age_days=30) == 0

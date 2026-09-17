@@ -419,15 +419,6 @@ def get_sessions(paths: Paths, conversation: str) -> list[Session]:
     return [_session(row) for row in rows]
 
 
-def get_session(paths: Paths, conversation: str, provider: str) -> Session | None:
-    with transaction(paths) as con:
-        row = con.execute(
-            "SELECT * FROM sessions WHERE conversation = ? AND provider = ?",
-            (conversation, provider),
-        ).fetchone()
-    return _session(row) if row else None
-
-
 def set_session(
     paths: Paths, conversation: str, provider: str, session_id: str, workspace: str
 ) -> None:
