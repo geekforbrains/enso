@@ -246,8 +246,9 @@ or override operator-specific provider settings in `config.json`.
 
 `enso slack manifest` always prints the packaged manifest JSON, without a wrapper, network
 request, or `--json` flag. It works from an installed wheel without a source checkout.
-Setup also seeds a local copy at `~/.enso/slack/manifest.json` without replacing an existing
-copy; the command always exports the package's current canonical version.
+Neither `init` nor `setup` copies it into the home. Upgrades retire an unchanged copy
+seeded by an older release; edited or untracked copies are preserved. The command always
+exports the package's current canonical version.
 The [connection commands](connections.md#hosted-command-contract) add token verification,
 expiring owner pairing, configuration apply, and evidence of a delivered first reply.
 

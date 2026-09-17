@@ -104,8 +104,8 @@ HOME: tuple[Entry, ...] = (
     ),
     Entry("heartbeat", MANAGED, "installation-level beat locks"),
     Entry("browser", MANAGED, "the enso-browser skill's profiles"),
-    # Every shipped file outside skills/ lands under here; see workspaces.BUNDLED_FILES.
-    Entry("slack", MANAGED, "the packaged Slack app manifest"),
+    # Older homes may keep an edited copy after the packaged manifest stops being seeded.
+    Entry("slack", USER, "legacy Slack app files"),
     Entry(".bundles.json", MANAGED, "the record of what Enso installed"),
     Entry(".migrations.json", MANAGED, "the last completed home migration", private=True),
     Entry(".config.lock", MANAGED, "the configuration writer lock"),

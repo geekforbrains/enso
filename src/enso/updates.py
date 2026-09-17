@@ -58,7 +58,7 @@ MIGRATION_PATHS = (
     "skills",
     "AGENTS.md",
     ".bundles.json",
-    "slack",
+    "slack",  # An upgrade may retire the previously seeded manifest; rollback needs it.
 )
 STATE_FIELDS = (
     "id",
