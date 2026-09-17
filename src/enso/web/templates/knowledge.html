@@ -5,13 +5,6 @@
 {% block content %}
 {% call m.phead(now) %}Knowledge{% endcall %}
 <div class="knowledge-location">
-  <form class="toolbar" action="/knowledge" method="get">
-    {% call m.select('Knowledge scope', 'scope') %}
-    <option value="all"{% if scope == 'all' %} selected{% endif %}>All knowledge</option>
-    {% for root in roots %}<option value="{{ root.scope }}"{% if scope == root.scope %} selected{% endif %}>{{ root.label }}</option>{% endfor %}
-    {% endcall %}
-    {{ m.filter_button('Open', hide=False) }}
-  </form>
   <p class="crumbs">{% for label, href in crumbs %}{% if not loop.first %} / {% endif %}{% if loop.last %}<span aria-current="page">{{ label }}</span>{% else %}<a href="{{ href }}">{{ label }}</a>{% endif %}{% endfor %}</p>
 </div>
 {{ m.subtabs(tabs, current_tab) }}
@@ -37,6 +30,20 @@
 </div>
 {% else %}
 {{ m.empty('No notes match this search.' if q else 'No notes here yet. Ask Enso to add knowledge in this scope.') }}
+{% endif %}
+{% if recent %}
+<section aria-labelledby="recent-head">
+  <div class="shead"><h2 id="recent-head">Recently updated</h2></div>
+  <div class="panel rows knowledge-rows">
+    {% for row in recent %}
+    <a class="row knowledge-row" href="{{ row.href }}">
+      <span class="knowledge-symbol">{{ icon('note') }}</span>
+      <span class="body"><span class="title">{{ row.title }}</span><span class="detail">{{ row.scope }} / {{ row.path }}</span></span>
+      <span class="trail">{{ row.updated|ago }}</span>
+    </a>
+    {% endfor %}
+  </div>
+</section>
 {% endif %}
 {% if pages > 1 %}
 <nav class="pager" aria-label="Knowledge pages">

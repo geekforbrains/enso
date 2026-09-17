@@ -3,7 +3,7 @@
 {% from "_icons.html" import icon %}
 {% block title %}{{ note.title }} · Knowledge{% endblock %}
 {% block content %}
-<p class="crumbs"><a href="/knowledge">Knowledge</a>{% for label, href in crumbs %} / <a href="{{ href }}">{{ label }}</a>{% endfor %}</p>
+<p class="crumbs">{% for label, href in crumbs %}{% if not loop.first %} / {% endif %}<a href="{{ href }}">{{ label }}</a>{% endfor %}</p>
 {% call m.phead(now) %}{{ note.title }}{% endcall %}
 <div class="knowledge-layout">
   <div class="knowledge-reading">

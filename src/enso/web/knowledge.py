@@ -20,11 +20,11 @@ from markdown_it.token import Token
 from markupsafe import Markup, escape
 
 from .. import knowledge as kb
-from ..config import Paths
+from ..config import Paths, WebConfig
 from . import common, files, filters
 
-PAGE_SIZE = 50
 SIDEBAR_SIZE = 20
+BACKLINK_SIZE = 50
 ASSET_LIMIT = 20 * 1024 * 1024
 # Only passive raster formats render inline; SVG/HTML and everything else download.
 IMAGE_TYPES = {
@@ -35,7 +35,7 @@ IMAGE_TYPES = {
     ".webp": "image/webp",
     ".avif": "image/avif",
 }
-VIEWS = ("folders", "recent", "all")
+VIEWS = ("folders", "all")
 
 
 def browse_url(**values: str | int) -> str:
@@ -143,8 +143,8 @@ def _folder_rows(catalog: kb.Catalog, scope: str, folder: str) -> list[dict[str,
 
 def _crumbs(root: kb.Root | None, folder: str) -> list[tuple[str, str]]:
     if root is None:
-        return [("All knowledge", browse_url(scope="all"))]
-    return [(root.label, browse_url(scope=root.scope))] + [
+        return [("Knowledge", browse_url())]
+    return [("Knowledge", browse_url()), (root.label, browse_url(scope=root.scope))] + [
         (label, browse_url(scope=root.scope, folder=path)) for label, path in files.crumbs(folder)
     ]
 
@@ -152,7 +152,9 @@ def _crumbs(root: kb.Root | None, folder: str) -> list[tuple[str, str]]:
 def listing_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any] | None:
     """One current page of a folder, recent list, or search; unknown locations are absent."""
     catalog = kb.scan(paths)
-    scope = query.get("scope") or "general"
+    config, problems = common.read_config(paths)
+    web = config.web if config is not None else WebConfig()
+    scope = query.get("scope") or "all"
     root = _root(catalog, scope)
     if scope != "all" and root is None:
         return None
@@ -183,19 +185,19 @@ def listing_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any] | No
         ]
     elif view == "folders":
         notes = [note for note in notes if scope != "all" and "/" not in note.path[len(prefix) :]]
-    if view == "recent":
+    if view == "all":
         notes.sort(key=lambda note: (_updated(note), note.path), reverse=True)
     else:
         notes.sort(key=lambda note: (note.title.casefold(), note.scope, note.path))
     folders = _folder_rows(catalog, scope, folder) if view == "folders" and not search else []
     entries: list[dict[str, Any] | kb.Note] = [*folders, *notes]
     total = len(entries)
-    pages = max(1, math.ceil(total / PAGE_SIZE))
+    pages = max(1, math.ceil(total / web.knowledge.page_size))
     raw_page = query.get("page", "1")
     page = min(max(1, int(raw_page)), pages) if raw_page.isdecimal() and len(raw_page) < 10 else 1
     shown = [
         _note_row(entry, search, catalog=catalog) if isinstance(entry, kb.Note) else entry
-        for entry in entries[(page - 1) * PAGE_SIZE : page * PAGE_SIZE]
+        for entry in entries[(page - 1) * web.knowledge.page_size : page * web.knowledge.page_size]
     ]
     values = {
         "scope": scope,
@@ -204,7 +206,13 @@ def listing_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any] | No
         "q": search,
         "across": "1" if across else "",
     }
-    _config, problems = common.read_config(paths)
+    recent = (
+        sorted(catalog.notes, key=lambda note: (_updated(note), note.path), reverse=True)[
+            : web.knowledge.recent_limit
+        ]
+        if scope == "all" and view == "folders" and not search
+        else []
+    )
     return {
         "config_problems": problems,
         "alarm": common.alarm(paths),
@@ -218,11 +226,12 @@ def listing_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any] | No
         "across": across,
         "view": view,
         "rows": shown,
+        "recent": [_note_row(note, catalog=catalog) for note in recent],
         "total": total,
         "page": page,
         "pages": pages,
-        "start": (page - 1) * PAGE_SIZE + 1 if shown else 0,
-        "end": (page - 1) * PAGE_SIZE + len(shown) if shown else 0,
+        "start": (page - 1) * web.knowledge.page_size + 1 if shown else 0,
+        "end": (page - 1) * web.knowledge.page_size + len(shown) if shown else 0,
         "prev_link": browse_url(**values, page=page - 1) if page > 1 else None,
         "next_link": browse_url(**values, page=page + 1) if page < pages else None,
         "tabs": [
@@ -458,7 +467,7 @@ def note_model(
         "crumbs": _crumbs(note.root, folder),
         "siblings": siblings[:SIDEBAR_SIZE],
         "sibling_count": len(siblings),
-        "backlinks": [_note_row(other, catalog=catalog) for other in linked[:PAGE_SIZE]],
+        "backlinks": [_note_row(other, catalog=catalog) for other in linked[:BACKLINK_SIZE]],
         "backlink_count": len(linked),
         "updated": _updated(note),
         "created": _stamp(note.metadata.get("created")),

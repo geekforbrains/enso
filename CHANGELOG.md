@@ -7,6 +7,9 @@ All notable changes to Enso are documented here, following
 
 ### Changed
 
+- Knowledge opens as a folder hierarchy over shared and workspace roots, with configurable
+  recently updated notes at its home. The former Recent view is removed; All notes is now
+  newest-first and its page size is configurable in `web.knowledge`.
 - Reduce the default `enso-memory` job schedule from every 15 minutes to hourly.
 - Simplify memory viewer rows to a status dot, readable note name, source count, and relative
   occurrence time. Memory titles omit generated UUID suffixes in lists and detail views.

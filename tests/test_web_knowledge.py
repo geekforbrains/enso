@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
+from conftest import write_config
 from test_web_navigation import Document
 
 from enso import knowledge as kb
@@ -54,13 +55,12 @@ async def test_mixed_folders_pagination_and_scoped_search(client, enso_home):
     assert response.status == 200
     html = await response.text()
     rows = knowledge_rows(html)
-    assert [row.text.strip().splitlines()[0].strip() for row in rows][:3] == [
-        "Empty",
-        "Large",
-        "Mixed",
+    assert [row.text.strip().splitlines()[0].strip() for row in rows[:2]] == [
+        "General",
+        "autodiscovered",
     ]
     assert "autodiscovered" in html and "View source" not in html
-    assert "Deep" not in " ".join(row.text for row in rows)
+    assert "Recently updated" in html and "Deep" in html
 
     response = await client.get("/knowledge?scope=general&folder=Mixed")
     rows = knowledge_rows(await response.text())
@@ -246,7 +246,9 @@ async def test_paths_symlinks_read_only_and_missing_home(client, enso_home, tmp_
         )
         assert response.status == 404, relative
     for folder in ("..", "Escape", ".hidden", "missing"):
-        response = await client.get("/knowledge?" + urlencode({"folder": folder}))
+        response = await client.get(
+            "/knowledge?" + urlencode({"scope": "general", "folder": folder})
+        )
         assert response.status == 404, folder
     for route in (
         "/knowledge",
@@ -260,16 +262,33 @@ async def test_paths_symlinks_read_only_and_missing_home(client, enso_home, tmp_
     assert before == {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
 
 
-def test_recent_uses_metadata_then_mtime_and_current_scan(enso_home):
+def test_all_notes_and_home_recents_use_metadata_then_mtime_and_current_scan(enso_home):
     root = enso_home.knowledge
     first, _ = note(root, "First.md")
     second, _ = note(root, "Second.md")
     second.write_text(second.read_text().replace("2026-09-15", "2026-09-16"))
-    model = knowledge.listing_model(enso_home, {"view": "recent"})
+    model = knowledge.listing_model(enso_home, {"scope": "general", "view": "all"})
     assert [row["title"] for row in model["rows"]] == ["Second", "First"]
+    home = knowledge.listing_model(enso_home, {})
+    assert [row["title"] for row in home["recent"]] == ["Second", "First"]
     first.write_text(first.read_text().replace("2026-09-15", "2026-09-17"))
-    model = knowledge.listing_model(enso_home, {"view": "recent"})
+    model = knowledge.listing_model(enso_home, {"scope": "general", "view": "all"})
     assert model["rows"][0]["title"] == "First"
+
+
+def test_knowledge_listing_uses_configured_recent_and_page_sizes(enso_home, raw_config):
+    raw_config["web"] = {"knowledge": {"recent_limit": 1, "page_size": 1}}
+    write_config(enso_home, raw_config)
+    root = enso_home.knowledge
+    _first, _ = note(root, "First.md")
+    second, _ = note(root, "Second.md")
+    second.write_text(second.read_text().replace("2026-09-15", "2026-09-16"))
+
+    home = knowledge.listing_model(enso_home, {})
+    assert [row["title"] for row in home["recent"]] == ["Second"]
+    model = knowledge.listing_model(enso_home, {"scope": "general", "view": "all"})
+    assert model["total"] == 2 and model["pages"] == 2
+    assert [row["title"] for row in model["rows"]] == ["Second"]
 
 
 async def test_duplicate_id_is_not_arbitrarily_resolved(client, enso_home):
@@ -278,7 +297,7 @@ async def test_duplicate_id_is_not_arbitrarily_resolved(client, enso_home):
     response = await client.get(f"/knowledge/notes/{identity}")
     assert response.status == 404
     assert len(kb.scan(enso_home).notes) == 2
-    response = await client.get("/knowledge")
+    response = await client.get("/knowledge?scope=general")
     links = [row.attrs["href"] for row in knowledge_rows(await response.text())]
     assert len(links) == 2 and all(link.startswith("/knowledge/file?") for link in links)
     response = await client.get(links[0])

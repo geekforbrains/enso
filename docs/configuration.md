@@ -248,7 +248,8 @@ which accepts strict JSON.
   "logging": { "level": "INFO", "max_bytes": 10485760, "backups": 5 },
   "runs":    { "keep": 500, "max_age_days": 30 },
   "heartbeat": { "enabled": true, "retention_days": 30 },
-  "web":     { "host": "127.0.0.1", "port": 8787 }
+  "web":     { "host": "127.0.0.1", "port": 8787,
+                 "knowledge": { "recent_limit": 5, "page_size": 50 } }
 }
 ```
 
@@ -534,11 +535,13 @@ boundary, not several.
 ## Web
 
 `web.host` and `web.port` are defaults for `enso web start`; command-line flags win. `port`
-is an integer from 1 through 65535 and `host` a non-empty string. When `config.json` is
-missing or invalid the viewer still starts, on `127.0.0.1:8787` unless flags say otherwise,
-because its Health page is where you read the problem. The viewer is read-only and has no
-authentication, so leave `host` at `127.0.0.1` unless something else is handling access.
-See [Web viewer](web.md).
+is an integer from 1 through 65535 and `host` a non-empty string. `web.knowledge.recent_limit`
+defaults to 5 and is a non-negative integer; it limits the recently updated notes shown at the
+Knowledge home. `web.knowledge.page_size` defaults to 50 and is a positive integer; it limits
+each page of Knowledge listings. When `config.json` is missing or invalid the viewer still
+starts, on `127.0.0.1:8787` unless flags say otherwise, because its Health page is where you
+read the problem. The viewer is read-only and has no authentication, so leave `host` at
+`127.0.0.1` unless something else is handling access. See [Web viewer](web.md).
 
 ## Heartbeat
 
