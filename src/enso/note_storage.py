@@ -6,6 +6,7 @@ import hashlib
 import os
 import re
 import stat
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
@@ -203,12 +204,19 @@ def timestamp() -> str:
 
 
 @contextmanager
-def writer(paths: Paths, kind: str) -> Iterator[None]:
+def writer(paths: Paths, kind: str, *, retry_for: float = 0) -> Iterator[None]:
+    """Hold a note writer lock, optionally retrying brief job-hook collisions."""
     paths.home.mkdir(parents=True, exist_ok=True)
-    try:
-        fd = locks.acquire(paths.home / f".{kind}.lock")
-    except BlockingIOError:
-        raise NoteError(f"another {kind} write is in progress; retry") from None
+    deadline = time.monotonic() + retry_for
+    while True:
+        try:
+            fd = locks.acquire(paths.home / f".{kind}.lock")
+            break
+        except BlockingIOError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise NoteError(f"another {kind} write is in progress; retry") from None
+            time.sleep(min(0.05, remaining))
     try:
         yield
     finally:

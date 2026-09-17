@@ -25,6 +25,7 @@ GUIDANCE = (
     "Segments contain only this bounded pass, not necessarily a complete conversation; "
     "earlier or later context and truncated text may be missing. Do not fetch history."
 )
+JOB_LOCK_RETRY_SECONDS = 5
 
 
 def _identity(workspace: str, sources: tuple[int, ...]) -> str:
@@ -161,7 +162,9 @@ def _outputs(batch: Batch, value: Any) -> tuple[dict[str, str], ...]:
     return tuple(outputs)
 
 
-def publish(paths: Paths, workspace: str, value: Any) -> captures.Receipt:
+def publish(
+    paths: Paths, workspace: str, value: Any, *, lock_retry_for: float = 0
+) -> captures.Receipt:
     """Validate all results before reserving inputs; persist the plan before any file write."""
     require_workspace(paths, workspace)
     if not isinstance(value, dict):
@@ -169,7 +172,7 @@ def publish(paths: Paths, workspace: str, value: Any) -> captures.Receipt:
     sources = _ids(value.get("sources"))
     if not sources:
         raise NoteError("an empty batch needs no publication")
-    with storage.writer(paths, "memory"):
+    with storage.writer(paths, "memory", retry_for=lock_retry_for):
         _recover(paths, workspace)
         selected = _next(paths, workspace)
         if selected.sources[: len(sources)] != sources:
@@ -228,7 +231,7 @@ def job_batch(paths: Paths, workspace: str, run_id: str, *, prepare: bool = Fals
     ):
         raise NoteError("memory hooks require the current running workspace:enso-memory job")
     require_workspace(paths, workspace)
-    with storage.writer(paths, "memory"):
+    with storage.writer(paths, "memory", retry_for=JOB_LOCK_RETRY_SECONDS):
         _recover(paths, workspace)
         with db.reader(paths) as con:
             row = con.execute(
@@ -259,4 +262,4 @@ def check_job_result(paths: Paths, selected: Batch, value: Any) -> None:
     if captures.handled(paths, selected.workspace, selected.sources):
         return
     _outputs(selected, value)
-    publish(paths, selected.workspace, value)
+    publish(paths, selected.workspace, value, lock_retry_for=JOB_LOCK_RETRY_SECONDS)

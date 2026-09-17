@@ -1,7 +1,10 @@
 """Workspace jobs turn live conversation fixtures into recallable, nonrecursive memory."""
 
 import json
+import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from threading import Event
 
 import pytest
 from conftest import (
@@ -16,7 +19,17 @@ from conftest import (
 from test_capture_runtime import drain
 from typer.testing import CliRunner
 
-from enso import captures, db, execution, harvesting, initialization, memory, runs, workspaces
+from enso import (
+    captures,
+    db,
+    execution,
+    harvesting,
+    initialization,
+    locks,
+    memory,
+    runs,
+    workspaces,
+)
 from enso.cli import app
 from enso.config import Agent, load_config
 from enso.routing import UNBOUND_NOTICE
@@ -78,6 +91,39 @@ def conversation(paths):
         ],
         "no_memory": [],
     }
+
+
+def test_memory_job_retries_brief_writer_collision(enso_home, fake_config, monkeypatch):
+    workspaces.seed_home(enso_home)
+    workspaces.ensure_layout(enso_home.workspace("default"))
+    write_config(enso_home, fake_config.raw)
+    workspaces.seed_jobs(enso_home, fake_config.defaults)
+    db.initialize(enso_home)
+    job = load_job(enso_home, fake_config, "enso-memory")
+    run_id = runs.start(enso_home, job, "manual", effort=job.effort)
+    value = conversation(enso_home)
+    held = locks.acquire(enso_home.home / ".memory.lock")
+    contended = Event()
+    acquire = locks.acquire
+
+    def observed_acquire(*args, **kwargs):
+        try:
+            return acquire(*args, **kwargs)
+        except BlockingIOError:
+            contended.set()
+            raise
+
+    monkeypatch.setattr(locks, "acquire", observed_acquire)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(harvesting.job_batch, enso_home, "default", run_id, prepare=True)
+            assert contended.wait(3)
+            os.close(held)
+            held = None
+            assert future.result(timeout=3).sources == tuple(value["sources"])
+    finally:
+        if held is not None:
+            os.close(held)
 
 
 async def test_live_discussion_harvests_then_fresh_session_recalls_and_promotes(
