@@ -184,7 +184,7 @@ single-object JSON error contract.
 | `recover` | `ok`, `operation` |
 
 An operation includes `id`, `status`, `from_version`, `to_version`, `started_at`,
-`updated_at`, and an `error` or `notification_error` when applicable. Terminal statuses are
+`updated_at`, and `error`, `notification_error`, or `cleanup_error` when applicable. Terminal statuses are
 `succeeded`, `failed`, `rolled_back`, `recovery_failed`, and `deferred`. A `recovery_failed`
 operation keeps new work paused until recovery succeeds. Internal worker commands are
 implementation details; operators and agents use the commands above.

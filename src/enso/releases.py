@@ -643,6 +643,9 @@ def prepare_release(
                     "--python",
                     str(release_dir / "bin/python"),
                     "--no-build",
+                    # Release environments must survive clearing their download cache.
+                    "--link-mode",
+                    "copy",
                     "--constraint",
                     str(constraints_path),
                     requirement,

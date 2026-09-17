@@ -60,7 +60,7 @@ def managed(enso_home, monkeypatch):
     monkeypatch.setattr(updates, "_release", lambda *args, **kwargs: release)
     monkeypatch.setattr(update_services, "discover", lambda *args: dict(services))
     monkeypatch.setattr(update_services, "launch", lambda *args: events.append(("launch", args)))
-    monkeypatch.setattr(update_services, "cleanup_finished", lambda *args: None)
+    monkeypatch.setattr(update_services, "cleanup_finished", lambda *args: True)
     for name in ("stop", "start", "healthy"):
         monkeypatch.setattr(
             update_services,
@@ -80,6 +80,9 @@ def managed(enso_home, monkeypatch):
         return target
 
     monkeypatch.setattr(updates, "_candidate", candidate)
+    monkeypatch.setattr(
+        updates, "_candidate_plan", lambda paths, *args: updates.migration_plan(paths)
+    )
     return SimpleNamespace(
         paths=paths,
         old=old,
@@ -295,7 +298,8 @@ def test_direct_install_persists_default_or_explicit_feed(
     def candidate(paths, release, receipt):
         target = paths.runtime_dir / "releases" / release.release_id
         (target / "bin").mkdir(parents=True)
-        (target / "bin/enso").write_text("executable")
+        (target / "bin/enso").write_text("#!/bin/sh\nexit 0\n")
+        (target / "bin/enso").chmod(0o755)
         return target
 
     monkeypatch.setattr(updates, "_candidate", candidate)
@@ -530,7 +534,7 @@ def test_snapshot_path_tampering_is_rejected_before_restoring_anything(managed):
     state = queue(managed)
     managed.paths.config.write_text("configuration to keep")
     updates._snapshot(managed.paths, state)
-    snapshot = managed.paths.runtime_dir / "operations" / state["id"] / "backup/snapshot.json"
+    snapshot = managed.paths.runtime_dir / "operations" / state["id"] / "snapshot.json"
     write_json(snapshot, {"paths": ["config.json", "../../outside"]})
     with pytest.raises(UpdateError, match="snapshot is incomplete"):
         updates._restore(managed.paths, state)
@@ -698,3 +702,182 @@ def test_snapshot_and_restore_refuse_linked_workspace_parents(managed, tmp_path)
             operation(paths, state)
     assert paths.config.read_bytes() == before
     assert not list(outside.iterdir())
+
+
+def test_repeated_updates_bound_snapshots_operations_and_runtimes(managed, monkeypatch):
+    paths = managed.paths
+    for index in range(3):
+        release = replace(managed.release, version=f"0.2.{index}", commit=f"{index + 1:x}" * 40)
+        monkeypatch.setattr(updates, "_release", lambda *args, selected=release: selected)
+        state = queue(managed)
+        updates.run_update(paths, state["id"])
+        assert read_json(paths.update_state)["status"] == "succeeded"
+        assert list((paths.runtime_dir / "operations").iterdir()) == [
+            paths.runtime_dir / "operations" / state["id"]
+        ]
+        assert not list((paths.runtime_dir / "operations").glob("*/backup"))
+        assert not list((paths.runtime_dir / "operations").glob("*/failed-state-*"))
+        assert len(list((paths.runtime_dir / "releases").iterdir())) == 2
+        assert (paths.runtime_dir / "current").resolve().name == release.release_id
+
+
+def test_cleanup_failure_never_rolls_back_success_and_retries(managed, monkeypatch):
+    state = queue(managed)
+    remove = updates._remove_owned
+
+    def cannot_remove(path):
+        if path.name == "backup":
+            raise OSError("disk problem")
+        remove(path)
+
+    monkeypatch.setattr(updates, "_remove_owned", cannot_remove)
+    updates.run_update(managed.paths, state["id"])
+    outcome = read_json(managed.paths.update_state)
+    assert outcome["status"] == "succeeded" and outcome["cleanup_error"]
+    assert updates.installed(managed.paths)["version"] == managed.release.version
+    managed.paths.config.write_text("new work after successful update")
+    managed.events.clear()
+    monkeypatch.setattr(updates, "_remove_owned", remove)
+    updates.run_update(managed.paths, state["id"])
+    assert "cleanup_error" not in read_json(managed.paths.update_state)
+    assert managed.paths.config.read_text() == "new work after successful update"
+    assert not any(name in {"stop", "start", "healthy"} for name, _ in managed.events)
+
+
+def test_gate_removal_error_after_durable_success_never_enters_rollback(managed, monkeypatch):
+    from pathlib import Path
+
+    state = queue(managed)
+    unlink = Path.unlink
+
+    def broken_unlink(path, *args, **kwargs):
+        if path == managed.paths.maintenance:
+            raise OSError("interrupted gate cleanup")
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", broken_unlink)
+    with pytest.raises(OSError, match="gate cleanup"):
+        updates.run_update(managed.paths, state["id"])
+    assert read_json(managed.paths.update_state)["status"] == "succeeded"
+    assert updates.installed(managed.paths)["version"] == managed.release.version
+    monkeypatch.setattr(Path, "unlink", unlink)
+    managed.events.clear()
+    updates.run_update(managed.paths, state["id"])
+    assert not maintenance.paused(managed.paths)
+    assert not any(name in {"stop", "start", "healthy"} for name, _ in managed.events)
+
+
+def test_candidate_declared_move_rolls_back_new_parent_and_migration_marker(managed, monkeypatch):
+    paths = managed.paths
+    legacy = paths.home / "legacy"
+    legacy.mkdir()
+    (legacy / "workflow.json").write_text('{"old": true}')
+    marker = paths.home / ".migrations.json"
+    write_json(marker, {"revision": 0})
+    destination = paths.home / "new-core/workflows"
+    monkeypatch.setattr(
+        updates,
+        "_candidate_plan",
+        lambda paths, *args: updates.update_snapshot.plan(
+            paths, [*updates.migration_plan(paths), "legacy", "new-core/workflows"]
+        ),
+    )
+
+    def run(args, **kwargs):
+        if args[-1] == "_prepare-home":
+            destination.parent.mkdir()
+            legacy.rename(destination)
+            (destination / "workflow.json").write_text('{"new": true}')
+            write_json(marker, {"revision": 1})
+            raise UpdateError("later migration failed")
+        return ""
+
+    monkeypatch.setattr(update_services, "run_command", run)
+    state = queue(managed)
+    updates.run_update(paths, state["id"])
+    assert read_json(paths.update_state)["status"] == "rolled_back"
+    assert read_json(marker) == {"revision": 0}
+    assert not destination.parent.exists()
+    assert (legacy / "workflow.json").read_text() == '{"old": true}'
+    assert list((paths.runtime_dir / "releases").iterdir()) == [managed.old]
+    operation = paths.runtime_dir / "operations" / state["id"]
+    assert not (operation / "backup").exists() and not list(operation.glob("failed-state-*"))
+
+
+def test_preparation_migrates_before_current_config_and_db_readers(managed, monkeypatch):
+    paths = managed.paths
+    paths.config.write_text("old config")
+    write_json(paths.maintenance, {"operation_id": "a" * 32})
+    events = []
+    monkeypatch.setattr(updates.migrations, "apply", lambda paths: events.append("migrate"))
+    monkeypatch.setattr(
+        updates,
+        "load_config",
+        lambda paths: events.append("config") or SimpleNamespace(defaults=None, workspaces={}),
+    )
+    monkeypatch.setattr(updates.db, "initialize", lambda paths: events.append("database"))
+    monkeypatch.setattr(
+        updates.workspaces, "reconcile_bundles", lambda *args, **kwargs: events.append("bundles")
+    )
+    updates.prepare_home(paths)
+    assert events == ["migrate", "config", "database", "bundles"]
+
+
+def test_uninitialized_install_upgrades_directly_to_latest_home_revision(tmp_path, monkeypatch):
+    from enso.config import Paths
+
+    paths = Paths(tmp_path / "fresh-home")
+    write_json(paths.maintenance, {"operation_id": "a" * 32})
+    ran = []
+    monkeypatch.setattr(
+        updates.migrations,
+        "MIGRATIONS",
+        (updates.migrations.Migration(1, "old shape", lambda _: (), lambda _: ran.append(True)),),
+    )
+    updates.prepare_home(paths)
+    assert read_json(paths.home / ".migrations.json") == {"revision": 1}
+    assert not ran and not paths.config.exists() and not paths.db.exists()
+
+
+def test_adoption_preflight_refuses_pending_changes_without_mutation(enso_home, monkeypatch):
+    monkeypatch.setattr(
+        updates.migrations,
+        "MIGRATIONS",
+        (updates.migrations.Migration(1, "new shape", lambda _: (), lambda _: None),),
+    )
+    with pytest.raises(UpdateError, match="Adopt a compatible release first"):
+        updates.validate_home(enso_home)
+    assert not enso_home.config.exists() and not enso_home.db.exists()
+    assert not (enso_home.home / ".migrations.json").exists()
+
+
+def test_gate_cleanup_error_after_rollback_never_restores_over_new_work(managed, monkeypatch):
+    paths = managed.paths
+    state = queue(managed)
+    paths.config.write_text("original data")
+
+    def prepare_fails(args, **kwargs):
+        if args[-1] == "_prepare-home":
+            paths.config.write_text("migrated data")
+            raise UpdateError("migration failure")
+        return ""
+
+    monkeypatch.setattr(update_services, "run_command", prepare_fails)
+    sync = updates.sync_directory
+
+    def sync_fails_after_admission(path):
+        if path == paths.runtime_dir and not maintenance.paused(paths):
+            raise UpdateError("gate directory sync failed")
+        sync(path)
+
+    monkeypatch.setattr(updates, "sync_directory", sync_fails_after_admission)
+    with pytest.raises(UpdateError, match="gate directory sync failed"):
+        updates.run_update(paths, state["id"])
+    assert read_json(paths.update_state)["status"] == "rolled_back"
+    assert paths.config.read_text() == "original data" and not maintenance.paused(paths)
+    paths.config.write_text("work accepted after rollback")
+    monkeypatch.setattr(updates, "sync_directory", sync)
+    managed.events.clear()
+    updates.run_update(paths, state["id"])
+    assert paths.config.read_text() == "work accepted after rollback"
+    assert not any(name in {"stop", "start", "healthy"} for name, _ in managed.events)

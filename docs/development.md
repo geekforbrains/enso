@@ -104,8 +104,8 @@ enso setup
 ```
 
 This installs an unmanaged copy of the checkout, independent of later source edits. Reinstall
-the tool to pick up a newer commit. Use the pinned development installation below when
-replacing an existing managed home, and [adopt a compatible release](install.md#adopt-an-existing-installation)
+the tool to pick up a newer commit. Use the local managed-bundle procedure below to test
+the release installation flow, or [adopt a compatible release](install.md#adopt-an-existing-installation)
 before using managed updates.
 
 Manual application checks use a new scratch home by default. Answer **no** when `setup`
@@ -177,28 +177,35 @@ checks installed package behavior; it does not publish a release or convert an e
 
 ### Installing an unreleased snapshot locally
 
-When the operator explicitly requests unreleased code on their active home, prefer a
-pinned development installation over editing a managed release environment in place.
-Build a wheel from a clean, recorded commit, install it with the locked dependencies in
-a separate persistent environment, and record the source commit and wheel checksum.
-A development version may be assigned in the build's private source copy; keep the
-repository's release version unchanged. Test the installed wheel in a scratch home first.
+To test the normal managed installation from local code, build the same release bundle used
+for publication from a clean, recorded commit. Keep the repository version unchanged and
+record the wheel checksum. No upload or publication is involved:
 
-Keep the prior runtime intact and back up the launcher, service units, configuration,
-and database before switching. Drain active work and serialize the switch against the
-updater. As part of this explicit conversion, archive the original managed install
-receipt intact; do not rewrite it to describe different code. Point the launcher at the
-pinned development environment, then verify services and data before admitting work.
-Record the backup and recovery instructions outside the repository. A failed switch
-restores the previous launcher and receipt; do not restore an old database over newer
-accepted work.
+```bash
+ENSO_LOCAL_RELEASE=$(mktemp -d /tmp/enso-local-release.XXXXXX)
+python3 scripts/build-release.py --output "$ENSO_LOCAL_RELEASE"
+sh "$ENSO_LOCAL_RELEASE/install.sh" --manifest "$ENSO_LOCAL_RELEASE/release.json"
+enso setup
+```
 
-This installation is deliberately unmanaged: release checks report development mode,
-and later code updates are manual. Returning to managed releases uses
-[the adoption procedure](install.md#adopt-an-existing-installation) with stopped services
-and the intended release manifest. Do not reuse a published version for different code,
-alter an existing immutable environment, or assign a future public version just to bypass
-the managed updater's version checks.
+The local manifest selects the code to install; future checks still default to GitHub.
+The installed environment, receipt, stable launcher, migrations, and service behavior are
+identical to a downloaded release. Source edits do not change the installed copy.
+
+An explicit operator request is required before replacing an active home. Drain accepted
+work, stop its daemon and viewer, and back up the launcher, service units, configuration,
+and database. Keep the previous runtime intact until the new services are verified. For an
+unmanaged compatible home, use the local installer with `--adopt`, prepare missing bundles
+with `enso init` and the existing configuration, and reinstall the services that were in use.
+Record the exact source commit, wheel checksum, backup location, and service results outside
+the repository. A failed switch restores the previous launcher and services before admitting
+work; never restore an old database over newer accepted work.
+
+An already managed home uses `enso update apply --manifest PATH` for a newer version.
+Published versions and their environments are immutable: a different local build with the
+same version is not an automatic update. Test those builds in a scratch home unless the
+operator explicitly requests a separate local replacement. Never alter an installed release
+in place or invent a future public version to bypass the version check.
 
 ## Design and code
 

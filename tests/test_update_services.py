@@ -19,10 +19,12 @@ HELPER = f"gui/{os.getuid()}/{LABEL}"
 class Manager:
     """A fake launchd or systemd holding one unit: loaded or not, running a pid or not."""
 
-    def __init__(self, platform, *, loaded=False, pid=None):
+    def __init__(self, platform, *, loaded=False, pid=None, transient=False):
         self.platform = platform
         self.loaded = loaded
         self.pid = pid
+        self.transient = transient
+        self.active_state = None
         self.queries = []
         self.commands = []
 
@@ -30,6 +32,10 @@ class Manager:
         self.queries.append(args)
         if "is-enabled" in args:
             return "enabled" if self.loaded else "disabled"
+        if "--property=LoadState,ActiveState,MainPID" in args:
+            state = self.active_state or ("active" if self.pid else "inactive")
+            loaded = "loaded" if self.loaded else "not-found"
+            return f"LoadState={loaded}\nActiveState={state}\nMainPID={self.pid or 0}\n"
         if args[0] == "systemctl":
             return f"{self.pid or 0}\n"
         if not self.loaded:
@@ -37,11 +43,21 @@ class Manager:
         return f"state = running\n\tpid = {self.pid}\n" if self.pid else "state = not running\n"
 
     def run(self, args, *, check=True):
+        if (args[0] == "launchctl" and args[1] == "print") or (
+            "--property=LoadState,ActiveState,MainPID" in args
+        ):
+            output = self.query(args)
+            if args[0] == "launchctl" and not self.loaded:
+                return subprocess.CompletedProcess(
+                    args, 113, "", f'Could not find service "{LABEL}"'
+                )
+            return subprocess.CompletedProcess(args, 0, output, "")
         self.commands.append(args)
         action = args[1] if args[0] == "launchctl" else args[2]
         if action in {"bootout", "stop"}:
             self.pid = None
-            self.loaded = action == "stop"  # systemd keeps a stopped unit enabled
+            # Standard systemd services stay enabled; completed transient helpers collect.
+            self.loaded = action == "stop" and not self.transient
         elif action in {"bootstrap", "kickstart", "start"}:
             self.loaded, self.pid = True, 4242
         return subprocess.CompletedProcess(args, 0, "", "")
@@ -103,11 +119,52 @@ def test_launch_never_kickstarts_a_live_helper(enso_home, monkeypatch):
     assert fake.commands == []
 
 
+@pytest.mark.parametrize("platform", ["launchd", "systemd"])
 @pytest.mark.parametrize("pid", [None, 123])
-def test_completed_helper_cleanup_skips_live_processes(enso_home, monkeypatch, pid):
-    fake = fake_manager(monkeypatch, "launchd", loaded=True, pid=pid)
-    update_services.cleanup_finished(enso_home, OPERATION)
-    assert fake.commands == ([] if pid else [["launchctl", "bootout", HELPER]])
+def test_completed_helper_cleanup_unloads_idle_and_preserves_live_processes(
+    enso_home, monkeypatch, platform, pid
+):
+    fake = fake_manager(monkeypatch, platform, loaded=True, pid=pid, transient=True)
+    assert update_services.cleanup_finished(enso_home, OPERATION) is (pid is None)
+    stop = (
+        ["launchctl", "bootout", HELPER]
+        if platform == "launchd"
+        else ["systemctl", "--user", "stop", f"enso-update-{OPERATION}"]
+    )
+    assert fake.commands == ([] if pid else [stop])
+
+
+def test_absent_helper_allows_cleanup_without_stopping_anything(enso_home, manager):
+    assert update_services.cleanup_finished(enso_home, OPERATION)
+    assert manager.commands == []
+
+
+@pytest.mark.parametrize("failure", ["query", "stop", "still-loaded"])
+def test_unconfirmed_helper_cleanup_preserves_files(enso_home, monkeypatch, manager, failure):
+    manager.loaded = True
+    if failure == "query":
+        monkeypatch.setattr(
+            service,
+            "_run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(args, 1, "", "offline"),
+        )
+    elif failure == "stop":
+
+        def failed(*args, **kwargs):
+            raise service.ServiceError("unload failed")
+
+        monkeypatch.setattr(service, "stop", failed)
+    else:
+        monkeypatch.setattr(service, "stop", lambda *args, **kwargs: None)
+    assert not update_services.cleanup_finished(enso_home, OPERATION)
+    assert manager.loaded
+
+
+def test_systemd_helper_waiting_to_restart_is_preserved(enso_home, monkeypatch):
+    fake = fake_manager(monkeypatch, "systemd", loaded=True)
+    fake.active_state = "activating"
+    assert not update_services.cleanup_finished(enso_home, OPERATION)
+    assert fake.commands == []
 
 
 def test_unsupported_platform_is_reported_before_any_service_work(enso_home, monkeypatch):

@@ -169,3 +169,13 @@ def worker(operation_id: str) -> None:
 @update_app.command("_prepare-home", hidden=True)
 def prepare_home() -> None:
     updates.prepare_home(Paths.from_env())
+
+
+@update_app.command("_migration-plan", hidden=True)
+def migration_plan() -> None:
+    echo_json(updates.migration_plan(Paths.from_env()))
+
+
+@update_app.command("_validate-home", hidden=True)
+def validate_home() -> None:
+    updates.validate_home(Paths.from_env())

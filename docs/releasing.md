@@ -257,6 +257,8 @@ Serve the generated `install.sh` from the trusted release host. The shell instal
 `curl` only when uv is missing, keeps uv at `runtime/tools/uv` without modifying shell profiles, and lets uv
 install Python 3.14. uv tools, Python, caches, and environments live inside the selected Enso
 home. A separately selected bin directory receives the stable `enso` launcher.
+Release dependencies are installed with uv's copy link mode, independent of the download cache.
+Completed updates can clear that cache without retaining historical wheel contents.
 
 ```bash
 curl -fsSL https://github.com/geekforbrains/enso/releases/latest/download/install.sh | sh
