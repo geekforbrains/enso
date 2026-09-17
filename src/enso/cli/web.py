@@ -27,7 +27,7 @@ def _lifecycle(paths: Paths) -> Iterator[None]:
     if state.get("id") and os.environ.get("ENSO_UPDATE_INTERNAL") == state["id"]:
         yield
         return
-    if not (paths.runtime_dir / "install.json").exists():
+    if not maintenance.coordinated(paths):
         if maintenance.paused(paths):
             raise maintenance.UpdateError("Enso is updating; wait before changing the viewer")
         yield

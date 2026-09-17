@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+if [ ! -x "$repo/.venv/bin/python" ]; then
+    printf '%s\n' 'Run uv sync --all-extras --locked in the checkout first.' >&2
+    exit 1
+fi
+exec "$repo/.venv/bin/python" -m enso.development refresh "$@"

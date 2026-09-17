@@ -23,6 +23,11 @@ class UpdateError(Exception):
     """An installation or update could not safely complete."""
 
 
+def coordinated(paths: Paths) -> bool:
+    """Managed releases and local development share home-access admission."""
+    return any((paths.runtime_dir / name).exists() for name in ("install.json", "development.json"))
+
+
 def prepare(paths: Paths) -> None:
     for directory in (paths.home, paths.runtime_dir):
         if directory.is_symlink():

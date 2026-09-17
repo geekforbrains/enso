@@ -45,7 +45,14 @@ is operating state and must not be edited to bypass a migration.
 Fresh `enso init` or `enso setup` stamps the latest revision before seeding the current
 scaffold, so it skips historical conversions and can safely resume interrupted setup.
 Rerunning initialization over existing content never marks pending migrations complete.
-Existing homes with pending steps must finish the managed upgrade first.
+Existing homes with pending steps must finish the managed upgrade, or an explicit local
+development migration, before initialization.
+
+For an editable checkout, [Development's manual migration commands](development.md#manual-development-migrations)
+preview and apply this same registry without publishing or increasing the package version.
+They preserve installed bundles and use the release snapshot helpers for recovery. A revision
+already applied to a live development home must not be edited and replayed; append the next
+revision, and use disposable old-layout fixtures when testing a step repeatedly.
 
 ## Declare everything the step changes
 

@@ -296,7 +296,9 @@ data recovery and retain independent backups of your home.
 
 This procedure requires a 0.2.0-or-newer home compatible with the selected release.
 
-An editable checkout or `uv tool` install is unmanaged and never changes itself. For the
+An editable checkout or `uv tool` install is unmanaged and never changes itself.
+[The local development loop](development.md#local-development-loop) connects a maintainer's
+services to a checkout and refreshes it without replacing home content. For the
 one-time move, stop its daemon and viewer, then run the release installer with `--adopt` and
 the same home and bin directory. The previous launcher is preserved beside the new one;
 existing configuration and user content stay in place. The installer refuses an active
