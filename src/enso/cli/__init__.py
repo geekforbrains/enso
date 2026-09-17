@@ -98,16 +98,13 @@ def _root(
     independent = ctx.invoked_subcommand in {"update", "serve", "logs", "web"}
     try:
         state = maintenance.read_json(paths.update_state)
-        workflow_gate = (
-            maintenance.read_json(paths.maintenance) if ctx.invoked_subcommand == "workflow" else {}
-        )
+        gate = maintenance.read_json(paths.maintenance)
     except (maintenance.UpdateError, OSError) as exc:
         fail([str(exc)], as_json="--json" in ctx.args or "--json" in sys.argv)
     internal = bool(state.get("id")) and os.environ.get("ENSO_UPDATE_INTERNAL") == state["id"]
-    workflow_resume = (
-        ctx.invoked_subcommand == "workflow" and workflow_gate.get("kind") == "workflow-init"
-    )
-    if not independent and not internal and (paths.runtime_dir / "install.json").exists():
+    workflow_resume = ctx.invoked_subcommand == "workflow" and gate.get("kind") == "workflow-init"
+    development_drain = gate.get("kind") == "development" and gate.get("phase") == "draining"
+    if not independent and not internal and maintenance.coordinated(paths):
         try:
             fd = maintenance.acquire_access(paths)
         except maintenance.UpdateError as exc:
@@ -117,6 +114,7 @@ def _root(
         maintenance.paused(paths)
         and not independent
         and state.get("status") != "draining"
+        and not development_drain
         and not internal
         and not workflow_resume
     ):

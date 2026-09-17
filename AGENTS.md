@@ -26,6 +26,17 @@ Preserve unrelated work and choose the smallest coherent solution. Each fact has
 owning page: update that page and link to it rather than copying conventions here.
 Do not introduce Git hooks, GitHub Actions, or release automation without an explicit ask.
 
+## Local development instance
+
+Gavin uses this checkout's `develop` branch to run his local Enso. After completing,
+testing, and committing a requested change, refresh and verify that instance using
+[Development § Local development loop](docs/development.md#local-development-loop).
+This is standing authorization for that routine code refresh; do not ask again.
+Preserve `~/.enso` content, including installed jobs and skills. Required home migrations
+use the separate, explicit migration workflow documented there; never reset or reseed the home.
+An Enso stage job hands this step to an external maintainer session instead of restarting
+the service that is running it.
+
 ## Handoff
 
 Follow [Development § Completion](docs/development.md#completion). In a stage job, the

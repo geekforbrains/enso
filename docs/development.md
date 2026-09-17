@@ -54,6 +54,9 @@ Product behaviour belongs in its owning page under `docs/`, starting with
   so it uses only the standard library and imports nothing from the package. It also owns
   `fetch`, the one bounded, redirect-refusing HTTP read; the skill catalog imports it and
   keeps its own redirect policy, headers, and error type.
+- `src/enso/development.py` — repository-only editable refresh and manual migration
+  orchestration behind `scripts/dev-refresh` and `scripts/dev-migrate`. It shares admission,
+  service ownership, migration revisions, and snapshots with release updates.
 - `src/enso/web/` — `server.py` owns routes and template wiring; `filters.py` owns
   presentation helpers, Jinja filters, and chart series. `tasks.py` builds task board and
   detail models; `views.py` builds the other pages. Both use `common.py` for configuration,
@@ -113,8 +116,9 @@ offers to install the background service: its service unit lives outside `ENSO_H
 changing the home alone does not isolate it. The viewer's `web install` has the same
 constraint. An explicit operator request to install and validate code in the active home
 authorizes that scoped live operation; preserve a rollback, check for active work, and
-record the exact installed code and service results. Ordinary development or a release
-request alone does not authorize using the active home for tests.
+record the exact installed code and service results. The regular maintainer checkout has
+the standing authorization in [the local development loop](#local-development-loop).
+Other development and release work does not authorize using an active home for tests.
 
 ```bash
 ENSO_DEV_HOME=$(mktemp -d /tmp/enso-dev.XXXXXX)
@@ -174,6 +178,93 @@ The import must resolve inside the scratch `venv`, and the copied fixtures isola
 Enso and user homes. The omitted Git/document check still runs in the full source suite.
 No command above installs a service or contacts a transport/provider account. This lane
 checks installed package behavior; it does not publish a release or convert an existing home.
+
+## Local development loop
+
+Gavin's regular checkout at `~/Projects/enso`, on `develop`, drives his local instance.
+After completing a requested change, run the checks, review and commit it, then run:
+
+```bash
+./scripts/dev-refresh
+enso --version
+enso service status
+enso web status
+```
+
+This routine is authorized by [AGENTS.md](../AGENTS.md#local-development-instance).
+Run it from an external terminal or agent session, never from an Enso chat turn or stage job
+whose execution the command would have to drain. Do not create another branch or publish a
+release as part of the refresh. The package can remain `0.2.1` through many iterations.
+The command requires a clean `develop` checkout and uses its editable `.venv`, prepared
+initially with `uv sync --all-extras --locked`. Source changes are visible to new imports;
+refresh restarts the long-running processes with the completed, tested code.
+
+On the first run, the existing managed installation must be idle and its user services must
+use the stable `enso` launcher. Refresh saves the original launcher and installation receipt,
+then points that launcher at the checkout's `.venv/bin/enso`. Existing service definitions and
+the old release environment stay intact. The active managed receipt is archived in the
+development operation, making the source install explicitly unmanaged; managed update checks
+must not mistake it for the old release. Later refreshes wait for accepted work, hold the same
+exclusive home-access lock as updates, sync locked dependencies, restart previously running
+services, and verify readiness before reopening work. Stopped services remain stopped.
+
+**A normal refresh does not initialize, migrate, reseed, or refresh bundled content.**
+Configuration, jobs, skills, projects, knowledge, and memory files stay as installed.
+For example, changing the shipped memory schedule does not rewrite the local `JOB.md`.
+Runtime control files, logs, and ordinary application activity continue to change normally.
+Do not run `setup`, `init`, config apply, or bundle reconciliation to refresh source code.
+An invalid existing configuration stops the preflight; fix only the specific authorized
+problem, without replacing the home with checkout defaults.
+
+Runtime records live under `runtime/development.json` and `runtime/development/<operation>/`.
+They record the source commit, services, first-install recovery material, and any migration
+snapshot. They are operating state, not files to edit by hand. Verify the returned commit and
+version, both service statuses, and the affected behavior; UI changes also need a live browser
+check. Record the result in the handoff. This verifies the local editable install; it does not
+replace the installed-release acceptance checks in [Upgrade tests](upgrade-testing.md).
+
+### Manual development migrations
+
+Home revisions are independent of package versions. Preview the checkout's actual pending
+steps without changing anything, then explicitly apply required changes:
+
+```bash
+./scripts/dev-migrate
+./scripts/dev-migrate --apply
+./scripts/dev-refresh
+```
+
+Normal refresh refuses pending migrations. `dev-migrate --apply` uses the same registry and
+snapshot implementation as the release updater: pause admission, drain work, stop services,
+save declared paths and the revision marker, apply every pending revision, validate the home,
+restart, and check readiness. It does not refresh bundled content or switch the launcher.
+It can run repeatedly at the same package version; already completed revisions are skipped.
+The live instance must already use the development launcher. A stopped scratch home can also
+be migrated without creating a launcher or starting services:
+
+```bash
+./scripts/dev-migrate --home /absolute/path/to/scratch-home
+./scripts/dev-migrate --home /absolute/path/to/scratch-home --apply
+```
+
+Test new steps against a disposable old-layout fixture first, including failure and recovery.
+A scratch migration may use uncommitted source; a live refresh still requires the tested commit.
+Once a revision has run in the live home, append a new revision to change it again. Never reset
+the live marker to replay an edited step. Use fresh old-layout fixtures for repeated testing.
+[Home migrations](migration.md) owns step authoring and the declared-path contract.
+
+A failed or interrupted operation keeps work paused. Inspect its private `operation.json`,
+then restore its snapshot and original launcher with:
+
+```bash
+./scripts/dev-refresh --recover
+```
+
+Recovery leaves services stopped and admission closed. Fix the checkout, rerun an explicitly
+needed migration, then refresh; the recorded services resume only after validation succeeds.
+Recovery never rewrites Git or rolls editable source back. A successful operation cannot be
+rolled back with this command after newer work has been admitted. Migration snapshots are
+temporary transaction recovery, not long-term backups.
 
 ### Installing an unreleased snapshot locally
 
