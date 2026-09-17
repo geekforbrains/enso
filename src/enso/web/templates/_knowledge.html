@@ -1,0 +1,19 @@
+{% from "_icons.html" import icon %}
+
+{% macro breadcrumbs(items, current=false) -%}
+<p class="crumbs">{% for label, href in items %}{% if not loop.first %} / {% endif %}{% if current and loop.last %}<span aria-current="page">{{ label }}</span>{% else %}<a href="{{ href }}">{{ label }}</a>{% endif %}{% endfor %}</p>
+{%- endmacro %}
+
+{% macro row(item, detail=true, trail=true, excerpt=true, current_url='') -%}
+<a class="row knowledge-row{% if current_url and item.href == current_url %} is-current{% endif %}" href="{{ item.href }}"{% if current_url and item.href == current_url %} aria-current="page"{% endif %}>
+  <span class="knowledge-symbol">{{ icon('folder' if item.kind == 'folder' else 'note') }}</span>
+  <span class="body"><span class="title">{{ item.title }}</span>{% if detail and item.kind == 'note' %}<span class="detail">{{ item.scope }} / {{ item.path }}</span>{% if excerpt and item.excerpt %}<span class="knowledge-excerpt">{{ item.excerpt }}</span>{% endif %}{% endif %}</span>
+  {% if trail %}<span class="trail">{% if item.kind == 'folder' %}{{ item.count }} note{{ 's' if item.count != 1 }} {{ icon('chevron-right', 12) }}{% else %}{{ item.updated|ago }}{% endif %}</span>{% endif %}
+</a>
+{%- endmacro %}
+
+{% macro row_list(items, detail=true, trail=true, excerpt=true, current_url='') -%}
+<div class="panel rows knowledge-rows">
+  {% for item in items %}{{ row(item, detail, trail, excerpt, current_url) }}{% endfor %}
+</div>
+{%- endmacro %}
