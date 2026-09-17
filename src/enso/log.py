@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import logging
 import os
 import re
@@ -83,21 +84,18 @@ def context(tag: str) -> Iterator[None]:
 
 
 def _rotated(path: Path) -> Iterator[Path]:
-    """The live log, then its backups newest first, stopping at the first gap."""
-    yield path
-    for index in range(1, 1000):
-        backup = path.with_name(f"{path.name}.{index}")
-        if not backup.exists():
+    """The live log, then its backups newest first, stopping at the first missing file."""
+    for index in itertools.count():
+        candidate = path.with_name(f"{path.name}.{index}") if index else path
+        if not candidate.exists():
             return
-        yield backup
+        yield candidate
 
 
 def tail(paths: Paths, count: int, keep: Callable[[str], bool] = lambda _line: True) -> list[str]:
     """The last ``count`` lines that pass ``keep``, reaching into rotated backups as needed."""
     found: list[str] = []
     for path in _rotated(paths.log):
-        if not path.exists():
-            break
         need = count - len(found)
         if need <= 0:
             break
@@ -107,7 +105,7 @@ def tail(paths: Paths, count: int, keep: Callable[[str], bool] = lambda _line: T
 
 
 def follow(paths: Paths, interval: float = 0.5) -> Iterator[str]:
-    """Lines appended from now on, reopening the file when it is rotated or recreated."""
+    """Lines appended from now on, reopening the file once it is rotated, replaced, or truncated."""
     path = paths.log
     handle = open(path, encoding="utf-8", errors="replace")  # noqa: SIM115 - reopened below
     handle.seek(0, os.SEEK_END)
