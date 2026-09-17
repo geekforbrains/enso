@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}{{ note.title }} · Memory{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/memory?workspace={{ workspace|urlencode }}">Memory</a> / {{ workspace }} / Memories</p>
+{% include "_memory_header.html" %}
+<h2>{{ note.title }}</h2>
+<dl class="panel kv memory-facts">
+  <dt>Occurrence</dt><dd>{{ note.metadata.get('occurred') or 'Unknown' }}</dd>
+  <dt>Created</dt><dd>{{ note.metadata.get('created')|when if note.metadata.get('created') else 'Unknown' }}</dd>
+  <dt>Updated</dt><dd>{{ note.metadata.get('updated')|when if note.metadata.get('updated') else 'Unknown' }}</dd>
+  <dt>Path</dt><dd><code>{{ note.path }}</code></dd>
+  <dt>Identity</dt><dd><code>{{ note.id or 'Invalid or missing' }}</code></dd>
+</dl>
+{% if note.problems %}<div class="state error" role="status"><strong>Metadata findings.</strong><ul>{% for problem in note.problems %}<li>{{ problem }}</li>{% endfor %}</ul></div>{% endif %}
+<div class="panel knowledge-document"><article class="markdown">{{ html }}</article></div>
+<section aria-labelledby="memory-sources"><div class="shead"><h2 id="memory-sources">Source captures</h2><span class="right">{{ sources|length }}</span></div>
+{% if sources %}<div class="panel rows">{% for source in sources %}<a class="row entity" href="{{ source.href }}"><span class="pin {{ 'ok' if source.capture else 'warning' }}" role="img" aria-label="{{ 'Stored' if source.capture else 'Missing' }}"></span><span class="body"><span class="title">Capture #{{ source.id }}</span><span class="detail">{{ source.capture.capture.transport ~ ' · ' ~ source.capture.capture.occurred_at if source.capture else 'Source missing from this workspace' }}</span></span></a>{% endfor %}</div>{% else %}{{ m.empty('Manual memory: no capture sources were recorded.') }}{% endif %}
+</section>
+{% endblock %}
