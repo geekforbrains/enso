@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class Credential:
-    """One secret the setup wizard asks for; ``hint`` is printed first and may name ``{home}``."""
+    """One secret the setup wizard asks for; ``hint`` is printed first."""
 
     key: str
     prompt: str
@@ -92,8 +92,7 @@ class SlackSpec(TransportSpec):
             "bot_token",
             "Bot token (xoxb-…)",
             "Create your Slack app at https://api.slack.com/apps?new_app=1\n"
-            "Choose From an app manifest and paste the contents of:\n"
-            "  {home}/slack/manifest.json\n"
+            "Run enso slack manifest, choose From an app manifest, and paste its JSON.\n"
             "Install it to your workspace, then copy its Bot User OAuth Token.",
         ),
         Credential(

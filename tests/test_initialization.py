@@ -53,6 +53,11 @@ main()
     assert json.loads(run.stdout)["ok"]
     assert not enso_home.config.exists() and not enso_home.db.exists()
     assert not (enso_home.home / "worktrees").exists()
+    assert not (enso_home.home / "slack").exists()
+    assert (
+        "slack/manifest.json"
+        not in json.loads((enso_home.home / ".bundles.json").read_text())["files"]
+    )
     example = json.loads(enso_home.config_example.read_text())
     assert example["version"] == 2
     assert not list(enso_home.workspace_jobs("default").iterdir())
@@ -409,6 +414,7 @@ def test_packaged_slack_manifest_matches_repository_example_without_config(enso_
     assert manifest["settings"]["socket_mode_enabled"]
     assert not manifest["features"]["app_home"]["messages_tab_read_only_enabled"]
     assert not enso_home.config.exists() and not enso_home.db.exists()
+    assert not (enso_home.home / "slack").exists()
 
 
 APPLY_FIELDS = {

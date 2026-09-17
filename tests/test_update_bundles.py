@@ -241,21 +241,43 @@ def test_entire_retired_bundles_leave_no_empty_bundle_directories(bundle_home, m
     seed(home)
     monkeypatch.setattr(workspaces, "BUNDLED_SKILLS", ())
     monkeypatch.setattr(workspaces, "BUNDLED_JOBS", ())
-    monkeypatch.setattr(workspaces, "BUNDLED_FILES", ())
 
     changed = workspaces.reconcile_bundles(home.paths, home.agent)
 
     assert set(changed) == {
         "skills/enso/SKILL.md",
-        "slack/manifest.json",
         "workspaces/default/jobs/enso-audit/JOB.md",
         "workspaces/default/jobs/enso-audit/prerun.sh",
     }
     assert not (home.paths.skills / "enso").exists()
-    assert not (home.paths.home / "slack").exists()
     assert not (home.paths.workspace_jobs("default") / "enso-audit").exists()
     assert home.paths.skills.is_dir() and home.paths.workspace_jobs("default").is_dir()
     assert home.paths.agents_md.is_file()
+    assert workspaces.reconcile_bundles(home.paths, home.agent) == []
+
+
+@pytest.mark.parametrize("legacy", ["unchanged", "edited", "untracked"])
+def test_retired_slack_manifest_respects_receipts_and_edits(bundle_home, legacy):
+    home = bundle_home
+    seed(home)
+    target = home.paths.home / "slack/manifest.json"
+    target.parent.mkdir()
+    original = (home.bundled / "slack/manifest.json").read_text()
+    target.write_text(original if legacy != "edited" else "my manifest\n")
+    if legacy != "untracked":
+        marker = home.paths.home / ".bundles.json"
+        receipt = read_json(marker)
+        receipt["files"]["slack/manifest.json"] = hashlib.sha256(original.encode()).hexdigest()
+        write_json(marker, receipt)
+
+    changed = workspaces.reconcile_bundles(home.paths, home.agent)
+
+    if legacy == "unchanged":
+        assert changed == ["slack/manifest.json"]
+        assert not target.parent.exists()
+    else:
+        assert changed == []
+        assert target.read_text() == ("my manifest\n" if legacy == "edited" else original)
     assert workspaces.reconcile_bundles(home.paths, home.agent) == []
 
 

@@ -13,6 +13,8 @@ All notable changes to Enso are documented here, following
 
 ### Changed
 
+- New homes no longer receive a copy of the Slack app manifest; `enso slack manifest`
+  remains the source for setup. Upgrades remove untouched old copies and preserve edits.
 - Knowledge opens as a folder hierarchy over shared and workspace roots, with configurable
   recently updated notes above the Workspaces list at its Index. The former Recent view is
   removed; All notes is now newest-first and its page size is configurable in `web.knowledge`.
