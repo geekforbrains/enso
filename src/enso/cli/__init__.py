@@ -513,7 +513,14 @@ def doctor_lines(report: doctor.Report) -> list[str]:
 
 
 @app.command("doctor")
-def doctor_command(as_json: bool = JSON_FLAG) -> None:
+def doctor_command(
+    as_json: bool = JSON_FLAG,
+    attention: bool = typer.Option(
+        False,
+        "--attention",
+        help="Exit 1 for anything worth reporting, not only a health problem.",
+    ),
+) -> None:
     """Check installation health and Markdown notes; exit 1 on a problem."""
     paths = Paths.from_env()
     report = doctor.run(paths)
@@ -522,7 +529,7 @@ def doctor_command(as_json: bool = JSON_FLAG) -> None:
     else:
         for line in doctor_lines(report):
             typer.echo(line)
-    if not report.ok:
+    if report.attention if attention else not report.ok:
         raise typer.Exit(1)
 
 

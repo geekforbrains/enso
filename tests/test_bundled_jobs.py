@@ -1,7 +1,7 @@
 """The bundled ``enso-audit`` job end to end, with a stub ``enso`` first on PATH.
 
-Its prerun calls ``enso doctor --json``; a stub that exits 0, 1, or 2 stands in for it, so
-the real doctor never runs and the real home is never touched.
+Its prerun calls ``enso doctor --json --attention``; a stub that exits 0, 1, or 2 stands in
+for it, so the real doctor never runs and the real home is never touched.
 """
 
 from __future__ import annotations
@@ -44,8 +44,8 @@ Stub = Callable[..., None]
 def stub_enso(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Stub:
     """``stub(exit_code, stdout, stderr)`` puts a ``enso`` first on PATH.
 
-    It answers ``doctor --json`` with exactly that and refuses anything else, so the venv's
-    real ``enso`` behind it is never reached.
+    It answers ``doctor --json --attention`` with exactly that and refuses anything else, so
+    the venv's real ``enso`` behind it is never reached.
     """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -58,7 +58,7 @@ def stub_enso(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Stub:
         script = bin_dir / "enso"
         script.write_text(
             "#!/usr/bin/env bash\n"
-            '[[ "$*" == "doctor --json" ]] || exit 99\n'
+            '[[ "$*" == "doctor --json --attention" ]] || exit 99\n'
             f"cat '{bin_dir / 'stdout'}'\n"
             f"cat '{bin_dir / 'stderr'}' >&2\n"
             f"exit {exit_code}\n"

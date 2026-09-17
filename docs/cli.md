@@ -45,7 +45,7 @@ enso providers [--json]             bundled provider, model, and effort choices
 enso slack manifest                 packaged app manifest, JSON on stdout
 enso connect start|status|cancel|finish  private owner pairing; see Connections for arguments
 enso models [--all] [--json]       look up OpenRouter models OpenCode can run
-enso doctor [--json]                config, home, workspaces, providers, transports, service, viewer_service, jobs, heartbeat, knowledge, memory
+enso doctor [--json] [--attention]  config, home, workspaces, providers, transports, service, viewer_service, jobs, heartbeat, knowledge, memory
 enso update check|apply|status|recover  managed release checks and recovery; see Updates
 ```
 
@@ -72,11 +72,26 @@ operation is blocked: for example, a workspace layout error fails `doctor`, whil
 logs it and continues when the workspace directory itself still exists. Sections that need
 a valid `config.json` are `skipped` until it is.
 
-`--json` prints `{"ok", "home", "sections": [...]}`, one section per line above in that
-order, each `{"name", "status", "note", "problems", "warnings", "details"}`. `status` is
-`ok`, `warning`, `error`, or `skipped`; `problems` and `warnings` are the messages the text
+`--attention` answers a wider question than health: is there anything worth telling you
+about, problem or not. It exits 1 for every health problem and also for the
+[installation-hygiene findings](workspaces.md#auditing) — an unexpected entry, a dangling
+link, credentials other users can read, a stale generated file — which are warnings and
+would otherwise pass silently. Warnings that are matters of taste, such as an orphan
+workspace or an unedited `AGENTS.md` template, do not exit 1. Plain `enso doctor` keeps its
+ordinary meaning either way; the flag changes only the exit code, never the report. The
+[nightly audit job](jobs.md#nightly-health-audit) runs `enso doctor --json --attention` as
+its gate.
+
+`--json` prints `{"ok", "attention", "home", "sections": [...]}`, one section per line above
+in that order, each
+`{"name", "status", "note", "problems", "warnings", "attention", "details"}`. `status` is
+`ok`, `warning`, `error`, or `skipped`; `attention` is what `--attention` exits on, true on
+the report when anything is worth reporting and on a section when one of its warnings is;
+`problems` and `warnings` are the messages the text
 output shows; `details` holds the facts (provider paths and whether they resolve, transport
-extras, the service pid, job names, and beat counts and attention references). The note
+extras, the service pid, job names, and beat counts and attention references). The `home`
+section's `details.layout` maps each top-level entry present in the home to its
+[layout category](workspaces.md#what-belongs-where). The note
 sections' `details` contain `notes` and `findings` counts and a `roots` object mapping scope
 names to paths; they run even when configuration is invalid.
 

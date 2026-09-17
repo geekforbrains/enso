@@ -44,6 +44,9 @@ Product behaviour belongs in its owning page under `docs/`, starting with
   bounded pipe reads, and failure diagnostics for chat and background turns. Callers own
   process lifetimes, response presentation, and persistence; `execution.py` owns shared
   process cleanup and background execution without importing the chat runtime.
+- `src/enso/layout.py` — one table per root naming every top-level entry an Enso home and a
+  workspace may hold and who owns it. Setup's preflight, the scaffold, and the audit read it,
+  so a new shipped directory is declared once; it imports no other Enso module.
 - `src/enso/locks.py` — the hardened advisory lock open every lock site uses; it imports no
   other Enso module.
 - `src/enso/releases.py` — release manifests, artifact downloads, and isolated release

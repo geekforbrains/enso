@@ -55,7 +55,25 @@ a second identity. The scaffold creates `knowledge/`, `memory/`, `jobs/`, `proje
 links valid even before you add a workspace skill. It creates neither `WORKSPACE.md` nor
 `heartbeat/`; adding either later requires no restart.
 
-The home also has `~/.enso/knowledge/` (or `$ENSO_HOME/knowledge/`) for shared reference that
+The home itself holds the workspaces and what they share:
+
+```text
+~/.enso/
+├── AGENTS.md          # instructions every workspace inherits
+├── CLAUDE.md          # symlink -> AGENTS.md
+├── config.json        # the configuration; readable only by you
+├── skills/            # installed and hand-written skills
+├── knowledge/         # shared reference that belongs across workspaces
+├── secrets/           # *.env files loaded into the service environment
+├── workspaces/<name>/ # one directory per workspace, as above
+├── heartbeat/         # installation-level beat locks
+├── cache/, runtime/   # Enso's own operating state
+├── enso.db, enso.log  # captures, runs, tasks and beats, and the service log
+└── .claude/skills, .agents/skills
+                       # symlinks -> ../skills, as in a workspace
+```
+
+`~/.enso/knowledge/` (or `$ENSO_HOME/knowledge/`) is for shared reference that
 belongs across workspaces. The viewer discovers existing workspace knowledge roots from
 the directories themselves; no extra registration is needed. Both roots support nested
 folders with notes and subfolders together. Keep one owning note and link across scopes
@@ -313,14 +331,48 @@ The audit checks, each finding carrying the check id shown:
 | No skill name collides with a user-level skill | `skill-collision` | warning | Reports only |
 | No `enso-*` skill or job exists that Enso did not install | `reserved` | warning | Reports only |
 | The workspace is bound, or named by a job | `orphan` | warning | Reports only |
-| Unexpected entries at a workspace's top level, or under `workspaces/` | `unexpected` | warning | Reports only |
+| Unexpected entries at the home's or a workspace's top level, or under `workspaces/` | `unexpected` | warning | Reports only |
+| A dangling symbolic link where an optional entry belongs | `link` | warning | Reports only |
+| `config.json`, `runtime/`, and `secrets/` are not readable by other users | `permissions` | warning | Restricts them to `0600`/`0700` |
+| SQLite sidecars left behind by a removed `enso.db` | `stale` | warning | Reports only |
 | `uploads/` size | — | — | Reported as a number |
 
 The audit checks layout and skill discovery. Optional provider policy files are allowed
 in the layout and preserved, with no policy or trust checks. An audit does not establish
 provider permissions or prove that access is confined.
 
-`--fix` only ever creates and repairs directories and discovery links. It never deletes a
+### What belongs where
+
+One table in `src/enso/layout.py` names every top-level entry the home and a workspace may
+hold, and who owns it. Setup's preflight, the scaffold, and this audit all read it, so a
+new Enso directory is declared once rather than in separate allowlists. Each present entry
+is reported in one of five categories:
+
+| Category | Meaning | Examples |
+| --- | --- | --- |
+| `required` | Enso's, and missing it is an error | `AGENTS.md`, `skills/`, `workspaces/`, `.git` |
+| `managed` | Enso's, written when needed | `enso.db`, `cache/`, `runtime/`, `.bundles.json` |
+| `user` | Enso may create the root; what is inside is yours | `secrets/`, `WORKSPACE.md`, a workspace `heartbeat/` |
+| `extension` | A provider or tool's own file, preserved and never read | `.codex/`, `.grok/`, `opencode.json` |
+| `unexpected` | Nothing in the table claims this name | whatever you left there |
+
+Only a root's own top-level names are classified. The audit never descends into a declared
+directory, so operating state under `runtime/` or `cache/` is never mistaken for clutter,
+and your notes under `knowledge/` are never inspected by this check. `.DS_Store` is ignored
+in every root.
+
+`permissions` covers only the paths whose security contract is Enso's: the configuration it
+writes, the private state it creates, and the `secrets/` directory whose `*.env` files reach
+the service environment. It says nothing about the rest of your files, and it is the one
+finding `--fix` repairs by changing a mode — tightening only, never widening, and never
+following a symbolic link. A root that is already private is left exactly as it is.
+
+`stale` is deliberately narrow: a finding must be certain, not a guess about age. Today that
+is `enso.db-wal` and `enso.db-shm` with no `enso.db` beside them. Nothing deletes them for
+you.
+
+`--fix` only ever creates and repairs directories, discovery links, and the permissions of
+the paths listed under `permissions` above. It never deletes a
 file, edits `AGENTS.md` or `WORKSPACE.md`, or changes content inside workspace directories.
 A real file or directory sitting where a link belongs, or a dangling symbolic link sitting where a
 directory belongs, is reported and left for you to move aside. Fixes run first and the
@@ -338,6 +390,13 @@ an error. So is an unexpected top-level entry: Enso tells you it is there and le
 alone. Files the CLIs themselves drop inside `.claude/`, such as Claude Code's
 `.cc-writes/`, are expected and not reported, and neither is `.DS_Store`.
 
+A finding also says whether it is worth reporting on its own, as `attention` in `--json`.
+Layout findings are: they are portable facts about the installation, true for every Enso
+home. An orphan workspace and an unedited `AGENTS.md` template are not, since they are
+matters of taste you may have settled deliberately. Only the first kind wakes the
+[nightly audit job](jobs.md#nightly-health-audit) when nothing is actually broken; every
+error is always worth reporting. Nothing else about the audit changes with this mark.
+
 `--fix` repairs directories inside an existing workspace; it does not recreate an entire
 missing workspace. Use `enso workspace create NAME` to scaffold one.
 
@@ -350,17 +409,27 @@ their walk at the nearest Git root, so a repository inside a workspace hides the
 ```json
 {
   "ok": false,
-  "home": {"path": "/Users/you/.enso", "status": "ok", "findings": [], "fixed": []},
+  "attention": true,
+  "home": {
+    "path": "/Users/you/.enso",
+    "status": "ok",
+    "attention": false,
+    "layout": {"AGENTS.md": "required", "runtime": "managed", "secrets": "user"},
+    "findings": [],
+    "fixed": []
+  },
   "workspaces": [
     {
       "name": "meteor",
       "path": "/Users/you/.enso/workspaces/meteor",
       "status": "error",
+      "attention": true,
       "bindings": ["slack:C0BP5BQF6UF"],
       "jobs": ["meteor-forum-watch"],
       "uploads_bytes": 1048576,
+      "layout": {"AGENTS.md": "required", "notes.txt": "unexpected"},
       "findings": [
-        {"check": "directory", "severity": "error", "message": "drafts/ is missing", "fixable": true}
+        {"check": "directory", "severity": "error", "message": "drafts/ is missing", "fixable": true, "attention": false}
       ],
       "fixed": []
     }
@@ -369,7 +438,10 @@ their walk at the nearest Git root, so a repository inside a workspace hides the
 ```
 
 `status` is the worst severity present (`error`, `warning`, or `ok`), `fixed` lists what
-`--fix` did on this run, and `fixable` says whether `--fix` would repair a finding. The
+`--fix` did on this run, and `fixable` says whether `--fix` would repair a finding.
+`layout` maps each top-level entry that is actually there to its category, so a consumer
+reads ownership from the report instead of guessing from a name. `attention` on a root is
+true when it holds an error or a marked warning. The
 same report backs `enso workspace list`'s audit column, the warning `enso serve` logs at
 start, and the [web viewer](web.md).
 

@@ -74,6 +74,7 @@ def test_a_healthy_home_is_ok_everywhere(enso_home: Paths, raw_config: dict, uni
         "note": "claude, codex, grok",
         "problems": [],
         "warnings": [],
+        "attention": False,
         "details": {
             name: {"path": sys.executable, "executable": True, "models": models}
             for name, models in (
@@ -205,7 +206,12 @@ def test_a_fresh_home_reports_and_skips(enso_home: Paths, monkeypatch: pytest.Mo
         and "(git is not on PATH)" in home.problems[0]
     )
     assert home.warnings == ["git is not on PATH; the provider CLIs and `--fix` expect it"]
-    assert home.details == {"path": str(enso_home.home), "git_root": False, "git": None}
+    assert home.details == {
+        "path": str(enso_home.home),
+        "git_root": False,
+        "git": None,
+        "layout": {"workspaces": "required"},
+    }
     assert report.section("workspaces").problems[0] == (
         "default: skills/ is missing (repairable with `enso workspace audit --fix`)"
     )
@@ -405,3 +411,53 @@ def test_doctor_reports_invalid_note_roots_without_following_links(
         assert section.status == "error" and section.details["notes"] == 0
         assert "symbolic link" in "\n".join(section.problems)
     assert "shared memory is unsupported" in "\n".join(report.section("memory").problems)
+
+
+def test_attention_separates_what_is_worth_reporting_from_what_is_unhealthy(
+    enso_home: Paths, raw_config: dict, unit: Path
+) -> None:
+    """The nightly audit's gate: a tidy-but-healthy home stays quiet, an untidy one does not."""
+    healthy(enso_home, raw_config)
+    runner = CliRunner()
+
+    quiet = doctor.run(enso_home)
+    assert quiet.ok and not quiet.attention
+    assert not any(section.attention for section in quiet.sections)
+
+    # A matter of taste: reported, but never enough on its own to wake the job.
+    workspaces.create_workspace(enso_home, "lonely")
+    taste = doctor.run(enso_home)
+    assert taste.ok and not taste.attention
+    assert taste.section("workspaces").warnings and not taste.section("workspaces").attention
+
+    # A portable fact about the layout: still healthy, now worth a report.
+    (enso_home.home / "leftover.tar.gz").write_bytes(b"")
+    report = doctor.run(enso_home)
+    assert report.ok and report.attention
+    home = report.section("home")
+    assert home.status == "warning" and home.attention
+    assert home.warnings == (
+        [f"leftover.tar.gz is not part of the layout; move it out of {enso_home.home} or remove it"]
+    )
+    assert home.details["layout"]["leftover.tar.gz"] == "unexpected"
+
+    plain = runner.invoke(app, ["doctor"])
+    assert plain.exit_code == 0, plain.output  # ordinary semantics are untouched
+    gated = runner.invoke(app, ["doctor", "--json", "--attention"])
+    payload = json.loads(gated.stdout)
+    assert gated.exit_code == 1 and payload["ok"] and payload["attention"]
+
+    enso_home.config.chmod(0o644)
+    loose = runner.invoke(app, ["doctor", "--json", "--attention"])
+    assert loose.exit_code == 1 and json.loads(loose.stdout)["ok"]
+
+
+def test_attention_is_true_for_every_health_problem(enso_home: Paths, raw_config: dict) -> None:
+    """A problem is always worth reporting, so the gate never narrows what it used to pass."""
+    healthy(enso_home, raw_config)
+    shutil.rmtree(enso_home.workspace("default") / "drafts")
+
+    report = doctor.run(enso_home)
+
+    assert not report.ok and report.attention
+    assert CliRunner().invoke(app, ["doctor", "--attention"]).exit_code == 1

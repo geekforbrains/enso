@@ -279,6 +279,7 @@ def write_workspace(paths: Paths, name: str, fields: dict) -> Path:
 def write_config(paths: Paths, raw: dict) -> None:
     paths.home.mkdir(parents=True, exist_ok=True)
     paths.config.write_text(json.dumps(raw))
+    paths.config.chmod(0o600)  # what the real writer leaves; the audit checks it
 
 
 @pytest.fixture
