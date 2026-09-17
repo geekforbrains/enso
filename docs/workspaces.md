@@ -336,15 +336,16 @@ The audit checks, each finding carrying the check id shown:
 | No skill name collides with a user-level skill | `skill-collision` | warning | Reports only |
 | No `enso-*` skill or job exists that Enso did not install | `reserved` | warning | Reports only |
 | The workspace is bound, or named by a job | `orphan` | warning | Reports only |
+| A project command that is one `./script` beside `PROJECT.md` finds it present and executable | `script` | warning | Reports only |
 | Unexpected entries at the home's or a workspace's top level, or under `workspaces/` | `unexpected` | warning | Reports only |
 | A dangling optional link, or a link or file in place of a real `runtime/`, `cache/`, or `secrets/` directory | `link`, `directory` | warning | Reports only |
 | `config.json`, `runtime/`, and `secrets/` have no group or other access | `permissions` | warning | Removes group and other access; preserves owner access |
 | SQLite sidecars left behind by a removed `enso.db` | `stale` | warning | Reports only |
 | `uploads/` size | — | — | Reported as a number |
 
-The audit checks layout and skill discovery. Optional provider policy files are allowed
-in the layout and preserved, with no policy or trust checks. An audit does not establish
-provider permissions or prove that access is confined.
+The audit checks layout, skill discovery, and project script references. Optional
+provider policy files are allowed in the layout and preserved, with no policy or trust
+checks. An audit does not establish provider permissions or prove that access is confined.
 
 ### What belongs where
 
@@ -378,6 +379,12 @@ is left exactly as it is.
 is `enso.db-wal` and `enso.db-shm` with no `enso.db` beside them. Nothing deletes them for
 you.
 
+`script` inspects a project `setup`, stage `command`, check `command`, or `hooks` entry only
+when it is one bare `./path` and nothing else — the documented wrapper-script shape — and
+warns when that path is missing or not an executable file. Anything else is shell, which
+the audit does not parse; the engine reports such a command at exit 126/127 when it fails
+to run. Nothing writes a script for you.
+
 `--fix` only ever creates and repairs required directories, discovery links, and the permissions of
 the paths listed under `permissions` above. It never deletes a
 file, edits `AGENTS.md` or `WORKSPACE.md`, or changes content inside workspace directories.
@@ -395,9 +402,9 @@ The command exits 1 while any error remains and 0 otherwise; warnings never fail
 audit. With a readable configuration, the audit uses its project stages to include jobs
 that Enso runs itself, including `command` and `integrate` stages whose `JOB.md` omits
 provider, model, and effort. Without a readable configuration, it lists only jobs that
-can be parsed without one and skips the orphan check because bindings and stage jobs may
-be unknown. `enso doctor` reports `JOB.md` parsing problems; the layout audit does not.
-An orphan workspace — one nothing is bound to and no job names — is a warning, not an
+can be parsed without one and skips the orphan and script checks because bindings, stage
+jobs, and project commands may be unknown. `enso doctor` reports `JOB.md` parsing
+problems; the layout audit does not. An orphan workspace — one nothing is bound to and no job names — is a warning, not an
 error. So is an unexpected top-level entry: Enso tells you it is there and leaves it
 alone. Files the CLIs themselves drop inside `.claude/`, such as Claude Code's
 `.cc-writes/`, are expected and not reported, and neither is `.DS_Store`.
