@@ -5,6 +5,12 @@ All notable changes to Enso are documented here, following
 
 ## [Unreleased]
 
+### Added
+
+- The workspace audit warns, with check id `script`, when a project's `setup`, stage
+  `command`, check `command`, or `hooks` entry is a bare `./script` beside `PROJECT.md`
+  that is missing or not executable. `--fix` never writes a script.
+
 ### Changed
 
 - Knowledge opens as a folder hierarchy over shared and workspace roots, with configurable
