@@ -17,23 +17,31 @@ README and explicit test fixtures. It excludes Git metadata, local artifacts,
 credentials and homes. The running container has no network, bind mounts,
 privileged mode or Linux capabilities. No existing Docker volumes are used.
 Dependency downloads happen during the image build; runtime installations use a
-prewarmed uv cache and a release feed on the container's loopback interface.
+prewarmed uv cache and a release feed on the container's loopback interface. Between repeated
+upgrades the harness supplies dependency cache entries from that offline fixture at wheel download,
+simulating downloads after the application clears its own cache. Cleanup assertions still run
+before the next download; this test provision never runs in an installed Enso home.
 
 The harness builds synthetic versions from temporary source copies. It replaces
 Slack with a local socket transport and Claude with the existing fake provider;
 the installed CLI, runtime, updater, database preparation and uv environments are
 real. Temporary candidate releases contain deliberately broken dependencies,
-a synthetic schema upgrade or startup code. Production 0.2.0 refuses pre-0.2.0 homes;
-the injected upgrade exercises updater recovery within scratch homes only. These faults
+synthetic ordered migrations or startup code. The fixture starts at 0.2.0 and registers
+real migration steps for database and file changes in later releases. These faults
 never enter production source or the working checkout's version metadata.
 
 The cases check:
 
-- a successful upgrade changes the running process and version, migrates the
-  database, preserves user data, and answers a new provider turn;
+- a fresh latest install uses the latest schema and layout without replaying migrations;
+- a successful upgrade changes the running process and version, adds/defaults/backfills/drops
+  database fields, moves and reformats workflow files, preserves user data, and answers a turn;
+- skipped releases run every pending migration in order;
+- repeated upgrades retain only the latest operation and at most two runtimes, remove rollback
+  copies and failed candidates, and work with uv absent from the service's PATH;
 - a wrong checksum, missing download or dependency-resolution failure preserves
   the working installation;
-- startup and migration failures restore compatible software and database state;
+- startup and migration failures restore code, database, file contents, absent destinations,
+  and the original migration marker;
 - concurrent requests cannot install competing releases;
 - busy provider work prevents an unsafe swap; and
 - a killed updater can recover without losing the selected release or user data.

@@ -252,28 +252,93 @@ def _installed_agent(job: Path, default: Agent) -> Agent | None:
         return None
 
 
+def _bundle_receipts(paths: Paths) -> dict[str, str]:
+    """Validate persisted paths before using old installation receipts to remove files."""
+    from .maintenance import UpdateError, read_json
+
+    previous = read_json(paths.home / ".bundles.json").get("files", {})
+    if not isinstance(previous, dict) or any(
+        not isinstance(relative, str)
+        or any(part in {"", ".", ".."} for part in relative.split("/"))
+        or "\x00" in relative
+        or not isinstance(digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        for relative, digest in previous.items()
+    ):
+        raise UpdateError(".bundles.json contains invalid file paths or hashes")
+    return previous
+
+
+def _retire_bundles(paths: Paths, previous: dict[str, str], shipped: set[str]) -> list[str]:
+    """Remove unchanged retired files and empty bundle directories within snapshot roots."""
+    changed = []
+    for relative in sorted(previous.keys() - shipped):
+        parts = relative.split("/")
+        bundle = _bundle_root(relative)
+        if bundle is not None:
+            name = bundle.split("/")[-1]
+            if (
+                relative == bundle
+                or not reserved(name)
+                or not valid_workspace_name(name)
+                or not valid_workspace_name(parts[1])
+            ):
+                continue
+            root = paths.home / bundle
+        elif parts[0] == "slack" and len(parts) > 1:
+            root = paths.home / "slack"
+        else:
+            continue  # Other old home locations need an explicit migration and snapshot.
+        target = paths.home / relative
+        if any(
+            part.is_symlink()
+            for part in (target, *target.parents)
+            if part.is_relative_to(paths.home)
+        ):
+            continue
+        if (
+            not target.is_file()
+            or hashlib.sha256(target.read_bytes()).hexdigest() != previous[relative]
+        ):
+            continue
+        target.unlink()
+        changed.append(relative)
+        parent = target.parent
+        while parent.is_relative_to(root) and not any(parent.iterdir()):
+            parent.rmdir()
+            parent = parent.parent
+    return changed
+
+
 def reconcile_bundles(
     paths: Paths, agent: Agent, *, workspace_agents: Mapping[str, Agent] | None = None
 ) -> list[str]:
-    """Refresh proven untouched files; retain edits and remembered deletions.
+    """Refresh or retire proven untouched files; retain edits and remembered deletions.
 
     Historical files without a receipt are user-owned. New bundle names are
     installed when absent, but removing a previously tracked bundle is a choice
     that survives later releases. Existing jobs keep their own agent triple.
     """
-    from .maintenance import read_json, write_bytes, write_json
+    from .maintenance import write_bytes, write_json
 
-    state = read_json(paths.home / ".bundles.json")
-    previous = state.get("files", {})
+    previous = _bundle_receipts(paths)
     known = dict(previous)
     contents = {"AGENTS.md": _bundled("AGENTS.md")}
     contents.update({name: _bundled(name) for name in BUNDLED_FILES})
     contents.update({relative: _bundled(relative) for relative in bundled_skill_files()})
+    shipped = set(contents)
     changed: list[str] = []
     for workspace, name in (
         (owner, slug) for owner in list_workspaces(paths) for slug in bundled_jobs(owner)
     ):
         relative = f"workspaces/{workspace}/jobs/{name}"
+        entries = tuple(
+            entry
+            for entry in resources.files("enso").joinpath("bundled", "jobs", name).iterdir()
+            if entry.is_file()
+        )
+        # A malformed customized JOB.md must not make its still-shipped files look retired.
+        shipped.update(f"{relative}/{entry.name}" for entry in entries)
         job = paths.home / relative / "JOB.md"
         initial = (workspace_agents or {}).get(workspace, agent) if name == "enso-memory" else agent
         selected = _installed_agent(job, initial)
@@ -281,9 +346,8 @@ def reconcile_bundles(
             continue
         values = asdict(selected)
         stamps = {key: json.dumps(value)[1:-1] for key, value in values.items()}
-        for entry in resources.files("enso").joinpath("bundled", "jobs", name).iterdir():
-            if entry.is_file():
-                contents[f"{relative}/{entry.name}"] = _stamp(entry.read_text("utf-8"), stamps)
+        for entry in entries:
+            contents[f"{relative}/{entry.name}"] = _stamp(entry.read_text("utf-8"), stamps)
     preexisting_bundles = {
         bundle
         for relative in contents
@@ -310,6 +374,7 @@ def reconcile_bundles(
         write_bytes(target, text.encode())
         known[relative] = digest
         changed.append(relative)
+    changed.extend(_retire_bundles(paths, previous, shipped))
     write_json(paths.home / ".bundles.json", {"files": known})
     if not paths.knowledge.exists() and not paths.knowledge.is_symlink():
         paths.knowledge.mkdir()

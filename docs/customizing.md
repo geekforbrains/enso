@@ -217,6 +217,12 @@ jobs keep their original agent triple, and changing a prompt, schedule, or `enab
 preserves that edited `JOB.md`. Newly introduced files can be added inside a tracked bundle,
 and entirely new bundle names are seeded.
 
+When a release stops shipping a skill, job, or support file, the upgrade removes its old copy
+only if it still matches the recorded baseline. Empty directories inside the retired bundle
+are removed too. Edited or untracked files, nonempty directories, and symlinks are preserved.
+The small baseline receipts remain so a deleted file stays deleted if a later release
+reintroduces it; retired code and extra backup copies do not accumulate in the home.
+
 Historical files without baseline receipts are user-owned: upgrades do not replace them or
 restore missing scripts inside their existing bundle directories. Merge new guidance into
 those files yourself when needed. This upgrade behavior is separate from setup and config

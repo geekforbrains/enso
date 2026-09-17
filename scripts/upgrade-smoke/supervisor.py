@@ -81,16 +81,38 @@ class Supervisor(socketserver.UnixStreamServer):
             )
             if "--unit" in args:
                 name = args[args.index("--unit") + 1]
+            if not name.endswith(".service"):
+                name += ".service"
             self.start(name, env, command)
             return 0, ""
         verb = next((arg for arg in args if not arg.startswith("-")), "")
-        name = next((arg for arg in args if arg.endswith(".service")), "enso.service")
+        name = next(
+            (arg for arg in args if arg.endswith(".service") or arg.startswith("enso-update-")),
+            "enso.service",
+        )
+        if not name.endswith(".service"):
+            name += ".service"
         child = self.children.get(name)
         alive = child is not None and child.poll() is None
+        installed = (Path(env["HOME"]) / ".config/systemd/user" / name).exists()
         if verb == "show":
-            return 0, str(child.pid if alive else 0) + "\n"
+            properties = next(
+                (arg.removeprefix("--property=") for arg in args if arg.startswith("--property=")),
+                args[args.index("-p") + 1] if "-p" in args else "MainPID",
+            ).split(",")
+            state = {
+                "MainPID": str(child.pid if alive else 0),
+                "LoadState": "loaded" if alive or installed else "not-found",
+                "ActiveState": "active" if alive else "inactive",
+            }
+            return 0, "".join(
+                f"{state[prop]}\n" if "--value" in args else f"{prop}={state[prop]}\n"
+                for prop in properties
+            )
         if verb in ("is-active", "is-enabled"):
-            return (0 if alive else 3), ("active\n" if verb == "is-active" else "enabled\n")
+            if verb == "is-enabled":
+                return (0, "enabled\n") if installed else (1, "not-found\n")
+            return (0, "active\n") if alive else (3, "inactive\n")
         if verb in ("stop", "restart", "disable"):
             self.stop(name)
         if verb in ("start", "restart", "enable"):

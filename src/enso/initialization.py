@@ -12,7 +12,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from . import __version__, db, layout, workspaces
+from . import __version__, db, layout, migrations, workspaces
 from .config import (
     CONFIG_VERSION,
     LEGACY_HOME_MESSAGE,
@@ -25,6 +25,7 @@ from .config import (
     safe_diagnostics,
     write_config_locked,
 )
+from .maintenance import UpdateError, write_json
 from .providers import PROVIDER_CLASSES
 
 CONTRACT_VERSION = 1
@@ -143,10 +144,24 @@ def _layout_problems(paths: Paths) -> list[str]:
     return problems
 
 
+def is_fresh_home(paths: Paths) -> bool:
+    """Installer runtime and the init lock can exist before any home content is seeded."""
+    if not paths.home.exists():
+        return True
+    return all(
+        entry.name in {"runtime", ".config.lock", *layout.IGNORED} for entry in paths.home.iterdir()
+    )
+
+
 def home_problems(paths: Paths) -> list[str]:
     """Refuse incompatible homes before onboarding can seed content or request credentials."""
     if problems := _layout_problems(paths):
         return problems
+    try:
+        if migrations.pending(paths) and not is_fresh_home(paths):
+            return ["home migrations are pending; run enso update apply before preparing this home"]
+    except UpdateError as exc:
+        return [str(exc)]
     for path in (paths.config, paths.db):
         if path.is_symlink():
             return [f"{path}: expected a file, not a symbolic link; existing path was preserved"]
@@ -182,6 +197,12 @@ def initialize_home(paths: Paths) -> dict[str, Any]:
             result["problems"] = problems
             return result
         with config_lock(paths):
+            # Record a fresh schema before seeding: an interrupted init must resume as
+            # this release's scaffold, rather than appear to be an older installation.
+            if is_fresh_home(paths):
+                write_json(
+                    paths.home / migrations.MARKER, {"revision": migrations.latest_revision()}
+                )
             # A private root is created private, not widened and narrowed again: nothing
             # readable should exist inside it between the two calls.
             private = {entry.name for entry in layout.private(layout.HOME)}
@@ -210,6 +231,8 @@ def initialize_home(paths: Paths) -> dict[str, Any]:
         result["ok"] = True
     except ConfigConflictError as exc:
         result["problems"] = exc.problems
+    except UpdateError as exc:
+        result["problems"] = [str(exc)]
     except OSError, subprocess.SubprocessError:
         result["problems"] = [
             "could not finish preparing the home; check path permissions and rerun init"

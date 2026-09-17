@@ -58,10 +58,6 @@ Enso is in pre-1.0 beta and runs on macOS and Linux. You need an authenticated a
 CLI and a Slack app or Telegram bot; the release installer supplies Python and uv
 when needed.
 
-The upcoming 0.2.0 release starts a new home format and does not read 0.1.x homes;
-existing installations require manual conversion following the [migration guide](docs/migration.md)
-when it is complete. The current release and its home should stay together until then.
-
 Install Enso with one command:
 
 ```bash
@@ -74,6 +70,16 @@ sure `~/.local/bin` is on your `PATH`, then run `enso setup`.
 Setup connects your chat, prepares a default workspace, and offers to run Enso as a
 background service. Once it is running, say `!help` in Slack or `/help` in Telegram,
 then send a normal message to check that Enso can answer.
+
+Check GitHub for a new release and upgrade when ready:
+
+```bash
+enso update check
+enso update apply
+```
+
+The updater installs the release, prepares your home, restarts the services that were
+running, and verifies that Enso is ready. Use `enso update status` to see the outcome.
 
 See [installation and setup](docs/install.md) for requirements, Slack app creation,
 service management, and upgrades. Working from a checkout? Start with

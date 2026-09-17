@@ -10,7 +10,7 @@ Install Enso with uv: install.sh [options]
   --home DIR            Enso home (default: ENSO_HOME or ~/.enso)
   --bin-dir DIR         Stable command directory (default: ~/.local/bin)
   --token-file FILE     Private feed bearer token file
-  --feed URL            Update feed (defaults to bundled feed or manifest source)
+  --feed URL            Update feed (default: official GitHub releases)
   --extras LIST         Comma-separated slack,telegram,web (default: all three)
   --viewer-service NAME System viewer unit to restart alongside Enso
   --adopt               Adopt an existing stopped unmanaged installation
@@ -46,20 +46,29 @@ if [ -n "$enso_previous" ] || [ -z "$enso_manifest" ]; then
 fi
 case "$enso_home" in /*) ;; *) enso_home="$PWD/$enso_home" ;; esac
 case "$enso_bin_dir" in /*) ;; *) enso_bin_dir="$PWD/$enso_bin_dir" ;; esac
+if [ -L "$enso_home/runtime/tools" ] || [ -L "$enso_home/runtime/tools/uv" ]; then
+  printf '%s\n' 'The managed uv directory and executable must not be symbolic links.' >&2
+  exit 1
+fi
 mkdir -p "$enso_home/runtime/tools"
 enso_bootstrap=$(mktemp -d "$enso_home/runtime/.bootstrap.XXXXXX")
 trap 'rm -rf "$enso_bootstrap"' EXIT HUP INT TERM
-if command -v uv >/dev/null 2>&1; then
-  enso_uv=$(command -v uv)
-elif [ -x "$enso_home/runtime/tools/uv" ]; then
-  enso_uv="$enso_home/runtime/tools/uv"
+enso_uv="$enso_home/runtime/tools/uv"
+if [ -f "$enso_uv" ] && [ -x "$enso_uv" ]; then
+  :
+elif [ -e "$enso_uv" ]; then
+  printf '%s\n' 'The managed uv executable is not an executable file.' >&2
+  exit 1
+elif command -v uv >/dev/null 2>&1; then
+  cp -L "$(command -v uv)" "$enso_bootstrap/uv"
+  chmod 700 "$enso_bootstrap/uv"
+  mv "$enso_bootstrap/uv" "$enso_uv"
 else
   command -v curl >/dev/null 2>&1 || { printf '%s\n' 'curl is required to bootstrap uv.' >&2; exit 1; }
   curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
     --connect-timeout 15 --max-time 120 https://astral.sh/uv/install.sh \
     --output "$enso_bootstrap/uv-install.sh"
   UV_UNMANAGED_INSTALL="$enso_home/runtime/tools" sh "$enso_bootstrap/uv-install.sh"
-  enso_uv="$enso_home/runtime/tools/uv"
 fi
 export UV_PYTHON_INSTALL_DIR="$enso_home/runtime/python"
 export UV_CACHE_DIR="$enso_home/runtime/cache/uv"

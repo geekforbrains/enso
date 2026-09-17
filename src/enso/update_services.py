@@ -153,22 +153,57 @@ def launch(paths: Paths, operation_id: str, python: Path) -> None:
     run_command(["launchctl", "bootstrap", service.domain(), str(unit)], cwd=paths.home)
 
 
-def cleanup_finished(paths: Paths, operation_id: str) -> None:
-    """Forget one completed idle launchd helper; caller must hold the worker lock.
+def _helper_state(platform: str, helper: service.Definition) -> str:
+    """Distinguish confirmed absence from failed queries before deleting a helper's files."""
+    if platform == "launchd":
+        result = service._run(
+            ["launchctl", "print", f"{service.domain()}/{helper.label}"], check=False
+        )
+        if result.returncode == 113 and f'Could not find service "{helper.label}"' in result.stderr:
+            return "absent"
+        if result.returncode or re.search(r"^\s*pid = [1-9]\d*", result.stdout, re.MULTILINE):
+            return "busy"
+        return (
+            "idle"
+            if re.search(r"^\s*state = not running$", result.stdout, re.MULTILINE)
+            else "busy"
+        )
+    result = service._run(
+        [
+            "systemctl",
+            "--user",
+            "show",
+            "--property=LoadState,ActiveState,MainPID",
+            helper.unit,
+        ],
+        check=False,
+    )
+    state = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    if result.returncode or state.get("MainPID") != "0":
+        return "busy"
+    if state.get("LoadState") == "not-found" and state.get("ActiveState") == "inactive":
+        return "absent"
+    return "idle" if state.get("ActiveState") in {"inactive", "failed"} else "busy"
 
-    Linux transient units already use --collect. Keep the operation's private
-    plist and log as recovery evidence, and never stop a helper that is running.
+
+def cleanup_finished(paths: Paths, operation_id: str) -> bool:
+    """Unload an idle completed helper; return whether its files may now be pruned.
+
+    The caller holds the worker lock. Running or restarting helpers and uncertain
+    service state keep their files; systemd's transient units use --collect.
     """
     platform = _platform()
-    if platform != "launchd":
-        return
     helper = _helper(operation_id)
-    if not service.unit_loaded(platform, definition=helper):
-        return
-    if service.unit_pid(platform, definition=helper):
-        return
-    with contextlib.suppress(service.ServiceError):
+    try:
+        state = _helper_state(platform, helper)
+        if state == "absent":
+            return True
+        if state != "idle":
+            return False
         service.stop(platform, definition=helper)
+        return _helper_state(platform, helper) == "absent"
+    except service.ServiceError:
+        return False
 
 
 def _viewer(name: str) -> service.Definition:
