@@ -13,7 +13,7 @@ from pathlib import PurePosixPath
 from typing import Literal
 from uuid import uuid4
 
-from . import db
+from . import db, frontmatter
 from .config import Paths, require_workspace
 from .note_storage import valid_timestamp
 
@@ -110,7 +110,7 @@ class Capture:
 
 
 def _capture(row: sqlite3.Row) -> Capture:
-    fields = dict(row)
+    fields = {name: row[name] for name in Capture.__dataclass_fields__}
     fields["attachments"] = tuple(Attachment(**item) for item in json.loads(row["attachments"]))
     fields["parts"] = tuple(Part(**item) for item in json.loads(row["parts"]))
     fields["truncated"] = bool(row["truncated"])
@@ -314,6 +314,150 @@ def query(
             break
         result.append(_capture(row))
     return tuple(result)
+
+
+@dataclass(frozen=True)
+class AuditCapture:
+    """A stored capture and its durable processing result, even if a note was removed."""
+
+    capture: Capture
+    processing: str
+    receipt_id: str | None
+    planned_note_ids: tuple[str, ...]
+
+
+def _planned_sources(outputs: str) -> dict[int, tuple[str, ...]]:
+    planned: dict[int, list[str]] = {}
+    for output in json.loads(outputs):
+        document, _problem = frontmatter.parse(output.get("text", ""))
+        ident = output.get("id")
+        if document and isinstance(ident, str):
+            for source in document.fields.get("sources", []):
+                if type(source) is int and source > 0:
+                    planned.setdefault(source, []).append(ident)
+    return {source: tuple(ids) for source, ids in planned.items()}
+
+
+def _receipt_plans(
+    con: sqlite3.Connection, workspace: str, rows: list[sqlite3.Row]
+) -> dict[str, dict[int, tuple[str, ...]]]:
+    ids = {row["receipt_id"] for row in rows if row["receipt_id"] is not None}
+    if not ids:
+        return {}
+    sql = (
+        "SELECT id, outputs FROM _enso_memory_receipts WHERE workspace = ? AND id IN ("
+        + ",".join("?" for _ in ids)
+        + ")"
+    )
+    return {
+        row["id"]: _planned_sources(row["outputs"]) for row in con.execute(sql, (workspace, *ids))
+    }
+
+
+def _audit_capture(row: sqlite3.Row, plans: dict[str, dict[int, tuple[str, ...]]]) -> AuditCapture:
+    capture = _capture(row)
+    receipt_id = row["receipt_id"]
+    if receipt_id is None:
+        return AuditCapture(capture, "unprocessed", None, ())
+    if row["completed_at"] is None:
+        processing = "publication pending"
+    else:
+        processing = "processed with no memory"
+    planned = plans.get(receipt_id, {}).get(capture.id, ())
+    if planned and row["completed_at"] is not None:
+        processing = "processed with memory"
+    return AuditCapture(capture, processing, receipt_id, planned)
+
+
+_AUDIT_FROM = (
+    " FROM _enso_captures c LEFT JOIN _enso_memory_inputs i ON i.capture_id = c.id "
+    "LEFT JOIN _enso_memory_receipts r ON r.id = i.receipt_id "
+)
+_AUDIT_SELECT = "SELECT c.*, r.id AS receipt_id, r.completed_at" + _AUDIT_FROM
+
+
+def audit_counts(paths: Paths, workspace: str) -> tuple[int, int]:
+    """Return capture and unprocessed counts without creating a missing database."""
+    try:
+        with db.reader(paths) as con:
+            row = con.execute(
+                "SELECT count(*), count(*) - count(r.id)" + _AUDIT_FROM + " WHERE c.workspace = ?",
+                (workspace,),
+            ).fetchone()
+            return row[0], row[1]
+    except db.MissingDatabaseError:
+        return 0, 0
+
+
+def audit_page(
+    paths: Paths, workspace: str, *, transport: str = "", page: int = 1, limit: int = 50
+) -> tuple[tuple[AuditCapture, ...], int]:
+    """Newest first, one bounded page, filtered before pagination."""
+    if not 1 <= page <= 999_999_999 or not 1 <= limit <= 100:
+        raise ValueError("capture page exceeds the viewer bounds")
+    where = " WHERE c.workspace = ?"
+    args: list[str | int] = [workspace]
+    if transport:
+        where += " AND c.transport = ?"
+        args.append(transport)
+    try:
+        with db.reader(paths) as con:
+            total = con.execute("SELECT count(*)" + _AUDIT_FROM + where, args).fetchone()[0]
+            page = min(page, max(1, (total + limit - 1) // limit))
+            rows = con.execute(
+                _AUDIT_SELECT + where + " ORDER BY c.id DESC LIMIT ? OFFSET ?",
+                (*args, limit, (page - 1) * limit),
+            ).fetchall()
+            plans = _receipt_plans(con, workspace, rows)
+            return tuple(_audit_capture(row, plans) for row in rows), total
+    except db.MissingDatabaseError:
+        return (), 0
+
+
+def audit_get(paths: Paths, workspace: str, capture_id: int) -> AuditCapture | None:
+    """Fetch one capture only through its owning workspace."""
+    try:
+        with db.reader(paths) as con:
+            row = con.execute(
+                _AUDIT_SELECT + " WHERE c.workspace = ? AND c.id = ?", (workspace, capture_id)
+            ).fetchone()
+            return _audit_capture(row, _receipt_plans(con, workspace, [row])) if row else None
+    except db.MissingDatabaseError:
+        return None
+
+
+def audit_context(
+    paths: Paths, workspace: str, conversation: str, capture_id: int
+) -> tuple[Capture, ...]:
+    """At most three captures on each side in the same workspace conversation."""
+    try:
+        with db.reader(paths) as con:
+            before = con.execute(
+                "SELECT * FROM _enso_captures WHERE workspace = ? AND conversation = ? "
+                "AND id < ? ORDER BY id DESC LIMIT 3",
+                (workspace, conversation, capture_id),
+            ).fetchall()
+            after = con.execute(
+                "SELECT * FROM _enso_captures WHERE workspace = ? AND conversation = ? "
+                "AND id > ? ORDER BY id LIMIT 3",
+                (workspace, conversation, capture_id),
+            ).fetchall()
+            return tuple(_capture(row) for row in (*reversed(before), *after))
+    except db.MissingDatabaseError:
+        return ()
+
+
+def audit_reply(paths: Paths, workspace: str, parent_id: int) -> Capture | None:
+    """Find the one reply linked to an addressed input in this workspace."""
+    try:
+        with db.reader(paths) as con:
+            row = con.execute(
+                "SELECT * FROM _enso_captures WHERE workspace = ? AND parent_id = ?",
+                (workspace, parent_id),
+            ).fetchone()
+            return _capture(row) if row else None
+    except db.MissingDatabaseError:
+        return None
 
 
 def source_problems(paths: Paths, workspace: str, sources: list[int]) -> tuple[str, ...]:

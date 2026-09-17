@@ -808,6 +808,13 @@
 
 /* Knowledge keeps the existing compact rows, with a reading column beside local context. */
 @layer components {
+  .memory-summary { display: flex; gap: var(--s-3) var(--s-6); flex-wrap: wrap; margin: 0 0 var(--s-6); color: var(--fg-3); font-size: var(--text-xs); }
+  .memory-summary b { color: var(--fg); font-weight: 600; }
+  .memory-facts { margin: var(--s-5) 0; }
+  .memory-text { margin: var(--s-5) 0; }
+  .memory-text pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .memory-list { list-style: none; margin: 0; padding: var(--s-5) var(--s-6); overflow-wrap: anywhere; }
+  .memory-list li + li { margin-top: var(--s-4); }
   .knowledge-location { display: flex; gap: var(--s-6); align-items: center; flex-wrap: wrap; }
   .knowledge-location .crumbs { margin-bottom: var(--s-5); }
   .knowledge-check { display: flex; align-items: center; gap: var(--s-3); font-size: var(--text-xs); }

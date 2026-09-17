@@ -17,6 +17,9 @@ These changes are planned for 0.2.0 and have not been published.
 
 ### Changed
 
+- The read-only web viewer now has a Memory page with workspace-scoped memories and
+  capture evidence, receipt-based processing status, source links, and paginated filters.
+
 - Setup explains binding trust and shared memory, and home/workspace guidance routes current
   reference and dated recall through their respective skills. Setup and offline initialization
   reject obsolete homes before seeding content.

@@ -10,6 +10,12 @@ Memory records dated conversations and experiences as ordinary Markdown under
 `$ENSO_HOME/workspaces/<name>/memory/`. There is no shared or home-level memory root.
 The containing workspace owns the notes, and the Markdown is the source of truth for
 maintained memory. Parsed caches or search indexes must be rebuildable from those files.
+[The web viewer](web.md#memory) provides a read-only audit of current memories and stored
+capture evidence, with separate **Memories** and **Captures** tabs. Its workspace and
+transport filters, paginated lists, source links, and receipt-based processing labels do
+not change the Markdown or processing state. Live capture is best effort: the viewer does
+not show complete chat history, truncated text cannot be recovered there, and attachment
+references are not extracted contents.
 [Knowledge](knowledge.md#knowledge-and-memory-in-020) holds current maintained facts and
 reference material in shared or workspace roots.
 

@@ -100,6 +100,7 @@ its named sections above the content:
 | [Jobs](#jobs) `/jobs` | a job opens to Overview · History |
 | [Runs](#runs) `/runs` | Acted · Failed · All |
 | [Knowledge](#knowledge) `/knowledge` | Folders · Recent · All notes |
+| [Memory](#memory) `/memory` | Memories · Captures |
 | [Workspaces](#workspaces) `/workspaces` | Workspaces · Skills |
 | [Health](#health) `/health` | Doctor · Log |
 
@@ -114,8 +115,8 @@ includes on the line that counts its rows. An empty list is one quiet sentence w
 rows would have been.
 
 At 820px and below, the sidebar becomes a bottom bar with exactly five items: **Today,
-Tasks, Heartbeats, Runs, More**. More opens a compact popup containing Knowledge, Jobs, Workspaces,
-and Health. It stays highlighted while one of those views is open, and carries the Health
+Tasks, Heartbeats, Runs, More**. More opens a compact popup containing Knowledge, Memory, Jobs,
+Workspaces, and Health. It stays highlighted while one of those views is open, and carries the Health
 attention indicator even while the popup is closed. The bar respects the phone's safe area
 and stays within the viewport at 320px wide.
 
@@ -353,6 +354,31 @@ refreshing sees additions, moves, and edits. The viewer builds no persistent ind
 no missing directories, and never changes Markdown, metadata, or the database. Knowledge
 appears in the desktop sidebar and the phone's **More** menu.
 
+### Memory
+
+`/memory` audits one workspace at a time. The header counts its captures, captures without
+a processing receipt, current Markdown memories, and whether its `memory` job is installed
+and enabled. Missing or invalid jobs are shown without hiding the stored records. The
+**Memories** and **Captures** tabs share the workspace selection; neither writes state.
+
+**Memories** searches titles, paths, and bodies and lists at most 50 notes per page, newest
+occurrence first. A detail renders the Markdown without active HTML or images and shows
+the occurrence, creation and update dates, exact path, metadata findings, and source
+capture links. A manual memory with no sources says so. A missing source remains labelled
+as missing. Links to other current memories remain within their workspace; unresolved
+links are inert.
+
+**Captures** filters Slack or Telegram and shows at most 50 stored messages per page,
+newest stored first. A detail shows the escaped stored text, truncation flag, sender,
+original time, conversation and thread, attachment references, kind, handling and delivery
+outcomes, linked parent or reply, nearby stored context from the same conversation, and
+current memories citing it. The processing label comes from the durable receipt:
+unprocessed, publication pending, processed with memory, or processed with no memory.
+A completed receipt remains processed even if its memory file is later removed. The page
+does not backfill chat history; live capture is best effort, text can be truncated, and
+attachments are references rather than extracted content. See [Memory](memory.md) for the
+capture and processing contracts.
+
 ### Workspaces
 
 The list is a workspace name and its [audit](workspaces.md) verdict, so a malformed workspace
@@ -501,8 +527,8 @@ provider paths and whether they resolve, transport extras, agent and optional vi
 service state, every `JOB.md`, current Heartbeat health, and knowledge/memory audits.
 Note findings include paths, counts, and commands for detailed scoped audits; they check
 structure and source validity, not factual truth. Heartbeat checks inspect saved state;
-they do not execute gates or start an assessment. Memory has no dedicated viewer page;
-recall and corrections use the [memory CLI](cli.md#memory).
+they do not execute gates or start an assessment. The [Memory](#memory) page offers a
+read-only audit; recall and corrections use the [memory CLI](cli.md#memory).
 
 Every section gets the same block, problems first: a heading with its verdict, and a panel of
 what it found. Sections retain their context line even when findings exist, including note

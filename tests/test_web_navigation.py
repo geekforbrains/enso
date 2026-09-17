@@ -83,6 +83,7 @@ def test_desktop_sidebar_and_mobile_more_reach_every_view_without_javascript():
         "/heartbeats",
         "/runs",
         "/knowledge",
+        "/memory",
         "/jobs",
         "/workspaces",
         "/health",
@@ -103,6 +104,7 @@ def test_desktop_sidebar_and_mobile_more_reach_every_view_without_javascript():
     assert more.children[0].attrs["aria-controls"] == "more-sections"
     assert [node.attrs["href"] for node in more.find("a")] == [
         "/knowledge",
+        "/memory",
         "/jobs",
         "/workspaces",
         "/health",
@@ -119,6 +121,7 @@ def test_desktop_sidebar_and_mobile_more_reach_every_view_without_javascript():
         ("/heartbeats/HB-001", "/heartbeats", False),
         ("/runs/abc", "/runs", False),
         ("/knowledge/notes/abc", "/knowledge", True),
+        ("/memory/captures/default/1", "/memory", True),
         ("/jobs/default%3Anightly", "/jobs", True),
         ("/workspaces/default", "/workspaces", True),
         ("/skills/enso-heartbeat", "/workspaces", True),
