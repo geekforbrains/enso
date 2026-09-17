@@ -338,10 +338,11 @@ Common requests do not require storage terminology:
 ### Harvesting schedule and bounds
 
 Every workspace has an enabled job named **`enso-memory`**, referenced as `<workspace>:enso-memory`,
-scheduled every 15 minutes (`*/15 * * * *`). [Jobs](jobs.md#workspace-memory-job-in-020)
-owns installation and job customization. The prerun skips provider execution when no new
+scheduled hourly by default (`0 * * * *`, at the top of the hour).
+[Jobs](jobs.md#workspace-memory-job-in-020) owns installation and job customization.
+The prerun skips provider execution when no new
 captures need processing. This is a polling cadence, not a promise that every capture is
-summarized within 15 minutes: service downtime, execution time, and backlog affect latency.
+summarized within an hour: service downtime, execution time, and backlog affect latency.
 
 Each run handles at most **100 captures or 128 KiB (131,072 bytes) of stored source text**,
 stopping before either limit would be exceeded. Attachment-only captures count toward

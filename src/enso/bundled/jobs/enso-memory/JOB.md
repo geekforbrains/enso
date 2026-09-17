@@ -1,6 +1,6 @@
 ---
 name: Enso memory
-schedule: "*/15 * * * *"
+schedule: "0 * * * *"
 provider: "{{provider}}"
 model: "{{model}}"
 effort: "{{effort}}"

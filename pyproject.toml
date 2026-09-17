@@ -1,6 +1,6 @@
 [project]
 name = "enso"
-version = "0.2.0"
+version = "0.2.1"
 description = "A personal AI assistant that runs on your machine, connects to your chat, and keeps work moving."
 readme = "README.md"
 license = "MIT"
