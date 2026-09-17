@@ -53,10 +53,10 @@ def _agent(providers: dict[str, dict[str, Any]]) -> dict[str, str]:
     return {"provider": provider, "model": model, "effort": effort}
 
 
-def _credentials(paths: Paths, spec: TransportSpec) -> dict[str, str]:
+def _credentials(spec: TransportSpec) -> dict[str, str]:
     values: dict[str, str] = {}
     for credential in spec.credentials:
-        typer.echo(credential.hint.format(home=paths.home))
+        typer.echo(credential.hint)
         values[credential.key] = typer.prompt(credential.prompt, hide_input=True)
     return values
 
@@ -124,7 +124,7 @@ def setup_wizard() -> None:
         fail(scaffold["problems"])
     for line in scaffold["changes"]:
         typer.echo(line)
-    credentials = _credentials(paths, TRANSPORTS[transport])
+    credentials = _credentials(TRANSPORTS[transport])
     typer.echo(
         "Pairing grants your account access and selects the default workspace. People sharing "
         "a workspace share its memory; a personal workspace is not confidential from other "

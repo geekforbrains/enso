@@ -63,11 +63,12 @@ Product behaviour belongs in its owning page under `docs/`, starting with
   source errors, and the shared attention indicator. `heartbeat.py` owns bounded heartbeat
   and mixed-run reads; `files.py` owns safe file browsing and Markdown rendering. Shared
   helpers do not import page models.
-- `src/enso/bundled/` — content shipped to an Enso home, not development instructions.
-  Shared files mirror their home paths; job and workspace templates land in their owning
-  workspace. Shipped files are listed in
-  [`src/enso/workspaces.py`](../src/enso/workspaces.py). Add new shipped files in both places;
-  keep their installation and update behaviour covered by tests.
+- `src/enso/bundled/` — packaged content, not development instructions.
+  Home-copied files mirror their home paths; job and workspace templates land in their owning
+  workspace. Home-copied files are listed in
+  [`src/enso/workspaces.py`](../src/enso/workspaces.py). The packaged Slack manifest is a CLI
+  resource, not a home copy. Add new home-copied files in both places; keep their installation
+  and update behaviour covered by tests.
 - `tests/` — automated tests; shared fixtures live in
   [`tests/conftest.py`](../tests/conftest.py).
 - `docs/` — product documentation and these development/release guides. Each fact has one

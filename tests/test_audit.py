@@ -26,7 +26,6 @@ SEEDED_HOME_LAYOUT = {
     "CLAUDE.md": "required",
     "knowledge": "required",
     "skills": "required",
-    "slack": "managed",
     "workspaces": "required",
 }
 CLEAN_WORKSPACE_LAYOUT = {
@@ -683,10 +682,15 @@ def test_the_layout_table_covers_everything_the_scaffold_writes(enso_home: Paths
     assert {link.split("/")[0] for link, _ in layout.LINKS} <= named
 
     workspaces.seed_home(enso_home)
+    assert not (enso_home.home / "slack").exists()
     workspaces.ensure_layout(enso_home.workspace("default"))
     report = audit.audit(enso_home, user_dirs=USER_DIRS)
     assert layout.UNEXPECTED not in report.home.layout.values()
     assert layout.UNEXPECTED not in report.workspaces[0].layout.values()
+    legacy = enso_home.home / "slack" / "manifest.json"
+    legacy.parent.mkdir()
+    legacy.write_text("customized legacy manifest")
+    assert audit.audit(enso_home, user_dirs=USER_DIRS).home.layout["slack"] == layout.USER
     assert {entry.name for entry in layout.WORKSPACE} >= {
         *layout.WORKSPACE_DIRS,
         *(link.split("/")[0] for link, _ in layout.LINKS),

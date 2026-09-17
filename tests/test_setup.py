@@ -26,11 +26,10 @@ def test_seed_home_writes_once_and_refreshes_skills_with_a_backup(enso_home: Pat
     assert sorted(p.name for p in enso_home.skills.iterdir()) == list(workspaces.BUNDLED_SKILLS)
     for link in (enso_home.home / ".claude" / "skills", enso_home.home / ".agents" / "skills"):
         assert os.readlink(link) == "../skills" and (link / "enso-jobs" / "SKILL.md").is_file()
-    # AGENTS.md, bundled files and skills, shared knowledge, the three links, and git init.
+    # AGENTS.md, bundled skills, shared knowledge, the three links, and git init.
     assert (enso_home.home / ".git").is_dir() and enso_home.knowledge.is_dir()
-    assert (
-        len(done) == 1 + len(workspaces.BUNDLED_FILES) + len(workspaces.bundled_skill_files()) + 5
-    )
+    assert len(done) == 1 + len(workspaces.bundled_skill_files()) + 5
+    assert not (enso_home.home / "slack").exists()
     assert workspaces.seed_home(enso_home) == []
     skill = enso_home.skills / "enso-slack" / "SKILL.md"
     skill.write_text("edited")
@@ -66,7 +65,7 @@ def test_seed_jobs_stamps_the_agent_and_writes_once(enso_home: Paths) -> None:
     assert [path.name for path in job_dir.iterdir()] == ["JOB.md"]
 
 
-def test_bundled_content_mirrors_the_home(enso_home: Paths) -> None:
+def test_home_copied_bundled_content_mirrors_the_home(enso_home: Paths) -> None:
     bundled = Path(workspaces.__file__).parent / "bundled"
     files = sorted(
         path.relative_to(bundled)
@@ -74,6 +73,7 @@ def test_bundled_content_mirrors_the_home(enso_home: Paths) -> None:
         if path.is_file() and "__pycache__" not in path.parts
     )
     template = Path("workspace") / "AGENTS.md"
+    assert Path("slack/manifest.json") in files  # packaged for the CLI, not home-copied
     assert template in files and len(files) > 2
     jobs = {path.parts[1] for path in files if path.parts[0] == "jobs"}
     assert jobs == set(workspaces.BUNDLED_JOBS)  # dropped in but unlisted: never seeded or exempt
@@ -85,9 +85,10 @@ def test_bundled_content_mirrors_the_home(enso_home: Paths) -> None:
     workspaces.seed_home(enso_home)
     workspaces.seed_jobs(enso_home, Agent("claude", "opus", "high"))
     root = workspaces.create_workspace(enso_home, "meteor")
+    assert not (enso_home.home / "slack").exists()
 
     for relative in files:
-        if relative == template:
+        if relative in (template, Path("slack/manifest.json")):
             continue
         expected = (bundled / relative).read_text()
         if relative.parts[0] == "jobs":
@@ -179,6 +180,9 @@ def test_setup_wizard_slack_path(enso_home: Paths, monkeypatch: pytest.MonkeyPat
     assert "People sharing a workspace share its memory" in result.output
     assert "Binding a channel trusts all its human participants" in result.output
     assert "Your Slack user id" not in result.output
+    assert "enso slack manifest" in result.output
+    assert "slack/manifest.json" not in result.output
+    assert not (enso_home.home / "slack").exists()
     config = load_config(enso_home)
     assert config.bindings == {"slack:dm:U1": "default"}
     assert (config.defaults.provider, config.defaults.model, config.defaults.effort) == (
@@ -222,6 +226,7 @@ def test_setup_wizard_telegram_path(enso_home: Paths, monkeypatch: pytest.Monkey
 
     assert result.exit_code == 0, result.output
     assert "BotFather" in result.output and "Create your Slack app" not in result.output
+    assert not (enso_home.home / "slack").exists()
     assert paired == [("telegram", {"bot_token": "123:abc"})]
     config = load_config(enso_home)
     assert config.raw["transports"]["telegram"] == {"bot_token": "123:abc", "notify": "123"}
