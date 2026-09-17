@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -13,6 +14,7 @@ from test_web_navigation import Document
 from enso import captures, db, memory
 from enso.config import Paths
 from enso.web import server
+from enso.web.memory import note_title
 
 
 @pytest.fixture
@@ -62,6 +64,63 @@ def sourced_note(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
     return path, ident, text
+
+
+@pytest.mark.parametrize(
+    ("stem", "expected"),
+    [
+        (
+            "knowledge-note-filename-convention-decided-ebb51ab9-2f51-5f9a-8406-0bcec902825d",
+            "Knowledge note filename convention decided",
+        ),
+        ("API_access-confirmed", "API access confirmed"),
+        ("release-plan-2026-09-17", "Release plan 2026 09 17"),
+        ("note-ebb51ab9-2f51-5f9a-8406-incomplete", "Note ebb51ab9 2f51 5f9a 8406 incomplete"),
+        ("Remembered", "Remembered"),
+    ],
+)
+def test_readable_memory_titles(stem: str, expected: str):
+    assert note_title(stem) == expected
+
+
+async def test_compact_rows_and_detail_share_readable_title(client: TestClient, enso_home: Paths):
+    db.initialize(enso_home)
+    capture = record(enso_home, "1")
+    path, ident, original = sourced_note(
+        enso_home,
+        capture.id,
+        title="knowledge-note-filename-convention-decided-ebb51ab9-2f51-5f9a-8406-0bcec902825d",
+    )
+    title = "Knowledge note filename convention decided"
+    response = await client.get("/memory", params={"q": title})
+    assert response.status == 200
+    (row,) = Document(await response.text()).root.find("a", "memory-row")
+    assert row.attrs["href"] == f"/memory/notes/default/{ident}"
+    assert row.find("span", "pin")[0].attrs["aria-label"] == "Memory"
+    assert row.find("span", "title")[0].text == title
+    assert row.find("span", "memory-source-count")[0].text == "1 source"
+    (when,) = row.find("time")
+    assert when.text.endswith(" ago")
+    assert datetime.fromisoformat(when.attrs["datetime"]) == datetime.fromisoformat(
+        "2026-09-16T12:00:00Z"
+    )
+    assert path.name not in row.text and not row.find("span", "at")
+
+    detail = Document(await (await client.get(row.attrs["href"])).text()).root
+    assert detail.find("h2", "memory-title")[0].text == title
+    assert detail.find("title")[0].text.startswith(title + " · Memory")
+    assert path.name in detail.text
+    linked = Document(
+        await (await client.get(f"/memory/captures/default/{capture.id}")).text()
+    ).root
+    assert title in [node.text for node in linked.find("span", "title")]
+    assert path.read_text() == original
+
+    memory.create_note(enso_home, "default", "manual-note.md", "Manual body", occurred=None)
+    manual = Document(await (await client.get("/memory?q=Manual+note")).text()).root
+    (row,) = manual.find("a", "memory-row")
+    assert row.find("span", "memory-source-count")[0].text == "0 sources"
+    assert row.find("span", "trail")[0].text == "Undated" and not row.find("time")
 
 
 async def test_empty_missing_job_and_get_only(client: TestClient, enso_home: Paths):

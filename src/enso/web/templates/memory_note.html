@@ -1,10 +1,10 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m %}
-{% block title %}{{ note.title }} · Memory{% endblock %}
+{% block title %}{{ title }} · Memory{% endblock %}
 {% block content %}
 <p class="crumbs"><a href="/memory?workspace={{ workspace|urlencode }}">Memory</a> / {{ workspace }} / Memories</p>
 {% include "_memory_header.html" %}
-<h2>{{ note.title }}</h2>
+<h2 class="memory-title">{{ title }}</h2>
 <dl class="panel kv memory-facts">
   <dt>Occurrence</dt><dd>{{ note.metadata.get('occurred') or 'Unknown' }}</dd>
   <dt>Created</dt><dd>{{ note.metadata.get('created')|when if note.metadata.get('created') else 'Unknown' }}</dd>

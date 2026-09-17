@@ -362,7 +362,11 @@ and enabled. Missing or invalid jobs are shown without hiding the stored records
 **Memories** and **Captures** tabs share the workspace selection; neither writes state.
 
 **Memories** searches titles, paths, and bodies and lists at most 50 notes per page, newest
-occurrence first. A detail renders the Markdown without active HTML or images and shows
+occurrence first. Each row shows a status dot, readable note name, source count, and time
+since occurrence (or **Undated**). Names replace filename hyphens and underscores with spaces,
+omit a trailing UUID, and capitalize the first letter. The same name appears on the detail
+and linked capture pages; title search accepts this readable form as well as the original path.
+A detail renders the Markdown without active HTML or images and shows
 the occurrence, creation and update dates, exact path, metadata findings, and source
 capture links. A manual memory with no sources says so. A missing source remains labelled
 as missing. Links to other current memories remain within their workspace; unresolved

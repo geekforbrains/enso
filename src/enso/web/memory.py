@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
@@ -20,6 +21,15 @@ from . import common, filters
 
 PAGE_SIZE = 50
 TRANSPORTS = ("slack", "telegram")
+
+
+def note_title(stem: str) -> str:
+    """Show a filename as prose, omitting a generated trailing UUID."""
+    stem = re.sub(
+        r"[-_][0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$", "", stem, flags=re.IGNORECASE
+    )
+    title = re.sub(r"[-_]+", " ", stem).strip()
+    return title[:1].upper() + title[1:]
 
 
 def browse_url(*, workspace: str, view: str = "memories", **values: str | int) -> str:
@@ -108,14 +118,14 @@ def listing_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any] | No
             notes = [
                 note
                 for note in notes
-                if needle in (note.title + " " + note.path + " " + note.body).casefold()
+                if needle in (note_title(note.title) + " " + note.path + " " + note.body).casefold()
             ]
         notes.sort(key=lambda note: (_occurred(note), note.path), reverse=True)
         total = len(notes)
         pages = max(1, math.ceil(total / PAGE_SIZE))
         page = _page(raw_page, pages)
         rows = [
-            {"note": note, "href": note_url(note, catalog)}
+            {"note": note, "title": note_title(note.title), "href": note_url(note, catalog)}
             for note in notes[(page - 1) * PAGE_SIZE : page * PAGE_SIZE]
         ]
     else:
@@ -217,6 +227,7 @@ def note_model(
     sources = note.metadata.get("sources", [])
     model.update(
         note=note,
+        title=note_title(note.title),
         html=render_note(catalog, note),
         sources=[
             {
@@ -252,7 +263,8 @@ def capture_model(paths: Paths, workspace: str, capture_id: int) -> dict[str, An
     model.update(
         audited=audited,
         linked_notes=[
-            {"note": note, "href": note_url(note, catalog)} for note in linked[:PAGE_SIZE]
+            {"note": note, "title": note_title(note.title), "href": note_url(note, catalog)}
+            for note in linked[:PAGE_SIZE]
         ],
         linked_count=len(linked),
         parent=parent,

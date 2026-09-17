@@ -810,6 +810,16 @@
 @layer components {
   .memory-summary { display: flex; gap: var(--s-3) var(--s-6); flex-wrap: wrap; margin: 0 0 var(--s-6); color: var(--fg-3); font-size: var(--text-xs); }
   .memory-summary b { color: var(--fg); font-weight: 600; }
+  .row.memory-row {
+    grid-template-columns: 8px minmax(0, 1fr) 5rem 7rem; grid-template-rows: auto;
+    padding: var(--s-5) var(--s-6);
+    .pin { grid-column: 1; grid-row: 1; }
+    .body { grid-column: 2; grid-row: 1; display: block; }
+    .title { white-space: normal; overflow-wrap: anywhere; }
+    .memory-source-count { grid-column: 3; grid-row: 1; text-align: right; white-space: nowrap; font-size: var(--text-xs); color: var(--fg-3); }
+    .trail { grid-column: 4; grid-row: 1; }
+  }
+  .memory-title { overflow-wrap: anywhere; }
   .memory-facts { margin: var(--s-5) 0; }
   .memory-text { margin: var(--s-5) 0; }
   .memory-text pre { white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -845,6 +855,9 @@
   .knowledge-findings ul { list-style: disc; padding-left: var(--s-7); margin-top: var(--s-4); }
 }
 @layer phone {
+  @media (width <= 820px) {
+    .row.memory-row { grid-template-columns: 8px minmax(0, 1fr) auto auto; column-gap: var(--s-4); padding-inline: var(--s-5); }
+  }
   @media (max-width: 1000px) { .knowledge-layout { grid-template-columns: minmax(0, 1fr); } }
   @media (max-width: 600px) {
     .knowledge-rows .row.knowledge-row { padding: var(--s-5); }

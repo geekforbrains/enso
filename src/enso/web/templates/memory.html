@@ -24,11 +24,11 @@
 <div class="panel rows">
   {% if view == 'memories' %}
     {% for row in rows %}
-    <a class="row" href="{{ row.href }}">
-      <span class="at">{{ row.note.metadata.get('occurred')|ago if row.note.metadata.get('occurred') else 'Undated' }}</span>
+    <a class="row memory-row" href="{{ row.href }}">
       <span class="pin {{ 'warning' if row.note.problems else 'ok' }}" role="img" aria-label="{{ 'Metadata findings' if row.note.problems else 'Memory' }}"></span>
-      <span class="body"><span class="title">{{ row.note.title }}</span><span class="detail"><span>{{ row.note.path }}</span><span>{{ row.note.metadata.get('sources', [])|length }} source{{ 's' if row.note.metadata.get('sources', [])|length != 1 }}</span></span></span>
-      <span class="trail">{{ row.note.metadata.get('updated')|ago if row.note.metadata.get('updated') else '—' }}</span>
+      <span class="body"><span class="title">{{ row.title }}</span></span>
+      <span class="memory-source-count">{{ row.note.metadata.get('sources', [])|length }} source{{ 's' if row.note.metadata.get('sources', [])|length != 1 }}</span>
+      <span class="trail">{% if row.note.metadata.get('occurred') %}<time datetime="{{ row.note.metadata.get('occurred')|iso }}" title="{{ row.note.metadata.get('occurred')|when }}">{{ row.note.metadata.get('occurred')|ago }}</time>{% else %}Undated{% endif %}</span>
     </a>
     {% endfor %}
   {% else %}
