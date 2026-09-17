@@ -24,9 +24,10 @@ These changes are planned for 0.2.0 and have not been published.
 - The audit now covers installation hygiene from one core layout definition shared by
   setup, the scaffold, and `enso workspace audit`. It classifies each top-level entry as
   required, managed, user-owned, extension, or unexpected; reports unexpected entries in
-  the home as well as in a workspace, dangling optional links, `config.json`/`runtime/`/
-  `secrets/` that other users can read, and SQLite sidecars left by a removed `enso.db`.
-  `--fix` tightens those permissions and still never deletes anything. `--json` gains
+  the home as well as in a workspace, irregular optional links and operating roots,
+  `config.json`/`runtime/`/`secrets/` with group or other access, and SQLite sidecars left
+  by a removed `enso.db`. `--fix` removes shared access while preserving owner permissions,
+  repairs a missing `workspaces/` root, and still never deletes anything. `--json` gains
   `layout` and `attention` per root and per finding.
 
 - `enso doctor --attention` exits 1 for anything worth reporting rather than health

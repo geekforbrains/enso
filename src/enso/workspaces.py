@@ -318,13 +318,13 @@ def reconcile_bundles(
 
 
 def ensure_home(home: Path) -> list[str]:
-    """Create missing ``skills/``, ``knowledge/``, the links, and a Git root.
+    """Create missing home roots, the skill links, and a Git root.
 
     Never writes content: ``AGENTS.md`` and the skills are ``seed_home``'s. The CLIs find
     them by walking up from a workspace to the Git root, and Enso never commits there.
     """
     done: list[str] = []
-    for directory in (Paths(home).skills, Paths(home).knowledge):
+    for directory in (Paths(home).skills, Paths(home).knowledge, Paths(home).workspaces):
         if not directory.exists() and not directory.is_symlink():
             directory.mkdir(parents=True)
             done.append(f"created {directory}")

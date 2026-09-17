@@ -29,8 +29,8 @@ from .jobs import load_jobs
 from .skills import ERROR, WARNING
 
 # Check ids: one per row of the check table, stable for --json consumers.
-DIRECTORY = "directory"  # a required directory is missing or is a file
-LINK = "link"  # a documented link is missing or wrong, or a top-level link dangles
+DIRECTORY = "directory"  # a required directory is missing or an operating root is a file
+LINK = "link"  # a documented link is wrong, or a top-level link is irregular
 GIT_ROOT = "git-root"  # the home is not a Git root, or a workspace is one
 AGENTS_MD = "agents-md"  # missing, unreadable, or still the untouched template
 SKILL = "skill"  # a managed skill directory's SKILL.md is missing or wrong
@@ -453,8 +453,7 @@ def _scan_entries(
     directory is descended into: what lives inside a declared root is its owner's business.
 
     A required entry has its own check above, which already describes a missing or
-    irregular one; the dangling-link report here covers the rest of the table and the
-    names it does not claim.
+    irregular one; this scan covers optional entries and the names the table does not claim.
     """
     present: dict[str, str] = {}
     if root.is_symlink() or not root.is_dir():
@@ -477,6 +476,25 @@ def _scan_entries(
                         attention=True,
                     )
                 )
+        elif entry.real_directory and path.is_symlink():
+            kind = "a dangling symbolic link" if not path.exists() else "a symbolic link"
+            findings.append(
+                Finding(
+                    LINK,
+                    WARNING,
+                    f"{path.name}/ is {kind}, not a real directory; move it aside",
+                    attention=True,
+                )
+            )
+        elif entry.real_directory and not path.is_dir():
+            findings.append(
+                Finding(
+                    DIRECTORY,
+                    WARNING,
+                    f"{path.name}/ is a file, not a directory; move it aside",
+                    attention=True,
+                )
+            )
         elif path.is_symlink() and not path.exists() and not entry.required:
             findings.append(
                 Finding(
@@ -506,12 +524,12 @@ def _check_permissions(paths: Paths) -> Iterator[Finding]:
             continue
         if not mode & layout.SHARED_BITS:
             continue
-        wanted = layout.PRIVATE_DIR if path.is_dir() else layout.PRIVATE_FILE
+        wanted = mode & ~layout.SHARED_BITS
         yield Finding(
             PERMISSIONS,
             WARNING,
             f"{path} holds {entry.what} and is readable by other users on this machine "
-            f"(mode {mode:04o}); it should be {wanted:04o}",
+            f"(mode {mode:04o}); remove group and other access to make it {wanted:04o}",
             fixable=True,
             attention=True,
         )
@@ -528,7 +546,7 @@ def _repair_permissions(paths: Paths) -> list[str]:
             mode = stat.S_IMODE(path.stat().st_mode)
             if not mode & layout.SHARED_BITS:
                 continue
-            wanted = layout.PRIVATE_DIR if path.is_dir() else layout.PRIVATE_FILE
+            wanted = mode & ~layout.SHARED_BITS
             path.chmod(wanted)
         except OSError:
             continue  # the check reports it; a repair that cannot run is not a failure
@@ -561,6 +579,10 @@ def _check_workspace_entries(paths: Paths) -> Iterator[Finding]:
         yield Finding(DIRECTORY, ERROR, "workspaces/ must be a real directory, not a symbolic link")
         return
     if not paths.workspaces.is_dir():
+        if paths.workspaces.exists():
+            yield Finding(DIRECTORY, ERROR, "workspaces/ is a file, not a directory")
+        else:
+            yield Finding(DIRECTORY, ERROR, "workspaces/ is missing", fixable=True)
         return
     for entry in sorted(paths.workspaces.iterdir()):
         if entry.name in layout.IGNORED:

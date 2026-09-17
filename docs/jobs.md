@@ -236,7 +236,7 @@ the two contracts read `0` and `1` the other way round:
 | exit 1 with no report (a crash), or anything else: the doctor itself failed | exit 2 with a `ENSO_ERROR:` line | `prerun_error`, alerted |
 
 [`--attention`](cli.md#operating) is what makes the gate wider than health alone: a home
-that is working but untidy — an unexpected entry, a dangling link, credentials other users
+that is working but untidy — an unexpected entry, an irregular link, credentials other users
 can read, a stale generated file — is reported too, with `"ok": true` in the report saying
 nothing is actually broken. Warnings that are matters of taste, such as an orphan workspace
 or an unedited `AGENTS.md` template, keep the gate shut. A home with none of this stays

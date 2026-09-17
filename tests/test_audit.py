@@ -618,7 +618,7 @@ def test_a_dangling_top_level_link_is_reported_once(enso_home: Paths, config: Co
 
     (found,) = [f for f in report.home.findings if f.check == "link"]
     assert (found.severity, found.fixable, found.attention) == ("warning", False, True)
-    assert found.message.startswith("cache is a dangling symbolic link")
+    assert found.message.startswith("cache/ is a dangling symbolic link")
     assert report.home.layout["cache"] == "managed"
     assert (enso_home.home / "cache").is_symlink()  # --fix neither repoints nor removes it
     # A required entry keeps its own, stronger report instead of a second one.
@@ -628,6 +628,74 @@ def test_a_dangling_top_level_link_is_reported_once(enso_home: Paths, config: Co
     assert [f.message for f in report.home.findings if "knowledge" in f.message] == [
         "knowledge/ is a dangling symbolic link; move it aside"
     ]
+
+
+@pytest.mark.parametrize("name", ["runtime", "cache", "secrets"])
+def test_operating_roots_must_be_real_directories(
+    enso_home: Paths, config: Config, tmp_path: Path, name: str
+) -> None:
+    workspaces.seed_home(enso_home)
+    finish(enso_home.workspace("default"))
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    root = enso_home.home / name
+    root.symlink_to(outside, target_is_directory=True)
+
+    report = audit.audit(enso_home, fix=True, config=config, user_dirs=USER_DIRS)
+
+    found = [f for f in report.home.findings if f.check == "link" and f.message.startswith(name)]
+    assert len(found) == 1
+    assert (found[0].severity, found[0].fixable, found[0].attention) == (
+        "warning", False, True,
+    )  # fmt: skip
+    assert "not a real directory" in found[0].message
+    assert report.ok and report.attention
+    assert root.is_symlink() and list(outside.iterdir()) == []
+
+
+def test_operating_root_file_is_reported_without_replacing_it(
+    enso_home: Paths, config: Config
+) -> None:
+    workspaces.seed_home(enso_home)
+    finish(enso_home.workspace("default"))
+    root = enso_home.home / "runtime"
+    root.write_text("preserve me")
+
+    report = audit.audit(enso_home, fix=True, config=config, user_dirs=USER_DIRS)
+
+    found = [f for f in report.home.findings if f.check == "directory"]
+    assert len(found) == 1 and found[0].message.startswith("runtime/ is a file")
+    assert found[0].attention and not found[0].fixable
+    assert root.read_text() == "preserve me"
+
+
+def test_a_missing_workspaces_root_is_reported_and_fixable(enso_home: Paths) -> None:
+    workspaces.seed_home(enso_home)
+    shutil.rmtree(enso_home.workspaces)
+
+    report = audit.audit(enso_home, user_dirs=USER_DIRS)
+
+    found = [f for f in report.home.findings if f.check == "directory"]
+    assert [(f.message, f.fixable) for f in found] == [("workspaces/ is missing", True)]
+    assert not report.ok and report.attention
+
+    fixed = audit.audit(enso_home, fix=True, user_dirs=USER_DIRS)
+    assert fixed.home.findings == []
+    assert fixed.home.fixed == [f"created {enso_home.workspaces}"]
+    assert enso_home.workspaces.is_dir()
+
+
+def test_a_file_cannot_replace_the_workspaces_root(enso_home: Paths) -> None:
+    workspaces.seed_home(enso_home)
+    shutil.rmtree(enso_home.workspaces)
+    enso_home.workspaces.write_text("preserve me")
+
+    report = audit.audit(enso_home, fix=True, user_dirs=USER_DIRS)
+
+    assert [f.message for f in report.home.findings if f.check == "directory"] == [
+        "workspaces/ is a file, not a directory"
+    ]
+    assert enso_home.workspaces.read_text() == "preserve me"
 
 
 def test_private_roots_are_reported_and_tightened_when_other_users_can_read_them(
@@ -664,6 +732,21 @@ def test_private_roots_are_reported_and_tightened_when_other_users_can_read_them
     enso_home.config.chmod(0o400)
     again = audit.audit(enso_home, fix=True, user_dirs=USER_DIRS)
     assert again.home.fixed == [] and stat.S_IMODE(enso_home.config.stat().st_mode) == 0o400
+
+
+def test_permission_fix_preserves_the_owners_existing_access(enso_home: Paths) -> None:
+    workspaces.seed_home(enso_home)
+    finish(enso_home.workspace("default"))
+    enso_home.config.write_text("{}")
+    enso_home.config.chmod(0o440)
+
+    report = audit.audit(enso_home, user_dirs=USER_DIRS)
+    found = [f for f in report.home.findings if f.check == "permissions"]
+    assert len(found) == 1 and "make it 0400" in found[0].message
+
+    fixed = audit.audit(enso_home, fix=True, user_dirs=USER_DIRS)
+    assert not any(f.check == "permissions" for f in fixed.home.findings)
+    assert stat.S_IMODE(enso_home.config.stat().st_mode) == 0o400
 
 
 def test_sqlite_sidecars_are_stale_only_without_their_database(enso_home: Paths) -> None:
