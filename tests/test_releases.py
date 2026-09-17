@@ -3,6 +3,7 @@
 import hashlib
 import io
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -95,6 +96,52 @@ def test_normalize_source_accepts_https_and_loopback_without_fetching(source, mo
         releases, "_read_bytes", lambda *args, **kwargs: pytest.fail("must not fetch")
     )
     assert releases.normalize_source(source) == source
+
+
+def test_uv_is_copied_from_resolved_executable_and_survives_source_removal(tmp_path, monkeypatch):
+    source = tmp_path / "system/uv-original"
+    source.parent.mkdir()
+    source.write_text("#!/bin/sh\nprintf 'uv test-version\\n'\n")
+    source.chmod(0o755)
+    (source.parent / "uv").symlink_to(source)
+    monkeypatch.setenv("PATH", str(source.parent))
+    runtime = tmp_path / "home/runtime"
+    copied = releases.ensure_uv(runtime)
+    assert copied == str(runtime / "tools/uv")
+    assert not (runtime / "tools/uv").is_symlink()
+    assert (runtime / "tools/uv").read_bytes() == source.read_bytes()
+    source.unlink()
+    monkeypatch.setenv("PATH", "/missing")
+    assert releases.ensure_uv(runtime) == copied
+    assert releases.run_bounded([copied, "--version"], cwd=runtime) == "uv test-version"
+    assert set((runtime / "tools").iterdir()) == {runtime / "tools/uv"}
+
+
+@pytest.mark.parametrize("kind", ["symlink", "directory", "not-executable"])
+def test_uv_refuses_to_replace_an_invalid_existing_home_copy(tmp_path, kind):
+    runtime = tmp_path / "runtime"
+    destination = runtime / "tools/uv"
+    destination.parent.mkdir(parents=True)
+    if kind == "symlink":
+        destination.symlink_to(tmp_path / "missing")
+    elif kind == "directory":
+        destination.mkdir()
+    else:
+        destination.write_text("not executable")
+        destination.chmod(0o600)
+    with pytest.raises(releases.ReleaseError, match="managed uv"):
+        releases.ensure_uv(runtime)
+    assert os.path.lexists(destination)
+
+
+def test_uv_missing_from_home_and_path_explains_repair_without_creating_files(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("PATH", "/missing")
+    runtime = tmp_path / "runtime"
+    with pytest.raises(releases.ReleaseError, match="rerun the release installer"):
+        releases.ensure_uv(runtime)
+    assert not runtime.exists()
 
 
 def test_manifest_reports_independent_errors(tmp_path):
@@ -192,8 +239,11 @@ def test_completed_release_can_be_reused_but_extras_cannot_change(tmp_path, monk
     source, _ = manifest(tmp_path)
     release = releases.load_release(source)
     candidate = tmp_path / "runtime/releases/candidate"
+    monkeypatch.setenv("UV_LINK_MODE", "symlink")
+    commands = []
 
     def fake_run(args, **kwargs):
+        commands.append(args)
         if "venv" in args:
             (candidate / "bin").mkdir()
             (candidate / "bin/enso").touch()
@@ -203,10 +253,14 @@ def test_completed_release_can_be_reused_but_extras_cannot_change(tmp_path, monk
 
     monkeypatch.setattr(releases, "run_bounded", fake_run)
     releases.prepare_release(release, candidate, extras=("slack",))
+    install_command = next(command for command in commands if "install" in command)
+    assert install_command[install_command.index("--link-mode") + 1] == "copy"
+    commands.clear()
     monkeypatch.setattr(
         releases, "download_artifact", lambda *a, **kw: pytest.fail("reuse needs no download")
     )
     assert releases.prepare_release(release, candidate, extras=("slack",)) == candidate
+    assert not any("install" in command for command in commands)
     with pytest.raises(releases.ReleaseError, match="matching completed install"):
         releases.prepare_release(release, candidate, extras=("telegram",))
     assert (candidate / "bin/enso").exists()

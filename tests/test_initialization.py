@@ -14,9 +14,9 @@ import pytest
 from conftest import write_workspace
 from typer.testing import CliRunner
 
-from enso import connection_setup, initialization, workspaces
+from enso import connection_setup, initialization, migrations, workspaces
 from enso.cli import app
-from enso.config import config_fingerprint, config_lock, load_config, save_config
+from enso.config import Paths, config_fingerprint, config_lock, load_config, save_config
 from enso.providers import PROVIDER_CLASSES
 
 
@@ -109,6 +109,45 @@ def test_init_rerun_preserves_active_config_instructions_jobs_and_skills(enso_ho
     assert result["ok"] and result["changes"] == []
     assert enso_home.config.read_bytes() == before
     assert all(path.read_text() == "personal content\n" for path in personal)
+
+
+def test_fresh_init_records_latest_revision_without_running_old_migrations(tmp_path, monkeypatch):
+    paths = Paths(tmp_path / "fresh-home")
+    # A URL installation creates runtime before setup initializes its home.
+    paths.runtime_dir.mkdir(parents=True)
+    ran = []
+    monkeypatch.setattr(
+        migrations,
+        "MIGRATIONS",
+        (migrations.Migration(1, "older layout", lambda _: (), lambda _: ran.append(True)),),
+    )
+    assert initialization.initialize_home(paths)["ok"]
+    assert migrations.read_revision(paths) == 1 and ran == []
+    assert initialization.initialize_home(paths)["ok"]
+    assert migrations.read_revision(paths) == 1 and ran == []
+
+
+def test_init_never_marks_an_existing_unmarked_home_current(enso_home, monkeypatch):
+    enso_home.agents_md.write_text("existing instructions")
+    assert initialization.initialize_home(enso_home)["ok"]
+    assert not (enso_home.home / migrations.MARKER).exists()
+    monkeypatch.setattr(
+        migrations,
+        "MIGRATIONS",
+        (migrations.Migration(1, "new layout", lambda _: (), lambda _: None),),
+    )
+    report = initialization.initialize_home(enso_home)
+    assert not report["ok"] and "enso update apply" in report["problems"][0]
+    assert not (enso_home.home / migrations.MARKER).exists()
+    assert enso_home.agents_md.read_text() == "existing instructions"
+
+
+@pytest.mark.parametrize("content", ['{"revision": true}', '{"revision": 1}', "{"])
+def test_init_refuses_bad_migration_marker_before_seeding(enso_home, content):
+    (enso_home.home / migrations.MARKER).write_text(content)
+    report = initialization.initialize_home(enso_home)
+    assert not report["ok"] and report["changes"] == []
+    assert not enso_home.agents_md.exists() and not enso_home.config_example.exists()
 
 
 @pytest.mark.parametrize(

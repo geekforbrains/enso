@@ -14,9 +14,9 @@ waits for this turn and other accepted work to complete. It then backs up affect
 state, switches releases, restarts Enso and any running viewer, checks readiness,
 and sends the result to the originating conversation.
 
-`apply` and `check --notify` require the inherited `ENSO_WORKSPACE` or an explicit
-`--workspace NAME`. The flag overrides the environment; missing or invalid context is an
-error. The update retains that workspace for its completion notification after restart,
+`apply` and `check --notify` use an explicit `--workspace NAME`, the inherited
+`ENSO_WORKSPACE`, or `default` in a terminal. Invalid context is an error.
+The update retains that workspace for its completion notification after restart,
 and recovery uses the saved owner. A read-only check needs no workspace.
 
 Use `enso update status --json` for progress or the final outcome. If a helper or
@@ -24,6 +24,7 @@ host was interrupted and no update is running, `enso update recover --json` retr
 the original operation's recovery. Never remove the maintenance gate, edit runtime
 receipts, overwrite backups, downgrade the database, or reinstall packages directly.
 
-An unmanaged/development install must first use the release installer. A legacy
-install must be stopped for the one-time migration. Explain the returned reason;
+An unmanaged/development install must first stop its services and use
+`enso update install --adopt`, then reinstall its services. Development code ahead
+of the public feed must wait for a compatible release. Explain the returned reason;
 do not work around it by killing active work or changing service units.

@@ -2,8 +2,8 @@
 
 ## Requirements
 
-- The release installer supplies **Python 3.14** and [uv](https://docs.astral.sh/uv/)
-  when needed; `curl` is required to bootstrap uv.
+- The release installer supplies **Python 3.14** and keeps its own copy of
+  [uv](https://docs.astral.sh/uv/) in the home; `curl` is required to bootstrap uv.
 - **At least one agent CLI**, installed and already authenticated: `claude`, `codex`,
   `grok`, `agy`, or `opencode`. Enso drives them; it does not manage their credentials.
 - **A transport**: a Slack app in Socket Mode, or a Telegram bot token.
@@ -38,7 +38,8 @@ pass installer options after `sh -s --` when piping the download to the shell.
 The default extras are `slack,telegram,web`; use `--extras slack,web` to select features, or
 `--extras ''` for the base CLI. Without `web`, the base CLI and `enso web status|stop|uninstall`
 still work; `enso web start` and `install` explain the missing feature. A local installation
-can save its future HTTPS update source with `--feed URL`; otherwise it keeps the manifest source.
+can save its future update source with `--feed URL`; otherwise it follows the official GitHub
+feed, even when the manifest was a downloaded local file.
 Private feeds use `--token-file FILE`, whose bearer token is copied privately into the
 runtime. It is never placed in a URL or forwarded to a different origin.
 
@@ -51,7 +52,7 @@ enso setup
 The wizard is linear and requires `config.json` to be absent. A home prepared with `init`
 can use it too; existing scaffold content is preserved.
 Both commands refuse an obsolete configuration, database, or home-level `jobs/` before
-seeding files, with a migration-guide pointer. Moving the old config aside is not conversion.
+seeding files. Automatic migrations support 0.2.0 onward; older layouts are unsupported.
 
 1. Detects which provider CLIs are on `PATH` and records their model lists and unattended
    flags.
@@ -207,28 +208,25 @@ a change. This page owns installing and operating Enso, not contributor workflow
 
 ## Upgrading
 
-**0.1.x → 0.2.0 requires the [manual migration guide](migration.md#01x--020).** Do not use
-the old managed updater or the adoption command below for that conversion. Keep the old
-code and database together until the rebuilt home has been verified.
-
-Enso is in pre-1.0 beta. Managed updates follow published
+This upgrade flow supports homes created by 0.2.0 onward. Managed updates follow published
 `major.minor.patch` releases, not changes to the repository's default branch. The package
 version comes from installed package metadata and the runtime receipt; `config.json`'s
 `version` and the database schema version remain independent format versions.
 
 ```bash
-enso update check --json
-enso update apply --workspace default --json
-enso update status --json
+enso update check
+enso update apply
+enso update status
 ```
 
 Checking does not authorize installation. The bundled nightly check announces each new
-release once to the configured notification target and stays quiet when unchanged, offline,
-or unmanaged. It spends no provider tokens and never installs an update. You can ask in chat
+release once to the configured notification target and stays quiet when unchanged or offline.
+An unmanaged installation also gets one notice explaining adoption. The check spends no
+provider tokens and never installs an update. You can ask in chat
 whether an upgrade is available, then ask Enso to upgrade itself when ready.
 
-Update requests and checks with `--notify` require `ENSO_WORKSPACE` or `--workspace NAME`;
-choose an existing workspace in a terminal. The update saves this owner for its completion
+Update requests and checks with `--notify` use `--workspace NAME`, then `ENSO_WORKSPACE`,
+then `default` for terminal use. The update saves this owner for its completion
 notification after restart. See [CLI § Updates](cli.md#updates) for the command contract.
 
 `apply` queues an independent updater under launchd or user systemd and returns immediately.
@@ -238,8 +236,9 @@ jobs, and waits for already accepted work. Other CLI commands hold access to the
 their execution, including waiting for stdin. The updater waits for them too; a busy deadline
 defers the update without interrupting work or changing the selected release.
 
-Once work has drained, the helper stops Enso and any running viewer, snapshots the files
-release preparation can change, selects the candidate, validates the database and refreshes eligible bundled content,
+Once work has drained, the helper stops Enso and any running viewer, asks the candidate which
+paths it will change, and snapshots them. It selects the candidate, runs all pending database,
+configuration and file migrations, validates the result, and refreshes eligible bundled content,
 then restarts the previous services. The new daemon must become ready while new work is still
 paused. Only then does the helper commit the installed version, admit work, and report the
 outcome in the originating conversation or default notification target. A stopped daemon or
@@ -252,15 +251,15 @@ Managed self-updates support the user services generated by `enso service instal
 unchanged until the update or recovery finishes; concurrent service reconfiguration is
 unsupported. Viewer lifecycle commands refuse changes while a managed update is pending.
 
-The snapshot covers `config.json`, `enso.db` and its WAL/SHM files, `skills/`, every workspace's `jobs/`,
-home-level `AGENTS.md`, `.bundles.json`, and `slack/`. It leaves shared `knowledge/`,
-other workspace files, project repositories, provider sessions, browser profiles, and the
-`secrets/` directory outside the rollback; an update never changes their contents.
+The snapshot includes configuration, the database and sidecars, migration and bundle receipts,
+bundled content, and every path declared by pending migrations. Folder moves include both
+their source and destination; new destinations are restored to their original absence on failure.
+Other home content is preserved. Migrations cannot change files outside the home or the
+updater's own operating state. [Home migrations](migration.md) owns the authoring rules.
 Customized bundles survive according to [Customizing](customizing.md#the-bundled-skills).
 
 If preparation or startup fails before work is admitted, the helper restores the previous code
-and snapshot together and verifies the old service. Failed-state files and the original
-backup remain in `runtime/operations/<id>/` for inspection. If the helper or host is interrupted:
+and snapshot together and verifies the old service. If the helper or host is interrupted:
 
 ```bash
 enso update status --json
@@ -273,6 +272,20 @@ and retry recovery. Never delete the maintenance gate or edit the runtime receip
 A terminal operation whose gate cleanup was interrupted only completes that cleanup; it does
 not restore old data after successful operation has resumed.
 
+### Automatic cleanup
+
+After a successful upgrade or verified rollback, Enso removes the temporary snapshot and
+failed-state copies. It keeps only the latest small operation record and log. A successful
+upgrade keeps the current runtime and at most one previous runtime while the old updater exits;
+the next update removes that previous runtime before staging another. Failed candidates,
+unused managed Python versions, and the download cache are cleaned automatically.
+Packages are copied into each runtime, so clearing the cache cannot break the installation.
+This keeps normal repeated upgrades from accumulating installations or backups.
+
+If recovery is incomplete, its original snapshot and runtimes remain intact and work stays
+paused. Cleanup errors appear in `enso update status --json` and are retried on the next
+update; they never undo a successful upgrade. Keep independent backups for long-term recovery.
+
 This is recovery for an incomplete update, not a general downgrade command. Once a release
 has admitted work, there is no automatic rollback to an older snapshot. The database still
 refuses code that understands an older schema, before changing the database or its journal
@@ -281,23 +294,28 @@ data recovery and retain independent backups of your home.
 
 ### Adopt an existing installation
 
-This procedure requires a home already compatible with the selected release; it does not
-convert a 0.1.x home to 0.2.0. Follow [Migration](migration.md) first for that version step.
+This procedure requires a 0.2.0-or-newer home compatible with the selected release.
 
 An editable checkout or `uv tool` install is unmanaged and never changes itself. For the
 one-time move, stop its daemon and viewer, then run the release installer with `--adopt` and
 the same home and bin directory. The previous launcher is preserved beside the new one;
 existing configuration and user content stay in place. The installer refuses an active
-legacy daemon or viewer.
+daemon or viewer and checks that the candidate can read the existing home before switching.
+If structural migrations are needed, first adopt a compatible release, then use `update apply`.
 
 ```bash
 enso service stop
 enso web stop
-sh /path/to/release/install.sh --manifest /path/to/release/release.json --adopt
+enso update install --adopt
 enso init --json
 enso config apply --file ~/.enso/config.json --json
 enso service install
 ```
+
+The default source is the official GitHub feed. Use the release shell installer with
+`--adopt` instead if uv needs bootstrapping, and reinstall `enso web install` if the viewer
+was supervised. `--manifest` selects a specific release; `--feed` chooses its future update
+source. A development version ahead of the feed reports that state without recommending a downgrade.
 
 Use the actual home path if it is customized. `init` adds missing bundled skills and
 instructions; applying the existing valid configuration seeds missing bundled jobs, including
