@@ -189,11 +189,12 @@ def audit(
 ) -> Report:
     """Audit the home and ``names`` (default: every workspace), repairing first with ``fix``.
 
-    ``config`` supplies the bindings; without it the orphan check is skipped, since a
-    workspace may be bound in a config that cannot be read. Jobs are read either way.
+    ``config`` supplies bindings and stage definitions. Without it the orphan check is
+    skipped, since a workspace may be bound in a config that cannot be read. Jobs are
+    read either way, though some stage jobs cannot be parsed without their definitions.
     ``user_dirs`` overrides where user-level skills are looked for (tests).
     """
-    jobs, _ = load_jobs(paths)
+    jobs, _ = load_jobs(paths, config)
     named: dict[str, list[str]] = {}
     for job in jobs:
         named.setdefault(job.workspace, []).append(job.ref)

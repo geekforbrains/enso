@@ -388,8 +388,13 @@ a dangling link. Note metadata, links, and style use the separate
 [knowledge checks](knowledge.md), not the workspace layout audit.
 
 The command exits 1 while any error remains and 0 otherwise; warnings never fail an
-audit. An orphan workspace — one nothing is bound to and no job names — is a warning, not
-an error. So is an unexpected top-level entry: Enso tells you it is there and leaves it
+audit. With a readable configuration, the audit uses its project stages to include jobs
+that Enso runs itself, including `command` and `integrate` stages whose `JOB.md` omits
+provider, model, and effort. Without a readable configuration, it lists only jobs that
+can be parsed without one and skips the orphan check because bindings and stage jobs may
+be unknown. `enso doctor` reports `JOB.md` parsing problems; the layout audit does not.
+An orphan workspace — one nothing is bound to and no job names — is a warning, not an
+error. So is an unexpected top-level entry: Enso tells you it is there and leaves it
 alone. Files the CLIs themselves drop inside `.claude/`, such as Claude Code's
 `.cc-writes/`, are expected and not reported, and neither is `.DS_Store`.
 
@@ -428,7 +433,7 @@ their walk at the nearest Git root, so a repository inside a workspace hides the
       "status": "error",
       "attention": true,
       "bindings": ["slack:C0BP5BQF6UF"],
-      "jobs": ["meteor-forum-watch"],
+      "jobs": ["meteor:forum-watch"],
       "uploads_bytes": 1048576,
       "layout": {"AGENTS.md": "required", "notes.txt": "unexpected"},
       "findings": [

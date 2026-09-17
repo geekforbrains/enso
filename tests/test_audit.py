@@ -9,11 +9,11 @@ import stat
 from pathlib import Path
 
 import pytest
-from conftest import write_config, write_job
+from conftest import write_config, write_job, write_project
 from test_skills import write_skill
 
 from enso import audit, layout, workspaces
-from enso.config import Config, Paths
+from enso.config import Config, Paths, parse_config
 
 USER_DIRS: list[Path] = []  # no user-level skills unless a test says so
 # What the scaffold leaves at each root's top level, with the category the audit reports.
@@ -251,6 +251,61 @@ def test_untouched_template_and_orphan_are_warnings(enso_home: Paths, config: Co
     write_job(enso_home, workspace="lonely")
     (named,) = audit.audit(enso_home, ["lonely"], config=config, user_dirs=USER_DIRS).workspaces
     assert named.jobs == ["lonely:nightly"] and [f.check for f in named.findings] == ["agents-md"]
+
+
+@pytest.mark.parametrize(
+    "stage",
+    [
+        {"name": "run", "command": "true"},
+        {"name": "run", "integrate": True},
+    ],
+    ids=["command", "integrate"],
+)
+def test_audit_finds_engine_stage_jobs_with_config(
+    enso_home: Paths, raw_config: dict, repo: Path, stage: dict
+) -> None:
+    workspaces.seed_home(enso_home)
+    stage_root = workspaces.create_workspace(enso_home, "stage-only")
+    workspaces.create_workspace(enso_home, "ordinary")
+    write_project(
+        enso_home,
+        "DEMO",
+        {"name": "Demo", "repo": str(repo), "stages": [stage]},
+        workspace="stage-only",
+    )
+    write_job(
+        enso_home,
+        "run",
+        workspace="stage-only",
+        omit=["schedule", "provider", "model", "effort"],
+        project="DEMO",
+        stage="run",
+        prompt="",
+    )
+    write_job(enso_home, workspace="ordinary")
+    config, problems, _ = parse_config(raw_config, enso_home)
+    assert config is not None, problems
+
+    stage_audit, ordinary_audit = audit.audit(
+        enso_home, ["stage-only", "ordinary"], config=config, user_dirs=USER_DIRS
+    ).workspaces
+    assert stage_audit.jobs == ["stage-only:run"]
+    assert ordinary_audit.jobs == ["ordinary:nightly"]
+    assert [finding.check for finding in stage_audit.findings] == ["agents-md"]
+    assert [finding.check for finding in ordinary_audit.findings] == ["agents-md"]
+
+    stage_without_config, ordinary_without_config = audit.audit(
+        enso_home, ["stage-only", "ordinary"], user_dirs=USER_DIRS
+    ).workspaces
+    assert stage_without_config.jobs == []
+    assert ordinary_without_config.jobs == ["ordinary:nightly"]
+    assert [finding.check for finding in stage_without_config.findings] == ["agents-md"]
+
+    (stage_root / "CLAUDE.md").unlink()
+    assert any(
+        line.startswith("workspace stage-only fails its audit:") and "CLAUDE.md" in line
+        for line in audit.startup_warnings(enso_home, config)
+    )
 
 
 def test_a_relocated_opencode_root_reaches_the_collision_check(
