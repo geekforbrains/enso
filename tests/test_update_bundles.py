@@ -9,7 +9,7 @@ import pytest
 
 from enso import workspaces
 from enso.config import Agent
-from enso.maintenance import read_json
+from enso.maintenance import UpdateError, read_json, write_json
 
 
 @pytest.fixture
@@ -200,6 +200,147 @@ def test_new_skill_helper_added_to_tracked_but_not_historical_bundle(bundle_home
     (home.paths.home / ".bundles.json").unlink()
     workspaces.reconcile_bundles(home.paths, home.agent)
     assert not target.exists()
+
+
+def test_retired_helpers_remove_only_unchanged_files_and_empty_directories(
+    bundle_home, monkeypatch
+):
+    home = bundle_home
+    helpers = ("scripts/old/tool.py", "references/guide.md", "deleted.txt")
+    monkeypatch.setattr(workspaces, "BUNDLED_SKILL_SUPPORT", {"enso": helpers})
+    for name in helpers:
+        source = home.bundled / "skills/enso" / name
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("original\n")
+    seed(home)
+    root = home.paths.skills / "enso"
+    (root / "references/guide.md").write_text("my guide\n")
+    (root / "deleted.txt").unlink()
+    (root / "personal.txt").write_text("my content\n")
+    receipt = read_json(home.paths.home / ".bundles.json")
+    monkeypatch.setattr(workspaces, "BUNDLED_SKILL_SUPPORT", {})
+
+    changed = workspaces.reconcile_bundles(home.paths, home.agent)
+
+    assert changed == ["skills/enso/scripts/old/tool.py"]
+    assert not (root / "scripts").exists()
+    assert (root / "references/guide.md").read_text() == "my guide\n"
+    assert (root / "personal.txt").read_text() == "my content\n"
+    assert not (root / "deleted.txt").exists()
+    assert read_json(home.paths.home / ".bundles.json") == receipt
+    assert workspaces.reconcile_bundles(home.paths, home.agent) == []
+
+    # Retained receipts keep the user's deletion when a later release restores a helper.
+    monkeypatch.setattr(workspaces, "BUNDLED_SKILL_SUPPORT", {"enso": helpers})
+    workspaces.reconcile_bundles(home.paths, home.agent)
+    assert not (root / "deleted.txt").exists()
+
+
+def test_entire_retired_bundles_leave_no_empty_bundle_directories(bundle_home, monkeypatch):
+    home = bundle_home
+    seed(home)
+    monkeypatch.setattr(workspaces, "BUNDLED_SKILLS", ())
+    monkeypatch.setattr(workspaces, "BUNDLED_JOBS", ())
+    monkeypatch.setattr(workspaces, "BUNDLED_FILES", ())
+
+    changed = workspaces.reconcile_bundles(home.paths, home.agent)
+
+    assert set(changed) == {
+        "skills/enso/SKILL.md",
+        "slack/manifest.json",
+        "workspaces/default/jobs/enso-audit/JOB.md",
+        "workspaces/default/jobs/enso-audit/prerun.sh",
+    }
+    assert not (home.paths.skills / "enso").exists()
+    assert not (home.paths.home / "slack").exists()
+    assert not (home.paths.workspace_jobs("default") / "enso-audit").exists()
+    assert home.paths.skills.is_dir() and home.paths.workspace_jobs("default").is_dir()
+    assert home.paths.agents_md.is_file()
+    assert workspaces.reconcile_bundles(home.paths, home.agent) == []
+
+
+def test_retired_bundle_preserves_custom_and_untracked_files(bundle_home, monkeypatch):
+    home = bundle_home
+    seed(home)
+    root = home.paths.skills / "enso"
+    (root / "SKILL.md").write_text("my edited skill\n")
+    (root / "local.txt").write_text("my content\n")
+    monkeypatch.setattr(workspaces, "BUNDLED_SKILLS", ())
+    assert workspaces.reconcile_bundles(home.paths, home.agent) == []
+    assert (root / "SKILL.md").read_text() == "my edited skill\n"
+    assert (root / "local.txt").read_text() == "my content\n"
+
+
+@pytest.mark.parametrize("kind", ["file", "directory"])
+def test_retirement_does_not_follow_symlinks(bundle_home, monkeypatch, tmp_path, kind):
+    home = bundle_home
+    seed(home)
+    target = home.paths.skills / "enso/SKILL.md"
+    original = target.read_text()
+    outside = tmp_path / "outside"
+    if kind == "file":
+        outside.write_text(original)
+        target.unlink()
+        target.symlink_to(outside)
+    else:
+        target.parent.rename(outside)
+        target.parent.symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(workspaces, "BUNDLED_SKILLS", ())
+    assert workspaces.reconcile_bundles(home.paths, home.agent) == []
+    assert target.read_text() == original
+    assert (target if kind == "file" else target.parent).is_symlink()
+
+
+@pytest.mark.parametrize(
+    "relative", ["../outside", "/outside", "skills/enso/../../outside", "skills//bad"]
+)
+def test_invalid_retirement_receipt_is_refused_before_any_bundle_changes(bundle_home, relative):
+    home = bundle_home
+    seed(home)
+    marker = home.paths.home / ".bundles.json"
+    receipt = read_json(marker)
+    receipt["files"][relative] = hashlib.sha256(b"owned").hexdigest()
+    write_json(marker, receipt)
+    (home.bundled / "AGENTS.md").write_text("new instructions")
+    with pytest.raises(UpdateError, match="invalid file paths or hashes"):
+        workspaces.reconcile_bundles(home.paths, home.agent)
+    assert home.paths.agents_md.read_text() == "Home instructions one\n"
+    assert read_json(marker) == receipt
+
+
+@pytest.mark.parametrize("files", [["bad"], {"AGENTS.md": 0}, {"AGENTS.md": "not-a-hash"}])
+def test_malformed_receipts_are_refused(bundle_home, files):
+    home = bundle_home
+    seed(home)
+    write_json(home.paths.home / ".bundles.json", {"files": files})
+    with pytest.raises(UpdateError, match="invalid file paths or hashes"):
+        workspaces.reconcile_bundles(home.paths, home.agent)
+
+
+@pytest.mark.parametrize(
+    "relative", ["knowledge/Keep.md", "skills/personal/SKILL.md", "runtime/keep"]
+)
+def test_retirement_ignores_receipts_outside_owned_bundle_scopes(bundle_home, relative):
+    home = bundle_home
+    seed(home)
+    target = home.paths.home / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("user content")
+    marker = home.paths.home / ".bundles.json"
+    receipt = read_json(marker)
+    receipt["files"][relative] = hashlib.sha256(b"user content").hexdigest()
+    write_json(marker, receipt)
+    assert workspaces.reconcile_bundles(home.paths, home.agent) == []
+    assert target.read_text() == "user content"
+
+
+def test_malformed_custom_job_does_not_make_its_shipped_script_retired(bundle_home):
+    home = bundle_home
+    seed(home)
+    root = home.paths.workspace_jobs("default") / "enso-audit"
+    (root / "JOB.md").write_text("my custom job without agent fields")
+    assert workspaces.reconcile_bundles(home.paths, home.agent) == []
+    assert (root / "prerun.sh").read_text() == "#!/bin/sh\nprintf old\n"
 
 
 def test_upgrade_creates_shared_knowledge_without_changing_existing_notes(bundle_home):

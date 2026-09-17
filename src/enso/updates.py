@@ -7,6 +7,7 @@ been verified. Code selection and pre-migration data are recovered together.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -18,7 +19,18 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from . import __version__, db, messages, releases, update_services, web, workspaces
+from . import (
+    __version__,
+    db,
+    initialization,
+    messages,
+    migrations,
+    releases,
+    update_services,
+    update_snapshot,
+    web,
+    workspaces,
+)
 from .config import Paths, load_config, resolve_workspace, valid_workspace_name
 from .connection_setup import receiver_active, service_receiver
 from .maintenance import (
@@ -34,13 +46,15 @@ from .maintenance import (
 )
 
 TERMINAL = frozenset({"succeeded", "failed", "rolled_back", "recovery_failed", "deferred"})
-# Only these files can be changed by release preparation. Other workspace content,
-# repositories, browser profiles and provider sessions are never restored over.
+# Baseline preparation paths. Future candidates add their complete migration plan
+# before the running updater takes a snapshot; an old updater need not know new layouts.
 MIGRATION_PATHS = (
     "config.json",
     "enso.db",
     "enso.db-wal",
     "enso.db-shm",
+    "enso.db-journal",
+    migrations.MARKER,
     "skills",
     "AGENTS.md",
     ".bundles.json",
@@ -55,6 +69,7 @@ STATE_FIELDS = (
     "started_at",
     "updated_at",
     "notification_error",
+    "cleanup_error",
 )
 
 
@@ -263,7 +278,9 @@ def check_message(result: dict[str, Any]) -> str:
 
 def update_workspace(paths: Paths, workspace: str | None = None) -> str:
     """Home updates use default for terminal notifications; chat keeps its owner."""
-    return resolve_workspace(paths, workspace or os.environ.get("ENSO_WORKSPACE") or "default")
+    return resolve_workspace(
+        paths, workspace if workspace is not None else os.environ.get("ENSO_WORKSPACE") or "default"
+    )
 
 
 def _candidate(paths: Paths, release: releases.Release, receipt: dict[str, Any]) -> Path:
@@ -375,6 +392,11 @@ def install(
         # prepare_release validates its receipt and installed metadata even when reused.
         releases.ensure_uv(paths.runtime_dir)
         target = _candidate(paths, release, receipt)
+        update_services.run_command(
+            [str(target / "bin" / "enso"), "update", "_validate-home"],
+            cwd=paths.home,
+            env={**os.environ, "ENSO_HOME": str(paths.home)},
+        )
         _select(paths, target)
         _launcher(paths, Path(receipt["bin_dir"]), adopt=adopt)
         write_json(_install_path(paths), receipt)
@@ -415,7 +437,9 @@ def request_apply(
         if previous and (previous["status"] not in TERMINAL or paused(paths)):
             raise UpdateError("an update is pending; inspect update status or run update recover")
         if previous:
-            update_services.cleanup_finished(paths, previous["id"])
+            if not update_services.cleanup_finished(paths, previous["id"]):
+                raise UpdateError("the previous updater is still exiting; retry shortly")
+            _cleanup(paths, previous, helper_finished=True)
         release = _release(paths, source)
         if _version_key(release.version) <= _version_key(receipt["version"]):
             if release.version == receipt["version"] and release.commit == receipt["commit"]:
@@ -471,16 +495,6 @@ def _drain(paths: Paths, state: dict[str, Any]) -> None:
     raise UpdateError("active work did not finish before the drain deadline; update deferred")
 
 
-def _copy(source: Path, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if source.is_symlink():
-        destination.symlink_to(os.readlink(source))
-    elif source.is_dir():
-        shutil.copytree(source, destination, symlinks=True)
-    else:
-        shutil.copy2(source, destination)
-
-
 def _check_snapshot_parents(paths: Paths) -> None:
     parents = [paths.home, paths.workspaces, paths.workspace("default")]
     if paths.workspaces.is_dir() and not paths.workspaces.is_symlink():
@@ -490,94 +504,54 @@ def _check_snapshot_parents(paths: Paths) -> None:
             raise UpdateError(f"{parent} must not be a symbolic link during a managed update")
 
 
-def _migration_paths(paths: Paths) -> tuple[str, ...]:
-    return MIGRATION_PATHS + tuple(
-        f"workspaces/{name}/jobs"
-        for name in sorted({"default", *workspaces.list_workspaces(paths)})
-    )
-
-
-def _restorable(name: str) -> bool:
-    parts = name.split("/")
-    return name in MIGRATION_PATHS or (
-        len(parts) == 3
-        and parts[0] == "workspaces"
-        and valid_workspace_name(parts[1])
-        and parts[2] == "jobs"
-    )
+def migration_plan(paths: Paths) -> list[str]:
+    """Return the candidate's complete read-only snapshot contract for the old updater."""
+    _check_snapshot_parents(paths)
+    names = [
+        *MIGRATION_PATHS,
+        *(
+            f"workspaces/{name}/jobs"
+            for name in sorted({"default", *workspaces.list_workspaces(paths)})
+        ),
+        *(name.split("/")[0] for name in workspaces.BUNDLED_FILES),
+        *(migrations.plan(paths) if not initialization.is_fresh_home(paths) else ()),
+    ]
+    if not paths.knowledge.exists():
+        names.append("knowledge")
+    return update_snapshot.plan(paths, names)
 
 
 def _snapshot(paths: Paths, state: dict[str, Any]) -> None:
     _check_snapshot_parents(paths)
-    for name in ("config.json", "enso.db", "enso.db-wal", "enso.db-shm"):
-        if (paths.home / name).is_symlink():
-            raise UpdateError(f"{name} must not be a symbolic link during a managed update")
-    backup = _operation_dir(paths, state["id"]) / "backup"
-    backup.mkdir(mode=0o700)
-    captured: list[str] = []
-    for name in _migration_paths(paths):
-        source = paths.home / name
-        if source.exists() or source.is_symlink():
-            _copy(source, backup / name)
-            captured.append(name)
-    _sync_snapshot(backup)
-    write_json(backup / "snapshot.json", {"paths": captured})
-
-
-def _sync_snapshot(root: Path) -> None:
-    """A completed snapshot must survive a power loss before migration may begin."""
-    if root.is_symlink():
-        return
-    if root.is_file():
-        fd = os.open(root, os.O_RDONLY | os.O_NOFOLLOW)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-        return
-    for directory, _children, files in os.walk(root, topdown=False, followlinks=False):
-        for name in files:
-            path = Path(directory) / name
-            if path.is_symlink():
-                continue
-            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-            try:
-                os.fsync(fd)
-            finally:
-                os.close(fd)
-        sync_directory(Path(directory))
+    names = state["migration_paths"] if "migration_paths" in state else migration_plan(paths)
+    update_snapshot.capture(paths, _operation_dir(paths, state["id"]), names)
 
 
 def _restore(paths: Paths, state: dict[str, Any]) -> None:
     _check_snapshot_parents(paths)
-    directory = _operation_dir(paths, state["id"])
-    backup = directory / "backup"
-    snapshot = read_json(backup / "snapshot.json")
-    captured = snapshot.get("paths")
-    if not isinstance(captured, list) or not all(
-        isinstance(name, str) and _restorable(name) for name in captured
-    ):
-        raise UpdateError("the pre-update snapshot is incomplete; recovery requires inspection")
-    failed = directory / f"failed-state-{uuid.uuid4().hex[:8]}"
-    failed.mkdir(mode=0o700)
-    for name in sorted(set(_migration_paths(paths)) | set(captured)):
-        current = paths.home / name
-        if current.exists() or current.is_symlink():
-            destination = failed / name
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(current, destination)
-        if name in captured:
-            _copy(backup / name, current)
-            _sync_snapshot(current)
-    sync_directory(failed)
-    sync_directory(paths.home)
+    update_snapshot.restore(paths, _operation_dir(paths, state["id"]))
+
+
+def validate_home(paths: Paths) -> None:
+    """Adoption selects compatible homes; managed apply owns structural conversion."""
+    if problems := initialization.home_problems(paths):
+        raise UpdateError(
+            "Cannot adopt this release: "
+            + "; ".join(problems)
+            + ". Adopt a compatible release first, then run enso update apply."
+        )
 
 
 def prepare_home(paths: Paths) -> None:
     """Run in the candidate interpreter while all receivers and admissions are stopped."""
     if not paused(paths):
         raise UpdateError("release preparation requires an active update gate")
+    fresh = initialization.is_fresh_home(paths)
     with service_receiver(paths):
+        if fresh:
+            write_json(paths.home / migrations.MARKER, {"revision": migrations.latest_revision()})
+        else:
+            migrations.apply(paths)
         if paths.config.exists():
             config = load_config(paths)
             db.initialize(paths)
@@ -605,6 +579,8 @@ def _recover(paths: Paths, state: dict[str, Any]) -> None:
         with exclusive_access(paths, state["drain_timeout"]):
             _restore_runtime(paths, state)
     except UpdateError:
+        if state["status"] == "rolled_back":
+            raise
         _save(
             paths,
             state,
@@ -628,6 +604,8 @@ def _restore_runtime(paths: Paths, state: dict[str, Any]) -> None:
         )
         _finish(paths, state, "rolled_back")
     except Exception as exc:
+        if state["status"] == "rolled_back":
+            raise
         # Keep the gate and both state copies. Removing it here could admit writes
         # into an unverified or partially recovered database.
         _save(paths, state, "recovery_failed", error=f"recovery failed: {type(exc).__name__}")
@@ -643,6 +621,7 @@ def run_update(paths: Paths, operation_id: str) -> None:
             raise UpdateError("update operation is missing or has been superseded")
         if state["status"] in TERMINAL - {"recovery_failed"}:
             _finish(paths, state, state["status"])
+            _cleanup(paths, state)
             _notify_outcome(paths, state)
             return
         if state["status"] == "draining":
@@ -652,13 +631,16 @@ def run_update(paths: Paths, operation_id: str) -> None:
                 "deferred",
                 error="updater was interrupted before stopping; active work was preserved",
             )
+            _cleanup(paths, state)
             _notify_outcome(paths, state)
             return
         if state["status"] not in ("queued", "staging"):
             _recover(paths, state)
+            _cleanup(paths, state)
             _notify_outcome(paths, state)
             return
         _perform(paths, state)
+        _cleanup(paths, state)
         _notify_outcome(paths, state)
 
 
@@ -683,6 +665,8 @@ def _perform(paths: Paths, state: dict[str, Any]) -> None:
         with exclusive_access(paths, state["drain_timeout"]):
             _commit_release(paths, state, release, target)
     except Exception as exc:
+        if state["status"] == "succeeded":
+            raise
         state["error"] = str(exc) if isinstance(exc, UpdateError) else type(exc).__name__
         if state["status"] in ("queued", "staging"):
             _finish(paths, state, "failed")
@@ -693,6 +677,19 @@ def _perform(paths: Paths, state: dict[str, Any]) -> None:
             _recover(paths, state)
 
 
+def _candidate_plan(paths: Paths, binary: Path, env: dict[str, str]) -> list[str]:
+    declared = update_services.run_command(
+        [str(binary), "update", "_migration-plan"],
+        cwd=paths.home,
+        env=env,
+    )
+    try:
+        names = update_snapshot.plan(paths, json.loads(declared))
+    except (ValueError, RecursionError) as exc:
+        raise UpdateError("the candidate returned an invalid migration plan") from exc
+    return names
+
+
 def _commit_release(
     paths: Paths,
     state: dict[str, Any],
@@ -701,12 +698,13 @@ def _commit_release(
 ) -> None:
     _save(paths, state, "stopping")
     update_services.stop(paths, state["services"])
-    _save(paths, state, "backing_up")
+    binary = target / "bin" / "enso"
+    env = {**os.environ, "ENSO_HOME": str(paths.home), "ENSO_UPDATE_INTERNAL": state["id"]}
+    names = _candidate_plan(paths, binary, env)
+    _save(paths, state, "backing_up", migration_paths=names)
     _snapshot(paths, state)
     _save(paths, state, "switching", snapshot_complete=True)
     _select(paths, target)
-    binary = target / "bin" / "enso"
-    env = {**os.environ, "ENSO_HOME": str(paths.home), "ENSO_UPDATE_INTERNAL": state["id"]}
     update_services.run_command(
         [str(binary), "update", "_prepare-home"],
         cwd=paths.home,
@@ -725,6 +723,89 @@ def _commit_release(
         },
     )
     _finish(paths, state, "succeeded")
+
+
+def _remove_owned(path: Path) -> None:
+    if path.is_symlink():
+        raise UpdateError("cleanup refused a symbolic link in managed runtime storage")
+    if path.is_dir():
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
+
+
+def _prune_interpreters(paths: Paths, releases_root: Path, keep: set[str]) -> None:
+    # Keep Python interpreters still referenced by retained environments.
+    python_root = paths.runtime_dir / "python"
+    if python_root.is_symlink():
+        raise UpdateError("Python storage must not be a symbolic link")
+    interpreters = [(releases_root / name / "bin/python").resolve() for name in keep]
+    if python_root.is_dir():
+        for interpreter in python_root.iterdir():
+            if re.fullmatch(r"cpython-\d+\.\d+\.\d+-.+", interpreter.name) and not any(
+                binary.is_relative_to(interpreter) for binary in interpreters
+            ):
+                _remove_owned(interpreter)
+
+
+def _cleanup(paths: Paths, state: dict[str, Any], *, helper_finished: bool = False) -> None:
+    """Discard rollback data only after a durable terminal result and an open gate.
+
+    The old helper runs from the previous environment, so successful updates retain
+    it until the next apply confirms that helper exited. Cleanup never rolls back success.
+    """
+    if state["status"] not in TERMINAL - {"recovery_failed"} or paused(paths):
+        return
+    try:
+        directory = _operation_dir(paths, state["id"])
+        _remove_owned(directory / "backup")
+        for failed in directory.glob("failed-state-*"):
+            if re.fullmatch(r"failed-state-[0-9a-f]{8}", failed.name):
+                _remove_owned(failed)
+        active = installed(paths)["release_id"]
+        keep = {active}
+        if not helper_finished:
+            keep.add(state["previous_install"]["release_id"])
+        releases_root = paths.runtime_dir / "releases"
+        if releases_root.is_symlink():
+            raise UpdateError("release storage must not be a symbolic link")
+        for release_dir in releases_root.iterdir():
+            if re.fullmatch(r"\d+\.\d+\.\d+-[0-9a-f]{12}", release_dir.name):
+                if release_dir.name not in keep:
+                    _remove_owned(release_dir)
+            elif re.fullmatch(r"\.download-[a-z0-9_]+", release_dir.name):
+                _remove_owned(release_dir)
+        _prune_interpreters(paths, releases_root, keep)
+        uv = paths.runtime_dir / "tools/uv"
+        cache = paths.runtime_dir / "cache/uv"
+        if uv.is_file() and cache.is_dir():
+            if uv.is_symlink() or cache.is_symlink() or cache.parent.is_symlink():
+                raise UpdateError("managed cache tools must not be symbolic links")
+            update_services.run_command(
+                [str(uv), "--no-config", "cache", "clean", "--cache-dir", str(cache)],
+                cwd=paths.home,
+            )
+        _prune_operations(paths, state)
+        if state.pop("cleanup_error", None):
+            _save(paths, state)
+    except Exception:
+        _save(paths, state, cleanup_error="cleanup incomplete; the next update will retry")
+
+
+def _prune_operations(paths: Paths, state: dict[str, Any]) -> None:
+    """Retain only the latest operation, after confirming older helpers have exited."""
+    for directory in _operation_dir(paths, state["id"]).parent.iterdir():
+        if directory.name == state["id"] or not re.fullmatch(r"[0-9a-f]{32}", directory.name):
+            continue
+        directory = _operation_dir(paths, directory.name)
+        old = read_json(directory / "operation.json")
+        _validate_operation(old)
+        if old["id"] != directory.name:
+            raise UpdateError("operation directory does not match its saved identity")
+        if old["status"] in TERMINAL - {"recovery_failed"}:
+            if not update_services.cleanup_finished(paths, old["id"]):
+                raise UpdateError("an older update helper has not finished")
+            _remove_owned(directory)
 
 
 def recover(paths: Paths) -> dict[str, Any]:

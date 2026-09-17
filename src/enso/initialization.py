@@ -144,7 +144,7 @@ def _layout_problems(paths: Paths) -> list[str]:
     return problems
 
 
-def _fresh_home(paths: Paths) -> bool:
+def is_fresh_home(paths: Paths) -> bool:
     """Installer runtime and the init lock can exist before any home content is seeded."""
     if not paths.home.exists():
         return True
@@ -158,7 +158,7 @@ def home_problems(paths: Paths) -> list[str]:
     if problems := _layout_problems(paths):
         return problems
     try:
-        if migrations.pending(paths) and not _fresh_home(paths):
+        if migrations.pending(paths) and not is_fresh_home(paths):
             return ["home migrations are pending; run enso update apply before preparing this home"]
     except UpdateError as exc:
         return [str(exc)]
@@ -199,7 +199,7 @@ def initialize_home(paths: Paths) -> dict[str, Any]:
         with config_lock(paths):
             # Record a fresh schema before seeding: an interrupted init must resume as
             # this release's scaffold, rather than appear to be an older installation.
-            if _fresh_home(paths):
+            if is_fresh_home(paths):
                 write_json(
                     paths.home / migrations.MARKER, {"revision": migrations.latest_revision()}
                 )

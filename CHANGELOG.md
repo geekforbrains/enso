@@ -25,6 +25,10 @@ These changes are planned for 0.2.0 and have not been published.
   and explain adoption; terminal `enso update apply` needs no workspace argument.
 - Home migrations have ordered, cumulative revisions for database, configuration, and
   file changes; fresh homes record the latest revision directly.
+- Updates snapshot the new release's declared paths, including absent destinations, and
+  restore code and data together on migration or startup failure. Completed upgrades and
+  rollbacks clean their snapshots and failed candidates; repeated upgrades retain only the
+  latest operation and at most two runtimes. Retired untouched bundles are removed safely.
 
 - The audit now covers installation hygiene from one core layout definition shared by
   setup, the scaffold, and `enso workspace audit`. It classifies each top-level entry as

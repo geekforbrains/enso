@@ -88,7 +88,7 @@ Enso's runtime state lives under one directory:
 │   ├── update.json      # latest update operation and outcome
 │   ├── maintenance.json # durable gate while an update pauses new work
 │   ├── daemon.json      # current daemon version, readiness, and accepted work
-│   ├── operations/<id>/ # pinned manifest, journal, backups, failed state, helper files
+│   ├── operations/<id>/ # latest journal; temporary rollback data during an update
 │   └── tools/, python/, cache/    # installer tools and uv-managed runtime support
 └── cache/
     ├── connect/         # private pairing state, receive lock, and first-reply receipt
@@ -136,7 +136,9 @@ code; see [Upgrading](install.md#upgrading).
 Managed updates stage verified releases before pausing new work. An independent helper
 waits for accepted turns, jobs, and ordinary CLI operations, then snapshots affected state,
 switches code, and verifies readiness before admitting work again. An interrupted or failed
-update retains its journal and recovery gate. These files are private runtime state, never
+update retains its journal and recovery gate until recovery completes. Successful upgrades
+and rollbacks remove their temporary snapshots; [automatic cleanup](install.md#automatic-cleanup)
+keeps runtime storage from accumulating. These files are private runtime state, never
 configuration to edit by hand. [Install](install.md#upgrading) owns recovery and adoption;
 [Releases](releasing.md) owns the published bundle and feed.
 

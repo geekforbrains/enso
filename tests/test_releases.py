@@ -239,8 +239,11 @@ def test_completed_release_can_be_reused_but_extras_cannot_change(tmp_path, monk
     source, _ = manifest(tmp_path)
     release = releases.load_release(source)
     candidate = tmp_path / "runtime/releases/candidate"
+    monkeypatch.setenv("UV_LINK_MODE", "symlink")
+    commands = []
 
     def fake_run(args, **kwargs):
+        commands.append(args)
         if "venv" in args:
             (candidate / "bin").mkdir()
             (candidate / "bin/enso").touch()
@@ -250,10 +253,14 @@ def test_completed_release_can_be_reused_but_extras_cannot_change(tmp_path, monk
 
     monkeypatch.setattr(releases, "run_bounded", fake_run)
     releases.prepare_release(release, candidate, extras=("slack",))
+    install_command = next(command for command in commands if "install" in command)
+    assert install_command[install_command.index("--link-mode") + 1] == "copy"
+    commands.clear()
     monkeypatch.setattr(
         releases, "download_artifact", lambda *a, **kw: pytest.fail("reuse needs no download")
     )
     assert releases.prepare_release(release, candidate, extras=("slack",)) == candidate
+    assert not any("install" in command for command in commands)
     with pytest.raises(releases.ReleaseError, match="matching completed install"):
         releases.prepare_release(release, candidate, extras=("telegram",))
     assert (candidate / "bin/enso").exists()
