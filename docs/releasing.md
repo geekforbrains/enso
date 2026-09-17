@@ -12,8 +12,8 @@ does not authorize them.
 
 Use plain `major.minor.patch` versions. During 0.x, patch releases contain fixes; minor releases
 contain features or intentional compatibility breaks. Explain breaks and any user action in
-the owning docs and release notes, and never silently lose user data. `0.1.0` is a suitable
-initial development release under [SemVer](https://semver.org/spec/v2.0.0.html). Describe the
+the owning docs and release notes, and never silently lose user data. `0.2.0` establishes the
+managed upgrade baseline under [SemVer](https://semver.org/spec/v2.0.0.html). Describe the
 product as **beta** in prose; the managed builder and update feed do not accept prerelease or
 development suffixes.
 
@@ -32,11 +32,11 @@ Use a separate worktree for `main`; keep the regular checkout on `develop` so ta
 continue to target development. Fetch first and bring both local branches up to date
 without discarding local commits. A merge or push to either branch does not publish code.
 
-- **Production patch** (`0.1.2` → `0.1.3`): branch the fix from current `main`, validate it,
+- **Production patch** (`0.2.0` → `0.2.1`): branch the fix from current `main`, validate it,
   and merge it into `main`. Prepare and publish the patch there using the checklist below.
   Merge the resulting `main`, including its release commit, into `develop`, resolve
   changelog/lockfile conflicts, and run the checks before pushing the synchronized branch.
-- **Feature release** (`0.1.x` → `0.2.0`): stop adding features to `develop` while preparing
+- **Feature release** (`0.2.x` → `0.3.0`): stop adding features to `develop` while preparing
   the release. Merge current `main` into it and validate the combined tree. With merge
   authorization, promote `develop` to `main`, preferably by fast-forward, and complete
   the checklist on `main`. Merge the release preparation commit back into `develop`
@@ -82,7 +82,7 @@ does not publish it or authorize a tag; record the commit and installation mode 
 
 When using GitHub's `releases/latest/download/release.json` as the feed, publish an ordinary
 release, **not** a GitHub prerelease: [GitHub's latest release](https://docs.github.com/en/rest/releases/releases#get-the-latest-release)
-excludes drafts and prereleases. The title can still say `v0.1.0 (beta)`. This keeps one update
+excludes drafts and prereleases. The title can still say `v0.2.0 (beta)`. This keeps one update
 channel without adding preview-channel machinery. GitHub also recommends
 [drafting and attaching assets before publication](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository).
 
@@ -96,7 +96,7 @@ The following values are examples, not live deployment configuration. Set the ve
 package metadata and choose the real release repository only when preparing a publication:
 
 ```bash
-release_version=0.1.0
+release_version=0.2.0
 release_repo=OWNER/REPO
 release_output=$(mktemp -d /tmp/enso-release.XXXXXX)
 uv run python scripts/build-release.py --output "$release_output" \
@@ -111,7 +111,7 @@ creates these artifacts together:
 ```text
 <release output>/
 ├── release.json
-├── enso-0.1.0-py3-none-any.whl
+├── enso-0.2.0-py3-none-any.whl
 ├── constraints.txt
 └── install.sh
 ```
@@ -173,18 +173,18 @@ assets; upload only the four files in the original output directory.
 ```json
 {
   "schema_version": 1,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "commit": "0123456789abcdef0123456789abcdef01234567",
   "requires_python": ">=3.14",
   "wheel": {
-    "url": "enso-0.1.0-py3-none-any.whl",
+    "url": "enso-0.2.0-py3-none-any.whl",
     "sha256": "<64 lowercase hexadecimal characters>"
   },
   "constraints": {
     "url": "constraints.txt",
     "sha256": "<64 lowercase hexadecimal characters>"
   },
-  "release_notes_url": "https://github.com/OWNER/REPO/releases/tag/v0.1.0"
+  "release_notes_url": "https://github.com/OWNER/REPO/releases/tag/v0.2.0"
 }
 ```
 
@@ -270,7 +270,7 @@ records the intended version and moving feed. A local bundle with relative URLs 
 without a release host:
 
 ```bash
-sh install.sh --manifest /tmp/enso-release-0.1.0/release.json \
+sh install.sh --manifest /tmp/enso-release-0.2.0/release.json \
   --home /tmp/enso-install-smoke --bin-dir /tmp/enso-install-bin
 ```
 

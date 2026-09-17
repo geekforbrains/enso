@@ -11,7 +11,6 @@ rules below. Native setup includes this explanation before pairing.
 
 ## Access in 0.2.0
 
-**Implemented on the 0.2.0 development branch.**
 A binding both grants access to the installation and selects an existing Enso workspace.
 The key uses platform-issued channel or user IDs from authenticated
 transport events. Display names and identities claimed in message text never grant access.

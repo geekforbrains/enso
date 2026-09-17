@@ -333,6 +333,8 @@ inherited from the Enso chat agent, job, or Heartbeat run calling them. Optional
 for that operation. The [context contract](workspaces.md#context-selection-in-020) owns
 validation and recorded ownership; there is no directory inference or implicit `default`.
 Installation-wide commands retain their installation scope.
+For [updates](#updates), requests and release notifications use `default` as their owner
+when neither `--workspace` nor `ENSO_WORKSPACE` is supplied.
 
 For an agent running with `ENSO_WORKSPACE=team`, commands select context as shown below:
 

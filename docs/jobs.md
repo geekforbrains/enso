@@ -279,10 +279,12 @@ closed. The explicit agent triple is stamped into the job like any other job, bu
 check never starts that agent or spends provider tokens. A completed check appears as
 `no_work` in run history, including when it delivered a release notice.
 
-A managed install checks its saved release feed and sends one notice per newer stable
-version to the default notification target. It records the version only after delivery
-succeeds. Unchanged releases, missing feeds, unmanaged checkouts, offline checks, and delivery
-failures remain quiet; the next scheduled check retries. A manual
+A check uses the installation's saved release feed, falling back to official GitHub releases.
+A managed install sends one notice per newer stable version to the default notification
+target. An unmanaged install also receives a notice explaining adoption. Notices are recorded
+only after successful delivery, separately for managed and unmanaged installations.
+Repeated notices, offline checks, and delivery failures remain quiet; failed checks and sends
+are retried on the next scheduled run. A manual
 `enso job run default:enso-update` also uses the default notification target rather than a calling
 chat's origin.
 

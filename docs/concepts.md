@@ -8,9 +8,6 @@ provider CLIs that can power it; each execution runs inside a workspace.
 This document defines the primitives and traces how conversations and background work move
 through the system. Everything else in the docs assumes these words.
 
-Sections marked **Forthcoming in 0.2.0** describe agreed contracts awaiting implementation.
-Other runtime descriptions reflect the currently implemented behavior.
-
 ## Installation trust model
 
 One Enso installation is one trusted environment for a person or
@@ -99,7 +96,7 @@ Enso's runtime state lives under one directory:
 [Connections](connections.md) owns the pairing lifecycle and private state. Prepared home,
 paired chat, valid configuration, and a successful provider reply are separate milestones.
 
-**Implemented for 0.2.0:** workspace settings use `WORKSPACE.md`, and the
+Workspace settings use `WORKSPACE.md`, and the
 workspace directories are scaffolded. Jobs, projects, and Heartbeat scripts now use the
 [workspace ownership layout](workspaces.md#ownership-in-020). Workspace Markdown memory and
 its manual CLI, live conversation capture, and harvesting follow that ownership.
