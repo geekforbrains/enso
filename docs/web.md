@@ -326,7 +326,8 @@ matches titles, paths, and note bodies under the current folder. The explicit **
 search option broadens to every discovered root. Every list shows at most
 `web.knowledge.page_size` items per page (50 by default), with its count, range, and ordinary
 Previous/Next links. Thousands of notes never produce a fully expanded tree or an unbounded
-page.
+page. Note rows show seconds, minutes, hours, or days ago through seven days, then a local
+calendar date such as `Jan 1st, 2025`.
 
 A note opens at `/knowledge/notes/<id>`, using its permanent ID so the URL survives moves
 and renames. Notes without a valid or unique ID remain readable through an explicit

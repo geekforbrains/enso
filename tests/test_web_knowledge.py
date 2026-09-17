@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlencode
 from uuid import uuid4
@@ -87,6 +88,19 @@ async def test_mixed_folders_pagination_and_scoped_search(client, enso_home):
     assert len(knowledge_rows(await across.text())) == 3
     all_notes = await client.get("/knowledge?scope=all&view=all&q=needle")
     assert len(knowledge_rows(await all_notes.text())) == 3
+
+
+async def test_knowledge_rows_show_calendar_dates_with_precise_time_available(client, enso_home):
+    path, _ = note(enso_home.knowledge, "Older.md")
+    local = datetime.now().astimezone().tzinfo
+    updated = datetime(2025, 1, 1, 12, tzinfo=local).isoformat()
+    path.write_text(path.read_text().replace("2026-09-15T12:00:00Z", updated))
+
+    response = await client.get("/knowledge?scope=general")
+    row = knowledge_rows(await response.text())[0]
+    assert "Jan 1st, 2025" in row.text
+    (timestamp,) = row.find("time")
+    assert timestamp.attrs["datetime"] and timestamp.attrs["title"]
 
 
 async def test_note_links_anchors_backlinks_and_stable_id_after_move(client, enso_home):

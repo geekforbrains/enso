@@ -8,7 +8,7 @@
 <a class="row knowledge-row{% if current_url and item.href == current_url %} is-current{% endif %}" href="{{ item.href }}"{% if current_url and item.href == current_url %} aria-current="page"{% endif %}>
   <span class="knowledge-symbol">{{ icon('folder' if item.kind == 'folder' else 'note') }}</span>
   <span class="body"><span class="title">{{ item.title }}</span>{% if detail and item.kind == 'note' %}<span class="detail">{{ item.scope }} / {{ item.path }}</span>{% if excerpt and item.excerpt %}<span class="knowledge-excerpt">{{ item.excerpt }}</span>{% endif %}{% endif %}</span>
-  {% if trail %}<span class="trail">{% if item.kind == 'folder' %}{{ item.count }} note{{ 's' if item.count != 1 }} {{ icon('chevron-right', 12) }}{% else %}{{ item.updated|ago }}{% endif %}</span>{% endif %}
+  {% if trail %}<span class="trail">{% if item.kind == 'folder' %}{{ item.count }} note{{ 's' if item.count != 1 }} {{ icon('chevron-right', 12) }}{% else %}<time datetime="{{ item.updated|iso }}" title="{{ item.updated|when }}">{{ item.updated|knowledge_age }}</time>{% endif %}</span>{% endif %}
 </a>
 {%- endmacro %}
 
