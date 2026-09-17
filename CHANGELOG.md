@@ -26,6 +26,8 @@ All notable changes to Enso are documented here, following
 
 ### Fixed
 
+- Scheduled memory jobs now retry brief shared-writer collisions, so workspaces starting
+  together do not fail their prerun while another workspace prepares a batch.
 - Heartbeat retention now removes a closed beat's script directory, record, and lock file
   together, removes the record last so an interrupted pass is retried, reclaims lock files
   left by earlier pruning, and keeps a beat with an unreconciled action or undelivered

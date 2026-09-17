@@ -400,10 +400,12 @@ choose another workspace, supply arbitrary metadata, or cite an input outside th
 Validation finishes before any inputs are reserved or files published. The receipt retains
 the exact planned Markdown, note identities, paths, and hashes before publication begins.
 The shared memory writer lock serializes publication and recovery against managed manual
-edits; a concurrent writer gets a retry error. A stale result cannot reserve its captures
-again. Before-publication crashes replay the saved plan; after-publication crashes reconcile
-existing identities before completing the receipt. A completed receipt is never replayed,
-even if someone later deletes its notes. No recovery path reruns a provider or sends a message.
+edits. Scheduled memory hooks retry brief collisions for up to five seconds when workspace
+jobs start together; other concurrent writers get a retry error. A stale result cannot
+reserve its captures again. Before-publication crashes replay the saved plan;
+after-publication crashes reconcile existing identities before completing the receipt.
+A completed receipt is never replayed, even if someone later deletes its notes. No recovery
+path reruns a provider or sends a message.
 
 If someone edits a created note before its receipt completes, recovery keeps the edited
 file and finishes the receipt when the note is valid, has a nonempty body, and retains its
