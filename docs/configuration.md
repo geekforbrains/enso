@@ -34,7 +34,7 @@ a binding, the canned unbound notice, and trusted pairing. Missing bound workspa
 errors, with no fallback. [Workspace context](workspaces.md#context-selection-in-020) owns
 CLI selection through `ENSO_WORKSPACE` and optional `--workspace`.
 
-**Implemented on the 0.2.0 development branch:** the config schema is `version: 2`, Enso's
+The config schema is `version: 2`, Enso's
 workspace restriction mode is removed, and workspace settings load from `WORKSPACE.md`.
 [Provider permissions](#provider-permissions-and-installation-trust) owns the launch and
 trust contract. Version 1 is refused without parsing its fields, using
@@ -45,8 +45,7 @@ changing the version number alone is not a migration. An old database or home-le
 
 ### WORKSPACE.md in 0.2.0
 
-**Implemented on the 0.2.0 development branch.** The optional file contains YAML
-frontmatter with only these fields:
+The optional file contains YAML frontmatter with only these fields:
 
 | Field | Contract |
 | --- | --- |

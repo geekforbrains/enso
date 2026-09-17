@@ -11,8 +11,7 @@ rather than assembled by hand.
 
 ## Layout
 
-This layout is implemented on the 0.2.0 development branch, including workspace jobs.
-Heartbeat scripts, Markdown memory, live captures, and memory harvesting also use their
+Jobs, Heartbeat scripts, Markdown memory, live captures, and memory harvesting use their
 owning workspace, as detailed in the [ownership layout](#ownership-in-020).
 
 ```text
@@ -165,8 +164,9 @@ is an error. There is no required privileged workspace type.
 Fresh setup keeps the name `default` and places installation-maintenance jobs there:
 `workspaces/default/jobs/enso-audit/JOB.md` and
 `workspaces/default/jobs/enso-update/JOB.md`, referenced as `default:enso-audit` and
-`default:enso-update`. `default` is an ordinary workspace, not a privileged role or an
-implicit fallback for missing CLI context. Each workspace also owns its own
+`default:enso-update`. `default` is an ordinary workspace. Workspace-scoped commands require
+explicit or inherited context; [update notifications](cli.md#updates) use `default` when
+neither is supplied. Each workspace also owns its own
 [memory harvesting job](jobs.md#workspace-memory-job-in-020), including `default:enso-memory`
 and `team:enso-memory`; those jobs process only their containing workspace.
 
@@ -187,11 +187,15 @@ which saves the resolved workspace for later scheduling and execution.
 
 For example, an agent running with `ENSO_WORKSPACE=team` operates on `team` by default.
 Adding `--workspace personal` deliberately selects `personal` for that CLI operation. A
-later command without the flag still uses `team`. The CLI does not infer context from its
+later command without the flag still uses `team`. These commands do not infer context from their
 current directory or fall back to `default`. Missing context, an invalid selected workspace,
 or ambiguous ownership is an error; an invalid explicit selection never falls back to the
 environment. An operation on an existing record respects that record's stored ownership;
 selecting another context does not transfer it.
+
+Installation-wide [updates](cli.md#updates) can run from a terminal without workspace
+context. Update requests and release notifications select their notification owner from
+`--workspace`, then `ENSO_WORKSPACE`, then `default`; an invalid selection still fails.
 
 Environment variables are context hints, not authenticated identities. Cross-workspace
 selection is a deliberate context choice, available within the installation's trust model;

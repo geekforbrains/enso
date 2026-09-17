@@ -5,7 +5,7 @@ All notable changes to Enso are documented here, following
 
 ## [Unreleased]
 
-These changes are planned for 0.2.0 and have not been published.
+## [0.2.0] - 2026-09-17
 
 ### Breaking
 
@@ -72,8 +72,8 @@ These changes are planned for 0.2.0 and have not been published.
   sends and operational lists require `--workspace` or `ENSO_WORKSPACE`; sends can explicitly
   select another workspace, and lists offer `--all-workspaces`. Registered tables and the
   read-only viewer remain installation-wide.
-  Update requests and release notifications require the same workspace selection;
-  completion notifications retain their recorded workspace through restarts.
+  Update requests and release notifications use an explicit workspace, then
+  `ENSO_WORKSPACE`, then `default`; completion notifications retain that owner through restarts.
 
 - Heartbeat gates and helpers now live under their saved workspace's `heartbeat/<REF>/`.
   Creation requires `--workspace` or `ENSO_WORKSPACE`; JSON `workspace` fields and transfers
