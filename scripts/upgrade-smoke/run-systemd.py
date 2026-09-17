@@ -19,6 +19,7 @@ def unit_value(instance, unit, property_name):
 
 
 def chat_update(instance, release):
+    instance.feed.refill_cache = instance.refill_offline_cache
     response = socket_call(
         instance.home / "smoke-transport.sock",
         {"action": "update", "manifest": instance.url(release)},
@@ -30,7 +31,7 @@ def chat_update(instance, release):
 
 
 def independent_handoff(instance):
-    old_daemon = instance.health("0.1.0")["pid"]
+    old_daemon = instance.health("0.2.0")["pid"]
     old_viewer = instance.viewer_health()["pid"]
     old_cgroup = Path(f"/proc/{old_daemon}/cgroup").read_text().strip()
     hold = instance.home / "smoke-hold-ready"
@@ -48,7 +49,7 @@ def independent_handoff(instance):
         instance.feed.hold = False
         instance.feed.release.set()
     wait_for(
-        lambda: read_json(instance.home / "smoke-waiting-ready.json").get("version") == "0.2.0",
+        lambda: read_json(instance.home / "smoke-waiting-ready.json").get("version") == "0.2.1",
         description="new daemon waiting for transport readiness",
     )
     assert not Path(f"/proc/{old_daemon}").exists(), "old daemon survived service stop"
@@ -59,9 +60,9 @@ def independent_handoff(instance):
     socket_call(instance.home / "smoke-transport.sock", {"action": "release_ready"})
     outcome = instance.outcome()
     assert outcome["operation"]["status"] == "succeeded", outcome
-    new_daemon = instance.health("0.2.0")["pid"]
+    new_daemon = instance.health("0.2.1")["pid"]
     new_viewer = instance.viewer_health()["pid"]
-    instance.assert_preserved(migrated=True)
+    instance.assert_preserved(revision=1)
     return {
         "name": "helper_survives_daemon_cgroup_stop",
         "ok": True,
@@ -100,9 +101,9 @@ def automatic_recovery(instance):
         instance.feed.release.set()
     outcome = instance.outcome()
     assert outcome["operation"]["status"] == "succeeded", outcome
-    instance.health("0.3.0")
+    instance.health("0.2.2")
     instance.viewer_health()
-    instance.assert_preserved(migrated=True)
+    instance.assert_preserved(revision=1)
     return {
         "name": "sigkill_helper_automatically_recovers",
         "ok": True,
@@ -115,13 +116,13 @@ def automatic_recovery(instance):
 
 def failed_candidate(instance, release):
     before = instance.snapshot()
-    old_daemon = instance.health("0.3.0")["pid"]
+    old_daemon = instance.health("0.2.2")["pid"]
     old_viewer = instance.viewer_health()["pid"]
     chat_update(instance, release)
     outcome = instance.outcome()
     assert outcome["operation"]["status"] == "rolled_back", outcome
-    assert outcome["installed_version"] == "0.3.0", outcome
-    new_daemon = instance.health("0.3.0")["pid"]
+    assert outcome["installed_version"] == "0.2.2", outcome
+    new_daemon = instance.health("0.2.2")["pid"]
     new_viewer = instance.viewer_health()["pid"]
     assert new_daemon != old_daemon and new_viewer != old_viewer
     assert instance.snapshot() == before, "rollback changed pre-upgrade data or schema"
@@ -130,13 +131,13 @@ def failed_candidate(instance, release):
         for line in (instance.home / "smoke-start-attempts.jsonl").read_text().splitlines()
     ]
     if release == "startup":
-        assert "0.4.0" in attempted, "startup failure never reached candidate transport"
+        assert "0.2.3" in attempted, "startup failure never reached candidate transport"
     else:
-        assert "0.5.0" not in attempted, "candidate started after migration failure"
+        assert "0.2.4" not in attempted, "candidate started after migration failure"
     return {
         "name": f"{release}_failure_restores_code_database_and_viewer",
         "ok": True,
-        "restored_version": "0.3.0",
+        "restored_version": "0.2.2",
         "restored_schema": before["schema"],
         "old_daemon_pid": old_daemon,
         "new_daemon_pid": new_daemon,
@@ -151,7 +152,7 @@ def interrupted_candidate(instance):
     hold.touch()
     unit = chat_update(instance, "interrupted")
     wait_for(
-        lambda: read_json(instance.home / "smoke-waiting-ready.json").get("version") == "0.6.0",
+        lambda: read_json(instance.home / "smoke-waiting-ready.json").get("version") == "0.2.5",
         description="candidate migration before readiness",
     )
     assert instance.snapshot()["schema"] == before["schema"] + 1
@@ -163,15 +164,15 @@ def interrupted_candidate(instance):
     hold.unlink()
     outcome = instance.outcome()
     assert outcome["operation"]["status"] == "rolled_back", outcome
-    assert outcome["installed_version"] == "0.3.0", outcome
-    instance.health("0.3.0")
+    assert outcome["installed_version"] == "0.2.2", outcome
+    instance.health("0.2.2")
     instance.viewer_health()
     assert instance.snapshot() == before
     return {
         "name": "sigkill_after_migration_automatically_restores_previous_release",
         "ok": True,
         "killed_helper_pid": helper,
-        "restored_version": "0.3.0",
+        "restored_version": "0.2.2",
         "restored_schema": before["schema"],
         "manual_recover_called": False,
     }
@@ -198,32 +199,45 @@ def main():
     feed = None
     instance = None
     try:
-        for name, version in (("base", "0.1.0"), ("good", "0.2.0"), ("recovery", "0.3.0")):
+        for name, version in (("base", "0.2.0"), ("good", "0.2.1"), ("recovery", "0.2.2")):
             print(f"Building synthetic {name} release", flush=True)
-            build_release(name, version, migration="none" if name == "base" else "good")
-        for name, version in (("startup", "0.4.0"), ("migration", "0.5.0")):
+            build_release(name, version, revision=0 if name == "base" else 1)
+        for name, version in (("startup", "0.2.3"), ("migration", "0.2.4")):
             print(f"Building synthetic {name} release", flush=True)
             build_release(
                 name,
                 version,
-                migration="fail" if name == "migration" else "good",
+                revision=2,
+                migration_failure=name == "migration",
                 startup_failure=name == "startup",
-                source_root=ROOT / "sources/good",
             )
-        build_release("interrupted", "0.6.0", migration="good", source_root=ROOT / "sources/good")
+        build_release("interrupted", "0.2.5", revision=2)
+        build_release("latest", "0.2.6", revision=2)
+        build_release("repeat", "0.2.7", revision=2)
         feed = Feed()
         threading.Thread(target=feed.serve_forever, daemon=True).start()
         instance = Instance("systemd", feed, real_systemd=True)
         for case in (independent_handoff, automatic_recovery):
             print(f"Running {case.__name__}", flush=True)
             report["results"].append(case(instance))
+            instance.assert_cleaned()
             REPORT.write_text(json.dumps(report, indent=2))
         for release in ("startup", "migration"):
             print(f"Running {release}_failure", flush=True)
             report["results"].append(failed_candidate(instance, release))
+            instance.assert_cleaned()
             REPORT.write_text(json.dumps(report, indent=2))
         print("Running interrupted_candidate", flush=True)
         report["results"].append(interrupted_candidate(instance))
+        instance.assert_cleaned()
+        for release, version in (("latest", "0.2.6"), ("repeat", "0.2.7")):
+            chat_update(instance, release)
+            outcome = instance.outcome()
+            assert outcome["operation"]["status"] == "succeeded", outcome
+            instance.health(version)
+            instance.assert_preserved(revision=2)
+            instance.assert_cleaned()
+        report["results"].append({"name": "repeated_updates_leave_bounded_storage", "ok": True})
         report["ok"] = True
     except Exception:
         report["error"] = traceback.format_exc()

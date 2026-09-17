@@ -45,51 +45,74 @@ async def test_smoke_transport_supports_cli_delivery(config, tmp_path, upload):
     assert result == expected
 
 
-@pytest.mark.parametrize("fail", [False, True])
-def test_smoke_candidate_exercises_real_schema_preparation(enso_home, fail):
-    from enso import db
-
-    inject = runpy.run_path(str(ROOT / "scripts/upgrade-smoke/run.py"))["inject_migration"]
-    source = (ROOT / "src/enso/db.py").read_text()
-    namespace = {"__name__": "enso._smoke_db", "__package__": "enso"}
-    # Dataclass decorators require their defining module to be registered.
+@pytest.mark.parametrize(("revision", "fail"), [(1, False), (2, False), (2, True)])
+def test_smoke_candidates_use_real_cumulative_migrations(enso_home, monkeypatch, revision, fail):
+    import json
     import sys
     import types
 
-    module = types.ModuleType("enso._smoke_db")
-    module.__dict__.update(namespace)
-    sys.modules[module.__name__] = module
-    try:
-        exec(compile(inject(source, fail=fail), "<smoke candidate>", "exec"), module.__dict__)
-        db.initialize(enso_home)
-        if fail:
-            with pytest.raises(sqlite3.OperationalError):
-                module.initialize(enso_home)
-        else:
-            module.initialize(enso_home)
-            module.initialize(enso_home)
-        with sqlite3.connect(enso_home.db) as con:
-            assert con.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION + (
-                not fail
-            )
-            assert bool(
-                con.execute(
-                    "SELECT 1 FROM sqlite_master WHERE name = ?",
-                    (f"smoke_migrated_v{db.SCHEMA_VERSION + 1}",),
-                ).fetchone()
-            ) is (not fail)
-        if not fail:
-            # The interrupted-update fixture builds from an already upgraded source tree.
-            twice = inject(inject(source))
-            exec(compile(twice, "<next smoke candidate>", "exec"), module.__dict__)
-            module.initialize(enso_home)
-            with sqlite3.connect(enso_home.db) as con:
-                assert con.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION + 2
-    finally:
-        del sys.modules[module.__name__]
+    from enso.config import Paths
+    from enso.maintenance import UpdateError
+
+    fixture = runpy.run_path(str(ROOT / "scripts/upgrade-smoke/run.py"))
+
+    def module(name, source):
+        candidate = types.ModuleType(name)
+        candidate.__package__ = "enso"
+        monkeypatch.setitem(sys.modules, name, candidate)
+        exec(compile(source, "<smoke candidate>", "exec"), candidate.__dict__)
+        return candidate
+
+    database_source = (ROOT / "src/enso/db.py").read_text()
+    base = module("enso._smoke_base", fixture["inject_schema"](database_source, 0))
+    base.initialize(enso_home)
+    with sqlite3.connect(enso_home.db) as con:
+        con.executemany("INSERT INTO smoke_feature VALUES (?, ?)", [("first", 1), ("second", 0)])
+    old = enso_home.home / "smoke-legacy/workflows"
+    old.mkdir(parents=True)
+    (old / "example.json").write_text('{"name":"custom","format":0}\n')
+    migrations = module(
+        "enso._smoke_migrations",
+        fixture["inject_migrations"](
+            (ROOT / "src/enso/migrations.py").read_text(), db.SCHEMA_VERSION, revision, fail=fail
+        ),
+    )
+    assert [step.revision for step in migrations.pending(enso_home)] == list(range(1, revision + 1))
+    declared = migrations.plan(enso_home)
+    assert "enso.db" in declared and "smoke-legacy" in declared
+    assert fixture["WORKFLOW_PATHS"][revision] in declared
+    if fail:
+        with pytest.raises(UpdateError, match="after database and file writes"):
+            migrations.apply(enso_home)
+        # This fault occurs after both kinds of durable mutation and the first marker:
+        # the container acceptance checks must prove the updater restores all three.
+        assert migrations.read_revision(enso_home) == 1
+    else:
+        migrations.apply(enso_home)
+        migrations.apply(enso_home)
+        assert migrations.read_revision(enso_home) == revision
+    destination = enso_home.home / fixture["WORKFLOW_PATHS"][revision] / "example.json"
+    assert json.loads(destination.read_text()) == {"name": "custom", "format": revision}
+    assert not old.exists()
+    candidate = module("enso._smoke_latest", fixture["inject_schema"](database_source, revision))
+    candidate.initialize(enso_home)
+    fresh = Paths(enso_home.home.parent / "fresh")
+    fresh.home.mkdir()
+    candidate.initialize(fresh)
+    with sqlite3.connect(enso_home.db) as upgraded, sqlite3.connect(fresh.db) as new:
+        assert upgraded.execute("PRAGMA user_version").fetchone() == (db.SCHEMA_VERSION + revision,)
+        assert (
+            upgraded.execute("PRAGMA table_info(smoke_feature)").fetchall()
+            == new.execute("PRAGMA table_info(smoke_feature)").fetchall()
+        )
+        defaults = (0, 0) if revision == 2 else (0,)
+        assert upgraded.execute("SELECT * FROM smoke_feature ORDER BY name").fetchall() == [
+            ("first", "done", *defaults),
+            ("second", "pending", *defaults),
+        ]
 
 
-def test_smoke_migration_injection_refuses_missing_anchor():
-    inject = runpy.run_path(str(ROOT / "scripts/upgrade-smoke/run.py"))["inject_migration"]
-    with pytest.raises(AssertionError, match="requires SCHEMA_VERSION and initialize"):
-        inject("SCHEMA_VERSION = 1\n")
+def test_smoke_schema_injection_refuses_missing_anchor():
+    inject = runpy.run_path(str(ROOT / "scripts/upgrade-smoke/run.py"))["inject_schema"]
+    with pytest.raises(AssertionError, match="requires SCHEMA_VERSION and _SCHEMA"):
+        inject("SCHEMA_VERSION = 1\n", 1)
