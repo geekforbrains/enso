@@ -64,7 +64,7 @@ seeding files, with a migration-guide pointer. Moving the old config aside is no
    Pairing creates an explicit user binding to `default`; it does not grant wildcard access.
    Setup explains shared memory and channel audience trust before pairing.
 5. Writes `config.json`, seeds the `enso-audit` and `enso-update` jobs in `default` and a
-   `memory` job in each workspace with its effective agent, sends a test message, and
+   `enso-memory` job in each workspace with its effective agent, sends a test message, and
    offers to install the background service.
 
 The connection acknowledgment and test message verify chat delivery, not provider login.

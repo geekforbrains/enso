@@ -148,8 +148,8 @@ Fresh setup keeps the name `default` and places installation-maintenance jobs th
 `workspaces/default/jobs/enso-update/JOB.md`, referenced as `default:enso-audit` and
 `default:enso-update`. `default` is an ordinary workspace, not a privileged role or an
 implicit fallback for missing CLI context. Each workspace also owns its own
-[memory harvesting job](jobs.md#workspace-memory-job-in-020), including `default:memory`
-and `team:memory`; those jobs process only their containing workspace.
+[memory harvesting job](jobs.md#workspace-memory-job-in-020), including `default:enso-memory`
+and `team:enso-memory`; those jobs process only their containing workspace.
 
 ## Context selection in 0.2.0
 

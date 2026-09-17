@@ -256,7 +256,8 @@ cp -a "$ENSO_CONVERT_OLD/jobs/nightly" "$ENSO_CONVERT_HOME/workspaces/team/jobs/
 Do this before config apply seeds missing bundled jobs. Replace unmodified old audit/update
 bundles with the current shipped ones; merge customized prompts/scripts and preserve
 `enabled: false`. Record deliberate deletions so newly seeded counterparts are not accidentally
-enabled. An existing custom `memory` job needs a decision before installing the new harvester.
+enabled. An existing custom `memory` job can coexist with `enso-memory`; review whether both
+should run, since a custom harvester could process the same captures twice.
 
 | Old usage | New usage |
 | --- | --- |

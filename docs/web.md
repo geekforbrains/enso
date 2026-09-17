@@ -357,7 +357,7 @@ appears in the desktop sidebar and the phone's **More** menu.
 ### Memory
 
 `/memory` audits one workspace at a time. The header counts its captures, captures without
-a processing receipt, current Markdown memories, and whether its `memory` job is installed
+a processing receipt, current Markdown memories, and whether its `enso-memory` job is installed
 and enabled. Missing or invalid jobs are shown without hiding the stored records. The
 **Memories** and **Captures** tabs share the workspace selection; neither writes state.
 

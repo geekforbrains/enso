@@ -408,7 +408,7 @@ def _check_jobs(paths: Paths) -> Iterator[Finding]:
         if root.is_symlink() or not root.is_dir():
             continue
         for entry in sorted(root.iterdir()):
-            installed = workspace == "default" and entry.name in workspaces.BUNDLED_JOBS
+            installed = entry.name in workspaces.bundled_jobs(workspace)
             if entry.is_dir() and workspaces.reserved(entry.name) and not installed:
                 yield Finding(
                     RESERVED, WARNING, _reserved_message(f"workspaces/{workspace}/jobs", entry.name)

@@ -96,6 +96,29 @@ def test_a_healthy_home_is_ok_everywhere(enso_home: Paths, raw_config: dict, uni
     }
 
 
+def test_fresh_two_workspace_home_with_bundled_memory_jobs_passes_doctor(
+    enso_home: Paths, raw_config: dict, unit: Path
+) -> None:
+    raw_config["bindings"]["slack:C2"] = "team"
+    healthy(enso_home, raw_config)
+    workspaces.create_workspace(enso_home, "team")
+    (enso_home.workspace("team") / "AGENTS.md").write_text("# team\n")
+    config = load_config(enso_home)
+    for workspace in ("default", "team"):
+        workspaces.seed_jobs(enso_home, config.defaults, workspace=workspace)
+
+    report = doctor.run(enso_home)
+
+    assert report.ok
+    assert report.section("workspaces").status == "ok"
+    assert report.section("jobs").details["jobs"] == [
+        "default:enso-audit",
+        "default:enso-memory",
+        "default:enso-update",
+        "team:enso-memory",
+    ]
+
+
 def test_codex_astra_is_available_with_ultra_effort(
     enso_home: Paths, raw_config: dict, unit: Path
 ) -> None:

@@ -222,9 +222,9 @@ def job_batch(paths: Paths, workspace: str, run_id: str, *, prepare: bool = Fals
         run is None
         or run.id != run_id
         or run.status != "running"
-        or run.job != f"{workspace}:memory"
+        or run.job != f"{workspace}:enso-memory"
     ):
-        raise NoteError("memory hooks require the current running workspace:memory job")
+        raise NoteError("memory hooks require the current running workspace:enso-memory job")
     require_workspace(paths, workspace)
     with storage.writer(paths, "memory"):
         _recover(paths, workspace)
