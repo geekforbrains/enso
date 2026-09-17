@@ -21,6 +21,10 @@ These changes are planned for 0.2.0 and have not been published.
 
 ### Changed
 
+- Memory harvesting now records only notable events: a decision, a commitment, a change,
+  or an outcome. The bundled `enso-memory` job, skill, and batch guidance state that most
+  batches produce no note and that an explicit `no_memory` result is a successful run,
+  so ordinary discussion no longer becomes a memory.
 - The audit now covers installation hygiene from one core layout definition shared by
   setup, the scaffold, and `enso workspace audit`. It classifies each top-level entry as
   required, managed, user-owned, extension, or unexpected; reports unexpected entries in
