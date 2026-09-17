@@ -314,9 +314,9 @@ workflow and worktree contracts.
 workspace `knowledge/` directory. **Folders** starts at the Knowledge home, where shared
 knowledge and each workspace are folders to enter. The home first shows the most recently
 updated notes across every root, up to `web.knowledge.recent_limit` (5 by default), then the
-root folders. Its breadcrumb is **Index**. The Markdown files remain the source of truth.
-See [Knowledge](knowledge.md) for metadata, writing conventions, imports, and the agent's
-maintenance tools.
+root folders under **Workspaces**. Its breadcrumb is **Index**. The Markdown files remain the
+source of truth. See [Knowledge](knowledge.md) for metadata, writing conventions, imports,
+and the agent's maintenance tools.
 
 Away from the home, **Folders** shows immediate subfolders followed by notes directly in
 the current folder, including folders that have both. Breadcrumbs move up the hierarchy.

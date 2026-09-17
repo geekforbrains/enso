@@ -1,11 +1,11 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m %}
-{% from "_icons.html" import icon %}
+{% import "_knowledge.html" as k %}
 {% block title %}Knowledge{% if folder %} · {{ folder }}{% endif %}{% endblock %}
 {% block content %}
 {% call m.phead(now) %}Knowledge{% endcall %}
 <div class="knowledge-location">
-  <p class="crumbs">{% for label, href in crumbs %}{% if not loop.first %} / {% endif %}{% if loop.last %}<span aria-current="page">{{ label }}</span>{% else %}<a href="{{ href }}">{{ label }}</a>{% endif %}{% endfor %}</p>
+  {{ k.breadcrumbs(crumbs, current=true) }}
 </div>
 {{ m.subtabs(tabs, current_tab) }}
 <form class="toolbar knowledge-search" action="/knowledge" method="get">
@@ -20,28 +20,16 @@
 {% if recent %}
 <section class="knowledge-recent" aria-labelledby="recent-head">
   <div class="shead"><h2 id="recent-head">Recently updated</h2></div>
-  <div class="panel rows knowledge-rows">
-    {% for row in recent %}
-    <a class="row knowledge-row" href="{{ row.href }}">
-      <span class="knowledge-symbol">{{ icon('note') }}</span>
-      <span class="body"><span class="title">{{ row.title }}</span><span class="detail">{{ row.scope }} / {{ row.path }}</span></span>
-      <span class="trail">{{ row.updated|ago }}</span>
-    </a>
-    {% endfor %}
-  </div>
+  {{ k.row_list(recent) }}
 </section>
 {% endif %}
+{% if scope == 'all' and view == 'folders' and not q %}
+<div class="shead"><h2>Workspaces</h2></div>
+{% else %}
 <p class="range">{% if q %}{{ total }} result{{ 's' if total != 1 }} for “{{ q }}” · {{ 'All knowledge' if across else scope_label ~ (' / ' ~ folder if folder else '') }}{% else %}{{ total }} {{ 'item' if view == 'folders' else 'note' }}{{ 's' if total != 1 }}{% endif %}{% if total %} · Showing {{ start }}–{{ end }}{% endif %}</p>
+{% endif %}
 {% if rows %}
-<div class="panel rows knowledge-rows">
-  {% for row in rows %}
-  <a class="row knowledge-row" href="{{ row.href }}">
-    <span class="knowledge-symbol">{{ icon('folder' if row.kind == 'folder' else 'note') }}</span>
-    <span class="body"><span class="title">{{ row.title }}</span>{% if row.kind == 'note' %}<span class="detail">{{ row.scope }} / {{ row.path }}</span>{% if row.excerpt %}<span class="knowledge-excerpt">{{ row.excerpt }}</span>{% endif %}{% endif %}</span>
-    <span class="trail">{% if row.kind == 'folder' %}{{ row.count }} note{{ 's' if row.count != 1 }} {{ icon('chevron-right', 12) }}{% else %}{{ row.updated|ago }}{% endif %}</span>
-  </a>
-  {% endfor %}
-</div>
+{{ k.row_list(rows) }}
 {% else %}
 {{ m.empty('No notes match this search.' if q else 'No notes here yet. Ask Enso to add knowledge in this scope.') }}
 {% endif %}

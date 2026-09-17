@@ -56,6 +56,7 @@ async def test_mixed_folders_pagination_and_scoped_search(client, enso_home):
     html = await response.text()
     assert '<span aria-current="page">Index</span>' in html
     assert html.index("Recently updated") < html.index('href="/knowledge?scope=general"')
+    assert "<h2>Workspaces</h2>" in html and "3 items · Showing 1\u20133" not in html
     rows = knowledge_rows(html)
     assert [row.text.strip().splitlines()[0].strip() for row in rows[-2:]] == [
         "General",
@@ -67,6 +68,7 @@ async def test_mixed_folders_pagination_and_scoped_search(client, enso_home):
     response = await client.get("/knowledge?scope=general&folder=Mixed")
     html = await response.text()
     assert '<a href="/knowledge">Index</a>' in html
+    assert "<h2>Workspaces</h2>" not in html and "2 items · Showing 1\u20132" in html
     rows = knowledge_rows(html)
     assert len(rows) == 2 and "Nested" in rows[0].text and "Overview" in rows[1].text
 
