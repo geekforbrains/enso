@@ -253,6 +253,94 @@ def test_untouched_template_and_orphan_are_warnings(enso_home: Paths, config: Co
     assert named.jobs == ["lonely:nightly"] and [f.check for f in named.findings] == ["agents-md"]
 
 
+def test_project_scripts_that_cannot_run_are_warnings(enso_home: Paths, raw_config: dict) -> None:
+    workspaces.seed_home(enso_home)
+    finish(enso_home.workspace("default"))
+    write_project(
+        enso_home,
+        "EN",
+        {
+            "name": "Enso",
+            "setup": "./setup.sh",
+            "stages": [
+                {"name": "build", "command": "./build.sh"},
+                {"name": "work", "checks": [{"name": "tests", "command": "./test.sh"}]},
+            ],
+            "hooks": {"after:done": "./done.sh"},
+        },
+    )
+    directory = enso_home.project("default", "EN")
+    (directory / "setup.sh").write_text("#!/bin/sh\n")  # present, not executable
+    (directory / "build.sh").mkdir()
+    (directory / "test.sh").symlink_to("nowhere")  # dangling
+    config, problems, _ = parse_config(raw_config, enso_home)
+    assert config is not None, problems
+
+    (found,) = audit.audit(enso_home, ["default"], config=config, user_dirs=USER_DIRS).workspaces
+
+    assert found.ok and found.attention and found.summary == "4 warnings"
+    assert [(f.check, f.fixable, f.message) for f in found.findings] == [
+        ("script", False, "projects/EN: setup runs ./setup.sh, which is not an executable file"),
+        (
+            "script",
+            False,
+            "projects/EN: stage build runs ./build.sh, which is not an executable file",
+        ),
+        ("script", False, "projects/EN: check tests runs ./test.sh, which does not exist"),
+        ("script", False, "projects/EN: hook after:done runs ./done.sh, which does not exist"),
+    ]
+    # Without a readable config nobody knows the project's commands, so the check is skipped.
+    (unknown,) = audit.audit(enso_home, ["default"], user_dirs=USER_DIRS).workspaces
+    assert unknown.findings == []
+    # --fix never writes a script: a stub could only guess.
+    (fixed,) = audit.audit(
+        enso_home, ["default"], fix=True, config=config, user_dirs=USER_DIRS
+    ).workspaces
+    assert fixed.fixed == [] and fixed.findings == found.findings
+    assert not (directory / "done.sh").exists()
+
+    shutil.rmtree(directory / "build.sh")
+    (directory / "test.sh").unlink()
+    for name in ("setup.sh", "build.sh", "test.sh", "done.sh"):
+        (directory / name).write_text("#!/bin/sh\n")
+        (directory / name).chmod(0o755)
+    (healthy,) = audit.audit(enso_home, ["default"], config=config, user_dirs=USER_DIRS).workspaces
+    assert healthy.findings == []
+
+
+@pytest.mark.parametrize(
+    "command, inspected",
+    [
+        ("./test.sh", True),
+        ("./scripts/test.sh", True),
+        ("./test.sh --verbose", False),
+        ("bash ./test.sh", False),
+        ("npm test", False),
+        ("cd x && ./test.sh", False),
+        ("test.sh", False),
+    ],
+)
+def test_only_a_bare_script_reference_is_inspected(
+    enso_home: Paths, raw_config: dict, command: str, inspected: bool
+) -> None:
+    workspaces.seed_home(enso_home)
+    finish(enso_home.workspace("default"))
+    write_project(
+        enso_home,
+        "EN",
+        {
+            "name": "Enso",
+            "stages": [{"name": "work", "checks": [{"name": "t", "command": command}]}],
+        },
+    )
+    config, problems, _ = parse_config(raw_config, enso_home)
+    assert config is not None, problems
+
+    (found,) = audit.audit(enso_home, ["default"], config=config, user_dirs=USER_DIRS).workspaces
+
+    assert [f.check for f in found.findings] == (["script"] if inspected else [])
+
+
 @pytest.mark.parametrize(
     "stage",
     [

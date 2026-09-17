@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import layout, skills, workspaces
-from .config import Config, Paths, require_workspace, valid_workspace_name
+from .config import Config, Paths, ProjectConfig, require_workspace, valid_workspace_name
 from .jobs import load_jobs
 from .skills import ERROR, WARNING
 
@@ -40,6 +40,7 @@ UNEXPECTED = "unexpected"  # an entry the layout has no place for
 RESERVED = "reserved"  # an enso-* skill or job that Enso did not install
 PERMISSIONS = "permissions"  # a root Enso keeps private is readable by other users
 STALE = "stale"  # a generated file whose owner is gone
+SCRIPT = "script"  # a project command names a ./script that is missing or not executable
 
 
 @dataclass(frozen=True)
@@ -189,9 +190,9 @@ def audit(
 ) -> Report:
     """Audit the home and ``names`` (default: every workspace), repairing first with ``fix``.
 
-    ``config`` supplies bindings and stage definitions. Without it the orphan check is
-    skipped, since a workspace may be bound in a config that cannot be read. Jobs are
-    read either way, though some stage jobs cannot be parsed without their definitions.
+    ``config`` supplies bindings and project definitions. Without it the orphan and script
+    checks are skipped, since a workspace may be bound in a config that cannot be read. Jobs
+    are read either way, though some stage jobs cannot be parsed without their definitions.
     ``user_dirs`` overrides where user-level skills are looked for (tests).
     """
     jobs, _ = load_jobs(paths, config)
@@ -203,10 +204,18 @@ def audit(
     found = []
     for name in names:
         bound = None
+        projects: list[ProjectConfig] = []
         if config is not None:
             bound = sorted(key for key, target in config.bindings.items() if target == name)
+            projects = [p for p in config.projects.values() if p.workspace == name]
         result = audit_workspace(
-            paths, name, fix=fix, bound=bound, jobs=named.get(name, []), user_dirs=user_dirs
+            paths,
+            name,
+            fix=fix,
+            bound=bound,
+            jobs=named.get(name, []),
+            projects=projects,
+            user_dirs=user_dirs,
         )
         found.append(result)
     return Report(audit_home(paths, fix=fix, user_dirs=user_dirs), found)
@@ -257,9 +266,13 @@ def audit_workspace(
     fix: bool = False,
     bound: Sequence[str] | None = None,
     jobs: Sequence[str] = (),
+    projects: Sequence[ProjectConfig] = (),
     user_dirs: Sequence[Path] | None = None,
 ) -> WorkspaceAudit:
-    """One workspace. ``bound`` is its binding keys, or None to skip the orphan check."""
+    """One workspace. ``bound`` is its binding keys, or None to skip the orphan check.
+
+    ``projects`` are the workspace's own definitions; their script references are checked.
+    """
     root = paths.workspaces / name
     result = WorkspaceAudit(name=name, path=root, bindings=list(bound or ()), jobs=list(jobs))
     if not valid_workspace_name(name):
@@ -286,6 +299,7 @@ def audit_workspace(
             )
         )
     findings.extend(_check_skills(skills.resolve(paths, name, user_dirs=user_dirs), "workspace"))
+    findings.extend(_check_scripts(paths, projects))
     result.layout = _scan_entries(root, layout.WORKSPACE, findings)
     if bound is not None and not bound and not jobs:
         findings.append(
@@ -442,6 +456,47 @@ def _check_jobs(paths: Paths) -> Iterator[Finding]:
                 yield Finding(
                     RESERVED, WARNING, _reserved_message(f"workspaces/{workspace}/jobs", entry.name)
                 )
+
+
+def _check_scripts(paths: Paths, projects: Sequence[ProjectConfig]) -> Iterator[Finding]:
+    """A project command that is one ``./script`` beside ``PROJECT.md`` which cannot run.
+
+    Only that documented shape is inspected: a bare relative path and nothing else. Any
+    other command is shell, which Enso does not parse; the runtime reports it at exit
+    126/127 when it fails. This only stats a path, so a false match costs one warning.
+    """
+    for project in projects:
+        directory = paths.project(project.workspace, project.key)
+        for source, command in _project_commands(project):
+            words = command.split()
+            if len(words) != 1 or not words[0].startswith("./"):
+                continue
+            script = directory / words[0]
+            if not script.exists():
+                problem = "does not exist"
+            elif not script.is_file() or not os.access(script, os.X_OK):
+                problem = "is not an executable file"
+            else:
+                continue
+            yield Finding(
+                SCRIPT,
+                WARNING,
+                f"projects/{project.key}: {source} runs {words[0]}, which {problem}",
+                attention=True,
+            )
+
+
+def _project_commands(project: ProjectConfig) -> Iterator[tuple[str, str]]:
+    """Every command string a project can run, with the field that names it."""
+    if project.setup:
+        yield "setup", project.setup
+    for stage in project.stages:
+        if stage.command:
+            yield f"stage {stage.name}", stage.command
+        for check in stage.checks:
+            yield f"check {check.name}", check.command
+    for event, command in project.hooks.items():
+        yield f"hook {event}", command
 
 
 def _scan_entries(
