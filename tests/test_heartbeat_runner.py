@@ -11,7 +11,7 @@ import threading
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from conftest import FakeTransport, write_workspace
+from conftest import FakeTransport, beat_runs, write_workspace
 
 from enso import db, execution, heartbeat
 from enso.config import load_config, save_config
@@ -98,7 +98,7 @@ async def test_quiet_gate_only_updates_metadata(runtime, monkeypatch):
     await tick(runner, clock)
     saved = heartbeat.get(config.paths, beat.ref)
     assert saved.last_check_status == "quiet" and saved.last_success_at == db.now()
-    assert heartbeat.list_runs(config.paths, beat.ref) == []
+    assert beat_runs(config.paths, beat.ref) == []
     assert [event.kind for event in heartbeat.history(config.paths, beat.ref)] == [
         "resumed",
         "created",
@@ -158,9 +158,9 @@ async def test_restart_keeps_workspace_gate_helpers_provider_and_action_receipts
     saved = heartbeat.get(config.paths, beat.ref)
     assert saved.workspace == "team" and saved.state == "fulfilled"
     assert len(calls) == 2
-    assert {
-        run.definition.agent.provider for run in heartbeat.list_runs(config.paths, beat.ref)
-    } == {"claude"}
+    assert {run.definition.agent.provider for run in beat_runs(config.paths, beat.ref)} == {
+        "claude"
+    }
     assert not config.paths.workspace_heartbeat("default").exists()
 
 
@@ -197,7 +197,7 @@ async def test_relocated_gate_never_follows_a_linked_parent(runtime, monkeypatch
     else:
         assert saved.last_check_status == "error"
         assert "link" in saved.last_check_error or "missing" in saved.last_check_error
-    assert heartbeat.list_runs(config.paths, beat.ref) == []
+    assert beat_runs(config.paths, beat.ref) == []
 
 
 def test_beat_env_replaces_inherited_identity_with_this_beat(runtime, monkeypatch):
@@ -245,7 +245,7 @@ async def test_ready_gate_persists_bounded_evidence_before_compact_provider_prom
     saved = heartbeat.get(config.paths, beat.ref)
     assert calls and saved.checkpoint == {"last_id": 7} and saved.state == "active"
     assert heartbeat.history(config.paths, beat.ref, unhandled=True) == []
-    assert heartbeat.list_runs(config.paths, beat.ref)[0].status == "ok"
+    assert beat_runs(config.paths, beat.ref)[0].status == "ok"
 
 
 @pytest.mark.asyncio
@@ -292,7 +292,7 @@ async def test_missing_or_changed_gate_is_an_error_without_provider(runtime, mon
     (config.paths.workspace_heartbeat(beat.workspace) / beat.ref / "gate.sh").unlink()
     await tick(HeartbeatRunner(config), clock)
     assert heartbeat.get(config.paths, beat.ref).last_check_status == "error"
-    assert heartbeat.list_runs(config.paths, beat.ref) == []
+    assert beat_runs(config.paths, beat.ref) == []
 
 
 @pytest.mark.asyncio
@@ -311,7 +311,7 @@ async def test_provider_exit_does_not_fulfill_or_spin_same_failed_input(runtime,
     await tick(runner, clock, minutes=1)
     saved = heartbeat.get(config.paths, beat.ref)
     assert calls == [True] and saved.state == "active" and saved.attention
-    assert heartbeat.list_runs(config.paths, beat.ref)[0].status == "error"
+    assert beat_runs(config.paths, beat.ref)[0].status == "error"
     assert len(heartbeat.history(config.paths, beat.ref, unhandled=True)) == 1
     heartbeat.note(config, beat.ref, "A new receipt became available")
     await tick(runner, clock, minutes=1)
@@ -397,11 +397,11 @@ async def test_one_shot_interruption_on_either_side_of_claim_preserves_a_durable
     assert saved.last_check_at is None
     if claimed:
         assert saved.at_consumed and saved.attention and saved.next_check_at is None
-        assert heartbeat.list_runs(config.paths, beat.ref)[0].status == "cancelled"
+        assert beat_runs(config.paths, beat.ref)[0].status == "cancelled"
         assert heartbeat.due(config, clock[0] + timedelta(minutes=1)) == []
     else:
         assert not saved.at_consumed and saved.next_check_at == beat.at
-        assert heartbeat.list_runs(config.paths, beat.ref) == []
+        assert beat_runs(config.paths, beat.ref) == []
         assert heartbeat.due(config, clock[0] + timedelta(minutes=1))[0].ref == beat.ref
 
 
@@ -460,7 +460,7 @@ async def test_live_changes_cancel_and_await_active_provider(runtime, monkeypatc
         await runner.tick(clock[0])
     await drain(runner)
     assert cleaned.is_set() and runner.running() == []
-    run = heartbeat.list_runs(config.paths, beat.ref)[0]
+    run = beat_runs(config.paths, beat.ref)[0]
     assert run.status == "cancelled" and run.settlement is None
     assert heartbeat.get(config.paths, beat.ref).claim_run_id is None
 
@@ -550,7 +550,7 @@ async def test_hard_expiry_interrupts_active_assessment(runtime, monkeypatch, st
     clock[0] += timedelta(minutes=2)
     await drain(runner)
     assert cleaned.is_set() and heartbeat.get(config.paths, beat.ref).state == "expired"
-    runs = heartbeat.list_runs(config.paths, beat.ref)
+    runs = beat_runs(config.paths, beat.ref)
     assert runs == [] if stage == "gate" else runs[0].status == "cancelled"
 
 
@@ -563,7 +563,7 @@ async def test_gate_timeout_records_safe_failure(runtime):
     assert (
         saved.last_check_status == "error" and saved.last_check_error == "Gate timed out after 1s"
     )
-    assert heartbeat.list_runs(config.paths, beat.ref) == []
+    assert beat_runs(config.paths, beat.ref) == []
 
 
 @pytest.mark.asyncio
@@ -574,7 +574,7 @@ async def test_real_provider_adapter_uses_fresh_session_and_requires_settlement(
     runner = HeartbeatRunner(fake_config)
     await runner.tick(now + timedelta(seconds=1))
     await drain(runner)
-    run = heartbeat.list_runs(fake_config.paths, beat.ref)[0]
+    run = beat_runs(fake_config.paths, beat.ref)[0]
     assert run.session_id and run.exit_code == 0 and run.status == "error"
     assert "new " + run.session_id in run.output
     assert "without recording wait or complete" in run.error
@@ -673,7 +673,7 @@ async def test_slow_notices_do_not_delay_other_due_assessments(runtime, monkeypa
     await asyncio.wait_for(runner.tick(clock[0]), 2)
     await asyncio.wait_for(asyncio.gather(sending.wait(), assessed.wait()), 2)
     await runner.stop()
-    assert cancelled.is_set() and heartbeat.list_runs(config.paths, due.ref)[0].status == "ok"
+    assert cancelled.is_set() and beat_runs(config.paths, due.ref)[0].status == "ok"
 
 
 @pytest.mark.asyncio
@@ -773,4 +773,4 @@ async def test_assessments_preserve_provider_arguments_without_policy_prerequisi
     monkeypatch.setattr(execution, "execute_turn", assess)
     await tick(HeartbeatRunner(config), clock)
     assert calls == ["claude"]
-    assert heartbeat.list_runs(config.paths, beat.ref)[0].status == "ok"
+    assert beat_runs(config.paths, beat.ref)[0].status == "ok"

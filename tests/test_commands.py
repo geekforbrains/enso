@@ -7,7 +7,7 @@ import threading
 from dataclasses import replace
 
 import pytest
-from conftest import FakeReply, make_turn
+from conftest import FakeReply, make_turn, session_for
 
 from enso import commands, db
 from enso.commands import Command, parse
@@ -66,7 +66,7 @@ async def test_status_then_clear(runtime: Runtime, enso_home: Paths) -> None:
     ]
 
     await runtime.handle(make_turn("hello"), FakeReply())
-    session = db.get_session(enso_home, "slack:D1", "claude")
+    session = session_for(enso_home, "slack:D1", "claude")
     assert session is not None
     await commands.dispatch(runtime, make_turn("!status"), reply)
     assert f"Session: claude {session.session_id[:8]} · started 0s ago" in reply.sent[-1]
@@ -158,7 +158,7 @@ async def test_status_reads_sessions_off_loop(
 async def test_commands_in_a_dm_thread_target_the_dm(runtime: Runtime, enso_home: Paths) -> None:
     """``!status``/``!clear`` typed inside a DM thread act on the DM's one conversation."""
     await runtime.handle(make_turn("hello"), FakeReply())
-    session = db.get_session(enso_home, "slack:D1", "claude")
+    session = session_for(enso_home, "slack:D1", "claude")
     assert session is not None
     reply = FakeReply()
     await commands.dispatch(runtime, make_turn("!status", thread="9.9"), reply)

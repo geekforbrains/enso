@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from conftest import FakeReply, make_turn, write_config
+from conftest import FakeReply, make_turn, session_for, write_config
 
 from enso import db, messages
 from enso.config import Paths
@@ -194,7 +194,7 @@ async def test_queue_rebinding_and_restart_keep_background_and_sessions_owned(
     first, queued, rebound = FakeReply(), FakeReply(), FakeReply()
     drain = await runtime.submit(make_turn("first"), first)
     await asyncio.wait_for(entered.wait(), 5)
-    original = db.get_session(enso_home, "slack:D1", "claude")
+    original = session_for(enso_home, "slack:D1", "claude")
     assert original is not None and original.workspace == "default"
     assert await runtime.submit(make_turn("queued"), queued) is None
     raw = {**runtime.config.raw, "bindings": {"slack:dm:U1": "team"}}
@@ -207,7 +207,7 @@ async def test_queue_rebinding_and_restart_keep_background_and_sessions_owned(
     await asyncio.wait_for(drain, 5)
     assert f"resumed {original.session_id} workspace=default" in queued.sent[-1]
     assert "default result" in queued.sent[-1] and "team result" not in queued.sent[-1]
-    current = db.get_session(enso_home, "slack:D1", "claude")
+    current = session_for(enso_home, "slack:D1", "claude")
     assert current is not None and current.workspace == "team"
     assert current.session_id != original.session_id
     assert "team result" in rebound.sent[-1] and "default result" not in rebound.sent[-1]

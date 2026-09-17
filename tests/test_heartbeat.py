@@ -6,6 +6,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from conftest import beat_runs
 
 from enso import db, heartbeat
 from enso.config import Agent, WorkspaceConfig
@@ -399,11 +400,7 @@ def test_recovery_and_pruning_skip_live_locks_and_never_reuse_ids(config, defini
     with lock:
         assert heartbeat.prune(config, now=future) == []
     assert [beat.ref for beat in heartbeat.prune(config, now=future)] == [beat.ref]
-    assert (
-        heartbeat.history(config.paths, beat.ref)
-        == heartbeat.list_runs(config.paths, beat.ref)
-        == []
-    )
+    assert heartbeat.history(config.paths, beat.ref) == beat_runs(config.paths, beat.ref) == []
     assert heartbeat.create(config, definition).ref == "HB-002"
 
 
