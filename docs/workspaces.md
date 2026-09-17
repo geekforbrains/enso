@@ -65,6 +65,7 @@ The home itself holds the workspaces and what they share:
 ├── skills/            # installed and hand-written skills
 ├── knowledge/         # shared reference that belongs across workspaces
 ├── secrets/           # *.env files loaded into the service environment
+├── .gitignore         # optional: yours, for the Git root Enso creates but never commits to
 ├── workspaces/<name>/ # one directory per workspace, as above
 ├── heartbeat/         # installation-level beat locks
 ├── cache/, runtime/   # Enso's own operating state
@@ -352,7 +353,7 @@ is reported in one of five categories:
 | --- | --- | --- |
 | `required` | Enso's, and missing it is an error | `AGENTS.md`, `skills/`, `workspaces/`, `.git` |
 | `managed` | Enso's, written when needed | `enso.db`, `cache/`, `runtime/`, `.bundles.json` |
-| `user` | Enso may create the root; what is inside is yours | `secrets/`, `WORKSPACE.md`, a workspace `heartbeat/` |
+| `user` | Enso may create the root; what is inside is yours | `secrets/`, `.gitignore`, `WORKSPACE.md`, a workspace `heartbeat/` |
 | `extension` | A provider or tool's own file, preserved and never read | `.codex/`, `.grok/`, `opencode.json` |
 | `unexpected` | Nothing in the table claims this name | whatever you left there |
 
