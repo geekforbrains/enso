@@ -26,7 +26,7 @@ from typer.testing import CliRunner
 
 from enso import db, runs, web
 from enso.cli import app
-from enso.config import Config, Paths, WebConfig, parse_config
+from enso.config import Config, Paths, WebConfig, WebKnowledgeConfig, parse_config
 from enso.web import server, views
 from enso.web.server import CSP, create_app
 
@@ -63,6 +63,10 @@ def test_web_config_defaults_values_and_problems(enso_home: Paths, raw_config: d
     config, problems, _ = parse_config(raw_config, enso_home)
     assert config is not None and config.web == WebConfig("0.0.0.0", 9000)
 
+    raw_config["web"] = {"knowledge": {"recent_limit": 7, "page_size": 25}}
+    config, problems, _ = parse_config(raw_config, enso_home)
+    assert config is not None and config.web.knowledge == WebKnowledgeConfig(7, 25)
+
     for bad, expected in (
         ({"port": 0}, "web.port must be an integer from 1 through 65535"),
         ({"port": 70000}, "web.port must be an integer from 1 through 65535"),
@@ -70,6 +74,13 @@ def test_web_config_defaults_values_and_problems(enso_home: Paths, raw_config: d
         ({"port": True}, "web.port must be an integer from 1 through 65535"),
         ({"host": ""}, "web.host must be a non-empty string"),
         ({"host": 7}, "web.host must be a non-empty string"),
+        (
+            {"knowledge": {"recent_limit": -1}},
+            "web.knowledge.recent_limit must be a non-negative integer",
+        ),
+        ({"knowledge": {"page_size": 0}}, "web.knowledge.page_size must be a positive integer"),
+        ({"knowledge": {"page_size": True}}, "web.knowledge.page_size must be a positive integer"),
+        ({"knowledge": []}, "web.knowledge must be an object"),
     ):
         raw_config["web"] = bad
         config, problems, _ = parse_config(raw_config, enso_home)

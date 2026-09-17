@@ -40,6 +40,8 @@ DEFAULT_RUNS_KEEP = 500
 DEFAULT_RUNS_MAX_AGE_DAYS = 30
 DEFAULT_WEB_HOST = "127.0.0.1"
 DEFAULT_WEB_PORT = 8787
+DEFAULT_WEB_KNOWLEDGE_RECENT_LIMIT = 5
+DEFAULT_WEB_KNOWLEDGE_PAGE_SIZE = 50
 _LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 # Every project has these stages besides its own; a project may not name one of them.
 BUILTIN_STAGES = ("backlog", "blocked", "done", "cancelled")
@@ -279,11 +281,20 @@ class HeartbeatConfig:
 
 
 @dataclass(frozen=True)
+class WebKnowledgeConfig:
+    """Bounded knowledge-list sizes for the read-only viewer."""
+
+    recent_limit: int = DEFAULT_WEB_KNOWLEDGE_RECENT_LIMIT
+    page_size: int = DEFAULT_WEB_KNOWLEDGE_PAGE_SIZE
+
+
+@dataclass(frozen=True)
 class WebConfig:
     """Where ``enso web start`` listens unless its flags say otherwise."""
 
     host: str = DEFAULT_WEB_HOST
     port: int = DEFAULT_WEB_PORT
+    knowledge: WebKnowledgeConfig = field(default_factory=WebKnowledgeConfig)
 
 
 @dataclass(frozen=True)
@@ -537,7 +548,7 @@ SETTINGS_KEYS = {
     "agent": ("timeout",),
     "logging": ("level", "max_bytes", "backups"),
     "runs": ("keep", "max_age_days"),
-    "web": ("host", "port"),
+    "web": ("host", "port", "knowledge"),
     "heartbeat": ("enabled", "retention_days"),
 }
 # JSON member names are arbitrary text. An ordinary one prints as itself; anything else is
@@ -1062,7 +1073,28 @@ def _parse_web(raw: dict, problems: list[str]) -> WebConfig:
     if not valid_port(port):
         problems.append("web.port must be an integer from 1 through 65535")
         port = DEFAULT_WEB_PORT
-    return WebConfig(host=host.strip(), port=port)
+    knowledge_raw = raw.get("knowledge", {})
+    if not isinstance(knowledge_raw, dict):
+        problems.append("web.knowledge must be an object")
+        knowledge_raw = {}
+    else:
+        _unknown_keys(knowledge_raw, ("recent_limit", "page_size"), "web.knowledge", problems)
+    recent_limit = _positive_int(
+        knowledge_raw,
+        "recent_limit",
+        DEFAULT_WEB_KNOWLEDGE_RECENT_LIMIT,
+        "web.knowledge",
+        problems,
+    )
+    page_size = knowledge_raw.get("page_size", DEFAULT_WEB_KNOWLEDGE_PAGE_SIZE)
+    if isinstance(page_size, bool) or not isinstance(page_size, int) or page_size < 1:
+        problems.append("web.knowledge.page_size must be a positive integer")
+        page_size = DEFAULT_WEB_KNOWLEDGE_PAGE_SIZE
+    return WebConfig(
+        host=host.strip(),
+        port=port,
+        knowledge=WebKnowledgeConfig(recent_limit=recent_limit, page_size=page_size),
+    )
 
 
 def _parse_heartbeat(raw: dict, problems: list[str]) -> HeartbeatConfig:
