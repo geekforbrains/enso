@@ -10,7 +10,6 @@ import asyncio
 import json
 import logging
 import os
-import shutil
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -18,7 +17,7 @@ from functools import partial
 from typing import Any
 
 from .. import db, execution, messages, routing
-from ..config import Config, ConfigError, load_config, require_workspace
+from ..config import Config, ConfigError, load_config
 from ..providers import make_provider
 from ..transports import Transport
 from . import store
@@ -170,6 +169,7 @@ class HeartbeatRunner:
         self._running: dict[str, asyncio.Task[None]] = {}
         self._notice_task: asyncio.Task[None] | None = None
         self._notice_failures: set[str] = set()
+        self._retained: dict[str, str] = {}
         self._closed = False
         self._invalid_config = False
 
@@ -228,7 +228,11 @@ class HeartbeatRunner:
         if self._notice_task is None or self._notice_task.done():
             self._notice_task = asyncio.create_task(self._notices(config), name="heartbeat:notices")
             self._notice_task.add_done_callback(partial(self._finished, "notices"))
-        await asyncio.to_thread(self._prune, config, now)
+        retained = await asyncio.to_thread(store.prune, config, now=now)
+        for ref, reason in retained.items():
+            if self._retained.get(ref) != reason:
+                log.warning("heartbeat %s is kept past retention: %s", ref, reason)
+        self._retained = retained
 
     def _finished(self, ref: str, task: asyncio.Task[None]) -> None:
         if self._running.get(ref) is task:
@@ -546,29 +550,3 @@ class HeartbeatRunner:
                     )
                     self._notice_failures.add(ref)
                 return
-
-    def _prune(self, config: Config, now: datetime) -> None:
-        for beat in store.prune(config, now=now):
-            root = self.paths.workspace_heartbeat(beat.workspace)
-            directory = root / beat.ref
-            try:
-                require_workspace(self.paths, beat.workspace)
-            except ValueError:
-                log.warning(
-                    "heartbeat %s retained scripts in an unavailable workspace during pruning",
-                    beat.ref,
-                )
-                continue
-            if not directory.exists():
-                continue
-            if (
-                root.is_symlink()
-                or directory.is_symlink()
-                or directory.resolve().parent != root.resolve()
-            ):
-                log.warning("heartbeat %s retained an unsafe script path during pruning", beat.ref)
-                continue
-            try:
-                shutil.rmtree(directory)
-            except OSError:
-                log.warning("heartbeat %s could not remove its old script directory", beat.ref)
