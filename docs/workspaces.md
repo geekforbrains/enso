@@ -324,7 +324,7 @@ The audit checks, each finding carrying the check id shown:
 | `CLAUDE.md` is a symlink to `AGENTS.md` | `link` | error | Creates or repoints the link |
 | `.claude/skills` and `.agents/skills` are symlinks to `../skills` | `link` | error | Creates or repoints the link |
 | The home is a Git root, and no workspace is one | `git-root` | error | Runs `git init` in the home |
-| The home has `AGENTS.md`, `skills/`, `knowledge/`, and the same three links | `agents-md`, `directory`, `link` | error | Creates missing directories and the links |
+| The home has `AGENTS.md`, `skills/`, `knowledge/`, `workspaces/`, and the same three links | `agents-md`, `directory`, `link` | error | Creates missing directories and the links |
 | `AGENTS.md` exists | `agents-md` | error | Reports only |
 | `AGENTS.md` is not still the untouched template | `agents-md` | warning | Reports only |
 | Every skill directory has a `SKILL.md` whose `name` matches the directory | `skill` | error | Reports only |
@@ -333,8 +333,8 @@ The audit checks, each finding carrying the check id shown:
 | No `enso-*` skill or job exists that Enso did not install | `reserved` | warning | Reports only |
 | The workspace is bound, or named by a job | `orphan` | warning | Reports only |
 | Unexpected entries at the home's or a workspace's top level, or under `workspaces/` | `unexpected` | warning | Reports only |
-| A dangling symbolic link where an optional entry belongs | `link` | warning | Reports only |
-| `config.json`, `runtime/`, and `secrets/` are not readable by other users | `permissions` | warning | Restricts them to `0600`/`0700` |
+| A dangling optional link, or a link or file in place of a real `runtime/`, `cache/`, or `secrets/` directory | `link`, `directory` | warning | Reports only |
+| `config.json`, `runtime/`, and `secrets/` have no group or other access | `permissions` | warning | Removes group and other access; preserves owner access |
 | SQLite sidecars left behind by a removed `enso.db` | `stale` | warning | Reports only |
 | `uploads/` size | — | — | Reported as a number |
 
@@ -360,19 +360,21 @@ is reported in one of five categories:
 Only a root's own top-level names are classified. The audit never descends into a declared
 directory, so operating state under `runtime/` or `cache/` is never mistaken for clutter,
 and your notes under `knowledge/` are never inspected by this check. `.DS_Store` is ignored
-in every root.
+in every root. When present, `runtime/`, `cache/`, and `secrets/` must be real directories;
+the audit reports a file or symlink in their place and leaves it untouched.
 
 `permissions` covers only the paths whose security contract is Enso's: the configuration it
 writes, the private state it creates, and the `secrets/` directory whose `*.env` files reach
 the service environment. It says nothing about the rest of your files, and it is the one
-finding `--fix` repairs by changing a mode — tightening only, never widening, and never
-following a symbolic link. A root that is already private is left exactly as it is.
+finding `--fix` repairs by changing a mode — removing group and other bits while preserving
+the existing owner bits, and never following a symbolic link. A root that is already private
+is left exactly as it is.
 
 `stale` is deliberately narrow: a finding must be certain, not a guess about age. Today that
 is `enso.db-wal` and `enso.db-shm` with no `enso.db` beside them. Nothing deletes them for
 you.
 
-`--fix` only ever creates and repairs directories, discovery links, and the permissions of
+`--fix` only ever creates and repairs required directories, discovery links, and the permissions of
 the paths listed under `permissions` above. It never deletes a
 file, edits `AGENTS.md` or `WORKSPACE.md`, or changes content inside workspace directories.
 A real file or directory sitting where a link belongs, or a dangling symbolic link sitting where a

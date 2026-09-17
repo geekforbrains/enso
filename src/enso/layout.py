@@ -25,7 +25,7 @@ UNEXPECTED = "unexpected"  # nothing in the table claims this name
 CATEGORIES = (REQUIRED, MANAGED, USER, EXTENSION, UNEXPECTED)
 # OS noise: reported by nothing, whatever root it turns up in.
 IGNORED = frozenset({".DS_Store"})
-# What a ``private`` entry is created with, and what a repair restores it to.
+# What a ``private`` entry is created with; repairs preserve its owner bits.
 PRIVATE_DIR = 0o700
 PRIVATE_FILE = 0o600
 SHARED_BITS = 0o077  # any group or other access at all
@@ -39,6 +39,7 @@ class Entry:
     category: str
     what: str  # a short phrase, shown when a finding has to name the entry
     private: bool = False  # Enso owns its permissions: no group or other access
+    real_directory: bool = False  # when present, a file or symlink cannot replace this root
 
     @property
     def required(self) -> bool:
@@ -93,8 +94,14 @@ HOME: tuple[Entry, ...] = (
     Entry("launchd-web.log", MANAGED, "the viewer service manager's own log"),
     Entry("web.log", MANAGED, "the viewer log"),
     Entry("web.pid", MANAGED, "the viewer's pidfile"),
-    Entry("cache", MANAGED, "expiring lookups and private pairing state"),
-    Entry("runtime", MANAGED, "managed releases and update receipts", private=True),
+    Entry("cache", MANAGED, "expiring lookups and private pairing state", real_directory=True),
+    Entry(
+        "runtime",
+        MANAGED,
+        "managed releases and update receipts",
+        private=True,
+        real_directory=True,
+    ),
     Entry("heartbeat", MANAGED, "installation-level beat locks"),
     Entry("browser", MANAGED, "the enso-browser skill's profiles"),
     # Every shipped file outside skills/ lands under here; see workspaces.BUNDLED_FILES.
@@ -105,7 +112,13 @@ HOME: tuple[Entry, ...] = (
     Entry(".knowledge.lock", MANAGED, "the shared knowledge writer lock"),
     Entry(".memory.lock", MANAGED, "the memory writer lock"),
     Entry(".workflow-locks", MANAGED, "workflow lifecycle delivery locks"),
-    Entry("secrets", USER, "*.env files loaded into the service environment", private=True),
+    Entry(
+        "secrets",
+        USER,
+        "*.env files loaded into the service environment",
+        private=True,
+        real_directory=True,
+    ),
     # Enso runs ``git init`` here and never commits, but the repository it made is the
     # operator's to use, and a repository's ignore file belongs beside it.
     Entry(".gitignore", USER, "what the operator keeps out of the home's own history"),

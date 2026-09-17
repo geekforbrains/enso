@@ -74,7 +74,7 @@ a valid `config.json` are `skipped` until it is.
 
 `--attention` answers a wider question than health: is there anything worth telling you
 about, problem or not. It exits 1 for every health problem and also for the
-[installation-hygiene findings](workspaces.md#auditing) — an unexpected entry, a dangling
+[installation-hygiene findings](workspaces.md#auditing) — an unexpected entry, an irregular
 link, credentials other users can read, a stale generated file — which are warnings and
 would otherwise pass silently. Warnings that are matters of taste, such as an orphan
 workspace or an unedited `AGENTS.md` template, do not exit 1. Plain `enso doctor` keeps its
