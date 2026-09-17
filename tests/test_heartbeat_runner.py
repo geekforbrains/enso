@@ -714,7 +714,9 @@ async def test_failed_transport_retries_and_failure_recovery_notices_are_transit
 
 
 @pytest.mark.asyncio
-async def test_lock_overlap_recovery_and_pruning_preserve_owned_boundaries(runtime, tmp_path):
+async def test_lock_overlap_recovery_and_pruning_preserve_owned_boundaries(
+    runtime, tmp_path, caplog
+):
     config, clock = runtime
     config.paths.workspace("team").mkdir()
     beat = make_beat(config, workspace="team", gate="exit 1\n")
@@ -729,15 +731,19 @@ async def test_lock_overlap_recovery_and_pruning_preserve_owned_boundaries(runti
         assert heartbeat.get_run(config.paths, run.id).status == "running"
     assert runner.recover() == 1
     heartbeat.cancel(config, beat.ref)
+    for outbox_id, notice in enumerate(heartbeat.pending_notices(config.paths), start=1):
+        heartbeat.notice_delivered(config, notice, outbox_id)
     clock[0] += timedelta(days=31)
     await runner.tick(clock[0])
     await drain(runner)
     # A notice can hold the beat lock during tick's prune; retry after its owner finishes.
-    runner._prune(config, clock[0])
+    assert heartbeat.prune(config, now=clock[0]) == {}
     assert heartbeat.get(config.paths, beat.ref) is None
     assert not (config.paths.workspace_heartbeat(beat.workspace) / beat.ref).exists()
+    assert not (config.paths.heartbeat / ".locks" / f"{beat.ref}.lock").exists()
     assert heartbeat.get(config.paths, other.ref).state == "active"
     assert (config.paths.workspace_heartbeat(other.workspace) / other.ref / "gate.sh").is_file()
+    assert (config.paths.heartbeat / ".locks" / f"{other.ref}.lock").is_file()
     # A closed beat's symlink is never followed into somebody else's files.
     unsafe = make_beat(config)
     directory = config.paths.workspace_heartbeat(unsafe.workspace) / unsafe.ref
@@ -746,10 +752,16 @@ async def test_lock_overlap_recovery_and_pruning_preserve_owned_boundaries(runti
     marker.write_text("user data")
     heartbeat.cancel(config, unsafe.ref)
     clock[0] += timedelta(days=31)
-    await runner.tick(clock[0])
-    await drain(runner)
-    runner._prune(config, clock[0])
+    with caplog.at_level("WARNING", logger=module.log.name):
+        for _ in range(2):
+            await runner.tick(clock[0])
+            await drain(runner)
     assert marker.read_text() == "user data" and directory.is_symlink()
+    assert heartbeat.get(config.paths, unsafe.ref).state == "cancelled"
+    kept = [record.message for record in caplog.records if "past retention" in record.message]
+    assert kept == [
+        f"heartbeat {unsafe.ref} is kept past retention: its script path is a symbolic link"
+    ]
 
 
 @pytest.mark.asyncio
