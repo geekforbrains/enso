@@ -89,7 +89,7 @@ async def test_live_discussion_harvests_then_fresh_session_recalls_and_promotes(
     workspaces.ensure_layout(enso_home.workspace("default"))
     write_config(enso_home, fake_config.raw)
     workspaces.seed_jobs(enso_home, fake_config.defaults)
-    job = load_job(enso_home, fake_config, "memory")
+    job = load_job(enso_home, fake_config, "enso-memory")
     log = tmp_path / "launches.jsonl"
     monkeypatch.setenv("FAKE_CLAUDE_LAUNCHES", str(log))
     runtime = Runtime(fake_config)
@@ -227,7 +227,7 @@ async def test_followups_cannot_expand_the_original_batch(enso_home, fake_config
     from enso.jobs.runner import JobRunner
 
     workspaces.seed_jobs(enso_home, fake_config.defaults)
-    job = load_job(enso_home, fake_config, "memory")
+    job = load_job(enso_home, fake_config, "enso-memory")
     original = conversation(enso_home)
     call = execution.execute_turn
     attempts = 0
@@ -290,14 +290,14 @@ def test_apply_installs_each_workspace_job_with_its_agent_and_preserves_customiz
     applied = initialization.apply_config(enso_home, raw_config)
     assert applied["ok"], applied
     config = load_config(enso_home)
-    default = load_job(enso_home, config, "memory")
+    default = load_job(enso_home, config, "enso-memory")
     assert default.model == "sonnet" and default.effort == "low"
     assert load_job(enso_home, config, "enso-audit").model == config.defaults.model
-    team = load_job(enso_home, config, "team:memory")
+    team = load_job(enso_home, config, "team:enso-memory")
     assert (team.provider, team.model, team.effort) == ("claude", "sonnet", "high")
     assert default.schedule == team.schedule == "*/15 * * * *"
     assert team.enabled and team.prerun == "prerun.sh" and team.postrun == "postrun.sh"
-    assert sorted(p.name for p in enso_home.workspace_jobs("team").iterdir()) == ["memory"]
+    assert sorted(p.name for p in enso_home.workspace_jobs("team").iterdir()) == ["enso-memory"]
     target = team.job_dir / "JOB.md"
     edited = (
         target.read_text()
@@ -322,13 +322,13 @@ def test_new_workspace_and_bundle_refresh_install_memory_in_their_own_locations(
     created = CliRunner().invoke(app, ["workspace", "create", "team"])
     assert created.exit_code == 0, created.output
     config = load_config(enso_home)
-    assert load_job(enso_home, config, "team:memory").model == config.defaults.model
+    assert load_job(enso_home, config, "team:enso-memory").model == config.defaults.model
     workspaces.create_workspace(enso_home, "research")
     workspaces.reconcile_bundles(
         enso_home, config.defaults, workspace_agents={"research": Agent("claude", "sonnet", "high")}
     )
     config = load_config(enso_home)
-    assert load_job(enso_home, config, "research:memory").model == "sonnet"
+    assert load_job(enso_home, config, "research:enso-memory").model == "sonnet"
     skill = enso_home.skills / "enso-memory/SKILL.md"
     customized = skill.read_text() + "\nPrefer a brief narrative.\n"
     skill.write_text(customized)
@@ -336,24 +336,35 @@ def test_new_workspace_and_bundle_refresh_install_memory_in_their_own_locations(
     assert skill.read_text() == customized
 
 
-def test_conflicting_memory_job_is_reported_and_preserved(enso_home, config):
+def test_operator_memory_job_coexists_with_bundled_job(enso_home, config):
     original = write_job(enso_home, "memory", prompt="Our custom job")
     before = original.read_bytes()
-    changed = workspaces.seed_jobs(enso_home, config.defaults)
-    assert any("conflict:" in line for line in changed)
-    changed = workspaces.reconcile_bundles(enso_home, config.defaults)
-    assert any("conflict:" in line for line in changed)
+    workspaces.seed_jobs(enso_home, config.defaults)
+    assert (original.parent.parent / "enso-memory" / "JOB.md").is_file()
+    workspaces.reconcile_bundles(enso_home, config.defaults)
     assert original.read_bytes() == before
     assert sorted(p.name for p in original.parent.iterdir()) == ["JOB.md"]
+    assert sorted(p.name for p in original.parent.parent.iterdir()) == [
+        "enso-audit",
+        "enso-memory",
+        "enso-update",
+        "memory",
+    ]
 
 
 def test_hooks_require_current_run_and_reconcile_completed_retry(enso_home, config, monkeypatch):
     db.initialize(enso_home)
     workspaces.seed_jobs(enso_home, config.defaults)
-    job = load_job(enso_home, config, "memory")
+    job = load_job(enso_home, config, "enso-memory")
     runner = CliRunner()
     monkeypatch.setenv("ENSO_WORKSPACE", "default")
     assert runner.invoke(app, ["memory", "job-hook", "prerun"]).exit_code == 2
+    write_job(enso_home, "memory")
+    operator_job = load_job(enso_home, config, "memory")
+    operator_run = runs.start(enso_home, operator_job, "manual", effort=operator_job.effort)
+    monkeypatch.setenv("ENSO_RUN_ID", operator_run)
+    refused = runner.invoke(app, ["memory", "job-hook", "prerun"])
+    assert refused.exit_code == 2 and "workspace:enso-memory job" in refused.output
     run_id = runs.start(enso_home, job, "manual", effort=job.effort)
     monkeypatch.setenv("ENSO_RUN_ID", run_id)
     monkeypatch.setenv("ENSO_RUN_STATUS", "ok")

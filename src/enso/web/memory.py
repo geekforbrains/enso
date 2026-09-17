@@ -57,7 +57,7 @@ def _occurred(note: Note) -> datetime:
 
 
 def _job_state(paths: Paths, workspace: str, config: Config | None) -> str:
-    path = paths.workspace_jobs(workspace) / "memory" / "JOB.md"
+    path = paths.workspace_jobs(workspace) / "enso-memory" / "JOB.md"
     if not path.exists() and not path.is_symlink():
         return "Not installed"
     job, problems = parse_job(path, config)

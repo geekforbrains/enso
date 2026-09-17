@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 import os
 import re
 import shutil
@@ -19,15 +18,12 @@ from pathlib import Path
 from . import frontmatter
 from .config import Agent, Paths, require_workspace, valid_workspace_name
 
-log = logging.getLogger(__name__)
-
 # Shared files in ``src/enso/bundled/`` keep their relative paths under ``$ENSO_HOME``.
 # ``jobs/<name>/`` seeds maintenance jobs in default and memory in every workspace.
 # ``bundled/workspace/AGENTS.md`` is the per-workspace template,
 # stamped by ``create_workspace``; a job is stamped with the agent chosen at setup.
-# Managed updates refresh only bundle files matching their recorded baseline. What
-# Enso installs generally says so in its name: ``enso`` and ``enso-*`` are reserved;
-# the workspace ``memory`` job instead relies on its recorded bundle baseline.
+# Managed updates refresh only bundle files matching their recorded baseline.
+# Bundled job and skill names use the reserved ``enso`` and ``enso-*`` namespace.
 BUNDLED_SKILLS = (
     "enso",
     "enso-browser",
@@ -49,7 +45,7 @@ BUNDLED_SKILL_SUPPORT = {
     "enso-browser": ("scripts/browser.py", "references/setup.md"),
     "enso-knowledge": ("references/formatting.md", "scripts/lint.py"),
 }
-BUNDLED_JOBS: tuple[str, ...] = ("enso-audit", "enso-update", "memory")
+BUNDLED_JOBS: tuple[str, ...] = ("enso-audit", "enso-update", "enso-memory")
 BUNDLED_FILES = ("slack/manifest.json",)
 RESERVED_PREFIX = "enso-"
 # The documented workspace layout (docs/workspaces.md § Layout): the directories, and the
@@ -177,20 +173,7 @@ def seed_home(paths: Paths, *, refresh_skills: bool = False) -> list[str]:
 
 def bundled_jobs(workspace: str) -> tuple[str, ...]:
     """Maintenance jobs belong to default; every workspace gets its own memory job."""
-    return tuple(name for name in BUNDLED_JOBS if workspace == "default" or name == "memory")
-
-
-def _memory_conflict(paths: Paths, relative: str, known: dict[str, str]) -> str | None:
-    target = paths.home / relative
-    if (
-        target.name == "memory"
-        and (target.exists() or target.is_symlink())
-        and not any(key.startswith(relative + "/") for key in known)
-    ):
-        message = f"conflict: preserved existing {target}; memory job was not installed"
-        log.warning(message)
-        return message
-    return None
+    return tuple(name for name in BUNDLED_JOBS if workspace == "default" or name == "enso-memory")
 
 
 def seed_jobs(
@@ -208,18 +191,13 @@ def seed_jobs(
     jobs_root = paths.workspace_jobs(workspace)
     if jobs_root.is_symlink():
         raise OSError("jobs directory must not be a symbolic link")
-    from .maintenance import read_json
-
-    known = read_json(paths.home / ".bundles.json").get("files", {})
     for name in bundled_jobs(workspace):
-        selected = memory_agent if name == "memory" and memory_agent is not None else agent
+        selected = memory_agent if name == "enso-memory" and memory_agent is not None else agent
         # Templates quote these fields; JSON escaping keeps configured IDs in one scalar.
         stamps = {key: json.dumps(value)[1:-1] for key, value in asdict(selected).items()}
         relative = f"workspaces/{workspace}/jobs/{name}"
         target = jobs_root / name
         if target.exists() or target.is_symlink():
-            if problem := _memory_conflict(paths, relative, known):
-                done.append(problem)
             continue
         jobs_root.mkdir(parents=True, exist_ok=True)
         bundled = resources.files("enso").joinpath("bundled", "jobs", name)
@@ -305,10 +283,7 @@ def reconcile_bundles(
     ):
         relative = f"workspaces/{workspace}/jobs/{name}"
         job = paths.home / relative / "JOB.md"
-        if problem := _memory_conflict(paths, relative, previous):
-            changed.append(problem)
-            continue
-        initial = (workspace_agents or {}).get(workspace, agent) if name == "memory" else agent
+        initial = (workspace_agents or {}).get(workspace, agent) if name == "enso-memory" else agent
         selected = _installed_agent(job, initial)
         if selected is None:
             continue

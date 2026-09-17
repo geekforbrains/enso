@@ -1,5 +1,5 @@
 ---
-name: Workspace memory
+name: Enso memory
 schedule: "*/15 * * * *"
 provider: "{{provider}}"
 model: "{{model}}"

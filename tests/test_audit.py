@@ -418,6 +418,25 @@ def test_reserved_names_warn_unless_enso_installed_them(enso_home: Paths) -> Non
     assert report.ok  # warnings only
 
 
+def test_bundled_memory_job_in_nondefault_workspace_has_no_reserved_warning(
+    enso_home: Paths, config: Config
+) -> None:
+    workspaces.seed_home(enso_home)
+    workspaces.create_workspace(enso_home, "team")
+    workspaces.seed_jobs(enso_home, config.defaults, workspace="default")
+    workspaces.seed_jobs(enso_home, config.defaults, workspace="team")
+
+    report = audit.audit(enso_home, config=config, user_dirs=USER_DIRS)
+
+    assert not [finding for finding in report.home.findings if finding.check == "reserved"]
+    assert not [
+        finding
+        for workspace in report.workspaces
+        for finding in workspace.findings
+        if finding.check == "reserved"
+    ]
+
+
 def test_official_receipts_recognized_only_at_home_and_bad_receipts_warn(enso_home: Paths):
     from enso.skill_catalog import RECEIPT, SOURCE
 

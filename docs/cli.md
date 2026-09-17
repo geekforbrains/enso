@@ -482,7 +482,7 @@ and the distinction between source validation and factual accuracy.
 `ENSO_WORKSPACE`. The prerun pins a batch and exits 1 without output when quiet; errors
 exit 2. Postrun checks stdin only after `ENSO_RUN_STATUS=ok`; a correctable result requests
 a follow-up with exit 10, while storage/recovery errors exit 2. The run's input budget stays
-fixed through follow-ups. Use `enso job run WORKSPACE:memory --json` for a manual sweep.
+fixed through follow-ups. Use `enso job run WORKSPACE:enso-memory --json` for a manual sweep.
 
 Remove one selected note, with a preview by default:
 

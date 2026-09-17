@@ -59,7 +59,7 @@ def test_workspace_create_and_list(enso_home: Paths, raw_config: dict) -> None:
     assert [line.split() for line in result.stdout.splitlines()] == [
         ["WORKSPACE", "BINDINGS", "JOBS", "AUDIT"],
         ["default", "slack:C1,", "slack:dm:U1", "-", "11", "errors"],
-        ["meteor", "-", "meteor:memory", "1", "warning"],
+        ["meteor", "-", "meteor:enso-memory", "1", "warning"],
     ]
     assert result.stderr.startswith("home: ")  # not seeded either
 
@@ -94,7 +94,7 @@ def test_workspace_audit_command(enso_home: Paths, raw_config: dict) -> None:
     warned = runner.invoke(app, ["workspace", "audit", "lonely"])
     assert warned.exit_code == 0 and warned.stdout.splitlines()[1:] == [
         "lonely: 1 warning",
-        "  jobs: lonely:memory",
+        "  jobs: lonely:enso-memory",
         "  warning: AGENTS.md is still the untouched template; say what the workspace is for",
     ]
     assert "  uploads: 2.0 KB" in runner.invoke(app, ["workspace", "audit", "default"]).stdout

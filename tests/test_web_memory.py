@@ -74,7 +74,7 @@ async def test_empty_missing_job_and_get_only(client: TestClient, enso_home: Pat
     assert response.headers["Cache-Control"] == "no-store"
     assert (await client.get("/memory?view=captures")).status == 200
     assert not enso_home.db.exists()
-    job = enso_home.workspace_jobs("default") / "memory" / "JOB.md"
+    job = enso_home.workspace_jobs("default") / "enso-memory" / "JOB.md"
     job.parent.mkdir(parents=True)
     job.write_text(
         '---\nname: Memory\nschedule: "*/15 * * * *"\nprovider: claude\n'

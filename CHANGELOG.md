@@ -9,6 +9,10 @@ These changes are planned for 0.2.0 and have not been published.
 
 ### Breaking
 
+- The bundled workspace memory job is now `enso-memory`, referenced as
+  `<workspace>:enso-memory`. Unreleased development homes with the old bundled `memory`
+  job must retire it when installing the new job to avoid duplicate harvests; an operator's
+  separate `memory` job is preserved.
 - 0.2.0 does not read a 0.1.x home, configuration, or database. Conversion is manual, from
   backups, following the [migration guide](docs/migration.md); the managed
   0.1.x updater does not perform this conversion.
@@ -105,7 +109,7 @@ These changes are planned for 0.2.0 and have not been published.
   validates workspace sources, records explicit no-memory results, and reconciles durable
   publication receipts before advancing progress; source captures remain inspectable.
   The bundled `enso-memory` skill guides recall and corrections; each workspace gets an
-  enabled 15-minute `memory` job with a fixed input budget and no provider call when quiet.
+  enabled 15-minute `enso-memory` job with a fixed input budget and no provider call when quiet.
   `enso memory remove` previews one note and requires `--yes` to delete it, preserving
   source captures and processing receipts so ordinary sweeps do not recreate it.
 
