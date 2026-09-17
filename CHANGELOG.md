@@ -152,6 +152,10 @@ These changes are planned for 0.2.0 and have not been published.
 - Reject conflicting provider session IDs consistently in chat and background turns,
   preventing resumed chats from silently switching conversations. Unrecognized provider
   output now reports an error instead of establishing a chat session.
+- `enso workspace audit` reads jobs with the configuration it was given, so jobs serving a
+  stage Enso runs itself — a `command` stage or `integrate: true` — appear in a workspace's
+  job list instead of vanishing. A workspace whose only jobs are of that kind is no longer
+  reported as an orphan, and `enso serve` no longer skips its startup warning.
 
 ### Security
 
