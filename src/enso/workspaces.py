@@ -17,6 +17,7 @@ from pathlib import Path
 
 from . import frontmatter
 from .config import Agent, Paths, require_workspace, valid_workspace_name
+from .layout import LINKS, WORKSPACE_DIRS
 
 # Shared files in ``src/enso/bundled/`` keep their relative paths under ``$ENSO_HOME``.
 # ``jobs/<name>/`` seeds maintenance jobs in default and memory in every workspace.
@@ -48,15 +49,6 @@ BUNDLED_SKILL_SUPPORT = {
 BUNDLED_JOBS: tuple[str, ...] = ("enso-audit", "enso-update", "enso-memory")
 BUNDLED_FILES = ("slack/manifest.json",)
 RESERVED_PREFIX = "enso-"
-# The documented workspace layout (docs/workspaces.md § Layout): the directories, and the
-# links the home carries too. Link targets are relative to the link's own directory. The
-# provider CLIs find the skill links by walking up from the workspace to the Git root.
-WORKSPACE_DIRS = ("skills", "knowledge", "memory", "jobs", "projects", "drafts", "uploads")
-LINKS = (
-    ("CLAUDE.md", "AGENTS.md"),
-    (".claude/skills", "../skills"),
-    (".agents/skills", "../skills"),
-)
 
 
 def reserved(name: str) -> bool:

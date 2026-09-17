@@ -5,6 +5,10 @@ the workspace audit, the provider paths, the transport extras, ``service.status`
 ``jobs.load_jobs``, and the Markdown note audits. An error-level health finding makes doctor
 exit 1 but does not imply that every Enso operation is blocked; warnings alone exit 0. ``--json`` is
 ``Report.as_dict``.
+
+``ok`` answers "is this machine healthy". ``attention`` answers the wider question the
+nightly audit job asks — "is there anything to tell the operator" — so a healthy but untidy
+installation can be reported without a warning anywhere becoming a health failure.
 """
 
 from __future__ import annotations
@@ -50,6 +54,8 @@ class Section:
     warnings: list[str] = field(default_factory=list)
     details: dict = field(default_factory=dict)  # the facts, for scripts and the viewer
     skipped: bool = False  # could not run until something else is fixed
+    # Some warning here is worth an unprompted report; see ``Report.attention``.
+    attention: bool = False
 
     @property
     def status(self) -> str:
@@ -73,6 +79,7 @@ class Section:
             "note": self.note,
             "problems": list(self.problems),
             "warnings": list(self.warnings),
+            "attention": self.attention,
             "details": dict(self.details),
         }
 
@@ -87,12 +94,23 @@ class Report:
         """No problems anywhere; warnings and skipped sections do not fail the doctor."""
         return not any(section.problems for section in self.sections)
 
+    @property
+    def attention(self) -> bool:
+        """Whether anything here is worth reporting, health problem or not.
+
+        Every problem, plus the warnings a section marked: today the installation-hygiene
+        findings, which are portable facts about the layout rather than matters of taste.
+        An orphan workspace or an unedited ``AGENTS.md`` stays quiet.
+        """
+        return not self.ok or any(section.attention for section in self.sections)
+
     def section(self, name: str) -> Section:
         return next(section for section in self.sections if section.name == name)
 
     def as_dict(self) -> dict:
         return {
             "ok": self.ok,
+            "attention": self.attention,
             "home": str(self.home),
             "sections": [section.as_dict() for section in self.sections],
         }
@@ -210,7 +228,13 @@ def _home(paths: Paths, home: audit.HomeAudit) -> Section:
         note=f"Git root at {paths.home}" if git_root else str(paths.home),
         problems=[_finding_text(finding) for finding in home.errors],
         warnings=[_finding_text(finding) for finding in home.warnings],
-        details={"path": str(paths.home), "git_root": git_root, "git": shutil.which("git")},
+        attention=any(finding.attention for finding in home.warnings),
+        details={
+            "path": str(paths.home),
+            "git_root": git_root,
+            "git": shutil.which("git"),
+            "layout": dict(home.layout),
+        },
     )
     if not section.details["git"]:
         section.warnings.append("git is not on PATH; the provider CLIs and `--fix` expect it")
@@ -226,6 +250,8 @@ def _workspaces(found: list[audit.WorkspaceAudit]) -> Section:
     for workspace in found:
         section.problems.extend(f"{workspace.name}: {_finding_text(f)}" for f in workspace.errors)
         section.warnings.extend(f"{workspace.name}: {_finding_text(f)}" for f in workspace.warnings)
+        if any(finding.attention for finding in workspace.warnings):
+            section.attention = True
     return section
 
 

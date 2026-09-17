@@ -9,7 +9,9 @@ prerun: prerun.sh
 catch_up: true
 ---
 
-`enso doctor --json` found problems with this Enso installation. The report:
+`enso doctor --json --attention` found something worth telling the operator about this Enso
+installation. `ok` says whether it is healthy; a report with `"ok": true` carries no health
+problem at all, only findings worth a mention. The report:
 
 ```json
 {{prerun_output}}
@@ -19,10 +21,12 @@ Write a short summary for the operator, who is probably reading it on a phone:
 
 - One line per problem, in plain words: what is wrong and what it stops (a chat turn, a job, a beat, an alert).
 - Say which problems `enso workspace audit --fix` would repair; the doctor marks those with "(repairable with `enso workspace audit --fix`)". Everything else needs a hand.
+- Layout findings (`unexpected`, `link`, `permissions`, `stale`) stop nothing on their own; say what the path is and what the operator would do about it. An unexpected entry is a file Enso does not place and will not touch. A `permissions` finding means other users on this machine can read credentials. A `stale` file is safe to delete, and nothing deletes it for them. Do not guess what an unexpected file is for.
 - A job problem names its `JOB.md` in brackets. Quote that path and say which frontmatter field to edit. Nothing repairs a job for the operator, and a schedule is never guessed or rewritten: it is five cron fields, `minute hour day-of-month month day-of-week`.
 - A heartbeat problem names an `HB-…` reference. Read `enso heartbeat show REF --json` and only the relevant history if needed, then explain what is waiting or failing. Do not retry its actions, advance a checkpoint, or change its state.
 - Knowledge and memory findings name note paths and give counts. If the summary is truncated, use `enso knowledge audit --workspace NAME --json` (or `--shared`) or `enso memory audit --workspace NAME --json` for the relevant root. These are structural checks, not proof that a note is true or belongs in the best workspace.
-- If there are warnings, one closing line covering them.
+- If there are warnings, one closing line covering them. When the whole report is warnings, say
+  plainly that nothing is broken.
 
 Fix nothing yourself: do not run `--fix`, and do not edit `config.json` or any other file. The operator decides what to do.
 

@@ -21,6 +21,20 @@ These changes are planned for 0.2.0 and have not been published.
 
 ### Changed
 
+- The audit now covers installation hygiene from one core layout definition shared by
+  setup, the scaffold, and `enso workspace audit`. It classifies each top-level entry as
+  required, managed, user-owned, extension, or unexpected; reports unexpected entries in
+  the home as well as in a workspace, dangling optional links, `config.json`/`runtime/`/
+  `secrets/` that other users can read, and SQLite sidecars left by a removed `enso.db`.
+  `--fix` tightens those permissions and still never deletes anything. `--json` gains
+  `layout` and `attention` per root and per finding.
+
+- `enso doctor --attention` exits 1 for anything worth reporting rather than health
+  problems alone, and `--json` gains `attention` on the report and each section. Plain
+  `enso doctor` keeps its exit codes. The bundled `enso-audit` job uses the new flag, so a
+  working but untidy home is reported; an orphan workspace or an unedited `AGENTS.md`
+  template still keeps it silent.
+
 - The read-only web viewer now has a Memory page with workspace-scoped memories and
   capture evidence, receipt-based processing status, source links, and paginated filters.
 

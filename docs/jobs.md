@@ -226,20 +226,28 @@ asleep at 03:00 runs it on wake), works in the `default` workspace, and uses the
 model, and effort in the configuration when it is first installed. Later default-agent
 changes do not rewrite it.
 
-Its prerun runs `enso doctor --json` and inverts the doctor's exit code, since the two
-contracts read `0` and `1` the other way round:
+Its prerun runs `enso doctor --json --attention` and inverts the doctor's exit code, since
+the two contracts read `0` and `1` the other way round:
 
 | Doctor | Prerun | Run |
 | --- | --- | --- |
-| exit 0: healthy, warnings included | exit 1 | `no_work`; nothing spent, nothing sent |
-| exit 1 with the report on stdout: problems | exit 0, the report on stdout | the agent gets the report in `{{prerun_output}}` |
+| exit 0: nothing to report | exit 1 | `no_work`; nothing spent, nothing sent |
+| exit 1 with the report on stdout: something to report | exit 0, the report on stdout | the agent gets the report in `{{prerun_output}}` |
 | exit 1 with no report (a crash), or anything else: the doctor itself failed | exit 2 with a `ENSO_ERROR:` line | `prerun_error`, alerted |
+
+[`--attention`](cli.md#operating) is what makes the gate wider than health alone: a home
+that is working but untidy — an unexpected entry, a dangling link, credentials other users
+can read, a stale generated file — is reported too, with `"ok": true` in the report saying
+nothing is actually broken. Warnings that are matters of taste, such as an orphan workspace
+or an unedited `AGENTS.md` template, keep the gate shut. A home with none of this stays
+silent exactly as before.
 
 The agent explains each problem in plain words, says which ones
 `enso workspace audit --fix` would repair (the doctor marks them), and sends the summary
 with `enso message send`. It fixes nothing; the operator decides. A home that stays broken
-hears about it every night: each of those is a provider run, not a repeated prerun
-failure, so nothing suppresses it.
+or untidy hears about it every night: each of those is a provider run, not a repeated prerun
+failure, so nothing suppresses it. Tidying the home, or repairing it with
+`enso workspace audit --fix`, is what stops the reports.
 
 Where the scheduled summary goes: `enso message send` without `--to` uses the transport's
 notify target. A manual run inside a chat turn can inherit that conversation as its

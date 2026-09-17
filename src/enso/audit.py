@@ -1,28 +1,36 @@
-"""The workspace audit: the documented layout, the skill wiring, and what ``--fix`` repairs.
+"""The installation audit: the documented layout, the skill wiring, and what ``--fix`` repairs.
 
 Every row of the check table in ``docs/workspaces.md`` § Auditing, for the home and for
-each workspace. A finding carries a stable check id, a severity, a message, and whether
-``--fix`` repairs it. ``--fix`` only creates and repairs (directories, links, the home's
-Git root); it never deletes, never edits ``AGENTS.md``, and never touches contents under
-``knowledge/``, ``drafts/``, or ``uploads/``. ``enso doctor`` and the viewer share the report.
+each workspace. The layout itself is :mod:`enso.layout`'s, so setup, the scaffold, and
+this audit agree on what belongs where and who owns it. A finding carries a stable check
+id, a severity, a message, whether ``--fix`` repairs it, and whether it is worth reporting
+to the operator on its own. ``--fix`` only creates and repairs (directories, links, the
+home's Git root, and the permissions of the roots Enso keeps private); it never deletes,
+never edits ``AGENTS.md``, and never touches contents under ``knowledge/``, ``drafts/``,
+or ``uploads/``. ``enso doctor`` and the viewer share the report.
+
+Only a root's own top-level entries are classified. Nothing recurses into a core-managed
+root such as ``runtime/`` or ``cache/``, so private operating state is never mistaken for
+the operator's clutter.
 """
 
 from __future__ import annotations
 
 import os
 import shutil
+import stat
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import skills, workspaces
+from . import layout, skills, workspaces
 from .config import Config, Paths, require_workspace, valid_workspace_name
 from .jobs import load_jobs
 from .skills import ERROR, WARNING
 
 # Check ids: one per row of the check table, stable for --json consumers.
 DIRECTORY = "directory"  # a required directory is missing or is a file
-LINK = "link"  # CLAUDE.md or a skill link is missing, wrong, or a real file
+LINK = "link"  # a documented link is missing or wrong, or a top-level link dangles
 GIT_ROOT = "git-root"  # the home is not a Git root, or a workspace is one
 AGENTS_MD = "agents-md"  # missing, unreadable, or still the untouched template
 SKILL = "skill"  # a managed skill directory's SKILL.md is missing or wrong
@@ -30,20 +38,8 @@ SKILL_COLLISION = "skill-collision"  # a name shared with another scope
 ORPHAN = "orphan"  # nothing is bound to the workspace and no job names it
 UNEXPECTED = "unexpected"  # an entry the layout has no place for
 RESERVED = "reserved"  # an enso-* skill or job that Enso did not install
-# The layout includes optional provider configuration; its contents belong to the provider.
-EXPECTED_ENTRIES = frozenset(
-    {
-        "AGENTS.md",
-        "WORKSPACE.md",
-        "heartbeat",
-        *workspaces.WORKSPACE_DIRS,
-        *(link.split("/")[0] for link, _ in workspaces.LINKS),
-        ".codex",
-        ".grok",
-        "opencode.json",
-    }
-)
-IGNORED_ENTRIES = frozenset({".DS_Store"})
+PERMISSIONS = "permissions"  # a root Enso keeps private is readable by other users
+STALE = "stale"  # a generated file whose owner is gone
 
 
 @dataclass(frozen=True)
@@ -54,6 +50,10 @@ class Finding:
     severity: str  # error | warning
     message: str
     fixable: bool = False  # --fix creates or repairs it
+    # Worth telling the operator even at warning severity, because it is a portable fact
+    # about the installation rather than a matter of taste. Errors need no such mark: they
+    # already fail the audit. See ``Report.attention``.
+    attention: bool = False
 
     def as_dict(self) -> dict:
         return {
@@ -61,6 +61,7 @@ class Finding:
             "severity": self.severity,
             "message": self.message,
             "fixable": self.fixable,
+            "attention": self.attention,
         }
 
 
@@ -84,6 +85,11 @@ class _Root:
         return not self.errors
 
     @property
+    def attention(self) -> bool:
+        """Anything here is worth reporting: an error, or a marked warning."""
+        return bool(self.errors) or any(finding.attention for finding in self.warnings)
+
+    @property
     def status(self) -> str:
         """``error``, ``warning``, or ``ok``: the worst severity present."""
         return ERROR if self.errors else WARNING if self.warnings else "ok"
@@ -99,6 +105,9 @@ class HomeAudit(_Root):
     """The home: a Git root with instructions, skills, shared knowledge, and the links."""
 
     path: Path
+    # Every top-level entry that is actually there, by layout category. A consumer reads
+    # ownership from here instead of guessing from a name.
+    layout: dict[str, str] = field(default_factory=dict)
     findings: list[Finding] = field(default_factory=list)
     fixed: list[str] = field(default_factory=list)
 
@@ -106,6 +115,8 @@ class HomeAudit(_Root):
         return {
             "path": str(self.path),
             "status": self.status,
+            "attention": self.attention,
+            "layout": dict(self.layout),
             "findings": [finding.as_dict() for finding in self.findings],
             "fixed": list(self.fixed),
         }
@@ -120,6 +131,7 @@ class WorkspaceAudit(_Root):
     bindings: list[str] = field(default_factory=list)  # binding keys pointing here
     jobs: list[str] = field(default_factory=list)  # qualified references of jobs owned by it
     uploads_bytes: int = 0
+    layout: dict[str, str] = field(default_factory=dict)  # present entries, by category
     findings: list[Finding] = field(default_factory=list)
     fixed: list[str] = field(default_factory=list)
 
@@ -128,9 +140,11 @@ class WorkspaceAudit(_Root):
             "name": self.name,
             "path": str(self.path),
             "status": self.status,
+            "attention": self.attention,
             "bindings": list(self.bindings),
             "jobs": list(self.jobs),
             "uploads_bytes": self.uploads_bytes,
+            "layout": dict(self.layout),
             "findings": [finding.as_dict() for finding in self.findings],
             "fixed": list(self.fixed),
         }
@@ -147,9 +161,19 @@ class Report:
     def ok(self) -> bool:
         return self.home.ok and all(workspace.ok for workspace in self.workspaces)
 
+    @property
+    def attention(self) -> bool:
+        """Whether anything here is worth reporting to the operator unprompted.
+
+        Wider than ``not ok``: a tidy-but-healthy installation is ``ok`` while still
+        having, say, an unexpected entry or a world-readable ``config.json`` to mention.
+        """
+        return self.home.attention or any(space.attention for space in self.workspaces)
+
     def as_dict(self) -> dict:
         return {
             "ok": self.ok,
+            "attention": self.attention,
             "home": self.home.as_dict(),
             "workspaces": [workspace.as_dict() for workspace in self.workspaces],
         }
@@ -198,6 +222,7 @@ def audit_home(
         return result
     if fix:
         result.fixed.extend(workspaces.ensure_home(home))
+        result.fixed.extend(_repair_permissions(paths))
     findings = result.findings
     if not (home / ".git").exists():
         git = shutil.which("git") is not None
@@ -218,6 +243,9 @@ def audit_home(
     findings.extend(_check_skills(skills.resolve(paths, user_dirs=user_dirs), "enso"))
     findings.extend(_check_jobs(paths))
     findings.extend(_check_workspace_entries(paths))
+    findings.extend(_check_permissions(paths))
+    findings.extend(_check_stale(paths))
+    result.layout = _scan_entries(home, layout.HOME, findings)
     return result
 
 
@@ -257,7 +285,7 @@ def audit_workspace(
             )
         )
     findings.extend(_check_skills(skills.resolve(paths, name, user_dirs=user_dirs), "workspace"))
-    findings.extend(_check_entries(root))
+    result.layout = _scan_entries(root, layout.WORKSPACE, findings)
     if bound is not None and not bound and not jobs:
         findings.append(
             Finding(ORPHAN, WARNING, "nothing is bound to this workspace and no job names it")
@@ -298,7 +326,7 @@ def tree_size(path: Path) -> int:
 
 
 def _check_dirs(root: Path) -> Iterator[Finding]:
-    for name in workspaces.WORKSPACE_DIRS:
+    for name in layout.WORKSPACE_DIRS:
         yield from _check_dir(root / name, name, allow_link=name in {"skills", "drafts"})
     heartbeat = root / "heartbeat"
     if heartbeat.exists() or heartbeat.is_symlink():
@@ -319,7 +347,7 @@ def _check_dir(path: Path, name: str, *, allow_link: bool) -> Iterator[Finding]:
 
 def _check_links(root: Path) -> Iterator[Finding]:
     """Each documented link is a symlink with exactly the documented target."""
-    for relative, target in workspaces.LINKS:
+    for relative, target in layout.LINKS:
         link = root / relative
         parent = link.parent
         if parent != root and (parent.is_symlink() or (parent.exists() and not parent.is_dir())):
@@ -415,13 +443,116 @@ def _check_jobs(paths: Paths) -> Iterator[Finding]:
                 )
 
 
-def _check_entries(root: Path) -> Iterator[Finding]:
-    """Top-level entries the layout has no place for. ``.git`` has its own check."""
-    for entry in sorted(root.iterdir()):
-        if entry.name in EXPECTED_ENTRIES or entry.name in IGNORED_ENTRIES or entry.name == ".git":
+def _scan_entries(
+    root: Path, table: tuple[layout.Entry, ...], findings: list[Finding]
+) -> dict[str, str]:
+    """Classify the root's own top-level entries; append what the layout cannot place.
+
+    Returns the present names mapped to their category, so a consumer can tell a
+    core-managed root from a user one without knowing the table. Nothing is opened and no
+    directory is descended into: what lives inside a declared root is its owner's business.
+
+    A required entry has its own check above, which already describes a missing or
+    irregular one; the dangling-link report here covers the rest of the table and the
+    names it does not claim.
+    """
+    present: dict[str, str] = {}
+    if root.is_symlink() or not root.is_dir():
+        return present
+    for path in sorted(root.iterdir()):
+        if path.name in layout.IGNORED:
             continue
-        shown = f"{entry.name}/" if entry.is_dir() else entry.name
-        yield Finding(UNEXPECTED, WARNING, f"{shown} is not part of the layout")
+        entry = layout.classify(table, path.name)
+        present[path.name] = entry.category if entry else layout.UNEXPECTED
+        if entry is None:
+            # A workspace's own ``.git`` is unexpected, but the Git-root check above already
+            # reported it, at error severity and saying what it actually breaks.
+            if path.name != ".git":
+                shown = f"{path.name}/" if path.is_dir() else path.name
+                findings.append(
+                    Finding(
+                        UNEXPECTED,
+                        WARNING,
+                        f"{shown} is not part of the layout; move it out of {root} or remove it",
+                        attention=True,
+                    )
+                )
+        elif path.is_symlink() and not path.exists() and not entry.required:
+            findings.append(
+                Finding(
+                    LINK,
+                    WARNING,
+                    f"{path.name} is a dangling symbolic link ({entry.what}); "
+                    "repoint it or remove it",
+                    attention=True,
+                )
+            )
+    return present
+
+
+def _check_permissions(paths: Paths) -> Iterator[Finding]:
+    """Roots Enso keeps private that other users on this machine can read.
+
+    Only where Enso owns the security contract: the credentials it writes and the private
+    state it creates. It says nothing about what the operator's own umask does elsewhere.
+    """
+    for entry in layout.private(layout.HOME):
+        path = paths.home / entry.name
+        if path.is_symlink() or not path.exists():
+            continue
+        try:
+            mode = stat.S_IMODE(path.stat().st_mode)
+        except OSError:
+            continue
+        if not mode & layout.SHARED_BITS:
+            continue
+        wanted = layout.PRIVATE_DIR if path.is_dir() else layout.PRIVATE_FILE
+        yield Finding(
+            PERMISSIONS,
+            WARNING,
+            f"{path} holds {entry.what} and is readable by other users on this machine "
+            f"(mode {mode:04o}); it should be {wanted:04o}",
+            fixable=True,
+            attention=True,
+        )
+
+
+def _repair_permissions(paths: Paths) -> list[str]:
+    """``--fix`` for the check above: tighten, never widen, and never follow a link."""
+    done: list[str] = []
+    for entry in layout.private(layout.HOME):
+        path = paths.home / entry.name
+        if path.is_symlink() or not path.exists():
+            continue
+        try:
+            mode = stat.S_IMODE(path.stat().st_mode)
+            if not mode & layout.SHARED_BITS:
+                continue
+            wanted = layout.PRIVATE_DIR if path.is_dir() else layout.PRIVATE_FILE
+            path.chmod(wanted)
+        except OSError:
+            continue  # the check reports it; a repair that cannot run is not a failure
+        done.append(f"restricted {path} to {wanted:04o}")
+    return done
+
+
+def _check_stale(paths: Paths) -> Iterator[Finding]:
+    """Generated files whose owner is gone, where that is certain rather than a guess.
+
+    SQLite's sidecars belong to ``enso.db``. Without it they are unreadable leftovers, and
+    a later database would not adopt them. Nothing deletes them for the operator.
+    """
+    if paths.db.exists() or paths.db.is_symlink():
+        return
+    for name in ("enso.db-wal", "enso.db-shm"):
+        path = paths.home / name
+        if path.exists() or path.is_symlink():
+            yield Finding(
+                STALE,
+                WARNING,
+                f"{path} is left over from a removed enso.db and is safe to delete",
+                attention=True,
+            )
 
 
 def _check_workspace_entries(paths: Paths) -> Iterator[Finding]:
@@ -432,7 +563,7 @@ def _check_workspace_entries(paths: Paths) -> Iterator[Finding]:
     if not paths.workspaces.is_dir():
         return
     for entry in sorted(paths.workspaces.iterdir()):
-        if entry.name in IGNORED_ENTRIES:
+        if entry.name in layout.IGNORED:
             continue
         if entry.is_symlink():
             yield Finding(DIRECTORY, ERROR, f"workspaces/{entry.name} must not be a symbolic link")

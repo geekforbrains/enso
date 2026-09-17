@@ -12,7 +12,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from . import __version__, db, workspaces
+from . import __version__, db, layout, workspaces
 from .config import (
     CONFIG_VERSION,
     LEGACY_HOME_MESSAGE,
@@ -108,7 +108,7 @@ def _layout_problems(paths: Paths) -> list[str]:
         paths.secrets,
         paths.skills,
         paths.knowledge,
-        *(default / name for name in workspaces.WORKSPACE_DIRS),
+        *(default / name for name in layout.WORKSPACE_DIRS),
     }
     files = {
         paths.agents_md,
@@ -121,7 +121,7 @@ def _layout_problems(paths: Paths) -> list[str]:
     links = [
         (root / relative, target)
         for root in (paths.home, default)
-        for relative, target in workspaces.LINKS
+        for relative, target in layout.LINKS
     ]
     for item in [*files, *(link for link, _ in links)]:
         directories.update(
@@ -182,6 +182,9 @@ def initialize_home(paths: Paths) -> dict[str, Any]:
             result["problems"] = problems
             return result
         with config_lock(paths):
+            # A private root is created private, not widened and narrowed again: nothing
+            # readable should exist inside it between the two calls.
+            private = {entry.name for entry in layout.private(layout.HOME)}
             for directory in (
                 paths.workspaces,
                 paths.heartbeat,
@@ -190,7 +193,8 @@ def initialize_home(paths: Paths) -> dict[str, Any]:
                 paths.workspace("default"),
             ):
                 if not directory.exists():
-                    directory.mkdir(parents=True)
+                    mode = layout.PRIVATE_DIR if directory.name in private else 0o777
+                    directory.mkdir(parents=True, mode=mode)
                     changes.append(f"created {directory}")
             default = paths.workspace("default")
             if workspaces.write_missing(
