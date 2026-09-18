@@ -195,7 +195,7 @@ enso web status
 This routine is authorized by [AGENTS.md](../AGENTS.md#local-development-instance).
 Run it from an external terminal or agent session, never from an Enso chat turn or stage job
 whose execution the command would have to drain. Do not create another branch or publish a
-release as part of the refresh. The package can remain `0.2.1` through many iterations.
+release as part of the refresh. The package version need not change for each local refresh.
 The command requires a clean `develop` checkout and uses its editable `.venv`, prepared
 initially with `uv sync --all-extras --locked`. Source changes are visible to new imports;
 refresh restarts the long-running processes with the completed, tested code.
