@@ -178,6 +178,12 @@ through the existing links. Run
 `enso workspace audit` after adding one to confirm its `SKILL.md` is valid and its name
 is free. See [Workspaces](workspaces.md).
 
+For changes to bundled skills in the source repository, use the opt-in
+[skill evaluation workflow](development.md#skill-evaluations) to compare the original and
+revised package through installed provider CLIs. It checks synthetic task results and reports
+tokens and tool calls for an explicit provider, model, and reasoning effort. Review correctness
+before accepting reduced effort; add scenarios as the skill's responsibilities need them.
+
 ### The bundled skills
 
 Enso installs these into `~/.enso/skills/`:
