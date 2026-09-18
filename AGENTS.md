@@ -14,6 +14,9 @@ This is the entrypoint for people and CLI agents changing Enso's source. Files u
   from there or the [README documentation map](README.md#documentation) for the change.
 - [Releases](docs/releasing.md) owns versioning, changelog entries, and the manual release
   checklist. Read it for release work; a code change alone does not authorize publication.
+- For bundled-skill refinement, read [Skill evaluations](docs/development.md#skill-evaluations)
+  before editing: preserve a baseline, use the local CLI runner when live evaluation is
+  requested, and report correctness alongside tokens and tool calls.
 
 ## Authority and scope
 

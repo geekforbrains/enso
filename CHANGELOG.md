@@ -7,6 +7,9 @@ All notable changes to Enso are documented here, following
 
 ### Added
 
+- The source checkout now provides `scripts/eval-skills` to compare bundled skill versions
+  through installed Codex or Claude CLIs with explicit model and reasoning effort. Reports
+  show correctness, tokens, tool calls, failures, and duration, with saved traces for review.
 - Tasks now shows project navigation and readable workflows with stage counts, checks,
   return paths, and links to agent stage instructions. Workspace filters, origin labels,
   and links from workspace details connect projects and tasks, including empty projects.

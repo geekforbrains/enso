@@ -36,3 +36,6 @@ uploads/
 
 # Scratch planning file, never committed
 /PLAN.md
+
+# Local live skill evaluation reports, traces and synthetic state
+/.evals/
