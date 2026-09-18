@@ -21,7 +21,7 @@ class ResolvedAgent:
     provider: str
     model: str
     effort: str
-    source: str  # "defaults" | "workspace"
+    source: str  # "defaults" | "workspace" | "conversation"
 
 
 def binding_key(transport: str, channel: str, *, is_dm: bool = False, user_id: str = "") -> str:
@@ -64,6 +64,12 @@ def clamp_effort(provider: str, model: str, effort: str) -> str:
     if clamped != effort:
         log.info("effort %s clamped to %s for %s %s", effort, clamped, provider, model)
     return clamped
+
+
+def exact_efforts(provider: str, model: str) -> list[str]:
+    """Efforts Enso passes through unchanged for a provider and model."""
+    adapter = provider_class(provider)
+    return [level for level in adapter.effort_levels if adapter.clamp_effort(level, model) == level]
 
 
 def resolve_agent(config: Config, workspace: str) -> ResolvedAgent:

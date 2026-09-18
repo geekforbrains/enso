@@ -189,12 +189,14 @@ An agent is three values, always stated together:
 { "provider": "claude", "model": "opus", "effort": "xhigh" }
 ```
 
-There is no partial agent and no inferred model. `defaults` in `config.json` gives the
-triple every conversation uses; a workspace may replace the whole triple. Each provider-backed
-job must state its own triple in `JOB.md`, independent of those chat defaults, while still
-using the workspace's provider-argument overrides. Command and integration stages omit the
-triple because they do not invoke a provider. Providers with an ordered reasoning ladder
-clamp effort *down* to what the model supports, with a log line saying so. Antigravity
+The stored agent is always a complete triple; a chat `use` shorthand changes one field of
+the current triple without inferring a model. `defaults` in `config.json` gives the
+triple a conversation uses unless its workspace replaces the whole triple or the conversation
+selects another with the chat `use` command. Each provider-backed job must state its own
+triple in `JOB.md`, independent of chat defaults, and still uses the workspace's
+provider-argument overrides. Command and integration stages omit the triple because they do
+not invoke a provider. Providers with an ordered reasoning ladder clamp effort *down* to
+what the model supports, with a log line saying so. Antigravity
 reports the effort embedded in its model id, even when the request is lower; OpenCode
 instead treats it as an exact, model-specific variant. See
 [Configuration](configuration.md#providers).
@@ -224,7 +226,12 @@ A **conversation** is finer-grained than a binding. In a Slack channel each top-
 message starts its own thread and its own conversation; a DM or a Telegram chat is one
 continuous conversation. Each conversation is serialized — one provider process at a time,
 later messages queued behind it — and holds a resumable provider **session** per provider,
-valid only in the workspace it was created in.
+valid only in the workspace it was created in. A chat `use` selection belongs to that
+conversation and workspace. It lasts until changed, reset with `use default`, cleared, or the
+service restarts; moving the binding to another workspace or removing its configured
+provider or model also discards it.
+Changing the selection keeps the other providers' sessions available. A fresh provider
+session can still receive Slack thread context. Jobs and Heartbeat keep their own agents.
 
 ## Job and run
 
@@ -332,7 +339,7 @@ from SQLite itself. Workspace selection is not a database permission boundary.
    the last valid configuration stays in force.
 3. Its location resolves to a binding key. No binding, no work.
 4. The location and thread resolve to a conversation key.
-5. Commands (`!stop`, `!clear`, `!status`, `!help`, `!restart`) are handled here and stop.
+5. Commands (`!stop`, `!clear`, `!status`, `!use`, `!help`, `!restart`) are handled here and stop.
 6. The original human message is captured in its resolved workspace before asynchronous
    preparation, including while queued. Eligible unaddressed messages are captured as ambient
    discussion without a provider call or attachment download. Commands and setup traffic are
@@ -343,8 +350,8 @@ from SQLite itself. Workspace selection is not a database permission boundary.
    attachments all fail says so in the prompt. A message that cannot be prepared is answered
    with the error and dropped; the ones queued behind it still run.
 8. The turn takes the conversation lock, or queues behind whatever holds it.
-9. The agent triple resolves: workspace override, else `defaults`. Effort is normalized for
-   that provider.
+9. The agent triple resolves: conversation selection, workspace override, else `defaults`.
+   Effort is normalized for that provider.
 10. The prompt is assembled: the [chat-origin block](#chat-origin), background messages,
     transport context, attachment paths, the user's text, and — on Slack — the rich-format
     contract.

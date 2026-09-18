@@ -9,15 +9,30 @@ import os
 import re
 import uuid
 from collections.abc import AsyncIterator
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 try:
-    from telegram import Bot, BotCommand, Message, ReplyParameters, Update
+    from telegram import (
+        Bot,
+        BotCommand,
+        CallbackQuery,
+        InlineKeyboardButton,
+        InlineKeyboardMarkup,
+        Message,
+        ReplyParameters,
+        Update,
+    )
     from telegram.constants import ChatAction, ChatType, ParseMode
     from telegram.error import BadRequest, Forbidden, RetryAfter
-    from telegram.ext import Application, ContextTypes, MessageHandler, filters
+    from telegram.ext import (
+        Application,
+        CallbackQueryHandler,
+        ContextTypes,
+        MessageHandler,
+        filters,
+    )
 except ImportError as exc:  # pragma: no cover - import guard
     raise ImportError(
         f"Telegram transport dependencies are missing ({exc.name}); install enso[telegram]"
@@ -25,8 +40,9 @@ except ImportError as exc:  # pragma: no cover - import guard
 
 from .. import captures, commands, routing, workspaces
 from ..capture_runtime import CaptureWriter
-from ..config import Paths, TelegramConfig
+from ..config import Config, Paths, TelegramConfig
 from ..formatting import md_to_html
+from ..maintenance import paused
 from . import Reply, Transport, Turn
 
 if TYPE_CHECKING:
@@ -37,6 +53,26 @@ log = logging.getLogger(__name__)
 TELEGRAM_TEXT_LIMIT = 4096
 FILE_DOWNLOAD_LIMIT = 20 * 1024 * 1024  # Bot API ceiling for getFile
 QUOTE_LIMIT = 500
+
+
+@dataclass
+class _UsePicker:
+    token: str
+    chat_id: int
+    message_id: int
+    workspace: str
+    provider: str
+    model: str
+    config: Config
+    original: routing.ResolvedAgent
+    stage: str = "main"
+    revision: int = 0
+    options: tuple[str, ...] = ()
+    history: list[tuple[str, str, str]] = field(default_factory=list)
+
+
+def _button_label(value: str) -> str:
+    return value if len(value) <= 60 else f"{value[:44]}…{value[-15:]}"
 
 
 def _is_parse_error(exc: BadRequest) -> bool:
@@ -202,6 +238,7 @@ class TelegramTransport(Transport):
         self.bot_user_id = ""
         self.bot_name = "Enso"
         self._bot: Bot | None = None
+        self._use_pickers: dict[int, _UsePicker] = {}
 
     @property
     def bot(self) -> Bot:
@@ -215,6 +252,7 @@ class TelegramTransport(Transport):
         self.runtime = runtime
         app = Application.builder().token(self.config.bot_token).concurrent_updates(True).build()
         app.add_handler(MessageHandler(filters.UpdateType.MESSAGE, self._on_update))
+        app.add_handler(CallbackQueryHandler(self._on_callback, pattern=r"^u:"))
         async with app:
             self._bot = app.bot
             me = await app.bot.get_me()
@@ -223,7 +261,7 @@ class TelegramTransport(Transport):
             log.info("telegram connected as @%s (%s)", me.username, me.id)
             await app.start()
             assert app.updater is not None
-            await app.updater.start_polling(allowed_updates=[Update.MESSAGE])
+            await app.updater.start_polling(allowed_updates=[Update.MESSAGE, Update.CALLBACK_QUERY])
             runtime.transport_ready(self.name)
             try:
                 await asyncio.Event().wait()
@@ -288,6 +326,160 @@ class TelegramTransport(Transport):
         except Exception:
             log.exception("telegram message handling failed")
 
+    async def _on_callback(self, update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+        if update.callback_query is None:
+            return
+        try:
+            await self.handle_callback(update.callback_query)
+        except Exception:
+            log.exception("telegram picker handling failed")
+
+    def _picker_view(self, picker: _UsePicker) -> tuple[str, InlineKeyboardMarkup]:
+        config = picker.config
+        if picker.stage == "main":
+            prompt = (
+                f"Current: {picker.provider}:{picker.model}:{picker.original.effort}"
+                "\nChoose what to change."
+            )
+            options: tuple[str, ...] = ("Provider", "Model", "Effort", "Default")
+        elif picker.stage == "provider":
+            prompt = "Choose a configured provider."
+            options = tuple(config.providers)
+        elif picker.stage == "model":
+            prompt = f"Choose a model for {picker.provider}."
+            provider = config.providers.get(picker.provider)
+            options = provider.models if provider is not None else ()
+        else:
+            prompt = f"Choose effort for {picker.provider}:{picker.model}."
+            options = tuple(routing.exact_efforts(picker.provider, picker.model))
+        picker.revision += 1
+        picker.options = options
+        prefix = f"u:{picker.token}:{picker.revision}:"
+        rows = [
+            [InlineKeyboardButton(_button_label(option), callback_data=f"{prefix}{index}")]
+            for index, option in enumerate(options)
+        ]
+        if picker.history:
+            rows.append([InlineKeyboardButton("Back", callback_data=f"{prefix}b")])
+        rows.append([InlineKeyboardButton("Cancel", callback_data=f"{prefix}c")])
+        return prompt, InlineKeyboardMarkup(rows)
+
+    async def _open_use_picker(self, chat_id: int, workspace: str) -> None:
+        assert self.runtime is not None
+        conversation = routing.conversation_key("telegram", str(chat_id), None)
+        agent = self.runtime.current_agent(conversation, workspace)
+        picker = _UsePicker(
+            uuid.uuid4().hex[:10],
+            chat_id,
+            0,
+            workspace,
+            agent.provider,
+            agent.model,
+            self.runtime.config,
+            agent,
+        )
+        text, markup = self._picker_view(picker)
+        self._use_pickers[chat_id] = picker
+        sent = await self.bot.send_message(chat_id, text, reply_markup=markup)
+        picker.message_id = sent.message_id
+
+    async def handle_callback(self, query: CallbackQuery) -> None:
+        assert self.runtime is not None
+        message = query.message
+        user = query.from_user
+        if (
+            message is None
+            or user is None
+            or user.is_bot
+            or message.chat.type != ChatType.PRIVATE
+            or message.chat.id != user.id
+        ):
+            await query.answer()
+            return
+        chat_id = message.chat.id
+        picker = self._use_pickers.get(chat_id)
+        parts = (query.data or "").split(":")
+        if (
+            picker is None
+            or len(parts) != 4
+            or parts[1] != picker.token
+            or parts[2] != str(picker.revision)
+            or message.message_id != picker.message_id
+        ):
+            await query.answer("This picker expired. Send /use again.", show_alert=True)
+            return
+        config = self.runtime.config
+        bound = routing.workspace_for(
+            config, routing.binding_key("telegram", str(chat_id), user_id=str(user.id))
+        )
+        if bound != picker.workspace:
+            self._use_pickers.pop(chat_id, None)
+            await query.answer("This chat changed workspace. Send /use again.", show_alert=True)
+            return
+        if config is not picker.config:
+            self._use_pickers.pop(chat_id, None)
+            await query.answer("Configuration changed. Send /use again.", show_alert=True)
+            return
+        choice = parts[3]
+        if choice == "c":
+            self._use_pickers.pop(chat_id, None)
+            await query.answer()
+            await self.bot.edit_message_text(
+                "Selection cancelled.", chat_id=chat_id, message_id=picker.message_id
+            )
+            return
+        if choice == "b" and picker.history:
+            picker.stage, picker.provider, picker.model = picker.history.pop()
+        elif choice.isdecimal() and int(choice) < len(picker.options):
+            selected = picker.options[int(choice)]
+            if picker.stage == "main" and selected == "Default":
+                await self._finish_picker(picker, query, "default")
+                return
+            if picker.stage == "effort":
+                await self._finish_picker(
+                    picker, query, f"{picker.provider}:{picker.model}:{selected}"
+                )
+                return
+            picker.history.append((picker.stage, picker.provider, picker.model))
+            if picker.stage == "main":
+                picker.stage = selected.lower()
+            elif picker.stage == "provider":
+                picker.provider, picker.stage = selected, "model"
+            else:
+                picker.model, picker.stage = selected, "effort"
+        else:
+            await query.answer("This menu changed. Use the latest buttons.", show_alert=True)
+            return
+        text, markup = self._picker_view(picker)
+        await query.answer()
+        await self.bot.edit_message_text(
+            text, chat_id=chat_id, message_id=picker.message_id, reply_markup=markup
+        )
+
+    async def _finish_picker(self, picker: _UsePicker, query: CallbackQuery, spec: str) -> None:
+        assert self.runtime is not None
+        self._use_pickers.pop(picker.chat_id, None)
+        await query.answer()
+        if paused(self.runtime.config.paths):
+            text = "Enso is updating; wait for it to report ready before changing its state."
+        else:
+            conversation = routing.conversation_key("telegram", str(picker.chat_id), None)
+            if self.runtime.current_agent(conversation, picker.workspace) != picker.original:
+                text = "Selection changed. Send /use again."
+            else:
+                result = await commands.run(
+                    self.runtime,
+                    commands.Command("use", spec),
+                    conversation=conversation,
+                    binding=routing.binding_key(
+                        "telegram", str(picker.chat_id), user_id=str(query.from_user.id)
+                    ),
+                    workspace=picker.workspace,
+                    transport="telegram",
+                )
+                text = result.text
+        await self.bot.edit_message_text(text, chat_id=picker.chat_id, message_id=picker.message_id)
+
     async def handle_message(self, message: Message) -> None:
         assert self.runtime is not None
         user = message.from_user
@@ -313,7 +505,16 @@ class TelegramTransport(Transport):
             return
 
         text = (message.text or message.caption or "").strip()
-        if commands.parse(text, "telegram") is not None and await commands.dispatch(
+        parsed = commands.parse(text, "telegram")
+        if (
+            parsed is not None
+            and parsed.name == "use"
+            and not parsed.args
+            and not paused(self.runtime.config.paths)
+        ):
+            await self._open_use_picker(message.chat.id, workspace)
+            return
+        if parsed is not None and await commands.dispatch(
             self.runtime, build_turn(message, text, workspace=workspace), reply
         ):
             return

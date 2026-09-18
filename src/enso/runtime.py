@@ -18,7 +18,7 @@ from typing import Any
 from . import connection_setup, db, messages, outbound, routing
 from . import log as logctx
 from .capture_runtime import CaptureWriter
-from .config import Config, LiveConfig
+from .config import Agent, Config, LiveConfig
 from .execution import terminate_process_tree
 from .formatting import format_elapsed, format_error, preview, split_text, status_text
 from .outbound import OutboundMessage
@@ -179,6 +179,7 @@ class Runtime:
         self._drains: dict[str, asyncio.Task[None]] = {}
         self._running: dict[str, Running] = {}
         self._clearing: dict[str, asyncio.Future[None]] = {}
+        self._selected: dict[str, tuple[str, str, Agent]] = {}
         self.ready_transports: set[str] = set()
 
     @property
@@ -208,6 +209,38 @@ class Runtime:
     async def sessions(self, conversation: str) -> list[db.Session]:
         """Saved provider sessions for this conversation, stale ones included."""
         return await asyncio.to_thread(db.get_sessions, self.paths, conversation)
+
+    def current_agent(
+        self, conversation: str, workspace: str, config: Config | None = None
+    ) -> ResolvedAgent:
+        """Use a valid conversation selection in its workspace, else the live default."""
+        config = config if config is not None else self.config
+        selected = self._selected.get(conversation)
+        if selected is not None:
+            binding, owner, agent = selected
+            provider = config.providers.get(agent.provider)
+            if (
+                owner == workspace
+                and config.bindings.get(binding) == owner
+                and provider is not None
+                and agent.model in provider.models
+                and agent.effort in routing.exact_efforts(agent.provider, agent.model)
+            ):
+                return ResolvedAgent(agent.provider, agent.model, agent.effort, "conversation")
+            del self._selected[conversation]
+        return routing.resolve_agent(config, workspace)
+
+    def select_agent(
+        self, conversation: str, binding: str, workspace: str, agent: Agent | None
+    ) -> bool:
+        """Apply a chat-only selection when no turn or clear owns the conversation."""
+        if self.busy(conversation) or conversation in self._clearing:
+            return False
+        if agent is None:
+            self._selected.pop(conversation, None)
+        else:
+            self._selected[conversation] = (binding, workspace, agent)
+        return True
 
     def running(self, conversation: str) -> Running | None:
         return self._running.get(conversation)
@@ -547,8 +580,13 @@ class Runtime:
         self._clearing[conversation] = clearing
         try:
             sessions = await asyncio.to_thread(db.delete_sessions, self.paths, conversation)
+            had_selection = self._selected.pop(conversation, None) is not None
             if not sessions:
-                return "No session to clear."
+                return (
+                    "Cleared selection. The next message uses the configured default."
+                    if had_selection
+                    else "No session to clear."
+                )
             lines = ["Cleared. The next message starts a fresh session."]
             for session in sessions:
                 summary = await asyncio.to_thread(self._forget_local, session)
@@ -670,7 +708,7 @@ class Runtime:
                 await turn.capture.finish("dropped")
             await reply.send(routing.UNBOUND_NOTICE)
             return
-        running.agent = routing.resolve_agent(config, workspace)
+        running.agent = self.current_agent(conversation, workspace, config)
         running.config = config
         try:
             await self._turn(conversation, workspace, turn, reply, running)

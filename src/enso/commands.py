@@ -1,4 +1,4 @@
-"""Chat commands — ``stop``, ``clear``, ``status``, ``help``, ``restart`` — for every transport."""
+"""Chat commands shared by Slack and Telegram."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from . import routing
+from .config import Agent, Config
 from .formatting import format_elapsed, model_label
 from .runtime import Runtime, usable
 from .service import restart_command
@@ -23,8 +24,9 @@ log = logging.getLogger(__name__)
 
 COMMANDS: tuple[tuple[str, str], ...] = (
     ("stop", "Stop the running process and drop queued messages"),
-    ("clear", "Forget this conversation's session; the next message starts fresh"),
+    ("clear", "Forget this conversation's selection and sessions"),
     ("status", "Workspace, agent, session, and queue for this conversation"),
+    ("use", "Choose this conversation's provider, model, and effort"),
     ("help", "List these commands"),
     ("restart", "Restart the Enso service"),
 )
@@ -74,8 +76,14 @@ def _age(stamp: str) -> str:
 
 async def status_text(runtime: Runtime, conversation: str, workspace: str) -> str:
     """Workspace, effective agent and its source, sessions, running work, queue depth."""
-    agent = routing.resolve_agent(runtime.config, workspace)
-    source = "defaults" if agent.source == "defaults" else f"workspaces.{workspace}.agent"
+    agent = runtime.current_agent(conversation, workspace)
+    source = (
+        "conversation selection"
+        if agent.source == "conversation"
+        else "defaults"
+        if agent.source == "defaults"
+        else f"workspaces.{workspace}.agent"
+    )
     lines = [
         f"Workspace: {workspace}",
         f"Agent: {agent.provider} · {model_label(agent.model)} · {agent.effort} (from {source})",
@@ -98,6 +106,96 @@ async def status_text(runtime: Runtime, conversation: str, workspace: str) -> st
         lines.append(f"Running: {elapsed} · ↳ {running.action}")
     lines.append(f"Queued: {runtime.queued(conversation)}")
     return "\n".join(lines)
+
+
+def _use_help(runtime: Runtime, conversation: str, workspace: str, prefix: str) -> str:
+    config = runtime.config
+    current = runtime.current_agent(conversation, workspace, config)
+    source = "selected here" if current.source == "conversation" else "configured default"
+    return "\n".join(
+        (
+            f"Using {current.provider}:{current.model}:{current.effort} ({source}).",
+            f"{prefix}use PROVIDER:MODEL:EFFORT — choose all three",
+            f"{prefix}use model:MODEL — change only the model",
+            f"{prefix}use effort:EFFORT — change only the effort",
+            f"{prefix}use default — return to the configured default",
+            f"Providers: {', '.join(config.providers)}",
+        )
+    )
+
+
+def _use_choice(
+    config: Config, current: routing.ResolvedAgent, spec: str, prefix: str
+) -> Agent | str:
+    """An exact triple, or a human-readable reason it cannot be selected."""
+    partial = ""
+    if spec.startswith("model:"):
+        partial = "model"
+        agent = Agent(current.provider, spec[len("model:") :], current.effort)
+    elif spec.startswith("effort:"):
+        partial = "effort"
+        agent = Agent(current.provider, current.model, spec[len("effort:") :])
+    else:
+        provider, separator, remainder = spec.partition(":")
+        model, final_separator, effort = remainder.rpartition(":")
+        if not separator or not final_separator or not provider or not model or not effort:
+            return f"Choose a complete triple, for example {prefix}use codex:sol:medium."
+        agent = Agent(provider, model, effort)
+    if not agent.provider or not agent.model or not agent.effort:
+        return f"Use {prefix}use PROVIDER:MODEL:EFFORT, model:MODEL, effort:EFFORT, or default."
+    provider_config = config.providers.get(agent.provider)
+    if provider_config is None:
+        return (
+            f"Provider {agent.provider!r} is not configured. Choose: {', '.join(config.providers)}."
+        )
+    if agent.model not in provider_config.models:
+        return (
+            f"Model {agent.model!r} is not configured for {agent.provider}. "
+            f"Choose: {', '.join(provider_config.models)}."
+        )
+    exact = routing.exact_efforts(agent.provider, agent.model)
+    if agent.effort not in exact:
+        direction = (
+            f" Use {prefix}use {agent.provider}:{agent.model}:EFFORT to change both."
+            if partial == "model"
+            else ""
+        )
+        return (
+            f"Effort {agent.effort!r} cannot be used with {agent.provider}:{agent.model}. "
+            f"Choose: {', '.join(exact)}.{direction}"
+        )
+    return agent
+
+
+async def _use_text(
+    runtime: Runtime, conversation: str, binding: str, workspace: str, spec: str, prefix: str
+) -> str:
+    if not spec:
+        return _use_help(runtime, conversation, workspace, prefix)
+    config = runtime.config
+    current = runtime.current_agent(conversation, workspace, config)
+    if spec == "default":
+        selected: Agent | None = None
+    else:
+        choice = _use_choice(config, current, spec, prefix)
+        if isinstance(choice, str):
+            return choice
+        selected = choice
+    if not runtime.select_agent(conversation, binding, workspace, selected):
+        return (
+            "A message is running or being cleared. Wait or stop it before changing the selection."
+        )
+    agent = runtime.current_agent(conversation, workspace, config)
+    sessions = await runtime.sessions(conversation)
+    resumed = any(s.provider == agent.provider and usable(s, workspace) for s in sessions)
+    source = "configured default" if selected is None else "conversation selection"
+    context = (
+        f"Resuming the earlier {agent.provider} session; "
+        "it may miss turns handled by other providers."
+        if resumed
+        else f"The next {agent.provider} turn starts a fresh provider session."
+    )
+    return f"Using {agent.provider}:{agent.model}:{agent.effort} ({source}). {context}"
 
 
 def restart_service() -> None:
@@ -128,7 +226,13 @@ def _schedule_restart() -> None:
 
 
 async def run(
-    runtime: Runtime, command: Command, *, conversation: str, workspace: str, transport: str
+    runtime: Runtime,
+    command: Command,
+    *,
+    conversation: str,
+    binding: str,
+    workspace: str,
+    transport: str,
 ) -> Result:
     """Execute one parsed command for a bound conversation."""
     prefix = TRANSPORTS[transport].prefix
@@ -138,6 +242,10 @@ async def run(
         return Result(await runtime.clear(conversation))
     if command.name == "status":
         return Result(await status_text(runtime, conversation, workspace))
+    if command.name == "use":
+        return Result(
+            await _use_text(runtime, conversation, binding, workspace, command.args, prefix)
+        )
     if command.name == "help":
         return Result(help_text(prefix))
     if command.name == "restart":
@@ -171,7 +279,12 @@ async def dispatch(runtime: Runtime, turn: Turn, reply: Reply) -> bool:
         conversation,
     )
     result = await run(
-        runtime, command, conversation=conversation, workspace=workspace, transport=turn.transport
+        runtime,
+        command,
+        conversation=conversation,
+        binding=key,
+        workspace=workspace,
+        transport=turn.transport,
     )
     await reply.send(result.text)
     if result.after is not None:

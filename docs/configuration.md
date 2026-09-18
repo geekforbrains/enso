@@ -293,10 +293,10 @@ missing directory as a problem.
 ## Defaults, workspaces, and agents
 
 `defaults` names the provider, model, and effort every conversation uses unless the
-workspace overrides it, and all three keys are required. Each provider-backed job supplies
-its own triple in `JOB.md`; changing chat defaults or a workspace's `agent` does not change
-an existing job. Command and integration stages omit the triple because they do not invoke
-a provider.
+workspace or a temporary chat selection overrides it, and all three keys are required.
+Each provider-backed job supplies its own triple in `JOB.md`; changing chat defaults or a
+workspace's `agent` does not change an existing job. Command and integration stages omit
+the triple because they do not invoke a provider.
 
 A workspace may replace the whole triple in `WORKSPACE.md` with an `agent` block
 (also all three keys), or replace one provider's flags with `providers.<name>.args`. Providers with an ordered
@@ -358,10 +358,11 @@ it does not change provider arguments, configuration, logs, or CLI output. See
 [Agent](concepts.md#agent) for the exact display rule.
 
 Chat session ids are stored per conversation and provider in `enso.db`, and a session is only
-resumable in the workspace it was created in. `clear` in chat forgets them. Sessions idle
-for 30 days are pruned at start. Jobs with postrun capture a separate session per run and
-can resume it for bounded follow-ups; later triggers start fresh. Job session IDs live in
-run history and are not chat sessions. See [Jobs](jobs.md#postrun-scripts).
+resumable in the workspace it was created in. Changing the chat selection keeps these
+sessions; `clear` forgets them. Sessions idle for 30 days are pruned at start. Jobs with
+postrun capture a separate session per run and can resume it for bounded follow-ups; later
+triggers start fresh. Job session IDs live in run history and are not chat sessions. See
+[Jobs](jobs.md#postrun-scripts).
 
 Every id is checked against the contract of the provider that owns it — one opaque token,
 never a path — before it is stored, resumed, or deleted, and a `clear` proves the data it
@@ -561,12 +562,37 @@ closed records are pruned under `heartbeat.retention_days`.
 
 ## Chat commands
 
-Slack uses `!`, Telegram `/`.
+Slack uses `!`, Telegram `/`. Slack commands follow the channel and thread mention settings:
+use `@Enso !use …` when a mention is required, or `!use …` when it is not.
 
 | Command | Effect |
 | --- | --- |
 | `stop` | Kill the running process for this conversation and drop its queue |
-| `clear` | Forget the conversation's sessions and attempt to delete their local provider data; refuses while a message is running, so stop it or wait first |
+| `clear` | Reset the chat selection, forget the conversation's sessions, and attempt to delete their local provider data; refuses while a message is running, so stop it or wait first |
 | `status` | Workspace, agent in effect and where it came from, session age, what is running, queue depth |
+| `use` | Show the current selection and command help in Slack; open the selection picker in Telegram |
 | `help` | List these |
 | `restart` | Restart the service (or re-exec `enso serve`) after replying |
+
+In Slack, `!use provider:model:effort` selects all three values. `!use model:MODEL` or
+`!use effort:EFFORT` changes just that field of the current agent; `!use default` returns
+to the workspace agent, or installation default if the workspace has none. For example,
+`!use codex:sol:medium`, `!use model:astra`, and `!use effort:max`. A provider change
+requires the complete triple: `!use provider:codex` and `!use codex:sol` are incomplete.
+The model may contain colons; the first and last colons delimit the provider and effort.
+
+Enso offers only providers and models registered in `config.json`. An unknown provider,
+unconfigured model, or effort Enso would clamp or rewrite leaves the selection unchanged
+and shows valid choices. A model-only change must also keep the
+inherited effort unchanged. Telegram's `/use` picker has Provider, Model, Effort, and
+Default buttons. It shows configured providers and models, then efforts compatible under
+Enso's provider rules; the final choice uses the same validation as Slack. OpenCode's
+model-specific variant support can still differ from Enso's offered efforts (see
+[OpenCode](#opencode)). An outdated picker asks you to run `/use` again.
+
+The selection stays in memory for that conversation and workspace until another selection,
+`use default`, `clear`, or a service restart (including a software update that restarts it).
+It has no idle expiry and is discarded if its binding moves to another workspace or a
+configuration edit makes it invalid.
+`use default` keeps provider sessions; `clear` removes them. Jobs and Heartbeat keep their
+separately configured agents.
