@@ -3,7 +3,7 @@
 {% import "_workflow.html" as w %}
 {% block title %}{{ ref }}{% if task %} · {{ task.title }}{% endif %}{% endblock %}
 {% block content %}
-<p class="crumbs"><a href="/tasks">Tasks</a> / <span aria-current="page">{{ ref }}</span></p>
+<p class="crumbs"><a href="/tasks">Tasks</a>{% if task %} / <a href="/tasks?project={{ task.project|urlencode }}&amp;workspace={{ task.workspace|urlencode }}">{{ project_name }}</a>{% endif %} / <span aria-current="page">{{ ref }}</span></p>
 {{ m.error(error, "The task could not be read") }}
 {% if task %}
 {% call m.phead(now) %}<span class="mono">{{ task.ref }}</span> {{ task.title }}{% if task.attention %} {{ m.tag('warning', 'needs attention') }}{% endif %}{% endcall %}
@@ -18,7 +18,8 @@
 
 <div class="panel">
   <dl class="kv">
-    <dt>Project</dt><dd>{{ project_name }} <span class="muted">({{ task.project }})</span></dd>
+    <dt>Project</dt><dd><a href="/tasks?project={{ task.project|urlencode }}&amp;workspace={{ task.workspace|urlencode }}">{{ project_name }}</a> <span class="muted">({{ task.project }})</span></dd>
+    <dt>Workspace</dt><dd><a href="/workspaces/{{ task.workspace|urlencode }}">{{ task.workspace }}</a></dd>
     <dt>Stage</dt>
     <dd>
       {% if stages %}

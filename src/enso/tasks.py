@@ -355,11 +355,14 @@ def _like(text: str) -> str:
 
 
 def _filters(
-    *, project: str | None, stage: str | None, query: str | None
+    *, project: str | None, stage: str | None, query: str | None, workspace: str | None = None
 ) -> tuple[list[str], list[str]]:
     """The filters common to ordinary lists and finished history."""
     clauses: list[str] = []
     params: list[str] = []
+    if workspace is not None:
+        clauses.append("workspace = ?")
+        params.append(workspace)
     if project:
         clauses.append("project = ?")
         params.append(project.strip().upper())
@@ -398,10 +401,7 @@ def list_tasks(
     """
     if ready and config is None:
         raise TaskError("listing ready tasks needs the config")
-    clauses, params = _filters(project=project, stage=stage, query=query)
-    if workspace is not None:
-        clauses.append("workspace = ?")
-        params.append(workspace)
+    clauses, params = _filters(project=project, stage=stage, query=query, workspace=workspace)
     if not stage and not all:
         clauses.append("stage NOT IN (?, ?)")
         params.extend(FINISHED)
@@ -442,6 +442,7 @@ def finished_tasks(
     project: str | None = None,
     stage: str | None = None,
     query: str | None = None,
+    workspace: str | None = None,
 ) -> FinishedTasks:
     """Finished tasks, newest in stage first, with filtered counts before the row limit.
 
@@ -456,7 +457,7 @@ def finished_tasks(
         raise TaskError("finished task cutoff needs a timezone")
     if stage and stage not in FINISHED:
         return FinishedTasks(rows=[], total=0, done_count=0)
-    clauses, params = _filters(project=project, stage=stage, query=query)
+    clauses, params = _filters(project=project, stage=stage, query=query, workspace=workspace)
     if not stage:
         clauses.append("stage IN (?, ?)")
         params.extend(FINISHED)
@@ -476,6 +477,23 @@ def finished_tasks(
     return FinishedTasks(
         rows=[_task(row) for row in rows], total=int(total), done_count=int(done_count)
     )
+
+
+def stage_counts(
+    paths: Paths, *, workspace: str | None = None
+) -> dict[tuple[str, str], dict[str, int]]:
+    """Task counts by (workspace, project) and accepted stage, without loading task bodies."""
+    where = "WHERE workspace = ?" if workspace is not None else ""
+    with db.reader(paths) as con:
+        rows = con.execute(
+            f"SELECT workspace, project, stage, count(*) AS total FROM _enso_tasks {where} "
+            "GROUP BY workspace, project, stage",
+            [workspace] if workspace is not None else [],
+        ).fetchall()
+    counts: dict[tuple[str, str], dict[str, int]] = {}
+    for row in rows:
+        counts.setdefault((row["workspace"], row["project"]), {})[row["stage"]] = row["total"]
+    return counts
 
 
 def tasks_for_run(paths: Paths, run_id: str) -> list[tuple[str, str]]:

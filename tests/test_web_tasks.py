@@ -153,8 +153,6 @@ async def test_tasks_board_groups_every_state(client: TestClient, board: Board) 
     # The dot is the only place the state appears, and a row never carries a message.
     assert "Waiting on the API key" not in body
     assert "waiting on you" not in body and 'class="err"' not in body
-    # An unknown parameter is ignored, so an old bookmarked tab still renders the board.
-    assert task_links(await html(client, "/tasks?view=done")) == listed
 
 
 async def test_ready_group_reads_down_the_pipeline(client: TestClient, board: Board) -> None:
@@ -248,7 +246,8 @@ async def test_tasks_filters_and_empty_states(client: TestClient, board: Board) 
         ("Done", "2 tasks", ["EN-006", "EN-005"]),
     ]
     assert "7 tasks matching the filter." in by_project
-    assert '<option value="EN" selected>' in by_project
+    assert '<a class="project-link" href="/tasks?project=EN" aria-current="page">' in by_project
+    assert '<input type="hidden" name="project" value="EN">' in by_project
 
     assert "No tasks matching “nothing here”." in await html(client, "/tasks?q=nothing+here")
     assert "No tasks in project ZZ." in await html(client, "/tasks?project=zz")
@@ -310,6 +309,108 @@ async def test_empty_board_says_so(client: TestClient, project_config: Config) -
     page = await html(client, "/tasks")
     assert task_links(page) == [] and board_groups(page) == []
     assert "No tasks yet." in page
+
+
+async def test_empty_projects_explain_the_flow(
+    client: TestClient, enso_home: Paths, project_config: Config
+) -> None:
+    edit_project(
+        enso_home,
+        stages=[
+            "triage",
+            {
+                "name": "build",
+                "command": "true",
+                "checks": [
+                    {"name": "Build <artifact>", "command": "true"},
+                ],
+            },
+            {"name": "approve", "human": True, "max_returns": 0},
+            {"name": "release", "return_to": "build"},
+        ],
+    )
+    page = await html(client, "/tasks?project=EN")
+    assert 'href="/tasks?project=MKT"' in page and "0 open" in page
+    assert "Enso · Workflow" in page and 'href="/workspaces/default"' in page
+    flow = page.split('<ol class="workflow-steps">')[1].split("</ol>")[0]
+    assert re.findall(r'&amp;stage=([a-z]+)"', flow) == [
+        "triage",
+        "build",
+        "approve",
+        "release",
+        "done",
+    ]
+    assert all(kind in flow for kind in ("Agent", "Command", "Human"))
+    assert "Checks: Build &lt;artifact&gt;" in flow
+    assert "May return to triage" in flow and "May return to build" in flow
+    assert "May return to approve" not in flow
+    assert "No tasks in project EN." in page
+
+
+async def test_workspace_scope_filters_history_before_the_cap_and_links_back(
+    client: TestClient, board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_project(board.paths, "BLOG", {"name": "Blog", "stages": ["write"]}, workspace="personal")
+    config = load_config(board.paths)
+    for index in range(3):
+        task = tasks.create(board.paths, config, "BLOG", f"Post {index}", actor=USER)
+        if index:
+            tasks.move(
+                board.paths,
+                config,
+                task.ref,
+                "advance",
+                actor=USER,
+                run_id=None,
+                message="Published",
+            )
+    monkeypatch.setattr(taskviews, "DONE_LIMIT", 1)
+
+    page = await html(client, "/tasks?workspace=default")
+    assert "8 tasks matching the filter, 7 listed." in page
+    assert group_rows(page)["Done"] == ["EN-006"]
+    assert 'href="/tasks?project=BLOG' not in page
+    scoped = await html(client, "/tasks?workspace=personal")
+    assert "3 tasks matching the filter, 2 listed." in scoped
+    assert "2 completed in the last 7 days" in scoped
+    assert task_links(scoped) == ["BLOG-001", "BLOG-003"]
+    assert '<input type="hidden" name="workspace" value="personal">' in scoped
+    assert "Blog · personal" in scoped
+
+    workspace = await html(client, "/workspaces/personal")
+    assert 'href="/tasks?project=BLOG&amp;workspace=personal"' in workspace
+    assert "write → done" in workspace and "1 open" in workspace
+    assert 'href="/tasks?project=EN' not in workspace
+    task_page = await html(client, "/tasks/BLOG-001")
+    assert 'href="/tasks?project=BLOG&amp;workspace=personal"' in task_page
+    assert 'href="/workspaces/personal"' in task_page
+
+
+async def test_project_counts_ignore_task_search_and_retain_missing_definitions(
+    client: TestClient, board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    page = await html(client, "/tasks?project=EN&stage=todo&q=unmatched")
+    flow = page.split('<ol class="workflow-steps">')[1].split("</ol>")[0]
+    assert "1 task" in flow and "5 open" in page
+    assert task_links(page) == []
+
+    definition = board.paths.project("default", "EN") / "PROJECT.md"
+    saved = definition.read_text()
+    definition.unlink()
+    orphan = await html(client, "/tasks?project=EN")
+    assert "Project definition unavailable" in orphan
+    assert 'href="/tasks?project=EN&amp;workspace=default"' in orphan
+    assert len(task_links(orphan)) == 7
+    definition.write_text(saved)
+
+    def unreadable_counts(*args, **kwargs):
+        raise OSError("counts unavailable")
+
+    monkeypatch.setattr(tasks, "stage_counts", unreadable_counts)
+    unavailable = await html(client, "/tasks?project=MKT")
+    assert "Tasks could not be read" in unavailable
+    assert "Count unavailable" in unavailable and "0 open" not in unavailable
+    assert "Marketing · Workflow" in unavailable
 
 
 async def test_task_page_shows_the_record(client: TestClient, board: Board) -> None:

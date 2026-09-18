@@ -60,9 +60,9 @@ Product behaviour belongs in its owning page under `docs/`, starting with
 - `src/enso/web/` — `server.py` owns routes and template wiring; `filters.py` owns
   presentation helpers, Jinja filters, and chart series. `tasks.py` builds task board and
   detail models; `views.py` builds the other pages. Both use `common.py` for configuration,
-  source errors, and the shared attention indicator. `heartbeat.py` owns bounded heartbeat
-  and mixed-run reads; `files.py` owns safe file browsing and Markdown rendering. Shared
-  helpers do not import page models.
+  project summaries, source errors, and the shared attention indicator. `heartbeat.py` owns
+  bounded heartbeat and mixed-run reads; `files.py` owns safe file browsing and Markdown
+  rendering. Shared helpers do not import page models.
 - `src/enso/bundled/` — packaged content, not development instructions.
   Home-copied files mirror their home paths; job and workspace templates land in their owning
   workspace. Home-copied files are listed in
