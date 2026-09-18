@@ -1,0 +1,15 @@
+{% macro task_count(count) -%}
+{{ count ~ ' task' ~ ('' if count == 1 else 's') if count is not none else 'Count unavailable' }}
+{%- endmacro %}
+
+{% macro flow(stages) -%}
+{% for step in stages %}{{ step.name }}{% if step.human %} (human){% endif %} → {% endfor %}{{ 'done' if stages else 'Project definition unavailable' }}
+{%- endmacro %}
+
+{% macro link(entry, current=False, preview=False) -%}
+<a class="project-link" href="{{ entry.href }}"{% if current %} aria-current="page"{% endif %}>
+  <span class="project-title"><strong>{{ entry.name }}</strong><span class="count">{% if entry.open_tasks is not none %}{{ entry.open_tasks }} open{% else %}—<span class="visually-hidden">Count unavailable</span>{% endif %}</span></span>
+  <span class="project-meta">{{ entry.key }} · {{ entry.workspace }}</span>
+  {% if preview %}<span class="project-flow">{{ flow(entry.stages) }}</span>{% endif %}
+</a>
+{%- endmacro %}

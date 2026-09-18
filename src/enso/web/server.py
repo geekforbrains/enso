@@ -397,7 +397,7 @@ async def run(request: web.Request) -> web.StreamResponse:
 
 async def tasks(request: web.Request) -> web.StreamResponse:
     paths = request.app[PATHS]
-    query = {key: request.query.get(key, "") for key in ("view", "project", "stage", "q")}
+    query = {key: request.query.get(key, "") for key in ("workspace", "project", "stage", "q")}
     model = await _model(lambda: taskviews.tasks_model(paths, query))
     return render(request, "tasks.html", model)
 
