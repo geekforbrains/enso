@@ -76,6 +76,7 @@
 {% endif %}
 
 <section aria-label="Tasks">
+{% if not project %}<div class="shead"><h2>All Tasks</h2></div>{% endif %}
 <form class="toolbar" method="get" action="/tasks" data-autosubmit>
   {% if project %}<input type="hidden" name="project" value="{{ project }}">{% endif %}
   {% if workspace %}<input type="hidden" name="workspace" value="{{ workspace }}">{% endif %}
