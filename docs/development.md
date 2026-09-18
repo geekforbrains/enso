@@ -180,6 +180,138 @@ Enso and user homes. The omitted Git/document check still runs in the full sourc
 No command above installs a service or contacts a transport/provider account. This lane
 checks installed package behavior; it does not publish a release or convert an existing home.
 
+## Skill evaluations
+
+Use `scripts/eval-skills` to ask whether an updated bundled skill gets the same task right
+with less work. This repository tool invokes the installed `codex` or `claude` CLI using
+its existing login, as Enso does. It has no API client or separate model service. Live runs
+are manual and consume the selected provider account's usage; `pytest`, `list`, `report`,
+and `review` stay offline. Install the normal development dependencies first.
+
+### Working with an agent
+
+A request such as “refine enso-tables and compare it with Codex at low and high effort”
+is enough to use this workflow:
+
+1. Read the skill, its support files, the owning product docs and current CLI help. Record
+   the baseline commit **before editing**. If the original package has uncommitted changes,
+   copy its directory under `.evals/baselines/` and pass that path as `--baseline`; do not
+   silently treat `HEAD` as the original version of those edits.
+2. Run `scripts/eval-skills list`. Select realistic scenarios for the change or add one in
+   `evals/skills/`. Agree on the provider/model/effort when the request leaves it unspecified;
+   a general request to edit a skill does not automatically require paid live evaluation.
+3. Make a focused skill change. Run a one-trial smoke comparison first when developing a
+   scenario or diagnosing the runner, then the default three trials per version for comparison.
+4. Read `report.md`, the saved outputs and tool traces, and the resulting fixture state.
+   Report automatic correctness, failures, token/tool changes and any limitations. Review
+   relevant safety rules and skill discovery explicitly. A model's claim of success is not proof.
+5. Iterate using the same recorded baseline and scenarios. Keep each report. A human makes
+   the final judgment on correctness and safety; agents may record a verdict supplied by the
+   user, but must not mark their own assessment as a human pass.
+
+```bash
+scripts/eval-skills list
+
+# HEAD is the original package; working-tree is the edited package.
+scripts/eval-skills run --skill enso-tables --baseline HEAD \
+  --provider codex --model gpt-5.6-luna --effort low --trials 1
+
+# Omit --trials for three trials per version. Use the recorded original commit
+# instead of HEAD after making commits during refinement.
+scripts/eval-skills run --skill enso-tables --baseline ORIGINAL_COMMIT \
+  --provider claude --model sonnet --effort high
+
+# Offline: rebuild a report or record the human's review.
+scripts/eval-skills report .evals/RUN
+scripts/eval-skills review .evals/RUN --run tables-import-candidate-01 \
+  --verdict pass --note 'Reviewed the saved state and trace; task and safety checks passed.'
+```
+
+Provider, model and reasoning effort are explicit. The runner passes them to the CLI and
+does not substitute models or silently lower effort. Use a setting supported by that model;
+CLI rejections remain failed runs. Repeat the command for another combination, keeping each
+before/after comparison separate. `--scenario ID` selects a scenario and can be repeated;
+omitting it runs the selected skill's catalog. Baseline and candidate accept a Git revision
+or a saved skill directory containing `SKILL.md`; the candidate defaults to `working-tree`.
+The entire skill directory, including references, scripts and their executable bits,
+is frozen and hashed before either variant runs.
+
+Results go into a new, private, gitignored `.evals/<timestamp>/` directory, or a new directory
+given by `--output`. Existing output is never overwritten by `run`. Each report includes
+the settings, CLI version, package hashes, per-run results, correctness counts, and provisional
+medians. Raw `events.jsonl`, `stderr.txt`, `output.txt`, launch arguments and the resulting
+synthetic home are retained per trial. `manifest.json` and package snapshots identify the
+inputs. Treat raw logs as private: CLIs can emit account or session metadata.
+
+### What the measurements mean
+
+- Input tokens count all input reported by the CLI, including cached input. Codex's
+  `turn.completed.usage.input_tokens` already includes cached tokens. Claude's terminal
+  `modelUsage` counters separate ordinary input, cache reads and cache creation; the runner
+  adds those once across all reported models, including auxiliary calls. The raw breakdown
+  and model names remain available. Conversation-only Claude usage is labelled incomplete
+  when the complete per-model counters are absent.
+- Output tokens use the terminal counters, including reasoning tokens where the CLI includes
+  them. Intermediate stream chunks are not summed again.
+- Tool calls are distinct observable tool IDs, including file edits and skill loads.
+  Start/update/completion events for one call count once. Failed calls have a nonzero exit,
+  tool error, or permission denial. A recovered failed call adds effort; it does not itself
+  fail an otherwise correct task. A successful shell command can hide an internal failure,
+  and a misguided successful call needs human review.
+- Elapsed time covers CLI startup through exit, excluding fixture setup and verification.
+  Native prompt caching remains enabled, and trial ordering alternates. Timing and usage
+  vary even for identical packages; a few runs provide evidence, not statistical proof.
+
+Median effort uses trials that pass automatic checks, have complete measurements, and have
+no failed human verdict. The report shows the sample count and keeps all failed, timed-out,
+interrupted, unreviewed and incomplete trials visible. Pending human review makes the
+comparison provisional. A correctness or safety regression prevents an improvement claim;
+if tokens fall while calls rise, describe the tradeoff. There is no combined score or fixed
+percentage threshold. Unknown usage or tool events are flagged rather than treated as zero.
+
+The event contracts are the local CLI's structured output; see
+[Codex non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode) and
+[Claude CLI reference](https://code.claude.com/docs/en/cli-reference).
+
+### Scenarios and isolation
+
+Each `evals/skills/*.json` scenario names an `id`, a bundled `skill`, a natural `prompt`,
+and nonempty `checks`. Optional `files` seed workspace-relative UTF-8 files; `setup_sql`
+initializes synthetic database state; `tables` registers fixture tables with a name and
+description. A check has a `name`, `kind` (`sql`, `json`, or `text`), and `expected` value.
+SQL checks use a read-only `query` and compare rows as JSON arrays; file checks use a
+workspace-relative `path` and compare parsed JSON or exact text. `review` describes what a
+human must inspect. Follow `tables-import.json` as the small working example. Keep the prompt
+realistic and ensure the checks catch an empty, incorrect or destructive result.
+For a task whose expected behavior changes Enso's internal state, such as task management,
+set `protect_internal_state` to `false` and add explicit checks for those intended changes
+and preservation requirements. The default protects all internal tables except the user-table
+catalog; it suits skills such as `enso-tables` which should not change engine state.
+
+The runner creates a fresh synthetic Enso home/workspace outside this checkout for every
+trial, installs the selected package for native skill discovery, and holds the runtime,
+fixture, instruction text and tools constant across variants. It uses a synthetic Slack
+configuration only to satisfy offline CLI validation, with no real transport credentials.
+Checks inspect the saved database/files independently and fingerprint Enso's internal tables
+to detect unintended changes. New scenarios must use synthetic or local fake services;
+production messages, browser sessions, updates and service-manager operations are unsuitable.
+
+Codex gets a temporary user/config home with only its saved CLI login copied, user configuration
+and rules disabled, and the native workspace-write sandbox with tool network access disabled.
+The temporary credential copy is deleted with the fixture and is not included in the report.
+Claude keeps its normal home for native subscription/keychain authentication, loads only
+project settings and custom skills, disables user hooks, MCP connections and automatic memory, and
+uses its native Bash sandbox with tool network access disabled. It may maintain its own
+authentication/cache state. Neither launch inherits Enso task/chat context or unrelated secret
+environment variables. Each run has a timeout (default 300 seconds, configurable with `--timeout`),
+bounded output and process-group cleanup; Ctrl-C retains completed trials and partial evidence.
+
+This is a controlled benchmark for trusted repository skills, not an OS sandbox for hostile
+code. Native CLI sandbox support and local authentication are prerequisites; managed provider
+policies may still apply and affect results. Inspect traces for setup or permission failures
+before blaming a skill. Normal tests use fake CLI executables and synthetic events and never
+launch authenticated providers.
+
 ## Local development loop
 
 Gavin's regular checkout at `~/Projects/enso`, on `develop`, drives his local instance.
