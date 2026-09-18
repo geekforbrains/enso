@@ -1,5 +1,7 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m %}
+{% import "_projects.html" as p %}
+{% from "_icons.html" import icon %}
 {% block title %}Tasks{% if project %} · {{ project }}{% endif %}{% endblock %}
 
 {# An entity row: the dot is the task's whole state, the reference leads the facts (with the
@@ -10,12 +12,12 @@
   <span class="pin {{ row.state|task_tone }}" role="img" aria-label="{{ row.state|replace('-', ' ') }}" title="{{ row.state|replace('-', ' ') }}"></span>
   <span class="body">
     <span class="title">{{ row.task.title }}</span>
-    <span class="detail">
+    <span class="detail task-detail">
       <span class="mono">{{ row.task.ref }}</span>
       <span>{{ row.task.stage }}</span>
       {% if row.phase %}<span>{{ row.phase }}</span>{% endif %}
-      <span>{{ row.project_name }}</span>
-      {% if row.task.claim_run_id %}<span>{{ 'Operator verification' if row.operator_verification else 'claimed by run' }} <span class="mono">{{ row.task.claim_run_id }}</span></span>{% endif %}
+      {% if not project %}<span>{{ row.project_name }} · {{ row.task.workspace }}</span>{% endif %}
+      {% if row.task.claim_run_id %}<span class="claim-detail">{{ 'Operator verification' if row.operator_verification else 'claimed by run' }} <span class="mono">{{ row.task.claim_run_id }}</span></span>{% endif %}
     </span>
   </span>
   <span class="trail">{{ row.task.entered_stage_at|since }}</span>
@@ -26,11 +28,57 @@
 {% call m.phead(now) %}Tasks{% endcall %}
 {{ m.error(error, "Tasks could not be read") }}
 
+<div class="task-layout">
+<nav class="project-nav" aria-label="Projects">
+  <div class="shead"><h2>Projects</h2></div>
+  <form class="toolbar" method="get" action="/tasks" data-autosubmit>
+    {% call m.select('Workspace', name='workspace') %}
+      <option value=""{% if not workspace %} selected{% endif %}>Any workspace</option>
+      {% for name in workspaces %}<option value="{{ name }}"{% if name == workspace %} selected{% endif %}>{{ name }}</option>{% endfor %}
+    {% endcall %}
+    {{ m.filter_button() }}
+  </form>
+  <ul class="panel project-list">
+    <li><a class="project-link" href="/tasks{% if workspace %}?workspace={{ workspace|urlencode }}{% endif %}"{% if not project %} aria-current="page"{% endif %}>All tasks</a></li>
+    {% for entry in projects %}<li>{{ p.link(entry, entry == selected_project) }}</li>{% endfor %}
+  </ul>
+  {% if not projects %}{{ m.empty('No projects in this workspace.' if workspace else 'No projects configured.') }}{% endif %}
+</nav>
+
+<div class="task-content">
+{% if selected_project %}
+<section aria-labelledby="flow-head">
+  <div class="shead"><h2 id="flow-head">{{ selected_project.name }} · Workflow</h2><a class="right" href="/workspaces/{{ selected_project.workspace|urlencode }}">{{ selected_project.workspace }}</a></div>
+  {% if selected_project.stages %}
+  <details class="panel workflow-definition"{% if stage %} open{% endif %}>
+  <summary>{{ icon('chevron-right', 14) }}<span>{{ p.flow(selected_project.stages) }}</span></summary>
+  <ol class="workflow-steps">
+    {% for step in selected_project.stages %}
+    <li><a href="{{ selected_project.href }}&amp;stage={{ step.name|urlencode }}"{% if stage == step.name %} aria-current="page"{% endif %}>
+      <span class="step-order" aria-hidden="true">{{ loop.index }}</span>
+      <span class="step-body"><span class="step-title">{{ step.name }} <span class="muted">{{ 'Human' if step.human else 'Command' if step.command else 'Integration' if step.integrate else 'Agent' }}</span></span>
+      {% if step.checks or (not loop.first and step.max_returns) %}
+      <span class="step-rules">{% if step.checks %}Checks: {{ step.checks|map(attribute='name')|join(', ') }}{% endif %}{% if not loop.first and step.max_returns %}{{ ' · ' if step.checks }}May return to {{ step.return_to or loop.previtem.name }}{% endif %}</span>
+      {% endif %}</span>
+      <span class="count">{{ p.task_count(selected_project.counts.get(step.name, 0) if selected_project.counts is not none else none) }}</span>
+    </a></li>
+    {% endfor %}
+    <li><a href="{{ selected_project.href }}&amp;stage=done"{% if stage == 'done' %} aria-current="page"{% endif %}>
+      <span class="step-order" aria-hidden="true">{{ selected_project.stages|length + 1 }}</span><span class="step-body">done</span>
+      <span class="count">{{ p.task_count(selected_project.counts.get('done', 0) if selected_project.counts is not none else none) }}</span>
+    </a></li>
+  </ol>
+  </details>
+  {% else %}{{ m.empty('Project definition unavailable; recorded tasks remain below.') }}{% endif %}
+</section>
+{% elif project %}
+<p class="note">Project {{ project }} has no definition in this view.</p>
+{% endif %}
+
+<section aria-label="Tasks">
 <form class="toolbar" method="get" action="/tasks" data-autosubmit>
-  {% call m.select('Project', name='project') %}
-    <option value=""{% if not project %} selected{% endif %}>Any project</option>
-    {% for key, name in projects %}<option value="{{ key }}"{% if key == project %} selected{% endif %}>{{ key }} · {{ name }}</option>{% endfor %}
-  {% endcall %}
+  {% if project %}<input type="hidden" name="project" value="{{ project }}">{% endif %}
+  {% if workspace %}<input type="hidden" name="workspace" value="{{ workspace }}">{% endif %}
   {% call m.select('Stage', name='stage') %}
     <option value=""{% if not stage %} selected{% endif %}>Any stage</option>
     {% for name in stages %}<option value="{{ name }}"{% if name == stage %} selected{% endif %}>{{ name }}</option>{% endfor %}
@@ -43,7 +91,7 @@
 {# One board, so the count line covers all of it: what matched, how much of that is on the
    page, and how the Done group is bounded. #}
 <p class="range" aria-live="polite">
-  {{ total }} task{{ 's' if total != 1 }}{% if project or stage or q %} matching the filter{% endif %}{% if listed != total %}, {{ listed }} listed{% endif %}.
+  {{ total }} task{{ 's' if total != 1 }}{% if project or workspace or stage or q %} matching the filter{% endif %}{% if listed != total %}, {{ listed }} listed{% endif %}.
   {{ done_count }} completed in the last {{ done_days }} days; Done lists up to {{ done_limit }} finished and cancelled tasks.
 </p>
 <div class="panel">
@@ -58,4 +106,7 @@
 {% elif not error %}
 {{ m.empty(empty) }}
 {% endif %}
+</section>
+</div>
+</div>
 {% endblock %}

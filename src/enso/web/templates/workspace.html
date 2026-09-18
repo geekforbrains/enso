@@ -1,10 +1,19 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m %}
+{% import "_projects.html" as p %}
 {% block title %}Workspace {{ name }}{% endblock %}
 {% block content %}
 <p class="crumbs"><a href="/workspaces">Workspaces</a> / <span aria-current="page">{{ name }}</span></p>
 {% call m.phead(now) %}{{ name }}{% if workspace and not workspace.ok %} {{ m.tag(workspace.status, workspace.summary) }}{% endif %}{% endcall %}
 {{ m.error(error, "The audit could not run") }}
+
+<section aria-labelledby="projects-head">
+  <div class="shead"><h2 id="projects-head">Projects</h2><a class="right" href="/tasks?workspace={{ name|urlencode }}">All tasks</a></div>
+  {{ m.error(projects_error, "Project task counts could not be read") }}
+  {% if projects %}<ul class="panel project-list">
+    {% for entry in projects %}<li>{{ p.link(entry, preview=True) }}</li>{% endfor %}
+  </ul>{% else %}{{ m.empty('No projects in this workspace.') }}{% endif %}
+</section>
 
 {% if workspace %}
 <section aria-labelledby="uses-head">

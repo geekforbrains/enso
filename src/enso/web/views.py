@@ -426,6 +426,7 @@ def workspace_model(paths: Paths, name: str) -> dict[str, Any] | None:
     except ValueError:
         return None
     config, problems = common.read_config(paths)
+    projects, projects_error = common.project_summaries(paths, config, workspace=name)
     report, error = common.attempt(partial(audit.audit, paths, [name], config=config))
     roots = []
     for root in files.ROOTS:
@@ -446,6 +447,8 @@ def workspace_model(paths: Paths, name: str) -> dict[str, Any] | None:
         "workspace": report.workspaces[0] if report else None,
         "home": report.home if report else None,
         "roots": roots,
+        "projects": projects,
+        "projects_error": projects_error,
         "error": error,
     }
 
