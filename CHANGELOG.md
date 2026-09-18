@@ -7,9 +7,9 @@ All notable changes to Enso are documented here, following
 
 ### Added
 
-- Tasks now shows project navigation and readable workflows with stage counts, checks, and
-  return paths. Workspace filters, origin labels, and links from workspace details connect
-  projects and tasks, including projects with no tasks yet.
+- Tasks now shows project navigation and readable workflows with stage counts, checks,
+  return paths, and links to agent stage instructions. Workspace filters, origin labels,
+  and links from workspace details connect projects and tasks, including empty projects.
 - Chat conversations can select a configured provider, model, and effort with Slack `!use`
   or Telegram's `/use` picker, then return to their workspace default without clearing
   provider sessions.

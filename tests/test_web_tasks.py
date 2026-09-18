@@ -347,6 +347,45 @@ async def test_empty_projects_explain_the_flow(
     assert "No tasks in project EN." in page
 
 
+async def test_workflow_links_to_its_agent_job_prompts(
+    client: TestClient, enso_home: Paths, project_config: Config
+) -> None:
+    edit_project(
+        enso_home, stages=["triage", {"name": "build", "command": "true"}, "approve:human"]
+    )
+    write_job(enso_home, "triage", project="EN", stage="triage", prompt="Read the task spec.")
+    write_job(enso_home, "backup", project="EN", stage="triage", enabled=False, name="Backup")
+    write_job(enso_home, "triage", workspace="personal", project="EN", stage="triage")
+    write_job(enso_home, "marketing", project="MKT", stage="draft")
+    write_job(enso_home, "build", project="EN", stage="build")
+    write_job(enso_home, "approve", project="EN", stage="approve")
+
+    page = await html(client, "/tasks?project=EN")
+    assert re.findall(r'href="(/jobs/[^"]+)"', page) == [
+        "/jobs/default%3Abackup#prompt-head",
+        "/jobs/default%3Atriage#prompt-head",
+    ]
+    assert "View instructions · Backup" in page
+    assert 'href="/tasks?project=EN&amp;stage=triage"' in page
+    job_page = await html(client, "/jobs/default%3Atriage")
+    assert 'id="prompt-head"' in job_page and "Read the task spec." in job_page
+    assert 'href="/tasks?project=EN&amp;stage=triage"' in job_page
+
+
+async def test_unreadable_stage_jobs_preserve_the_workflow_and_tasks(
+    client: TestClient, board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unreadable_jobs(*args, **kwargs):
+        raise OSError("jobs unavailable")
+
+    monkeypatch.setattr(taskviews, "load_jobs", unreadable_jobs)
+    page = await html(client, "/tasks?project=EN")
+    assert "Stage instructions could not be read" in page
+    assert "Tasks could not be read" not in page
+    assert "Enso · Workflow" in page and len(task_links(page)) == 7
+    assert "View instructions" not in page
+
+
 async def test_workspace_scope_filters_history_before_the_cap_and_links_back(
     client: TestClient, board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:

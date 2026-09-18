@@ -49,6 +49,7 @@
 {% if selected_project %}
 <section aria-labelledby="flow-head">
   <div class="shead"><h2 id="flow-head">{{ selected_project.name }} · Workflow</h2><a class="right" href="/workspaces/{{ selected_project.workspace|urlencode }}">{{ selected_project.workspace }}</a></div>
+  {{ m.error(jobs_error, "Stage instructions could not be read") }}
   {% if selected_project.stages %}
   <details class="panel workflow-definition"{% if stage %} open{% endif %}>
   <summary>{{ icon('chevron-right', 14) }}<span>{{ p.flow(selected_project.stages) }}</span></summary>
@@ -61,7 +62,13 @@
       <span class="step-rules">{% if step.checks %}Checks: {{ step.checks|map(attribute='name')|join(', ') }}{% endif %}{% if not loop.first and step.max_returns %}{{ ' · ' if step.checks }}May return to {{ step.return_to or loop.previtem.name }}{% endif %}</span>
       {% endif %}</span>
       <span class="count">{{ p.task_count(selected_project.counts.get(step.name, 0) if selected_project.counts is not none else none) }}</span>
-    </a></li>
+    </a>
+    {% if not (step.human or step.command or step.integrate) and stage_jobs.get(step.name) %}
+    <div class="step-instructions">
+      {% for job in stage_jobs[step.name] %}<a href="/jobs/{{ job.ref|urlencode }}#prompt-head" aria-label="View instructions for {{ step.name }}: {{ job.name }}">View instructions{% if stage_jobs[step.name]|length > 1 %} · {{ job.name }}{% endif %}</a>{% endfor %}
+    </div>
+    {% endif %}
+    </li>
     {% endfor %}
     <li><a href="{{ selected_project.href }}&amp;stage=done"{% if stage == 'done' %} aria-current="page"{% endif %}>
       <span class="step-order" aria-hidden="true">{{ selected_project.stages|length + 1 }}</span><span class="step-body">done</span>

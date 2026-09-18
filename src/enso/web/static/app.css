@@ -323,13 +323,19 @@
   .shead > a.right { color: var(--link); &:hover { text-decoration: underline; } }
   .workflow-steps {
     margin: 0; padding: 0; list-style: none;
-    a {
+    > li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+    > li > a {
       display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: baseline;
       gap: var(--s-5); padding: var(--s-5);
       &:hover { background: var(--surface-2); }
       &[aria-current="page"] { background: var(--accent-bg); }
     }
     .count { font-size: var(--text-xs); color: var(--fg-3); white-space: nowrap; }
+  }
+  .step-instructions {
+    display: grid; gap: var(--s-2); max-width: 180px; padding: var(--s-5);
+    font-size: var(--text-xs); overflow-wrap: anywhere;
+    a { color: var(--link); &:hover { text-decoration: underline; } }
   }
   .step-order { color: var(--fg-3); font-size: var(--text-xs); text-align: center; }
   .step-title { font-weight: 500; .muted { margin-left: var(--s-4); font-weight: 400; font-size: var(--text-xs); } }
@@ -757,6 +763,8 @@
     .row .detail { display: none; }
     .row .task-detail { display: flex; .claim-detail { display: none; } }
     .task-layout { grid-template-columns: minmax(0, 1fr); }
+    .workflow-steps > li { grid-template-columns: minmax(0, 1fr); }
+    .step-instructions { max-width: none; padding: 0 var(--s-5) var(--s-5) calc(22px + 2 * var(--s-5)); }
     .project-nav .project-list {
       display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
       gap: 1px; background: var(--border); max-height: 240px; overflow-y: auto;

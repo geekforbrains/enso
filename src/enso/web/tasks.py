@@ -18,6 +18,7 @@ from typing import Any
 
 from .. import db, tasks, workflows, worktrees
 from ..config import BUILTIN_STAGES, Config, Paths, ProjectConfig
+from ..jobs import Job, load_jobs
 from . import common, files
 
 # The board reads top to bottom: what needs a person first, then what the agents hold,
@@ -163,6 +164,17 @@ def tasks_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any]:
     projects, projects_error = common.project_summaries(paths, config, workspace=workspace)
     project = query.get("project", "").strip().upper() or None
     selected_project = next((entry for entry in projects if entry.key == project), None)
+    stage_jobs: dict[str, list[Job]] = {}
+    jobs_error = None
+    if selected_project and selected_project.stages:
+        loaded, jobs_error = common.attempt(partial(load_jobs, paths, config))
+        for job in loaded[0] if loaded else []:
+            if (
+                job.project == selected_project.key
+                and job.workspace == selected_project.workspace
+                and job.stage
+            ):
+                stage_jobs.setdefault(job.stage, []).append(job)
     stage = query.get("stage", "").strip().lower() or None
     if stage is not None and not _STAGE_NAME.fullmatch(stage):
         stage = None
@@ -225,6 +237,8 @@ def tasks_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any]:
         "done_limit": DONE_LIMIT,
         "project": project,
         "selected_project": selected_project,
+        "stage_jobs": stage_jobs,
+        "jobs_error": jobs_error,
         "workspace": workspace,
         "workspaces": sorted(
             {
