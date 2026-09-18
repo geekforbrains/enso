@@ -59,7 +59,6 @@ Enso's runtime state lives under one directory:
 ~/.enso/
 ├── config.json          # transports, bindings, agents, providers
 ├── config.example.json  # editable, incomplete template prepared by init
-├── .config.lock         # shared advisory lock for configuration writers
 ├── .bundles.json        # hashes of the bundled files Enso installed
 ├── AGENTS.md            # instructions for every turn and job (CLAUDE.md links to it)
 ├── CLAUDE.md -> AGENTS.md
@@ -69,7 +68,6 @@ Enso's runtime state lives under one directory:
 ├── .claude/skills       # symlink -> ../skills, discovered by the provider CLIs
 ├── .agents/skills       # symlink -> ../skills
 ├── workspaces/<name>/   # one directory per workspace
-├── heartbeat/.locks/   # stable per-beat execution locks
 ├── secrets/*.env        # KEY=value files exported into the service environment
 ├── enso.db             # captures, runs, messages, sessions, jobs, tasks, beats, user tables
 ├── .migrations.json    # last completed home migration revision
@@ -77,7 +75,7 @@ Enso's runtime state lives under one directory:
 ├── web.log, web.pid     # the web viewer's output and lock, while it runs
 ├── launchd-web.log      # stdout/stderr when the optional viewer service runs
 ├── runtime/
-│   ├── .concurrency/    # installation-wide job concurrency-group locks
+│   ├── locks/           # every lock file: empty, made on demand, never deleted
 │   ├── releases/<version>-<hash>/  # immutable managed Python environments
 │   ├── current -> releases/...    # selected release behind the stable launcher
 │   ├── install.json     # installed package version, feed, extras, integration settings

@@ -325,16 +325,14 @@ def initialize(
             worktree_root=worktree_root,
         )
         for job in sorted(old_jobs, key=lambda job: job.ref):
-            lock = acquire_lock(job.job_dir)
+            lock = acquire_lock(paths, job.ref)
             if lock is None:
                 raise ValueError(f"stop running project job {job.ref} before migration")
             held.callback(lock.close)
         for task in _idle(paths, key):
             held.enter_context(worktrees.execution_context(paths, task.ref))
-        event_dir = paths.home / ".workflow-locks"
-        event_dir.mkdir(parents=True, exist_ok=True)
         try:
-            event_lock = locks.acquire(event_dir / "events.lock")
+            event_lock = locks.acquire(paths.lock("workflow-events"))
         except BlockingIOError:
             raise ValueError(
                 "lifecycle delivery is active; retry migration after it finishes"

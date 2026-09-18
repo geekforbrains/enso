@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from enso import db
+from enso import migrations as real_migrations
 from enso.cli.common import deliver
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -77,7 +78,10 @@ def test_smoke_candidates_use_real_cumulative_migrations(enso_home, monkeypatch,
             (ROOT / "src/enso/migrations.py").read_text(), db.SCHEMA_VERSION, revision, fail=fail
         ),
     )
-    assert [step.revision for step in migrations.pending(enso_home)] == list(range(1, revision + 1))
+    shipped = real_migrations.latest_revision()  # the scratch home already has these
+    assert [step.revision for step in migrations.pending(enso_home)] == list(
+        range(shipped + 1, shipped + revision + 1)
+    )
     declared = migrations.plan(enso_home)
     assert "enso.db" in declared and "smoke-legacy" in declared
     assert fixture["WORKFLOW_PATHS"][revision] in declared
@@ -86,11 +90,11 @@ def test_smoke_candidates_use_real_cumulative_migrations(enso_home, monkeypatch,
             migrations.apply(enso_home)
         # This fault occurs after both kinds of durable mutation and the first marker:
         # the container acceptance checks must prove the updater restores all three.
-        assert migrations.read_revision(enso_home) == 1
+        assert migrations.read_revision(enso_home) == shipped + 1
     else:
         migrations.apply(enso_home)
         migrations.apply(enso_home)
-        assert migrations.read_revision(enso_home) == revision
+        assert migrations.read_revision(enso_home) == shipped + revision
     destination = enso_home.home / fixture["WORKFLOW_PATHS"][revision] / "example.json"
     assert json.loads(destination.read_text()) == {"name": "custom", "format": revision}
     assert not old.exists()

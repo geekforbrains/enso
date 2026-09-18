@@ -394,7 +394,7 @@ def _install_lock(paths: Paths) -> Iterator[None]:
     _no_links(paths.skills)
     paths.skills.mkdir(parents=True, exist_ok=True)
     try:
-        fd = locks.acquire(paths.skill_lock)
+        fd = locks.acquire(paths.lock("skills"))
     except locks.LockPathError as exc:
         raise SkillError(f"the skill installation {exc}") from None
     except BlockingIOError:

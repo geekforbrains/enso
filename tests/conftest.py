@@ -15,11 +15,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-from enso import db, frontmatter
+from enso import db, frontmatter, migrations
 from enso.config import Config, Paths, parse_config
 from enso.heartbeat import store
 from enso.heartbeat.models import BeatRun
 from enso.jobs import Job, find_job, render
+from enso.maintenance import write_json
 from enso.routing import resolve_agent
 from enso.runtime import Runtime, origin_block
 from enso.transports import Reply, Transport, Turn
@@ -230,6 +231,8 @@ def enso_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Paths:
     monkeypatch.setenv("HOME", str(user_home))
     home = tmp_path / "enso"
     (home / "workspaces" / "default").mkdir(parents=True)
+    # A scratch home has the current layout; migration tests write their own marker.
+    write_json(home / migrations.MARKER, {"revision": migrations.latest_revision()})
     for key in [key for key in os.environ if key.startswith("ENSO_")]:
         monkeypatch.delenv(key)  # a run started from a chat turn or job must not leak in
     monkeypatch.setenv("ENSO_HOME", str(home))

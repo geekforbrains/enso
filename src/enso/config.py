@@ -77,11 +77,6 @@ class Paths:
         return self.home / "config.json"
 
     @property
-    def config_lock(self) -> Path:
-        """Stable advisory lock shared by configuration writers."""
-        return self.home / ".config.lock"
-
-    @property
     def config_example(self) -> Path:
         return self.home / "config.example.json"
 
@@ -120,11 +115,6 @@ class Paths:
         return self.home / "knowledge"
 
     @property
-    def heartbeat(self) -> Path:
-        """Stable installation-level beat locks; script paths are workspace-owned."""
-        return self.home / "heartbeat"
-
-    @property
     def cache(self) -> Path:
         return self.home / "cache"
 
@@ -132,6 +122,16 @@ class Paths:
     def runtime_dir(self) -> Path:
         """Managed releases, update receipts and restart coordination for this home."""
         return self.home / "runtime"
+
+    def lock(self, *parts: str) -> Path:
+        """Where a lock file lives: ``runtime/locks/<parts>.lock``, empty and never deleted.
+
+        A lock can be the first thing a new home holds, so this creates its private directory.
+        """
+        path = self.runtime_dir.joinpath("locks", *parts[:-1], f"{parts[-1]}.lock")
+        self.runtime_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
 
     @property
     def update_state(self) -> Path:
@@ -161,11 +161,6 @@ class Paths:
     @property
     def skills(self) -> Path:
         return self.home / "skills"
-
-    @property
-    def skill_lock(self) -> Path:
-        """Serialize publication of official skills without depending on runtime setup."""
-        return self.home / ".skills.lock"
 
     @property
     def agents_md(self) -> Path:
@@ -1357,10 +1352,9 @@ class LiveConfig:
 
 @contextmanager
 def config_lock(paths: Paths) -> Iterator[None]:
-    """Take the shared writer lock without waiting; never delete this stable lock file."""
-    paths.home.mkdir(parents=True, exist_ok=True)
+    """Take the shared configuration writer lock without waiting."""
     try:
-        fd = locks.acquire(paths.config_lock)
+        fd = locks.acquire(paths.lock("config"))
     except locks.LockPathError as exc:
         raise ConfigError([str(exc)]) from None
     except BlockingIOError:

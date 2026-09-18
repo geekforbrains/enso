@@ -740,10 +740,8 @@ async def test_lock_overlap_recovery_and_pruning_preserve_owned_boundaries(
     assert heartbeat.prune(config, now=clock[0]) == {}
     assert heartbeat.get(config.paths, beat.ref) is None
     assert not (config.paths.workspace_heartbeat(beat.workspace) / beat.ref).exists()
-    assert not (config.paths.heartbeat / ".locks" / f"{beat.ref}.lock").exists()
     assert heartbeat.get(config.paths, other.ref).state == "active"
     assert (config.paths.workspace_heartbeat(other.workspace) / other.ref / "gate.sh").is_file()
-    assert (config.paths.heartbeat / ".locks" / f"{other.ref}.lock").is_file()
     # A closed beat's symlink is never followed into somebody else's files.
     unsafe = make_beat(config)
     directory = config.paths.workspace_heartbeat(unsafe.workspace) / unsafe.ref

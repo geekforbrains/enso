@@ -30,8 +30,8 @@ gate directories and never falls back to scripts in another location.
 The saved workspace owns the beat for its lifetime: definition updates cannot transfer it.
 Restarting Enso or changing a binding, the caller's `ENSO_WORKSPACE`, or the default agent
 does not reassign existing definitions, runs, or action receipts. Commands using `HB-001`
-operate on that recorded beat. Per-beat execution locks live at the installation level in
-`$ENSO_HOME/heartbeat/.locks/`, outside the script directories, and are removed with the beat.
+operate on that recorded beat. Per-beat execution locks live with Enso's other locks in
+`$ENSO_HOME/runtime/locks/heartbeat/`, outside the script directories.
 
 `enso heartbeat list` uses `--workspace` or `ENSO_WORKSPACE`; `--all-workspaces` explicitly
 includes the installation. `--all` separately includes closed beats. Runner notifications
@@ -181,14 +181,12 @@ heartbeat with an equivalent job. The daemon rereads this setting while it runs 
 active heartbeat work when it is disabled.
 
 Only closed beats are eligible for automatic pruning. Retention starts at closure, not
-creation. After it, the daemon removes everything the beat owns in a fixed order: the script
-directory, then the record with its events and runs, then the lock file. Because the record
-goes last, a pass interrupted by a filesystem error or a restart is simply repeated; a missing
-workspace has no scripts to remove. A linked script path is never followed, and that beat is
-kept. Lock files whose beat no longer exists are reclaimed on the same pass; nothing else in
-the lock directory is touched. Active and paused beats retain their context, and references
-are never reused. Permanent outputs, such as a signed agreement, belong in the user's
-requested notes or document location.
+creation. After it, the daemon removes what the beat owns in a fixed order: the script
+directory, then the record with its events and runs. Because the record goes last, a pass
+interrupted by a filesystem error or a restart is simply repeated; a missing workspace has no
+scripts to remove. A linked script path is never followed, and that beat is kept. Active and
+paused beats retain their context, and references are never reused. Permanent outputs, such
+as a signed agreement, belong in the user's requested notes or document location.
 
 A closed beat is kept past retention while it holds evidence the user has not received: an
 action still `pending` or `uncertain`, or an undelivered notification for a beat with a saved

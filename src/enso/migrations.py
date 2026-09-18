@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import stat
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
+from pathlib import Path
 
 from .config import Paths
 from .maintenance import UpdateError, read_json, write_json
@@ -28,8 +30,37 @@ class Migration:
     apply: Callable[[Paths], None]
 
 
+def _remove_locks(directory: Path) -> None:
+    """Delete a directory's lock files, then the directory once nothing else is in it."""
+    if directory.is_symlink() or not directory.is_dir():
+        return
+    for lock in directory.glob("*.lock"):
+        lock.unlink()
+    with suppress(OSError):
+        directory.rmdir()
+
+
+def remove_scattered_locks(paths: Paths) -> None:
+    """Locks now live in ``runtime/locks/``; the old files were empty, so nothing moves."""
+    for name in (".config.lock", ".skills.lock", ".knowledge.lock", ".memory.lock"):
+        (paths.home / name).unlink(missing_ok=True)
+    for lock in paths.workspaces.glob("*/jobs/*/.run.lock"):
+        lock.unlink()
+    for directory in (
+        paths.home / "heartbeat" / ".locks",
+        paths.home / "heartbeat",
+        paths.home / ".workflow-locks",
+        paths.runtime_dir / ".concurrency",
+        paths.runtime_dir / "worktree-locks",
+    ):
+        _remove_locks(directory)
+
+
 # 0.2.0 is revision zero. Keep every later step so installations may skip releases.
-MIGRATIONS: tuple[Migration, ...] = ()
+# Lock files hold nothing to restore, so the first step declares no snapshot paths.
+MIGRATIONS: tuple[Migration, ...] = (
+    Migration(1, "gather lock files under runtime/locks", lambda paths: (), remove_scattered_locks),
+)
 
 
 def latest_revision() -> int:
