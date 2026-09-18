@@ -186,7 +186,8 @@ Use `scripts/eval-skills` to ask whether an updated bundled skill gets the same 
 with less work. This repository tool invokes the installed `codex` or `claude` CLI using
 its existing login, as Enso does. It has no API client or separate model service. Live runs
 are manual and consume the selected provider account's usage; `pytest`, `list`, `report`,
-and `review` stay offline. Install the normal development dependencies first.
+and `review` stay offline. It uses the checkout's `.venv`, prepared with the normal
+[development setup](#setup-and-checks); no Enso reinstall or service restart is needed.
 
 ### Working with an agent
 
