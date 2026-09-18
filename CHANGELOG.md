@@ -5,6 +5,8 @@ All notable changes to Enso are documented here, following
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-18
+
 ### Added
 
 - The workspace audit warns, with check id `script`, when a project's `setup`, stage
