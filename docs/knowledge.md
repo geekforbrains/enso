@@ -50,21 +50,45 @@ and `__pycache__` are excluded. A root itself must be a real directory. Files ou
 roots are not knowledge attachments or link destinations.
 
 Knowledge commands default to `ENSO_WORKSPACE`; `--workspace NAME` selects a different
-workspace. Use `--shared` deliberately for the shared root, including when the environment
-selects a workspace. The two flags cannot be combined. No context means an error, not
-shared knowledge. UUIDs identify notes globally but CLI operations require their root to
-be selected, just like paths. The viewer's stable ID URLs and cross-root links continue to
+workspace, and `--shared` selects the shared root even when the environment selects a
+workspace. The two flags cannot be combined. No context means an error, not shared
+knowledge. UUIDs identify notes globally but CLI operations require their root to be
+selected, just like paths. The viewer's stable ID URLs and cross-root links continue to
 resolve globally. [CLI](cli.md#knowledge) owns the command signatures.
 
-Keep general personal/reference material in shared knowledge. Keep material whose meaning
-and ownership belong to one workspace in that workspace's knowledge directory. Link between
-them instead of maintaining competing copies. Nested folders may contain both notes and
-subfolders. Start agents in the relevant branch, read selectively, and broaden when needed;
-folders organize context but do not create access permissions or automatically load notes.
+Nested folders may contain both notes and subfolders. Start agents in the relevant branch,
+read selectively, and broaden when needed; folders organize context but do not create
+access permissions or automatically load notes.
 
 The [viewer](web.md#knowledge) owns folder browsing, All notes, search, and pagination.
 Enso caches parsed notes in memory using file identity, size, modification time, and change
 time; the Markdown files remain authoritative and no database migration is needed.
+
+## Where new notes go
+
+New notes go in the current workspace's `knowledge/`. Agents create or move notes into shared
+knowledge only when the user explicitly asks, in the conversation or in a standing rule the
+user wrote, such as the home or a workspace `AGENTS.md`, a job's `JOB.md`, or a
+filing-conventions note in knowledge. An agent's own judgment that a fact is useful across
+workspaces is not enough. This limits filing, not reading; an existing note is updated where
+it lives. Each fact keeps one owning note that others link to rather than copy.
+
+- **Another workspace needs a note.** An interactive agent links to it where it is, such as
+  `[[workspace:research:Projects/Topic]]`, tells the user, and asks whether to leave it or
+  move it to shared knowledge with `enso knowledge move REF DEST --to-shared`.
+- **Jobs and Heartbeat beats** have nobody to ask. They follow their written rules in
+  `JOB.md` or `AGENTS.md`; otherwise they file in their own workspace. When another
+  workspace needs a note, they link it where it is and mention that in their result so the
+  user can decide.
+- **No workspace selected.** An agent running outside Enso, without `ENSO_WORKSPACE`,
+  selects the workspace that owns the material with `--workspace NAME` and asks the user
+  when none clearly fits. Shared knowledge still requires an explicit request.
+
+The bundled `enso-knowledge` skill and `AGENTS.md` templates carry this rule; the CLI, audit,
+and viewer do not enforce it. Existing workspace `AGENTS.md` files and customized bundled
+files are not rewritten, and agents may read their old shared-reference lines as the user's
+rule until the user updates them; [Customizing](customizing.md#the-bundled-skills) explains
+what upgrades refresh.
 
 ## The note format
 
@@ -182,7 +206,7 @@ The bundled `enso-knowledge` skill explains where notes go and how agents mainta
 checks mechanical style. Both land under `$ENSO_HOME/skills/enso-knowledge/` and are preserved
 on upgrades. [Customizing](customizing.md) owns the rules for changing installed skills.
 
-Use one shared style across shared and workspace knowledge. Users can request a change in
+Use one style across every knowledge root. Users can request a change in
 conversation; the agent updates the style document and its checker together. Do not relax a
 rule merely to make a note pass. Core fields, link identity, and filesystem safety belong to
 Enso code and cannot be weakened by a custom formatting checker. The viewer never runs that
