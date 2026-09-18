@@ -300,6 +300,40 @@
   }
   .pipeline { display: inline-flex; gap: var(--s-2); flex-wrap: wrap; vertical-align: middle; }
 
+  /* Project navigation and the configured flow stay useful even with no tasks. */
+  main:has(.task-layout) { max-width: 1280px; }
+  .task-layout { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: var(--s-7); }
+  .task-content, .project-nav { min-width: 0; }
+  .project-nav .control.select { width: 100%; }
+  .project-list > li + li, .workflow-steps > li + li { border-top: 1px solid var(--border); }
+  .project-link {
+    display: block; padding: var(--s-5); border-left: 2px solid transparent;
+    &:hover { background: var(--surface-2); }
+    &[aria-current="page"] { background: var(--accent-bg); border-left-color: var(--accent); }
+  }
+  .project-title {
+    display: flex; align-items: baseline; gap: var(--s-4);
+    strong { font-weight: 500; overflow-wrap: anywhere; }
+    .count { margin-left: auto; white-space: nowrap; }
+  }
+  .project-meta, .project-flow, .step-rules, .project-title .count {
+    font-size: var(--text-xs); line-height: var(--lh-xs); color: var(--fg-3);
+  }
+  .project-meta, .project-flow, .step-rules { display: block; margin-top: var(--s-2); overflow-wrap: anywhere; }
+  .shead > a.right { color: var(--link); &:hover { text-decoration: underline; } }
+  .workflow-steps {
+    margin: 0; padding: 0; list-style: none;
+    a {
+      display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: baseline;
+      gap: var(--s-5); padding: var(--s-5);
+      &:hover { background: var(--surface-2); }
+      &[aria-current="page"] { background: var(--accent-bg); }
+    }
+    .count { font-size: var(--text-xs); color: var(--fg-3); white-space: nowrap; }
+  }
+  .step-order { color: var(--fg-3); font-size: var(--text-xs); text-align: center; }
+  .step-title { font-weight: 500; .muted { margin-left: var(--s-4); font-weight: 400; font-size: var(--text-xs); } }
+
   /* -- The universal list row -----------------------------------------------
      time | status dot | title + detail | trailing value.  Two lines in a narrow
      container; one line with the detail beside the title once there is room, so a
@@ -576,7 +610,8 @@
   .workflow-results { padding: var(--s-4) var(--s-6) var(--s-6); }
   .workflow-transaction { scroll-margin-block: var(--s-6); }
   :is(.workflow-transaction, .workflow-result) > summary { flex-wrap: wrap; gap: var(--s-2); }
-  :is(.workflow-transaction, .workflow-result)[open] > summary > svg { transform: rotate(90deg); }
+  .workflow-definition > summary { gap: var(--s-4); svg { flex: none; } }
+  :is(.workflow-transaction, .workflow-result, .workflow-definition)[open] > summary > svg { transform: rotate(90deg); }
   .verdict.running .lamp { background: var(--running-fill); color: var(--on-fill); }
   details.panel h3, .beat-event-body h3 { padding: var(--s-5) var(--s-6) 0; }
   /* The chevron trails the event number: a beat event's status dot owns the column a
@@ -720,6 +755,14 @@
 
     :root { --row-cols: 56px 8px minmax(0, 1fr) auto; }
     .row .detail { display: none; }
+    .row .task-detail { display: flex; .claim-detail { display: none; } }
+    .task-layout { grid-template-columns: minmax(0, 1fr); }
+    .project-nav .project-list {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 1px; background: var(--border); max-height: 240px; overflow-y: auto;
+      > li { background: var(--surface); border: 0; }
+      > li:first-child { grid-column: 1 / -1; }
+    }
     .row .message { display: block; }
     /* Two tidy lines: name and verdict, then the chart underneath. The bars keep
        their natural size: stretching them would make a five-run history look like

@@ -94,7 +94,7 @@ its named sections above the content:
 | View | Sections |
 | --- | --- |
 | [Today](#today) `/today` | Schedule · Activity · Reliability |
-| [Tasks](#tasks) `/tasks` | none; one board grouped Blocked · Active · Ready · Backlog · Done |
+| [Tasks](#tasks) `/tasks` | project navigation, selected workflow, and one board grouped Blocked · Active · Ready · Backlog · Done |
 | [Heartbeats](#heartbeats) `/heartbeats` | Current · Previous; each beat opens Overview · History · Runs |
 | [Jobs](#jobs) `/jobs` | a job opens to Overview · History |
 | [Runs](#runs) `/runs` | Acted · Failed · All |
@@ -192,9 +192,10 @@ The rules that keep them consistent:
   parser close the outer one and reparent the rest, which silently takes the row apart; a test
   walks every page counting anchor depth to keep it that way.
 
-On a phone the same row keeps its time, dot, name and trailing value and drops the detail line,
-so a list never has to scroll sideways to be read. A task event's message is the exception: it
-is the substance of the timeline, so it wraps and stays.
+On a phone the same row keeps its time, dot, name and trailing value and usually drops the
+detail line. Task details wrap to retain their reference, stage, current phase, and
+project/workspace origin; the claim's run ID is on the task page. Task event messages also
+wrap and stay because they are the substance of the timeline. Lists never need horizontal scrolling.
 
 ## What it shows
 
@@ -243,9 +244,27 @@ may leave fewer than 30 runs for a job in the scan, or none, in which case the j
 
 ### Tasks
 
-The [board](tasks.md) as one page at `/tasks`, read the way you would read it on a phone:
-what needs a decision from you first, then what the agents are doing. There are no tabs.
-Every task is in one of five groups, in this order, each headed by its name and its count:
+The [board](tasks.md) stays on one page at `/tasks`. Project navigation sits beside it on
+desktop and above it on phones, where the project list scrolls within a compact area. Each
+project shows its name, key, workspace, and unfinished task count. Configured projects remain
+visible with no tasks; tasks whose project definition is missing remain reachable too. **All
+tasks** returns to the board across projects. A workspace filter narrows both the project
+list and board; changing workspace clears the project and task filters.
+
+Selecting a project shows a compact workflow preview above its tasks. Open it for numbered
+stages in order, followed by `done`; choosing a stage keeps the details open. Each step shows
+its execution kind (Agent, Human, Command, or Integration), required check names, an allowed
+return destination, and the number of tasks at its accepted stage. Clicking a step filters
+the board to that stage. Project and stage links clear task
+search; project links also clear the stage filter. Workflow counts describe the whole project,
+independent of task search, and include all completed history without loading task bodies.
+Backlog, blocked, and cancelled tasks remain in the board outside the forward workflow.
+Missing counts are shown as unavailable, not zero. The project's workspace links to its detail
+page. This is a view of the current configuration; recorded execution evidence belongs to
+each task's Workflow history.
+
+The board puts work needing attention first, then work the agents hold. Every task is in one
+of five groups, in this order, each headed by its name and its count:
 
 | Group | Holds | Order |
 | --- | --- | --- |
@@ -263,20 +282,22 @@ the cap bites, gives the number completed in the last seven days, and states the
 200 finished and cancelled tasks. Filters apply before the cap, and finished history is
 counted without loading every task into the page.
 
-`project`, `stage`, and `q` (matched against the reference, title, and body) narrow the whole
-board, groups and count line together, and an emptied board names the filter that emptied it.
+`workspace`, `project`, `stage`, and `q` (matched against the reference, title, and body) narrow
+the whole board, groups and count line together, and an emptied board names the filter that
+emptied it. Workspace filtering also applies to completed history before its limit.
 Rows follow the [entity row standard](#row-standard): the dot is the state (needs you,
 blocked, active, ready, done, cancelled), the title is the name, the detail line is the
-reference, stage, project, and who holds it (`EN-041 · todo · Enso · claimed by run …`),
-and the trail is the time in its stage. While a transaction is active, the detail line also
-names its phase: working, handoff submitted, running required checks, or repairing failed
-checks. The row is the link. The board reads current transaction summaries in one bulk
+reference, stage, project and workspace, and who holds it; a selected project omits its repeated
+origin from each row. The trail is the time in its stage. While a transaction is active, the
+detail line also names its phase: working, handoff submitted, running required checks, or
+repairing failed checks. The row is the link. The board reads current transaction summaries in one bulk
 query; it does not load every task's check output or timeline.
 
 A task's own page at `/tasks/<ref>` is its record: the heading carries the reference, the
 title, and the attention flag when it is set. A workflow notice states the latest transaction
-outcome and links to its evidence. The panel under it shows the project, the stage as the
-project's pipeline with the current one marked, the priority, and the claim. The pipeline
+outcome and links to its evidence. The breadcrumb and project name return to the project's
+Tasks view, and its workspace links to the workspace detail page. The panel shows the stage
+as the project's pipeline with the current one marked, the priority, and the claim. The pipeline
 shows the **accepted stage**: submitting a handoff or passing one check does not advance it.
 The notice distinguishes work in progress, submission, checking, repair, acceptance,
 interruption, and blocking. Recorded operator overrides are labelled separately from success.
@@ -389,9 +410,12 @@ capture and processing contracts.
 ### Workspaces
 
 The list is a workspace name and its [audit](workspaces.md) verdict, so a malformed workspace
-is visible before it surprises you. Its own page carries the rest: what is bound to it, the jobs
-that name it, its upload size, and every audit finding — which required directories exist,
-whether `CLAUDE.md` and the skill links are correct, whether any skill name collides.
+is visible before it surprises you. Its own page starts with its projects: unfinished task
+counts and an ordered workflow preview, with human stages marked. Each project links back
+to its workspace-filtered Tasks view; **All tasks** opens all work for that workspace.
+The page also shows what is bound to it, the jobs that name it, its upload size, and every
+audit finding — which required directories exist, whether `CLAUDE.md` and the skill links
+are correct, whether any skill name collides.
 
 A workspace and its parent container must be real directories, matching CLI ownership;
 linked workspaces return 404. Directory summaries do not scan roots that escape the workspace.

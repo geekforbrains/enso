@@ -153,14 +153,16 @@ def _board_groups(
 
 
 def tasks_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any]:
-    """One board under the ``project``, ``stage`` and ``q`` filters.
+    """Project navigation and one board under workspace, project, stage, and search filters.
 
     Every matching task is on the page, in five groups the filters narrow together. The
     whole history is counted in SQL; at most ``DONE_LIMIT`` finished tasks are listed.
     """
     config, problems = common.read_config(paths)
-    projects = config.projects if config else {}
+    workspace = tasks.clean_text(query.get("workspace", ""), single_line=True)[:64] or None
+    projects, projects_error = common.project_summaries(paths, config, workspace=workspace)
     project = query.get("project", "").strip().upper() or None
+    selected_project = next((entry for entry in projects if entry.key == project), None)
     stage = query.get("stage", "").strip().lower() or None
     if stage is not None and not _STAGE_NAME.fullmatch(stage):
         stage = None
@@ -178,6 +180,7 @@ def tasks_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any]:
                 stage=stage,
                 query=q or None,
                 config=config,
+                workspace=workspace,
             )
         )
         live = listed or []
@@ -190,11 +193,12 @@ def tasks_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any]:
             project=project,
             stage=stage,
             query=q or None,
+            workspace=workspace,
         )
     )
     history = finished or tasks.FinishedTasks(rows=[], total=0, done_count=0)
     done_tasks = history.rows
-    error = error or finished_error
+    error = error or finished_error or projects_error
     current, workflow_error = common.attempt(
         partial(workflows.current_summaries, paths, [task.ref for task in live])
     )
@@ -205,14 +209,11 @@ def tasks_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any]:
         [_task_row(config, task) for task in done_tasks],
     )
     stages = list(BUILTIN_STAGES)
-    for key, entry in projects.items():
-        if project in (None, key):
-            stages.extend(name for name in entry.stage_names if name not in stages)
+    for entry in projects:
+        if project in (None, entry.key):
+            stages.extend(step.name for step in entry.stages if step.name not in stages)
     if stage and stage not in stages:
         stages.append(stage)
-    project_keys = sorted({*projects, *(task.project for task in (*live, *done_tasks))})
-    if project and project not in project_keys:
-        project_keys.append(project)
     return {
         "config_problems": problems,
         "alarm": common.alarm(paths),
@@ -223,21 +224,31 @@ def tasks_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any]:
         "done_days": DONE_WINDOW.days,
         "done_limit": DONE_LIMIT,
         "project": project,
+        "selected_project": selected_project,
+        "workspace": workspace,
+        "workspaces": sorted(
+            {
+                *(config.workspaces if config else ()),
+                *(entry.workspace for entry in projects),
+                *([workspace] if workspace else []),
+            }
+        ),
         "stage": stage,
         "q": q,
-        "projects": [(key, projects[key].name if key in projects else key) for key in project_keys],
+        "projects": projects,
         "stages": stages,
-        "empty": _tasks_empty(project, stage, q),
+        "empty": _tasks_empty(project, stage, q, workspace),
         "error": error,
     }
 
 
-def _tasks_empty(project: str | None, stage: str | None, q: str) -> str:
+def _tasks_empty(project: str | None, stage: str | None, q: str, workspace: str | None) -> str:
     """Say which filter emptied the board, so a blank page is not mistaken for a quiet one."""
     narrowed = [
         text
         for text, value in (
             (f"in project {project}", project),
+            (f"in workspace {workspace}", workspace),
             (f"in stage {stage}", stage),
             (f"matching “{q}”", q),
         )
@@ -441,7 +452,6 @@ def task_model(paths: Paths, ref_text: str) -> dict[str, Any] | None:
         "ref": ref,
         "task": task,
         "claim_is_operator": _operator_verification(task.claim_run_id),
-        "project": project,
         "project_name": project.name if project else task.project,
         "stages": list(project.stage_names) if project else [],
         "spec": files.render_markdown(task.body) if task.body else None,
