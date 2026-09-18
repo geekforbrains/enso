@@ -31,5 +31,8 @@ uploads/
 /.claude/
 /.codex/
 
+# Enso's default task worktree root; each worktree is its own checkout
+/.worktrees/
+
 # Scratch planning file, never committed
 /PLAN.md
