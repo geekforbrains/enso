@@ -113,6 +113,12 @@ def inject_schema(original: str, revision: int) -> str:
     )
 
 
+def shipped_revisions() -> int:
+    """How many home revisions the source ships; synthetic steps are numbered after them."""
+    registry = (SOURCE / "src/enso/migrations.py").read_text()
+    return len(re.findall(r"^    Migration\(", registry, re.MULTILINE))
+
+
 def inject_migrations(original: str, schema_version: int, revision: int, *, fail=False) -> str:
     """Register real, cumulative DB and filesystem migrations in disposable source copies."""
     fixture = f"""
@@ -157,11 +163,12 @@ def _smoke_second(paths):
         raise RuntimeError("synthetic migration failure after database and file writes")
 
 
+_shipped = len(MIGRATIONS)
 MIGRATIONS += (
-    Migration(1, "convert feature and move workflows", lambda paths: (
+    Migration(_shipped + 1, "convert feature and move workflows", lambda paths: (
         "enso.db", "smoke-legacy", "smoke-core/workflows"
     ), _smoke_first),
-    Migration(2, "add review default and organize workflows", lambda paths: (
+    Migration(_shipped + 2, "add review default and organize workflows", lambda paths: (
         "enso.db", "smoke-core/workflows", "smoke-core/library/workflows"
     ), _smoke_second),
 )[:{revision}]
@@ -354,7 +361,9 @@ class Instance:
         config_source = self.root / "config-source.json"
         config_source.write_text(json.dumps(self.config))
         self.cli("config", "apply", "--file", str(config_source), "--json")
-        assert read_json(self.home / ".migrations.json") == {"revision": revision}
+        assert read_json(self.home / ".migrations.json") == {
+            "revision": shipped_revisions() + revision
+        }
         workflow = self.home / WORKFLOW_PATHS[revision] / "example.json"
         assert read_json(workflow) == {"name": "example", "format": revision}
         workflow.write_text(json.dumps({"name": "user workflow", "format": revision}) + "\n")
@@ -482,7 +491,7 @@ class Instance:
         assert after["schema"] == self.before["schema"] + revision - self.initial_revision
         for name in ("rows", "config", "workspace", "provider_session"):
             assert after[name] == self.before[name], name
-        assert after["revision"] == {"revision": revision}, after
+        assert after["revision"] == {"revision": shipped_revisions() + revision}, after
         columns = ["name", "state", "priority"] + (["reviewed"] if revision == 2 else [])
         assert after["feature_columns"] == columns, after
         defaults = (0, 0) if revision == 2 else (0,)

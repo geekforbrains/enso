@@ -11,6 +11,12 @@ from enso import migrations
 from enso.maintenance import UpdateError, write_json
 
 
+@pytest.fixture(autouse=True)
+def unmarked(enso_home):
+    """These homes predate the marker, as a 0.2.0 home does."""
+    (enso_home.home / migrations.MARKER).unlink()
+
+
 def upgrade_database(paths):
     with sqlite3.connect(paths.db) as connection:
         # Explicit BEGIN includes DDL and user_version in the same transaction.
@@ -168,7 +174,7 @@ def test_malformed_marker_refuses_every_operation(enso_home, content):
 
 
 def test_newer_marker_refuses_downgrade(enso_home):
-    write_json(enso_home.home / migrations.MARKER, {"revision": 1})
+    write_json(enso_home.home / migrations.MARKER, {"revision": migrations.latest_revision() + 1})
     with pytest.raises(UpdateError, match="newer than this Enso supports"):
         migrations.apply(enso_home)
 
@@ -202,6 +208,44 @@ def test_marker_must_be_a_regular_file(enso_home, tmp_path, kind):
         migrations.apply(enso_home)
 
 
-def test_empty_registry_records_baseline_without_other_changes(enso_home):
+def test_empty_registry_records_baseline_without_other_changes(enso_home, monkeypatch):
+    monkeypatch.setattr(migrations, "MIGRATIONS", ())
     migrations.apply(enso_home)
     assert json.loads((enso_home.home / migrations.MARKER).read_text()) == {"revision": 0}
+
+
+def test_scattered_locks_are_removed_and_everything_else_is_kept(enso_home):
+    home, runtime = enso_home.home, enso_home.runtime_dir
+    job = enso_home.workspace_jobs("default") / "digest"
+    gate = enso_home.workspace_heartbeat("default") / "HB-001"
+    for directory in (job, gate, home / "heartbeat/.locks", home / ".workflow-locks"):
+        directory.mkdir(parents=True)
+    for directory in (runtime / ".concurrency", runtime / "worktree-locks"):
+        directory.mkdir(parents=True)
+    locks = [
+        *(home / name for name in (".config.lock", ".skills.lock", ".knowledge.lock")),
+        home / ".memory.lock",
+        home / "heartbeat/.locks/HB-001.lock",
+        home / ".workflow-locks/events.lock",
+        runtime / ".concurrency/abc.lock",
+        runtime / "worktree-locks/EN-001.lock",
+        job / ".run.lock",
+    ]
+    kept = [
+        job / "JOB.md",
+        gate / "gate.sh",
+        home / "heartbeat/notes.txt",
+        runtime / "control.lock",
+    ]
+    for path in (*locks, *kept):
+        path.touch()
+
+    assert migrations.plan(enso_home) == ()
+    migrations.apply(enso_home)
+    migrations.remove_scattered_locks(enso_home)  # a retry finds nothing left to do
+
+    assert not any(path.exists() for path in locks)
+    assert all(path.exists() for path in kept)
+    assert not (home / "heartbeat/.locks").exists() and not (home / ".workflow-locks").exists()
+    assert not (runtime / ".concurrency").exists() and not (runtime / "worktree-locks").exists()
+    assert migrations.read_revision(enso_home) == 1

@@ -839,12 +839,8 @@ def test_uninitialized_install_upgrades_directly_to_latest_home_revision(tmp_pat
     assert not ran and not paths.config.exists() and not paths.db.exists()
 
 
-def test_adoption_preflight_refuses_pending_changes_without_mutation(enso_home, monkeypatch):
-    monkeypatch.setattr(
-        updates.migrations,
-        "MIGRATIONS",
-        (updates.migrations.Migration(1, "new shape", lambda _: (), lambda _: None),),
-    )
+def test_adoption_preflight_refuses_pending_changes_without_mutation(enso_home):
+    (enso_home.home / ".migrations.json").unlink()  # an older home with shipped steps pending
     with pytest.raises(UpdateError, match="Adopt a compatible release first"):
         updates.validate_home(enso_home)
     assert not enso_home.config.exists() and not enso_home.db.exists()

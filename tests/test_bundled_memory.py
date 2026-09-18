@@ -102,7 +102,7 @@ def test_memory_job_retries_brief_writer_collision(enso_home, fake_config, monke
     job = load_job(enso_home, fake_config, "enso-memory")
     run_id = runs.start(enso_home, job, "manual", effort=job.effort)
     value = conversation(enso_home)
-    held = locks.acquire(enso_home.home / ".memory.lock")
+    held = locks.acquire(enso_home.lock("memory"))
     contended = Event()
     acquire = locks.acquire
 

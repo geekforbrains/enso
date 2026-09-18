@@ -344,6 +344,10 @@ matching docs and tests, and never silently lose user data. See
 - Take advisory file locks through `locks.acquire`, or `locks.open_lock` when the `flock`
   must happen later. The open never follows a symbolic link, refuses anything but a regular
   file, and never waits; the caller decides what contention means and closes the descriptor.
+  A lock file's path comes from `Paths.lock`, which keeps them all in `runtime/locks/`. They
+  are empty and never deleted, so nothing sweeps, migrates, or snapshots them. A file that
+  also carries data, such as `web.pid` or an update lock beside its state in `runtime/`, is
+  state and stays with its owner.
 - Launch subprocesses with argument arrays, explicit working directories, bounded output,
   timeouts, and cancellation cleanup. Do not block the event loop. Keep lock ownership
   narrow and use explicit synchronization instead of timing sleeps where practical.

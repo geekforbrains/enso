@@ -68,7 +68,8 @@ moving `old-workflows` into a new `automation/workflows` declares `old-workflows
 absence before any migration runs.
 
 Paths must stay inside the Enso home. The updater's own runtime, releases, journal, and
-rollback files are not migration targets. Source and destination roots must be real paths;
+rollback files are not migration targets. Lock files hold nothing to restore, so a step that
+only removes them, as revision 1 does, declares no paths. Source and destination roots must be real paths;
 unexpected symlinks or occupied destinations stop the update. Do not merge conflicting user
 files, follow a path outside the home, or overwrite custom content to make the upgrade pass.
 Choose a clear error naming the conflict so the operator can fix it and retry.

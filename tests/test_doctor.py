@@ -210,7 +210,7 @@ def test_a_fresh_home_reports_and_skips(enso_home: Paths, monkeypatch: pytest.Mo
         "path": str(enso_home.home),
         "git_root": False,
         "git": None,
-        "layout": {"workspaces": "required"},
+        "layout": {".migrations.json": "managed", "workspaces": "required"},
     }
     assert report.section("workspaces").problems[0] == (
         "default: skills/ is missing (repairable with `enso workspace audit --fix`)"

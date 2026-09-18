@@ -151,7 +151,7 @@ writes require the selected owner. The reader and writer limit each note to 2 Mi
 `audit` checks metadata, duplicate identity, date placement, links, and heading targets;
 findings include their root/path and never rewrite files. Hidden/system entries and
 symlinks are excluded, and an occupied or linked memory root is reported. CLI writers use
-a home `.memory.lock` and atomic publication shared with knowledge's filesystem primitives;
+the home's `memory` lock and atomic publication shared with knowledge's filesystem primitives;
 the two note formats retain their own metadata rules. Listing and search rebuild their view
 from the files, reusing only an in-memory parse cache invalidated by file identity, size,
 modification time, and change time. [CLI](cli.md#memory) owns exact signatures and results.
