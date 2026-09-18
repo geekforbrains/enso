@@ -818,10 +818,8 @@ def interrupt(paths: Paths, config: Config, ref: str, run_id: str, reason: str) 
 
 async def drain_events(paths: Paths, config: Config, *, ref: str | None = None) -> None:
     """At-least-once delivery, three attempts, stable IDs; failed events keep ownership."""
-    lock_dir = paths.home / ".workflow-locks"
-    lock_dir.mkdir(parents=True, exist_ok=True)
     try:
-        lock = locks.acquire(lock_dir / "events.lock")
+        lock = locks.acquire(paths.lock("workflow-events"))
     except BlockingIOError:
         return
     try:

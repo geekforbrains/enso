@@ -8,16 +8,13 @@ work against instructions that were changed or cancelled while it was running.
 from __future__ import annotations
 
 import json
-import os
-import re
 import shutil
 import sqlite3
 import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import IO, Any
 
 from .. import db
@@ -216,36 +213,13 @@ def _no_uncertain_actions(con: sqlite3.Connection, beat: Beat) -> None:
         )
 
 
-def _lock_path(paths: Paths, ref: str) -> Path:
-    directory = paths.heartbeat / ".locks"
-    if paths.heartbeat.is_symlink() or directory.is_symlink():
-        raise HeartbeatError("heartbeat lock paths must not be symlinks")
-    return directory / f"HB-{parse_ref(ref):03d}.lock"
-
-
 def acquire_lock(paths: Paths, ref: str) -> IO[str] | None:
-    """Take a stable per-beat lock kept outside the prunable gate directory.
-
-    Pruning unlinks a lock file while holding it, so a lock taken on an inode that no longer
-    sits at the path is stale: it is released and reported as contended for a later retry.
-    """
-    path = _lock_path(paths, ref)
+    """Take the per-beat lock, kept outside the prunable gate directory."""
+    name = f"HB-{parse_ref(ref):03d}"
     try:
-        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        lock = acquire_file_lock(path)
-        if lock is None:
-            return None
-        try:
-            current = os.stat(path, follow_symlinks=False)
-        except FileNotFoundError:
-            current = None
-        held = os.fstat(lock.fileno())
+        return acquire_file_lock(paths.lock("heartbeat", name))
     except OSError as exc:
-        raise HeartbeatError(f"could not lock {path.stem}: {exc}") from exc
-    if current is None or (current.st_dev, current.st_ino) != (held.st_dev, held.st_ino):
-        lock.close()
-        return None
-    return lock
+        raise HeartbeatError(f"could not lock {name}: {exc}") from exc
 
 
 def _next_existing(beat: Beat, definition: Definition, stamp: str) -> str | None:
@@ -1289,15 +1263,8 @@ def _remove_scripts(paths: Paths, beat: Beat) -> str | None:
     return None
 
 
-def _unlink_lock(paths: Paths, ref: str) -> None:
-    """Unlink a held lock file; a concurrent acquirer of the old inode sees it is stale."""
-    # A failed unlink leaves an orphan that the next pass reclaims.
-    with suppress(OSError):
-        os.unlink(_lock_path(paths, ref))
-
-
 def _remove(config: Config, number: int, cutoff: str) -> str | None:
-    """Under the beat lock: scripts, then the record, then the lock file; or why it stays."""
+    """Under the beat lock: scripts, then the record; or why it stays."""
     ref = f"HB-{number:03d}"
     with _reader(config.paths) as con:
         if con is None:
@@ -1319,37 +1286,14 @@ def _remove(config: Config, number: int, cutoff: str) -> str | None:
                     "AND state IN ('fulfilled', 'cancelled', 'expired') AND closed_at < ?",
                     (number, cutoff),
                 )
-    if reason is None:
-        _unlink_lock(config.paths, ref)
     return reason
-
-
-def _reclaim_locks(paths: Paths, known: set[int]) -> None:
-    """Remove lock files this Enso wrote for beats that no longer exist; touch nothing else."""
-    try:
-        names = sorted(path.name for path in (paths.heartbeat / ".locks").iterdir())
-    except OSError:
-        return
-    for name in names:
-        match = re.fullmatch(r"HB-([0-9]+)\.lock", name)
-        if match is None or int(match[1]) in known:
-            continue
-        ref = f"HB-{int(match[1]):03d}"
-        if name != f"{ref}.lock":
-            continue
-        lock = acquire_lock(paths, ref)
-        if lock is not None:
-            with lock:
-                if get(paths, ref) is None:
-                    _unlink_lock(paths, ref)
 
 
 def prune(config: Config, *, now: datetime | None = None) -> dict[str, str]:
     """Remove every closed beat past retention, or say why one stays.
 
     Scripts go first and the record last, so an interrupted pass leaves a record that the next
-    pass finishes; the lock file follows the record. Lock files whose beat no longer exists are
-    reclaimed too. Returns the beats kept past retention with the reason for each.
+    pass finishes. Returns the beats kept past retention with the reason for each.
     """
     if not config.heartbeat.enabled:
         return {}
@@ -1357,7 +1301,6 @@ def prune(config: Config, *, now: datetime | None = None) -> dict[str, str]:
     with _reader(config.paths) as con:
         if con is None:
             return {}
-        known = {row["id"] for row in con.execute("SELECT id FROM _enso_beats")}
         eligible = [
             row["id"]
             for row in con.execute(
@@ -1375,5 +1318,4 @@ def prune(config: Config, *, now: datetime | None = None) -> dict[str, str]:
             reason = _remove(config, number, cutoff)
         if reason is not None:
             retained[f"HB-{number:03d}"] = reason
-    _reclaim_locks(config.paths, known)
     return retained

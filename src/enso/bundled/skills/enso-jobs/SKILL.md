@@ -22,7 +22,7 @@ A job's `notify` only routes runner-generated alerts; it does not become the des
 Use `<workspace>:<job>` for every job reference, for example `team:digest`.
 `job create` selects its workspace from `--workspace` or `ENSO_WORKSPACE`; neither defaults
 to `default`. Job and run lists currently cover the installation. `ENSO_JOB` contains
-the qualified reference, and shared concurrency-group locks live in `runtime/.concurrency/`.
+the qualified reference, and job and concurrency-group locks live in `runtime/locks/`.
 
 Names beginning `enso-` are reserved for jobs Enso installs; `enso workspace audit` warns about one it did not. The bundled jobs are `default:enso-audit`, which reports nightly health problems and fixes nothing, and `default:enso-update`, which checks for releases and notifies without invoking a model or installing updates.
 

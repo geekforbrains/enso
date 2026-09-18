@@ -11,6 +11,14 @@ All notable changes to Enso are documented here, following
   or Telegram's `/use` picker, then return to their workspace default without clearing
   provider sessions.
 
+### Changed
+
+- Every lock file now lives under `runtime/locks/` and is never deleted, so Heartbeat pruning
+  no longer removes or reclaims lock files. Upgrading runs home revision 1, which removes the
+  old root `.config.lock`, `.skills.lock`, `.knowledge.lock` and `.memory.lock`, the
+  `.workflow-locks/` and top-level `heartbeat/` directories, each job's `.run.lock`, and the
+  `runtime/.concurrency/` and `runtime/worktree-locks/` directories.
+
 ## [0.2.1] - 2026-09-18
 
 ### Added

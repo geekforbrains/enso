@@ -132,22 +132,16 @@ def test_fresh_init_records_latest_revision_without_running_old_migrations(tmp_p
     assert migrations.read_revision(paths) == 1 and ran == []
 
 
-def test_init_never_marks_an_existing_unmarked_home_current(enso_home, monkeypatch):
+def test_init_never_marks_an_existing_unmarked_home_current(enso_home):
     enso_home.agents_md.write_text("existing instructions")
-    assert initialization.initialize_home(enso_home)["ok"]
-    assert not (enso_home.home / migrations.MARKER).exists()
-    monkeypatch.setattr(
-        migrations,
-        "MIGRATIONS",
-        (migrations.Migration(1, "new layout", lambda _: (), lambda _: None),),
-    )
+    (enso_home.home / migrations.MARKER).unlink()
     report = initialization.initialize_home(enso_home)
     assert not report["ok"] and "enso update apply" in report["problems"][0]
     assert not (enso_home.home / migrations.MARKER).exists()
     assert enso_home.agents_md.read_text() == "existing instructions"
 
 
-@pytest.mark.parametrize("content", ['{"revision": true}', '{"revision": 1}', "{"])
+@pytest.mark.parametrize("content", ['{"revision": true}', '{"revision": 99}', "{"])
 def test_init_refuses_bad_migration_marker_before_seeding(enso_home, content):
     (enso_home.home / migrations.MARKER).write_text(content)
     report = initialization.initialize_home(enso_home)

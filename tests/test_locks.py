@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from enso import locks
+from enso.config import Paths
 
 
 def test_lock_refuses_links_and_special_files(tmp_path: Path) -> None:
@@ -53,3 +54,13 @@ def test_lock_contention_shared_readers_and_mode(tmp_path: Path) -> None:
     released = locks.acquire_file_lock(path)
     assert released is not None
     released.close()
+
+
+def test_lock_paths_share_one_private_directory_even_in_an_empty_home(tmp_path: Path) -> None:
+    paths = Paths(tmp_path / "home")  # a lock can be the first thing a new home holds
+    assert paths.lock("config") == paths.runtime_dir / "locks/config.lock"
+    assert paths.lock("jobs", "team", "v1.digest") == (
+        paths.runtime_dir / "locks/jobs/team/v1.digest.lock"
+    )
+    assert stat.S_IMODE(paths.runtime_dir.stat().st_mode) == 0o700
+    os.close(locks.acquire(paths.lock("heartbeat", "HB-001")))

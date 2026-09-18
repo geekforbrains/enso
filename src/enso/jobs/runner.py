@@ -9,14 +9,20 @@ import os
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import IO, Literal
 
 from .. import db, execution, messages, routing, runs, scheduling, tasks, workflows
 from .. import log as logctx
-from ..config import Config, LiveConfig, Paths, check_config, project_directory
+from ..config import (
+    Config,
+    LiveConfig,
+    Paths,
+    check_config,
+    project_directory,
+    split_job_ref,
+)
 from ..execution import alert_text, enso_error
-from ..locks import LockPathError, acquire_file_lock
+from ..locks import acquire_file_lock
 from ..providers import make_provider
 from ..transports import Transport
 from . import Job, _job_path, command_stage, load_jobs, parse_job, taskflow
@@ -25,8 +31,6 @@ log = logging.getLogger(__name__)
 
 FAILURE_RENOTIFY_SECONDS = 24 * 3600
 POSTRUN_FEEDBACK_LIMIT = 64 * 1024
-LOCK_FILENAME = ".run.lock"
-GROUP_LOCK_DIRNAME = ".concurrency"
 INTERRUPTED_ERROR = "interrupted (enso exited before the run finished)"
 
 Decision = Literal["first", "wait", "fire", "misfire"]
@@ -89,9 +93,9 @@ def _parse_stamp(value: str | None) -> datetime | None:
         return None
 
 
-def acquire_lock(job_dir: Path) -> IO[str] | None:
+def acquire_lock(paths: Paths, ref: str) -> IO[str] | None:
     """Take the per-job ``flock``, or None when another process holds it."""
-    return acquire_file_lock(job_dir / LOCK_FILENAME)
+    return acquire_file_lock(paths.lock("jobs", *split_job_ref(ref)))
 
 
 def acquire_group_lock(paths: Paths, group: str) -> IO[str] | None:
@@ -99,14 +103,9 @@ def acquire_group_lock(paths: Paths, group: str) -> IO[str] | None:
 
     File locks are released by the operating system if Enso or its host process dies, unlike
     a database flag that would need expiry and recovery rules.  The filename is a digest so a
-    user-authored group name can never escape Enso's private runtime directory.
+    user-authored group name can never escape the lock directory.
     """
-    directory = paths.runtime_dir / GROUP_LOCK_DIRNAME
-    if paths.runtime_dir.is_symlink() or directory.is_symlink():
-        raise LockPathError(f"group lock directory must not be a symbolic link: {directory}")
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    name = hashlib.sha256(group.encode()).hexdigest()
-    return acquire_file_lock(directory / f"{name}.lock")
+    return acquire_file_lock(paths.lock("groups", hashlib.sha256(group.encode()).hexdigest()))
 
 
 def acquire_project_slot(paths: Paths, project: str, limit: int) -> IO[str] | None:
@@ -235,19 +234,13 @@ class JobRunner:
         """Close ``running`` rows whose owner is gone; returns how many."""
         closed = 0
         for run in runs.unfinished(self.paths):
-            job_dir = self.paths.job(run.job).parent
-            if any(path.is_symlink() for path in (job_dir, *job_dir.parents)):
-                log.warning("cannot recover %s: its job path contains a symbolic link", run.job)
+            lock = acquire_lock(self.paths, run.job)
+            if lock is None:
+                # The row belongs to an ``enso job run`` still holding the per-job
+                # lock in another process (§3.9); it will close its own row.
                 continue
-            if job_dir.is_dir():
-                lock = acquire_lock(job_dir)
-                if lock is None:
-                    # The row belongs to an ``enso job run`` still holding the per-job
-                    # lock in another process (§3.9); it will close its own row.
-                    continue
-                lock.close()
-            # A missing job directory means nobody can hold its lock: an orphan too. An
-            # owner that closes its row between the listing and here keeps its outcome.
+            lock.close()
+            # An owner that closes its row between the listing and here keeps its outcome.
             if runs.abandon(self.paths, run.id, INTERRUPTED_ERROR):
                 closed += 1
                 # The run can no longer hand off, so the claims it took would stay forever
@@ -296,7 +289,7 @@ class JobRunner:
                     raise ValueError("job path does not match its owning workspace")
             except ValueError as exc:
                 return RunResult("skipped", error=str(exc))
-            lock = await asyncio.to_thread(acquire_lock, job.job_dir)
+            lock = await asyncio.to_thread(acquire_lock, self.paths, job.ref)
             if lock is None:
                 log.info("already running (lock held); skipping this trigger")
                 return RunResult("skipped", error="already running")

@@ -136,7 +136,7 @@ Transport tokens stay literal in this file; environment placeholders are not exp
 For an update based on an earlier read, pass `--expected-hash HASH`, using the exact-byte
 SHA256 from `enso config check --json` or the previous apply. Use `missing` to require that
 no config exists. A stale hash or busy writer lock refuses the change. Enso's writers share
-`~/.enso/.config.lock`; do not delete that file while Enso commands are running. Programs
+`~/.enso/runtime/locks/config.lock`; do not delete it while Enso commands are running. Programs
 editing config themselves should use the apply command and revision check to participate in
 that protection. A symbolic-link `config.json` is preserved and refused by apply.
 

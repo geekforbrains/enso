@@ -68,7 +68,8 @@ def test_refresh_switches_only_runtime_and_launcher_and_repeats_same_version(loc
     job = paths.workspace_jobs("default") / "enso-memory/JOB.md"
     job.parent.mkdir(parents=True)
     job.write_text("customized job stays byte-for-byte intact")
-    before = {path: path.read_bytes() for path in (paths.config, paths.db, job)}
+    marker = paths.home / migrations.MARKER
+    before = {path: path.read_bytes() for path in (paths.config, paths.db, job, marker)}
     original = local.launcher.read_bytes()
     for _ in range(2):
         result = development.run(paths, local.repository)
@@ -78,7 +79,6 @@ def test_refresh_switches_only_runtime_and_launcher_and_repeats_same_version(loc
         assert updates.installed(paths) == {}
         assert not maintenance.paused(paths)
         assert {path: path.read_bytes() for path in before} == before
-        assert not (paths.home / migrations.MARKER).exists()
         assert local.events.index("stop") < local.events.index(
             ["uv", "sync", "--all-extras", "--locked"]
         )
@@ -90,6 +90,7 @@ def test_refresh_switches_only_runtime_and_launcher_and_repeats_same_version(loc
 
 def registry(local, monkeypatch, *, fail=False):
     paths = local.paths
+    (paths.home / migrations.MARKER).unlink()  # this home has run none of the steps below
     with sqlite3.connect(paths.db) as connection:
         connection.execute("CREATE TABLE example (name TEXT)")
         connection.execute("INSERT INTO example VALUES ('original')")

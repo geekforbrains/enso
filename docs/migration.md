@@ -68,7 +68,8 @@ moving `old-workflows` into a new `automation/workflows` declares `old-workflows
 absence before any migration runs.
 
 Paths must stay inside the Enso home. The updater's own runtime, releases, journal, and
-rollback files are not migration targets. Source and destination roots must be real paths;
+rollback files are not migration targets. Lock files hold nothing to restore, so a step that
+only removes them, as revision 1 does, declares no paths. Source and destination roots must be real paths;
 unexpected symlinks or occupied destinations stop the update. Do not merge conflicting user
 files, follow a path outside the home, or overwrite custom content to make the upgrade pass.
 Choose a clear error naming the conflict so the operator can fix it and retry.
@@ -154,6 +155,11 @@ Test a real old schema and representative user files against the new step. Verif
 rows, new defaults, removed fields, renamed paths, preserved content, and the final marker.
 Test skipping several releases, an already-completed step, destination conflicts, and a
 failure after some work has changed. Compare fresh and upgraded homes at the new version.
+
+The shared `enso_home` test fixture is stamped with the latest revision, because a scratch
+home has the current layout. A test that needs an older home deletes `.migrations.json` or
+writes its own revision. Test a shipped step by calling that registry entry directly, as the
+revision 1 test does, so later revisions never run against its fixture.
 
 The migration unit tests live in [`tests/test_migrations.py`](../tests/test_migrations.py).
 [Upgrade tests](upgrade-testing.md) owns the disposable installed-release checks, including

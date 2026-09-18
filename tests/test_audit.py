@@ -22,6 +22,7 @@ SEEDED_HOME_LAYOUT = {
     ".bundles.json": "managed",
     ".claude": "required",
     ".git": "required",
+    ".migrations.json": "managed",
     "AGENTS.md": "required",
     "CLAUDE.md": "required",
     "knowledge": "required",
@@ -712,7 +713,7 @@ def test_managed_roots_are_classified_not_searched(enso_home: Paths, config: Con
     """Private operating state stays private: no recursion, no findings about what is in it."""
     workspaces.seed_home(enso_home)
     finish(enso_home.workspace("default"))
-    for name in ("runtime", "cache", ".workflow-locks"):
+    for name in ("runtime", "cache"):
         root = enso_home.home / name
         root.mkdir(mode=layout.PRIVATE_DIR if name == "runtime" else 0o777)
         (root / "anything-at-all.tmp").write_text("managed state")
@@ -722,9 +723,7 @@ def test_managed_roots_are_classified_not_searched(enso_home: Paths, config: Con
     report = audit.audit(enso_home, config=config, user_dirs=USER_DIRS)
 
     assert report.home.findings == [] and report.ok
-    assert [report.home.layout[name] for name in ("runtime", "cache", ".workflow-locks")] == [
-        "managed", "managed", "managed",
-    ]  # fmt: skip
+    assert [report.home.layout[name] for name in ("runtime", "cache")] == ["managed", "managed"]
     # The operator's own roots are equally off limits.
     (enso_home.knowledge / "notes.md").write_text("# a note\n")
     assert audit.audit(enso_home, config=config, user_dirs=USER_DIRS).home.findings == []
