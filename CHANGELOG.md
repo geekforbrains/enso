@@ -32,6 +32,11 @@ All notable changes to Enso are documented here, following
   so update them. The audit reports a leftover top-level `knowledge/`, or anything but
   `knowledge/` in `shared/`, as unexpected; a top-level `memory/` is now reported the same
   way, as a warning rather than a memory error.
+- Agents now file new knowledge notes in the current workspace, and in shared knowledge only
+  when you ask, in conversation or in a rule you wrote such as an `AGENTS.md` or `JOB.md`.
+  The CLI is unchanged. Existing workspace `AGENTS.md` files and customized bundled files
+  are not rewritten, and agents may read their old shared-reference lines as your rule, so
+  update them.
 
 ### Fixed
 

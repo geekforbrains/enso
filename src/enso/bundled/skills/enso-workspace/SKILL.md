@@ -39,8 +39,9 @@ Paths below show the default home; use `ENSO_HOME` instead of `~/.enso` when it 
 Keep `AGENTS.md` small: what the workspace is for, what ambiguous terms mean, and any rule that must be visible every turn. Point to files in `knowledge/` for detail instead of inlining it.
 
 Load `enso-knowledge` to find, write, import, organize, or link durable notes, or change their
-formatting. It owns shared versus workspace placement and the common formatting rules;
-the viewer discovers these knowledge roots automatically and stays read-only.
+formatting. It owns where notes go (this workspace unless the user asks for shared) and the
+common formatting rules; the viewer discovers these knowledge roots automatically and stays
+read-only.
 Knowledge is current reference; dated conversations and experiences belong in `memory/`.
 For earlier work, load `enso-memory`, search with `enso memory search`, and read relevant
 notes and sources before answering. People sharing this workspace share its maintained memory.

@@ -95,9 +95,12 @@ Deliberately minimal. A new workspace gets this:
 
 ## Files
 
-- `knowledge/` — durable reference material
+- `knowledge/` — current facts and reference material; load `enso-knowledge` and use `enso knowledge` to find or maintain it
+- `memory/` — dated conversations and experiences; load `enso-memory`, search with `enso memory search`, and inspect sources before recalling earlier work
 - `drafts/` — generated and editable output
 - `uploads/` — chat attachments, written by Enso
+
+New knowledge notes go in `knowledge/` unless someone asks for shared knowledge (`$ENSO_HOME/shared/knowledge/`, `--shared`). Memory belongs to this workspace. People sharing it share maintained memory; separate workspaces do not promise confidentiality within this installation.
 ```
 
 Fill in the blanks and delete what does not apply. `enso workspace audit` warns while the
@@ -112,8 +115,8 @@ Pricing rules are in `knowledge/pricing.md`. Read it before quoting a number.
 ```
 
 The agent reads the relevant files when needed, and the read-only viewer lets you browse
-them. Shared reference belongs in the home's `shared/knowledge/`; see
-[Knowledge](knowledge.md).
+them. A rule written here, such as which notes belong in shared knowledge, counts as asking
+for it; see [Knowledge](knowledge.md#where-new-notes-go).
 
 ## Knowledge formatting
 
@@ -189,7 +192,7 @@ Enso installs these into `~/.enso/skills/`:
 | `enso-browser` | Persistent Chrome profiles, human login, and attaching browser tools; see [Browser](browser.md) |
 | `enso-heartbeat` | Finite future actions and temporary watches, script gates, event history, action receipts, and completion |
 | `enso-jobs` | Creating, testing, and troubleshooting scheduled and stage jobs and their prerun and postrun scripts |
-| `enso-knowledge` | Finding and maintaining shared or workspace Markdown notes, links, imports, and user-defined formatting |
+| `enso-knowledge` | Finding and maintaining Markdown notes (in the workspace unless you ask for shared), links, imports, and user-defined formatting |
 | `enso-memory` | Recalling, recording, and correcting dated workspace memory, and writing useful summaries of captured conversations |
 | `enso-security` | Installation trust, provider permissions, credential handling, and untrusted input |
 | `enso-skills` | Finding official optional skills and writing or refining a skill manually |

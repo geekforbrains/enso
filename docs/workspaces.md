@@ -62,7 +62,7 @@ The home itself holds the workspaces and what they share:
 ├── CLAUDE.md          # symlink -> AGENTS.md
 ├── config.json        # the configuration; readable only by you
 ├── skills/            # installed and hand-written skills
-├── shared/knowledge/  # shared reference that belongs across workspaces
+├── shared/knowledge/  # reference shared across workspaces
 ├── secrets/           # *.env files loaded into the service environment
 ├── .gitignore         # optional: yours, for the Git root Enso creates but never commits to
 ├── workspaces/<name>/ # one directory per workspace, as above
@@ -72,11 +72,11 @@ The home itself holds the workspaces and what they share:
                        # symlinks -> ../skills, as in a workspace
 ```
 
-`shared/` holds what workspaces share; knowledge is its only entry for now.
-`~/.enso/shared/knowledge/` (or `$ENSO_HOME/shared/knowledge/`) is for shared reference that
-belongs across workspaces, and each workspace's `knowledge/` is discovered without
-registration. [Knowledge](knowledge.md) owns placement, the note format, links, searching,
-and import behavior; `enso-knowledge` guides agent maintenance.
+`shared/` holds what workspaces share; knowledge is its only entry for now. New notes go
+in the workspace's `knowledge/`, discovered without registration; agents file notes in
+`~/.enso/shared/knowledge/` (or `$ENSO_HOME/shared/knowledge/`) only when the user asks.
+[Knowledge](knowledge.md) owns placement, the note format, links, searching, and import
+behavior; `enso-knowledge` guides agent maintenance.
 
 `AGENTS.md` is the file you write; `CLAUDE.md` is always a symlink to it so both CLI
 families read one document. Skills follow the same rule: `skills/` is the directory you

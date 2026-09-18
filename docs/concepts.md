@@ -37,7 +37,7 @@ and [context selection](workspaces.md#context-selection-in-020).
 | **Transport** | A chat platform connection: Slack or Telegram. Both run in one process. |
 | **Binding** | A map from a chat location to a workspace. Unbound places are ignored. |
 | **Workspace** | A directory with a fixed layout. The agent's working directory and its context. |
-| **Knowledge** | Durable Markdown notes in a shared home root or a workspace, written with the agent and browsed read-only |
+| **Knowledge** | Durable Markdown notes in a workspace, or in shared knowledge on request, written with the agent and browsed read-only |
 | **Agent** | An explicit `provider` + `model` + `effort` triple |
 | **Conversation** | A serialized queue of turns with a resumable provider session |
 | **Job** | `JOB.md`: a cron schedule or executable stage, a workspace, and agent instructions when a model is used |
@@ -160,14 +160,14 @@ home-level instructions and any user-level instructions the provider loads. Opti
 
 ## Knowledge
 
-Knowledge is ordinary Markdown under the home's `shared/knowledge/` directory or a
-workspace's `knowledge/`. The agent maintains notes through chat and the CLI; the viewer
+Knowledge is ordinary Markdown in a workspace's `knowledge/` or the home's
+`shared/knowledge/`. The agent maintains notes through chat and the CLI; the viewer
 provides folder navigation, search, and clickable note links. Files remain the source of
 truth. Folders help the agent select context, but they do not isolate access.
 
-Shared material has one home across workspaces; workspace-specific facts stay with their
-workspace and link across roots when needed. See [Knowledge](knowledge.md) for metadata,
-links, imports, and the user-editable formatting convention.
+New notes go in the current workspace; the agent files notes in shared knowledge only when
+the user asks, and links across roots instead of copying. See [Knowledge](knowledge.md) for
+filing, metadata, links, imports, and the user-editable formatting convention.
 
 ## Memory
 
