@@ -255,7 +255,7 @@ def test_safe_reads_writes_conflicts_and_lock_contention(paths, monkeypatch):
     with pytest.raises((OSError, NoteError)):
         memory.create_note(paths, "team", "Link.md", "Unsafe", occurred=None)
     assert outside.read_text() == "Untouched"
-    fd = locks.acquire(paths.home / ".memory.lock")
+    fd = locks.acquire(paths.lock("memory"))
     try:
         with pytest.raises(NoteError, match="another memory write"):
             memory.update_note(paths, "team", note.id, "Concurrent", expected_hash=note.sha256)

@@ -206,11 +206,10 @@ def timestamp() -> str:
 @contextmanager
 def writer(paths: Paths, kind: str, *, retry_for: float = 0) -> Iterator[None]:
     """Hold a note writer lock, optionally retrying brief job-hook collisions."""
-    paths.home.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic() + retry_for
     while True:
         try:
-            fd = locks.acquire(paths.home / f".{kind}.lock")
+            fd = locks.acquire(paths.lock(kind))
             break
         except BlockingIOError:
             remaining = deadline - time.monotonic()

@@ -33,7 +33,6 @@ Enso's normal runtime state lives under one directory, `~/.enso` (or `$ENSO_HOME
 │   ├── projects/<KEY>/PROJECT.md # project definition and sibling scripts
 │   ├── jobs/<job>/JOB.md # workspace jobs, referenced as <workspace>:<job>
 │   └── heartbeat/<REF>/ # a beat's optional gate.sh and helpers
-├── heartbeat/.locks/   # stable per-beat execution locks
 ├── secrets/*.env        # KEY=value files exported into the service environment
 ├── enso.db             # captures, processing receipts, runs, messages, sessions, tasks, beats, tables
 ├── enso.log            # rotating log

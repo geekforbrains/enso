@@ -291,10 +291,8 @@ def dirty_files(paths: Paths, project: ProjectConfig, ref: str) -> tuple[str, ..
 @contextlib.contextmanager
 def execution_context(paths: Paths, ref: str) -> Iterator[None]:
     """The owner holds this from preparation through hooks; sweep uses the same lock."""
-    root = paths.runtime_dir / "worktree-locks"
-    root.mkdir(parents=True, exist_ok=True)
     try:
-        fd = locks.acquire(root / f"{_check_ref(ref)}.lock")
+        fd = locks.acquire(paths.lock("worktrees", _check_ref(ref)))
     except BlockingIOError:
         raise WorktreeBusyError(f"{ref} worktree is in use") from None
     except OSError as exc:

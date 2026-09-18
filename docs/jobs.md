@@ -62,7 +62,7 @@ controlled by `max_concurrency` (default 1); raise it to allow different tasks i
 stages concurrently. Each task worktree still has one execution owner. Use an explicit
 group for jobs sharing another resource, such as a test database. Jobs in the same group run their preruns independently, but Enso admits only one
 selected run through provider execution and postrun checks at a time. It uses an advisory
-file lock under `runtime/.concurrency/`, shared with manual runs, so the operating system
+file lock under `runtime/locks/groups/`, shared with manual runs, so the operating system
 releases it if a process or the service dies; a stale database flag cannot strand a group.
 The group lock stays held through postrun and every follow-up, so another grouped job cannot
 change the workspace between the work and its check. A group collision produces `skipped`
@@ -480,8 +480,8 @@ in history and should be treated as sensitive job data.
 - Catch-up runs once when a missed slot is found; it does not replay every missed slot.
   The scheduler stamps its dispatch time before launching and leaves that timestamp
   unchanged when the run finishes. A manual run does not move this scheduling anchor.
-- The per-job lock is `workspaces/<workspace>/jobs/<job>/.run.lock`, shared with `enso job run` in another
-  process.
+- The per-job lock is `runtime/locks/jobs/<workspace>/<job>.lock`, shared with `enso job run`
+  in another process.
 
 Cron is exactly five fields, `minute hour day-of-month month day-of-week`: `0 9 * * *`
 daily at 09:00, `30 6 * * 1-5` weekdays at 06:30, `*/15 * * * *` every 15 minutes,

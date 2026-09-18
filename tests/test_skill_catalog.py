@@ -175,7 +175,7 @@ def test_destination_appearing_during_download_is_preserved(enso_home, remote, m
 
 
 def test_install_lock_refuses_special_files_without_blocking(enso_home, remote):
-    os.mkfifo(enso_home.skill_lock)
+    os.mkfifo(enso_home.lock("skills"))
     with pytest.raises(catalog.SkillError, match="lock must be a regular file"):
         catalog.install(enso_home, NAME)
     assert not (enso_home.skills / NAME).exists()

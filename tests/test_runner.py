@@ -683,12 +683,11 @@ async def test_postrun_keeps_both_locks_and_run_row_until_followups_finish(
         await asyncio.wait_for(checking.wait(), 3)
         (active,) = runs.list_runs(enso_home)
         assert active.status == "running" and active.ended_at is None
-        assert acquire_lock(nightly.job_dir) is None
+        assert acquire_lock(enso_home, nightly.ref) is None
         assert acquire_group_lock(enso_home, "shared") is None
         (attempt,) = runs.attempts(enso_home, active.id)
         assert attempt.status == "ok" and attempt.postrun_exit_code is None
         assert (await runner.run(teammate, trigger="manual")).status == "skipped"
-        assert (enso_home.runtime_dir / runner_module.GROUP_LOCK_DIRNAME).is_dir()
     finally:
         proceed.set()
         result = await task
@@ -724,7 +723,7 @@ async def test_cancel_during_postrun_preserves_completed_attempt_and_closes_row(
     assert run.status == "error" and "cancelled" in (run.error or "")
     (attempt,) = runs.attempts(enso_home, run.id)
     assert attempt.status == "ok" and attempt.session_id and attempt.output
-    for held in (acquire_lock(nightly.job_dir), acquire_group_lock(enso_home, "shared")):
+    for held in (acquire_lock(enso_home, nightly.ref), acquire_group_lock(enso_home, "shared")):
         assert held is not None
         held.close()
 
@@ -827,7 +826,7 @@ async def test_overlapping_trigger_is_skipped(
     runner: JobRunner, enso_home: Paths, fake_config: Config
 ) -> None:
     nightly = job(enso_home, fake_config, prompt="sleep 0.5")
-    held = acquire_lock(nightly.job_dir)  # another process is running the job
+    held = acquire_lock(enso_home, nightly.ref)  # another process is running the job
     assert held is not None
     skipped = await runner.run(nightly, trigger="schedule")
     assert (skipped.status, skipped.run_id) == ("skipped", None)
@@ -879,7 +878,7 @@ async def test_stop_closes_the_running_row_without_alerting(
     assert run.status == "error" and run.error
     assert run.ended_at is not None and run.duration_ms is not None
     assert transport.sent == []
-    held = acquire_lock(nightly.job_dir)  # the lock was released with the task
+    held = acquire_lock(enso_home, nightly.ref)  # the lock was released with the task
     assert held is not None
     held.close()
 
@@ -895,7 +894,7 @@ def test_recover_closes_orphaned_rows_only(
     gone = runs.start(enso_home, other, "manual", effort=other.effort)
     with db.transaction(enso_home) as con:  # its job directory was deleted since
         con.execute("UPDATE runs SET job = 'gone' WHERE id = ?", (gone,))
-    held = acquire_lock(other.job_dir)  # an ``enso job run`` in another process
+    held = acquire_lock(enso_home, other.ref)  # an ``enso job run`` in another process
     assert held is not None
 
     def status(run_id: str) -> str:
@@ -1071,22 +1070,18 @@ async def test_jobs_preserve_provider_arguments_without_policy_prerequisites(
     assert transport.sent == []
 
 
-def test_job_locks_refuse_symbolic_links(
+def test_job_lock_lives_outside_the_job_and_refuses_a_symbolic_link(
     enso_home: Paths, fake_config: Config, tmp_path: Path
 ) -> None:
     nightly = job(enso_home, fake_config)
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    (outside / "run.lock").touch()
-    (nightly.job_dir / runner_module.LOCK_FILENAME).symlink_to(outside / "run.lock")
+    acquire_lock(enso_home, nightly.ref).close()
+    assert sorted(entry.name for entry in nightly.job_dir.iterdir()) == ["JOB.md"]
+    lock = enso_home.lock("jobs", "default", "nightly")
+    lock.unlink()
+    lock.symlink_to(tmp_path / "outside.lock")
     with pytest.raises(LockPathError, match="symbolic link"):
-        acquire_lock(nightly.job_dir)
-    groups = enso_home.runtime_dir / runner_module.GROUP_LOCK_DIRNAME
-    groups.parent.mkdir(parents=True, exist_ok=True)
-    groups.symlink_to(outside, target_is_directory=True)
-    with pytest.raises(LockPathError, match="symbolic link"):
-        acquire_group_lock(enso_home, "shared")
-    assert sorted(entry.name for entry in outside.iterdir()) == ["run.lock"]
+        acquire_lock(enso_home, nightly.ref)
+    assert not (tmp_path / "outside.lock").exists()
 
 
 async def test_same_named_jobs_have_independent_execution_and_history(
@@ -1160,7 +1155,7 @@ async def test_same_named_jobs_have_independent_execution_and_history(
             ("default", "digest"),
             ("team", "digest"),
         }
-    held = acquire_lock(selected[0].job_dir)
+    held = acquire_lock(enso_home, selected[0].ref)
     assert held is not None
     try:
         assert (await runner.run(selected[0], trigger="manual")).status == "skipped"

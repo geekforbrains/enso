@@ -20,7 +20,7 @@ def _names(value: object) -> list[str]:
             or any(part in {"", ".", ".."} for part in name.split("/"))
             or "\x00" in name
             or "\\" in name
-            or name.split("/")[0] in {"runtime", ".git", "cache", "heartbeat", "web.pid"}
+            or name.split("/")[0] in {"runtime", ".git", "cache", "web.pid"}
             or any(part.endswith(".lock") for part in name.split("/"))
         ):
             raise UpdateError("the migration snapshot paths are invalid")

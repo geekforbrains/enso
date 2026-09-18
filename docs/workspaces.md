@@ -66,7 +66,6 @@ The home itself holds the workspaces and what they share:
 ├── secrets/           # *.env files loaded into the service environment
 ├── .gitignore         # optional: yours, for the Git root Enso creates but never commits to
 ├── workspaces/<name>/ # one directory per workspace, as above
-├── heartbeat/         # installation-level beat locks
 ├── cache/, runtime/   # Enso's own operating state
 ├── enso.db, enso.log  # captures, runs, tasks and beats, and the service log
 └── .claude/skills, .agents/skills
@@ -150,9 +149,9 @@ Enso's restriction mode is removed without silently changing provider arguments.
 Every job is referenced as `<workspace>:<job>`, including commands, scheduling, history,
 alerts, task-claim actors, `ENSO_JOB`, and viewer routes. For example, `team:digest` and
 `personal:digest` identify separate jobs in their respective workspace directories. A job's
-frontmatter does not repeat its workspace. Per-job locks live with the job; concurrency
-groups remain installation-wide, with locks under `runtime/.concurrency/` in the home. Jobs in
-different workspaces using the same group still serialize.
+frontmatter does not repeat its workspace. Per-job and concurrency-group locks both live
+under `runtime/locks/` in the home; groups remain installation-wide, so jobs in different
+workspaces using the same group still serialize.
 
 A project's key and workspace come from `projects/<KEY>/PROJECT.md`'s location, rather than
 repeating them as ownership fields. Project scripts live alongside the definition and run

@@ -455,7 +455,7 @@ def test_background_lifecycle(enso_home: Paths) -> None:
         assert b"Content-Security-Policy" in reply
         assert enso_home.db.exists() is False  # the viewer created nothing
         assert sorted(p.name for p in enso_home.home.iterdir()) == [
-            "web.log", "web.pid", "workspaces",
+            ".migrations.json", "web.log", "web.pid", "workspaces",
         ]  # fmt: skip
     finally:
         stopped = web.stop(enso_home)

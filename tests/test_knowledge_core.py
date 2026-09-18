@@ -257,7 +257,7 @@ def test_publication_detects_a_direct_edit_during_write(tmp_path, monkeypatch):
 
 def test_writers_refuse_contention_and_symlink_lock(tmp_path):
     paths = Paths(tmp_path)
-    fd = locks.acquire(paths.home / ".knowledge.lock")
+    fd = locks.acquire(paths.lock("knowledge"))
     try:
         with pytest.raises(knowledge.KnowledgeError, match="another knowledge"):
             knowledge.create_note(paths, "general", "No.md", "body")
@@ -265,8 +265,8 @@ def test_writers_refuse_contention_and_symlink_lock(tmp_path):
         import os
 
         os.close(fd)
-    (paths.home / ".knowledge.lock").unlink()
-    (paths.home / ".knowledge.lock").symlink_to(tmp_path / "other")
+    (paths.lock("knowledge")).unlink()
+    (paths.lock("knowledge")).symlink_to(tmp_path / "other")
     with pytest.raises(OSError):
         knowledge.create_note(paths, "general", "No.md", "body")
 

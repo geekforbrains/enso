@@ -104,7 +104,6 @@ def _layout_problems(paths: Paths) -> list[str]:
         paths.home,
         paths.workspaces,
         default,
-        paths.heartbeat,
         paths.cache,
         paths.secrets,
         paths.skills,
@@ -145,12 +144,10 @@ def _layout_problems(paths: Paths) -> list[str]:
 
 
 def is_fresh_home(paths: Paths) -> bool:
-    """Installer runtime and the init lock can exist before any home content is seeded."""
+    """Installer runtime, which holds the init lock, can exist before any content is seeded."""
     if not paths.home.exists():
         return True
-    return all(
-        entry.name in {"runtime", ".config.lock", *layout.IGNORED} for entry in paths.home.iterdir()
-    )
+    return all(entry.name in {"runtime", *layout.IGNORED} for entry in paths.home.iterdir())
 
 
 def home_problems(paths: Paths) -> list[str]:
@@ -208,7 +205,6 @@ def initialize_home(paths: Paths) -> dict[str, Any]:
             private = {entry.name for entry in layout.private(layout.HOME)}
             for directory in (
                 paths.workspaces,
-                paths.heartbeat,
                 paths.cache,
                 paths.secrets,
                 paths.workspace("default"),

@@ -35,7 +35,6 @@ def operation(tmp_path):
         ["runtime/releases"],
         [".git/config"],
         ["cache/private"],
-        ["heartbeat/state"],
         ["web.pid"],
         [".config.lock"],
         ["nested/worker.lock/state"],

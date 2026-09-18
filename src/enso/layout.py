@@ -98,21 +98,15 @@ HOME: tuple[Entry, ...] = (
     Entry(
         "runtime",
         MANAGED,
-        "managed releases and update receipts",
+        "managed releases, update receipts, and lock files",
         private=True,
         real_directory=True,
     ),
-    Entry("heartbeat", MANAGED, "installation-level beat locks"),
     Entry("browser", MANAGED, "the enso-browser skill's profiles"),
     # Older homes may keep an edited copy after the packaged manifest stops being seeded.
     Entry("slack", USER, "legacy Slack app files"),
     Entry(".bundles.json", MANAGED, "the record of what Enso installed"),
     Entry(".migrations.json", MANAGED, "the last completed home migration", private=True),
-    Entry(".config.lock", MANAGED, "the configuration writer lock"),
-    Entry(".skills.lock", MANAGED, "the skill publication lock"),
-    Entry(".knowledge.lock", MANAGED, "the shared knowledge writer lock"),
-    Entry(".memory.lock", MANAGED, "the memory writer lock"),
-    Entry(".workflow-locks", MANAGED, "workflow lifecycle delivery locks"),
     Entry(
         "secrets",
         USER,
