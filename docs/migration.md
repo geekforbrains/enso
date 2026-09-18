@@ -28,8 +28,9 @@ MIGRATIONS = (
 )
 ```
 
-This is an illustrative future registry. The registry shipped with 0.2.0 is empty: that
-release is home revision **0**. A release with no structural changes needs no migration.
+This registry is illustrative; the file holds the real steps. The registry shipped with
+0.2.0 is empty: that release is home revision **0**. A release with no structural changes
+needs no migration.
 Home revisions are independent of release versions and SQLite's `user_version`; one home
 step may update several files and the database together.
 
@@ -63,16 +64,20 @@ or database readers that already expect the new format.
 Declare every path a step can change, including files whose references it rewrites. For a
 move, include **both the source and destination**, even if the destination does not exist yet.
 If a step creates parent directories, declare the highest new parent it creates. For example,
-moving `old-workflows` into a new `automation/workflows` declares `old-workflows` and
-`automation`. The updater validates the paths and snapshots their original contents or
-absence before any migration runs.
+moving `knowledge` into a new `shared/knowledge` declares `knowledge` and `shared`, plus each
+workspace knowledge or memory root holding links the step rewrites. Declare the containing
+directory rather than each user file: a snapshot takes at most 4096 paths, none ending in
+`.lock`. The updater validates the paths and snapshots their original contents or absence
+before any migration runs.
 
 Paths must stay inside the Enso home. The updater's own runtime, releases, journal, and
 rollback files are not migration targets. Lock files hold nothing to restore, so a step that
 only removes them, as revision 1 does, declares no paths. Source and destination roots must be real paths;
 unexpected symlinks or occupied destinations stop the update. Do not merge conflicting user
 files, follow a path outside the home, or overwrite custom content to make the upgrade pass.
-Choose a clear error naming the conflict so the operator can fix it and retry.
+Choose a clear error naming the conflict so the operator can fix it and retry. Raise a
+conflict the old layout already shows from `paths` as well as `apply`, so the development
+preview reports it and a release update fails before any home change.
 
 For a folder move, the migration checks the old location and destination, moves the existing
 files, updates any stored references, and validates their new format. Update the corresponding

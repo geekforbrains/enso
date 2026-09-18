@@ -18,7 +18,7 @@ def _scope(paths: Paths, workspace: str | None, shared: bool) -> str:
     if shared:
         if workspace is not None:
             raise ValueError("give --workspace or --shared, not both")
-        return "general"
+        return "shared"
     return f"workspace:{resolve_workspace(paths, workspace)}"
 
 

@@ -139,11 +139,11 @@ class Catalog(NoteCatalog):
 
     def resolve(self, source: Note, target: str, *, wiki: bool = False) -> Resolution:
         target = target.strip()
-        if wiki or target.startswith(("general:", "workspace:")):
+        if wiki or target.startswith(("shared:", "workspace:")):
             return Resolution("missing")
         return super().resolve(source, target)
 
-    def get(self, ref: str, scope: str = "general") -> Note:
+    def get(self, ref: str, scope: str = "shared") -> Note:
         if not valid_id(ref) and not ref.lower().endswith(".md"):
             raise NoteError("use a UUID or an exact .md path relative to the memory root")
         return super().get(ref, scope)
@@ -155,9 +155,6 @@ def scan(paths: Paths, workspace: str | None = None) -> Catalog:
     if workspace is not None:
         require_workspace(paths, workspace)
     roots, problems = storage.discover_roots(paths, "memory")
-    shared = paths.home / "memory"
-    if shared.exists() or shared.is_symlink():
-        problems += (f"{shared}: shared memory is unsupported; memory belongs in a workspace",)
     notes, read_problems, assets = scan_roots(roots, _read_note)
     # Database validity is checked outside the file parse cache: a source may arrive later.
     notes = tuple(

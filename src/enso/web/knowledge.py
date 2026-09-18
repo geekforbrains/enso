@@ -305,7 +305,7 @@ def _external_safe(target: str) -> bool:
 
 
 def _markdown_link_safe(url: str) -> bool:
-    if url.startswith(("general:", "workspace:")):
+    if url.startswith(("shared:", "workspace:")):
         return True
     try:
         return files._safe_link(url)

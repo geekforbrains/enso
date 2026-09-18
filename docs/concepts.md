@@ -63,7 +63,7 @@ Enso's runtime state lives under one directory:
 ├── AGENTS.md            # instructions for every turn and job (CLAUDE.md links to it)
 ├── CLAUDE.md -> AGENTS.md
 ├── skills/              # enso-wide skills, available in every workspace
-├── knowledge/           # shared Markdown knowledge, visible across workspaces
+├── shared/knowledge/    # shared Markdown knowledge, visible across workspaces
 ├── browser/             # optional private Chrome profiles, output, state, and tooling
 ├── .claude/skills       # symlink -> ../skills, discovered by the provider CLIs
 ├── .agents/skills       # symlink -> ../skills
@@ -160,7 +160,7 @@ home-level instructions and any user-level instructions the provider loads. Opti
 
 ## Knowledge
 
-Knowledge is ordinary Markdown under the home's shared `knowledge/` directory or a
+Knowledge is ordinary Markdown under the home's `shared/knowledge/` directory or a
 workspace's `knowledge/`. The agent maintains notes through chat and the CLI; the viewer
 provides folder navigation, search, and clickable note links. Files remain the source of
 truth. Folders help the agent select context, but they do not isolate access.

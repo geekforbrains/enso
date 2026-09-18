@@ -21,6 +21,24 @@ All notable changes to Enso are documented here, following
   old root `.config.lock`, `.skills.lock`, `.knowledge.lock` and `.memory.lock`, the
   `.workflow-locks/` and top-level `heartbeat/` directories, each job's `.run.lock`, and the
   `runtime/.concurrency/` and `runtime/worktree-locks/` directories.
+- **Breaking:** Shared knowledge moves from `~/.enso/knowledge/` to the new
+  `~/.enso/shared/knowledge/`, and its scope is renamed from `general` to `shared` with no
+  fallback: in links (`[[shared:Reference/Topic]]`), `--json` output, errors, `enso doctor`,
+  and viewer URLs and labels. `--shared` and `--to-shared` are unchanged. Upgrading runs home
+  revision 2, which moves the directory and rewrites `general:` links to `shared:` in
+  knowledge and memory notes without changing `updated`; a `general:` link written afterward
+  is broken. Existing workspace `AGENTS.md` files, customized bundled files, and your own
+  instructions, jobs, skills, and scripts that name `~/.enso/knowledge` are not rewritten,
+  so update them. The audit reports a leftover top-level `knowledge/`, or anything but
+  `knowledge/` in `shared/`, as unexpected; a top-level `memory/` is now reported the same
+  way, as a warning rather than a memory error.
+
+### Fixed
+
+- Link checks, note moves, and home revision 2 no longer treat links inside inline code
+  that wraps onto a second line, or inside fenced code after a form feed or Unicode line
+  separator, as links. `scripts/import-knowledge.py` no longer leaves a lock file beside
+  its destination.
 
 ## [0.2.1] - 2026-09-18
 

@@ -331,9 +331,9 @@ workflow and worktree contracts.
 
 ### Knowledge
 
-`/knowledge` reads the shared home `knowledge/` and automatically discovers every visible
-workspace `knowledge/` directory. **Folders** starts at the Knowledge home, where shared
-knowledge and each workspace are folders to enter. The home first shows the most recently
+`/knowledge` reads the home's `shared/knowledge/` and automatically discovers every visible
+workspace `knowledge/` directory. **Folders** starts at the Knowledge home, where **Shared**
+and each workspace are folders to enter. The home first shows the most recently
 updated notes across every root, up to `web.knowledge.recent_limit` (5 by default), then the
 root folders under **Workspaces**. Its breadcrumb is **Index**. The Markdown files remain the
 source of truth. See [Knowledge](knowledge.md) for metadata, writing conventions, imports,
@@ -360,7 +360,7 @@ the total backlink count. Folder context is capped at 20 items, with a link to t
 paginated folder.
 
 Wiki links (`[[Page]]`, `[[Folder/Page|Label]]`, `[[Page#Heading]]`) and ordinary relative
-Markdown links navigate inside the viewer. Cross-scope links explicitly name `general:`
+Markdown links navigate inside the viewer. Cross-scope links explicitly name `shared:`
 or `workspace:<name>:`. Duplicate filenames require a qualified path: ambiguous and missing
 references are visibly marked instead of selecting a destination arbitrarily. Missing
 heading anchors are marked while the destination note remains clickable. Headings get

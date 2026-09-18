@@ -4,11 +4,13 @@ One table per root — the home and a workspace — naming every top-level entry
 writes or expects, the provider files it preserves without reading, and who owns each one.
 Setup's preflight, the scaffolding in :mod:`enso.workspaces`, and the audit all read these
 tables, so a new directory is declared once instead of in three independent allowlists.
+``SHARED`` names what the home's ``shared/`` holds; only the audit reads it, and the
+scaffold creates ``shared/knowledge/`` directly.
 
 The tables describe top-level entries only. Nothing here invites a recursive scan: a
 core-managed root such as ``runtime/`` or ``cache/`` is private operating state, and what
 is inside it is Enso's business, never a layout finding. The same holds for a user root
-such as ``knowledge/``, whose contents belong to the operator.
+such as ``shared/knowledge/``, whose contents belong to the operator.
 """
 
 from __future__ import annotations
@@ -27,7 +29,6 @@ CATEGORIES = (REQUIRED, MANAGED, USER, EXTENSION, UNEXPECTED)
 IGNORED = frozenset({".DS_Store"})
 # What a ``private`` entry is created with; repairs preserve its owner bits.
 PRIVATE_DIR = 0o700
-PRIVATE_FILE = 0o600
 SHARED_BITS = 0o077  # any group or other access at all
 
 
@@ -82,7 +83,7 @@ HOME: tuple[Entry, ...] = (
     Entry(".agents", REQUIRED, "the Codex, Antigravity, and OpenCode skill link"),
     Entry(".git", REQUIRED, "the Git root the provider CLIs stop their walk at"),
     Entry("skills", REQUIRED, "the installed and hand-written skills"),
-    Entry("knowledge", REQUIRED, "shared reference that belongs across workspaces"),
+    Entry("shared", REQUIRED, "what every workspace shares"),
     Entry("workspaces", REQUIRED, "one directory per workspace"),
     Entry("config.json", MANAGED, "the configuration", private=True),
     Entry("config.example.json", MANAGED, "the editable configuration template"),
@@ -117,6 +118,11 @@ HOME: tuple[Entry, ...] = (
     # Enso runs ``git init`` here and never commits, but the repository it made is the
     # operator's to use, and a repository's ignore file belongs beside it.
     Entry(".gitignore", USER, "what the operator keeps out of the home's own history"),
+)
+
+# What ``shared/`` holds; later sharing features add their entries here.
+SHARED: tuple[Entry, ...] = (
+    Entry("knowledge", REQUIRED, "shared reference that belongs across workspaces"),
 )
 
 

@@ -8,14 +8,19 @@ converted before the new release's normal config and database readers run.
 
 from __future__ import annotations
 
+import os
 import stat
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import frontmatter
 from .config import Paths
+from .knowledge.catalog import Note, read_note, scan_roots
+from .knowledge.links import extract_links
 from .maintenance import UpdateError, read_json, write_json
+from .note_storage import discover_roots, publish, read_bytes, split_document
 
 MARKER = ".migrations.json"
 
@@ -56,10 +61,94 @@ def remove_scattered_locks(paths: Paths) -> None:
         _remove_locks(directory)
 
 
+def _general_linked(paths: Paths) -> tuple[Note, ...]:
+    """Knowledge and memory notes with a link target in the old ``general`` scope."""
+    roots = (
+        *discover_roots(paths, "knowledge", shared=True)[0],
+        *discover_roots(paths, "memory")[0],
+    )
+    notes = scan_roots(roots, read_note)[0]
+    return tuple(n for n in notes if any(_general(link.target) for link in n.links))
+
+
+def _general(target: str) -> bool:
+    # The catalog strips a target before reading its scope, as in ``< general:X.md>``.
+    return target.lstrip().startswith("general:")
+
+
+def _refuse_shared_knowledge_conflicts(paths: Paths) -> None:
+    """Refuse an unfinished move, a ``shared`` that is not a directory, or two note roots.
+
+    An empty ``shared/knowledge/``, such as a fixing audit creates, is not a second root.
+    """
+    if any(paths.home.glob(".knowledge-move-*")):
+        raise UpdateError(
+            "a .knowledge-move-* recovery directory is in the home; finish or reverse that "
+            "interrupted move, remove the directory, and retry"
+        )
+    if paths.shared.is_symlink() or (paths.shared.exists() and not paths.shared.is_dir()):
+        raise UpdateError("shared is not a directory; move it aside and retry")
+    old, new = paths.home / "knowledge", paths.knowledge
+    if (old.exists() or old.is_symlink()) and (
+        new.is_symlink() or (new.exists() and (not new.is_dir() or any(new.iterdir())))
+    ):
+        raise UpdateError(
+            "both knowledge/ and shared/knowledge/ exist; merge them into "
+            "shared/knowledge/, remove knowledge/, and retry"
+        )
+
+
+def shared_knowledge_paths(paths: Paths) -> tuple[str, ...]:
+    """The old and new roots, and each workspace root holding links to rename.
+
+    Whole roots keep the declaration bounded by workspaces rather than by notes.
+    """
+    _refuse_shared_knowledge_conflicts(paths)
+    home = paths.home.resolve()
+    roots = (n.root.path.relative_to(home).as_posix() for n in _general_linked(paths))
+    return tuple(dict.fromkeys(("knowledge", "shared", *roots)))
+
+
+def move_shared_knowledge(paths: Paths) -> None:
+    """Move ``knowledge/`` to ``shared/knowledge/`` and rename ``general:`` links to ``shared:``.
+
+    Only parsed link targets change: prose, code, metadata, ``updated``, and the file's
+    modification time stay, since a format migration is not a content update. A retry
+    recognizes the completed move; a conflict stops the step before anything changes.
+    """
+    _refuse_shared_knowledge_conflicts(paths)
+    old = paths.home / "knowledge"
+    if old.exists() or old.is_symlink():
+        with suppress(FileNotFoundError):
+            paths.knowledge.rmdir()
+        paths.shared.mkdir(exist_ok=True)
+        old.rename(paths.knowledge)
+    else:
+        paths.knowledge.mkdir(parents=True, exist_ok=True)
+    for note in _general_linked(paths):
+        text = read_bytes(note.root, note.path).decode("utf-8")
+        # Split as the catalog reads it: a leading block that is not a mapping is body.
+        head, body = split_document(text) if frontmatter.parse(text)[0] else ("", text)
+        for link in reversed(extract_links(body)):
+            if _general(link.target):
+                at = link.start + len(link.target) - len(link.target.lstrip())
+                body = body[:at] + "shared" + body[at + len("general") :]
+        path = note.root.path / note.path
+        before = path.stat()
+        publish(note.root, note.path, head + body, expected_hash=note.sha256)
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+
 # 0.2.0 is revision zero. Keep every later step so installations may skip releases.
 # Lock files hold nothing to restore, so the first step declares no snapshot paths.
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "gather lock files under runtime/locks", lambda paths: (), remove_scattered_locks),
+    Migration(
+        2,
+        "move knowledge to shared/knowledge and rename general links",
+        shared_knowledge_paths,
+        move_shared_knowledge,
+    ),
 )
 
 

@@ -16,7 +16,7 @@ Paths below show the default home; use `ENSO_HOME` instead of `~/.enso` when it 
 ├── AGENTS.md                 # shared instructions for every turn and job
 ├── CLAUDE.md -> AGENTS.md
 ├── skills/                   # enso-wide skills: enso, enso-*, and yours
-├── knowledge/                # shared reference across workspaces
+├── shared/knowledge/         # shared reference across workspaces
 ├── .claude/skills -> ../skills
 ├── .agents/skills -> ../skills
 └── workspaces/<name>/

@@ -65,7 +65,7 @@ message limited to 500 characters. Use `enso knowledge audit --workspace NAME` (
 and `enso memory audit --workspace NAME` for complete scoped findings. Reads reuse the
 existing file parse caches; doctor never rewrites notes or creates a note database.
 These checks establish structural validity, not factual truth or the most useful workspace
-for a note. Unsupported shared memory and invalid roots are reported without following links.
+for a note. Invalid roots are reported without following links.
 An error-level finding is a health problem and makes
 `doctor` exit 1; warnings alone exit 0. That strict health result does not mean every Enso
 operation is blocked: for example, a workspace layout error fails `doctor`, while `serve`
@@ -361,7 +361,7 @@ inventory, and installation health checks retain their installation-wide scope.
 ## Knowledge
 
 Knowledge starts in the selected workspace. `--workspace NAME` overrides `ENSO_WORKSPACE`;
-`--shared` explicitly selects the home knowledge root and ignores the environment.
+`--shared` explicitly selects shared knowledge and ignores the environment.
 `--workspace` and `--shared` are mutually exclusive. Missing workspace context without
 `--shared`, or an invalid explicit workspace, is an error; shared knowledge is never a
 fallback. These selectors apply to reads and writes, including UUID lookup.
@@ -387,8 +387,8 @@ paths must end in `.md`. Moves stay in the source root unless `--to-workspace` o
 `--limit` from 1 to 500 and a nonnegative `--offset`. Search matches every whitespace-separated
 term against paths and bodies, case insensitively. There is no `--scope` or all-roots search
 flag: broaden deliberately with another search using `--shared` or `--workspace NAME`.
-`roots` inventories all roots without requiring context. Internal root identifiers remain
-`general` and `workspace:<name>` in JSON results and cross-root links.
+`roots` inventories all roots without requiring context. Root scopes are `shared` and
+`workspace:<name>` in JSON results and cross-root links.
 No command loads transport configuration or initializes the database.
 [Knowledge](knowledge.md) owns the filesystem, metadata, link-resolution, adoption, and
 write-safety contracts.

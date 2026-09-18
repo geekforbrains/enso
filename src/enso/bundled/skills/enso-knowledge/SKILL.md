@@ -19,7 +19,7 @@ Use `$ENSO_HOME` (default `~/.enso`):
 
 | Location | Scope | What belongs there |
 | --- | --- | --- |
-| `$ENSO_HOME/knowledge/` | `general` | Personal or shared reference useful across workspaces |
+| `$ENSO_HOME/shared/knowledge/` | `shared` | Personal or shared reference useful across workspaces |
 | `$ENSO_HOME/workspaces/<name>/knowledge/` | `workspace:<name>` | Knowledge owned by one workspace or project |
 
 Enso discovers existing workspace knowledge automatically; no registry or config entry is
@@ -51,7 +51,7 @@ knowledge explicitly. Searches inspect only the selected root; broaden with a se
 
 Read [references/formatting.md](references/formatting.md) before authoring or changing the
 display conventions. That one file and [scripts/lint.py](scripts/lint.py) define the shared
-style for both General and workspace knowledge.
+style for both shared and workspace knowledge.
 
 1. Find the existing owning note before creating another. Keep current truth clear and link
    relevant memory instead of copying dated discussions. Put sources beside the claims
@@ -67,7 +67,7 @@ style for both General and workspace knowledge.
 ```bash
 enso knowledge create "Reference/Topic.md" --shared --file /tmp/note-body.md
 enso knowledge update "Reference/Topic.md" --shared --file /tmp/note-body.md --expected-hash HASH
-python3 "$ENSO_HOME/skills/enso-knowledge/scripts/lint.py" "$ENSO_HOME/knowledge/Reference/Topic.md"
+python3 "$ENSO_HOME/skills/enso-knowledge/scripts/lint.py" "$ENSO_HOME/shared/knowledge/Reference/Topic.md"
 enso knowledge audit --shared --json
 ```
 
@@ -86,7 +86,7 @@ The viewer follows ordinary Markdown links and wikilinks:
 [[Reference/Topic|Readable label]]
 [[Reference/Topic#Heading]]
 [Readable label](../Reference/Topic.md#heading)
-[[general:Reference/Topic]]
+[[shared:Reference/Topic]]
 [[workspace:research:Projects/Topic]]
 ```
 

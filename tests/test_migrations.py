@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 
 import pytest
 
-from enso import migrations
+from enso import knowledge, migrations, update_snapshot
 from enso.maintenance import UpdateError, write_json
 
 
@@ -249,3 +250,140 @@ def test_scattered_locks_are_removed_and_everything_else_is_kept(enso_home):
     assert all(path.exists() for path in kept)
     assert not (home / "heartbeat/.locks").exists() and not (home / ".workflow-locks").exists()
     assert not (runtime / ".concurrency").exists() and not (runtime / "worktree-locks").exists()
+
+
+NOTE = """---
+schema: enso.note/v1
+id: 0d8f3b86-5a2e-4a4c-9b7e-1f8c2f0a6d11
+created: "2026-01-01T00:00:00Z"
+updated: "2026-01-02T00:00:00Z"
+---
+
+See [[general:Reference/Topic|the topic]] and [scope](general:Reference/Topic.md#scope).
+The catalog strips [a spaced target](< general:Reference/Topic.md>) before its scope.
+Prose that says general: stays, and so does `[[general:Reference/Topic]]` in code.
+A code span may wrap: `[[general:Reference/Topic]] across
+a line break` stays too.
+
+```
+[[general:Reference/Topic]]
+```
+
+[topic]: general:Reference/Topic.md
+"""
+RENAMED = (
+    NOTE.replace("[[general:Reference/Topic|", "[[shared:Reference/Topic|")
+    .replace("(general:", "(shared:")
+    .replace("(< general:", "(< shared:")
+    .replace("[topic]: general:", "[topic]: shared:")
+)
+# The catalog reads a leading block that is not a mapping as body, so its links count.
+LOOSE = "---\nSee [[general:Reference/Topic]]\n---\nbody\n"
+OLD_TIME = 1_600_000_000_000_000_000
+
+
+def old_layout(paths, *, shared=True):
+    """A revision 1 home: top-level knowledge, and notes in every root linking into it."""
+    written = {}
+    workspace = paths.workspace("default")
+    notes = {
+        workspace / "knowledge/Page.md": NOTE,
+        workspace / "memory/undated/Recall.md": NOTE.replace("\n", "\r\n"),
+        workspace / "knowledge/Plain.md": "No scoped links here.\n",
+        workspace / "knowledge/Loose.md": LOOSE,
+    }
+    if shared:
+        notes[paths.home / "knowledge/Index.md"] = NOTE
+        notes[paths.home / "knowledge/Reference/Topic.md"] = "## Scope\n"
+        notes[paths.home / "knowledge/Reference/diagram.png"] = "attachment bytes"
+    for path, text in notes.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(text.encode())
+        os.utime(path, ns=(OLD_TIME, OLD_TIME))
+        written[path] = text
+    return written
+
+
+def test_shared_knowledge_moves_and_general_links_are_renamed_in_every_root(enso_home):
+    step = migrations.MIGRATIONS[1]  # run this step alone, so later revisions never break it
+    old_layout(enso_home)
+    shared, workspace = enso_home.knowledge, enso_home.workspace("default")
+    shared.mkdir(parents=True)  # an empty root, as a fixing audit creates, is no conflict
+    assert step.revision == 2 and step.paths(enso_home) == (
+        "knowledge",
+        "shared",
+        "workspaces/default/knowledge",
+        "workspaces/default/memory",
+    )
+
+    step.apply(enso_home)
+
+    assert not (enso_home.home / "knowledge").exists()
+    assert (shared / "Index.md").read_bytes() == RENAMED.encode()
+    assert (workspace / "knowledge/Page.md").read_bytes() == RENAMED.encode()
+    assert (workspace / "knowledge/Loose.md").read_text() == LOOSE.replace("general:", "shared:")
+    # Only the link targets change: line endings, metadata, and ``updated`` stay.
+    recall = workspace / "memory/undated/Recall.md"
+    assert recall.read_bytes() == RENAMED.replace("\n", "\r\n").encode()
+    assert (shared / "Reference/diagram.png").read_text() == "attachment bytes"
+    for path in (
+        shared / "Index.md",
+        shared / "Reference/Topic.md",
+        shared / "Reference/diagram.png",
+        workspace / "knowledge/Page.md",
+        workspace / "knowledge/Plain.md",
+        workspace / "knowledge/Loose.md",
+        recall,
+    ):
+        assert path.stat().st_mtime_ns == OLD_TIME, path
+    catalog = knowledge.scan(enso_home)
+    assert [r.scope for r in catalog.roots] == ["shared", "workspace:default"]
+    assert not [p for p in catalog.audit() if "link" in p["problem"]]
+
+    before = {p: p.read_bytes() for p in enso_home.home.rglob("*.md")}
+    step.apply(enso_home)  # a retry recognizes the completed move and finds nothing to rename
+    assert {p: p.read_bytes() for p in enso_home.home.rglob("*.md")} == before
+    assert step.paths(enso_home) == ("knowledge", "shared")
+
+
+def test_shared_knowledge_without_an_old_root_is_created(enso_home):
+    step = migrations.MIGRATIONS[1]
+    old_layout(enso_home, shared=False)
+    step.apply(enso_home)
+    assert enso_home.knowledge.is_dir() and not list(enso_home.knowledge.iterdir())
+    page = enso_home.workspace("default") / "knowledge/Page.md"
+    assert page.read_bytes() == RENAMED.encode()
+
+
+@pytest.mark.parametrize("conflict", ["both roots", "shared file", "move recovery"])
+def test_shared_knowledge_conflicts_stop_before_any_change(enso_home, conflict):
+    step = migrations.MIGRATIONS[1]
+    written = old_layout(enso_home)
+    if conflict == "both roots":
+        (enso_home.knowledge / "Newer.md").parent.mkdir(parents=True)
+        (enso_home.knowledge / "Newer.md").write_text("keep me\n")
+        match = "both knowledge/ and shared/knowledge/ exist"
+    elif conflict == "shared file":
+        enso_home.shared.write_text("my shared list\n")
+        match = "shared is not a directory"
+    else:
+        (enso_home.home / ".knowledge-move-abc123").mkdir()
+        match = r"\.knowledge-move-\* recovery directory"
+    for run in (step.paths, step.apply):  # the preview refuses as the step itself does
+        with pytest.raises(UpdateError, match=match):
+            run(enso_home)
+    assert all(path.read_bytes() == text.encode() for path, text in written.items())
+    assert enso_home.shared.exists() == (conflict != "move recovery")
+
+
+def test_shared_knowledge_declared_paths_restore_the_old_layout(enso_home, tmp_path):
+    step = migrations.MIGRATIONS[1]
+    written = old_layout(enso_home)
+    operation = tmp_path / "operation"
+    operation.mkdir()
+    names = update_snapshot.plan(enso_home, list(step.paths(enso_home)))
+    update_snapshot.capture(enso_home, operation, names)
+    step.apply(enso_home)
+    update_snapshot.restore(enso_home, operation)
+    assert not enso_home.shared.exists()
+    assert all(path.read_bytes() == text.encode() for path, text in written.items())

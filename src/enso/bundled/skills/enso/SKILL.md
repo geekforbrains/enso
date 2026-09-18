@@ -22,7 +22,7 @@ Enso's normal runtime state lives under one directory, `~/.enso` (or `$ENSO_HOME
 ├── AGENTS.md            # instructions for every turn and job (CLAUDE.md links to it)
 ├── CLAUDE.md -> AGENTS.md
 ├── skills/              # enso-wide skills: enso, enso-*, and the user's own
-├── knowledge/           # shared Markdown knowledge across workspaces
+├── shared/knowledge/    # shared Markdown knowledge across workspaces
 ├── browser/             # private browser profiles, output, state, and optional tooling
 ├── .claude/skills -> ../skills
 ├── .agents/skills -> ../skills

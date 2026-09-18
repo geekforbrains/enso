@@ -39,9 +39,12 @@ class Root:
 def discover_roots(
     paths: Paths, kind: str, *, shared: bool = False
 ) -> tuple[tuple[Root, ...], tuple[str, ...]]:
-    """Find note roots without following workspace links; retain invalid-root findings."""
+    """Find note roots without following workspace links; retain invalid-root findings.
+
+    ``shared`` adds the shared knowledge root and skips absent workspace roots.
+    """
     paths = Paths(paths.home.resolve())
-    candidates = [Root("general", "General", paths.home / kind)] if shared else []
+    candidates = [Root("shared", "Shared", paths.knowledge)] if shared else []
     problems: list[str] = []
     try:
         if paths.workspaces.is_symlink():
@@ -61,8 +64,10 @@ def discover_roots(
         problems.append(f"{paths.workspaces}: cannot read workspace roots ({exc.strerror})")
     roots: list[Root] = []
     for root in candidates:
-        if root.path.is_symlink() or (root.path.exists() and not root.path.is_dir()):
-            entry = "symbolic link" if root.path.is_symlink() else "file"
+        # The shared root is nested in shared/, so a link there must not be followed either.
+        linked = root.path.is_symlink() or root.path.parent.is_symlink()
+        if linked or (root.path.exists() and not root.path.is_dir()):
+            entry = "symbolic link" if linked else "file"
             problems.append(
                 f"{root.scope}: {root.path}: {kind} root must be a directory, not a {entry}"
             )
