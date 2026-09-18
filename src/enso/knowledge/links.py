@@ -11,6 +11,8 @@ from functools import lru_cache
 from markdown_it import MarkdownIt
 
 _MARKDOWN = MarkdownIt("commonmark", {"html": False})
+# Lines as markdown-it counts them for token maps: only CR, LF, and CRLF end a line.
+_LINES = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+\Z")
 
 
 @dataclass(frozen=True)
@@ -24,16 +26,27 @@ class Link:
     image: bool = False
 
 
+def _blank(text: str) -> str:
+    return re.sub(r"[^\r\n]", " ", text)
+
+
 def _mask_code(text: str) -> str:
-    """Keep offsets intact while excluding fenced/indented code and inline backticks."""
-    output = text.splitlines(keepends=True)
+    """Blank code blocks and code spans, keeping offsets and line breaks intact.
+
+    A code span may wrap within its paragraph or heading, never past it.
+    """
+    lines = _LINES.findall(text)
     for token in _MARKDOWN.parse(text):
-        if token.type in {"fence", "code_block"} and token.map:
-            for index in range(*token.map):
-                line = output[index]
-                output[index] = " " * len(line.rstrip("\r\n")) + line[len(line.rstrip("\r\n")) :]
-    masked = "".join(output)
-    return re.sub(r"(`+)(?!`)(.+?)(?<!`)\1(?!`)", lambda m: " " * len(m[0]), masked)
+        if token.map and token.type in {"fence", "code_block", "inline"}:
+            start, end = token.map
+            source = "".join(lines[start:end])
+            if token.type == "inline":
+                pattern = r"(`+)(?!`)(.+?)(?<!`)\1(?!`)"
+                source = re.sub(pattern, lambda m: _blank(m[0]), source, flags=re.S)
+            else:
+                source = _blank(source)
+            lines[start:end] = _LINES.findall(source)
+    return "".join(lines)
 
 
 def extract_links(body: str) -> tuple[Link, ...]:

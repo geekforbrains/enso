@@ -110,9 +110,14 @@ class Paths:
         return self.home / "workspaces"
 
     @property
+    def shared(self) -> Path:
+        """What every workspace shares; ``layout.SHARED`` names what belongs inside."""
+        return self.home / "shared"
+
+    @property
     def knowledge(self) -> Path:
         """Shared Markdown knowledge, alongside workspace-local knowledge directories."""
-        return self.home / "knowledge"
+        return self.shared / "knowledge"
 
     @property
     def cache(self) -> Path:

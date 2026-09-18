@@ -15,7 +15,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, BinaryIO
 
-from enso import locks
 from enso.knowledge import normalize_text
 from enso.maintenance import write_json
 
@@ -127,10 +126,8 @@ def import_vault(source: Path, destination: Path, receipt: Path) -> dict[str, An
     receipt = Path(os.path.abspath(receipt.expanduser()))
     _validate_destination(source, destination, receipt)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    fd = locks.acquire(destination.parent / ".knowledge-import.lock")
     stage: Path | None = None
     try:
-        _validate_destination(source, destination, receipt)
         directories, files, skipped = _inventory(source)
         stage = Path(tempfile.mkdtemp(prefix=".knowledge-import-", dir=destination.parent))
         for relative in directories:
@@ -146,7 +143,7 @@ def import_vault(source: Path, destination: Path, receipt: Path) -> dict[str, An
             "skipped": skipped,
         }
         write_json(receipt, report)
-        # rename refuses to replace a nonempty directory if a concurrent writer arrived.
+        # rename refuses to replace a nonempty directory, so concurrent imports never merge.
         if destination.is_symlink():
             raise ValueError("The destination became a symbolic link during import.")
         os.rename(stage, destination)
@@ -157,7 +154,6 @@ def import_vault(source: Path, destination: Path, receipt: Path) -> dict[str, An
     finally:
         if stage is not None:
             shutil.rmtree(stage)
-        os.close(fd)
 
 
 def main() -> int:
@@ -168,7 +164,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         report = import_vault(args.source, args.destination, args.receipt)
-    except (OSError, ValueError, UnicodeError, locks.LockPathError) as exc:
+    except (OSError, ValueError, UnicodeError) as exc:
         print(f"Import failed: {exc}", file=sys.stderr)
         return 1
     print(

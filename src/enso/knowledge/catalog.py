@@ -92,7 +92,8 @@ def discover_roots(paths: Paths) -> tuple[Root, ...]:
 
 
 @lru_cache(maxsize=16384)
-def _read_note(root: Root, relative: str, signature: tuple[int, ...]) -> Note:
+def read_note(root: Root, relative: str, signature: tuple[int, ...]) -> Note:
+    """Parse one Markdown file's core metadata, body, and links, cached by file identity."""
     data = read_bytes(root, relative, limit=MAX_NOTE_BYTES)
     text = data.decode("utf-8")
     document, problem = frontmatter.parse(text)
@@ -124,7 +125,7 @@ def _read_note(root: Root, relative: str, signature: tuple[int, ...]) -> Note:
 def scan(paths: Paths) -> Catalog:
     """Stat all files, reuse unchanged parsed notes, and report independent read problems."""
     roots, problems = note_roots(paths, "knowledge", shared=True)
-    notes, read_problems, assets = scan_roots(roots, _read_note)
+    notes, read_problems, assets = scan_roots(roots, read_note)
     return Catalog(roots, notes, problems + read_problems, assets)
 
 
@@ -223,7 +224,7 @@ class Catalog:
         if len(self._paths[(note.scope, note.path.casefold())]) > 1:
             raise KnowledgeError("note path is ambiguous")
 
-    def get(self, ref: str, scope: str = "general") -> Note:
+    def get(self, ref: str, scope: str = "shared") -> Note:
         """Address a note by UUID or exact path within the selected scope."""
         if valid_id(ref):
             note = self.by_id(ref)
@@ -345,8 +346,8 @@ class Catalog:
 
 
 def _scope_target(default: str, target: str) -> tuple[str, str, bool]:
-    if target.startswith("general:"):
-        return "general", target.removeprefix("general:"), True
+    if target.startswith("shared:"):
+        return "shared", target.removeprefix("shared:"), True
     match = re.match(r"workspace:([^:]+):(.*)", target, re.S)
     if match:
         return f"workspace:{match[1]}", match[2], True

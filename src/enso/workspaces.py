@@ -377,9 +377,6 @@ def reconcile_bundles(
         changed.append(relative)
     changed.extend(_retire_bundles(paths, previous, shipped))
     write_json(paths.home / ".bundles.json", {"files": known})
-    if not paths.knowledge.exists() and not paths.knowledge.is_symlink():
-        paths.knowledge.mkdir()
-        changed.append("knowledge/")
     return changed
 
 
@@ -390,7 +387,12 @@ def ensure_home(home: Path) -> list[str]:
     them by walking up from a workspace to the Git root, and Enso never commits there.
     """
     done: list[str] = []
-    for directory in (Paths(home).skills, Paths(home).knowledge, Paths(home).workspaces):
+    paths = Paths(home)
+    for directory in (paths.skills, paths.knowledge, paths.workspaces):
+        parent = directory.parent
+        # A link or file where shared/ belongs is the audit's to report, never created through.
+        if parent != home and (parent.is_symlink() or (parent.exists() and not parent.is_dir())):
+            continue
         if not directory.exists() and not directory.is_symlink():
             directory.mkdir(parents=True)
             done.append(f"created {directory}")

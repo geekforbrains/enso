@@ -54,7 +54,7 @@ The team proposed September 25 for launch. Capture 1201 records the proposal;
 | `occurred` | Required; a quoted ISO 8601 timestamp with timezone, a quoted `YYYY-MM-DD` date, or `null` when unknown. | Record when the event happened at the precision actually known. |
 | `sources` | Required; a list of distinct positive integer capture IDs, or `[]` for a manual/imported memory with no captures. | Identify the source records in the home database. |
 | `created` | Set on new notes; optional on imports. | Record original document creation time, separate from the event. |
-| `updated` | Set on new notes and substantive edits; optional on imports. | Record the latest document update, including link repairs or corrections. |
+| `updated` | Set on new notes and substantive edits; optional on imports. | Record the latest document update, including link repairs or corrections, but not a link-syntax [format migration](knowledge.md#the-note-format). |
 
 These are the only permitted frontmatter fields. There are no title, tag, scope, workspace,
 or access fields: the filename supplies the title and the path supplies ownership. Source
@@ -156,7 +156,7 @@ the two note formats retain their own metadata rules. Listing and search rebuild
 from the files, reusing only an in-memory parse cache invalidated by file identity, size,
 modification time, and change time. [CLI](cli.md#memory) owns exact signatures and results.
 `enso doctor` summarizes the same checks across workspace memory roots, including capture
-source validity and unsupported home-level memory. It cannot prove that a recollection is
+source validity. It cannot prove that a recollection is
 true or that the selected workspace is the most useful owner.
 
 ## Conversation capture

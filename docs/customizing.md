@@ -112,14 +112,15 @@ Pricing rules are in `knowledge/pricing.md`. Read it before quoting a number.
 ```
 
 The agent reads the relevant files when needed, and the read-only viewer lets you browse
-them. Shared reference belongs in the home's `knowledge/`; see [Knowledge](knowledge.md).
+them. Shared reference belongs in the home's `shared/knowledge/`; see
+[Knowledge](knowledge.md).
 
 ## Knowledge formatting
 
 The bundled `enso-knowledge` skill owns the agent's note workflow. Its
 `references/formatting.md` supplies the default writing conventions, and `scripts/lint.py`
 checks mechanical style such as heading spacing and trailing whitespace. Both live under
-`~/.enso/skills/enso-knowledge/` and apply to General and workspace knowledge alike.
+`~/.enso/skills/enso-knowledge/` and apply to shared and workspace knowledge alike.
 
 Ask the agent to change those files together when you want a different style. Start with
 one common convention; the agent must not relax a rule just to make a note pass. Managed

@@ -229,7 +229,7 @@ def test_links_are_relative_with_headings_assets_and_no_workspace_or_wiki_guessi
         "Decision",
         "workspace:team:2026/09/20/Decision.md",
         " workspace:team:2026/09/20/Decision.md",
-        "general:Page.md",
+        "shared:Page.md",
         "../../../../secret.md",
     ):
         assert catalog.resolve(note, ref).status == "missing"

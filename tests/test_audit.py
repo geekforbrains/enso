@@ -25,7 +25,7 @@ SEEDED_HOME_LAYOUT = {
     ".migrations.json": "managed",
     "AGENTS.md": "required",
     "CLAUDE.md": "required",
-    "knowledge": "required",
+    "shared": "required",
     "skills": "required",
     "workspaces": "required",
 }
@@ -480,7 +480,7 @@ def test_a_file_where_a_dot_directory_belongs_is_reported_not_fixed(enso_home: P
     assert (root / ".agents").read_text() == "in the way"
 
 
-@pytest.mark.parametrize("scope", ["home", "workspace"])
+@pytest.mark.parametrize("scope", ["shared", "shared-knowledge", "workspace"])
 @pytest.mark.parametrize("kind", ["file", "symlink", "dangling-symlink"])
 def test_knowledge_roots_preserve_conflicts_and_never_follow_links(
     enso_home: Paths, tmp_path: Path, scope: str, kind: str
@@ -488,8 +488,12 @@ def test_knowledge_roots_preserve_conflicts_and_never_follow_links(
     workspaces.seed_home(enso_home)
     root = enso_home.workspace("default")
     finish(root)
-    knowledge = enso_home.knowledge if scope == "home" else root / "knowledge"
-    knowledge.rmdir()
+    knowledge = {
+        "shared": enso_home.shared,
+        "shared-knowledge": enso_home.knowledge,
+        "workspace": root / "knowledge",
+    }[scope]
+    shutil.rmtree(knowledge)
     outside = tmp_path / "outside"
     if kind == "file":
         knowledge.write_text("keep this file\n")
@@ -501,7 +505,7 @@ def test_knowledge_roots_preserve_conflicts_and_never_follow_links(
 
     report = audit.audit(enso_home, ["default"], fix=True, user_dirs=USER_DIRS)
 
-    findings = report.home.findings if scope == "home" else report.workspaces[0].findings
+    findings = report.workspaces[0].findings if scope == "workspace" else report.home.findings
     assert len(findings) == 1
     assert findings[0].check == "directory" and not findings[0].fixable
     if kind == "file":
@@ -509,6 +513,7 @@ def test_knowledge_roots_preserve_conflicts_and_never_follow_links(
     else:
         assert knowledge.is_symlink() and knowledge.readlink() == outside
         if kind == "symlink":
+            assert [p.name for p in outside.iterdir()] == ["Keep.md"]  # nothing written through
             assert (outside / "Keep.md").read_text() == "keep this note\n"
         else:
             assert not outside.exists()
@@ -538,7 +543,9 @@ def test_dangling_links_where_directories_belong_are_reported_not_fixed(
 def test_missing_shared_knowledge_is_created_without_changing_existing_notes(enso_home: Paths):
     workspaces.seed_home(enso_home)
     enso_home.knowledge.rmdir()
-    assert audit.audit_home(enso_home, user_dirs=USER_DIRS).findings[0].fixable
+    enso_home.shared.rmdir()
+    (missing,) = audit.audit_home(enso_home, user_dirs=USER_DIRS).findings
+    assert (missing.message, missing.fixable) == ("shared/ is missing", True)
     result = audit.audit_home(enso_home, fix=True, user_dirs=USER_DIRS)
     assert result.ok and result.fixed == [f"created {enso_home.knowledge}"]
     (enso_home.knowledge / "Keep.md").write_text("untouched content\n")
@@ -673,7 +680,7 @@ def test_audit_preserves_optional_provider_files_without_checking_permissions(en
 
 def test_the_layout_table_covers_everything_the_scaffold_writes(enso_home: Paths) -> None:
     """The guard against drift: a new shipped path must be declared, not discovered later."""
-    declared = (*layout.HOME, *layout.WORKSPACE)
+    declared = (*layout.HOME, *layout.SHARED, *layout.WORKSPACE)
     assert {entry.category for entry in declared} <= set(layout.CATEGORIES) - {
         layout.UNEXPECTED
     }  # a table entry is owned by someone; "unexpected" is only ever a scan result
@@ -688,6 +695,9 @@ def test_the_layout_table_covers_everything_the_scaffold_writes(enso_home: Paths
     report = audit.audit(enso_home, user_dirs=USER_DIRS)
     assert layout.UNEXPECTED not in report.home.layout.values()
     assert layout.UNEXPECTED not in report.workspaces[0].layout.values()
+    assert {path.name for path in enso_home.shared.iterdir()} == {
+        entry.name for entry in layout.SHARED
+    }
     legacy = enso_home.home / "slack" / "manifest.json"
     legacy.parent.mkdir()
     legacy.write_text("customized legacy manifest")
@@ -755,6 +765,31 @@ def test_an_unexpected_home_entry_is_reported_and_left_alone(
     assert stray.read_text() == "mine" and (enso_home.home / "old-backup").is_dir()
 
 
+def test_shared_holds_only_its_declared_entries(enso_home: Paths, config: Config) -> None:
+    """``shared/`` is checked like the home, and a leftover top-level knowledge/ is unexpected."""
+    workspaces.seed_home(enso_home)
+    finish(enso_home.workspace("default"))
+    (enso_home.home / "knowledge").mkdir()
+    (enso_home.shared / "memory").mkdir()
+
+    report = audit.audit(enso_home, fix=True, config=config, user_dirs=USER_DIRS)
+
+    assert [(f.check, f.severity, f.message) for f in report.home.findings] == [
+        (
+            "unexpected",
+            "warning",
+            f"memory/ is not part of the layout; move it out of {enso_home.shared} or remove it",
+        ),
+        (
+            "unexpected",
+            "warning",
+            f"knowledge/ is not part of the layout; move it out of {enso_home.home} or remove it",
+        ),
+    ]
+    assert report.ok and report.home.layout["knowledge"] == layout.UNEXPECTED
+    assert (enso_home.home / "knowledge").is_dir() and (enso_home.shared / "memory").is_dir()
+
+
 def test_a_dangling_top_level_link_is_reported_once(enso_home: Paths, config: Config) -> None:
     workspaces.seed_home(enso_home)
     finish(enso_home.workspace("default"))
@@ -767,13 +802,6 @@ def test_a_dangling_top_level_link_is_reported_once(enso_home: Paths, config: Co
     assert found.message.startswith("cache/ is a dangling symbolic link")
     assert report.home.layout["cache"] == "managed"
     assert (enso_home.home / "cache").is_symlink()  # --fix neither repoints nor removes it
-    # A required entry keeps its own, stronger report instead of a second one.
-    (enso_home.knowledge).rmdir()
-    (enso_home.knowledge).symlink_to("/nowhere-at-all")
-    report = audit.audit(enso_home, config=config, user_dirs=USER_DIRS)
-    assert [f.message for f in report.home.findings if "knowledge" in f.message] == [
-        "knowledge/ is a dangling symbolic link; move it aside"
-    ]
 
 
 @pytest.mark.parametrize("name", ["runtime", "cache", "secrets"])

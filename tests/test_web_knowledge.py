@@ -56,35 +56,36 @@ async def test_mixed_folders_pagination_and_scoped_search(client, enso_home):
     assert response.status == 200
     html = await response.text()
     assert '<span aria-current="page">Index</span>' in html
-    assert html.index("Recently updated") < html.index('href="/knowledge?scope=general"')
+    assert html.index("Recently updated") < html.index('href="/knowledge?scope=shared"')
     assert "<h2>Workspaces</h2>" in html and "3 items · Showing 1\u20133" not in html
     rows = knowledge_rows(html)
     assert [row.text.strip().splitlines()[0].strip() for row in rows[-2:]] == [
-        "General",
+        "Shared",
         "autodiscovered",
     ]
     assert "autodiscovered" in html and "View source" not in html
     assert "Recently updated" in html and "Deep" in html
 
-    response = await client.get("/knowledge?scope=general&folder=Mixed")
+    response = await client.get("/knowledge?scope=shared&folder=Mixed")
     html = await response.text()
     assert '<a href="/knowledge">Index</a>' in html
+    assert (await client.get("/knowledge?scope=general")).status == 404  # no old-name alias
     assert "<h2>Workspaces</h2>" not in html and "2 items · Showing 1\u20132" in html
     rows = knowledge_rows(html)
     assert len(rows) == 2 and "Nested" in rows[0].text and "Overview" in rows[1].text
 
-    first = await client.get("/knowledge?scope=general&folder=Large")
+    first = await client.get("/knowledge?scope=shared&folder=Large")
     html = await first.text()
     assert len(knowledge_rows(html)) == 50 and "Showing 1\u201350" in html
-    last = await client.get("/knowledge?scope=general&folder=Large&page=999")
+    last = await client.get("/knowledge?scope=shared&folder=Large&page=999")
     html = await last.text()
     assert (
         len(knowledge_rows(html)) == 33 and "Showing 51\u201383" in html and "Page 2 of 2" in html
     )
 
-    scoped = await client.get("/knowledge?scope=general&folder=Mixed&q=needle")
+    scoped = await client.get("/knowledge?scope=shared&folder=Mixed&q=needle")
     assert len(knowledge_rows(await scoped.text())) == 1
-    across = await client.get("/knowledge?scope=general&folder=Mixed&q=needle&across=1")
+    across = await client.get("/knowledge?scope=shared&folder=Mixed&q=needle&across=1")
     assert len(knowledge_rows(await across.text())) == 3
     all_notes = await client.get("/knowledge?scope=all&view=all&q=needle")
     assert len(knowledge_rows(await all_notes.text())) == 3
@@ -96,7 +97,7 @@ async def test_knowledge_rows_show_calendar_dates_with_precise_time_available(cl
     updated = datetime(2025, 1, 1, 12, tzinfo=local).isoformat()
     path.write_text(path.read_text().replace("2026-09-15T12:00:00Z", updated))
 
-    response = await client.get("/knowledge?scope=general")
+    response = await client.get("/knowledge?scope=shared")
     row = knowledge_rows(await response.text())[0]
     assert "Jan 1st, 2025" in row.text
     (timestamp,) = row.find("time")
@@ -188,7 +189,7 @@ async def test_ambiguity_metadata_and_legacy_source_are_readable(client, enso_ho
     assert [node.attrs["href"] for node in article.find("a")] == ["https://example.com"]
     assert "metadata finding" in html
     for relative in ("Malformed.md", "Legacy.md"):
-        url = "/knowledge/file?" + urlencode({"scope": "general", "path": relative})
+        url = "/knowledge/file?" + urlencode({"scope": "shared", "path": relative})
         response = await client.get(url)
         assert response.status == 200
         html = await response.text()
@@ -233,7 +234,7 @@ async def test_local_assets_remote_images_and_unsafe_content(client, enso_home):
     )
     for relative in ("Assets/document.html", "Assets/spoof.png"):
         response = await client.get(
-            "/knowledge/asset?" + urlencode({"scope": "general", "path": relative})
+            "/knowledge/asset?" + urlencode({"scope": "shared", "path": relative})
         )
         assert response.status == 200 and response.content_type == "application/octet-stream"
         assert response.headers["Content-Disposition"].startswith("attachment;")
@@ -262,17 +263,17 @@ async def test_paths_symlinks_read_only_and_missing_home(client, enso_home, tmp_
         "a\0b",
     ):
         response = await client.get(
-            "/knowledge/asset?" + urlencode({"scope": "general", "path": relative})
+            "/knowledge/asset?" + urlencode({"scope": "shared", "path": relative})
         )
         assert response.status == 404, relative
     for folder in ("..", "Escape", ".hidden", "missing"):
         response = await client.get(
-            "/knowledge?" + urlencode({"scope": "general", "folder": folder})
+            "/knowledge?" + urlencode({"scope": "shared", "folder": folder})
         )
         assert response.status == 404, folder
     for route in (
         "/knowledge",
-        "/knowledge/asset?scope=general&path=Safe.md",
+        "/knowledge/asset?scope=shared&path=Safe.md",
         "/knowledge/notes/none",
     ):
         for method in ("POST", "HEAD", "DELETE", "PUT"):
@@ -287,12 +288,12 @@ def test_all_notes_and_home_recents_use_metadata_then_mtime_and_current_scan(ens
     first, _ = note(root, "First.md")
     second, _ = note(root, "Second.md")
     second.write_text(second.read_text().replace("2026-09-15", "2026-09-16"))
-    model = knowledge.listing_model(enso_home, {"scope": "general", "view": "all"})
+    model = knowledge.listing_model(enso_home, {"scope": "shared", "view": "all"})
     assert [row["title"] for row in model["rows"]] == ["Second", "First"]
     home = knowledge.listing_model(enso_home, {})
     assert [row["title"] for row in home["recent"]] == ["Second", "First"]
     first.write_text(first.read_text().replace("2026-09-15", "2026-09-17"))
-    model = knowledge.listing_model(enso_home, {"scope": "general", "view": "all"})
+    model = knowledge.listing_model(enso_home, {"scope": "shared", "view": "all"})
     assert model["rows"][0]["title"] == "First"
 
 
@@ -306,7 +307,7 @@ def test_knowledge_listing_uses_configured_recent_and_page_sizes(enso_home, raw_
 
     home = knowledge.listing_model(enso_home, {})
     assert [row["title"] for row in home["recent"]] == ["Second"]
-    model = knowledge.listing_model(enso_home, {"scope": "general", "view": "all"})
+    model = knowledge.listing_model(enso_home, {"scope": "shared", "view": "all"})
     assert model["total"] == 2 and model["pages"] == 2
     assert [row["title"] for row in model["rows"]] == ["Second"]
 
@@ -317,7 +318,7 @@ async def test_duplicate_id_is_not_arbitrarily_resolved(client, enso_home):
     response = await client.get(f"/knowledge/notes/{identity}")
     assert response.status == 404
     assert len(kb.scan(enso_home).notes) == 2
-    response = await client.get("/knowledge?scope=general")
+    response = await client.get("/knowledge?scope=shared")
     links = [row.attrs["href"] for row in knowledge_rows(await response.text())]
     assert len(links) == 2 and all(link.startswith("/knowledge/file?") for link in links)
     response = await client.get(links[0])

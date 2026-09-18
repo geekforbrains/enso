@@ -35,7 +35,7 @@ def test_import_preserves_sources_assets_and_legacy_metadata(tmp_path, importer)
     (source / ".obsidian").mkdir()
     (source / ".obsidian" / "workspace.json").write_text("{}")
     (source / "escape.md").symlink_to(tmp_path / "unrelated.md")
-    destination = tmp_path / "home" / "knowledge"
+    destination = tmp_path / "home" / "shared" / "knowledge"
     receipt = tmp_path / "import.json"
     report = importer.import_vault(source, destination, receipt)
 
@@ -52,6 +52,7 @@ def test_import_preserves_sources_assets_and_legacy_metadata(tmp_path, importer)
     assert not (destination / ".obsidian").exists()
     assert not (destination / "escape.md").exists()
     assert json.loads(receipt.read_text())["state"] == "complete"
+    assert [p.name for p in destination.parent.iterdir()] == ["knowledge"]  # no lock or stage
     assert len(report["files"]) == 3
     (entry,) = [item for item in report["files"] if item["markdown"]]
     assert entry["source_sha256"] == hashlib.sha256(original).hexdigest()

@@ -123,7 +123,7 @@ def _layout_problems(paths: Paths) -> list[str]:
         for root in (paths.home, default)
         for relative, target in layout.LINKS
     ]
-    for item in [*files, *(link for link, _ in links)]:
+    for item in [*directories, *files, *(link for link, _ in links)]:
         directories.update(
             parent
             for parent in item.parents

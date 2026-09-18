@@ -15,8 +15,8 @@ from enso.cli import app
 from enso.config import Paths
 
 
-def put(paths, path, body, scope="general"):
-    root = paths.knowledge if scope == "general" else paths.workspaces / scope / "knowledge"
+def put(paths, path, body, scope="shared"):
+    root = paths.knowledge if scope == "shared" else paths.workspaces / scope / "knowledge"
     target = root / path
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(knowledge.normalize_text(body), encoding="utf-8")
@@ -32,7 +32,7 @@ def test_discovery_nested_paths_cache_and_hidden_boundaries(tmp_path):
     (tmp_path / "private.md").write_text("outside")
     (paths.knowledge / "linked").symlink_to(tmp_path, target_is_directory=True)
     catalog = knowledge.scan(paths)
-    assert [r.scope for r in catalog.roots] == ["general", "workspace:development"]
+    assert [r.scope for r in catalog.roots] == ["shared", "workspace:development"]
     assert len(catalog.notes) == 2
     assert catalog.get("Projects/Enso/Plan").title == "Plan"
     assert any("symbolic link" in problem for problem in catalog.problems)
@@ -48,13 +48,13 @@ def test_discovery_nested_paths_cache_and_hidden_boundaries(tmp_path):
         "escape.md",
     ):
         with pytest.raises((knowledge.KnowledgeError, OSError)):
-            knowledge.read_bytes(catalog.root("general"), bad)
+            knowledge.read_bytes(catalog.root("shared"), bad)
 
 
 def test_new_home_is_empty_and_reads_do_not_create_directories(tmp_path):
     paths = Paths(tmp_path / "absent")
     catalog = knowledge.scan(paths)
-    assert [r.scope for r in catalog.roots] == ["general"]
+    assert [r.scope for r in catalog.roots] == ["shared"]
     assert catalog.notes == ()
     assert catalog.problems == ()
     assert not paths.home.exists()
@@ -123,7 +123,10 @@ def test_link_resolution_is_scoped_and_ambiguous_names_are_not_guessed(tmp_path)
 def test_links_exclude_code_and_preserve_exact_target_spans():
     body = (
         "[ordinary](A%20Page.md#Heading) [[Page|label]] ![[image.png]]\n\n`[[inline]]`\n\n"
+        "`[[wrapped]] inline\ncode`\n\n"
         '```md\n[[example]]\n```\n\n[ref]: <Folder/A Page.md> "title"\n\n[x](A_(B).md)\n'
+        # Only CR and LF end a line for Markdown, so these never shift a fence.
+        "\f\u2028\n\n```\n[[fenced]]\n```\n"
     )
     links = knowledge.extract_links(body)
     assert [link.target for link in links] == [
@@ -157,22 +160,20 @@ def test_assets_backlinks_heading_audit_and_duplicate_ids(tmp_path):
 
 def test_create_update_and_adopt_are_atomic_and_reject_stale_or_occupied_paths(tmp_path):
     paths = Paths(tmp_path)
-    note = knowledge.create_note(paths, "general", "Folder/New.md", "## Body\n\nText")
+    note = knowledge.create_note(paths, "shared", "Folder/New.md", "## Body\n\nText")
     assert set(note.metadata) == {"schema", "id", "created", "updated"}
     assert not note.problems
     with pytest.raises(knowledge.KnowledgeError, match="already exists"):
-        knowledge.create_note(paths, "general", "Folder/New.md", "Overwrite")
+        knowledge.create_note(paths, "shared", "Folder/New.md", "Overwrite")
     with pytest.raises(knowledge.KnowledgeError, match="changed"):
-        knowledge.update_note(paths, "general", note.id, "New body", expected_hash="stale")
-    updated = knowledge.update_note(
-        paths, "general", note.id, "New body", expected_hash=note.sha256
-    )
+        knowledge.update_note(paths, "shared", note.id, "New body", expected_hash="stale")
+    updated = knowledge.update_note(paths, "shared", note.id, "New body", expected_hash=note.sha256)
     assert updated.body == "New body"
     assert updated.id == note.id and updated.metadata["created"] == note.metadata["created"]
     with pytest.raises(knowledge.KnowledgeError):
-        knowledge.create_note(paths, "general", "../outside.md", "Escape")
+        knowledge.create_note(paths, "shared", "../outside.md", "Escape")
     (paths.knowledge / "Legacy.md").write_text("Legacy body\n")
-    adopted = knowledge.adopt_note(paths, "general", "Legacy.md")
+    adopted = knowledge.adopt_note(paths, "shared", "Legacy.md")
     assert set(adopted.metadata) == {"schema", "id"}
     assert adopted.body == "Legacy body"
 
@@ -182,27 +183,27 @@ def test_import_edits_preserve_unknown_creation_and_moves_preserve_dates(tmp_pat
     target = put(paths, "Imported.md", "A recollection without known document dates.")
     imported = knowledge.scan(paths).get("Imported")
     updated = knowledge.update_note(
-        paths, "general", imported.id, "Confirmed current fact.", expected_hash=imported.sha256
+        paths, "shared", imported.id, "Confirmed current fact.", expected_hash=imported.sha256
     )
     assert updated.id == imported.id
     assert set(updated.metadata) == {"schema", "id", "updated"}
     unchanged = knowledge.update_note(
-        paths, "general", updated.id, updated.body, expected_hash=updated.sha256
+        paths, "shared", updated.id, updated.body, expected_hash=updated.sha256
     )
     assert unchanged.sha256 == updated.sha256
     original = target.read_bytes()
-    knowledge.move_note(paths, "general", updated.id, "Reference/Imported.md")
+    knowledge.move_note(paths, "shared", updated.id, "Reference/Imported.md")
     assert (paths.knowledge / "Reference/Imported.md").read_bytes() == original
 
 
 def test_edit_refuses_to_write_an_update_before_document_creation(tmp_path, monkeypatch):
     paths = Paths(tmp_path)
-    note = knowledge.create_note(paths, "general", "Page.md", "Original")
+    note = knowledge.create_note(paths, "shared", "Page.md", "Original")
     target = paths.knowledge / note.path
     original = target.read_bytes()
     monkeypatch.setattr(storage, "timestamp", lambda: "2000-01-01T00:00:00Z")
     with pytest.raises(knowledge.KnowledgeError, match="earlier than created"):
-        knowledge.update_note(paths, "general", note.id, "Changed", expected_hash=note.sha256)
+        knowledge.update_note(paths, "shared", note.id, "Changed", expected_hash=note.sha256)
     assert target.read_bytes() == original
 
 
@@ -216,26 +217,26 @@ def test_managed_writes_refuse_duplicate_ids_even_by_path(tmp_path, operation):
     original = target.read_bytes()
     with pytest.raises(knowledge.KnowledgeError, match="duplicate"):
         if operation == "adopt":
-            knowledge.adopt_note(paths, "general", "Page.md")
+            knowledge.adopt_note(paths, "shared", "Page.md")
         elif operation == "update":
             knowledge.update_note(
                 paths,
-                "general",
+                "shared",
                 "Page.md",
                 "Changed",
                 expected_hash=hashlib.sha256(original).hexdigest(),
             )
         elif operation == "move":
-            knowledge.move_note(paths, "general", "Page.md", "Moved.md")
+            knowledge.move_note(paths, "shared", "Page.md", "Moved.md")
         else:
-            knowledge.move_note(paths, "general", "Target.md", "Moved.md")
+            knowledge.move_note(paths, "shared", "Target.md", "Moved.md")
     assert target.read_bytes() == copy.read_bytes() == original
     assert not (paths.knowledge / "Moved.md").exists()
 
 
 def test_publication_detects_a_direct_edit_during_write(tmp_path, monkeypatch):
     paths = Paths(tmp_path)
-    note = knowledge.create_note(paths, "general", "Page.md", "Original")
+    note = knowledge.create_note(paths, "shared", "Page.md", "Original")
     target = paths.knowledge / note.path
     edited = target.read_text().replace("Original", "Human correction")
     original_hash_at = storage.hash_at
@@ -250,7 +251,7 @@ def test_publication_detects_a_direct_edit_during_write(tmp_path, monkeypatch):
 
     monkeypatch.setattr(storage, "hash_at", concurrent_hash)
     with pytest.raises(knowledge.KnowledgeError, match="changed during write"):
-        knowledge.update_note(paths, "general", note.id, "Agent edit", expected_hash=note.sha256)
+        knowledge.update_note(paths, "shared", note.id, "Agent edit", expected_hash=note.sha256)
     assert target.read_text() == edited
     assert not list(paths.knowledge.glob(".enso-note-*"))
 
@@ -260,7 +261,7 @@ def test_writers_refuse_contention_and_symlink_lock(tmp_path):
     fd = locks.acquire(paths.lock("knowledge"))
     try:
         with pytest.raises(knowledge.KnowledgeError, match="another knowledge"):
-            knowledge.create_note(paths, "general", "No.md", "body")
+            knowledge.create_note(paths, "shared", "No.md", "body")
     finally:
         import os
 
@@ -268,22 +269,22 @@ def test_writers_refuse_contention_and_symlink_lock(tmp_path):
     (paths.lock("knowledge")).unlink()
     (paths.lock("knowledge")).symlink_to(tmp_path / "other")
     with pytest.raises(OSError):
-        knowledge.create_note(paths, "general", "No.md", "body")
+        knowledge.create_note(paths, "shared", "No.md", "body")
 
 
 def test_writes_reject_second_frontmatter_oversize_and_case_collisions(tmp_path):
     paths = Paths(tmp_path)
     with pytest.raises(knowledge.KnowledgeError, match="without frontmatter"):
-        knowledge.create_note(paths, "general", "New.md", "---\ntags: []\n---\nBody")
+        knowledge.create_note(paths, "shared", "New.md", "---\ntags: []\n---\nBody")
     with pytest.raises(knowledge.KnowledgeError, match="at most"):
-        knowledge.create_note(paths, "general", "Huge.md", "a" * (2 * 1024 * 1024))
+        knowledge.create_note(paths, "shared", "Huge.md", "a" * (2 * 1024 * 1024))
     assert not (paths.knowledge / "Huge.md").exists()
-    note = knowledge.create_note(paths, "general", "Case.md", "Body")
+    note = knowledge.create_note(paths, "shared", "Case.md", "Body")
     with pytest.raises(knowledge.KnowledgeError, match="already exists"):
-        knowledge.create_note(paths, "general", "CASE.md", "Other")
+        knowledge.create_note(paths, "shared", "CASE.md", "Other")
     with pytest.raises(knowledge.KnowledgeError, match="without frontmatter"):
         knowledge.update_note(
-            paths, "general", note.id, "---\nid: wrong\n---\n", expected_hash=note.sha256
+            paths, "shared", note.id, "---\nid: wrong\n---\n", expected_hash=note.sha256
         )
 
 
@@ -310,8 +311,8 @@ def test_table_wiki_alias_escape_is_not_part_of_target_or_move_span(tmp_path):
         catalog.resolve(catalog.get("Index"), link.target, wiki=True).note.path
         == "Folder/Target.md"
     )
-    knowledge.move_note(paths, "general", "Folder/Target", "Renamed.md")
-    assert "[[general:Renamed\\|Display text]]" in knowledge.scan(paths).get("Index").body
+    knowledge.move_note(paths, "shared", "Folder/Target", "Renamed.md")
+    assert "[[shared:Renamed\\|Display text]]" in knowledge.scan(paths).get("Index").body
 
 
 def test_shortest_wiki_paths_resolve_unique_suffixes_without_broadening_other_links(tmp_path):
@@ -326,7 +327,10 @@ def test_shortest_wiki_paths_resolve_unique_suffixes_without_broadening_other_li
     assert resolved.fragment == "scope"
     assert catalog.resolve(source, "compliance/hipaa.md", wiki=True).note == resolved.note
     assert catalog.resolve(source, "Compliance/HIPAA.md").status == "missing"
-    assert catalog.resolve(source, "general:Compliance/HIPAA", wiki=True).status == "missing"
+    assert catalog.resolve(source, "shared:Compliance/HIPAA", wiki=True).status == "missing"
+    # The old scope name has no alias: it is an ordinary broken link.
+    assert catalog.resolve(source, "shared:Knowledge/Compliance/HIPAA").note == resolved.note
+    assert catalog.resolve(source, "general:Knowledge/Compliance/HIPAA").status == "missing"
     assert catalog.resolve(source, "workspace:dev:Compliance/HIPAA", wiki=True).status == "missing"
     assert catalog.backlinks(resolved.note) == (source,)
     assert not catalog.audit()
@@ -348,19 +352,19 @@ def test_move_repairs_incoming_shortest_wiki_paths(tmp_path):
     paths = Paths(tmp_path)
     put(paths, "Index.md", "[[Compliance/HIPAA|Policy]]")
     put(paths, "Knowledge/Compliance/HIPAA.md", "Body")
-    knowledge.move_note(paths, "general", "Knowledge/Compliance/HIPAA", "Compliance/Policy.md")
-    assert "[[general:Compliance/Policy|Policy]]" in knowledge.scan(paths).get("Index").body
+    knowledge.move_note(paths, "shared", "Knowledge/Compliance/HIPAA", "Compliance/Policy.md")
+    assert "[[shared:Compliance/Policy|Policy]]" in knowledge.scan(paths).get("Index").body
 
 
 def test_move_escapes_filename_delimiters_separately_from_heading_fragment(tmp_path):
     paths = Paths(tmp_path)
     put(paths, "Index.md", "[[Target#Heading|label]] [target](Target.md#Heading)")
     put(paths, "Target.md", "## Heading")
-    knowledge.move_note(paths, "general", "Target", "C# 100% [new]|plan.md")
+    knowledge.move_note(paths, "shared", "Target", "C# 100% [new]|plan.md")
     catalog = knowledge.scan(paths)
     body = catalog.get("Index").body
-    assert "[[general:C%23%20100%25%20%5Bnew%5D%7Cplan#heading|label]]" in body
-    assert "(general:C%23%20100%25%20%5Bnew%5D%7Cplan.md#heading)" in body
+    assert "[[shared:C%23%20100%25%20%5Bnew%5D%7Cplan#heading|label]]" in body
+    assert "(shared:C%23%20100%25%20%5Bnew%5D%7Cplan.md#heading)" in body
     assert not catalog.audit()
 
 
@@ -395,10 +399,10 @@ def test_list_links_are_repaired_while_nested_fences_and_indented_code_are_ignor
     assert [link.target for link in knowledge.extract_links(body)] == ["Target", "Target.md"]
     put(paths, "Index.md", body)
     put(paths, "Target.md", "## Heading")
-    result = knowledge.move_note(paths, "general", "Target", "Renamed.md")
+    result = knowledge.move_note(paths, "shared", "Target", "Renamed.md")
     catalog = knowledge.scan(paths)
     assert result["links_updated"] == 1
-    assert "    - [[general:Renamed]]" in catalog.get("Index").body
+    assert "    - [[shared:Renamed]]" in catalog.get("Index").body
     assert "[[Example]]" in catalog.get("Index").body
     assert not catalog.audit()
 
@@ -410,12 +414,12 @@ def test_code_indentation_and_eof_spaces_survive_read_move_and_substantive_updat
     put(paths, "Target.md", "Body")
     note = knowledge.scan(paths).get("Index")
     assert note.body == body
-    knowledge.move_note(paths, "general", "Target", "Renamed.md")
+    knowledge.move_note(paths, "shared", "Target", "Renamed.md")
     moved = knowledge.scan(paths).get("Index")
     assert moved.body.startswith("    print('  ')")
     assert moved.body.endswith("trailing  ")
     changed = knowledge.update_note(
-        paths, "general", moved.id, moved.body[4:], expected_hash=moved.sha256
+        paths, "shared", moved.id, moved.body[4:], expected_hash=moved.sha256
     )
     assert changed.sha256 != moved.sha256
     assert changed.body.startswith("print('  ')")
@@ -432,7 +436,7 @@ def test_move_preserves_identity_and_repairs_incoming_outgoing_and_asset_links(t
     previous = knowledge.scan(paths).get("Old/Page")
     result = knowledge.move_note(
         paths,
-        "general",
+        "shared",
         previous.id,
         "New/Renamed.md",
         to_scope="workspace:dev",
@@ -443,8 +447,8 @@ def test_move_preserves_identity_and_repairs_incoming_outgoing_and_asset_links(t
     assert moved.scope == "workspace:dev" and moved.path == "New/Renamed.md"
     assert not (paths.knowledge / "Old/Page.md").exists()
     assert "[[workspace:dev:New/Renamed#heading|A label]]" in catalog.get("Start").body
-    assert "[[general:Old/Sibling]]" in moved.body
-    assert "![[general:Old/image.png]]" in moved.body
+    assert "[[shared:Old/Sibling]]" in moved.body
+    assert "![[shared:Old/image.png]]" in moved.body
     assert not catalog.audit()
     assert result["links_updated"] == 1
     assert not list(paths.home.glob(".knowledge-move-*"))
@@ -453,19 +457,19 @@ def test_move_preserves_identity_and_repairs_incoming_outgoing_and_asset_links(t
 def test_same_folder_rename_rewrites_only_links_it_breaks(tmp_path):
     paths = Paths(tmp_path)
     kept = (
-        "## Overview\n\n[top](#overview) [Beta](Beta.md) [[Beta]] [[general:F/Beta]] ![[image.png]]"
+        "## Overview\n\n[top](#overview) [Beta](Beta.md) [[Beta]] [[shared:F/Beta]] ![[image.png]]"
     )
     put(paths, "F/Alpha.md", f"{kept} [self](Alpha.md)")
     put(paths, "F/Beta.md", "[[Alpha]] [alpha](Alpha.md) [alpha](../F/Alpha.md#overview)")
     put(paths, "Other.md", "[[Beta]] [alpha](F/Alpha.md)")
     (paths.knowledge / "F/image.png").write_bytes(b"asset")
-    result = knowledge.move_note(paths, "general", "F/Alpha", "F/Alpha2.md")
+    result = knowledge.move_note(paths, "shared", "F/Alpha", "F/Alpha2.md")
     catalog = knowledge.scan(paths)
-    assert catalog.get("F/Alpha2").body == f"{kept} [self](general:F/Alpha2.md)"
+    assert catalog.get("F/Alpha2").body == f"{kept} [self](shared:F/Alpha2.md)"
     assert catalog.get("F/Beta").body == (
-        "[[general:F/Alpha2]] [alpha](general:F/Alpha2.md) [alpha](general:F/Alpha2.md#overview)"
+        "[[shared:F/Alpha2]] [alpha](shared:F/Alpha2.md) [alpha](shared:F/Alpha2.md#overview)"
     )
-    assert catalog.get("Other").body == "[[Beta]] [alpha](general:F/Alpha2.md)"
+    assert catalog.get("Other").body == "[[Beta]] [alpha](shared:F/Alpha2.md)"
     assert result["links_updated"] == 2
     assert not catalog.audit()
 
@@ -475,12 +479,12 @@ def test_folder_move_keeps_scope_wide_names_and_qualifies_relative_paths(tmp_pat
     put(paths, "A/Page.md", "[[Sibling]] [sib](Sibling.md) ![[image.png]] ![img](image.png)")
     put(paths, "A/Sibling.md", "[[Page]] [page](Page.md)")
     (paths.knowledge / "A/image.png").write_bytes(b"asset")
-    result = knowledge.move_note(paths, "general", "A/Page", "B/Page.md")
+    result = knowledge.move_note(paths, "shared", "A/Page", "B/Page.md")
     catalog = knowledge.scan(paths)
     assert catalog.get("B/Page").body == (
-        "[[Sibling]] [sib](general:A/Sibling.md) ![[image.png]] ![img](general:A/image.png)"
+        "[[Sibling]] [sib](shared:A/Sibling.md) ![[image.png]] ![img](shared:A/image.png)"
     )
-    assert catalog.get("A/Sibling").body == "[[Page]] [page](general:B/Page.md)"
+    assert catalog.get("A/Sibling").body == "[[Page]] [page](shared:B/Page.md)"
     assert result["links_updated"] == 1
     assert not catalog.audit()
 
@@ -491,28 +495,33 @@ def test_move_qualifies_bare_links_the_new_name_would_make_ambiguous(tmp_path):
     put(paths, "B/Roadmap.md", "[[Plan]]")
     put(paths, "Index.md", "[[Plan]] [[Roadmap]]")
     put(paths, "Plan.md", "[[Plan]]", "dev")  # another scope is never involved
-    result = knowledge.move_note(paths, "general", "B/Roadmap", "B/Plan.md")
+    result = knowledge.move_note(paths, "shared", "B/Roadmap", "B/Plan.md")
     catalog = knowledge.scan(paths)
-    assert catalog.get("Index").body == "[[general:A/Plan]] [[general:B/Plan]]"
-    assert catalog.get("B/Plan").body == "[[general:A/Plan]]"
+    assert catalog.get("Index").body == "[[shared:A/Plan]] [[shared:B/Plan]]"
+    assert catalog.get("B/Plan").body == "[[shared:A/Plan]]"
     assert catalog.get("Plan", "workspace:dev").body == "[[Plan]]"
     assert result["links_updated"] == 1
     assert not catalog.audit()
 
 
-@pytest.mark.parametrize("kind", ["file", "symlink"])
+@pytest.mark.parametrize("kind", ["file", "symlink", "linked shared"])
 def test_occupied_shared_root_is_reported_by_kind(tmp_path, kind):
     paths = Paths(tmp_path / "home")
-    paths.home.mkdir()
+    if kind == "linked shared":
+        paths.home.mkdir()
+        (tmp_path / "knowledge").mkdir()
+        paths.shared.symlink_to(tmp_path, target_is_directory=True)
+    else:
+        paths.shared.mkdir(parents=True)
     if kind == "file":
         paths.knowledge.write_text("in the way")
-    else:
+    elif kind == "symlink":
         paths.knowledge.symlink_to(tmp_path, target_is_directory=True)
     catalog = knowledge.scan(paths)
     assert catalog.roots == ()
-    described = "symbolic link" if kind == "symlink" else "file"
+    described = "file" if kind == "file" else "symbolic link"
     assert catalog.problems == (
-        f"general: {paths.knowledge}: knowledge root must be a directory, not a {described}",
+        f"shared: {paths.knowledge}: knowledge root must be a directory, not a {described}",
     )
 
 
@@ -522,9 +531,9 @@ def test_move_refuses_ambiguous_incoming_and_existing_targets(tmp_path):
     put(paths, "B/Page.md", "B")
     put(paths, "Index.md", "[[Page]]")
     with pytest.raises(knowledge.KnowledgeError, match="ambiguous"):
-        knowledge.move_note(paths, "general", "A/Page", "New.md")
+        knowledge.move_note(paths, "shared", "A/Page", "New.md")
     with pytest.raises(knowledge.KnowledgeError, match="already exists"):
-        knowledge.move_note(paths, "general", "A/Page", "B/Page.md")
+        knowledge.move_note(paths, "shared", "A/Page", "B/Page.md")
 
 
 def test_failed_move_rolls_back_without_losing_notes(tmp_path, monkeypatch):
@@ -547,7 +556,7 @@ def test_failed_move_rolls_back_without_losing_notes(tmp_path, monkeypatch):
 
     monkeypatch.setattr(storage, "publish", fail_one)
     with pytest.raises(OSError, match="simulated"):
-        knowledge.move_note(paths, "general", "Target", "Moved.md")
+        knowledge.move_note(paths, "shared", "Target", "Moved.md")
     assert all(file.read_bytes() == original for file, original in originals.items())
     assert not (paths.knowledge / "Moved.md").exists()
 
@@ -602,7 +611,7 @@ def test_cli_json_read_write_audit_and_errors(tmp_path, monkeypatch):
     )
     assert conflict.exit_code == 1 and not json.loads(conflict.output)["ok"]
     assert (
-        hashlib.sha256((tmp_path / "knowledge/Folder/One.md").read_bytes()).hexdigest()
+        hashlib.sha256((Paths(tmp_path).knowledge / "Folder/One.md").read_bytes()).hexdigest()
         != note["sha256"]
     )
 
@@ -613,8 +622,8 @@ def test_cli_json_read_write_audit_and_errors(tmp_path, monkeypatch):
         ("team", [], "workspace:team"),
         ("team", ["--workspace", "personal"], "workspace:personal"),
         ("missing", ["--workspace", "team"], "workspace:team"),
-        ("missing", ["--shared"], "general"),
-        (None, ["--shared"], "general"),
+        ("missing", ["--shared"], "shared"),
+        (None, ["--shared"], "shared"),
         (None, [], None),
         ("team", ["--workspace", "missing"], None),
         ("team", ["--workspace", "team", "--shared"], None),
@@ -627,7 +636,7 @@ def test_cli_knowledge_context_selection(tmp_path, monkeypatch, environment, opt
         monkeypatch.delenv("ENSO_WORKSPACE", raising=False)
     else:
         monkeypatch.setenv("ENSO_WORKSPACE", environment)
-    for scope in ("general", "team", "personal"):
+    for scope in ("shared", "team", "personal"):
         put(paths, "Note.md", "Reference", scope)
     result = CliRunner().invoke(app, ["knowledge", "list", *options, "--json"])
     data = json.loads(result.output)
@@ -670,7 +679,7 @@ def test_cli_workspace_writes_scoped_ids_and_cross_root_moves(tmp_path, monkeypa
         app, ["knowledge", "move", note["id"], "Page.md", "--to-shared", "--json"]
     )
     assert moved.exit_code == 0, moved.output
-    assert json.loads(moved.output)["scope"] == "general"
+    assert json.loads(moved.output)["scope"] == "shared"
     again = runner.invoke(
         app,
         [
@@ -696,6 +705,7 @@ def test_cli_scoped_audit_and_search_report_only_selected_root(tmp_path, monkeyp
     monkeypatch.setenv("ENSO_HOME", str(tmp_path))
     monkeypatch.setenv("ENSO_WORKSPACE", "team")
     put(paths, "Note.md", "Reference", "team")
+    paths.shared.mkdir()
     paths.knowledge.write_text("Invalid shared root")
     runner = CliRunner()
     for command in (["audit"], ["search", "Reference"]):

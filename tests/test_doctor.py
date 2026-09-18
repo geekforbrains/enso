@@ -345,7 +345,7 @@ def test_doctor_command(enso_home: Paths, raw_config: dict, unit: Path) -> None:
 
 def test_note_audits_report_paths_and_counts_without_writes(enso_home, raw_config, unit):
     healthy(enso_home, raw_config)
-    reference = knowledge.create_note(enso_home, "general", "Reference.md", "Current facts.")
+    reference = knowledge.create_note(enso_home, "shared", "Reference.md", "Current facts.")
     recalled = memory.create_note(enso_home, "default", "Recall.md", "History.", occurred=None)
     assert doctor.run(enso_home).ok
     root = enso_home.workspace_memory("default")
@@ -404,13 +404,11 @@ def test_doctor_reports_invalid_note_roots_without_following_links(
         root = enso_home.workspace("default") / kind
         root.rmdir()
         root.symlink_to(outside, target_is_directory=True)
-    (enso_home.home / "memory").symlink_to(outside, target_is_directory=True)
     report = doctor.run(enso_home)
     for kind in ("knowledge", "memory"):
         section = report.section(kind)
         assert section.status == "error" and section.details["notes"] == 0
         assert "symbolic link" in "\n".join(section.problems)
-    assert "shared memory is unsupported" in "\n".join(report.section("memory").problems)
 
 
 def test_attention_separates_what_is_worth_reporting_from_what_is_unhealthy(

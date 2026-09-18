@@ -62,7 +62,7 @@ The home itself holds the workspaces and what they share:
 ├── CLAUDE.md          # symlink -> AGENTS.md
 ├── config.json        # the configuration; readable only by you
 ├── skills/            # installed and hand-written skills
-├── knowledge/         # shared reference that belongs across workspaces
+├── shared/knowledge/  # shared reference that belongs across workspaces
 ├── secrets/           # *.env files loaded into the service environment
 ├── .gitignore         # optional: yours, for the Git root Enso creates but never commits to
 ├── workspaces/<name>/ # one directory per workspace, as above
@@ -72,12 +72,11 @@ The home itself holds the workspaces and what they share:
                        # symlinks -> ../skills, as in a workspace
 ```
 
-`~/.enso/knowledge/` (or `$ENSO_HOME/knowledge/`) is for shared reference that
-belongs across workspaces. The viewer discovers existing workspace knowledge roots from
-the directories themselves; no extra registration is needed. Both roots support nested
-folders with notes and subfolders together. Keep one owning note and link across scopes
-instead of copying shared facts into every workspace. [Knowledge](knowledge.md) owns the
-note format, links, searching, and import behavior; `enso-knowledge` guides agent maintenance.
+`shared/` holds what workspaces share; knowledge is its only entry for now.
+`~/.enso/shared/knowledge/` (or `$ENSO_HOME/shared/knowledge/`) is for shared reference that
+belongs across workspaces, and each workspace's `knowledge/` is discovered without
+registration. [Knowledge](knowledge.md) owns placement, the note format, links, searching,
+and import behavior; `enso-knowledge` guides agent maintenance.
 
 `AGENTS.md` is the file you write; `CLAUDE.md` is always a symlink to it so both CLI
 families read one document. Skills follow the same rule: `skills/` is the directory you
@@ -107,7 +106,7 @@ $ENSO_HOME/
 ├── config.json
 ├── AGENTS.md
 ├── enso.db
-├── knowledge/                    # shared current reference material
+├── shared/knowledge/             # shared current reference material
 ├── skills/                       # shared skills
 └── workspaces/<name>/
     ├── AGENTS.md                 # purpose and working conventions for the agent
@@ -136,7 +135,7 @@ Enso's restriction mode is removed without silently changing provider arguments.
 | Resource | Source of truth | Owner |
 | --- | --- | --- |
 | Installation settings and bindings | Home `config.json` | Installation |
-| Shared guidance, knowledge, and skills | Home `AGENTS.md`, `knowledge/`, and `skills/` | Installation |
+| Shared guidance, knowledge, and skills | Home `AGENTS.md`, `shared/knowledge/`, and `skills/` | Installation |
 | Workspace guidance, knowledge, memory, drafts, uploads, and skills | Files in the workspace | Containing workspace |
 | Workspace agent and provider arguments | `WORKSPACE.md` | Containing workspace |
 | Jobs and their supporting scripts | `jobs/<job>/` in the workspace | Containing workspace |
@@ -177,7 +176,7 @@ its binding or losing its workspace drops it before execution; the
 [connection access contract](connections.md#access-in-020) owns admission and notices. The
 shared resolver is used by task, project, workflow, job creation, Heartbeat creation,
 message sends, operational list commands, knowledge, and memory. Knowledge adds `--shared`
-for explicit home-level reference; memory belongs only to a workspace.
+to explicitly select shared knowledge; memory belongs only to a workspace.
 [CLI](cli.md#workspace-context-in-020) owns command syntax. Enso sets `ENSO_WORKSPACE`
 for its chat agents, jobs, and Heartbeat runs, and CLI calls they launch inherit it.
 Workspace-scoped CLI operations default to that value; an optional
@@ -327,7 +326,7 @@ The audit checks, each finding carrying the check id shown:
 | `CLAUDE.md` is a symlink to `AGENTS.md` | `link` | error | Creates or repoints the link |
 | `.claude/skills` and `.agents/skills` are symlinks to `../skills` | `link` | error | Creates or repoints the link |
 | The home is a Git root, and no workspace is one | `git-root` | error | Runs `git init` in the home |
-| The home has `AGENTS.md`, `skills/`, `knowledge/`, `workspaces/`, and the same three links | `agents-md`, `directory`, `link` | error | Creates missing directories and the links |
+| The home has `AGENTS.md`, `skills/`, `shared/knowledge/`, `workspaces/`, and the same three links | `agents-md`, `directory`, `link` | error | Creates missing directories and the links |
 | `AGENTS.md` exists | `agents-md` | error | Reports only |
 | `AGENTS.md` is not still the untouched template | `agents-md` | warning | Reports only |
 | Every skill directory has a `SKILL.md` whose `name` matches the directory | `skill` | error | Reports only |
@@ -336,7 +335,7 @@ The audit checks, each finding carrying the check id shown:
 | No `enso-*` skill or job exists that Enso did not install | `reserved` | warning | Reports only |
 | The workspace is bound, or named by a job | `orphan` | warning | Reports only |
 | A project command that is one `./script` beside `PROJECT.md` finds it present and executable | `script` | warning | Reports only |
-| Unexpected entries at the home's or a workspace's top level, or under `workspaces/` | `unexpected` | warning | Reports only |
+| Unexpected entries at the home's or a workspace's top level, in `shared/`, or under `workspaces/` | `unexpected` | warning | Reports only |
 | A dangling optional link, or a link or file in place of a real `runtime/`, `cache/`, or `secrets/` directory | `link`, `directory` | warning | Reports only |
 | `config.json`, `runtime/`, and `secrets/` have no group or other access | `permissions` | warning | Removes group and other access; preserves owner access |
 | SQLite sidecars left behind by a removed `enso.db` | `stale` | warning | Reports only |
@@ -348,24 +347,26 @@ checks. An audit does not establish provider permissions or prove that access is
 
 ### What belongs where
 
-One table in `src/enso/layout.py` names every top-level entry the home and a workspace may
-hold, and who owns it. Setup's preflight, the scaffold, and this audit all read it, so a
-new Enso directory is declared once rather than in separate allowlists. Each present entry
-is reported in one of five categories:
+Tables in `src/enso/layout.py` name every top-level entry the home and a workspace may
+hold, and who owns each. Setup's preflight, the scaffold, and this audit all read them, so a
+new Enso directory is declared once rather than in separate allowlists. A second table names
+what `shared/` may hold, currently only `knowledge/`; anything else there is unexpected.
+Each present entry is reported in one of five categories:
 
 | Category | Meaning | Examples |
 | --- | --- | --- |
-| `required` | Enso's, and missing it is an error | `AGENTS.md`, `skills/`, `workspaces/`, `.git` |
+| `required` | Enso's, and missing it is an error | `AGENTS.md`, `skills/`, `shared/`, `workspaces/`, `.git` |
 | `managed` | Enso's, written when needed | `enso.db`, `cache/`, `runtime/`, `.bundles.json` |
 | `user` | Enso may create the root; what is inside is yours | `secrets/`, `.gitignore`, `WORKSPACE.md`, a workspace `heartbeat/` |
 | `extension` | A provider or tool's own file, preserved and never read | `.codex/`, `.grok/`, `opencode.json` |
 | `unexpected` | Nothing in the table claims this name | whatever you left there |
 
-Only a root's own top-level names are classified. The audit never descends into a declared
-directory, so operating state under `runtime/` or `cache/` is never mistaken for clutter,
-and your notes under `knowledge/` are never inspected by this check. `.DS_Store` is ignored
-in every root. When present, `runtime/`, `cache/`, and `secrets/` must be real directories;
-the audit reports a file or symlink in their place and leaves it untouched.
+Only a root's own top-level names and the entries of `shared/` are classified. The audit
+descends no further, so operating state under `runtime/` or `cache/` is never mistaken for
+clutter, and your notes under any `knowledge/` are never inspected by this check.
+`.DS_Store` is ignored in every root. When present, `runtime/`, `cache/`, and `secrets/`
+must be real directories; the audit reports a file or symlink in their place and leaves it
+untouched.
 
 `permissions` covers only the paths whose security contract is Enso's: the configuration it
 writes, the private state it creates, and the `secrets/` directory whose `*.env` files reach
@@ -391,10 +392,12 @@ A real file or directory sitting where a link belongs, or a dangling symbolic li
 directory belongs, is reported and left for you to move aside. Fixes run first and the
 report shows what remains, so a second `--fix` finds nothing to do.
 
-The shared `knowledge/` directory is created when missing, by setup, managed upgrades, or
-the fixing audit, without changing its contents.
-A file or symbolic link occupying a knowledge root is reported and preserved, including
-a dangling link. Note metadata, links, and style use the separate
+`shared/knowledge/` is created when missing, with its `shared/` parent, by setup or the
+fixing audit, without changing its contents. A file or symbolic link
+occupying `shared/` or a knowledge root is reported and preserved, including a dangling
+link. A top-level `knowledge/`, left from before shared knowledge
+[moved](knowledge.md#locations-and-context) or recreated by an old script, is reported as
+unexpected and left alone. Note metadata, links, and style use the separate
 [knowledge checks](knowledge.md), not the workspace layout audit.
 
 The command exits 1 while any error remains and 0 otherwise; warnings never fail an

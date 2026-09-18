@@ -26,9 +26,23 @@ does not automatically remove a fact already promoted into knowledge.
 
 ## Locations and context
 
-- `$ENSO_HOME/knowledge/` is shared knowledge, addressed as `general`.
+- `$ENSO_HOME/shared/knowledge/` is shared knowledge, addressed as `shared`.
 - `$ENSO_HOME/workspaces/<name>/knowledge/` belongs to that workspace, addressed as
   `workspace:<name>`.
+
+Until home revision 2, shared knowledge lived at `$ENSO_HOME/knowledge/` and was addressed
+as `general`. [Upgrading](install.md#upgrading) moves it and rewrites `general:` link
+targets to `shared:` in every knowledge and memory note. It changes nothing in the home
+while the old root sits beside a non-empty `shared/knowledge/` or a `.knowledge-move-*`
+[recovery](#writing-adoption-and-recovery) directory remains: a managed update fails after
+stopping services and restores the previous release, and `scripts/dev-migrate` reports it
+in its preview. Resolve that and retry. The old name has no fallback: a remaining
+`general:` link is an ordinary broken link and a `scope=general` viewer URL no longer
+resolves; stable ID URLs keep working. Existing workspace `AGENTS.md` files, customized
+bundled files, and any instructions, jobs, skills, or scripts naming `$ENSO_HOME/knowledge`
+are not rewritten; point them at `$ENSO_HOME/shared/knowledge`. The
+[layout audit](workspaces.md#what-belongs-where) reports a leftover top-level `knowledge/`
+as unexpected.
 
 Workspace knowledge roots are discovered from the filesystem without requiring workspace
 configuration or a viewer restart. Hidden directories and files, symbolic links, `node_modules`,
@@ -36,7 +50,7 @@ and `__pycache__` are excluded. A root itself must be a real directory. Files ou
 roots are not knowledge attachments or link destinations.
 
 Knowledge commands default to `ENSO_WORKSPACE`; `--workspace NAME` selects a different
-workspace. Use `--shared` deliberately for the home root, including when the environment
+workspace. Use `--shared` deliberately for the shared root, including when the environment
 selects a workspace. The two flags cannot be combined. No context means an error, not
 shared knowledge. UUIDs identify notes globally but CLI operations require their root to
 be selected, just like paths. The viewer's stable ID URLs and cross-root links continue to
@@ -48,16 +62,13 @@ them instead of maintaining competing copies. Nested folders may contain both no
 subfolders. Start agents in the relevant branch, read selectively, and broaden when needed;
 folders organize context but do not create access permissions or automatically load notes.
 
-The viewer lists immediate folders and notes, and also offers flat All notes and Recent views.
-Search includes note filenames and bodies, scoped to the selected folder and its descendants
-unless the user broadens it. Lists are paginated rather than expanding every file into a tree.
+The [viewer](web.md#knowledge) owns folder browsing, All notes, search, and pagination.
 Enso caches parsed notes in memory using file identity, size, modification time, and change
 time; the Markdown files remain authoritative and no database migration is needed.
 
 ## The note format
 
-The following metadata contract is retained unchanged for 0.2.0. Knowledge continues to
-use `enso.note/v1`; the separate [memory schema](memory.md#the-note-format) does not replace it.
+Knowledge notes use `enso.note/v1`; memory has its own [schema](memory.md#the-note-format).
 
 Every managed note begins with YAML frontmatter:
 
@@ -84,7 +95,9 @@ The note's contents.
 Timestamps use ISO 8601 with a timezone; Enso writes UTC ending in `Z`. An imported file's
 filesystem timestamp does not prove when its contents were created or updated, so unknown
 dates stay absent. `updated` cannot precede `created`. A move that does not change the body
-does not change its update time.
+does not change its update time. Neither does a format migration, such as home revision 2
+rewriting `general:` links to `shared:` in knowledge and memory notes: it is not a content
+update.
 
 For example, an imported reference with no known dates has only
 `schema: enso.note/v1` and its preserved or newly assigned `id`. Neither the import date
@@ -113,16 +126,16 @@ Supported note links include:
 [[Folder/Page|Display text]]
 [[Page#Heading]]
 [Display text](../Folder/Page.md#heading)
-[[general:Projects/Enso/Plan]]
+[[shared:Projects/Enso/Plan]]
 [[workspace:development:Design/Plan#Tradeoffs]]
-[Shared plan](general:Projects/Enso/Plan.md)
+[Shared plan](shared:Projects/Enso/Plan.md)
 ```
 
 A bare wiki name must be unique within the source scope. A qualified wiki path is checked
 relative to the source folder and the scope root; if both identify different notes it is
 ambiguous. If neither matches, a wiki path can match a unique trailing path within the same
 scope: `[[Compliance/HIPAA]]` can open `Knowledge/Compliance/HIPAA.md`. Multiple trailing
-matches are ambiguous. Explicit `general:` and `workspace:<name>:` links start at that root
+matches are ambiguous. Explicit `shared:` and `workspace:<name>:` links start at that root
 and require an exact path. Ordinary Markdown paths are relative to their source note and
 do not use trailing-path matching. Targets may omit `.md`; matching is case
 insensitive for note names and paths. Ambiguous targets are reported so the author can use a
@@ -144,8 +157,9 @@ schemes and paths escaping the knowledge root are refused.
 Keep attachments within a knowledge root and link with ordinary Markdown or Obsidian-style
 `![[image.png]]`. A bare wiki attachment name must also be unique in its scope. Local images
 can display in the viewer; other attachments can be opened or downloaded. The reader limits
-notes to 2 MiB; the viewer serves attachments up to 20 MiB. Hidden files, symlinks, and special files are never
-served. Embedded notes are links rather than recursive note transclusion.
+notes to 2 MiB; the viewer serves attachments up to 20 MiB. Hidden files, symlinks, and
+special files are never served. Embedded notes are links rather than recursive note
+transclusion.
 
 Root reads and note publication traverse all directory ancestors without following symbolic
 links, so replacing a workspace parent with a link cannot redirect a previously captured root.

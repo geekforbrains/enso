@@ -516,8 +516,6 @@ def migration_plan(paths: Paths) -> list[str]:
         *(name.split("/")[0] for name in workspaces.BUNDLED_FILES),
         *(migrations.plan(paths) if not initialization.is_fresh_home(paths) else ()),
     ]
-    if not paths.knowledge.exists():
-        names.append("knowledge")
     return update_snapshot.plan(paths, names)
 
 

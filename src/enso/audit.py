@@ -6,12 +6,12 @@ this audit agree on what belongs where and who owns it. A finding carries a stab
 id, a severity, a message, whether ``--fix`` repairs it, and whether it is worth reporting
 to the operator on its own. ``--fix`` only creates and repairs (directories, links, the
 home's Git root, and the permissions of the roots Enso keeps private); it never deletes,
-never edits ``AGENTS.md``, and never touches contents under ``knowledge/``, ``drafts/``,
+never edits ``AGENTS.md``, and never touches the contents of a knowledge root, ``drafts/``,
 or ``uploads/``. ``enso doctor`` and the viewer share the report.
 
-Only a root's own top-level entries are classified. Nothing recurses into a core-managed
-root such as ``runtime/`` or ``cache/``, so private operating state is never mistaken for
-the operator's clutter.
+Only a root's own top-level entries are classified; ``shared/`` is checked the same way as
+the home. Nothing recurses into a core-managed root such as ``runtime/`` or ``cache/``, so
+private operating state is never mistaken for the operator's clutter.
 """
 
 from __future__ import annotations
@@ -246,7 +246,7 @@ def audit_home(
             )
         )
     findings.extend(_check_dir(paths.skills, "skills", allow_link=True))
-    findings.extend(_check_dir(paths.knowledge, "knowledge", allow_link=False))
+    findings.extend(_check_shared(paths))
     findings.extend(_check_links(home))
     if not paths.agents_md.is_file():
         findings.append(Finding(AGENTS_MD, ERROR, "AGENTS.md is missing"))
@@ -346,6 +346,15 @@ def _check_dirs(root: Path) -> Iterator[Finding]:
     heartbeat = root / "heartbeat"
     if heartbeat.exists() or heartbeat.is_symlink():
         yield from _check_dir(heartbeat, "heartbeat", allow_link=False)
+
+
+def _check_shared(paths: Paths) -> list[Finding]:
+    """``shared/`` like the home: its required knowledge root, then anything unclaimed."""
+    findings = list(_check_dir(paths.shared, "shared", allow_link=False))
+    if not findings:
+        findings.extend(_check_dir(paths.knowledge, "shared/knowledge", allow_link=False))
+        _scan_entries(paths.shared, layout.SHARED, findings)
+    return findings
 
 
 def _check_dir(path: Path, name: str, *, allow_link: bool) -> Iterator[Finding]:

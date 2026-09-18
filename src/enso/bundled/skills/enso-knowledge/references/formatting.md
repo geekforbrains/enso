@@ -1,6 +1,6 @@
 # Knowledge formatting
 
-This is the common writing style for General and workspace knowledge. Change it when the
+This is the common writing style for shared and workspace knowledge. Change it when the
 user asks for different conventions, and keep `../scripts/lint.py` consistent with the
 mechanical rules below. Metadata and link validity are checked by `enso knowledge audit`.
 
@@ -38,5 +38,5 @@ or 2 for an input/read error. Run it on changed notes; importing a collection ne
 rewrite every historical note to satisfy a new style.
 
 ```bash
-python3 "$ENSO_HOME/skills/enso-knowledge/scripts/lint.py" "$ENSO_HOME/knowledge/Reference"
+python3 "$ENSO_HOME/skills/enso-knowledge/scripts/lint.py" "$ENSO_HOME/shared/knowledge/Reference"
 ```
