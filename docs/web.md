@@ -254,8 +254,9 @@ list and board; changing workspace clears the project and task filters.
 Selecting a project shows a compact workflow preview above its tasks. Open it for numbered
 stages in order, followed by `done`; choosing a stage keeps the details open. Each step shows
 its execution kind (Agent, Human, Command, or Integration), required check names, an allowed
-return destination, and the number of tasks at its accepted stage. Clicking a step filters
-the board to that stage. Project and stage links clear task
+return destination, and the number of tasks at its accepted stage. Agent stages have a
+**View instructions** link to each bound job's prompt, including disabled jobs. Clicking
+the stage itself filters the board to that stage. Project and stage links clear task
 search; project links also clear the stage filter. Workflow counts describe the whole project,
 independent of task search, and include all completed history without loading task bodies.
 Backlog, blocked, and cancelled tasks remain in the board outside the forward workflow.
