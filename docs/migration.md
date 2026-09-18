@@ -156,6 +156,11 @@ rows, new defaults, removed fields, renamed paths, preserved content, and the fi
 Test skipping several releases, an already-completed step, destination conflicts, and a
 failure after some work has changed. Compare fresh and upgraded homes at the new version.
 
+The shared `enso_home` test fixture is stamped with the latest revision, because a scratch
+home has the current layout. A test that needs an older home deletes `.migrations.json` or
+writes its own revision. Test a shipped step by calling that registry entry directly, as the
+revision 1 test does, so later revisions never run against its fixture.
+
 The migration unit tests live in [`tests/test_migrations.py`](../tests/test_migrations.py).
 [Upgrade tests](upgrade-testing.md) owns the disposable installed-release checks, including
 service restart, successful cleanup, and complete database/file rollback after failure.
