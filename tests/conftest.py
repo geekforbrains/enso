@@ -20,6 +20,7 @@ from enso.config import Config, Paths, parse_config
 from enso.heartbeat import store
 from enso.heartbeat.models import BeatRun
 from enso.jobs import Job, find_job, render
+from enso.routing import resolve_agent
 from enso.runtime import Runtime, origin_block
 from enso.transports import Reply, Transport, Turn
 
@@ -109,6 +110,9 @@ class FakeReply(Reply):
 
 class ImmediateIngress:
     """Transport-test runtime mixin: prepare immediately, without a provider or FIFO."""
+
+    def current_agent(self, conversation, workspace):
+        return resolve_agent(self.config, workspace)
 
     async def defer(self, conversation, queue_reply, raw_text, prepare, *, capture=None):
         if capture is not None and not await capture.ready():

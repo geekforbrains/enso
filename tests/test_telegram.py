@@ -79,6 +79,17 @@ class FakeRuntime(ImmediateIngress):
         self.handled.append((turn, reply))
 
 
+class FakeQuery:
+    def __init__(self, data: str, message_id: int, user: User = OWNER, chat: Chat = PRIVATE):
+        self.data = data
+        self.message = SimpleNamespace(chat=chat, message_id=message_id)
+        self.from_user = user
+        self.answers: list[dict[str, Any]] = []
+
+    async def answer(self, text: str = "", **kwargs: Any) -> None:
+        self.answers.append({"text": text, **kwargs})
+
+
 def message(
     user: User = OWNER, chat: Chat = PRIVATE, message_id: int = 10, **fields: Any
 ) -> Message:
@@ -102,6 +113,21 @@ def _runtime(transport: TelegramTransport) -> FakeRuntime:
 
 def _bot(transport: TelegramTransport) -> FakeBot:
     return transport._bot  # type: ignore[return-value]
+
+
+def _picker_markup(transport: TelegramTransport) -> Any:
+    bot = _bot(transport)
+    return (bot.edited[-1] if bot.edited else bot.sent[-1])["reply_markup"]
+
+
+async def _tap(transport: TelegramTransport, label: str) -> FakeQuery:
+    markup = _picker_markup(transport)
+    button = next(
+        button for row in markup.inline_keyboard for button in row if button.text == label
+    )
+    query = FakeQuery(button.callback_data, transport._use_pickers[123].message_id)
+    await transport.handle_callback(query)  # type: ignore[arg-type]
+    return query
 
 
 @pytest.mark.parametrize(
@@ -433,6 +459,137 @@ async def test_commands_run_once_before_the_queue(
     await asyncio.wait_for(turn_ran.wait(), timeout=1)
     assert dispatched == ["/help@ensobot"]
     assert handled == ["hello"]
+
+
+@pytest.mark.parametrize(
+    ("buttons", "spec"),
+    [
+        (("Provider", "codex", "sol", "medium"), "codex:sol:medium"),
+        (("Model", "sonnet", "high"), "claude:sonnet:high"),
+        (("Effort", "low"), "claude:opus:low"),
+        (("Default",), "default"),
+    ],
+)
+async def test_use_picker_applies_selected_triple(
+    transport: TelegramTransport,
+    monkeypatch: pytest.MonkeyPatch,
+    buttons: tuple[str, ...],
+    spec: str,
+) -> None:
+    selections: list[str] = []
+
+    async def apply(rt, command, *, conversation, binding, workspace, transport):
+        assert conversation == "telegram:123"
+        assert binding == "telegram:123"
+        assert workspace == "default"
+        assert transport == "telegram"
+        selections.append(command.args)
+        return commands.Result("Selection applied.")
+
+    monkeypatch.setattr(commands, "run", apply)
+    await transport.handle_message(message(text="/use"))
+    assert _bot(transport).sent[-1]["text"].startswith("Current: claude:opus:xhigh")
+    assert _runtime(transport).handled == []
+    for label in buttons:
+        query = await _tap(transport, label)
+        assert query.answers == [{"text": ""}]
+    assert selections == [spec]
+    assert _bot(transport).edited[-1]["text"] == "Selection applied."
+    assert 123 not in transport._use_pickers
+
+
+async def test_use_picker_back_cancel_and_old_buttons(
+    transport: TelegramTransport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def unexpected(*args, **kwargs):
+        pytest.fail("cancelled picker changed the agent")
+
+    monkeypatch.setattr(commands, "run", unexpected)
+    await transport.handle_message(message(text="/use"))
+    old_data = _picker_markup(transport).inline_keyboard[0][0].callback_data
+    await _tap(transport, "Provider")
+    await _tap(transport, "Back")
+    stale = FakeQuery(old_data, transport._use_pickers[123].message_id)
+    await transport.handle_callback(stale)  # type: ignore[arg-type]
+    assert "expired" in stale.answers[0]["text"]
+    await _tap(transport, "Cancel")
+    assert _bot(transport).edited[-1]["text"] == "Selection cancelled."
+    assert 123 not in transport._use_pickers
+
+
+async def test_use_picker_rechecks_binding_and_expiry(
+    transport: TelegramTransport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def unexpected(*args, **kwargs):
+        pytest.fail("invalid picker changed the agent")
+
+    monkeypatch.setattr(commands, "run", unexpected)
+    await transport.handle_message(message(text="/use"))
+    data = _picker_markup(transport).inline_keyboard[0][0].callback_data
+    message_id = transport._use_pickers[123].message_id
+    forged = FakeQuery(data, message_id, user=OTHER)
+    await transport.handle_callback(forged)  # type: ignore[arg-type]
+    assert forged.answers == [{"text": ""}]
+    assert _bot(transport).edited == []
+
+    runtime = _runtime(transport)
+    runtime.config = replace(runtime.config, bindings={})
+    unbound = FakeQuery(data, message_id)
+    await transport.handle_callback(unbound)  # type: ignore[arg-type]
+    assert "changed workspace" in unbound.answers[0]["text"]
+    assert 123 not in transport._use_pickers
+
+    expired = FakeQuery(data, message_id)
+    await transport.handle_callback(expired)  # type: ignore[arg-type]
+    assert "expired" in expired.answers[0]["text"]
+
+
+async def test_use_picker_uses_configured_models_and_effective_efforts(
+    transport: TelegramTransport,
+) -> None:
+    await transport.handle_message(message(text="/use"))
+    await _tap(transport, "Model")
+    model_buttons = [
+        button.text for row in _picker_markup(transport).inline_keyboard for button in row
+    ]
+    assert model_buttons == ["opus", "sonnet", "haiku", "Back", "Cancel"]
+    await _tap(transport, "haiku")
+    effort_buttons = [
+        button.text for row in _picker_markup(transport).inline_keyboard for button in row
+    ]
+    assert effort_buttons == ["low", "medium", "high", "Back", "Cancel"]
+    for row in _picker_markup(transport).inline_keyboard:
+        for button in row:
+            assert len(button.callback_data) <= 64
+
+
+async def test_use_picker_expires_after_config_reload(transport: TelegramTransport) -> None:
+    await transport.handle_message(message(text="/use"))
+    runtime = _runtime(transport)
+    runtime.config = replace(runtime.config)
+    query = await _tap(transport, "Provider")
+    assert query.answers == [
+        {"text": "Configuration changed. Send /use again.", "show_alert": True}
+    ]
+    assert _bot(transport).edited == []
+
+
+async def test_use_picker_keeps_long_model_id_out_of_callback(transport: TelegramTransport) -> None:
+    runtime = _runtime(transport)
+    model = "openrouter/" + "long-model-name/" * 7 + ":free"
+    claude = runtime.config.providers["claude"]
+    runtime.config = replace(
+        runtime.config,
+        providers={**runtime.config.providers, "claude": replace(claude, models=("opus", model))},
+    )
+    await transport.handle_message(message(text="/use"))
+    await _tap(transport, "Model")
+    button = _picker_markup(transport).inline_keyboard[1][0]
+    assert model not in button.callback_data
+    assert len(button.callback_data) <= 64
+    query = FakeQuery(button.callback_data, transport._use_pickers[123].message_id)
+    await transport.handle_callback(query)  # type: ignore[arg-type]
+    assert transport._use_pickers[123].model == model
 
 
 async def test_stop_cancels_blocked_preparation_and_flushes_followups(

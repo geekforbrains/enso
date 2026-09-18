@@ -10,9 +10,9 @@ import pytest
 from conftest import ImmediateIngress
 
 from enso import commands, db
-from enso.config import Agent, Config
+from enso.config import Config
 from enso.outbound import parse_outbound_message
-from enso.routing import UNBOUND_NOTICE
+from enso.routing import UNBOUND_NOTICE, ResolvedAgent
 from enso.runtime import ORIGIN_HEADER, Runtime, origin_block
 from enso.transports import Reply, Turn
 from enso.transports.slack import (
@@ -276,12 +276,15 @@ async def test_thread_context_uses_selected_provider_session(
     whole_thread: bool,
 ) -> None:
     conversation = "slack:C1:200.001"
-    codex_config = replace(config, defaults=Agent("codex", "sol", "xhigh"))
 
     class FakeRuntime(ImmediateIngress):
         def __init__(self) -> None:
-            self.config = codex_config
+            self.config = config
             self.handled: list[tuple[Turn, Reply]] = []
+
+        def current_agent(self, key: str, workspace: str) -> ResolvedAgent:
+            assert key == conversation and workspace == "default"
+            return ResolvedAgent("codex", "sol", "xhigh", "conversation")
 
         async def sessions(self, key: str) -> list[db.Session]:
             assert key == conversation
@@ -316,8 +319,8 @@ async def test_thread_context_uses_selected_provider_session(
         return "thread context"
 
     runtime = FakeRuntime()
-    assert codex_config.slack is not None
-    transport = SlackTransport(codex_config.slack, codex_config.paths)
+    assert config.slack is not None
+    transport = SlackTransport(config.slack, config.paths)
     transport.runtime = runtime  # type: ignore[assignment]
     transport.bot_user_id = "UBOT"
     transport._users["U1"] = "gavin"
@@ -778,7 +781,7 @@ async def test_threaded_dm_reply_joins_the_dm_conversation(
     """A reply inside a DM thread shares the DM's queue/session; the reply still threads."""
     conversation = "slack:D1"
 
-    class FakeRuntime:
+    class FakeRuntime(ImmediateIngress):
         def __init__(self) -> None:
             self.config = config
             self.handled: list[tuple[Turn, Reply]] = []

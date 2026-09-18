@@ -5,6 +5,12 @@ All notable changes to Enso are documented here, following
 
 ## [Unreleased]
 
+### Added
+
+- Chat conversations can select a configured provider, model, and effort with Slack `!use`
+  or Telegram's `/use` picker, then return to their workspace default without clearing
+  provider sessions.
+
 ## [0.2.1] - 2026-09-18
 
 ### Added

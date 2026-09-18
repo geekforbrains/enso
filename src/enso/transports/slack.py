@@ -846,7 +846,8 @@ class SlackTransport(Transport):
             channel_name=channel_name,
         )
         reply.sender_id, reply.sender_name = self.bot_user_id, self.bot_name
-        provider = routing.resolve_agent(self.runtime.config, workspace).provider
+        conversation = routing.conversation_key("slack", channel, reply_thread, is_dm=is_dm)
+        provider = self.runtime.current_agent(conversation, workspace).provider
         provider_has_session = provider in session_providers
         text = (await self._flatten(raw_text, strip_addressing=True)).strip()
         attachments = event.get("attachments") or []

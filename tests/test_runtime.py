@@ -22,7 +22,7 @@ from conftest import (
 )
 
 from enso import db
-from enso.config import Config, LiveConfig, Paths, parse_config
+from enso.config import Agent, Config, LiveConfig, Paths, parse_config
 from enso.outbound import CONTRACT, FAILURE_NOTICE, OutboundMessage, TableBlock
 from enso.providers.claude import ClaudeProvider, project_dir
 from enso.routing import UNBOUND_NOTICE
@@ -630,21 +630,26 @@ async def test_queued_turn_keeps_resolved_workspace_and_loads_its_current_settin
         if turn.text == "first":
             entered.set()
             await release.wait()
-        observed.append((workspace, running.config.provider_args(workspace, "claude")))
+        observed.append(
+            (workspace, running.agent.provider, running.config.provider_args(workspace, "claude"))
+        )
 
     monkeypatch.setattr(runtime, "_turn", execute)
     before = runtime.config.provider_args("default", "claude")
+    binding = "telegram:123" if transport == "telegram" else "slack:dm:U1"
+    conversation = "telegram:123" if transport == "telegram" else "slack:D1"
+    assert runtime.select_agent(conversation, binding, "default", Agent("codex", "sol", "medium"))
     drain = await runtime.submit(make_turn("first", transport=transport), FakeReply())
     await asyncio.wait_for(entered.wait(), 5)
     assert await runtime.submit(make_turn("second", transport=transport), FakeReply()) is None
     enso_home.workspace("other").mkdir()
     raw = copy.deepcopy(runtime.config.raw)
-    raw["bindings"]["telegram:123" if transport == "telegram" else "slack:dm:U1"] = "other"
+    raw["bindings"][binding] = "other"
     write_config(enso_home, raw)
     write_workspace(enso_home, "default", {"providers": {"claude": {"args": []}}})
     release.set()
     await asyncio.wait_for(drain, 5)
-    assert observed == [("default", before), ("default", ())]
+    assert observed == [("default", "codex", before), ("default", "claude", ())]
 
 
 async def test_a_turn_is_dropped_when_its_workspace_is_unbound_or_gone(
