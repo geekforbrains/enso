@@ -240,12 +240,12 @@ def test_scattered_locks_are_removed_and_everything_else_is_kept(enso_home):
     for path in (*locks, *kept):
         path.touch()
 
-    assert migrations.plan(enso_home) == ()
-    migrations.apply(enso_home)
-    migrations.remove_scattered_locks(enso_home)  # a retry finds nothing left to do
+    step = migrations.MIGRATIONS[0]  # run this step alone, so later revisions never break it
+    assert step.revision == 1 and step.paths(enso_home) == ()
+    step.apply(enso_home)
+    step.apply(enso_home)  # a retry finds nothing left to do
 
     assert not any(path.exists() for path in locks)
     assert all(path.exists() for path in kept)
     assert not (home / "heartbeat/.locks").exists() and not (home / ".workflow-locks").exists()
     assert not (runtime / ".concurrency").exists() and not (runtime / "worktree-locks").exists()
-    assert migrations.read_revision(enso_home) == 1
