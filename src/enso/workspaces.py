@@ -15,7 +15,7 @@ from dataclasses import asdict
 from importlib import resources
 from pathlib import Path
 
-from . import frontmatter
+from . import frontmatter, layout
 from .config import Agent, Paths, require_workspace, valid_workspace_name
 from .layout import LINKS, WORKSPACE_DIRS
 
@@ -435,16 +435,20 @@ def ensure_links(root: Path) -> list[str]:
     return done
 
 
-def ensure_layout(root: Path) -> list[str]:
+def ensure_layout(root: Path, *, include_optional: bool = True) -> list[str]:
     """Create what the documented layout is missing under ``root``; says what changed.
 
     Directories and links only: ``AGENTS.md`` is the operator's file and is never written
-    here, and nothing that exists is removed or rewritten. Safe to run on a live workspace.
+    here, and nothing that exists is removed or rewritten. Audits exclude optional content
+    directories so an operator's consolidation or rename stays in place.
     """
     done: list[str] = []
     if any(path.is_symlink() for path in (root, root.parent, root.parent.parent)):
         return done
     for name in WORKSPACE_DIRS:
+        entry = layout.classify(layout.WORKSPACE, name)
+        if not include_optional and entry is not None and not entry.required:
+            continue
         directory = root / name
         if not directory.exists() and not directory.is_symlink():
             directory.mkdir(parents=True)

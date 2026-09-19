@@ -70,8 +70,10 @@ New notes go in the current workspace's `knowledge/`. Agents create or move note
 knowledge only when the user explicitly asks, in the conversation or in a standing rule the
 user wrote, such as the home or a workspace `AGENTS.md`, a job's `JOB.md`, or a
 filing-conventions note in knowledge. An agent's own judgment that a fact is useful across
-workspaces is not enough. This limits filing, not reading; an existing note is updated where
-it lives. Each fact keeps one owning note that others link to rather than copy.
+workspaces is not enough. A standing user rule may make shared knowledge the sole filing
+destination; [Workspaces](workspaces.md#consolidating-knowledge-and-work-files) explains how
+to retire optional workspace knowledge roots without the audit recreating them. This limits
+filing, not reading; an existing note is updated where it lives. Each fact keeps one owning note that others link to rather than copy.
 
 - **Another workspace needs a note.** An interactive agent links to it where it is, such as
   `[[workspace:research:Projects/Topic]]`, tells the user, and asks whether to leave it or

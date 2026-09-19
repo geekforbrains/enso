@@ -5,6 +5,12 @@ All notable changes to Enso are documented here, following
 
 ## [Unreleased]
 
+### Changed
+
+- Workspace knowledge and drafts folders are optional: a fixing audit preserves their
+  removal after an intentional consolidation. The viewer also supports a `work/` folder
+  for retained output and hides absent optional content roots.
+
 ## [0.3.0] - 2026-09-18
 
 ### Added

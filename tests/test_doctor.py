@@ -315,14 +315,14 @@ def test_doctor_command(enso_home: Paths, raw_config: dict, unit: Path) -> None:
         "memory: ok (0 notes, 0 findings)",
     ]
 
-    shutil.rmtree(enso_home.workspace("default") / "drafts")
+    shutil.rmtree(enso_home.workspace("default") / "uploads")
     workspaces.create_workspace(enso_home, "lonely")
     broken = runner.invoke(app, ["doctor"])
     assert broken.exit_code == 1
     lines = broken.stdout.splitlines()
     assert lines[2:4] == [
         "workspaces: 1 error, 2 warnings (default, lonely)",
-        "  error: default: drafts/ is missing (repairable with `enso workspace audit --fix`)",
+        "  error: default: uploads/ is missing (repairable with `enso workspace audit --fix`)",
     ]
     assert lines[4].startswith("  warning: lonely: AGENTS.md is still the untouched template")
     as_json = runner.invoke(app, ["doctor", "--json"])
@@ -453,7 +453,7 @@ def test_attention_separates_what_is_worth_reporting_from_what_is_unhealthy(
 def test_attention_is_true_for_every_health_problem(enso_home: Paths, raw_config: dict) -> None:
     """A problem is always worth reporting, so the gate never narrows what it used to pass."""
     healthy(enso_home, raw_config)
-    shutil.rmtree(enso_home.workspace("default") / "drafts")
+    shutil.rmtree(enso_home.workspace("default") / "uploads")
 
     report = doctor.run(enso_home)
 

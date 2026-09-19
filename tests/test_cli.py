@@ -58,7 +58,7 @@ def test_workspace_create_and_list(enso_home: Paths, raw_config: dict) -> None:
     assert result.exit_code == 0
     assert [line.split() for line in result.stdout.splitlines()] == [
         ["WORKSPACE", "BINDINGS", "JOBS", "AUDIT"],
-        ["default", "slack:C1,", "slack:dm:U1", "-", "11", "errors"],
+        ["default", "slack:C1,", "slack:dm:U1", "-", "9", "errors"],
         ["meteor", "-", "meteor:enso-memory", "1", "warning"],
     ]
     assert result.stderr.startswith("home: ")  # not seeded either
@@ -74,7 +74,7 @@ def test_workspace_audit_command(enso_home: Paths, raw_config: dict) -> None:
     broken = runner.invoke(app, ["workspace", "audit"])
     lines = broken.stdout.splitlines()
     assert broken.exit_code == 1 and lines[0] == f"home {enso_home.home}: ok"
-    assert lines[1:3] == ["default: 10 errors", "  bindings: slack:C1, slack:dm:U1"]
+    assert lines[1:3] == ["default: 8 errors", "  bindings: slack:C1, slack:dm:U1"]
     assert lines[3] == "  error: skills/ is missing (repairable with --fix)"
     assert runner.invoke(app, ["workspace", "audit", "meteor"]).exit_code == 1  # no such workspace
 

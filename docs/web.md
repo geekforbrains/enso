@@ -421,14 +421,15 @@ are correct, whether any skill name collides.
 A workspace and its parent container must be real directories, matching CLI ownership;
 linked workspaces return 404. Directory summaries do not scan roots that escape the workspace.
 A workspace's `knowledge/` card opens its scope in [Knowledge](#knowledge). The existing
-file browser remains available over `knowledge/`, `drafts/`, and `uploads/`, with text and Markdown rendered
-in place. This is the "what files is the agent reading" view: it shows what is actually on
+file browser is available over `knowledge/`, `work/`, `drafts/`, and `uploads/`, with text and
+Markdown rendered in place. This is the "what files is the agent reading" view: it shows what is actually on
 disk in the directories the agent has been told to use, dotfiles included. Files over 2 MiB,
 binary files, and anything unreadable show their metadata instead of a body. Markdown is
 rendered with raw HTML escaped, images left as text, and only relative, `http`, `https`,
 and `mailto` links kept, so a file the agent wrote cannot make your browser fetch or run
-anything. The browser never leaves those three directories: a path that resolves outside
-them, including through a symlink, is a 404.
+anything. Absent optional content roots are omitted from the workspace page. The browser never
+leaves these allowed directories: a path that resolves outside them, including through a
+symlink, is a 404.
 
 ### Skills
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import sys
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, replace
@@ -301,9 +302,9 @@ async def test_workspaces_list_and_detail(client: TestClient, home: Home) -> Non
     assert "untouched template" in detail and 'href="/skills?workspace=lonely"' in detail
     assert "nothing is bound to this workspace" in detail
     assert "2.0 KB" in await page(client, "/workspaces/default")
-    os.rmdir(home.paths.workspace("lonely") / "drafts")
+    os.rmdir(home.paths.workspace("lonely") / "uploads")
     detail = await page(client, "/workspaces/lonely")
-    assert "drafts/ is missing" in detail and "missing</span>" in detail
+    assert "uploads/ is missing" in detail and "missing</span>" in detail
     assert "repairable with" in detail
 
     assert "Not found" in await page(client, "/workspaces/nope", 404)
@@ -1123,3 +1124,17 @@ async def test_same_named_jobs_link_to_their_own_history(client, home):
     assert f'href="/runs/{team_run}"' in team and home.ok_run not in team
     assert f'href="/runs/{home.ok_run}"' in default and team_run not in default
     await page(client, "/jobs/nightly", status=404)
+
+
+async def test_workspace_work_files_without_legacy_content_roots(home, client):
+    root = home.paths.workspace("default")
+    shutil.rmtree(root / "knowledge")
+    (root / "drafts").rename(root / "work")
+    (root / "work" / "Report.md").write_text("## Retained result\n\nUseful output.\n")
+
+    detail = await page(client, "/workspaces/default")
+    assert 'href="/workspaces/default/files/work/"' in detail
+    assert 'href="/workspaces/default/files/drafts/"' not in detail
+    assert 'href="/knowledge?scope=workspace%3Adefault"' not in detail
+    assert "Useful output." in await page(client, "/workspaces/default/files/work/Report.md")
+    assert "Not found" in await page(client, "/workspaces/default/files/work/../AGENTS.md", 404)

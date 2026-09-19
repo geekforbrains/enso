@@ -4,8 +4,8 @@ A workspace is where an agent works. It is the provider's working directory, the
 starts with, and the default home for files that belong to that workspace. It is not a
 sandbox: an explicit task or workspace rule may name another destination.
 
-Enso is opinionated about this. The layout below is fixed, Enso creates it, `enso
-workspace audit` proves it is still intact, and `--fix` repairs it. The point is that every
+Enso creates the layout below. `enso workspace audit` checks its required infrastructure,
+and `--fix` repairs it while respecting removed optional content folders. The point is that every
 path the agent is told about in `AGENTS.md` actually exists, and that skills are wired up
 rather than assembled by hand.
 
@@ -20,12 +20,13 @@ owning workspace, as detailed in the [ownership layout](#ownership-in-020).
 ├── WORKSPACE.md       # optional agent triple and provider arguments
 ├── CLAUDE.md          # symlink -> AGENTS.md
 ├── skills/            # skills unique to this workspace
-├── knowledge/         # durable reference material the agent should keep
+├── knowledge/         # optional workspace reference, created by the initial scaffold
 ├── memory/            # dated Markdown memories
 ├── jobs/              # scheduled and stage jobs
 ├── projects/          # workspace project definitions and scripts
 ├── heartbeat/<REF>/   # optional; a beat's gate.sh and helpers
-├── drafts/            # generated or editable output
+├── drafts/            # optional original output folder, created by the initial scaffold
+├── work/              # optional task files and retained output
 ├── uploads/           # chat attachments, one directory per turn
 ├── .claude/skills     # symlink -> ../skills, read by Claude Code and Grok
 ├── .agents/skills     # symlink -> ../skills, read by Codex, Grok, Antigravity, and OpenCode
@@ -41,7 +42,8 @@ owning workspace, as detailed in the [ownership layout](#ownership-in-020).
 | `projects/` | Project definitions and scripts, each under `<KEY>/`; see [Tasks](tasks.md#projects-and-stages). |
 | `heartbeat/` | Optional root, created only when workspace gate scripts are used. |
 | `WORKSPACE.md` | Optional settings; [Configuration](configuration.md#workspacemd-in-020) owns its format and reload behavior. |
-| `drafts/` | Ordinary work product. Posts, reports, scratch analysis. Safe to delete. |
+| `drafts/` | Optional original location for work product; retained files require deliberate cleanup. |
+| `work/` | Optional replacement for `drafts/`, holding task files and retained outputs. |
 | `uploads/` | Chat attachments. Enso writes here; nothing else should. |
 | `skills/` | Skills only this workspace needs. |
 | Policy files | Each CLI's own project-level permission file, in its own format. Optional; Enso neither checks nor enforces it. See [Provider permissions](configuration.md#provider-permissions-and-installation-trust). |
@@ -53,6 +55,21 @@ a second identity. The scaffold creates `knowledge/`, `memory/`, `jobs/`, `proje
 `drafts/`, `uploads/`, and `skills/`. The empty skills directory keeps the provider discovery
 links valid even before you add a workspace skill. It creates neither `WORKSPACE.md` nor
 `heartbeat/`; adding either later requires no restart.
+
+### Consolidating knowledge and work files
+
+An installation may keep all notes in `shared/knowledge/` and use workspace `work/` for
+other output. Record that standing filing rule in the home instructions, and use
+`enso knowledge ... --shared`. Move notes through `enso knowledge move` to preserve their
+IDs and repair links. Before removing the empty workspace knowledge roots or renaming
+`drafts/`, update local instructions, jobs, scripts, and references that use their paths.
+Keep repositories, source attachments, memory, and operating records in their existing homes.
+
+`knowledge/`, `drafts/`, and `work/` are optional content roots. Audits validate those that
+exist, but neither report missing optional roots nor recreate them with `--fix`. The viewer
+shows present content roots. New workspace creation and explicit initialization still seed
+the original `knowledge/` and `drafts/` defaults; they are not cleanup commands for a
+customized installation. No automatic content move or migration is performed.
 
 The home itself holds the workspaces and what they share:
 
@@ -450,7 +467,7 @@ their walk at the nearest Git root, so a repository inside a workspace hides the
       "uploads_bytes": 1048576,
       "layout": {"AGENTS.md": "required", "notes.txt": "unexpected"},
       "findings": [
-        {"check": "directory", "severity": "error", "message": "drafts/ is missing", "fixable": true, "attention": false}
+        {"check": "directory", "severity": "error", "message": "uploads/ is missing", "fixable": true, "attention": false}
       ],
       "fixed": []
     }
@@ -500,7 +517,7 @@ Enso does not delete a workspace for you.
 ## When a workspace is malformed
 
 A bound workspace that fails its audit is a warning at service start, not a fatal error. It
-is logged, the viewer shows it, and turns still run. A missing `drafts/` should not take
+is logged, the viewer shows it, and turns still run. A missing `uploads/` should not take
 your chat bridge down. The same goes for a workspace a job names, and for the home itself:
 `enso serve` logs one line per failing root, naming the errors, and points at
 `enso workspace audit`.

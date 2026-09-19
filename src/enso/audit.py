@@ -284,7 +284,7 @@ def audit_workspace(
         result.findings.append(Finding(DIRECTORY, ERROR, str(exc)))
         return result
     if fix:
-        result.fixed.extend(workspaces.ensure_layout(root))
+        result.fixed.extend(workspaces.ensure_layout(root, include_optional=False))
     findings = result.findings
     findings.extend(_check_dirs(root))
     findings.extend(_check_links(root))
@@ -342,10 +342,19 @@ def tree_size(path: Path) -> int:
 
 def _check_dirs(root: Path) -> Iterator[Finding]:
     for name in layout.WORKSPACE_DIRS:
+        entry = layout.classify(layout.WORKSPACE, name)
+        if (
+            entry is not None
+            and not entry.required
+            and not (root / name).exists()
+            and not (root / name).is_symlink()
+        ):
+            continue
         yield from _check_dir(root / name, name, allow_link=name in {"skills", "drafts"})
-    heartbeat = root / "heartbeat"
-    if heartbeat.exists() or heartbeat.is_symlink():
-        yield from _check_dir(heartbeat, "heartbeat", allow_link=False)
+    for name in ("heartbeat", "work"):
+        directory = root / name
+        if directory.exists() or directory.is_symlink():
+            yield from _check_dir(directory, name, allow_link=False)
 
 
 def _check_shared(paths: Paths) -> list[Finding]:
@@ -560,7 +569,15 @@ def _scan_entries(
                     attention=True,
                 )
             )
-        elif path.is_symlink() and not path.exists() and not entry.required:
+        elif (
+            path.is_symlink()
+            and not path.exists()
+            and not entry.required
+            and not (
+                table is layout.WORKSPACE
+                and path.name in {*layout.WORKSPACE_DIRS, "heartbeat", "work"}
+            )
+        ):
             findings.append(
                 Finding(
                     LINK,

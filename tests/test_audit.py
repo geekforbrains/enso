@@ -39,6 +39,7 @@ CLEAN_WORKSPACE_LAYOUT = {
         *layout.WORKSPACE_DIRS,
     )
 }
+CLEAN_WORKSPACE_LAYOUT.update(knowledge="user", drafts="user")
 
 
 def finish(root: Path) -> None:
@@ -174,7 +175,6 @@ def test_every_check_on_a_broken_workspace(
 
     assert [(f.check, f.severity, f.fixable) for f in found.findings] == [
         ("directory", "error", False),  # knowledge/ is a file
-        ("directory", "error", True),  # drafts/
         ("directory", "error", True),  # uploads/
         ("link", "error", False),  # CLAUDE.md is a file
         ("link", "error", False),  # .claude/skills is a directory
@@ -189,19 +189,19 @@ def test_every_check_on_a_broken_workspace(
     ]
     messages = [f.message for f in found.findings]
     assert messages[0] == "knowledge/ is a file, not a directory"
-    assert messages[3].startswith("CLAUDE.md is a real file, not a symlink to AGENTS.md")
-    assert messages[4].startswith(".claude/skills is a real directory, not a symlink to ../skills")
-    assert messages[5] == ".agents/skills points to /nowhere, not ../skills"
-    assert messages[8] == "skills/broken: SKILL.md is missing"
-    assert messages[9].startswith("skills/notes also exists in the user scope")
-    assert messages[10].startswith("skills/research also exists in the enso scope")
-    assert messages[11:] == [
+    assert messages[2].startswith("CLAUDE.md is a real file, not a symlink to AGENTS.md")
+    assert messages[3].startswith(".claude/skills is a real directory, not a symlink to ../skills")
+    assert messages[4] == ".agents/skills points to /nowhere, not ../skills"
+    assert messages[7] == "skills/broken: SKILL.md is missing"
+    assert messages[8].startswith("skills/notes also exists in the user scope")
+    assert messages[9].startswith("skills/research also exists in the enso scope")
+    assert messages[10:] == [
         f"notes/ is not part of the layout; move it out of {root} or remove it",
         f"stray.txt is not part of the layout; move it out of {root} or remove it",
     ]
     # Classified, not only reported: ``.git`` has no place here, whatever check names it.
     assert found.layout[".git"] == "unexpected" and found.layout["skills"] == "required"
-    assert not found.ok and found.status == "error" and found.summary == "10 errors, 3 warnings"
+    assert not found.ok and found.status == "error" and found.summary == "9 errors, 3 warnings"
     assert found.bindings == ["slack:C1", "slack:dm:U1"]  # bound, so no orphan warning
 
 
@@ -213,8 +213,8 @@ def test_fix_creates_and_repairs_but_never_deletes(enso_home: Paths, config: Con
     report = audit.audit(enso_home, fix=True, config=config, user_dirs=USER_DIRS)
 
     (found,) = report.workspaces
-    assert [line.split(" ", 1)[0] for line in found.fixed] == ["created", "created", "repointed"]
-    assert (root / "drafts").is_dir() and (root / "uploads").is_dir()
+    assert [line.split(" ", 1)[0] for line in found.fixed] == ["created", "repointed"]
+    assert not (root / "drafts").exists() and (root / "uploads").is_dir()
     assert os.readlink(root / ".agents" / "skills") == "../skills"
     remaining = [(f.check, f.fixable) for f in found.findings]
     assert remaining and not any(fixable for _, fixable in remaining)
@@ -561,14 +561,14 @@ def test_startup_warnings_cover_the_home_and_in_use_workspaces(
     workspaces.create_workspace(enso_home, "lonely")  # only warnings, and not in use
     assert audit.startup_warnings(enso_home, config) == []
 
-    shutil.rmtree(enso_home.workspace("default") / "drafts")
+    shutil.rmtree(enso_home.workspace("default") / "uploads")
     (enso_home.workspace("lonely") / "CLAUDE.md").unlink()  # an error, but nobody uses it
     shutil.rmtree(enso_home.home / ".git")
     lines = audit.startup_warnings(enso_home, config)
 
     assert len(lines) == 2 and all(line.endswith("; see `enso workspace audit`") for line in lines)
     assert lines[0].startswith("the home fails its audit: the home is not a Git root")
-    assert lines[1].startswith("workspace default fails its audit: drafts/ is missing")
+    assert lines[1].startswith("workspace default fails its audit: uploads/ is missing")
 
 
 def test_tree_size_counts_files_without_following_links(tmp_path: Path) -> None:
@@ -962,3 +962,23 @@ def test_warnings_the_operator_may_simply_disagree_with_do_not_ask_for_attention
 
     assert [f.check for f in found.warnings] == ["agents-md", "orphan"]
     assert found.ok and not found.attention
+
+
+def test_shared_knowledge_and_work_cleanup_survives_fixing_audit(enso_home):
+    workspaces.seed_home(enso_home)
+    root = enso_home.workspace("default")
+    finish(root)
+    (root / "knowledge").rmdir()
+    (root / "drafts").rename(root / "work")
+    (root / "work" / "Report.md").write_text("Retained output\n")
+    (enso_home.knowledge / "Shared.md").write_text("Shared reference\n")
+
+    report = audit.audit(enso_home, ["default"], fix=True, user_dirs=USER_DIRS)
+
+    assert report.ok
+    assert report.workspaces[0].fixed == []
+    assert report.workspaces[0].layout["work"] == "user"
+    assert not (root / "knowledge").exists()
+    assert not (root / "drafts").exists()
+    assert (root / "work" / "Report.md").read_text() == "Retained output\n"
+    assert (enso_home.knowledge / "Shared.md").read_text() == "Shared reference\n"

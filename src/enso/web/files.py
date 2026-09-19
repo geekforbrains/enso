@@ -1,6 +1,6 @@
 """The workspace file browser: which paths may be shown, and how a file is presented.
 
-Only ``knowledge/``, ``drafts/``, and ``uploads/`` are browsable, each rooted separately.
+Only ``knowledge/``, ``work/``, ``drafts/``, and ``uploads/`` are browsable, each rooted separately.
 Every candidate is resolved and must stay inside both its root and the workspace after
 symlinks are followed, which rejects encoded traversal, an escaping descendant symlink,
 and an allowed root that is itself a symlink out of the workspace. Nothing here writes.
@@ -20,7 +20,7 @@ from markupsafe import Markup
 
 from ..config import Paths, require_workspace
 
-ROOTS = ("knowledge", "drafts", "uploads")
+ROOTS = ("knowledge", "work", "drafts", "uploads")
 MAX_FILE_PREVIEW_BYTES = 2 * 1024 * 1024
 MARKDOWN_SUFFIXES = (".md", ".markdown")
 _LINK_SCHEMES = ("http", "https", "mailto")

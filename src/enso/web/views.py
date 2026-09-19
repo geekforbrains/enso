@@ -431,6 +431,8 @@ def workspace_model(paths: Paths, name: str) -> dict[str, Any] | None:
     roots = []
     for root in files.ROOTS:
         directory = paths.workspace(name) / root
+        if root != "uploads" and not directory.exists() and not directory.is_symlink():
+            continue
         try:
             resolved = files.resolve(paths, name, root, "")
             entries, size = files.tree_summary(resolved.root)
