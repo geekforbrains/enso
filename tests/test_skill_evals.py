@@ -205,8 +205,8 @@ def test_scenario_checks_final_database_and_protects_internal_state(tmp_path):
             "INSERT INTO weight_entries(recorded_at, weight_kg) "
             "VALUES ('2026-09-03T08:00:00Z', 79.0)"
         )
-    (workspace / "drafts").mkdir()
-    (workspace / "drafts/weight-summary.json").write_text('{"count":3,"average_kg":79.5}')
+    (workspace / "work").mkdir()
+    (workspace / "work/weight-summary.json").write_text('{"count":3,"average_kg":79.5}')
     assert all(c["passed"] for c in check_results(home, workspace, scenario, original))
     with sqlite3.connect(home / "enso.db") as con:
         con.execute("DROP TABLE sessions")
@@ -334,8 +334,8 @@ with sqlite3.connect(home/'enso.db') as con:
              "VALUES ('2026-09-02T08:00:00Z',79.5)")
  con.execute("INSERT INTO weight_entries(recorded_at,weight_kg) "
              "VALUES ('2026-09-03T08:00:00Z',79.0)")
-Path('drafts').mkdir()
-Path('drafts/weight-summary.json').write_text(' {"count":3,"average_kg":79.5}')
+Path('work').mkdir()
+Path('work/weight-summary.json').write_text(' {"count":3,"average_kg":79.5}')
 print(json.dumps({'type':'item.started','item':{'id':'one','type':'command_execution'}}))
 print(json.dumps({'type':'item.completed','item':{'id':'one','type':'command_execution','exit_code':0}}))
 print(json.dumps({'type':'turn.completed','usage':{'input_tokens':120,'cached_input_tokens':100,'output_tokens':12}}))

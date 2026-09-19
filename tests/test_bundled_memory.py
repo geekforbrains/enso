@@ -206,7 +206,7 @@ async def test_live_discussion_harvests_then_fresh_session_recalls_and_promotes(
     note = memory.scan(enso_home, "default").notes[0]
     assert note.metadata["sources"] == value["notes"][0]["sources"]
     assert not list(enso_home.home.rglob("escaped.md"))
-    assert not list(enso_home.workspace_knowledge("default").glob("*.md"))
+    assert not list(enso_home.knowledge.glob("*.md"))
     await runtime.clear("slack:C1:1789560060.000000")
     slack.runtime = Runtime(fake_config)
     assert await slack.runtime.sessions("slack:C1:1789560060.000000") == []
@@ -248,7 +248,8 @@ async def test_live_discussion_harvests_then_fresh_session_recalls_and_promotes(
         input=f"Alex owns launch testing. Source: memory/{note.path}, capture {before[0].id}.\n",
     )
     assert promoted.exit_code == 0, promoted.output
-    assert (enso_home.workspace_knowledge("default") / "Launch.md").is_file()
+    assert (enso_home.knowledge / "Launch.md").is_file()
+    assert not enso_home.workspace_knowledge("default").exists()
     # Account for the new recall exchange before checking that the next pass is quiet.
     remaining = harvesting.batch(enso_home, "default")
     harvesting.publish(

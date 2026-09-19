@@ -237,7 +237,7 @@ Moves: advance to review (message required) · return to triage (message require
 Working directory: /Users/x/Projects/enso/.worktrees/EN-041 (branch enso/EN-041, base develop)
 Main checkout: /Users/x/Projects/enso — do not edit, commit, or switch branches there
 Recovery: run 8f2c1a3b ended without a handoff; uncommitted changes in src/enso/slack_text.py
-Refs: commit abc123 · path drafts/notes.md
+Refs: commit abc123 · path work/notes.md
 Project instructions: /Users/x/Projects/enso/AGENTS.md (appended below)
 
 Handoff (triage → todo by job:dev-enso-triage, run 2c9d…, 2026-09-07 09:00):

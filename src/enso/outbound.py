@@ -29,7 +29,7 @@ FAILURE_NOTICE = "I couldn't format that response correctly. Please try again."
 
 CONTRACT = f"""[Slack rich format]
 Reply as ordinary Markdown. Refer to a local file by its workspace-relative path in inline code \
-(for example, `drafts/report.md`), never by an absolute path or Markdown link. Only when a native \
+(for example, `work/report.md`), never by an absolute path or Markdown link. Only when a native \
 table or chart materially helps, make the \
 entire reply exactly one fenced block and nothing else:
 {FENCE}

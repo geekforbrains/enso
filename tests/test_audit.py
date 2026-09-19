@@ -39,7 +39,7 @@ CLEAN_WORKSPACE_LAYOUT = {
         *layout.WORKSPACE_DIRS,
     )
 }
-CLEAN_WORKSPACE_LAYOUT.update(knowledge="user", drafts="user")
+CLEAN_WORKSPACE_LAYOUT.update(work="user")
 
 
 def finish(root: Path) -> None:
@@ -174,8 +174,8 @@ def test_every_check_on_a_broken_workspace(
     (found,) = audit.audit(enso_home, config=config, user_dirs=[user]).workspaces
 
     assert [(f.check, f.severity, f.fixable) for f in found.findings] == [
-        ("directory", "error", False),  # knowledge/ is a file
         ("directory", "error", True),  # uploads/
+        ("directory", "error", False),  # knowledge/ is a file
         ("link", "error", False),  # CLAUDE.md is a file
         ("link", "error", False),  # .claude/skills is a directory
         ("link", "error", True),  # .agents/skills points elsewhere
@@ -188,7 +188,7 @@ def test_every_check_on_a_broken_workspace(
         ("unexpected", "warning", False),  # stray.txt
     ]
     messages = [f.message for f in found.findings]
-    assert messages[0] == "knowledge/ is a file, not a directory"
+    assert messages[1] == "knowledge/ is a file, not a directory"
     assert messages[2].startswith("CLAUDE.md is a real file, not a symlink to AGENTS.md")
     assert messages[3].startswith(".claude/skills is a real directory, not a symlink to ../skills")
     assert messages[4] == ".agents/skills points to /nowhere, not ../skills"
@@ -493,7 +493,8 @@ def test_knowledge_roots_preserve_conflicts_and_never_follow_links(
         "shared-knowledge": enso_home.knowledge,
         "workspace": root / "knowledge",
     }[scope]
-    shutil.rmtree(knowledge)
+    if knowledge.exists():
+        shutil.rmtree(knowledge)
     outside = tmp_path / "outside"
     if kind == "file":
         knowledge.write_text("keep this file\n")
@@ -519,7 +520,9 @@ def test_knowledge_roots_preserve_conflicts_and_never_follow_links(
             assert not outside.exists()
 
 
-@pytest.mark.parametrize("scope, name", [("home", "skills"), ("workspace", "drafts")])
+@pytest.mark.parametrize(
+    "scope, name", [("home", "skills"), ("workspace", "drafts"), ("workspace", "work")]
+)
 def test_dangling_links_where_directories_belong_are_reported_not_fixed(
     enso_home: Paths, tmp_path: Path, scope: str, name: str
 ) -> None:
@@ -527,7 +530,8 @@ def test_dangling_links_where_directories_belong_are_reported_not_fixed(
     root = enso_home.workspace("default")
     finish(root)
     directory = (enso_home.home if scope == "home" else root) / name
-    shutil.rmtree(directory)
+    if directory.exists():
+        shutil.rmtree(directory)
     directory.symlink_to(tmp_path / "gone", target_is_directory=True)
 
     for _ in range(2):  # the second fixing run must find the same non-repairable state
@@ -964,12 +968,10 @@ def test_warnings_the_operator_may_simply_disagree_with_do_not_ask_for_attention
     assert found.ok and not found.attention
 
 
-def test_shared_knowledge_and_work_cleanup_survives_fixing_audit(enso_home):
+def test_shared_knowledge_and_work_layout_survives_fixing_audit(enso_home):
     workspaces.seed_home(enso_home)
     root = enso_home.workspace("default")
     finish(root)
-    (root / "knowledge").rmdir()
-    (root / "drafts").rename(root / "work")
     (root / "work" / "Report.md").write_text("Retained output\n")
     (enso_home.knowledge / "Shared.md").write_text("Shared reference\n")
 

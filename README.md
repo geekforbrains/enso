@@ -24,11 +24,10 @@ what's coming up, and what needs your attention.
 
 ## What it does
 
-- **Give it context.** Keep your preferences, project instructions, and reference
-  files in workspaces, so Enso has the background when you pick things up again.
-- **Build your knowledge.** Maintain linked Markdown notes with Enso, kept in each
-  workspace and shared across workspaces when you choose, and browse them in the read-only
-  viewer with search and backlinks.
+- **Give it context.** Give each workspace a purpose and working rules, so Enso
+  has the background when you pick things up again.
+- **Build your knowledge.** Maintain linked Markdown notes with Enso in one shared
+  knowledge directory, and browse them in the read-only viewer with search and backlinks.
 - **Pick up earlier conversations.** Ask what the team discussed or correct a remembered
   detail. Enso keeps dated workspace memory from eligible live conversations, including
   discussion that did not address it; [Memory](docs/memory.md) explains its sources and limits.

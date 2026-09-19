@@ -6,8 +6,8 @@ this audit agree on what belongs where and who owns it. A finding carries a stab
 id, a severity, a message, whether ``--fix`` repairs it, and whether it is worth reporting
 to the operator on its own. ``--fix`` only creates and repairs (directories, links, the
 home's Git root, and the permissions of the roots Enso keeps private); it never deletes,
-never edits ``AGENTS.md``, and never touches the contents of a knowledge root, ``drafts/``,
-or ``uploads/``. ``enso doctor`` and the viewer share the report.
+never edits ``AGENTS.md``, and never touches the contents of a knowledge root, ``work/``,
+``drafts/``, or ``uploads/``. ``enso doctor`` and the viewer share the report.
 
 Only a root's own top-level entries are classified; ``shared/`` is checked the same way as
 the home. Nothing recurses into a core-managed root such as ``runtime/`` or ``cache/``, so
@@ -341,7 +341,7 @@ def tree_size(path: Path) -> int:
 
 
 def _check_dirs(root: Path) -> Iterator[Finding]:
-    for name in layout.WORKSPACE_DIRS:
+    for name in (*layout.WORKSPACE_DIRS, "knowledge", "drafts", "heartbeat"):
         entry = layout.classify(layout.WORKSPACE, name)
         if (
             entry is not None
@@ -351,10 +351,6 @@ def _check_dirs(root: Path) -> Iterator[Finding]:
         ):
             continue
         yield from _check_dir(root / name, name, allow_link=name in {"skills", "drafts"})
-    for name in ("heartbeat", "work"):
-        directory = root / name
-        if directory.exists() or directory.is_symlink():
-            yield from _check_dir(directory, name, allow_link=False)
 
 
 def _check_shared(paths: Paths) -> list[Finding]:
@@ -575,7 +571,7 @@ def _scan_entries(
             and not entry.required
             and not (
                 table is layout.WORKSPACE
-                and path.name in {*layout.WORKSPACE_DIRS, "heartbeat", "work"}
+                and path.name in {*layout.WORKSPACE_DIRS, "knowledge", "drafts", "heartbeat"}
             )
         ):
             findings.append(

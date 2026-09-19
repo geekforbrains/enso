@@ -306,8 +306,12 @@ def test_fresh_scaffold_preserves_settings_and_keeps_optional_paths_absent(enso_
     assert initialization.initialize_home(enso_home)["ok"]
     assert path.read_bytes() == before
     root = workspaces.create_workspace(enso_home, "team")
-    for name in ("knowledge", "memory", "jobs", "projects", "drafts", "uploads", "skills"):
+    for name in ("memory", "jobs", "projects", "work", "uploads", "skills"):
         assert (root / name).is_dir()
+    for name in ("knowledge", "drafts"):
+        assert not (root / name).exists()
+        assert not (enso_home.workspace("default") / name).exists()
+    assert enso_home.knowledge.is_dir()
     assert not enso_home.workspace_settings("team").exists()
     assert not enso_home.workspace_heartbeat("team").exists()
     for link in (".claude/skills", ".agents/skills"):

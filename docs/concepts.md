@@ -37,7 +37,7 @@ and [context selection](workspaces.md#context-selection-in-020).
 | **Transport** | A chat platform connection: Slack or Telegram. Both run in one process. |
 | **Binding** | A map from a chat location to a workspace. Unbound places are ignored. |
 | **Workspace** | A directory with a fixed layout. The agent's working directory and its context. |
-| **Knowledge** | Durable Markdown notes in a workspace, or in shared knowledge on request, written with the agent and browsed read-only |
+| **Knowledge** | Durable Markdown notes in shared knowledge by default, written with the agent and browsed read-only |
 | **Agent** | An explicit `provider` + `model` + `effort` triple |
 | **Conversation** | A serialized queue of turns with a resumable provider session |
 | **Job** | `JOB.md`: a cron schedule or executable stage, a workspace, and agent instructions when a model is used |
@@ -160,13 +160,13 @@ home-level instructions and any user-level instructions the provider loads. Opti
 
 ## Knowledge
 
-Knowledge is ordinary Markdown in a workspace's `knowledge/` or the home's
-`shared/knowledge/`. The agent maintains notes through chat and the CLI; the viewer
-provides folder navigation, search, and clickable note links. Files remain the source of
-truth. Folders help the agent select context, but they do not isolate access.
+Knowledge is ordinary Markdown in the home's `shared/knowledge/`. Existing workspace
+knowledge roots remain supported. The agent maintains notes through chat and the CLI; the
+viewer provides folder navigation, search, and clickable note links. Files remain the source
+of truth. Folders help the agent select context, but they do not isolate access.
 
-New notes go in the current workspace; the agent files notes in shared knowledge only when
-the user asks, and links across roots instead of copying. See [Knowledge](knowledge.md) for
+New notes go in shared knowledge by default. The agent updates existing notes where they
+live and links across roots instead of copying. See [Knowledge](knowledge.md) for
 filing, metadata, links, imports, and the user-editable formatting convention.
 
 ## Memory
@@ -362,7 +362,7 @@ from SQLite itself. Workspace selection is not a database permission boundary.
     native Slack Markdown block, so the code is highlighted instead of showing the language as
     its first line; an unlabelled fence stays a plain code block, and a block Slack refuses
     falls back to the translated text. The Slack prompt asks the agent to name local files with
-    workspace-relative inline-code paths such as `drafts/report.md`.
+    workspace-relative inline-code paths such as `work/report.md`.
     The final reply is captured separately with generation and per-part delivery outcomes;
     progress, diagnostics, injected context, and formatting-repair turns are excluded.
 13. The validated session ID is stored against the conversation and workspace once a

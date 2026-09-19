@@ -328,7 +328,7 @@ it never deletes. The command exits 1 while any error remains; warnings alone ex
 ### Workspace context in 0.2.0
 
 Job and Heartbeat creation, message sends, operational lists, and task, project, and workflow
-commands, knowledge, and memory use the shared resolver.
+commands and memory use the shared resolver.
 Workspace-scoped commands use `ENSO_WORKSPACE`,
 inherited from the Enso chat agent, job, or Heartbeat run calling them. Optional `--workspace` overrides it
 for that operation. The [context contract](workspaces.md#context-selection-in-020) owns
@@ -360,11 +360,12 @@ inventory, and installation health checks retain their installation-wide scope.
 
 ## Knowledge
 
-Knowledge starts in the selected workspace. `--workspace NAME` overrides `ENSO_WORKSPACE`;
-`--shared` explicitly selects shared knowledge and ignores the environment.
-`--workspace` and `--shared` are mutually exclusive. Missing workspace context without
-`--shared`, or an invalid explicit workspace, is an error; shared knowledge is never a
-fallback. These selectors apply to reads and writes, including UUID lookup.
+Knowledge defaults to `$ENSO_HOME/shared/knowledge/`, ignoring `ENSO_WORKSPACE`.
+`--workspace NAME` selects an existing workspace knowledge root; `--shared` explicitly
+selects the default. The two flags are mutually exclusive. An invalid explicit workspace
+is an error; shared notes need no workspace context. These selectors apply to reads and
+writes, including UUID lookup. Existing scripts that relied on `ENSO_WORKSPACE` must now
+pass `--workspace NAME` to keep using workspace notes.
 
 ```text
 enso knowledge roots [--json]
@@ -386,7 +387,7 @@ paths must end in `.md`. Moves stay in the source root unless `--to-workspace` o
 `--folder` includes descendants. Listing/search returns up to 50 notes by default, with
 `--limit` from 1 to 500 and a nonnegative `--offset`. Search matches every whitespace-separated
 term against paths and bodies, case insensitively. There is no `--scope` or all-roots search
-flag: broaden deliberately with another search using `--shared` or `--workspace NAME`.
+flag: search retained workspace notes deliberately with `--workspace NAME`.
 `roots` inventories all roots without requiring context. Root scopes are `shared` and
 `workspace:<name>` in JSON results and cross-root links.
 No command loads transport configuration or initializes the database.

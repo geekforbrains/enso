@@ -402,7 +402,8 @@ def test_doctor_reports_invalid_note_roots_without_following_links(
     (outside / "Secret.md").write_text("This must not be read.")
     for kind in ("knowledge", "memory"):
         root = enso_home.workspace("default") / kind
-        root.rmdir()
+        if root.exists():
+            root.rmdir()
         root.symlink_to(outside, target_is_directory=True)
     report = doctor.run(enso_home)
     for kind in ("knowledge", "memory"):

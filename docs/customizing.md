@@ -63,11 +63,11 @@ Questions can be skipped or deferred. The agent records and respects a deferral,
 the TODO once the basics are answered or explicitly skipped. Jobs and beats leave these
 questions for live chat. Keep the remaining entries short, current, and appropriate for
 everyone using the install: the home file loads across all workspaces. Never put secrets or
-private personal details there; detailed background belongs in workspace `knowledge/`,
+private personal details there; detailed background belongs in `$ENSO_HOME/shared/knowledge/`,
 referenced by path. Existing customized homes can adopt this onboarding guidance manually;
 upgrades do not overwrite them.
 
-Keep it about *behaviour*. Facts about a project belong in a workspace.
+Keep it about *behaviour*. Facts about a project belong in shared knowledge.
 
 ### The workspace file
 
@@ -95,12 +95,12 @@ Deliberately minimal. A new workspace gets this:
 
 ## Files
 
-- `knowledge/` — current facts and reference material; load `enso-knowledge` and use `enso knowledge` to find or maintain it
+- `$ENSO_HOME/shared/knowledge/` — current facts and reference material shared across workspaces; load `enso-knowledge` and use `enso knowledge` to find or maintain it
 - `memory/` — dated conversations and experiences; load `enso-memory`, search with `enso memory search`, and inspect sources before recalling earlier work
-- `drafts/` — generated and editable output
+- `work/` — task files and generated or editable output, grouped by task
 - `uploads/` — chat attachments, written by Enso
 
-New knowledge notes go in `knowledge/` unless someone asks for shared knowledge (`$ENSO_HOME/shared/knowledge/`, `--shared`). Memory belongs to this workspace. People sharing it share maintained memory; separate workspaces do not promise confidentiality within this installation.
+Knowledge commands use shared knowledge by default. Keep work in its established repository or destination when one exists; otherwise use `work/`. Memory belongs to this workspace. People sharing it share maintained memory; separate workspaces do not promise confidentiality within this installation.
 ```
 
 Fill in the blanks and delete what does not apply. `enso workspace audit` warns while the
@@ -108,15 +108,15 @@ template is still untouched, because an unfilled `AGENTS.md` means the agent is 
 
 **Keep it short.** The provider CLI loads this file as workspace instructions; Enso does
 not prepend its contents to the prompt. Anything longer than a screen belongs in
-`knowledge/`, referenced by path:
+`$ENSO_HOME/shared/knowledge/`, referenced by path:
 
 ```markdown
-Pricing rules are in `knowledge/pricing.md`. Read it before quoting a number.
+Pricing rules are in `$ENSO_HOME/shared/knowledge/pricing.md`. Read it before quoting a number.
 ```
 
 The agent reads the relevant files when needed, and the read-only viewer lets you browse
-them. A rule written here, such as which notes belong in shared knowledge, counts as asking
-for it; see [Knowledge](knowledge.md#where-new-notes-go).
+them. A filing rule written here can override the shared default;
+see [Knowledge](knowledge.md#where-new-notes-go).
 
 ## Knowledge formatting
 
@@ -140,7 +140,7 @@ then the instructions.
 ```markdown
 ---
 name: research
-description: Research a topic across the sources this workspace tracks and write a brief into knowledge/. Use when asked to look into, investigate, or summarise a subject.
+description: Research a topic across the sources this workspace tracks and write a brief into shared knowledge. Use when asked to look into, investigate, or summarise a subject.
 ---
 
 # Research
@@ -198,7 +198,7 @@ Enso installs these into `~/.enso/skills/`:
 | `enso-browser` | Persistent Chrome profiles, human login, and attaching browser tools; see [Browser](browser.md) |
 | `enso-heartbeat` | Finite future actions and temporary watches, script gates, event history, action receipts, and completion |
 | `enso-jobs` | Creating, testing, and troubleshooting scheduled and stage jobs and their prerun and postrun scripts |
-| `enso-knowledge` | Finding and maintaining Markdown notes (in the workspace unless you ask for shared), links, imports, and user-defined formatting |
+| `enso-knowledge` | Finding and maintaining Markdown notes (in shared knowledge by default), links, imports, and user-defined formatting |
 | `enso-memory` | Recalling, recording, and correcting dated workspace memory, and writing useful summaries of captured conversations |
 | `enso-security` | Installation trust, provider permissions, credential handling, and untrusted input |
 | `enso-skills` | Finding official optional skills and writing or refining a skill manually |
@@ -303,7 +303,7 @@ about a `enso-*` skill or job that Enso did not put there.
 
 No docs system, no notes feature, no policy engine, no template library. Those are all the
 same thing wearing different hats: a place for text that an agent reads. You already have
-one — a Markdown file in `knowledge/`, and a skill that says when to read it.
+one — a Markdown file in `shared/knowledge/`, and a skill that says when to read it.
 
 Keeping that out of the core is what makes the workspace layout worth being strict about.
 

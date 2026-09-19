@@ -8,16 +8,19 @@ import typer
 
 from .. import knowledge
 from ..config import Paths, resolve_workspace
-from .common import JSON_FLAG, WORKSPACE, InputError, columns, echo_json, fail, read_input
+from .common import JSON_FLAG, InputError, columns, echo_json, fail, read_input
 
-knowledge_app = typer.Typer(no_args_is_help=True, help="Browse and maintain Markdown knowledge.")
-SHARED = typer.Option(False, "--shared", help="Select shared knowledge instead of a workspace.")
+knowledge_app = typer.Typer(
+    no_args_is_help=True, help="Browse and maintain Markdown knowledge; defaults to shared."
+)
+WORKSPACE = typer.Option(None, "--workspace", help="Select an existing workspace knowledge root.")
+SHARED = typer.Option(False, "--shared", help="Select shared knowledge (the default).")
 
 
 def _scope(paths: Paths, workspace: str | None, shared: bool) -> str:
-    if shared:
-        if workspace is not None:
-            raise ValueError("give --workspace or --shared, not both")
+    if shared and workspace is not None:
+        raise ValueError("give --workspace or --shared, not both")
+    if workspace is None:
         return "shared"
     return f"workspace:{resolve_workspace(paths, workspace)}"
 

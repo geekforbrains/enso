@@ -7,6 +7,12 @@ All notable changes to Enso are documented here, following
 
 ### Changed
 
+- New installations and workspaces use `work/` for task files and retained output, with
+  durable notes in `shared/knowledge/`. They no longer create workspace `knowledge/` or
+  `drafts/`; existing content stays where it is.
+- **Breaking:** Knowledge commands now default to shared knowledge and ignore
+  `ENSO_WORKSPACE`. Use `--workspace NAME` for existing workspace notes. Bundled instructions,
+  skills, and examples follow the new default; customized installed files are preserved.
 - Workspace knowledge and drafts folders are optional: a fixing audit preserves their
   removal after an intentional consolidation. The viewer also supports a `work/` folder
   for retained output and hides absent optional content roots.

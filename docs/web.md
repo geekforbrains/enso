@@ -420,10 +420,11 @@ are correct, whether any skill name collides.
 
 A workspace and its parent container must be real directories, matching CLI ownership;
 linked workspaces return 404. Directory summaries do not scan roots that escape the workspace.
-A workspace's `knowledge/` card opens its scope in [Knowledge](#knowledge). The existing
-file browser is available over `knowledge/`, `work/`, `drafts/`, and `uploads/`, with text and
-Markdown rendered in place. This is the "what files is the agent reading" view: it shows what is actually on
-disk in the directories the agent has been told to use, dotfiles included. Files over 2 MiB,
+New workspaces show `work/` and `uploads/`. A retained workspace `knowledge/` card opens its
+scope in [Knowledge](#knowledge); retained `drafts/` files also remain browsable. The file
+browser supports all four roots, with text and Markdown rendered in place. This is the
+"what files is the agent reading" view: it shows what is actually on disk in the directories
+the agent has been told to use, dotfiles included. Files over 2 MiB,
 binary files, and anything unreadable show their metadata instead of a body. Markdown is
 rendered with raw HTML escaped, images left as text, and only relative, `http`, `https`,
 and `mailto` links kept, so a file the agent wrote cannot make your browser fetch or run

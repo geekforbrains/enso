@@ -112,8 +112,9 @@ def test_templates_mention_only_paths_that_exist(enso_home: Paths) -> None:
     assert stamped.startswith("# meteor\n") and "## Purpose" in stamped
     for text in (enso_home.agents_md.read_text(), stamped):
         mentioned = set(MENTIONED_PATHS.findall(text))
-        assert {"knowledge/", "memory/", "drafts/", "uploads/"} <= mentioned
+        assert {"memory/", "work/", "uploads/"} <= mentioned
         assert [path for path in sorted(mentioned) if not (root / path).exists()] == []
+        assert "$ENSO_HOME/shared/knowledge/" in text and enso_home.knowledge.is_dir()
         for kind in ("knowledge", "memory"):
             assert f"enso-{kind}" in text and f"enso {kind}" in text
             assert (enso_home.skills / f"enso-{kind}" / "SKILL.md").is_file()

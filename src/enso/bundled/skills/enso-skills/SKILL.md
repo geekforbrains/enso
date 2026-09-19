@@ -76,7 +76,7 @@ description: Draft a short release brief from reviewed changes in this workspace
 # Release brief
 
 Read the workspace's release conventions and the requested changes. Summarize notable
-user-facing changes, link evidence, and save the draft in that workspace's `drafts/` (resolve
+user-facing changes, link evidence, and save the draft in that workspace's `work/` (resolve
 it through `ENSO_HOME` and `ENSO_WORKSPACE`, not a task worktree). Mark unknowns instead
 of inventing them. Publishing requires a separate user request.
 ````

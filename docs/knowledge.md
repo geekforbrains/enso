@@ -12,11 +12,11 @@ where they happened. Both remain ordinary Markdown and are authoritative for the
 content; operational records, including source message captures, live in the home database.
 
 When a user asks for a current fact or reference, agents use the knowledge CLI and
-`enso-knowledge` skill, starting with relevant knowledge in the selected workspace and
-consulting shared knowledge where applicable. Questions about earlier discussions, decisions,
-promises, and follow-ups use the memory CLI and bundled `enso-memory` skill. Broaden a
-lookup deliberately when needed; selecting a workspace organizes context rather than
-enforcing confidentiality. [Workspaces](workspaces.md#context-selection-in-020) owns selection.
+`enso-knowledge` skill, starting with relevant folders in shared knowledge. Questions about
+earlier discussions, decisions, promises, and follow-ups use the memory CLI and bundled
+`enso-memory` skill. Broaden a lookup deliberately when needed; selecting a workspace
+organizes context rather than enforcing confidentiality.
+[Workspaces](workspaces.md#context-selection-in-020) owns selection.
 
 For example, the currently agreed support hours belong in a maintained knowledge note.
 The conversation on September 16 that proposed changing those hours belongs in the team's
@@ -26,9 +26,9 @@ does not automatically remove a fact already promoted into knowledge.
 
 ## Locations and context
 
-- `$ENSO_HOME/shared/knowledge/` is shared knowledge, addressed as `shared`.
+- `$ENSO_HOME/shared/knowledge/` is the default home for notes, addressed as `shared`.
 - `$ENSO_HOME/workspaces/<name>/knowledge/` belongs to that workspace, addressed as
-  `workspace:<name>`.
+  `workspace:<name>`. Existing roots remain supported; new workspaces do not create them.
 
 Until home revision 2, shared knowledge lived at `$ENSO_HOME/knowledge/` and was addressed
 as `general`. [Upgrading](install.md#upgrading) moves it and rewrites `general:` link
@@ -49,12 +49,13 @@ configuration or a viewer restart. Hidden directories and files, symbolic links,
 and `__pycache__` are excluded. A root itself must be a real directory. Files outside these
 roots are not knowledge attachments or link destinations.
 
-Knowledge commands default to `ENSO_WORKSPACE`; `--workspace NAME` selects a different
-workspace, and `--shared` selects the shared root even when the environment selects a
-workspace. The two flags cannot be combined. No context means an error, not shared
-knowledge. UUIDs identify notes globally but CLI operations require their root to be
-selected, just like paths. The viewer's stable ID URLs and cross-root links continue to
-resolve globally. [CLI](cli.md#knowledge) owns the command signatures.
+Knowledge commands default to shared knowledge, regardless of `ENSO_WORKSPACE`.
+`--workspace NAME` selects an existing workspace root, and `--shared` explicitly selects
+the default. The two flags cannot be combined. No workspace context is needed for shared
+notes; an invalid explicit workspace still errors. UUIDs identify notes globally but CLI
+operations require their root to be selected, just like paths. The viewer's stable ID URLs
+and cross-root links continue to resolve globally. [CLI](cli.md#knowledge) owns the command
+signatures.
 
 Nested folders may contain both notes and subfolders. Start agents in the relevant branch,
 read selectively, and broaden when needed; folders organize context but do not create
@@ -66,31 +67,17 @@ time; the Markdown files remain authoritative and no database migration is neede
 
 ## Where new notes go
 
-New notes go in the current workspace's `knowledge/`. Agents create or move notes into shared
-knowledge only when the user explicitly asks, in the conversation or in a standing rule the
-user wrote, such as the home or a workspace `AGENTS.md`, a job's `JOB.md`, or a
-filing-conventions note in knowledge. An agent's own judgment that a fact is useful across
-workspaces is not enough. A standing user rule may make shared knowledge the sole filing
-destination; [Workspaces](workspaces.md#consolidating-knowledge-and-work-files) explains how
-to retire optional workspace knowledge roots without the audit recreating them. This limits
-filing, not reading; an existing note is updated where it lives. Each fact keeps one owning note that others link to rather than copy.
+New notes go in shared knowledge unless the user gives a different filing rule. This applies
+to interactive turns, jobs, Heartbeat beats, and agents running outside Enso. Find and update
+an existing note where it lives. Each fact keeps one owning note that others link to rather
+than copy; a retained workspace note can still be linked with
+`[[workspace:research:Projects/Topic]]`.
 
-- **Another workspace needs a note.** An interactive agent links to it where it is, such as
-  `[[workspace:research:Projects/Topic]]`, tells the user, and asks whether to leave it or
-  move it to shared knowledge with `enso knowledge move REF DEST --to-shared`.
-- **Jobs and Heartbeat beats** have nobody to ask. They follow their written rules in
-  `JOB.md` or `AGENTS.md`; otherwise they file in their own workspace. When another
-  workspace needs a note, they link it where it is and mention that in their result so the
-  user can decide.
-- **No workspace selected.** An agent running outside Enso, without `ENSO_WORKSPACE`,
-  selects the workspace that owns the material with `--workspace NAME` and asks the user
-  when none clearly fits. Shared knowledge still requires an explicit request.
-
-The bundled `enso-knowledge` skill and `AGENTS.md` templates carry this rule; the CLI, audit,
-and viewer do not enforce it. Existing workspace `AGENTS.md` files and customized bundled
-files are not rewritten, and agents may read their old shared-reference lines as the user's
-rule until the user updates them; [Customizing](customizing.md#the-bundled-skills) explains
-what upgrades refresh.
+The bundled `enso-knowledge` skill and `AGENTS.md` templates carry this default. Existing
+workspace notes, instructions, and customized bundled files are not rewritten. Scripts
+that previously relied on `ENSO_WORKSPACE` for knowledge must now pass `--workspace NAME`.
+[Workspaces](workspaces.md#consolidating-knowledge-and-work-files) explains deliberate
+consolidation; [Customizing](customizing.md#the-bundled-skills) explains what upgrades refresh.
 
 ## The note format
 

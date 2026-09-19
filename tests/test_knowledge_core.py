@@ -561,20 +561,21 @@ def test_failed_move_rolls_back_without_losing_notes(tmp_path, monkeypatch):
     assert not (paths.knowledge / "Moved.md").exists()
 
 
-def test_cli_json_read_write_audit_and_errors(tmp_path, monkeypatch):
+@pytest.mark.parametrize("options", [[], ["--shared"]])
+def test_cli_json_read_write_audit_and_errors(tmp_path, monkeypatch, options):
     monkeypatch.setenv("ENSO_HOME", str(tmp_path))
     runner = CliRunner()
     created = runner.invoke(
         app,
-        ["knowledge", "create", "Folder/One.md", "--file", "-", "--shared", "--json"],
+        ["knowledge", "create", "Folder/One.md", "--file", "-", *options, "--json"],
         input="Body text\n",
     )
     assert created.exit_code == 0, created.output
     note = json.loads(created.output)
-    assert note["ok"] and len(note["sha256"]) == 64
-    listing = runner.invoke(app, ["knowledge", "search", "body", "--shared", "--json"])
+    assert note["ok"] and note["scope"] == "shared" and len(note["sha256"]) == 64
+    listing = runner.invoke(app, ["knowledge", "search", "body", *options, "--json"])
     assert json.loads(listing.output)["total"] == 1
-    shown = runner.invoke(app, ["knowledge", "show", note["id"], "--shared", "--json"])
+    shown = runner.invoke(app, ["knowledge", "show", note["id"], *options, "--json"])
     assert json.loads(shown.output)["body"] == "Body text"
     updated = runner.invoke(
         app,
@@ -586,13 +587,13 @@ def test_cli_json_read_write_audit_and_errors(tmp_path, monkeypatch):
             "-",
             "--expected-hash",
             note["sha256"],
-            "--shared",
+            *options,
             "--json",
         ],
         input="[[Missing]]\n",
     )
     assert updated.exit_code == 0, updated.output
-    audited = runner.invoke(app, ["knowledge", "audit", "--shared", "--json"])
+    audited = runner.invoke(app, ["knowledge", "audit", *options, "--json"])
     assert audited.exit_code == 1 and not json.loads(audited.output)["ok"]
     conflict = runner.invoke(
         app,
@@ -604,7 +605,7 @@ def test_cli_json_read_write_audit_and_errors(tmp_path, monkeypatch):
             "-",
             "--expected-hash",
             note["sha256"],
-            "--shared",
+            *options,
             "--json",
         ],
         input="Stale\n",
@@ -614,17 +615,25 @@ def test_cli_json_read_write_audit_and_errors(tmp_path, monkeypatch):
         hashlib.sha256((Paths(tmp_path).knowledge / "Folder/One.md").read_bytes()).hexdigest()
         != note["sha256"]
     )
+    (Paths(tmp_path).knowledge / "Missing.md").write_text("Imported reference\n")
+    adopted = runner.invoke(app, ["knowledge", "adopt", "Missing.md", *options, "--json"])
+    assert adopted.exit_code == 0, adopted.output
+    moved = runner.invoke(app, ["knowledge", "move", note["id"], "Moved.md", *options, "--json"])
+    assert moved.exit_code == 0 and json.loads(moved.output)["scope"] == "shared", moved.output
+    assert runner.invoke(app, ["knowledge", "audit", *options, "--json"]).exit_code == 0
 
 
 @pytest.mark.parametrize(
     ("environment", "options", "selected"),
     [
-        ("team", [], "workspace:team"),
+        ("team", [], "shared"),
+        ("missing", [], "shared"),
+        ("team", ["--workspace", "team"], "workspace:team"),
         ("team", ["--workspace", "personal"], "workspace:personal"),
         ("missing", ["--workspace", "team"], "workspace:team"),
         ("missing", ["--shared"], "shared"),
         (None, ["--shared"], "shared"),
-        (None, [], None),
+        (None, [], "shared"),
         ("team", ["--workspace", "missing"], None),
         ("team", ["--workspace", "team", "--shared"], None),
     ],
@@ -657,7 +666,9 @@ def test_cli_workspace_writes_scoped_ids_and_cross_root_moves(tmp_path, monkeypa
     put(paths, "Index.md", "Personal reference", "personal")
     runner = CliRunner()
     created = runner.invoke(
-        app, ["knowledge", "create", "Page.md", "--file", "-", "--json"], input="Reference"
+        app,
+        ["knowledge", "create", "Page.md", "--workspace", "team", "--file", "-", "--json"],
+        input="Reference",
     )
     assert created.exit_code == 0, created.output
     note = json.loads(created.output)
@@ -672,11 +683,31 @@ def test_cli_workspace_writes_scoped_ids_and_cross_root_moves(tmp_path, monkeypa
         assert "belongs to workspace:team" in json.loads(refused.output)["error"]
     conflict = runner.invoke(
         app,
-        ["knowledge", "move", "Page.md", "Page.md", "--to-shared", "--to-workspace", "personal"],
+        [
+            "knowledge",
+            "move",
+            "Page.md",
+            "Page.md",
+            "--workspace",
+            "team",
+            "--to-shared",
+            "--to-workspace",
+            "personal",
+        ],
     )
     assert conflict.exit_code == 1 and "not both" in conflict.output
     moved = runner.invoke(
-        app, ["knowledge", "move", note["id"], "Page.md", "--to-shared", "--json"]
+        app,
+        [
+            "knowledge",
+            "move",
+            note["id"],
+            "Page.md",
+            "--workspace",
+            "team",
+            "--to-shared",
+            "--json",
+        ],
     )
     assert moved.exit_code == 0, moved.output
     assert json.loads(moved.output)["scope"] == "shared"
@@ -709,6 +740,6 @@ def test_cli_scoped_audit_and_search_report_only_selected_root(tmp_path, monkeyp
     paths.knowledge.write_text("Invalid shared root")
     runner = CliRunner()
     for command in (["audit"], ["search", "Reference"]):
-        result = runner.invoke(app, ["knowledge", *command, "--json"])
+        result = runner.invoke(app, ["knowledge", *command, "--workspace", "team", "--json"])
         assert result.exit_code == 0, result.output
         assert json.loads(result.output)["problems"] == []

@@ -50,7 +50,7 @@ class Entry:
 # The documented workspace layout (docs/workspaces.md § Layout). Link targets are relative
 # to the link's own directory; the provider CLIs find the skill links by walking up from
 # the workspace to the Git root.
-WORKSPACE_DIRS = ("skills", "knowledge", "memory", "jobs", "projects", "drafts", "uploads")
+WORKSPACE_DIRS = ("skills", "memory", "jobs", "projects", "work", "uploads")
 LINKS = (
     ("CLAUDE.md", "AGENTS.md"),
     (".claude/skills", "../skills"),
@@ -63,11 +63,11 @@ WORKSPACE: tuple[Entry, ...] = (
     Entry(".claude", REQUIRED, "the Claude Code and Grok skill link"),
     Entry(".agents", REQUIRED, "the Codex, Antigravity, and OpenCode skill link"),
     Entry("skills", REQUIRED, "skills only this workspace needs"),
-    Entry("knowledge", USER, "optional workspace reference material"),
+    Entry("knowledge", USER, "legacy workspace reference material"),
     Entry("memory", REQUIRED, "dated Markdown memories"),
     Entry("jobs", REQUIRED, "scheduled and stage jobs"),
     Entry("projects", REQUIRED, "project definitions and scripts"),
-    Entry("drafts", USER, "optional work product using the original folder name"),
+    Entry("drafts", USER, "legacy work product using the original folder name"),
     Entry("work", USER, "task files and retained work product"),
     Entry("uploads", REQUIRED, "chat attachments, one directory per turn"),
     Entry("WORKSPACE.md", USER, "optional agent triple and provider arguments"),

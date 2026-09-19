@@ -62,6 +62,9 @@ main()
     assert example["version"] == 2
     assert not list(enso_home.workspace_jobs("default").iterdir())
     assert (enso_home.home / ".git").is_dir()
+    root = enso_home.workspace("default")
+    assert (root / "work").is_dir() and enso_home.knowledge.is_dir()
+    assert not (root / "knowledge").exists() and not (root / "drafts").exists()
     # Filling the emitted example must work without deleting obsolete settings first.
     example["transports"]["slack"].update(bot_token="xoxb-test", app_token="xapp-test", notify="C1")
     example["providers"]["claude"]["path"] = sys.executable
@@ -100,12 +103,17 @@ def test_onboarding_refuses_obsolete_homes_before_seeding(enso_home, legacy, com
 def test_init_rerun_preserves_active_config_instructions_jobs_and_skills(enso_home, raw_config):
     assert initialization.initialize_home(enso_home)["ok"]
     assert initialization.apply_config(enso_home, raw_config)["ok"]
+    root = enso_home.workspace("default")
+    for legacy in ("knowledge", "drafts"):
+        (root / legacy).mkdir()
     personal = [
         enso_home.agents_md,
         enso_home.config_example,
         enso_home.skills / "enso" / "SKILL.md",
         enso_home.workspace("default") / "AGENTS.md",
         enso_home.workspace_jobs("default") / "enso-audit" / "JOB.md",
+        root / "knowledge" / "Note.md",
+        root / "drafts" / "Report.md",
     ]
     for path in personal:
         path.write_text("personal content\n")

@@ -19,9 +19,9 @@
 
 ## Files
 
-- `knowledge/` — current facts and reference material; load `enso-knowledge` and use `enso knowledge` to find or maintain it
+- `$ENSO_HOME/shared/knowledge/` — current facts and reference material shared across workspaces; load `enso-knowledge` and use `enso knowledge` to find or maintain it
 - `memory/` — dated conversations and experiences; load `enso-memory`, search with `enso memory search`, and inspect sources before recalling earlier work
-- `drafts/` — generated and editable output
+- `work/` — task files and generated or editable output, grouped by task
 - `uploads/` — chat attachments, written by Enso
 
-New knowledge notes go in `knowledge/` unless someone asks for shared knowledge (`$ENSO_HOME/shared/knowledge/`, `--shared`). Memory belongs to this workspace. People sharing it share maintained memory; separate workspaces do not promise confidentiality within this installation.
+Knowledge commands use shared knowledge by default. Keep work in its established repository or destination when one exists; otherwise use `work/`. Memory belongs to this workspace. People sharing it share maintained memory; separate workspaces do not promise confidentiality within this installation.

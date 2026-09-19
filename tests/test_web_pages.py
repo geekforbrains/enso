@@ -51,6 +51,7 @@ def home(enso_home: Paths, raw_config: dict) -> Home:
     default = enso_home.workspace("default")
     workspaces.ensure_layout(default)
     (default / "AGENTS.md").write_text("# default\nWhat this workspace is for.\n")
+    (default / "knowledge").mkdir()  # retained notes from an older installation
     (default / "knowledge" / "notes.md").write_text(
         "# Notes\n\n<script>alert(1)</script>\n\n[bad](javascript:alert(1)) "
         "![pic](http://evil.example/x.png) [fine](https://example.com) [rel](other.md)\n\n"
@@ -296,8 +297,9 @@ async def test_workspaces_list_and_detail(client: TestClient, home: Home) -> Non
 
     detail = await page(client, "/workspaces/lonely")
     assert title(detail) == "Workspace lonely · Enso"
-    assert 'href="/knowledge?scope=workspace%3Alonely"' in detail
-    assert 'href="/workspaces/lonely/files/drafts/"' in detail
+    assert 'href="/knowledge?scope=workspace%3Alonely"' not in detail
+    assert 'href="/workspaces/lonely/files/work/"' in detail
+    assert 'href="/workspaces/lonely/files/drafts/"' not in detail
     assert 'href="/workspaces/lonely/files/uploads/"' in detail
     assert "untouched template" in detail and 'href="/skills?workspace=lonely"' in detail
     assert "nothing is bound to this workspace" in detail
@@ -373,13 +375,13 @@ async def test_file_browser_lists_dotfiles_and_renders_safely(
     deep = await page(client, "/workspaces/default/files/knowledge/sub/deep.md")
     assert 'href="/workspaces/default/files/knowledge/sub/"' in deep and "<p>deep</p>" in deep
 
-    big = home.paths.workspace("default") / "drafts" / "big.txt"
+    big = home.paths.workspace("default") / "work" / "big.txt"
     with open(big, "wb") as handle:
         handle.truncate(files.MAX_FILE_PREVIEW_BYTES + 1)
-    large = await page(client, "/workspaces/default/files/drafts/big.txt")
+    large = await page(client, "/workspaces/default/files/work/big.txt")
     assert "Larger than the 2 MiB preview limit." in large and "2.0 MB" in large
-    (home.paths.workspace("default") / "drafts" / "empty.txt").write_text("")
-    assert "The file is empty." in await page(client, "/workspaces/default/files/drafts/empty.txt")
+    (home.paths.workspace("default") / "work" / "empty.txt").write_text("")
+    assert "The file is empty." in await page(client, "/workspaces/default/files/work/empty.txt")
     assert "This directory is empty." in await page(client, "/workspaces/default/files/uploads/")
 
 
@@ -393,7 +395,6 @@ async def test_file_browser_rejects_every_escape(
     os.symlink(home.paths.config, default / "knowledge" / "leak")
     os.symlink(outside, default / "knowledge" / "hole")
     os.symlink(default / "knowledge" / "plain.txt", default / "knowledge" / "inside")
-    os.rmdir(default / "drafts")
     os.symlink(outside, default / "drafts")
 
     for path in (
@@ -419,8 +420,7 @@ async def test_file_browser_rejects_every_escape(
     inside = await page(client, "/workspaces/default/files/knowledge/inside")
     assert "&lt;b&gt;not html&lt;/b&gt;" in inside  # a link that stays inside is fine
     detail = await page(client, "/workspaces/default")
-    assert "drafts/ {}".format("") or True
-    assert "not part of the layout" in detail or "drafts" in detail
+    assert "drafts" in detail
 
 
 # -- Skills ---------------------------------------------------------------------
@@ -1129,7 +1129,6 @@ async def test_same_named_jobs_link_to_their_own_history(client, home):
 async def test_workspace_work_files_without_legacy_content_roots(home, client):
     root = home.paths.workspace("default")
     shutil.rmtree(root / "knowledge")
-    (root / "drafts").rename(root / "work")
     (root / "work" / "Report.md").write_text("## Retained result\n\nUseful output.\n")
 
     detail = await page(client, "/workspaces/default")

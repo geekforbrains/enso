@@ -24,11 +24,10 @@ Paths below show the default home; use `ENSO_HOME` instead of `~/.enso` when it 
     ├── WORKSPACE.md           # optional agent triple and provider arguments
     ├── CLAUDE.md -> AGENTS.md
     ├── skills/               # skills unique to this workspace
-    ├── knowledge/            # durable reference owned by this workspace
     ├── memory/               # dated Markdown memory, maintained with enso memory
     ├── jobs/                 # scheduled and stage jobs
     ├── projects/             # workspace project definitions
-    ├── drafts/               # generated or editable output
+    ├── work/                 # task files and generated or editable output
     ├── uploads/              # chat attachments, one directory per turn
     ├── .claude/skills -> ../skills
     └── .agents/skills -> ../skills
@@ -36,11 +35,11 @@ Paths below show the default home; use `ENSO_HOME` instead of `~/.enso` when it 
 
 `AGENTS.md` and `skills/` are the files you write; the `CLAUDE.md` and `.claude`/`.agents` links are generated and are how the provider CLIs find them. Never replace a link with a copy, and never add skills under the links instead of `skills/`. A `.git` inside a workspace hides the home's `AGENTS.md` and skills from the agent, so keep repositories elsewhere.
 
-Keep `AGENTS.md` small: what the workspace is for, what ambiguous terms mean, and any rule that must be visible every turn. Point to files in `knowledge/` for detail instead of inlining it.
+Keep `AGENTS.md` small: what the workspace is for, what ambiguous terms mean, and any rule that must be visible every turn. Point to files in `$ENSO_HOME/shared/knowledge/` for detail instead of inlining it. Keep work in its established repository or destination; otherwise group it by task under `work/` and keep the workspace root clear.
 
 Load `enso-knowledge` to find, write, import, organize, or link durable notes, or change their
-formatting. It owns where notes go (this workspace unless the user asks for shared) and the
-common formatting rules; the viewer discovers these knowledge roots automatically and stays
+formatting. New notes go in shared knowledge by default. The skill owns the note workflow and
+common formatting rules; the viewer discovers knowledge roots automatically and stays
 read-only.
 Knowledge is current reference; dated conversations and experiences belong in `memory/`.
 For earlier work, load `enso-memory`, search with `enso memory search`, and read relevant
@@ -91,7 +90,7 @@ An `agent` block needs all three keys. Provider `args` replace the global list, 
 
 A job belongs to the workspace containing `jobs/<job>/JOB.md` and uses a `<workspace>:<job>` reference. Projects live in `projects/<KEY>/PROJECT.md`; neither file repeats its workspace. Bindings, workspace settings, and project definitions are read fresh for each operation, with no restart. A queued turn keeps its arrival workspace; removing its binding drops it before provider startup. Use `enso slack lookup-channel` for ids; never guess one.
 
-The workspace scaffold keeps `skills/` and its provider links ready even when empty. `WORKSPACE.md` and the workspace `heartbeat/` root are optional and are not created by scaffolding.
+The workspace scaffold keeps `skills/` and its provider links ready even when empty. `WORKSPACE.md` and the workspace `heartbeat/` root are optional and are not created by scaffolding. Existing `knowledge/` and `drafts/` directories remain supported, but new workspaces do not create them. Audits preserve absent optional content folders; initialization and audits never move existing notes or work files.
 
 ## Skills
 

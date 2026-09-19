@@ -45,8 +45,8 @@ def test_workspace_create_and_list(enso_home: Paths, raw_config: dict) -> None:
     assert (root / "AGENTS.md").read_text().startswith("# meteor\n")
     assert os.readlink(root / "CLAUDE.md") == "AGENTS.md"
     assert sorted(entry.name for entry in root.iterdir()) == [
-        ".agents", ".claude", "AGENTS.md", "CLAUDE.md", "drafts", "jobs", "knowledge",
-        "memory", "projects", "skills", "uploads",
+        ".agents", ".claude", "AGENTS.md", "CLAUDE.md", "jobs",
+        "memory", "projects", "skills", "uploads", "work",
     ]  # fmt: skip
     assert all((root / name).is_dir() for name in workspaces.WORKSPACE_DIRS)
     for link in (root / ".claude" / "skills", root / ".agents" / "skills"):

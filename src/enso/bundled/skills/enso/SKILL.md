@@ -28,7 +28,7 @@ Enso's normal runtime state lives under one directory, `~/.enso` (or `$ENSO_HOME
 ├── .agents/skills -> ../skills
 ├── workspaces/<name>/   # one directory per workspace: the agent's cwd and context
 │   ├── WORKSPACE.md     # optional agent and provider-argument overrides
-│   ├── knowledge/      # current reference owned by the workspace
+│   ├── work/           # task files and retained output
 │   ├── memory/         # dated history owned by the workspace
 │   ├── projects/<KEY>/PROJECT.md # project definition and sibling scripts
 │   ├── jobs/<job>/JOB.md # workspace jobs, referenced as <workspace>:<job>
@@ -69,7 +69,7 @@ Adding or editing a skill needs no Enso restart. The provider discovers skills t
 | Skill | Use it for |
 | --- | --- |
 | `enso-workspace` | The workspace layout, where files and skills go, bindings, the audit |
-| `enso-knowledge` | Markdown notes, filed in the workspace unless the user asks for shared; links, imports, and consistent user-defined formatting |
+| `enso-knowledge` | Markdown notes in shared knowledge by default; links, imports, and consistent user-defined formatting |
 | `enso-memory` | Earlier conversations, dated experiences, source captures, and deliberate corrections |
 | `enso-browser` | Persistent Chrome profiles, human login, and attaching browser tools |
 | `enso-skills` | Finding and installing official optional skills; authoring manual skills and choosing scope |

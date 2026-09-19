@@ -20,13 +20,11 @@ owning workspace, as detailed in the [ownership layout](#ownership-in-020).
 ├── WORKSPACE.md       # optional agent triple and provider arguments
 ├── CLAUDE.md          # symlink -> AGENTS.md
 ├── skills/            # skills unique to this workspace
-├── knowledge/         # optional workspace reference, created by the initial scaffold
 ├── memory/            # dated Markdown memories
 ├── jobs/              # scheduled and stage jobs
 ├── projects/          # workspace project definitions and scripts
 ├── heartbeat/<REF>/   # optional; a beat's gate.sh and helpers
-├── drafts/            # optional original output folder, created by the initial scaffold
-├── work/              # optional task files and retained output
+├── work/              # task files and retained output, grouped by task
 ├── uploads/           # chat attachments, one directory per turn
 ├── .claude/skills     # symlink -> ../skills, read by Claude Code and Grok
 ├── .agents/skills     # symlink -> ../skills, read by Codex, Grok, Antigravity, and OpenCode
@@ -36,14 +34,12 @@ owning workspace, as detailed in the [ownership layout](#ownership-in-020).
 
 | Directory | What belongs there |
 | --- | --- |
-| `knowledge/` | Durable reference owned by this workspace: notes, facts, and research worth finding again. |
 | `jobs/` | Scheduled and stage jobs, identified as `<workspace>:<job>`. |
 | `memory/` | Dated Markdown conversations and experiences, maintained with `enso memory`. |
 | `projects/` | Project definitions and scripts, each under `<KEY>/`; see [Tasks](tasks.md#projects-and-stages). |
 | `heartbeat/` | Optional root, created only when workspace gate scripts are used. |
 | `WORKSPACE.md` | Optional settings; [Configuration](configuration.md#workspacemd-in-020) owns its format and reload behavior. |
-| `drafts/` | Optional original location for work product; retained files require deliberate cleanup. |
-| `work/` | Optional replacement for `drafts/`, holding task files and retained outputs. |
+| `work/` | Task files and retained output, grouped by task; use an established repository or destination when one exists. |
 | `uploads/` | Chat attachments. Enso writes here; nothing else should. |
 | `skills/` | Skills only this workspace needs. |
 | Policy files | Each CLI's own project-level permission file, in its own format. Optional; Enso neither checks nor enforces it. See [Provider permissions](configuration.md#provider-permissions-and-installation-trust). |
@@ -51,25 +47,28 @@ owning workspace, as detailed in the [ownership layout](#ownership-in-020).
 Names are lowercase kebab-case (`meteor`, `blog-research`), at most 64 characters. The name
 is the directory name, and there is no other valid location. The workspace and its
 `workspaces/` container must be real directories; a symbolic link cannot give a workspace
-a second identity. The scaffold creates `knowledge/`, `memory/`, `jobs/`, `projects/`,
-`drafts/`, `uploads/`, and `skills/`. The empty skills directory keeps the provider discovery
-links valid even before you add a workspace skill. It creates neither `WORKSPACE.md` nor
-`heartbeat/`; adding either later requires no restart.
+a second identity. The scaffold creates `memory/`, `jobs/`, `projects/`, `work/`, `uploads/`,
+and `skills/`. Durable notes live in the home's `shared/knowledge/`. The empty skills
+directory keeps the provider discovery links valid even before you add a workspace skill.
+It creates neither `WORKSPACE.md` nor `heartbeat/`; adding either later requires no restart.
 
 ### Consolidating knowledge and work files
 
-An installation may keep all notes in `shared/knowledge/` and use workspace `work/` for
-other output. Record that standing filing rule in the home instructions, and use
-`enso knowledge ... --shared`. Move notes through `enso knowledge move` to preserve their
-IDs and repair links. Before removing the empty workspace knowledge roots or renaming
-`drafts/`, update local instructions, jobs, scripts, and references that use their paths.
+New installations keep notes in `shared/knowledge/` and use workspace `work/` for other
+output. Existing workspace `knowledge/` and `drafts/` directories remain supported but are
+no longer scaffolded, including by `enso init`. There is no automatic content migration.
+To consolidate an older installation, move notes through
+`enso knowledge move REF DEST --workspace NAME --to-shared` to preserve IDs and repair
+links. Before removing empty workspace knowledge roots or renaming `drafts/`, update local
+instructions, jobs, scripts, and references that use their paths. Knowledge commands now
+default to shared; scripts that still use workspace notes must pass `--workspace NAME`.
 Keep repositories, source attachments, memory, and operating records in their existing homes.
 
 `knowledge/`, `drafts/`, and `work/` are optional content roots. Audits validate those that
 exist, but neither report missing optional roots nor recreate them with `--fix`. The viewer
-shows present content roots. New workspace creation and explicit initialization still seed
-the original `knowledge/` and `drafts/` defaults; they are not cleanup commands for a
-customized installation. No automatic content move or migration is performed.
+shows present content roots. New workspace creation and explicit initialization seed `work/`;
+they never rename, move, or remove existing content. Keep temporary and retained task files
+inside their task's folder rather than adding loose files to the workspace root.
 
 The home itself holds the workspaces and what they share:
 
@@ -90,8 +89,7 @@ The home itself holds the workspaces and what they share:
 ```
 
 `shared/` holds what workspaces share; knowledge is its only entry for now. New notes go
-in the workspace's `knowledge/`, discovered without registration; agents file notes in
-`~/.enso/shared/knowledge/` (or `$ENSO_HOME/shared/knowledge/`) only when the user asks.
+in `~/.enso/shared/knowledge/` (or `$ENSO_HOME/shared/knowledge/`) by default.
 [Knowledge](knowledge.md) owns placement, the note format, links, searching, and import
 behavior; `enso-knowledge` guides agent maintenance.
 
@@ -100,7 +98,7 @@ families read one document. Skills follow the same rule: `skills/` is the direct
 write, and the two dot-directories are symlinks to it that the provider CLIs discover. One
 source of truth, generated links everywhere else. Keep `AGENTS.md` short — what the
 workspace is for, what ambiguous terms mean, and any rule that must be visible on every
-single turn. Detail belongs in `knowledge/`, referenced by path. See
+single turn. Detail belongs in `$ENSO_HOME/shared/knowledge/`, referenced by path. See
 [Customizing](customizing.md).
 The template directs current reference requests to `enso-knowledge` and `enso knowledge`,
 and earlier events to `enso-memory` and `enso memory`. Workspace memory is shared context,
@@ -128,7 +126,6 @@ $ENSO_HOME/
 └── workspaces/<name>/
     ├── AGENTS.md                 # purpose and working conventions for the agent
     ├── WORKSPACE.md              # optional agent triple and provider arguments
-    ├── knowledge/                # current reference owned by this workspace
     ├── memory/                   # dated conversations and experiences
     ├── jobs/<job>/
     │   ├── JOB.md
@@ -138,7 +135,7 @@ $ENSO_HOME/
     │   ├── PROJECT.md
     │   └── *.sh                  # optional project scripts
     ├── heartbeat/                # optional follow-up gate scripts and helpers
-    ├── drafts/
+    ├── work/                     # task files and retained output
     ├── uploads/
     └── skills/                   # scaffolded; workspace-specific skills are optional
 ```
@@ -153,7 +150,7 @@ Enso's restriction mode is removed without silently changing provider arguments.
 | --- | --- | --- |
 | Installation settings and bindings | Home `config.json` | Installation |
 | Shared guidance, knowledge, and skills | Home `AGENTS.md`, `shared/knowledge/`, and `skills/` | Installation |
-| Workspace guidance, knowledge, memory, drafts, uploads, and skills | Files in the workspace | Containing workspace |
+| Workspace guidance, memory, work files, uploads, and skills | Files in the workspace | Containing workspace |
 | Workspace agent and provider arguments | `WORKSPACE.md` | Containing workspace |
 | Jobs and their supporting scripts | `jobs/<job>/` in the workspace | Containing workspace |
 | Project definitions and scripts | `projects/<KEY>/` in the workspace | Containing workspace |
@@ -192,8 +189,9 @@ through preparation and queueing. Removing
 its binding or losing its workspace drops it before execution; the
 [connection access contract](connections.md#access-in-020) owns admission and notices. The
 shared resolver is used by task, project, workflow, job creation, Heartbeat creation,
-message sends, operational list commands, knowledge, and memory. Knowledge adds `--shared`
-to explicitly select shared knowledge; memory belongs only to a workspace.
+message sends, operational list commands, and memory. Knowledge defaults to shared and
+uses workspace selection only with an explicit `--workspace NAME`; it ignores
+`ENSO_WORKSPACE`. Memory belongs only to a workspace.
 [CLI](cli.md#workspace-context-in-020) owns command syntax. Enso sets `ENSO_WORKSPACE`
 for its chat agents, jobs, and Heartbeat runs, and CLI calls they launch inherit it.
 Workspace-scoped CLI operations default to that value; an optional
