@@ -204,8 +204,7 @@ Enso installs these into `~/.enso/skills/`:
 | `enso-skills` | Finding official optional skills and writing or refining a skill manually |
 | `enso-slack` | Looking people and channels up, reading history, sending, tables and charts |
 | `enso-tables` | Creating, registering, and querying structured data in `enso.db` |
-| `enso-tasks` | Working a task from a stage job: the Task block, handoff submission, evidence, worktrees, and recovery |
-| `enso-workflow` | Designing and migrating task pipelines, optional required checks, development presets, lifecycle scripts, and worktree settings |
+| `enso-projects` | Creating, organizing, managing, and troubleshooting projects, tasks, and workflows |
 | `enso-update` | Checking releases, requesting an authorized self-update, and inspecting recovery |
 | `enso-workspace` | Inspecting workspaces, the layout, the audit, and where skills go |
 

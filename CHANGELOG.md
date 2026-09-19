@@ -7,6 +7,8 @@ All notable changes to Enso are documented here, following
 
 ### Changed
 
+- **Breaking:** The bundled `enso-tasks` and `enso-workflow` skills are replaced by the
+  concise `enso-projects` skill, with separate project, task, and workflow references.
 - New installations and workspaces use `work/` for task files and retained output, with
   durable notes in `shared/knowledge/`. They no longer create workspace `knowledge/` or
   `drafts/`; existing content stays where it is.

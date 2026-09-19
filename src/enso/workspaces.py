@@ -33,19 +33,23 @@ BUNDLED_SKILLS = (
     "enso-jobs",
     "enso-knowledge",
     "enso-memory",
+    "enso-projects",
     "enso-security",
     "enso-skills",
     "enso-slack",
     "enso-tables",
-    "enso-tasks",
     "enso-update",
-    "enso-workflow",
     "enso-workspace",
 )
 # Explicitly list support files too: a local __pycache__ must never become a bundle.
 BUNDLED_SKILL_SUPPORT = {
     "enso-browser": ("scripts/browser.py", "references/setup.md"),
     "enso-knowledge": ("references/formatting.md", "scripts/lint.py"),
+    "enso-projects": (
+        "references/projects.md",
+        "references/tasks.md",
+        "references/workflows.md",
+    ),
 }
 BUNDLED_JOBS: tuple[str, ...] = ("enso-audit", "enso-update", "enso-memory")
 BUNDLED_FILES: tuple[str, ...] = ()

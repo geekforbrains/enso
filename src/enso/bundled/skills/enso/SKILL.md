@@ -45,7 +45,7 @@ Enso's normal runtime state lives under one directory, `~/.enso` (or `$ENSO_HOME
 The release installer writes a stable command into its selected bin directory. `enso service install` and `enso web install` write the operating system's user service units, and Antigravity may register a workspace in its own project catalog. `enso models` may reuse `$XDG_CACHE_HOME/opencode/models.json` (or `~/.cache/opencode/models.json` when that variable is unset or empty), but it only reads that external OpenCode cache and writes refreshes to Enso's own `cache/models.json`. Enso never modifies user-level instruction or skill files.
 
 New repository tasks use `<repo>/.worktrees/<REF>` unless their `PROJECT.md` selects another
-`worktree_root`; existing tasks retain their recorded paths. Read `enso-tasks` before preparing
+`worktree_root`; existing tasks retain their recorded paths. Read `enso-projects` before preparing
 or managing task worktrees.
 
 The installed Enso release version is package metadata, also recorded in `runtime/install.json` for managed installs. It is separate from config and database schema versions. `runtime/current` selects the managed release; `runtime/update.json`, `runtime/operations/`, and the maintenance gate belong to the updater and must not be edited by hand.
@@ -76,7 +76,7 @@ Adding or editing a skill needs no Enso restart. The provider discovers skills t
 | `enso-security` | Installation trust, provider permissions, credential handling, and untrusted input |
 | `enso-heartbeat` | Finite future actions and temporary watches: gates, event history, action receipts, explicit completion |
 | `enso-jobs` | Scheduled and stage jobs: `JOB.md`, no-work prerun gates, postrun checks and same-session follow-ups, run history |
-| `enso-tasks` | The task board: the Task block a stage job opens with, the moves, evidence, worktrees, landing a branch |
+| `enso-projects` | Projects, task boards and handoffs, workflows, checks, lifecycle scripts, and worktrees |
 | `enso-slack` | Looking people and channels up, reading Slack, sending messages, files, tables, and charts |
 | `enso-tables` | Durable structured data in `enso.db` |
 | `enso-update` | Release checks, user-authorized self-updates, status, and interrupted-update recovery |
@@ -94,7 +94,7 @@ enso table list|register|schema      # see enso-tables
 enso job list|show|run|create        # see enso-jobs
 enso heartbeat status|create|list|show|history|update|pause|resume|wait|complete  # see enso-heartbeat
 enso runs list|show
-enso task add|list|show|advance|return|block|resume|release|edit|note|ref|land|sweep   # see enso-tasks
+enso task add|list|show|advance|return|block|resume|release|edit|note|ref|land|sweep   # see enso-projects
 enso project list|add
 enso workspace list|create|audit     # see enso-workspace
 enso knowledge roots|list|search|show|audit|create|adopt|update|move  # see enso-knowledge

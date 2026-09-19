@@ -351,7 +351,7 @@ human checkpoints, or external CI commands only where useful. A command stage ca
 an artifact or poll an external result without invoking a provider. Integration is explicit;
 a final agent stage does not automatically imply permission to merge or publish.
 
-Use `--preset basic` for one unchecked `work` stage. The bundled `enso-workflow` skill helps
+Use `--preset basic` for one unchecked `work` stage. The bundled `enso-projects` skill helps
 choose and customize either process. This is an ordered pipeline with finite loops, not a
 general DAG engine or a requirement to adopt the development preset.
 
@@ -606,5 +606,5 @@ one it wrote.
 The agent in a chat turn uses the same commands, as the actor the origin names. "Move
 EN-041 to review with a note that the fences are fixed" is `enso task advance EN-041
 --message "…"`; "park it" is `block`; "kill it" is `drop`, which only a person's turn can
-do. The bundled `enso-tasks` skill teaches the agent the moves and the rules above; the
+do. The bundled `enso-projects` skill teaches the agent the moves and the rules above; the
 [web viewer](web.md#tasks) is where you read the board.
