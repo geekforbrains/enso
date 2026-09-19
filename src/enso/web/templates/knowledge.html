@@ -23,7 +23,7 @@
   {{ k.row_list(recent) }}
 </section>
 {% endif %}
-<p class="range">{% if q %}{{ total }} result{{ 's' if total != 1 }} for “{{ q }}” · {{ 'All knowledge' if across else scope_label ~ (' / ' ~ folder if folder else '') }}{% else %}{{ total }} {{ 'item' if view == 'browse' else 'note' }}{{ 's' if total != 1 }}{% endif %}{% if total %} · Showing {{ start }}–{{ end }}{% endif %}</p>
+<p class="range">{% if q %}{{ total }} result{{ 's' if total != 1 }} for “{{ q }}” · {{ 'All knowledge' if across else scope_label ~ (' / ' ~ folder|replace('/', ' / ') if folder else '') }}{% else %}{{ total }} {{ 'item' if view == 'browse' else 'note' }}{{ 's' if total != 1 }}{% endif %}{% if total %} · Showing {{ start }}–{{ end }}{% endif %}</p>
 {% if rows %}
 {{ k.row_list(rows) }}
 {% else %}

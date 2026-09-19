@@ -21,7 +21,7 @@ All notable changes to Enso are documented here, following
 - Knowledge's **Folders** tab is now **Browse**, and its home lists shared folders and
   notes directly instead of a **Shared** entry; retained workspace roots remain under
   **Workspaces**. Every note list, including folders, search, and backlinks, is newest
-  updated first.
+  updated first. Browse search lists matching folder names before matching notes.
 
 ## [0.3.0] - 2026-09-18
 

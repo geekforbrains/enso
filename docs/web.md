@@ -345,12 +345,15 @@ folder, including folders that have both. Breadcrumbs move up the hierarchy. **A
 lists the current folder and all its descendants. Every note list — Browse, All notes, search
 results, a note's folder context, and **Linked from** — is newest updated first, then by path;
 it uses `updated` metadata and falls back to file modification time when that date is unknown.
-Search matches titles, paths, and note bodies under the current folder. The explicit
-**All knowledge** search option broadens to every discovered root. Every list shows at most
+Search matches titles, paths, and note bodies under the current folder. In **Browse**,
+folders below the current one whose names match come first, by name, then the matching
+notes; **All notes** lists notes only. The explicit **All knowledge** search option
+broadens to every discovered root. Every list shows at most
 `web.knowledge.page_size` items per page (50 by default), with its count, range, and ordinary
 Previous/Next links. Thousands of notes never produce a fully expanded tree or an unbounded
-page. Note rows show seconds, minutes, hours, or days ago through seven days, then a local
-calendar date such as `Jan 1st, 2025`.
+page. Note rows show their location with spaced separators, such as
+`Shared / People / Employees / Name.md`, and seconds, minutes, hours, or days ago through
+seven days, then a local calendar date such as `Jan 1st, 2025`.
 
 A note opens at `/knowledge/notes/<id>`, using its permanent ID so the URL survives moves
 and renames. Notes without a valid or unique ID remain readable through an explicit

@@ -91,6 +91,18 @@ async def test_mixed_folders_pagination_and_scoped_search(client, enso_home):
     all_notes = await client.get("/knowledge?scope=all&view=all&q=needle")
     assert len(knowledge_rows(await all_notes.text())) == 3
 
+    # Browse search lists matching folder names first, then notes; All notes stays notes only.
+    found = knowledge_rows(await (await client.get("/knowledge?q=nested")).text())
+    assert [row.find("span", "title")[0].text for row in found] == ["Nested", "Deep"]
+    assert found[0].attrs["href"] == "/knowledge?scope=shared&folder=Mixed%2FNested"
+    assert "Shared / Mixed / Nested" in found[0].text and "1 note" in found[0].text
+    assert "Shared / Mixed / Nested / Deep.md" in found[1].text  # spaced path segments
+    inside = await client.get("/knowledge?scope=shared&folder=Mixed&q=mixed")
+    titles = [row.find("span", "title")[0].text for row in knowledge_rows(await inside.text())]
+    assert titles == ["Deep", "Overview"]  # the searched folder is not its own result
+    notes_only = await client.get("/knowledge?view=all&q=nested")
+    assert len(knowledge_rows(await notes_only.text())) == 1
+
 
 async def test_knowledge_rows_show_calendar_dates_with_precise_time_available(client, enso_home):
     path, _ = note(enso_home.knowledge, "Older.md")

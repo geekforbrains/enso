@@ -158,6 +158,30 @@ def _folder_rows(catalog: kb.Catalog, scope: str, folder: str) -> list[dict[str,
     ]
 
 
+def _matching_folders(notes: Iterable[kb.Note], prefix: str, needle: str) -> list[dict[str, Any]]:
+    """Folders below ``prefix`` named like the search, derived from the searched notes' paths."""
+    found: dict[tuple[str, str], dict[str, Any]] = {}
+    for note in notes:
+        parts = note.path.split("/")[:-1]
+        for depth, name in enumerate(parts, 1):
+            path = "/".join(parts[:depth])
+            if not path.startswith(prefix) or needle not in name.casefold():
+                continue
+            row = found.setdefault(
+                (note.scope, path),
+                {
+                    "title": name,
+                    "kind": "folder",
+                    "href": browse_url(scope=note.scope, folder=path),
+                    "path": path,
+                    "scope": note.root.label,
+                    "count": 0,
+                },
+            )
+            row["count"] += 1
+    return sorted(found.values(), key=lambda row: (row["title"].casefold(), row["path"]))
+
+
 def _crumbs(root: kb.Root | None, folder: str) -> list[tuple[str, str]]:
     crumbs = [("Index", browse_url())]
     if root is None:
@@ -199,8 +223,11 @@ def listing_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any] | No
         for note in catalog.notes
         if across or ((scope == "all" or note.scope == scope) and note.path.startswith(prefix))
     ]
+    folders: list[dict[str, Any]] = []
     if search:
         needle = search.casefold()
+        if view == "browse":
+            folders = _matching_folders(notes, "" if across else prefix, needle)
         notes = [
             note
             for note in notes
@@ -210,7 +237,7 @@ def listing_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any] | No
         notes = [
             note for note in notes if note.scope == listed and "/" not in note.path[len(prefix) :]
         ]
-    folders = _folder_rows(catalog, listed, folder) if view == "browse" and not search else []
+        folders = _folder_rows(catalog, listed, folder)
     entries: list[dict[str, Any] | kb.Note] = [*folders, *_recent_first(notes)]
     total = len(entries)
     pages = max(1, math.ceil(total / web.knowledge.page_size))
