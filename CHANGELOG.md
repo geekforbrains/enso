@@ -18,6 +18,10 @@ All notable changes to Enso are documented here, following
 - Workspace knowledge and drafts folders are optional: a fixing audit preserves their
   removal after an intentional consolidation. The viewer also supports a `work/` folder
   for retained output and hides absent optional content roots.
+- Knowledge's **Folders** tab is now **Browse**, and its home lists shared folders and
+  notes directly instead of a **Shared** entry; retained workspace roots remain under
+  **Workspaces**. Every note list, including folders, search, and backlinks, is newest
+  updated first.
 
 ## [0.3.0] - 2026-09-18
 

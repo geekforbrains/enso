@@ -98,7 +98,7 @@ its named sections above the content:
 | [Heartbeats](#heartbeats) `/heartbeats` | Current · Previous; each beat opens Overview · History · Runs |
 | [Jobs](#jobs) `/jobs` | a job opens to Overview · History |
 | [Runs](#runs) `/runs` | Acted · Failed · All |
-| [Knowledge](#knowledge) `/knowledge` | Folders · All notes |
+| [Knowledge](#knowledge) `/knowledge` | Browse · All notes |
 | [Memory](#memory) `/memory` | Memories · Captures |
 | [Workspaces](#workspaces) `/workspaces` | Workspaces · Skills |
 | [Health](#health) `/health` | Doctor · Log |
@@ -332,19 +332,21 @@ workflow and worktree contracts.
 ### Knowledge
 
 `/knowledge` reads the home's `shared/knowledge/` and automatically discovers every visible
-workspace `knowledge/` directory. **Folders** starts at the Knowledge home, where **Shared**
-and each workspace are folders to enter. The home first shows the most recently
-updated notes across every root, up to `web.knowledge.recent_limit` (5 by default), then the
-root folders under **Workspaces**. Its breadcrumb is **Index**. The Markdown files remain the
-source of truth. See [Knowledge](knowledge.md) for metadata, writing conventions, imports,
-and the agent's maintenance tools.
+workspace `knowledge/` directory. **Browse** starts at the Knowledge home, whose breadcrumb
+is **Index**. The home first shows the most recently updated notes across every root, up to
+`web.knowledge.recent_limit` (5 by default), then the top-level folders and notes of shared
+knowledge directly; shared folder breadcrumbs therefore start at **Index** with no **Shared**
+step. Retained workspace roots, when any exist, follow under **Workspaces** as folders to
+enter. The Markdown files remain the source of truth. See [Knowledge](knowledge.md) for
+metadata, writing conventions, imports, and the agent's maintenance tools.
 
-Away from the home, **Folders** shows immediate subfolders followed by notes directly in
-the current folder, including folders that have both. Breadcrumbs move up the hierarchy.
-**All notes** lists the current folder and all its descendants, newest updated first; it uses
-`updated` metadata and falls back to file modification time when that date is unknown. Search
-matches titles, paths, and note bodies under the current folder. The explicit **All knowledge**
-search option broadens to every discovered root. Every list shows at most
+**Browse** shows immediate subfolders, by name, followed by notes directly in the current
+folder, including folders that have both. Breadcrumbs move up the hierarchy. **All notes**
+lists the current folder and all its descendants. Every note list — Browse, All notes, search
+results, a note's folder context, and **Linked from** — is newest updated first, then by path;
+it uses `updated` metadata and falls back to file modification time when that date is unknown.
+Search matches titles, paths, and note bodies under the current folder. The explicit
+**All knowledge** search option broadens to every discovered root. Every list shows at most
 `web.knowledge.page_size` items per page (50 by default), with its count, range, and ordinary
 Previous/Next links. Thousands of notes never produce a fully expanded tree or an unbounded
 page. Note rows show seconds, minutes, hours, or days ago through seven days, then a local

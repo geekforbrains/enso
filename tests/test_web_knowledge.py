@@ -56,21 +56,22 @@ async def test_mixed_folders_pagination_and_scoped_search(client, enso_home):
     assert response.status == 200
     html = await response.text()
     assert '<span aria-current="page">Index</span>' in html
-    assert html.index("Recently updated") < html.index('href="/knowledge?scope=shared"')
-    assert "<h2>Workspaces</h2>" in html and "3 items · Showing 1\u20133" not in html
+    assert ">Browse</a>" in html and ">Folders</a>" not in html
+    assert html.index("Recently updated") < html.index("5 items · Showing 1\u20135")
+    # The home lists shared folders and notes directly; only workspace roots sit below.
     rows = knowledge_rows(html)
-    assert [row.text.strip().splitlines()[0].strip() for row in rows[-2:]] == [
-        "Shared",
-        "autodiscovered",
-    ]
-    assert "autodiscovered" in html and "View source" not in html
-    assert "Recently updated" in html and "Deep" in html
+    names = [row.find("span", "title")[0].text for row in rows]
+    assert names[-6:] == ["Empty", "Large", "Mixed", "Outside", "Overview", "autodiscovered"]
+    assert "Shared" not in names and 'href="/knowledge?scope=shared"' not in html
+    assert html.index("Overview") < html.index('id="workspaces-head"')
+    assert "View source" not in html and len(rows) == 11  # five recent notes lead
 
     response = await client.get("/knowledge?scope=shared&folder=Mixed")
     html = await response.text()
     assert '<a href="/knowledge">Index</a>' in html
+    assert Document(html).root.find("p", "crumbs")[0].text.split() == ["Index", "/", "Mixed"]
     assert (await client.get("/knowledge?scope=general")).status == 404  # no old-name alias
-    assert "<h2>Workspaces</h2>" not in html and "2 items · Showing 1\u20132" in html
+    assert "workspaces-head" not in html and "2 items · Showing 1\u20132" in html
     rows = knowledge_rows(html)
     assert len(rows) == 2 and "Nested" in rows[0].text and "Overview" in rows[1].text
 
@@ -283,15 +284,27 @@ async def test_paths_symlinks_read_only_and_missing_home(client, enso_home, tmp_
     assert before == {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
 
 
-def test_all_notes_and_home_recents_use_metadata_then_mtime_and_current_scan(enso_home):
+def test_every_note_list_is_newest_updated_first_from_the_current_scan(enso_home):
     root = enso_home.knowledge
     first, _ = note(root, "First.md")
-    second, _ = note(root, "Second.md")
+    second, _ = note(root, "Second.md", "[[Target]] needle")
     second.write_text(second.read_text().replace("2026-09-15", "2026-09-16"))
-    model = knowledge.listing_model(enso_home, {"scope": "shared", "view": "all"})
-    assert [row["title"] for row in model["rows"]] == ["Second", "First"]
+    path, target = note(root, "Target.md", "[[First]]")
+    path.write_text(path.read_text().replace("2026-09-15", "2026-09-13"))
+    third, _ = note(root, "A Third.md", "[[Target]] needle")
+    third.write_text(third.read_text().replace("2026-09-15", "2026-09-14"))
+    newest = ["Second", "First", "A Third", "Target"]
+    for query in ({"scope": "shared", "view": "all"}, {"scope": "shared"}, {}):
+        model = knowledge.listing_model(enso_home, query)
+        assert [row["title"] for row in model["rows"]] == newest, query
+    found = knowledge.listing_model(enso_home, {"q": "needle"})
+    assert [row["title"] for row in found["rows"]] == ["Second", "A Third"]
+    opened = knowledge.note_model(enso_home, note_id=target)
+    assert [row["title"] for row in opened["siblings"]] == newest
+    assert [row["title"] for row in opened["backlinks"]] == ["Second", "A Third"]
+    assert opened["folder_url"] == "/knowledge"  # shared's top level is the home
     home = knowledge.listing_model(enso_home, {})
-    assert [row["title"] for row in home["recent"]] == ["Second", "First"]
+    assert [row["title"] for row in home["recent"]] == newest
     first.write_text(first.read_text().replace("2026-09-15", "2026-09-17"))
     model = knowledge.listing_model(enso_home, {"scope": "shared", "view": "all"})
     assert model["rows"][0]["title"] == "First"

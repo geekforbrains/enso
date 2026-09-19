@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 import os
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Any
@@ -35,13 +35,21 @@ IMAGE_TYPES = {
     ".webp": "image/webp",
     ".avif": "image/avif",
 }
-VIEWS = ("folders", "all")
+VIEWS = ("browse", "all")
+SHARED = "shared"
 
 
 def browse_url(**values: str | int) -> str:
     """A knowledge location using query parameters so spaces and Unicode stay intact."""
     query = urlencode({key: value for key, value in values.items() if value != ""})
     return "/knowledge" + ("?" + query if query else "")
+
+
+def folder_url(scope: str, folder: str = "") -> str:
+    """Shared's top level is the Knowledge home itself, not a separate root page."""
+    if scope == SHARED and not folder:
+        return browse_url()
+    return browse_url(scope=scope, folder=folder)
 
 
 def note_url(note: kb.Note, catalog: kb.Catalog | None = None) -> str:
@@ -74,6 +82,11 @@ def _stamp(value: Any) -> datetime | None:
     return filters.parse_time(value) if isinstance(value, (str, datetime)) else None
 
 
+def _recent_first(notes: Iterable[kb.Note]) -> list[kb.Note]:
+    """Every note list is newest updated first; equal dates stay in path order."""
+    return sorted(sorted(notes, key=lambda note: note.path), key=_updated, reverse=True)
+
+
 def _note_row(note: kb.Note, query: str = "", *, catalog: kb.Catalog) -> dict[str, Any]:
     excerpt = ""
     if query:
@@ -95,17 +108,21 @@ def _note_row(note: kb.Note, query: str = "", *, catalog: kb.Catalog) -> dict[st
     }
 
 
+def _workspace_rows(catalog: kb.Catalog) -> list[dict[str, Any]]:
+    """Retained workspace roots; shared knowledge is the home listing, not a row here."""
+    return [
+        {
+            "title": root.label,
+            "kind": "folder",
+            "href": browse_url(scope=root.scope),
+            "count": sum(note.scope == root.scope for note in catalog.notes),
+        }
+        for root in catalog.roots
+        if root.scope != SHARED
+    ]
+
+
 def _folder_rows(catalog: kb.Catalog, scope: str, folder: str) -> list[dict[str, Any]]:
-    if scope == "all":
-        return [
-            {
-                "title": root.label,
-                "kind": "folder",
-                "href": browse_url(scope=root.scope),
-                "count": sum(note.scope == root.scope for note in catalog.notes),
-            }
-            for root in catalog.roots
-        ]
     root = _root(catalog, scope)
     if root is None:
         return []
@@ -142,9 +159,12 @@ def _folder_rows(catalog: kb.Catalog, scope: str, folder: str) -> list[dict[str,
 
 
 def _crumbs(root: kb.Root | None, folder: str) -> list[tuple[str, str]]:
+    crumbs = [("Index", browse_url())]
     if root is None:
-        return [("Index", browse_url())]
-    return [("Index", browse_url()), (root.label, browse_url(scope=root.scope))] + [
+        return crumbs
+    if root.scope != SHARED:
+        crumbs.append((root.label, browse_url(scope=root.scope)))
+    return crumbs + [
         (label, browse_url(scope=root.scope, folder=path)) for label, path in files.crumbs(folder)
     ]
 
@@ -167,9 +187,12 @@ def listing_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any] | No
         return None
     search = query.get("q", "").strip()[:200]
     across = query.get("across") == "1" and bool(search)
-    view = query.get("view", "folders")
+    view = query.get("view", "browse")
     if view not in VIEWS:
-        view = "folders"
+        view = "browse"
+    # The home browses shared knowledge directly; retained workspace roots follow it.
+    home = scope == "all" and view == "browse" and not search
+    listed = SHARED if home else scope
     prefix = folder + "/" if folder else ""
     notes = [
         note
@@ -183,14 +206,12 @@ def listing_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any] | No
             for note in notes
             if needle in (note.title + " " + note.path + " " + note.body).casefold()
         ]
-    elif view == "folders":
-        notes = [note for note in notes if scope != "all" and "/" not in note.path[len(prefix) :]]
-    if view == "all":
-        notes.sort(key=lambda note: (_updated(note), note.path), reverse=True)
-    else:
-        notes.sort(key=lambda note: (note.title.casefold(), note.scope, note.path))
-    folders = _folder_rows(catalog, scope, folder) if view == "folders" and not search else []
-    entries: list[dict[str, Any] | kb.Note] = [*folders, *notes]
+    elif view == "browse":
+        notes = [
+            note for note in notes if note.scope == listed and "/" not in note.path[len(prefix) :]
+        ]
+    folders = _folder_rows(catalog, listed, folder) if view == "browse" and not search else []
+    entries: list[dict[str, Any] | kb.Note] = [*folders, *_recent_first(notes)]
     total = len(entries)
     pages = max(1, math.ceil(total / web.knowledge.page_size))
     raw_page = query.get("page", "1")
@@ -206,13 +227,7 @@ def listing_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any] | No
         "q": search,
         "across": "1" if across else "",
     }
-    recent = (
-        sorted(catalog.notes, key=lambda note: (_updated(note), note.path), reverse=True)[
-            : web.knowledge.recent_limit
-        ]
-        if scope == "all" and view == "folders" and not search
-        else []
-    )
+    recent = _recent_first(catalog.notes)[: web.knowledge.recent_limit] if home else []
     return {
         "config_problems": problems,
         "alarm": common.alarm(paths),
@@ -227,6 +242,7 @@ def listing_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any] | No
         "view": view,
         "rows": shown,
         "recent": [_note_row(note, catalog=catalog) for note in recent],
+        "workspaces": _workspace_rows(catalog) if home else [],
         "total": total,
         "page": page,
         "pages": pages,
@@ -236,7 +252,7 @@ def listing_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any] | No
         "next_link": browse_url(**values, page=page + 1) if page < pages else None,
         "tabs": [
             (
-                name.title() if name != "all" else "All notes",
+                "Browse" if name == "browse" else "All notes",
                 browse_url(**{**values, "view": name}),
                 None,
                 None,
@@ -432,12 +448,12 @@ def note_model(
     siblings = _folder_rows(catalog, note.scope, folder)
     siblings.extend(
         _note_row(other, catalog=catalog)
-        for other in sorted(catalog.notes, key=lambda other: other.title.casefold())
+        for other in _recent_first(catalog.notes)
         if other.scope == note.scope
         and other.path.startswith(prefix)
         and "/" not in other.path[len(prefix) :]
     )
-    linked = tuple(other for other in catalog.backlinks(note) if other != note)
+    linked = _recent_first(other for other in catalog.backlinks(note) if other != note)
     _config, problems = common.read_config(paths)
     try:
         source = (
@@ -463,7 +479,7 @@ def note_model(
         "note_url": href,
         "note_problems": note_problems,
         "raw_url": href + ("&" if "?" in href else "?") + "raw=1",
-        "folder_url": browse_url(scope=note.scope, folder=folder),
+        "folder_url": folder_url(note.scope, folder),
         "crumbs": _crumbs(note.root, folder),
         "siblings": siblings[:SIDEBAR_SIZE],
         "sibling_count": len(siblings),
