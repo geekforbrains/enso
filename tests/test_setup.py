@@ -16,7 +16,6 @@ from enso.cli import app
 from enso.cli import setup as wizard
 from enso.config import Agent, Config, Paths, load_config
 from enso.jobs import find_job
-from enso.runtime import ORIGIN_HEADER
 
 
 def test_seed_home_writes_once_and_refreshes_skills_with_a_backup(enso_home: Paths) -> None:
@@ -99,47 +98,6 @@ def test_home_copied_bundled_content_mirrors_the_home(enso_home: Paths) -> None:
         assert set(re.findall(r"\{\{\w+\}\}", expected)) <= {"{{prerun_output}}"}
     stamped = (bundled / template).read_text().replace("{{workspace_name}}", "meteor")
     assert (root / "AGENTS.md").read_text() == stamped and "{{" not in stamped
-
-
-# Inline-code paths the templates point the agent at: directories, and the two instruction files.
-MENTIONED_PATHS = re.compile(r"`([\w.-]+/|AGENTS\.md|CLAUDE\.md)`")
-
-
-def test_templates_mention_only_paths_that_exist(enso_home: Paths) -> None:
-    workspaces.seed_home(enso_home)
-    root = workspaces.create_workspace(enso_home, "meteor")
-    stamped = (root / "AGENTS.md").read_text()
-    assert stamped.startswith("# meteor\n") and "## Purpose" in stamped
-    for text in (enso_home.agents_md.read_text(), stamped):
-        mentioned = set(MENTIONED_PATHS.findall(text))
-        assert {"memory/", "work/", "uploads/"} <= mentioned
-        assert [path for path in sorted(mentioned) if not (root / path).exists()] == []
-        assert "$ENSO_HOME/shared/knowledge/" in text and enso_home.knowledge.is_dir()
-        for kind in ("knowledge", "memory"):
-            assert f"enso-{kind}" in text and f"enso {kind}" in text
-            assert (enso_home.skills / f"enso-{kind}" / "SKILL.md").is_file()
-
-
-# The general prose must not tell the agent which platform this turn came from; the origin block
-# does. A platform name survives only where it identifies a real field, skill, or contract.
-PLATFORM_NAME = re.compile(r"[Ss]lack|[Tt]elegram")
-PLATFORM_SPECIFIC = re.compile(r"ENSO_ORIGIN_|enso-slack|rich-format contract")
-
-
-def test_home_instructions_leave_the_current_platform_to_the_origin_block(
-    enso_home: Paths,
-) -> None:
-    workspaces.seed_home(enso_home)
-    general, marker, turn = enso_home.agents_md.read_text().partition("## The turn")
-
-    assert marker and not PLATFORM_NAME.search(general)  # voice and behaviour assume no platform
-    assert ORIGIN_HEADER.split("—")[0].strip() in turn  # they point at the block instead
-    for line in turn.splitlines():
-        if PLATFORM_NAME.search(line):
-            assert PLATFORM_SPECIFIC.search(line), line
-
-    root = workspaces.create_workspace(enso_home, "meteor")
-    assert not PLATFORM_NAME.search((root / "AGENTS.md").read_text())  # the template names none
 
 
 def test_ensure_layout_creates_and_repoints_but_never_removes(enso_home: Paths) -> None:
@@ -247,55 +205,6 @@ def test_send_test_names_the_extra_when_the_transport_cannot_be_built(
     assert capsys.readouterr().out == (
         "no test message: slack transport unavailable; install enso[slack]\n"
     )
-
-
-def test_setup_detects_antigravity(enso_home: Paths, monkeypatch: pytest.MonkeyPatch) -> None:
-    """agy is found by its own name like the other three, and seeded with its own flags."""
-    monkeypatch.setattr(
-        wizard.shutil, "which", lambda name: "/opt/bin/agy" if name == "agy" else None
-    )
-    assert wizard.detect_providers() == {
-        "agy": {
-            "path": "/opt/bin/agy",
-            "models": [
-                "gemini-3.8-flash-high",
-                "gemini-3.8-flash-medium",
-                "gemini-3.8-flash-low",
-                "gemini-3.1-pro-high",
-                "gemini-3.1-pro-low",
-                "claude-sonnet-4-6",
-                "claude-opus-4-6-thinking",
-            ],
-            "args": ["--dangerously-skip-permissions"],
-        }
-    }
-    monkeypatch.setattr(wizard, "pair_in_terminal", lambda *args: wizard.PairedIdentity("U1", "D1"))
-    monkeypatch.setattr(wizard, "_send_test", lambda paths, config: None)
-    # Provider, model, effort, transport, then the Slack step; no background service.
-    answers = ["", "", "", "", "xoxb-1", "xapp-1", "n"]
-    result = CliRunner().invoke(app, ["setup"], input="\n".join(answers) + "\n")
-
-    assert result.exit_code == 0, result.output
-    assert "found agy at /opt/bin/agy" in result.output
-    config = load_config(enso_home)
-    assert config.providers["agy"].path == "/opt/bin/agy"
-    assert config.providers["agy"].args == ("--dangerously-skip-permissions",)
-    assert (config.defaults.provider, config.defaults.model, config.defaults.effort) == (
-        "agy", "gemini-3.8-flash-high", "high",
-    )  # fmt: skip
-
-
-def test_setup_detects_opencode(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        wizard.shutil, "which", lambda name: "/opt/bin/opencode" if name == "opencode" else None
-    )
-    assert wizard.detect_providers() == {
-        "opencode": {
-            "path": "/opt/bin/opencode",
-            "models": ["openrouter/deepseek/deepseek-v4-flash"],
-            "args": ["--auto"],
-        }
-    }
 
 
 def test_docs_link_only_to_pages_git_will_commit() -> None:

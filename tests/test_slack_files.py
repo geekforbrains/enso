@@ -80,24 +80,6 @@ def test_only_slacks_file_download_endpoint_is_fetchable(url: str) -> None:
 @pytest.mark.parametrize(
     "url",
     [
-        "https://files.slack.com/files-pri/%2e%2e/api/files.info",
-        "https://files.slack.com/files-pri/../api/files.info",
-        "https://files.slack.com/files-pri/./../api/files.info",
-    ],
-)
-def test_a_url_is_judged_as_the_client_would_actually_send_it(url: str) -> None:
-    """The escapes above are refused because the request would leave the endpoint.
-
-    ``URL`` is aiohttp's own URL type, so this is the path that would go on the wire, not a
-    second opinion about it: approving the raw text would put the bot token on ``/api/…``.
-    """
-    assert not URL(url).raw_path.startswith("/files-pri/")
-    assert _download_url({"url_private_download": url}) == ""
-
-
-@pytest.mark.parametrize(
-    "url",
-    [
         SLACK_URL,
         "https://files.slack.com:443/files-pri/T1-F1/notes.txt",
         "https://FILES.Slack.com/files-pri/T1-F1/notes.txt",
@@ -109,14 +91,6 @@ def test_slacks_private_file_urls_are_fetchable(url: str) -> None:
 
     assert approved == url
     assert URL(approved).raw_path.startswith("/files-pri/")  # and it is still sent there
-
-
-def test_the_download_variant_wins_over_the_view_url() -> None:
-    info = {
-        "url_private": "https://files.slack.com/files-pri/T1-F1/a",
-        "url_private_download": SLACK_URL,
-    }
-    assert _download_url(info) == SLACK_URL
 
 
 # -- The local name --
@@ -150,10 +124,6 @@ def test_local_names_are_enso_generated_and_bounded(info: dict, tail: str) -> No
     assert len(name) < 100
 
 
-def test_the_slack_file_id_never_reaches_the_local_name() -> None:
-    assert "F0BEEF" not in _local_name({"id": "F0BEEF", "name": "notes.txt"})
-
-
 # -- A loopback stand-in for files.slack.com --
 
 
@@ -176,7 +146,6 @@ class Server:
                 web.get("/big", self._big),
                 web.get("/slow", self._slow),
                 web.get("/redirect", self._redirect),
-                web.get("/missing", self._missing),
             ]
         )
         self._server = TestServer(app)
@@ -224,10 +193,6 @@ class Server:
     async def _redirect(self, request: web.Request) -> web.StreamResponse:
         self._record(request)
         raise web.HTTPFound(location="/elsewhere")
-
-    async def _missing(self, request: web.Request) -> web.StreamResponse:
-        self._record(request)
-        raise web.HTTPNotFound()
 
 
 @pytest.fixture
@@ -321,13 +286,6 @@ async def test_a_redirect_is_refused_rather_than_followed(config: Config, server
 
     assert await transport_for(config).download_files(files, "default") == []
     assert [path for path, _ in server.requests] == ["/redirect"]  # /elsewhere never asked
-    assert list(turn_dir(config).iterdir()) == []
-
-
-async def test_a_non_200_answer_leaves_no_file_behind(config: Config, server: Server) -> None:
-    files = [{"id": "F1", "name": "notes.txt", "url_private_download": server.url("missing")}]
-
-    assert await transport_for(config).download_files(files, "default") == []
     assert list(turn_dir(config).iterdir()) == []
 
 

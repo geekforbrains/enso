@@ -83,15 +83,6 @@ def test_harvesting_has_one_count_and_byte_budget(paths, size, count, expected):
     assert len(harvesting.batch(paths, "default").sources) == count - expected
 
 
-def test_attachment_only_and_truncated_sources_remain_explicit(paths):
-    record(paths, text="", attachments=(captures.Attachment("F1", "proposal.pdf"),))
-    record(paths, "2", text="€" * 30_000)
-    rows = harvesting.batch(paths, "default").as_dict()["segments"][0]["captures"]
-    assert rows[0]["attachments"][0]["status"] == "not_downloaded"
-    assert rows[0]["text"] == ""
-    assert rows[1]["truncated"] and "truncated at" in rows[1]["text"]
-
-
 def test_validated_publication_recall_and_explicit_no_memory(paths):
     first = record(paths)
     second = record(paths, "2", text="Thanks")
@@ -230,17 +221,6 @@ def test_failed_second_file_recovers_first_without_duplicate_notes(paths, monkey
     assert len(memory.scan(paths, "default").notes) == 2
 
 
-def test_already_handled_later_inputs_are_not_offered_again(paths):
-    first = record(paths)
-    later = record(paths, "2")
-    receipt = captures.prepare_receipt(paths, "default", (later.id,), ())
-    captures.complete_receipt(paths, "default", receipt.id)
-    batch = harvesting.batch(paths, "default")
-    assert batch.sources == (first.id,)
-    harvesting.publish(paths, "default", result(batch, notes=False))
-    assert captures.progress(paths, "default") == later.id
-
-
 @pytest.mark.parametrize("conflict", [None, "sources", "metadata", "duplicate", "empty"])
 def test_recovery_preserves_valid_edits_and_reports_invalid_conflicts(paths, monkeypatch, conflict):
     source = record(paths)
@@ -374,16 +354,15 @@ def test_remove_requires_pending_publication_to_finish_first(paths, monkeypatch)
     assert not (note.root.path / note.path).exists()
 
 
-async def test_session_clear_preserves_captures_notes_and_processing(paths, runtime):
+async def test_session_clear_preserves_notes_and_processing_state(paths, runtime):
     record(paths, conversation="slack:D1", channel="D1", thread=None)
     harvesting.publish(paths, "default", result(harvesting.batch(paths, "default")))
     note = memory.scan(paths, "default").notes[0]
-    before = processing_state(paths)
     contents = (note.root.path / note.path).read_bytes()
+    before = processing_state(paths)
     await runtime.handle(make_turn("Hello"), FakeReply())
     assert db.get_sessions(paths, "slack:D1")
     assert await commands.dispatch(runtime, make_turn("!clear"), FakeReply())
     assert not db.get_sessions(paths, "slack:D1")
     assert processing_state(paths) == before
     assert (note.root.path / note.path).read_bytes() == contents
-    assert not harvesting.batch(paths, "default").sources

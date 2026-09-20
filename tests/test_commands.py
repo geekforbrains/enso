@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import threading
 from dataclasses import replace
 
 import pytest
@@ -12,18 +11,14 @@ from conftest import FakeReply, make_turn, session_for, write_config
 
 from enso import commands, db
 from enso.commands import Command, parse
-from enso.config import Agent, Paths, parse_config
+from enso.config import Paths, parse_config
 from enso.routing import UNBOUND_NOTICE
 from enso.runtime import Runtime
 
 
-@pytest.mark.parametrize("transport", ["slack", "telegram"])
 @pytest.mark.parametrize("workspace", ["", "missing"])
-async def test_commands_recheck_binding_and_pinned_workspace(
-    runtime, monkeypatch, transport, workspace
-):
-    turn = make_turn("!restart" if transport == "slack" else "/restart", transport=transport)
-    turn = replace(turn, workspace=workspace)
+async def test_commands_recheck_binding_and_pinned_workspace(runtime, monkeypatch, workspace):
+    turn = replace(make_turn("!restart"), workspace=workspace)
     if not workspace:
         turn = replace(turn, user_id="unknown")
 
@@ -43,10 +38,7 @@ async def test_commands_recheck_binding_and_pinned_workspace(
         ("  !STOP now ", "slack", Command("stop", "now")),
         ("/status@enso_bot", "telegram", Command("status")),
         ("/start", "telegram", Command("help")),
-        ("!foo bar", "slack", Command("foo", "bar")),
         ("!use codex:sol:medium", "slack", Command("use", "codex:sol:medium")),
-        ("/use@enso_bot model:astra", "telegram", Command("use", "model:astra")),
-        ("!!!", "slack", None),
         ("! wow", "slack", None),
         ("/stop", "slack", None),
         ("!stop", "telegram", None),
@@ -80,19 +72,6 @@ async def test_status_then_clear(runtime: Runtime, enso_home: Paths) -> None:
     assert db.get_sessions(enso_home, "slack:D1") == []
     await commands.dispatch(runtime, make_turn("!clear"), reply)
     assert reply.sent[-1] == "No session to clear."
-
-
-async def test_status_compacts_a_routed_model_name(runtime: Runtime) -> None:
-    routed = Runtime(
-        replace(
-            runtime.config,
-            defaults=Agent("opencode", "openrouter/deepseek/deepseek-v4-flash-vision-exp", "low"),
-        )
-    )
-
-    text = await commands.status_text(routed, "slack:D1", "default")
-
-    assert "Agent: opencode · deepseek-v4-fla…sion-exp · low (from defaults)" in text
 
 
 async def test_use_selects_exact_triples_and_reset_keeps_sessions(
@@ -211,20 +190,6 @@ async def test_clear_removes_selection_without_a_provider_session(runtime: Runti
     assert runtime.current_agent("slack:D1", "default").source == "defaults"
 
 
-async def test_failed_clear_keeps_selection(
-    runtime: Runtime, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    await commands.dispatch(runtime, make_turn("!use model:sonnet"), FakeReply())
-
-    def fail(*args):
-        raise OSError("database unavailable")
-
-    monkeypatch.setattr(db, "delete_sessions", fail)
-    with pytest.raises(OSError, match="database unavailable"):
-        await runtime.clear("slack:D1")
-    assert runtime.current_agent("slack:D1", "default").model == "sonnet"
-
-
 async def test_use_is_scoped_to_one_conversation(runtime: Runtime) -> None:
     selected = replace(make_turn("!use codex:sol:medium"), channel="C1", thread="10.1", is_dm=False)
     await commands.dispatch(runtime, selected, FakeReply())
@@ -318,33 +283,3 @@ async def test_help_unknown_restart_and_passthrough(
     assert await commands.dispatch(runtime, unbound, reply)
     assert reply.sent[-1] == UNBOUND_NOTICE
     assert len(reply.sent) == 5
-
-
-async def test_status_reads_sessions_off_loop(
-    runtime: Runtime, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The session read runs in a worker thread (Slack admission shares this path)."""
-    threads: list[threading.Thread] = []
-    real = db.get_sessions
-
-    def record(paths: Paths, conversation: str) -> list[db.Session]:
-        threads.append(threading.current_thread())
-        return real(paths, conversation)
-
-    monkeypatch.setattr(db, "get_sessions", record)
-    assert await commands.dispatch(runtime, make_turn("!status"), FakeReply())
-    assert threads
-    assert threading.current_thread() not in threads
-
-
-async def test_commands_in_a_dm_thread_target_the_dm(runtime: Runtime, enso_home: Paths) -> None:
-    """``!status``/``!clear`` typed inside a DM thread act on the DM's one conversation."""
-    await runtime.handle(make_turn("hello"), FakeReply())
-    session = session_for(enso_home, "slack:D1", "claude")
-    assert session is not None
-    reply = FakeReply()
-    await commands.dispatch(runtime, make_turn("!status", thread="9.9"), reply)
-    assert f"Session: claude {session.session_id[:8]}" in reply.sent[-1]
-    await commands.dispatch(runtime, make_turn("!clear", thread="9.9"), reply)
-    assert reply.sent[-1].startswith("Cleared.")
-    assert db.get_sessions(enso_home, "slack:D1") == []

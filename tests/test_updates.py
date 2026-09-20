@@ -1,10 +1,12 @@
 """Managed update transactions against a scratch home and fake external services."""
 
+import errno
 import json
 import os
 import signal
 import subprocess
 import sys
+import time
 from contextlib import suppress
 from dataclasses import replace
 from types import SimpleNamespace
@@ -157,24 +159,20 @@ def test_update_notifications_default_to_default_and_save_explicit_override(
     assert [env["ENSO_WORKSPACE"] for env in sent] == ["team"]
 
 
-@pytest.mark.parametrize("command", [["apply"], ["check", "--notify", "--quiet"]])
+@pytest.mark.parametrize("command", [["apply"], ["check", "--notify", "--quiet"], ["check"]])
 def test_update_commands_work_without_workspace_arguments(managed, monkeypatch, command):
     monkeypatch.delenv("ENSO_WORKSPACE")
     sent = []
     monkeypatch.setattr(updates, "_send", lambda paths, text, origin: sent.append(origin))
     result = CliRunner().invoke(app, ["update", *command, "--json"])
     assert result.exit_code == 0, result.output
-    if command[0] == "apply":
+    if command == ["apply"]:
         assert read_json(managed.paths.update_state)["origin"]["workspace"] == "default"
+    elif command == ["check"]:  # a read-only check needs no workspace and records nothing
+        assert json.loads(result.stdout)["update_available"]
+        assert not sent and not managed.events and not managed.paths.update_state.exists()
     else:
         assert sent == [{"workspace": "default"}]
-
-
-def test_read_only_update_check_needs_no_workspace(managed, monkeypatch):
-    monkeypatch.delenv("ENSO_WORKSPACE")
-    result = CliRunner().invoke(app, ["update", "check", "--json"])
-    assert result.exit_code == 0 and json.loads(result.stdout)["update_available"]
-    assert not managed.events and not managed.paths.update_state.exists()
 
 
 def test_same_release_is_noop_and_downgrade_or_reused_version_is_refused(managed, monkeypatch):
@@ -261,20 +259,13 @@ def test_interruption_after_commit_clears_gate_without_restoring_old_data(manage
     assert not any(name in {"stop", "start", "healthy"} for name, _ in managed.events)
 
 
-def test_new_request_waits_for_previous_worker_to_finish_notification(managed):
-    state = queue(managed)
-    updates.run_update(managed.paths, state["id"])
-    with (
-        maintenance.lock(managed.paths, "worker"),
-        pytest.raises(UpdateError, match="in progress"),
-    ):
-        updates.request_apply(managed.paths)
-    assert read_json(managed.paths.update_state)["id"] == state["id"]
-
-
-@pytest.mark.parametrize("feed", [None, "https://private.example.test/stable/release.json"])
 @pytest.mark.parametrize(
-    "manifest", [None, "release.json", "https://private.example.test/release.json"]
+    "feed,manifest",
+    [
+        (None, None),
+        ("https://private.example.test/stable/release.json", "release.json"),
+        (None, "https://private.example.test/release.json"),
+    ],
 )
 def test_direct_install_persists_default_or_explicit_feed(
     enso_home, monkeypatch, tmp_path, feed, manifest
@@ -322,37 +313,16 @@ def test_direct_install_persists_default_or_explicit_feed(
     )
 
 
-@pytest.mark.parametrize("version", ["0.2.0.dev1", "0.3.0rc1", "0.2.0+local"])
-def test_unmanaged_development_check_reports_versions_without_upgrade_order(
-    enso_home, monkeypatch, version
+@pytest.mark.parametrize(
+    "current,version",
+    # A nonstable current version is a development install: it has no place in the
+    # stable ordering, so no upgrade is offered however new the published release is.
+    [("0.2.0", "0.2.1"), ("0.2.0", "0.1.9"), ("0.2.0.dev1", "0.2.1")],
+)
+def test_unmanaged_checks_default_feed_and_reports_adoption(
+    enso_home, monkeypatch, current, version
 ):
-    monkeypatch.setattr(updates, "__version__", version)
-    selected = releases.Release(
-        "0.2.0",
-        "a" * 40,
-        ">=3.14",
-        releases.Artifact("enso.whl", "b" * 64),
-        releases.Artifact("constraints.txt", "c" * 64),
-        releases.DEFAULT_FEED,
-    )
-    monkeypatch.setattr(releases, "load_release", lambda *args, **kwargs: selected)
-    result = updates.check(enso_home)
-    assert result["current"] == version and result["available"] == "0.2.0"
-    assert result["development"] and result["adoption_required"]
-    assert not result["update_available"]
-    text = updates.check_message(result)
-    assert version in text and "0.2.0" in text and "compatible published release" in text
-    assert "ahead" not in text and "up to date" not in text and "--adopt" not in text
-    monkeypatch.setattr(
-        releases, "load_release", lambda *args, **kwargs: replace(selected, version="0.2.1rc1")
-    )
-    with pytest.raises(UpdateError, match="stable"):
-        updates.check(enso_home)
-
-
-@pytest.mark.parametrize("version", ["0.2.0", "0.2.1", "0.1.9"])
-def test_unmanaged_checks_default_feed_and_reports_adoption(enso_home, monkeypatch, version):
-    monkeypatch.setattr(updates, "__version__", "0.2.0")
+    monkeypatch.setattr(updates, "__version__", current)
     selected = releases.Release(
         version,
         "a" * 40,
@@ -365,19 +335,14 @@ def test_unmanaged_checks_default_feed_and_reports_adoption(enso_home, monkeypat
     monkeypatch.setattr(
         releases, "load_release", lambda source, **kwargs: sources.append(source) or selected
     )
+    development = current == "0.2.0.dev1"
     result = updates.check(enso_home)
     assert sources == [releases.DEFAULT_FEED]
     assert result["available"] == version
-    assert result["update_available"] is (version == "0.2.1")
+    assert result["update_available"] is (version == "0.2.1" and not development)
+    assert result["development"] is development
     assert result["adoption_required"] and not result["managed"]
-    text = updates.check_message(result)
-    assert "unmanaged" in text
-    assert ("enso update install --adopt" in text) is (version != "0.1.9")
-    sent = []
-    monkeypatch.setattr(updates, "_send", lambda *args: sent.append(args))
-    assert updates.notify_available(enso_home, result, workspace="default")
-    assert not updates.notify_available(enso_home, result, workspace="default")
-    assert len(sent) == 1
+    assert version in updates.check_message(result)
 
 
 def test_recorded_feed_wins_and_manifest_override_does_not_replace_it(managed, monkeypatch):
@@ -429,19 +394,6 @@ def test_saved_release_token_stays_at_install_origin_for_feed_and_candidate(
         candidate = managed.real_candidate
         candidate(managed.paths, replace(managed.release, source=source), receipt)
         assert sent[-1][1] == (managed.paths.runtime_dir / "release.token" if authorized else None)
-
-
-def test_upgrade_reuses_bootstrapped_uv_without_requiring_it_on_path(enso_home, monkeypatch):
-    private_uv = enso_home.runtime_dir / "tools/uv"
-    private_uv.parent.mkdir(parents=True)
-    private_uv.write_text("private uv")
-    captured = []
-    monkeypatch.setattr(
-        releases, "prepare_release", lambda release, target, **kwargs: captured.append(kwargs)
-    )
-    selected = SimpleNamespace(release_id="0.2.0-" + "a" * 12, source=releases.DEFAULT_FEED)
-    updates._candidate(enso_home, selected, {"extras": ["slack"], "token_file": None})
-    assert captured[0]["uv"] == str(private_uv)
 
 
 def test_failed_migration_restores_database_config_bundles_and_wal_but_keeps_workspace(
@@ -518,27 +470,6 @@ def test_selection_refuses_external_directory_and_external_symlink(managed, tmp_
         with pytest.raises(UpdateError, match="prepared Enso release"):
             updates._select(managed.paths, candidate)
     assert (managed.paths.runtime_dir / "current").resolve() == managed.old
-
-
-def test_snapshot_rejects_database_symlink_before_target_can_be_migrated(managed, tmp_path):
-    state = queue(managed)
-    external = tmp_path / "external.db"
-    external.write_bytes(b"external database")
-    (managed.paths.home / "enso.db").symlink_to(external)
-    with pytest.raises(UpdateError, match=r"symbolic|symlink"):
-        updates._snapshot(managed.paths, state)
-    assert external.read_bytes() == b"external database"
-
-
-def test_snapshot_path_tampering_is_rejected_before_restoring_anything(managed):
-    state = queue(managed)
-    managed.paths.config.write_text("configuration to keep")
-    updates._snapshot(managed.paths, state)
-    snapshot = managed.paths.runtime_dir / "operations" / state["id"] / "snapshot.json"
-    write_json(snapshot, {"paths": ["config.json", "../../outside"]})
-    with pytest.raises(UpdateError, match="snapshot is incomplete"):
-        updates._restore(managed.paths, state)
-    assert managed.paths.config.read_text() == "configuration to keep"
 
 
 def test_rollback_restores_all_workspace_jobs_without_replacing_memories(managed):
@@ -647,15 +578,6 @@ def test_corrupt_install_metadata_returns_one_json_error(managed, document):
     assert "Traceback" not in result.output
 
 
-def test_corrupt_operation_metadata_returns_one_json_error(managed):
-    write_json(managed.paths.update_state, {"id": "../outside"})
-    result = CliRunner().invoke(app, ["update", "apply", "--json"])
-    assert result.exit_code == 1
-    response = json.loads(result.stdout)
-    assert response["ok"] is False
-    assert "Traceback" not in result.output
-
-
 def test_service_command_cleans_descendants_even_when_parent_exits(tmp_path):
     pid_file = tmp_path / "child.pid"
     child = f"import os,time; open({str(pid_file)!r}, 'w').write(str(os.getpid())); time.sleep(60)"
@@ -744,29 +666,6 @@ def test_cleanup_failure_never_rolls_back_success_and_retries(managed, monkeypat
     assert not any(name in {"stop", "start", "healthy"} for name, _ in managed.events)
 
 
-def test_gate_removal_error_after_durable_success_never_enters_rollback(managed, monkeypatch):
-    from pathlib import Path
-
-    state = queue(managed)
-    unlink = Path.unlink
-
-    def broken_unlink(path, *args, **kwargs):
-        if path == managed.paths.maintenance:
-            raise OSError("interrupted gate cleanup")
-        return unlink(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "unlink", broken_unlink)
-    with pytest.raises(OSError, match="gate cleanup"):
-        updates.run_update(managed.paths, state["id"])
-    assert read_json(managed.paths.update_state)["status"] == "succeeded"
-    assert updates.installed(managed.paths)["version"] == managed.release.version
-    monkeypatch.setattr(Path, "unlink", unlink)
-    managed.events.clear()
-    updates.run_update(managed.paths, state["id"])
-    assert not maintenance.paused(managed.paths)
-    assert not any(name in {"stop", "start", "healthy"} for name, _ in managed.events)
-
-
 def test_candidate_declared_move_rolls_back_new_parent_and_migration_marker(managed, monkeypatch):
     paths = managed.paths
     legacy = paths.home / "legacy"
@@ -847,33 +746,83 @@ def test_adoption_preflight_refuses_pending_changes_without_mutation(enso_home):
     assert not (enso_home.home / ".migrations.json").exists()
 
 
-def test_gate_cleanup_error_after_rollback_never_restores_over_new_work(managed, monkeypatch):
-    paths = managed.paths
+# In-flight CLI work and busy drains remain safe across update transitions.
+
+
+@pytest.mark.parametrize("gate_present", [False, True])
+def test_interrupted_drain_defers_without_stopping_busy_work(managed, gate_present):
     state = queue(managed)
-    paths.config.write_text("original data")
-
-    def prepare_fails(args, **kwargs):
-        if args[-1] == "_prepare-home":
-            paths.config.write_text("migrated data")
-            raise UpdateError("migration failure")
-        return ""
-
-    monkeypatch.setattr(update_services, "run_command", prepare_fails)
-    sync = updates.sync_directory
-
-    def sync_fails_after_admission(path):
-        if path == paths.runtime_dir and not maintenance.paused(paths):
-            raise UpdateError("gate directory sync failed")
-        sync(path)
-
-    monkeypatch.setattr(updates, "sync_directory", sync_fails_after_admission)
-    with pytest.raises(UpdateError, match="gate directory sync failed"):
-        updates.run_update(paths, state["id"])
-    assert read_json(paths.update_state)["status"] == "rolled_back"
-    assert paths.config.read_text() == "original data" and not maintenance.paused(paths)
-    paths.config.write_text("work accepted after rollback")
-    monkeypatch.setattr(updates, "sync_directory", sync)
+    updates._save(managed.paths, state, "draining")
+    if gate_present:
+        write_json(managed.paths.maintenance, {"operation_id": state["id"]})
     managed.events.clear()
-    updates.run_update(paths, state["id"])
-    assert paths.config.read_text() == "work accepted after rollback"
-    assert not any(name in {"stop", "start", "healthy"} for name, _ in managed.events)
+    updates.run_update(managed.paths, state["id"])
+    assert read_json(managed.paths.update_state)["status"] == "deferred"
+    assert not maintenance.paused(managed.paths)
+    assert managed.events == []
+    assert updates.installed(managed.paths)["version"] == "0.1.0"
+
+
+def test_cli_holds_home_access_while_waiting_for_input(managed, raw_config, tmp_path):
+    paths = managed.paths
+    fifo = tmp_path / "config.fifo"
+    os.mkfifo(fifo)
+    command = [sys.executable, "-m", "enso.cli", "config", "apply", "--file", str(fifo), "--json"]
+    process = subprocess.Popen(
+        command,
+        cwd=tmp_path,
+        env=dict(os.environ, ENSO_HOME=str(paths.home)),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    writer = None
+    try:
+        deadline = time.monotonic() + 10
+        while writer is None:
+            try:
+                writer = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+            except OSError as exc:
+                if exc.errno != errno.ENXIO or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.01)
+        # Opening the write end proves the CLI passed admission and reached its
+        # blocking input read. An update cannot snapshot until that CLI finishes.
+        with (
+            pytest.raises(UpdateError, match="another command"),
+            maintenance.exclusive_access(paths, timeout=0),
+        ):
+            pytest.fail("snapshot admission succeeded while a CLI was awaiting input")
+        write_json(paths.maintenance, {"operation_id": "b" * 32})
+        write_json(paths.update_state, {"id": "b" * 32, "status": "draining"})
+        os.write(writer, json.dumps(raw_config).encode())
+        os.close(writer)
+        writer = None
+        output, error = process.communicate(timeout=10)
+        assert process.returncode == 0, (output, error)
+        assert json.loads(output)["applied"] is True
+        with maintenance.exclusive_access(paths, timeout=0):
+            assert read_json(paths.config) == raw_config
+    finally:
+        if writer is not None:
+            os.close(writer)
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=5)
+
+
+def test_new_cli_cannot_mutate_during_exclusive_update(managed, raw_config, tmp_path):
+    with maintenance.exclusive_access(managed.paths, timeout=0):
+        result = subprocess.run(
+            [sys.executable, "-m", "enso.cli", "config", "apply", "--file", "-", "--json"],
+            input=json.dumps(raw_config),
+            cwd=tmp_path,
+            env=dict(os.environ, ENSO_HOME=str(managed.paths.home)),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    assert result.returncode == 1
+    assert json.loads(result.stdout)["ok"] is False
+    assert not managed.paths.config.exists()

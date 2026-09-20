@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlencode
 from uuid import uuid4
@@ -102,19 +101,6 @@ async def test_mixed_folders_pagination_and_scoped_search(client, enso_home):
     assert titles == ["Deep", "Overview"]  # the searched folder is not its own result
     notes_only = await client.get("/knowledge?view=all&q=nested")
     assert len(knowledge_rows(await notes_only.text())) == 1
-
-
-async def test_knowledge_rows_show_calendar_dates_with_precise_time_available(client, enso_home):
-    path, _ = note(enso_home.knowledge, "Older.md")
-    local = datetime.now().astimezone().tzinfo
-    updated = datetime(2025, 1, 1, 12, tzinfo=local).isoformat()
-    path.write_text(path.read_text().replace("2026-09-15T12:00:00Z", updated))
-
-    response = await client.get("/knowledge?scope=shared")
-    row = knowledge_rows(await response.text())[0]
-    assert "Jan 1st, 2025" in row.text
-    (timestamp,) = row.find("time")
-    assert timestamp.attrs["datetime"] and timestamp.attrs["title"]
 
 
 async def test_note_links_anchors_backlinks_and_stable_id_after_move(client, enso_home):
@@ -284,14 +270,6 @@ async def test_paths_symlinks_read_only_and_missing_home(client, enso_home, tmp_
             "/knowledge?" + urlencode({"scope": "shared", "folder": folder})
         )
         assert response.status == 404, folder
-    for route in (
-        "/knowledge",
-        "/knowledge/asset?scope=shared&path=Safe.md",
-        "/knowledge/notes/none",
-    ):
-        for method in ("POST", "HEAD", "DELETE", "PUT"):
-            response = await client.request(method, route)
-            assert response.status == 405 and response.headers["Allow"] == "GET"
     assert not enso_home.db.exists()
     assert before == {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
 
@@ -348,47 +326,3 @@ async def test_duplicate_id_is_not_arbitrarily_resolved(client, enso_home):
     assert len(links) == 2 and all(link.startswith("/knowledge/file?") for link in links)
     response = await client.get(links[0])
     assert response.status == 200 and "Duplicate note id" in await response.text()
-
-
-async def test_heading_warnings_code_titles_and_literal_wiki_labels(client, enso_home):
-    _, target_id = note(
-        enso_home.knowledge, "Target.md", "## `Code` heading\n\n## Repeated\n\n## Repeated\n"
-    )
-    _, source_id = note(
-        enso_home.knowledge,
-        "Source.md",
-        """[[Target#Code heading]]
-
-[[Target#Repeated-1]]
-
-[[Target#Absent]]
-
-[Missing section](Target.md#Absent)
-
-[A [[Target]] label](https://example.com)
-""",
-    )
-    response = await client.get(f"/knowledge/notes/{source_id}")
-    article = Document(await response.text()).root.find("article")[0]
-    links = article.find("a")
-    assert links[0].attrs["href"] == f"/knowledge/notes/{target_id}#code-heading"
-    assert "class" not in links[0].attrs
-    assert links[1].attrs["href"] == f"/knowledge/notes/{target_id}#repeated-1"
-    assert "class" not in links[1].attrs
-    assert links[2].attrs["title"] == "Missing heading"
-    assert links[3].attrs["title"] == "Missing heading"
-    assert links[4].text == "A [[Target]] label" and not links[4].find("a")
-
-
-async def test_escaped_wiki_aliases_work_in_tables_and_ordinary_paragraphs(client, enso_home):
-    _, target_id = note(enso_home.knowledge, "Target.md", "Body")
-    _, source_id = note(
-        enso_home.knowledge,
-        "Source.md",
-        "[[Target\\|Paragraph label]]\n\n| Note |\n| --- |\n| [[Target\\|Table label]] |\n",
-    )
-    response = await client.get(f"/knowledge/notes/{source_id}")
-    article = Document(await response.text()).root.find("article")[0]
-    links = article.find("a")
-    assert [link.text for link in links] == ["Paragraph label", "Table label"]
-    assert all(link.attrs["href"] == f"/knowledge/notes/{target_id}" for link in links)

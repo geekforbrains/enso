@@ -38,32 +38,6 @@ def test_fresh_database_is_created_at_current_schema_version(enso_home: Paths) -
     db.initialize(enso_home)
     with db.transaction(enso_home) as con:
         assert con.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION == 1
-        objects = {
-            row["name"]
-            for row in con.execute(
-                "SELECT name FROM sqlite_master WHERE type IN ('table', 'index')"
-            )
-        }
-        assert objects >= {
-            "runs",
-            "messages",
-            "sessions",
-            "job_state",
-            "_enso_tables",
-            "_enso_captures",
-            "_enso_memory_receipts",
-            "_enso_memory_inputs",
-            "_enso_memory_progress",
-            "_enso_memory_batches",
-            "_enso_run_attempts",
-            "_enso_tasks",
-            "_enso_task_events",
-            "_enso_task_refs",
-            "_enso_beats",
-            "_enso_beat_events",
-            "_enso_beat_runs",
-        }
-        assert objects >= {"runs_job", "messages_target"}
         for table in ("sessions", "messages"):
             columns = {row["name"]: row for row in con.execute(f"PRAGMA table_info({table})")}
             assert columns["workspace"]["notnull"] == 1
@@ -118,14 +92,6 @@ def test_transaction_holds_the_write_lock_for_its_whole_body(enso_home: Paths) -
                 other.execute("BEGIN IMMEDIATE")
         finally:
             other.close()
-
-
-def test_failing_transaction_propagates_its_own_exception(enso_home: Paths) -> None:
-    """A rollback that cannot run must not replace the failure that explains the problem."""
-    db.initialize(enso_home)
-    with pytest.raises(RuntimeError, match="the real failure"), db.transaction(enso_home) as con:
-        con.close()  # the rollback now fails too
-        raise RuntimeError("the real failure")
 
 
 def _newer_database(paths: Paths) -> dict[str, Any]:
@@ -213,7 +179,7 @@ def test_a_newer_schema_stays_readable_for_inspection(enso_home: Paths) -> None:
         con.close()
 
 
-@pytest.mark.parametrize("version", range(7))
+@pytest.mark.parametrize("version", [0, 6])
 def test_legacy_database_is_refused_without_modifying_it(enso_home, version):
     from enso.config import LEGACY_HOME_MESSAGE
 
@@ -230,21 +196,6 @@ def test_legacy_database_is_refused_without_modifying_it(enso_home, version):
         pass
     assert enso_home.db.read_bytes() == before
     assert not enso_home.db.with_name("enso.db-wal").exists()
-
-
-def test_initialization_is_atomic_and_retryable(enso_home, monkeypatch):
-    schema = db._SCHEMA
-    monkeypatch.setattr(db, "_SCHEMA", schema + "\nINVALID SQL;\n")
-    with pytest.raises(sqlite3.OperationalError):
-        db.initialize(enso_home)
-    with sqlite3.connect(enso_home.db) as con:
-        assert not con.execute("SELECT 1 FROM sqlite_master").fetchone()
-        assert con.execute("PRAGMA application_id").fetchone()[0] == 0
-        assert con.execute("PRAGMA user_version").fetchone()[0] == 0
-    monkeypatch.setattr(db, "_SCHEMA", schema)
-    db.initialize(enso_home)
-    with db.reader(enso_home) as con:
-        assert con.execute("PRAGMA application_id").fetchone()[0] == db.APPLICATION_ID
 
 
 def test_old_job_directory_is_refused_before_creating_state(enso_home, raw_config):

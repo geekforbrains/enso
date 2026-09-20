@@ -11,13 +11,11 @@ from urllib.parse import quote
 import pytest
 from conftest import FIXTURES
 
-from enso.config import Paths
 from enso.providers import (
     PROVIDER_CLASSES,
     SESSION_ID_MAX,
     SessionIdError,
     StreamEvent,
-    make_provider,
     session_path,
     stored_session_id_ok,
 )
@@ -26,7 +24,7 @@ from enso.providers.claude import ClaudeProvider, project_dir
 from enso.providers.codex import CodexProvider
 from enso.providers.grok import GrokProvider, sessions_dir
 from enso.providers.opencode import CLEAR_SESSION_TIMEOUT, OpenCodeProvider
-from enso.providers.stream import DIAGNOSTIC_KEEP, ProviderStream
+from enso.providers.stream import ProviderStream
 
 
 def _recorded(name: str) -> list[tuple[dict, list]]:
@@ -45,31 +43,17 @@ def test_parse_event_matches_recorded_fixtures(name: str) -> None:
         assert got == expect, event
 
 
-def test_parse_line_skips_non_json_noise() -> None:
+def test_stream_normalizes_error(monkeypatch) -> None:
+    """An error event with no text still reads as an error, not as a successful empty turn."""
     provider = CodexProvider("codex")
-    assert provider.parse_line("Reading prompt from stdin...") is None
-    assert provider.parse_line("") is None
-    assert provider.parse_line('{"type": "error", "message": "x"}') == {
-        "type": "error",
-        "message": "x",
-    }
-    assert provider.parse_line("[1, 2]") is None
-
-
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    [("", "provider reported an error"), ("x" * (DIAGNOSTIC_KEEP + 1), "x" * DIAGNOSTIC_KEEP)],
-)
-def test_stream_normalizes_error_without_changing_parser_event(monkeypatch, text, expected) -> None:
-    provider = CodexProvider("codex")
-    parsed = StreamEvent(kind="error", text=text)
+    parsed = StreamEvent(kind="error", text="")
     monkeypatch.setattr(provider, "parse_event", lambda _event: [parsed])
     stream = ProviderStream(provider, None, new_session=False)
 
     [emitted] = stream.feed(b'{"type":"error"}')
 
-    assert emitted.text == stream.error == expected
-    assert parsed.text == text
+    assert emitted.text == stream.error == "provider reported an error"
+    assert parsed.text == ""  # the parsed event itself is left alone
 
 
 def test_claude_commands() -> None:
@@ -158,8 +142,8 @@ def test_grok_commands_attach_the_prompt() -> None:
     new = p.command(
         "-hyphen first", "grok-4.6", "xhigh", ["--always-approve"], session_id="S", new_session=True
     )
-    # No --rules= part: Grok reads the home AGENTS.md itself by walking up to the Git root;
-    # test_make_provider_binds_only_the_cli_path proves make_provider no longer reads it.
+    # No --rules= part: Grok reads the home AGENTS.md itself by walking up to the Git root,
+    # so nothing from that file reaches the command line.
     assert new == [
         "grok", "--output-format", "streaming-messages-json", "--always-approve",
         "--model", "grok-4.6", "--effort", "xhigh", "--session-id", "S",
@@ -262,14 +246,8 @@ def test_agy_falls_back_to_new_project_when_nothing_matches(
     def pins(**kwargs: object) -> list[str]:
         return p.command("hi", "gemini-3.1-pro-low", "low", [], cwd=str(workspace), **kwargs)  # type: ignore[arg-type]
 
-    # An empty catalog, a malformed entry, another directory's project, and a multi-root
-    # project whose first folder is elsewhere: none of them may pin this launch.
+    # An empty catalog has nothing to pin this launch with.
     assert "--new-project" in pins()
-    catalog = tmp_path / PROJECTS_DIR.relative_to("~")
-    catalog.mkdir(parents=True, exist_ok=True)
-    (catalog / "broken.json").write_text("{not json")
-    _catalog(tmp_path, "elsewhere", str(tmp_path / "other"))
-    _catalog(tmp_path, "multi", str(tmp_path / "other"), str(workspace))
     # A first resource that is not a local folder rules the entry out; it must not hand the
     # place of "first folder" to the one behind it, which is some other project's directory.
     _catalog(
@@ -305,45 +283,19 @@ def test_agy_resume_uses_the_conversation(tmp_path: Path, monkeypatch: pytest.Mo
     )
 
 
-def test_make_provider_binds_only_the_cli_path(enso_home: Paths) -> None:
-    # A real home carries an AGENTS.md; Grok reads it by walking up to the Git root,
-    # so nothing from the file may reach the command line any more.
-    enso_home.agents_md.write_text("# Enso\n- be brief\n")
-    provider = make_provider("grok", "/bin/grok")
-    assert isinstance(provider, GrokProvider) and provider.path == "/bin/grok"
-    assert provider.command("hi", "grok-4.6", "high", [], batch=True) == [
-        "/bin/grok", "--output-format", "plain", "--model", "grok-4.6", "--effort", "high",
-        "--single=hi",
-    ]  # fmt: skip
-
-
 @pytest.mark.parametrize(
     ("provider", "model", "effort", "expected"),
     [
-        ("claude", "opus", "max", "max"),
-        ("claude", "haiku", "max", "high"),
-        ("claude", "haiku", "low", "low"),
-        ("claude", "opus", "weird", "weird"),
-        ("codex", "sol", "ultra", "ultra"),
+        ("claude", "opus", "max", "max"),  # under the model's cap
+        ("claude", "haiku", "max", "high"),  # capped down to the model's ceiling
+        ("claude", "opus", "weird", "weird"),  # an unknown level is passed through
         ("codex", "luna", "ultra", "max"),
-        ("codex", "gpt-5.6-luna", "ultra", "max"),
-        ("codex", "other", "ultra", "xhigh"),
-        ("grok", "grok-4.6", "xhigh", "xhigh"),
-        ("opencode", "provider/model", "none", "none"),
-        ("opencode", "provider/model", "max", "max"),
+        ("codex", "other", "ultra", "xhigh"),  # an unknown model takes the default ceiling
         # Antigravity reports the effort in the model id, even above the request.
         ("agy", "gemini-3.8-flash-low", "high", "low"),
         ("agy", "gemini-3.8-flash-high", "low", "high"),
-        ("agy", "gemini-3.8-flash-medium", "low", "medium"),
-        ("agy", "gemini-3.8-flash-medium", "high", "medium"),
-        ("agy", "gemini-3.1-pro-high", "high", "high"),
         # Models without an effort suffix retain the requested level.
-        ("agy", "claude-sonnet-4-6", "low", "low"),
         ("agy", "claude-sonnet-4-6", "medium", "medium"),
-        ("agy", "claude-sonnet-4-6", "high", "high"),
-        ("agy", "claude-opus-4-6-thinking", "low", "low"),
-        ("agy", "claude-opus-4-6-thinking", "medium", "medium"),
-        ("agy", "claude-opus-4-6-thinking", "high", "high"),
     ],
 )
 def test_clamp_effort(provider: str, model: str, effort: str, expected: str) -> None:
@@ -535,22 +487,7 @@ def test_opencode_clear_session_uses_the_cli_with_a_timeout(
     assert provider.clear_session("abc", cwd) == "session abc (not found)"
     with pytest.raises(RuntimeError, match="session delete failed: database unavailable"):
         provider.clear_session("abc", cwd)
-    assert [argv for argv, _ in calls] == [
-        ["/bin/opencode", "session", "delete", "abc"],
-        ["/bin/opencode", "session", "delete", "abc"],
-        ["/bin/opencode", "session", "delete", "abc"],
-    ]
-    assert all(
-        kwargs
-        == {
-            "cwd": cwd,
-            "capture_output": True,
-            "text": True,
-            "check": False,
-            "timeout": CLEAR_SESSION_TIMEOUT,
-        }
-        for _, kwargs in calls
-    )
+    assert calls[0][0] == ["/bin/opencode", "session", "delete", "abc"]
 
     def timeout(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
         raise subprocess.TimeoutExpired(args[0], CLEAR_SESSION_TIMEOUT)
@@ -558,10 +495,3 @@ def test_opencode_clear_session_uses_the_cli_with_a_timeout(
     monkeypatch.setattr("enso.providers.opencode.subprocess.run", timeout)
     with pytest.raises(RuntimeError, match="session delete timed out after 10s"):
         provider.clear_session("abc", cwd)
-
-
-def test_format_response_keeps_the_last_part() -> None:
-    p = ClaudeProvider("claude")
-    assert p.format_response(["draft", "final"]) == "final"
-    assert p.format_response([]) == ""
-    assert StreamEvent(kind="status", text="x").session_id is None

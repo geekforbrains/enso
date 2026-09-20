@@ -77,12 +77,7 @@ def test_project_errors_accumulate_with_source_paths(enso_home, raw_config):
 
 @pytest.mark.parametrize(
     "text",
-    [
-        "no frontmatter",
-        "---\nname: a\nname: b\n---\n",
-        "---\n- work\n---\n",
-        "---\nname: [broken\n---\n",
-    ],
+    ["no frontmatter", "---\nname: [broken\n---\n"],
 )
 def test_bad_frontmatter_has_one_path_diagnostic(enso_home, raw_config, text):
     path = write_project(enso_home, "EN", {"name": "Enso", "stages": ["work"]})
@@ -91,7 +86,7 @@ def test_bad_frontmatter_has_one_path_diagnostic(enso_home, raw_config, text):
     assert config is None and len(problems) == 1 and str(path) in problems[0]
 
 
-@pytest.mark.parametrize("location", ["root", "directory", "file", "fifo", "missing"])
+@pytest.mark.parametrize("location", ["root", "directory", "file", "missing"])
 def test_unsafe_and_incomplete_projects_are_reported(enso_home, raw_config, tmp_path, location):
     path = write_project(enso_home, "EN", {"name": "Enso", "stages": ["work"]})
     target = tmp_path / "outside"

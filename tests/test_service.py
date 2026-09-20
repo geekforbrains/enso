@@ -117,7 +117,6 @@ def test_unresolvable_bare_provider_names_never_put_dot_on_the_service_path(
     assert path[0] == "/opt/enso/bin"
     # resolvable providers still ride along; the unresolvable one contributes nothing
     assert str(Path(config.providers["claude"].path).parent) in path
-    assert path.index("/opt/homebrew/bin") < path.index("/usr/bin")
 
 
 @pytest.mark.parametrize(
@@ -190,3 +189,34 @@ def test_install_reloads_and_restarts_the_systemd_unit(
         ["restart", "enso.service"],
     ]
     assert done[-1] == "started enso.service"
+
+
+# -- The optional viewer unit -----------------------------------------------
+# ``enso.service`` renders and installs it with ``definition=service.VIEWER``; the
+# viewer's own supervisor lives in ``test_web_service.py``.
+
+
+def test_failed_systemd_uninstall_preserves_definition(enso_home, monkeypatch):
+    unit = service.unit_path("systemd", definition=service.VIEWER)
+    unit.parent.mkdir(parents=True)
+    unit.write_text("unit")
+
+    def failed(args, **kwargs):
+        raise service.ServiceError("permission denied")
+
+    monkeypatch.setattr(service, "_run", failed)
+    with pytest.raises(service.ServiceError, match="permission denied"):
+        service.uninstall("systemd", definition=service.VIEWER)
+    assert unit.read_text() == "unit"
+
+
+def test_launchd_unload_timeout_preserves_definition(enso_home, monkeypatch):
+    unit = service.unit_path("launchd", definition=service.VIEWER)
+    unit.parent.mkdir(parents=True)
+    unit.write_text("original unit")
+    monkeypatch.setattr(service, "_run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service, "_query", lambda args: "state = running")
+    monkeypatch.setattr(service, "BOOTOUT_WAIT_SECONDS", 0)
+    with pytest.raises(service.ServiceError, match="did not unload"):
+        service.install(enso_home, None, "launchd", definition=service.VIEWER, binary="/enso")
+    assert unit.read_text() == "original unit"

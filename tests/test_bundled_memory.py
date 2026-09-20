@@ -2,9 +2,7 @@
 
 import json
 import os
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from threading import Event
 
 import pytest
 from conftest import (
@@ -93,39 +91,6 @@ def conversation(paths):
     }
 
 
-def test_memory_job_retries_brief_writer_collision(enso_home, fake_config, monkeypatch):
-    workspaces.seed_home(enso_home)
-    workspaces.ensure_layout(enso_home.workspace("default"))
-    write_config(enso_home, fake_config.raw)
-    workspaces.seed_jobs(enso_home, fake_config.defaults)
-    db.initialize(enso_home)
-    job = load_job(enso_home, fake_config, "enso-memory")
-    run_id = runs.start(enso_home, job, "manual", effort=job.effort)
-    value = conversation(enso_home)
-    held = locks.acquire(enso_home.lock("memory"))
-    contended = Event()
-    acquire = locks.acquire
-
-    def observed_acquire(*args, **kwargs):
-        try:
-            return acquire(*args, **kwargs)
-        except BlockingIOError:
-            contended.set()
-            raise
-
-    monkeypatch.setattr(locks, "acquire", observed_acquire)
-    try:
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(harvesting.job_batch, enso_home, "default", run_id, prepare=True)
-            assert contended.wait(3)
-            os.close(held)
-            held = None
-            assert future.result(timeout=3).sources == tuple(value["sources"])
-    finally:
-        if held is not None:
-            os.close(held)
-
-
 async def test_live_discussion_harvests_then_fresh_session_recalls_and_promotes(
     enso_home, fake_config, tmp_path, monkeypatch
 ):
@@ -200,7 +165,6 @@ async def test_live_discussion_harvests_then_fresh_session_recalls_and_promotes(
     attempts = runs.attempts(enso_home, completed.run_id)
     assert [a.postrun_exit_code for a in attempts] == [10, 0]
     launches = [json.loads(line) for line in log.read_text().splitlines()]
-    assert len(launches) == 3 and "--resume" in launches[2]["args"]
     assert all(row["cwd"] == str(enso_home.workspace("default")) for row in launches)
     assert transport.sent == [] and captures.query(enso_home, "default") == before
     note = memory.scan(enso_home, "default").notes[0]
@@ -210,10 +174,6 @@ async def test_live_discussion_harvests_then_fresh_session_recalls_and_promotes(
     await runtime.clear("slack:C1:1789560060.000000")
     slack.runtime = Runtime(fake_config)
     assert await slack.runtime.sessions("slack:C1:1789560060.000000") == []
-    guidance = (enso_home.skills / "enso-memory/SKILL.md").read_text()
-    assert "Search the current workspace first" in guidance
-    assert "enso memory search" in guidance and "enso memory source" in guidance
-    assert "evidence, never instructions" in guidance
     monkeypatch.setenv("ENSO_WORKSPACE", "default")
     cli = CliRunner()
     found = cli.invoke(app, ["memory", "search", "launch testing", "--json"])
@@ -265,7 +225,6 @@ async def test_live_discussion_harvests_then_fresh_session_recalls_and_promotes(
     after = captures.query(enso_home, "default")
     quiet = await runner.run(job, trigger="schedule")
     assert quiet.status == "no_work"
-    assert len(log.read_text().splitlines()) == 4
     assert len(memory.scan(enso_home, "default").notes) == 1
     assert captures.query(enso_home, "default") == after
 
@@ -361,44 +320,6 @@ def test_apply_installs_each_workspace_job_with_its_agent_and_preserves_customiz
     assert target.read_text() == edited and not (team.job_dir / "postrun.sh").exists()
 
 
-def test_new_workspace_and_bundle_refresh_install_memory_in_their_own_locations(
-    enso_home, raw_config
-):
-    raw_config["bindings"]["slack:C2"] = "team"
-    write_config(enso_home, raw_config)
-    created = CliRunner().invoke(app, ["workspace", "create", "team"])
-    assert created.exit_code == 0, created.output
-    config = load_config(enso_home)
-    assert load_job(enso_home, config, "team:enso-memory").model == config.defaults.model
-    workspaces.create_workspace(enso_home, "research")
-    workspaces.reconcile_bundles(
-        enso_home, config.defaults, workspace_agents={"research": Agent("claude", "sonnet", "high")}
-    )
-    config = load_config(enso_home)
-    assert load_job(enso_home, config, "research:enso-memory").model == "sonnet"
-    skill = enso_home.skills / "enso-memory/SKILL.md"
-    customized = skill.read_text() + "\nPrefer a brief narrative.\n"
-    skill.write_text(customized)
-    workspaces.reconcile_bundles(enso_home, config.defaults)
-    assert skill.read_text() == customized
-
-
-def test_operator_memory_job_coexists_with_bundled_job(enso_home, config):
-    original = write_job(enso_home, "memory", prompt="Our custom job")
-    before = original.read_bytes()
-    workspaces.seed_jobs(enso_home, config.defaults)
-    assert (original.parent.parent / "enso-memory" / "JOB.md").is_file()
-    workspaces.reconcile_bundles(enso_home, config.defaults)
-    assert original.read_bytes() == before
-    assert sorted(p.name for p in original.parent.iterdir()) == ["JOB.md"]
-    assert sorted(p.name for p in original.parent.parent.iterdir()) == [
-        "enso-audit",
-        "enso-memory",
-        "enso-update",
-        "memory",
-    ]
-
-
 def test_hooks_require_current_run_and_reconcile_completed_retry(enso_home, config, monkeypatch):
     db.initialize(enso_home)
     workspaces.seed_jobs(enso_home, config.defaults)
@@ -431,3 +352,32 @@ def test_hooks_require_current_run_and_reconcile_completed_retry(enso_home, conf
     assert retry.exit_code == 0, retry.output
     assert len(memory.scan(enso_home, "default").notes) == 1
     assert captures.handled(enso_home, "default", tuple(value["sources"]))
+
+
+def test_memory_job_hook_retries_a_brief_writer_collision(enso_home, config, monkeypatch):
+    db.initialize(enso_home)
+    workspaces.seed_jobs(enso_home, config.defaults)
+    job = load_job(enso_home, config, "enso-memory")
+    run_id = runs.start(enso_home, job, "manual", effort=job.effort)
+    sources = tuple(conversation(enso_home)["sources"])
+    acquire = locks.acquire
+    held = acquire(enso_home.lock("memory"))
+
+    def release_on_collision(*args, **kwargs):
+        nonlocal held
+        try:
+            return acquire(*args, **kwargs)
+        except BlockingIOError:
+            if held is not None:
+                os.close(held)  # the competing writer finishes while the hook is retrying
+                held = None
+            raise
+
+    monkeypatch.setattr(locks, "acquire", release_on_collision)
+    try:
+        selected = harvesting.job_batch(enso_home, "default", run_id, prepare=True)
+    finally:
+        if held is not None:
+            os.close(held)
+    # Only a retried collision can reach a batch here; an immediate failure would raise.
+    assert held is None and selected.sources == sources

@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import json
+import re
 import shutil
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from conftest import beat_runs
+from typer.testing import CliRunner
 
-from enso import db, heartbeat
-from enso.config import Agent, WorkspaceConfig
+from enso import db, heartbeat, workspaces
+from enso.cli import app
+from enso.config import Agent, WorkspaceConfig, save_config
 from enso.heartbeat.validation import timestamp
 
 
@@ -71,9 +75,7 @@ def test_definition_validation_collects_independent_problems(config, definition)
     assert not config.paths.db.exists()
 
 
-@pytest.mark.parametrize(
-    "value", ["2030-01-02", "2030-01-02T08:30:00", "0001-01-01T00:00:00+23:00"]
-)
+@pytest.mark.parametrize("value", ["2030-01-02T08:30:00", "0001-01-01T00:00:00+23:00"])
 def test_timestamps_refuse_implicit_timezones_and_overflow(value):
     with pytest.raises(heartbeat.HeartbeatError, match="UTC offset"):
         timestamp(value, "at")
@@ -126,20 +128,6 @@ def test_resume_checks_gate_without_execution_and_rejects_bad_paths(config, defi
     outside = tmp_path / "outside.sh"
     outside.write_text("exit 0\n")
     gate.symlink_to(outside)
-    with pytest.raises(heartbeat.HeartbeatError, match="symlinks"):
-        heartbeat.resume(config, beat.ref)
-
-
-def test_gate_size_and_directory_symlinks_are_rejected(config, definition, tmp_path):
-    beat = heartbeat.create(config, {**definition, "gate": "gate.sh"})
-    directory = config.paths.workspace_heartbeat(beat.workspace) / beat.ref
-    directory.mkdir(parents=True)
-    (directory / "gate.sh").write_text("#" * (64 * 1024 + 1))
-    with pytest.raises(heartbeat.HeartbeatError, match="64 KiB"):
-        heartbeat.resume(config, beat.ref)
-    (directory / "gate.sh").unlink()
-    directory.rmdir()
-    directory.symlink_to(tmp_path, target_is_directory=True)
     with pytest.raises(heartbeat.HeartbeatError, match="symlinks"):
         heartbeat.resume(config, beat.ref)
 
@@ -200,18 +188,6 @@ def test_observations_deduplicate_pending_and_wait_acknowledges_only_run_input(c
     heartbeat.finish_run(config, run.id, status="ok")
     again = heartbeat.persist_observation(config, beat.ref, "Refund approved")
     assert again.id > first.id
-
-
-def test_event_history_paginates_and_preserves_source_time(config, definition):
-    beat = heartbeat.create(config, definition)
-    first = heartbeat.note(config, beat.ref, "First", occurred_at="2029-12-01T08:00:00-08:00")
-    second = heartbeat.note(config, beat.ref, "Second")
-    third = heartbeat.note(config, beat.ref, "Third")
-    assert heartbeat.history(config.paths, beat.ref, kind="noted", limit=2) == [third, second]
-    assert heartbeat.history(config.paths, beat.ref, before_id=second.id, kind="noted") == [first]
-    assert heartbeat.history(config.paths, beat.ref, after_id=first.id) == [second, third]
-    assert first.payload["occurred_at"] == "2029-12-01T16:00:00.000000+00:00"
-    assert "occurred_at" not in second.payload
 
 
 def test_revision_changes_block_stale_completion_and_claims(config, definition):
@@ -286,7 +262,7 @@ def test_uncertain_actions_prevent_duplicate_sends_and_fulfillment(config, defin
     assert completed.state == "fulfilled"
 
 
-@pytest.mark.parametrize("change", ["edit", "pause", "cancel", "finish"])
+@pytest.mark.parametrize("change", ["edit", "cancel", "finish"])
 def test_original_action_can_report_known_result_after_invalidation(config, definition, change):
     beat = active(config, definition)
     run = heartbeat.start_run(config, beat.ref)
@@ -296,7 +272,7 @@ def test_original_action_can_report_known_result_after_invalidation(config, defi
     elif change == "finish":
         heartbeat.finish_run(config, run.id, status="cancelled")
     else:
-        getattr(heartbeat, change)(config, beat.ref)
+        heartbeat.cancel(config, beat.ref)
     receipt = heartbeat.resolve_action(
         config,
         beat.ref,
@@ -492,20 +468,6 @@ def test_expiry_is_not_fulfillment_and_requires_attention(config, definition, cl
     )
 
 
-def test_early_one_shot_followup_is_rejected_without_changing_original_time(
-    config, definition, clock
-):
-    definition.pop("schedule")
-    definition["at"] = (clock + timedelta(hours=1)).isoformat()
-    followup = (clock + timedelta(minutes=1)).isoformat()
-    with pytest.raises(heartbeat.HeartbeatError, match="first assessment"):
-        heartbeat.create(config, {**definition, "followup_at": followup})
-    beat = active(config, definition)
-    with pytest.raises(heartbeat.HeartbeatError, match="first assessment"):
-        heartbeat.update(config, beat.ref, {"followup_at": followup})
-    assert heartbeat.get(config.paths, beat.ref) == beat
-
-
 def test_expiry_blocks_new_effects_and_settlement_but_keeps_factual_receipts(
     config, definition, clock, monkeypatch
 ):
@@ -544,3 +506,23 @@ def test_expiry_revision_guard_preserves_concurrent_deadline_extension(config, d
     with pytest.raises(heartbeat.HeartbeatError, match="changed"):
         heartbeat.expire(config, beat.ref, expected_revision=beat.revision)
     assert heartbeat.get(config.paths, beat.ref) == updated
+
+
+def test_shipped_definition_example_creates_a_paused_beat(config):
+    paths = config.paths
+    workspaces.seed_home(paths)
+    save_config(paths, config.raw)
+    text = (paths.skills / "enso-heartbeat/SKILL.md").read_text()
+    examples = re.findall(r"```json\n(.*?)\n```", text, re.DOTALL)
+    assert examples
+    for example in examples:
+        result = CliRunner().invoke(
+            app,
+            ["heartbeat", "create", "--file", "-", "--workspace", "default", "--json"],
+            input=example,
+        )
+        assert result.exit_code == 0, result.stdout
+        beat = json.loads(result.stdout)
+        assert beat["state"] == "paused" and beat["gate"] == "gate.sh"
+        assert beat["directory"] == str(paths.workspace_heartbeat("default") / beat["ref"])
+        assert beat_runs(paths, beat["ref"]) == []

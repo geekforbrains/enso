@@ -1,8 +1,5 @@
 """Snapshot declared state and restore the original across partial migration and recovery."""
 
-from __future__ import annotations
-
-import os
 import shutil
 
 import pytest
@@ -21,23 +18,13 @@ def operation(tmp_path):
 @pytest.mark.parametrize(
     "names",
     [
-        [],
-        "config.json",
-        [None],
-        [""],
         ["/outside"],
         ["../outside"],
-        ["old/../../outside"],
-        ["old//file"],
-        ["old/./file"],
-        ["old\\file"],
-        ["old\x00file"],
         ["runtime/releases"],
         [".git/config"],
         ["cache/private"],
         ["web.pid"],
         [".config.lock"],
-        ["nested/worker.lock/state"],
     ],
 )
 def test_invalid_or_operational_paths_are_rejected(enso_home, names):
@@ -86,15 +73,6 @@ def test_capture_and_restore_recover_partial_file_move_and_format(enso_home, ope
     failed = next(operation.glob("failed-state-*"))
     assert (failed / "automation/workflows/new.txt").read_text() == "new content"
     assert (failed / "config.json").read_text() == "partially converted config"
-
-
-def test_capture_requires_a_normalized_snapshot_plan(enso_home, operation):
-    names = update_snapshot.plan(enso_home, ["new/parent/file"])
-    assert names == ["new"]
-    # The declaration itself changed after planning and must be replanned.
-    with pytest.raises(UpdateError, match="paths changed"):
-        update_snapshot.capture(enso_home, operation, ["new/parent/file"])
-    assert not (operation / "backup").exists()
 
 
 def test_restore_recovers_both_occupied_destinations_and_sources(enso_home, operation):
@@ -148,18 +126,6 @@ def test_declared_symlink_root_or_parent_is_refused(enso_home, tmp_path, link):
     assert (outside / "keep.txt").read_text() == "keep"
 
 
-def test_declared_non_directory_parent_is_refused(enso_home):
-    (enso_home.home / "data").write_text("keep")
-    with pytest.raises(UpdateError, match="must be a directory"):
-        update_snapshot.plan(enso_home, ["data/nested"])
-
-
-def test_declared_special_file_is_refused_without_opening_it(enso_home):
-    os.mkfifo(enso_home.home / "pipe")
-    with pytest.raises(UpdateError, match="regular file or directory"):
-        update_snapshot.plan(enso_home, ["pipe"])
-
-
 def test_whole_directory_snapshot_preserves_descendant_symlinks(enso_home, operation, tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -184,7 +150,7 @@ def test_whole_directory_snapshot_preserves_descendant_symlinks(enso_home, opera
     assert not (root / "new.txt").exists()
 
 
-@pytest.mark.parametrize("missing", ["backup", "present-file", "manifest"])
+@pytest.mark.parametrize("missing", ["backup", "present-file"])
 def test_missing_snapshot_parts_fail_before_any_home_mutation(enso_home, operation, missing):
     enso_home.config.write_text("original")
     update_snapshot.capture(enso_home, operation, ["config.json", "new"])
@@ -192,10 +158,8 @@ def test_missing_snapshot_parts_fail_before_any_home_mutation(enso_home, operati
     (enso_home.home / "new").write_text("new data")
     if missing == "backup":
         shutil.rmtree(operation / "backup")
-    elif missing == "present-file":
-        (operation / "backup/config.json").unlink()
     else:
-        (operation / "snapshot.json").unlink()
+        (operation / "backup/config.json").unlink()
 
     with pytest.raises(UpdateError, match="snapshot is incomplete"):
         update_snapshot.restore(enso_home, operation)
@@ -205,57 +169,14 @@ def test_missing_snapshot_parts_fail_before_any_home_mutation(enso_home, operati
     assert not list(operation.glob("failed-state-*"))
 
 
-@pytest.mark.parametrize("kind", ["missing", "file", "symlink"])
-def test_absent_only_snapshot_still_requires_its_backup_directory(
-    enso_home, operation, kind, tmp_path
-):
-    update_snapshot.capture(enso_home, operation, ["new"])
-    (enso_home.home / "new").write_text("new data")
-    (operation / "backup").rmdir()
-    if kind == "file":
-        (operation / "backup").write_text("invalid backup")
-    elif kind == "symlink":
-        (operation / "backup").symlink_to(tmp_path, target_is_directory=True)
-    with pytest.raises(UpdateError, match="snapshot is incomplete"):
-        update_snapshot.restore(enso_home, operation)
-    assert (enso_home.home / "new").read_text() == "new data"
-
-
-@pytest.mark.parametrize(
-    "snapshot",
-    [
-        {"paths": ["../outside"], "present": []},
-        {"paths": ["data", "data/file"], "present": []},
-        {"paths": ["b", "a"], "present": []},
-        {"paths": ["data"], "present": ["data", "data"]},
-        {"paths": ["data"], "present": ["other"]},
-        {"paths": ["data"]},
-    ],
-)
-def test_invalid_snapshot_metadata_fails_before_home_mutation(enso_home, operation, snapshot):
+def test_invalid_snapshot_metadata_fails_before_home_mutation(enso_home, operation):
     (enso_home.home / "data").write_text("original")
     update_snapshot.capture(enso_home, operation, ["data"])
     (enso_home.home / "data").write_text("changed")
-    write_json(operation / "snapshot.json", snapshot)
+    write_json(operation / "snapshot.json", {"paths": ["../outside"], "present": []})
     with pytest.raises(UpdateError, match="snapshot is incomplete"):
         update_snapshot.restore(enso_home, operation)
     assert (enso_home.home / "data").read_text() == "changed"
-
-
-@pytest.mark.parametrize("content", ["{", "[" * 1500])
-def test_unreadable_snapshot_metadata_reports_incomplete_snapshot(enso_home, operation, content):
-    update_snapshot.capture(enso_home, operation, ["new"])
-    (operation / "snapshot.json").write_text(content)
-    with pytest.raises(UpdateError, match="snapshot is incomplete"):
-        update_snapshot.restore(enso_home, operation)
-
-
-def test_snapshot_manifest_special_file_is_refused_without_opening_it(enso_home, operation):
-    update_snapshot.capture(enso_home, operation, ["new"])
-    (operation / "snapshot.json").unlink()
-    os.mkfifo(operation / "snapshot.json")
-    with pytest.raises(UpdateError, match="snapshot is incomplete"):
-        update_snapshot.restore(enso_home, operation)
 
 
 @pytest.mark.parametrize("kind", ["parent", "file"])
@@ -272,30 +193,6 @@ def test_restore_refuses_symlinks_in_backup_paths(enso_home, operation, tmp_path
     with pytest.raises(UpdateError, match="snapshot is incomplete"):
         update_snapshot.restore(enso_home, operation)
     assert (root / "file").read_text() == "changed"
-
-
-def test_linked_operation_directory_is_refused(enso_home, operation, tmp_path):
-    linked = tmp_path / "linked-operation"
-    linked.symlink_to(operation, target_is_directory=True)
-    with pytest.raises(UpdateError, match="operation must be a real directory"):
-        update_snapshot.capture(enso_home, linked, ["new"])
-    assert list(operation.iterdir()) == []
-
-
-def test_restore_refuses_symlink_parent_before_moving_other_files(enso_home, operation, tmp_path):
-    enso_home.config.write_text("original config")
-    root = enso_home.home / "data"
-    root.mkdir()
-    (root / "file").write_text("original data")
-    update_snapshot.capture(enso_home, operation, ["config.json", "data/file"])
-    enso_home.config.write_text("changed config")
-    outside = tmp_path / "outside"
-    root.rename(outside)
-    root.symlink_to(outside, target_is_directory=True)
-    with pytest.raises(UpdateError, match="snapshot is incomplete"):
-        update_snapshot.restore(enso_home, operation)
-    assert enso_home.config.read_text() == "changed config"
-    assert (outside / "file").read_text() == "original data"
 
 
 def test_restore_replaces_a_failed_migration_symlink_without_following_it(

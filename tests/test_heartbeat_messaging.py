@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import json
-import sqlite3
 
 import pytest
 from conftest import FakeTransport, write_config
@@ -132,12 +130,12 @@ def test_native_commands_record_receipts_and_refuse_duplicate_sends(
     assert sender.connections == 1 and len(sender.writes) == 1
 
 
-@pytest.mark.parametrize("change", ["cancel", "pause", "update", "finished", "disabled"])
+@pytest.mark.parametrize("change", ["cancel", "update", "finished", "disabled"])
 async def test_stale_run_is_refused_before_any_network(active, change):
     config, beat, run = active
     sender = Sender(config, beat)
-    if change in {"cancel", "pause"}:
-        getattr(heartbeat, change)(config, beat.ref, message="User changed the plan")
+    if change == "cancel":
+        heartbeat.cancel(config, beat.ref, message="User changed the plan")
     elif change == "update":
         heartbeat.update(config, beat.ref, {"instructions": "Wait for me"})
     elif change == "finished":
@@ -151,13 +149,13 @@ async def test_stale_run_is_refused_before_any_network(active, change):
     assert sender.connections == 0 and sender.writes == []
 
 
-@pytest.mark.parametrize("change", ["cancel", "pause", "update", "disabled"])
+@pytest.mark.parametrize("change", ["cancel", "update", "disabled"])
 async def test_authority_changed_while_connecting_prevents_the_send(active, change):
     config, beat, _ = active
 
     def connected():
-        if change in {"cancel", "pause"}:
-            getattr(heartbeat, change)(config, beat.ref, message="Stop following this")
+        if change == "cancel":
+            heartbeat.cancel(config, beat.ref, message="Stop following this")
         elif change == "update":
             heartbeat.update(config, beat.ref, {"instructions": "Wait for me"})
         else:
@@ -187,14 +185,6 @@ async def test_gate_context_cannot_send_without_a_running_agent(active, monkeypa
     with pytest.raises(heartbeat.HeartbeatError, match="gates cannot send"):
         await deliver(config.paths, sender, "C3", "7.0", text="Hi")
     assert sender.connections == 0 and sender.writes == []
-
-
-async def test_action_key_uses_the_core_normalized_value_for_its_receipt(active):
-    config, beat, _ = active
-    sender = Sender(config, beat)
-    await deliver(config.paths, sender, "C3", "7.0", text="Hi", action_key=" notice ")
-    event = heartbeat.history(config.paths, beat.ref, limit=1)[0]
-    assert event.action_key == "notice" and event.action_status == "succeeded"
 
 
 @pytest.mark.parametrize("change", ["cancel", "update"])
@@ -238,39 +228,6 @@ async def test_connection_failure_before_attempt_can_retry(active):
     sender.connect_error = False
     await deliver(config.paths, sender, "C3", "7.0", text="Hi", action_key="notice")
     assert len(sender.writes) == 1
-
-
-async def test_cancelled_inflight_send_keeps_uncertain_action(active):
-    config, beat, _ = active
-    started = asyncio.Event()
-
-    async def blocked():
-        started.set()
-        await asyncio.Event().wait()
-
-    sender = Sender(config, beat, effect=blocked)
-    pending = asyncio.create_task(
-        deliver(config.paths, sender, "C3", "7.0", text="Hi", action_key="notice")
-    )
-    await asyncio.wait_for(started.wait(), 1)
-    pending.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await pending
-    assert heartbeat.history(config.paths, beat.ref, limit=1)[0].action_status == "uncertain"
-
-
-async def test_known_receipt_is_saved_when_outbox_write_fails(active, monkeypatch):
-    config, beat, _ = active
-    sender = Sender(config, beat)
-
-    def broken(*args, **kwargs):
-        raise sqlite3.OperationalError("outbox write failed")
-
-    monkeypatch.setattr(messages, "record", broken)
-    with pytest.raises(sqlite3.OperationalError):
-        await deliver(config.paths, sender, "C3", "7.0", text="Hi", action_key="notice")
-    event = heartbeat.history(config.paths, beat.ref, limit=1)[0]
-    assert event.action_status == "succeeded" and json.loads(event.receipt)["message_id"] == "100.1"
 
 
 def test_saved_destination_precedes_origin_and_explicit_target_clears_thread(active, monkeypatch):

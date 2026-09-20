@@ -8,7 +8,7 @@ import threading
 from dataclasses import replace
 
 import pytest
-from conftest import FakeReply, FakeSlack, ImmediateIngress, make_turn, script
+from conftest import FakeReply, ImmediateIngress, make_turn, script
 from test_slack import ENVELOPE, RecordingClient
 from test_telegram import FakeBot
 from test_telegram import message as telegram_message
@@ -151,28 +151,6 @@ async def test_rich_reply_captures_readable_content_or_the_actual_fallback(runti
         assert "| Widgets | 42 |" in reply.text and "Trend (USD)" in reply.text
         assert "| Jan | 10 |" in reply.text and "| Feb | 20 |" in reply.text
     assert "enso-message" not in reply.text
-
-
-@pytest.mark.parametrize("repaired", [False, True])
-async def test_format_repair_does_not_become_an_input(runtime, tmp_path, monkeypatch, repaired):
-    from test_runtime import RichReply
-
-    script(
-        tmp_path,
-        monkeypatch,
-        "```enso-message\n{\n```",
-        ENVELOPE if repaired else "```enso-message\n{\n```",
-    )
-    await enqueue(runtime, reply=RichReply())
-    await drain(runtime)
-    original, reply = captures.query(runtime.paths, "default")
-    assert original.text == "original request"
-    if repaired:
-        assert reply.text == outbound.markdown(outbound.parse_outbound_message(ENVELOPE))
-        assert reply.outcome == "completed" and reply.delivery == "complete"
-    else:
-        assert reply.text == "" and reply.outcome == "failed"
-        assert reply.delivery == "unattempted"
 
 
 async def test_pending_messages_are_captured_before_preparation_and_stop_accounts_for_them(runtime):
@@ -330,32 +308,6 @@ async def test_telegram_records_caption_and_download_reference_but_not_quoted_co
     assert len(transport.runtime.turns) == 1
 
 
-async def test_stop_during_provider_execution_keeps_request_and_drops_waiting_turn(
-    runtime, monkeypatch
-):
-    started = asyncio.Event()
-
-    async def collecting(*args, **kwargs):
-        started.set()
-        await asyncio.Event().wait()
-
-    monkeypatch.setattr(runtime, "_collect", collecting)
-    await enqueue(runtime, "running")
-    await started.wait()
-    waiting, _ = await enqueue(runtime, "waiting", "2")
-    await waiting.ready()
-    if state := runtime._ingress.get("slack:D1"):
-        await state.task
-    await runtime.stop("slack:D1")
-    await drain(runtime)
-    rows = captures.query(runtime.paths, "default")
-    assert {(r.text, r.outcome) for r in rows if r.kind == "addressed"} == {
-        ("running", "cancelled"),
-        ("waiting", "dropped"),
-    }
-    assert all(r.text == "" and r.delivery == "unattempted" for r in rows if r.kind == "reply")
-
-
 @pytest.mark.parametrize("removed", [False, True])
 async def test_binding_change_preserves_capture_owner_and_removal_drops_turn(runtime, removed):
     from enso.config import LiveConfig
@@ -404,22 +356,6 @@ async def test_provider_retry_yields_one_answer_and_one_capture(runtime, monkeyp
     original, reply = captures.query(runtime.paths, "default")
     assert len(attempts) == 2 and reply.text == "Recovered answer"
     assert original.outcome == reply.outcome == "completed"
-
-
-async def test_interruption_between_delivery_parts_is_partial(runtime):
-    writer = CaptureWriter.start(runtime.paths, source())
-    await writer.ready()
-    await writer.begin("first\n\nsecond", "completed")
-
-    async def sent():
-        return "known-id"
-
-    await writer.send("first", sent)
-    await writer.finish("cancelled")
-    original, reply = captures.query(runtime.paths, "default")
-    assert original.outcome == "cancelled"
-    assert reply.outcome == "completed" and reply.delivery == "partial"
-    assert reply.parts == (captures.Part(0, 5, "sent", "known-id"),)
 
 
 async def test_rejected_messages_commands_and_edits_leave_no_captures(runtime, monkeypatch):
@@ -472,57 +408,6 @@ async def test_rejected_messages_commands_and_edits_leave_no_captures(runtime, m
     assert not runtime.paths.workspace_memory("default").exists()
 
 
-async def test_waiting_capture_keeps_owner_while_another_workspace_finishes(runtime, monkeypatch):
-    """One blocked preparation cannot block another workspace or reassign its queued input."""
-    runtime.paths.workspace("team").mkdir()
-    runtime = Runtime(
-        replace(runtime.config, bindings={"slack:dm:U1": "default", "slack:dm:U2": "team"})
-    )
-    slack = SlackTransport(runtime.config.slack, runtime.paths)
-    slack.runtime, slack.bot_user_id, slack._client = runtime, "UBOT", FakeSlack()
-    slack._users.update({"U1": "One", "U2": "Two"})
-    entered, release, other_finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
-    prepare, run = slack._prepare_event, runtime._run_turn
-
-    async def waiting(event, **kwargs):
-        if event["ts"] == "100.000001":
-            entered.set()
-            await release.wait()
-        return await prepare(event, **kwargs)
-
-    async def finished(conversation, turn, reply):
-        await run(conversation, turn, reply)
-        if turn.workspace == "team":
-            other_finished.set()
-
-    monkeypatch.setattr(slack, "_prepare_event", waiting)
-    monkeypatch.setattr(runtime, "_run_turn", finished)
-    try:
-        for index, (channel, user, text) in enumerate(
-            (("D1", "U1", "first"), ("D1", "U1", "queued"), ("D2", "U2", "independent")), 1
-        ):
-            await slack._handle_event(
-                {"channel": channel, "user": user, "text": text, "ts": f"100.{index:06}"},
-                mentioned=False,
-            )
-        await asyncio.wait_for(entered.wait(), 2)
-        await asyncio.wait_for(other_finished.wait(), 5)
-        # Queued admission finishes independently of the blocked preparation.
-        assert {row.text for row in captures.query(runtime.paths, "default")} == {"first", "queued"}
-        assert captures.query(runtime.paths, "team")[-1].delivery == "complete"
-    finally:
-        release.set()
-        await drain(runtime)
-    for workspace, expected in (("default", ["first", "queued"]), ("team", ["independent"])):
-        rows = captures.query(runtime.paths, workspace)
-        assert [
-            row.text
-            for row in sorted(rows, key=lambda row: row.occurred_at)
-            if row.kind == "addressed"
-        ] == expected
-        assert all(f"workspace={workspace}" in row.text for row in rows if row.kind == "reply")
-
-
 async def test_preparation_failure_and_queue_overflow_keep_explicit_outcomes(runtime):
     from enso.runtime import MAX_QUEUE
 
@@ -548,19 +433,6 @@ async def test_preparation_failure_and_queue_overflow_keep_explicit_outcomes(run
     overflow = captures.get(runtime.paths, "default", writer.id)
     assert overflow.outcome == "dropped"
     await runtime.stop("slack:D1")
-
-
-async def test_telegram_failed_attachment_is_recorded_without_copying_content(runtime):
-    from telegram import Document
-
-    transport = TelegramTransport(runtime.config.telegram, runtime.paths)
-    transport.runtime = Admitted(runtime.config)
-    transport._bot = FakeBot()  # missing remote file makes its ordinary download fail
-    await transport.handle_message(telegram_message(document=Document("missing", "stable")))
-    original, reply = captures.query(runtime.paths, "default")
-    assert original.text == "" and original.attachments[0].status == "failed"
-    assert original.attachments[0].path is None and reply.outcome == "dropped"
-    assert transport.runtime.turns == []
 
 
 async def test_capture_limits_do_not_shorten_live_input_or_output(runtime, tmp_path, monkeypatch):

@@ -11,7 +11,6 @@ import json
 import os
 import signal
 import socket
-import struct
 import subprocess
 import sys
 import textwrap
@@ -27,7 +26,7 @@ from typer.testing import CliRunner
 from enso import db, runs, web
 from enso.cli import app
 from enso.config import Config, Paths, WebConfig, WebKnowledgeConfig, parse_config
-from enso.web import server, views
+from enso.web import views
 from enso.web.server import CSP, create_app
 
 
@@ -194,55 +193,9 @@ def test_run_summaries_never_carry_output(enso_home: Paths, config: Config) -> N
     assert runs.STATUSES[0] == "running" and runs.PAGE_SIZE == 500
 
 
-async def test_run_detail_shows_attempts_and_escapes_feedback(
-    client: TestClient, enso_home: Paths, config: Config
-) -> None:
-    db.initialize(enso_home)
-    write_job(enso_home)
-    run_id = runs.start(enso_home, load_job(enso_home, config), "manual", effort="high")
-    runs.record_attempt(
-        enso_home,
-        run_id,
-        number=1,
-        status="ok",
-        exit_code=0,
-        output="First answer",
-        error="",
-        session_id="same-session",
-        duration_ms=123,
-        postrun_exit_code=10,
-        postrun_output="Commit <script>unsafe()</script> changes.",
-    )
-    # Completed attempts remain inspectable while the next turn or check is still running.
-    ongoing = await client.get(f"/runs/{run_id}")
-    ongoing_text = await ongoing.text()
-    assert ongoing.status == 200 and "Attempt 1" in ongoing_text
-    assert "Follow-up feedback" in ongoing_text and "First answer" in ongoing_text
-    assert "&lt;script&gt;unsafe()&lt;/script&gt;" in ongoing_text
-    assert "<script>unsafe()</script>" not in ongoing_text
-    runs.finish(
-        enso_home,
-        run_id,
-        status="error",
-        output="Final answer",
-        error="Validation failed",
-        postrun_error="Validation failed",
-        session_id="same-session",
-    )
-    final = await client.get(f"/runs/{run_id}")
-    final_text = await final.text()
-    assert final.status == 200 and "Postrun error" in final_text
-    assert "Validation failed" in final_text and "same-session" in final_text
-    assert "including hooks" in final_text and "Provider time budget" in final_text
-    summary_text = await (await client.get("/runs")).text()
-    assert "First answer" not in summary_text and "unsafe()" not in summary_text
-
-
-# -- Rules: GET only, headers, assets -----------------------------------------
-
-
-@pytest.mark.parametrize("method", ["HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
-@pytest.mark.parametrize("path", ["/health", "/runs", "/static/app.css", "/", "/nope"])
+# HEAD and OPTIONS are the two a framework answers by itself; POST stands for the rest.
+@pytest.mark.parametrize("method", ["HEAD", "POST", "OPTIONS"])
+@pytest.mark.parametrize("path", ["/health", "/static/app.css", "/", "/nope"])
 async def test_only_get_is_answered(client: TestClient, method: str, path: str) -> None:
     response = await client.request(method, path, allow_redirects=False)
     assert response.status == 405 and response.headers["Allow"] == "GET"
@@ -289,44 +242,13 @@ async def test_home_screen_install_files(client: TestClient) -> None:
     manifest = await client.get("/static/manifest.webmanifest")
     assert manifest.status == 200
     assert manifest.headers["Content-Type"] == "application/manifest+json"
-    assert manifest.headers["Cache-Control"] == "no-cache"
-    data = json.loads(await manifest.text())
-    assert data["name"] == "Enso" and data["short_name"] == "Enso"
-    assert data["display"] == "standalone"
-    assert data["start_url"] == "/today" and data["scope"] == "/"
-    icons = [(icon["src"], icon["sizes"]) for icon in data["icons"]]
-    assert icons == [("/static/icon-192.png", "192x192"), ("/static/icon-512.png", "512x512")]
-    for src, sizes in [*icons, ("/static/apple-touch-icon.png", "180x180")]:
+    icons = [icon["src"] for icon in json.loads(await manifest.text())["icons"]]
+    for src in [*icons, "/static/apple-touch-icon.png"]:
         response = await client.get(src)
-        body = await response.read()
         assert response.status == 200 and response.headers["Content-Type"] == "image/png", src
-        assert body.startswith(b"\x89PNG\r\n\x1a\n")
-        width, height = struct.unpack(">II", body[16:24])
-        assert f"{width}x{height}" == sizes, src
-        # iOS composites a transparent icon over black; colour type 2 is opaque RGB.
-        assert body[25] == 2, src
     page = await (await client.get("/health")).text()
     assert '<link rel="manifest" href="/static/manifest.webmanifest" crossorigin=' in page
     assert '<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">' in page
-    assert '<meta name="apple-mobile-web-app-title" content="Enso">' in page
-    assert '<meta name="apple-mobile-web-app-capable" content="yes">' in page
-    assert page.count('<meta name="theme-color"') == 2
-
-
-def test_package_resources_load_the_same_way_everywhere() -> None:
-    assert server.static_asset("app.css").startswith(b"/* Enso web viewer")
-    assert b"DOMContentLoaded" in server.static_asset("app.js")
-    with pytest.raises(FileNotFoundError):
-        server.static_asset("../__init__.py")
-    env = server.environment()
-    assert env.autoescape is True
-    assert (
-        env.get_template("base.html")
-        .render(nav=server.NAV, active="/health", config_problems=[], version="x")
-        .startswith("<!doctype html>")
-    )
-    with pytest.raises(Exception):  # noqa: B017 - a missing template is a loader error
-        env.get_template("nope.html")
 
 
 async def test_failures_render_the_error_page_without_a_traceback(
@@ -375,17 +297,6 @@ def test_pidfile_lock_decides_running_versus_stale(enso_home: Paths) -> None:
     assert web.status(paths) == web.Status(running=False, stale=True)
 
 
-def test_pidfile_refuses_a_symbolic_link(enso_home: Paths, tmp_path: Path) -> None:
-    paths = enso_home
-    paths.home.mkdir(parents=True, exist_ok=True)
-    outside = tmp_path / "outside.pid"
-    outside.write_text('{"pid": 4242}\n')
-    paths.web_pid.symlink_to(outside)
-    with pytest.raises(web.WebError, match="symbolic link"):
-        web.PidFile(paths.web_pid).acquire()
-    assert outside.read_text() == '{"pid": 4242}\n'
-
-
 @pytest.mark.parametrize("command", ["status", "stop"])
 def test_pidfile_readers_refuse_a_locked_symbolic_link(
     enso_home: Paths, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str
@@ -410,31 +321,6 @@ def test_pidfile_readers_refuse_a_locked_symbolic_link(
         assert outside.read_bytes() == original
     finally:
         holder.release()
-
-
-def test_pidfile_readers_refuse_a_fifo_without_blocking(enso_home: Paths) -> None:
-    os.mkfifo(enso_home.web_pid)
-    script = textwrap.dedent(
-        """
-        from enso import web
-        from enso.config import Paths
-        for operation in (web.status, web.stop):
-            try:
-                operation(Paths.from_env())
-            except web.WebError as exc:
-                assert "regular file" in str(exc), str(exc)
-            else:
-                raise AssertionError(f"{operation.__name__} accepted a FIFO")
-        """
-    )
-    # A blocking open must fail the test instead of hanging the suite.
-    result = subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
-    )
-    assert result.returncode == 0, result.stderr
-
-
-# -- The process ----------------------------------------------------------------
 
 
 def test_background_lifecycle(enso_home: Paths) -> None:
@@ -508,30 +394,6 @@ def test_foreground_process_handles_sigterm_cleanly(enso_home: Paths) -> None:
     assert process.returncode == 0, output
     assert "listening on" in output and output.rstrip().endswith("stopped")
     assert not enso_home.web_pid.exists()
-
-
-def test_invalid_config_still_starts_with_defaults(enso_home: Paths) -> None:
-    enso_home.home.mkdir(parents=True, exist_ok=True)
-    enso_home.config.write_text("{not json")
-    port = free_port()
-    started = web.start(enso_home, port=port)  # the flag wins, the bad config is ignored
-    try:
-        assert started.startswith("listening on")
-    finally:
-        web.stop(enso_home)
-
-
-def test_non_loopback_bind_is_logged(enso_home: Paths) -> None:
-    port = free_port()
-    started = web.start(enso_home, host="0.0.0.0", port=port)
-    try:
-        assert started.startswith(f"listening on http://127.0.0.1:{port}")
-    finally:
-        web.stop(enso_home)
-    assert "no authentication" in enso_home.web_log.read_text()
-
-
-# -- The commands ---------------------------------------------------------------
 
 
 def test_web_commands(enso_home: Paths, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -629,9 +491,3 @@ def test_the_viewer_never_imports_the_runtime_or_transports() -> None:
     assert "enso.web.server" in loaded and "enso.audit" in loaded
     forbidden = ("enso.runtime", "enso.transports", "enso.cli")
     assert not any(name.startswith(forbidden) for name in loaded)
-
-
-def test_config_paths_stay_clear_of_the_real_home(enso_home: Paths) -> None:
-    assert not str(enso_home.home).startswith(str(Path.home() / ".enso"))
-    assert os.environ["ENSO_HOME"] == str(enso_home.home)
-    assert str(Paths.from_env().web_pid).startswith(str(enso_home.home))

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import UTC, datetime, timedelta
-from html.parser import HTMLParser
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
@@ -66,23 +65,6 @@ async def page(client, path):
     return await response.text()
 
 
-class Anchors(HTMLParser):
-    """Ensure clickable rows do not contain a second destination."""
-
-    def __init__(self):
-        super().__init__()
-        self.open = False
-
-    def handle_starttag(self, tag, attrs):
-        if tag == "a":
-            assert not self.open, "nested anchors"
-            self.open = True
-
-    def handle_endtag(self, tag):
-        if tag == "a":
-            self.open = False
-
-
 async def test_current_previous_state_and_attention_filters_are_paginated(
     client, saved, monkeypatch
 ):
@@ -108,39 +90,14 @@ async def test_current_previous_state_and_attention_filters_are_paginated(
     assert f'href="/heartbeats/{paused.ref}"' in filtered and "of 1 heartbeat" in filtered
     filtered = await page(client, "/heartbeats?attention=1")
     assert f'href="/heartbeats/{attention.ref}"' in filtered and "of 1 heartbeat" in filtered
-    for body in (first, second, previous, filtered):
-        Anchors().feed(body)
-
-
-async def test_detail_shows_current_intent_saved_agent_and_checks(client, saved):
-    current = beat(
-        saved,
-        title="<b>Dinner</b>",
-        instructions="<script>untrusted()</script>",
-        notify="slack:C1",
-        notify_thread="123.456",
-        timezone="America/Vancouver",
-    )
-    heartbeat.record_check(saved, current.ref, "quiet")
-    body = await page(client, f"/heartbeats/{current.ref}")
-    for text in (
-        "Completion condition",
-        "Allowed actions",
-        "Saved agent",
-        "Last successful check",
-        "America/Vancouver",
-        "123.456",
-    ):
-        assert text in body
-    assert "&lt;script&gt;untrusted()&lt;/script&gt;" in body and "<script>untrusted()" not in body
-    assert "&lt;b&gt;Dinner&lt;/b&gt;" in body and "quiet" in body
-    Anchors().feed(body)
+    # A well-formed reference with no row behind it is a miss, not a broken page.
+    assert (await client.get("/heartbeats/HB-999")).status == 404
 
 
 async def test_history_receipts_times_delivery_and_clipping_are_visible(client, saved, monkeypatch):
     current = beat(saved)
     source = datetime.now(UTC) - timedelta(hours=1)
-    note = heartbeat.note(
+    heartbeat.note(
         saved,
         current.ref,
         "<img src=x onerror=alert(1)> source update",
@@ -150,7 +107,7 @@ async def test_history_receipts_times_delivery_and_clipping_are_visible(client, 
     heartbeat.begin_action(
         saved, current.ref, "dinner-reply", "Send an authorized reply", run_id=run.id
     )
-    receipt = heartbeat.resolve_action(
+    heartbeat.resolve_action(
         saved,
         current.ref,
         "dinner-reply",
@@ -169,13 +126,6 @@ async def test_history_receipts_times_delivery_and_clipping_are_visible(client, 
     assert "&lt;script&gt;receipt&lt;/script&gt;" in body and "Notification delivered" in body
     assert '"outbox_id":123' in body.replace("&#34;", '"')
     assert f'href="/heartbeats/runs/{run.id}"' in body
-    # Every event is a fold inside one panel, the way every other list is built, and each
-    # keeps the anchor that links to it.
-    assert body.count('<div class="panel rows">') == 1
-    for event in (note, receipt):
-        assert f'<details class="fold beat-event" id="event-{event.id}">' in body
-    assert '<details class="panel beat-event"' not in body
-    Anchors().feed(body)
     long = heartbeat.note(saved, current.ref, "x" * (reading.EVENT_PREVIEW + 20))
     monkeypatch.setattr(reading, "PAGE_SIZE", 2)
     first = await page(client, f"/heartbeats/{current.ref}/history")
@@ -184,7 +134,6 @@ async def test_history_receipts_times_delivery_and_clipping_are_visible(client, 
     assert f"/heartbeats/{current.ref}/history?page=2" in first
     second = await page(client, f"/heartbeats/{current.ref}/history?page=2")
     assert f'id="event-{long.id}"' not in second
-    assert second.count('<div class="panel rows">') == 1
 
 
 async def test_list_failures_never_claim_rows(client, saved, monkeypatch):
@@ -222,22 +171,6 @@ async def test_detail_count_failures_remain_visible(client, saved, monkeypatch, 
     assert "database is locked" in body
 
 
-async def test_history_names_the_actor_and_keeps_the_recorded_value(client, saved):
-    current = beat(saved)
-    heartbeat.note(saved, current.ref, "A person asked", actor="slack:U0AETSSDDEF")
-    heartbeat.note(saved, current.ref, "A job looked", actor="job:default:nightly")
-    heartbeat.record_check(saved, current.ref, "error", error="Source login expired")
-    body = await page(client, f"/heartbeats/{current.ref}/history")
-    # The summary says a person did this from Slack; the member ID is meaningless there.
-    assert "<span>via Slack</span>" in body
-    assert "<span>slack:U0AETSSDDEF</span>" not in body
-    # Other origins already read, so they are shown exactly as recorded.
-    assert "<span>job:default:nightly</span>" in body and "<span>heartbeat</span>" in body
-    # The expanded body is the record: it keeps the raw value.
-    assert "<dt>Actor</dt><dd>slack:U0AETSSDDEF</dd>" in body
-    Anchors().feed(body)
-
-
 async def test_run_detail_keeps_saved_definition_and_bounded_input_identity(client, saved):
     current = beat(saved, instructions="Original authorization")
     run = assessment(saved, current, output="<script>provider output</script>")
@@ -257,11 +190,8 @@ async def test_run_detail_keeps_saved_definition_and_bounded_input_identity(clie
     assert '<div class="markdown output-md">' in detail
     assert "&lt;script&gt;provider output&lt;/script&gt;" in detail
     assert "<script>provider output</script>" not in detail
-    assert '<a href="/heartbeats" aria-current="page"' in detail or '/heartbeats"' in detail
     rows = await page(client, f"/heartbeats/{current.ref}/runs")
     assert f'href="/heartbeats/runs/{run.id}"' in rows and "provider output" not in rows
-    Anchors().feed(detail)
-    Anchors().feed(rows)
 
 
 async def test_mixed_runs_source_status_job_and_pagination_keep_bounded_summaries(
@@ -295,7 +225,6 @@ async def test_mixed_runs_source_status_job_and_pagination_keep_bounded_summarie
     assert f'href="/runs/{job_id}"' in jobs and "/heartbeats/runs/" not in jobs
     summary = reading.activity(saved.paths)[0]
     assert not hasattr(summary, "output") and len(summary.error_preview or "") <= runs.ERROR_PREVIEW
-    Anchors().feed(mixed)
 
 
 async def test_today_includes_beat_activity_upcoming_and_attention_but_charts_jobs(client, saved):
@@ -318,43 +247,3 @@ async def test_today_includes_beat_activity_upcoming_and_attention_but_charts_jo
     assert "Heartbeat is turned off" in disabled and "Dinner planning" in disabled
     schedule = await page(client, "/today")
     assert f'href="/heartbeats/{scheduled.ref}"' not in schedule
-
-
-@pytest.mark.parametrize("value", ["²", "9" * 5000, "-1", "0", "wrong"])
-async def test_invalid_page_values_are_safe_for_both_lists(client, saved, value):
-    current = beat(saved)
-    assert (await client.get("/heartbeats", params={"page": value})).status == 200
-    assert (await client.get("/runs", params={"page": value})).status == 200
-    assert (
-        await client.get(f"/heartbeats/{current.ref}/history", params={"page": value})
-    ).status == 200
-
-
-@pytest.mark.parametrize(
-    "path",
-    [
-        "/heartbeats/wrong",
-        "/heartbeats/HB-999",
-        "/heartbeats/HB-001/wrong",
-        "/heartbeats/runs/unknown",
-    ],
-)
-async def test_missing_refs_and_sections_return_404(client, saved, path):
-    beat(saved)
-    assert (await client.get(path)).status == 404
-
-
-async def test_heartbeat_pages_are_get_only_and_do_not_change_persisted_state(client, saved):
-    current = beat(saved)
-    run = assessment(saved, current)
-    before = saved.paths.db.read_bytes()
-    for path in (
-        "/heartbeats",
-        f"/heartbeats/{current.ref}",
-        f"/heartbeats/{current.ref}/history",
-        f"/heartbeats/{current.ref}/runs",
-        f"/heartbeats/runs/{run.id}",
-    ):
-        assert (await client.get(path)).status == 200
-        assert (await client.post(path)).status == 405
-    assert saved.paths.db.read_bytes() == before

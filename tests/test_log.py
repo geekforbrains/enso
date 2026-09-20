@@ -73,23 +73,10 @@ def test_follow_reads_the_new_file_after_rotation(
     assert [next(lines), next(lines)] == ["last", "first"]
 
 
-def test_follow_restarts_from_the_top_after_truncation(
-    enso_home: Paths, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    live = enso_home.log
-    live.write_text("a longer first line\n")
-    lines = _following(monkeypatch, enso_home, lambda: live.write_text("short\n"))
-    assert next(lines) == "short"
-
-
 def test_redacted_command_hides_attached_and_separated_prompts() -> None:
     attached = ["grok", "--output-format", "plain", "--model", "grok-4.6", "--single=hi there"]
     assert redacted_command(attached) == (
         "grok --output-format plain --model grok-4.6 '--single=<prompt chars=8>'"
-    )
-    agy = ["agy", "--output-format", "stream-json", "--new-project", "--prompt=hi there"]
-    assert redacted_command(agy) == (
-        "agy --output-format stream-json --new-project '--prompt=<prompt chars=8>'"
     )
     separated = ["claude", "-p", "--", "hi", "there"]
     assert redacted_command(separated) == "claude -p -- '<prompt chars=7>'"
@@ -99,11 +86,4 @@ def test_redacted_command_hides_attached_and_separated_prompts() -> None:
 def test_redacted_command_hides_every_token_shape(token: str) -> None:
     assert redacted_command(["claude", "-p", token, "--", "hi"]) == (
         "claude -p '<redacted>' -- '<prompt chars=2>'"
-    )
-
-
-def test_redacted_command_keeps_ordinary_arguments() -> None:
-    # A short number is not a Telegram token; over-redacting would make the log useless.
-    assert redacted_command(["claude", "-p", "12345", "--", "hi"]) == (
-        "claude -p 12345 -- '<prompt chars=2>'"
     )

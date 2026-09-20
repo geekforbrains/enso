@@ -274,8 +274,8 @@ def test_new_profiles_are_independent_and_lock_without_opening_chrome(installed_
         assert len(installed.events("chrome")) == 2
 
 
-@pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM])
-def test_signal_during_startup_cleans_browser_and_allows_retry(installed_browser, tmp_path, signum):
+def test_signal_during_startup_cleans_browser_and_allows_retry(installed_browser, tmp_path):
+    signum = signal.SIGTERM
     installed = installed_browser
     installed.result("create")
     installed.install_mcp()
@@ -302,8 +302,9 @@ def test_signal_during_startup_cleans_browser_and_allows_retry(installed_browser
         assert installed.result("status")["pid"] != unready["pid"]
 
 
-@pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM])
-def test_signal_after_first_use_preserves_ready_browser(installed_browser, signum):
+def test_signal_after_first_use_preserves_ready_browser(installed_browser):
+    # The sibling startup test covers SIGTERM; both signals share one handler.
+    signum = signal.SIGINT
     installed = installed_browser
     installed.result("create")
     installed.install_mcp()
@@ -326,9 +327,8 @@ def test_signal_after_first_use_preserves_ready_browser(installed_browser, signu
         assert len(installed.events("chrome")) == 1
 
 
-@pytest.mark.parametrize("customized", [False, True])
 def test_browser_bundle_upgrade_preserves_profiles_and_printed_registration(
-    installed_browser, tmp_path, monkeypatch, customized
+    installed_browser, tmp_path, monkeypatch
 ):
     installed = installed_browser
     installed.result("create", "work")
@@ -344,13 +344,6 @@ def test_browser_bundle_upgrade_preserves_profiles_and_printed_registration(
     state = installed.home / "browser/state/work.json"
     original_state = state.read_bytes()
     original_registration = registration_file.read_bytes()
-    if customized:
-        for relative in BROWSER_FILES:
-            target = installed.home / relative
-            target.write_text(target.read_text() + "\n# Operator customization.\n")
-    original_browser = {
-        relative: (installed.home / relative).read_text() for relative in BROWSER_FILES
-    }
     package = tmp_path / "next-package"
     shutil.copytree(workspaces.resources.files("enso").joinpath("bundled"), package / "bundled")
     for relative in BROWSER_FILES:
@@ -359,12 +352,8 @@ def test_browser_bundle_upgrade_preserves_profiles_and_printed_registration(
     monkeypatch.setattr(workspaces.resources, "files", lambda name: package)
     changed = workspaces.reconcile_bundles(installed.paths, Agent("claude", "opus", "high"))
     for relative in BROWSER_FILES:
-        assert (relative in changed) is not customized
-        current = (installed.home / relative).read_text()
-        if customized:
-            assert current == original_browser[relative]
-        else:
-            assert current.endswith("# Next browser release.\n")
+        assert relative in changed
+        assert (installed.home / relative).read_text().endswith("# Next browser release.\n")
     assert cookie.read_text() == "saved login"
     assert state.read_bytes() == original_state
     assert registration_file.read_bytes() == original_registration

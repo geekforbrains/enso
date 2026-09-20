@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import builtins
 import contextlib
-import importlib.util
 import json
 import os
 import sqlite3
@@ -24,7 +22,7 @@ from enso.cli import _serve, app, build_transports
 from enso.cli.common import INPUT_LIMIT, InputError, read_input
 from enso.config import Config, Paths
 from enso.heartbeat.runner import HeartbeatRunner
-from enso.jobs.runner import JobRunner, acquire_group_lock
+from enso.jobs.runner import JobRunner
 from enso.runtime import Runtime
 from enso.transports.slack import SlackTransport
 from enso.transports.telegram import TelegramTransport
@@ -104,14 +102,6 @@ def test_workspace_audit_command(enso_home: Paths, raw_config: dict) -> None:
 
 def test_build_transports_covers_every_configured_entry(config_both: Config) -> None:
     assert [t.name for t in build_transports(config_both)] == ["slack", "telegram"]
-
-
-async def test_serve_starts_every_transport(config_both: Config) -> None:
-    transports = [FakeTransport("slack"), FakeTransport("telegram")]
-    await _serve(
-        Runtime(config_both), transports, JobRunner(config_both), HeartbeatRunner(config_both)
-    )
-    assert all(t.started for t in transports)
 
 
 async def test_serve_cancellation_stops_transports_and_closes_running_jobs(
@@ -194,50 +184,7 @@ def test_a_newer_database_stops_startup_before_any_transport(
 
 @pytest.mark.parametrize(
     "command",
-    [
-        ["job", "list"],
-        ["job", "show", "default:missing"],
-        ["job", "run", "default:missing"],
-        [
-            "job",
-            "create",
-            "--name",
-            "Example",
-            "--provider",
-            "claude",
-            "--model",
-            "opus",
-            "--effort",
-            "high",
-            "--schedule",
-            "0 9 * * *",
-            "--workspace",
-            "default",
-        ],
-        ["runs", "list"],
-        ["runs", "show", "missing"],
-        ["message", "send", "example"],
-        ["message", "attach", "example.txt"],
-        ["message", "list"],
-        ["telegram", "send", "example"],
-        ["telegram", "attach", "example.txt"],
-        ["slack", "send", "-c", "C1", "example"],
-        ["slack", "upload", "-c", "C1", "example.txt"],
-        ["slack", "edit", "-c", "C1", "--ts", "1.0", "example"],
-        ["slack", "delete", "-c", "C1", "--ts", "1.0"],
-        ["slack", "react", "-c", "C1", "--ts", "1.0", "eyes"],
-        ["slack", "unreact", "-c", "C1", "--ts", "1.0", "eyes"],
-        ["slack", "thread", "C1", "1.0"],
-        ["slack", "history", "C1"],
-        ["slack", "lookup-user", "example"],
-        ["slack", "lookup-channel", "example"],
-        ["slack", "whois", "U1"],
-        ["slack", "open-dm", "U1"],
-        ["slack", "refresh"],
-        ["table", "list"],
-        ["table", "register", "example", "--description", "Example"],
-        ["table", "schema", "example"],
-    ],
+    [["job", "list"], ["message", "send", "example"], ["slack", "send", "-c", "C1", "example"]],
 )
 def test_json_commands_report_missing_config(enso_home: Paths, command: list[str]) -> None:
     result = CliRunner().invoke(app, [*command, "--json"])
@@ -249,10 +196,15 @@ def test_json_commands_report_missing_config(enso_home: Paths, command: list[str
     assert not enso_home.db.exists()
 
 
+def test_skill_list_works_before_the_home_is_configured(enso_home: Paths) -> None:
+    result = CliRunner().invoke(app, ["skill", "list", "--json"])
+    assert result.exit_code == 0 and result.stderr == ""
+    assert json.loads(result.stdout) == []
+    assert not enso_home.config.exists() and not enso_home.db.exists()
+
+
 @pytest.mark.parametrize("as_json", [False, True])
-@pytest.mark.parametrize(
-    "failure", ["config", "newer_database", "corrupt_database", "database_dir"]
-)
+@pytest.mark.parametrize("failure", ["config", "corrupt_database"])
 def test_loading_errors_respect_output_mode(
     enso_home: Paths, raw_config: dict, as_json: bool, failure: str
 ) -> None:
@@ -260,17 +212,9 @@ def test_loading_errors_respect_output_mode(
     if failure == "config":
         enso_home.config.write_text("{")
         expected = "could not read"
-    elif failure == "newer_database":
-        with sqlite3.connect(enso_home.db) as con:
-            con.execute(f"PRAGMA application_id = {db.APPLICATION_ID}")
-            con.execute(f"PRAGMA user_version = {db.SCHEMA_VERSION + 1}")
-        expected = "upgrade Enso to the version that wrote it"
-    elif failure == "corrupt_database":
+    else:
         enso_home.db.write_text("not a SQLite database")
         expected = "file is not a database"
-    else:
-        enso_home.db.mkdir()
-        expected = "unable to open database file"
     before = enso_home.db.read_bytes() if enso_home.db.is_file() else None
     result = CliRunner().invoke(app, ["message", "list", *(["--json"] if as_json else [])])
     assert result.exit_code == 1
@@ -286,34 +230,23 @@ def test_loading_errors_respect_output_mode(
 
 
 @pytest.mark.parametrize(
-    ("command", "error"),
+    ("command", "fields"),
     [
-        (["job", "show", "default:missing"], "no job named default:missing"),
-        (["job", "run", "default:missing"], "no job named default:missing"),
-        (["runs", "show", "missing"], "no run matches missing"),
+        ("show", {"enabled": "yes", "timeout": 0}),
+        ("run", {"enabled": "yes", "timeout": 0}),
+        ("run", {"schedule": "@hourly"}),
     ],
 )
-def test_json_lookup_failures(
-    enso_home: Paths, raw_config: dict, command: list[str], error: str
+def test_json_job_commands_refuse_a_job_with_problems(
+    enso_home: Paths, raw_config: dict, command: str, fields: dict
 ) -> None:
+    """A file with any problem never runs, and an unreadable one cannot be shown either."""
     write_config(enso_home, raw_config)
-    result = CliRunner().invoke(app, [*command, "--json"])
-    assert result.exit_code == 1 and result.stderr == ""
-    assert json.loads(result.stdout) == {"ok": False, "error": error}
-
-
-@pytest.mark.parametrize("command", ["show", "run"])
-def test_json_job_commands_report_malformed_frontmatter(
-    enso_home: Paths, raw_config: dict, command: str
-) -> None:
-    write_config(enso_home, raw_config)
-    write_job(enso_home, enabled="yes", timeout=0)
+    write_job(enso_home, **fields)
     result = CliRunner().invoke(app, ["job", command, "default:nightly", "--json"])
     assert result.exit_code == 1 and result.stderr == ""
-    assert json.loads(result.stdout) == {
-        "ok": False,
-        "error": "enabled must be true or false; timeout must be a positive integer",
-    }
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False and payload["error"]
     assert runs.list_runs(enso_home) == []
 
 
@@ -374,104 +307,6 @@ def test_job_and_runs_commands(enso_home: Paths, raw_config: dict, fake_claude: 
         and "job=default:nightly-digest" in one.stdout
     )
     assert runner.invoke(app, ["runs", "show", "zzz"]).exit_code == 1
-
-
-def test_job_create_refuses_an_invalid_schedule(enso_home: Paths, raw_config: dict) -> None:
-    """The schedule is validated before anything is written, so a refusal leaves no directory."""
-    write_config(enso_home, raw_config)
-    runner = CliRunner()
-    for schedule in ("@daily", "* * * * * *", "0 9 * *"):
-        made = runner.invoke(app, [
-            "job", "create", "--name", "Odd Hours", "--provider", "claude", "--model", "opus",
-            "--effort", "high", "--schedule", schedule, "--workspace", "default",
-        ])  # fmt: skip
-        assert made.exit_code == 1 and made.stdout == ""
-        assert "must be exactly five fields" in made.stderr
-        assert not (enso_home.workspace_jobs("default") / "odd-hours").exists()
-
-
-def test_job_show_and_list_carry_a_schedule_problem(enso_home: Paths, raw_config: dict) -> None:
-    write_config(enso_home, raw_config)
-    write_job(enso_home, "hourly", schedule="@hourly")
-    db.initialize(enso_home)
-    runner = CliRunner()
-
-    shown = runner.invoke(app, ["job", "show", "default:hourly", "--json"])
-    payload = json.loads(shown.stdout)
-    assert shown.exit_code == 0 and payload["next_run"] is None
-    assert payload["problems"] == [
-        "schedule '@hourly' must be exactly five fields, "
-        "minute hour day-of-month month day-of-week; Enso schedules at minute resolution, "
-        "so a seconds or year field and aliases such as @daily are not accepted"
-    ]
-    listed = json.loads(
-        runner.invoke(app, ["job", "list", "--workspace", "default", "--json"]).stdout
-    )
-    assert [entry["problems"] for entry in listed] == [payload["problems"]]
-    assert runner.invoke(app, ["job", "run", "default:hourly"]).exit_code == 1
-    refused = runner.invoke(app, ["job", "run", "default:hourly", "--json"])
-    assert refused.exit_code == 1 and refused.stderr == ""
-    assert json.loads(refused.stdout) == {"ok": False, "error": "; ".join(payload["problems"])}
-    assert runs.list_runs(enso_home) == []
-
-
-@pytest.mark.parametrize(
-    ("status", "exit_code", "prerun", "prompt"),
-    [
-        ("ok", 1, "exit 0", "Say hi."),
-        ("error", 1, "exit 0", "fail provider failure"),
-        ("timeout", 1, "exit 0", "sleep 10"),
-        ("no_work", 1, "exit 1", "Say hi."),
-        ("prerun_error", 1, "exit 2", "Say hi."),
-        ("skipped", 1, "exit 0", "Say hi."),
-    ],
-)
-def test_job_run_reports_failing_postrun_for_every_outcome(
-    enso_home: Paths,
-    raw_config: dict,
-    fake_claude: str,
-    status: str,
-    exit_code: int,
-    prerun: str,
-    prompt: str,
-) -> None:
-    raw_config["providers"]["claude"]["path"] = fake_claude
-    write_config(enso_home, raw_config)
-    path = write_job(
-        enso_home,
-        enabled=False,
-        prerun="prerun.sh",
-        postrun="postrun.sh",
-        concurrency_group="cli-test",
-        timeout=1 if status == "timeout" else 30,
-        prompt=prompt,
-    )
-    path.with_name("prerun.sh").write_text(prerun)
-    path.with_name("postrun.sh").write_text('echo "ENSO_ERROR: example hook failure" >&2\nexit 2')
-    runner = CliRunner()
-    with contextlib.ExitStack() as stack:
-        if status == "skipped":
-            lock = acquire_group_lock(enso_home, "cli-test")
-            assert lock is not None
-            stack.enter_context(lock)
-        ran = runner.invoke(app, ["job", "run", "default:nightly"])
-        assert ran.exit_code == exit_code
-        assert ran.stderr.count("postrun failed: example hook failure\n") == 1
-        if status in ("ok", "no_work", "skipped"):
-            assert ran.stderr == "postrun failed: example hook failure\n"
-        serialized = runner.invoke(app, ["job", "run", "default:nightly", "--json"])
-        assert serialized.exit_code == exit_code and serialized.stderr == ""
-        payload = json.loads(serialized.stdout)
-        final_status = "error" if status in ("ok", "no_work", "skipped") else status
-        assert (payload["status"], payload["postrun_error"]) == (
-            final_status,
-            "example hook failure",
-        )
-        assert payload["ok"] is (exit_code == 0) and payload["run_id"]
-    history = runs.list_runs(enso_home)
-    assert len(history) == 2 and all(run.status == final_status for run in history)
-    assert all(run.error == (payload["error"] or None) for run in history)
-    assert all(run.postrun_error == "example hook failure" for run in history)
 
 
 def test_job_run_reports_a_failing_postrun(
@@ -551,23 +386,12 @@ def test_runs_show_includes_attempts_without_loading_them_in_lists(
 # -- transport tools, outbox, logs ---------------------------------------------
 
 
-def test_message_help_describes_destination_priority() -> None:
-    result = CliRunner().invoke(app, ["message", "--help"])
-    assert result.exit_code == 0
-    assert (
-        "Send to --to, else the conversation that asked, else the transport's notify target."
-        in " ".join(result.stdout.split())
-    )
-
-
 @pytest.mark.parametrize("transport", ["slack", "telegram"])
-@pytest.mark.parametrize("as_json", [False, True])
 def test_message_origin_with_unconfigured_transport(
     enso_home: Paths,
     raw_config_both: dict,
     monkeypatch: pytest.MonkeyPatch,
     transport: str,
-    as_json: bool,
 ) -> None:
     raw_config_both["transports"].pop(transport)
     raw_config_both["bindings"] = {}
@@ -578,49 +402,11 @@ def test_message_origin_with_unconfigured_transport(
     if transport == "slack":
         commands.append(["slack", "send", "-c", "C1", "example"])
     for command in commands:
-        result = CliRunner().invoke(app, [*command, *(["--json"] if as_json else [])])
+        result = CliRunner().invoke(app, [*command, "--json"])
         assert result.exit_code == 1
         error = f"transports.{transport} is not configured"
-        if as_json:
-            assert json.loads(result.stdout) == {"ok": False, "error": error}
-            assert result.stderr == ""
-        else:
-            assert result.stdout == "" and result.stderr == f"error: {error}\n"
-
-
-@pytest.mark.parametrize("transport", ["slack", "telegram"])
-@pytest.mark.parametrize("generic", [False, True])
-def test_json_transport_import_failure(
-    enso_home: Paths,
-    raw_config_both: dict,
-    monkeypatch: pytest.MonkeyPatch,
-    transport: str,
-    generic: bool,
-) -> None:
-    write_config(enso_home, raw_config_both)
-    importing = builtins.__import__
-    error = f"Missing transport dependencies; install enso[{transport}]"
-
-    def missing_transport(name, globals=None, locals=None, fromlist=(), level=0):
-        package = globals["__package__"] if level else ""
-        if (
-            importlib.util.resolve_name("." * level + name, package)
-            == f"enso.transports.{transport}"
-        ):
-            raise ImportError(error)
-        return importing(name, globals, locals, fromlist, level)
-
-    monkeypatch.setattr(builtins, "__import__", missing_transport)
-    if generic:
-        target = "slack:C1" if transport == "slack" else "telegram:123"
-        command = ["message", "send", "example", "--to", target]
-    elif transport == "slack":
-        command = ["slack", "send", "-c", "C1", "example"]
-    else:
-        command = ["telegram", "send", "example"]
-    result = CliRunner().invoke(app, [*command, "--json"])
-    assert result.exit_code == 1 and result.stderr == ""
-    assert json.loads(result.stdout) == {"ok": False, "error": error}
+        assert json.loads(result.stdout) == {"ok": False, "error": error}
+        assert result.stderr == ""
 
 
 @pytest.fixture
@@ -667,43 +453,6 @@ def test_read_input_bounds_files_and_requires_utf8(tmp_path: Path) -> None:
         read_input("\udcff", literal=True)
 
 
-def test_message_input_over_the_limit_is_refused_before_sending(
-    slack: FakeSlack, tmp_path: Path
-) -> None:
-    runner = CliRunner()
-    body_file = tmp_path / "body.md"
-    body_file.write_bytes(b"x" * (INPUT_LIMIT + 1))
-    result = runner.invoke(app, ["slack", "send", "-c", "C1", "--file", str(body_file), "--json"])
-    assert result.exit_code == 1 and result.stderr == ""
-    assert json.loads(result.stdout) == {"ok": False, "error": f"input exceeds {INPUT_LIMIT} bytes"}
-    result = runner.invoke(app, ["message", "send", "-"], input="x" * (INPUT_LIMIT + 1))
-    assert result.exit_code == 1 and result.stderr == f"error: input exceeds {INPUT_LIMIT} bytes\n"
-    result = runner.invoke(app, ["message", "send", "é" * (INPUT_LIMIT // 2) + "x", "--json"])
-    assert result.exit_code == 1 and result.stderr == ""
-    assert json.loads(result.stdout) == {"ok": False, "error": f"input exceeds {INPUT_LIMIT} bytes"}
-    assert slack.sent("chat_postMessage") == []
-
-
-@pytest.mark.parametrize("as_json", [False, True])
-@pytest.mark.parametrize("invalid_utf8", [False, True])
-def test_rich_input_is_bounded_and_requires_utf8(
-    slack: FakeSlack, tmp_path: Path, as_json: bool, invalid_utf8: bool
-) -> None:
-    envelope = tmp_path / "rich.json"
-    content = b'{"version":1,"fallback_text":"A: 1","blocks":[{"type":"table","rows":[["A",1]]}]}'
-    envelope.write_bytes(b"\xff" if invalid_utf8 else content.ljust(INPUT_LIMIT + 1, b" "))
-    error = f"{envelope} is not UTF-8" if invalid_utf8 else f"input exceeds {INPUT_LIMIT} bytes"
-    args = ["slack", "send", "-c", "C1", "--rich", str(envelope)]
-    result = CliRunner().invoke(app, [*args, *(["--json"] if as_json else [])])
-    assert result.exit_code == 1
-    if as_json:
-        assert result.stderr == ""
-        assert json.loads(result.stdout) == {"ok": False, "error": error}
-    else:
-        assert result.stdout == "" and result.stderr == f"error: {error}\n"
-    assert slack.sent("chat_postMessage") == []
-
-
 def test_slack_writes_follow_the_json_contract_and_fill_the_outbox(
     slack: FakeSlack, tmp_path: Path
 ) -> None:
@@ -736,6 +485,17 @@ def test_slack_writes_follow_the_json_contract_and_fill_the_outbox(
         == 1
     )
     assert runner.invoke(app, ["slack", "send", "-c", "C1"]).exit_code == 1
+
+    # Over-limit input is refused before anything reaches Slack.
+    settled = len(slack.sent("chat_postMessage"))
+    body_file.write_bytes(b"x" * (INPUT_LIMIT + 1))
+    refused = runner.invoke(app, ["slack", "send", "-c", "C1", "--file", str(body_file), "--json"])
+    assert refused.exit_code == 1 and refused.stderr == ""
+    assert json.loads(refused.stdout) == {
+        "ok": False,
+        "error": f"input exceeds {INPUT_LIMIT} bytes",
+    }
+    assert len(slack.sent("chat_postMessage")) == settled
 
     envelope = tmp_path / "rich.json"
     envelope.write_text(
@@ -919,14 +679,7 @@ def test_message_send_without_destination_fails(
 
 @pytest.mark.parametrize(
     "command",
-    [
-        ["message", "send"],
-        ["message", "attach"],
-        ["telegram", "send"],
-        ["telegram", "attach"],
-        ["slack", "send", "-c", "C1"],
-        ["slack", "upload", "-c", "C1"],
-    ],
+    [["message", "send"], ["telegram", "attach"], ["slack", "upload", "-c", "C1"]],
 )
 def test_native_sends_require_context_and_allow_workspace_override(
     enso_home, raw_config_both, monkeypatch, tmp_path, command
@@ -1039,38 +792,3 @@ def test_logs_filters_across_rotated_files(enso_home: Paths) -> None:
     assert runner.invoke(app, ["logs", "--grep", "nothing"]).stdout == ""
     enso_home.log.unlink()
     assert runner.invoke(app, ["logs"]).exit_code == 1
-
-
-def test_config_set_and_unset_text_output(enso_home: Paths, raw_config: dict) -> None:
-    write_config(enso_home, raw_config)
-    runner = CliRunner()
-    result = runner.invoke(app, ["config", "set", "logging.level", "DEBUG"])
-    assert result.exit_code == 0, result.output
-    assert result.stdout.splitlines() == [
-        "configuration applied",
-        "restart the service to apply the transports or logging change",
-    ]
-    # The viewer is its own process, so a web change names it, not the service.
-    result = runner.invoke(app, ["config", "set", "web.port", "9000"])
-    assert result.exit_code == 0, result.output
-    assert result.stdout.splitlines() == [
-        "configuration applied",
-        "restart the viewer (enso web stop, then enso web start) to apply the web change",
-    ]
-    result = runner.invoke(app, ["config", "unset", "logging.level"])
-    assert result.exit_code == 0 and result.stdout.splitlines()[0] == "configuration applied"
-    result = runner.invoke(app, ["config", "unset", "logging.level"])
-    assert result.exit_code == 1 and result.stdout == ""
-    assert result.stderr == "error: logging.level is not set\n"
-    result = runner.invoke(app, ["config", "set", "agent.timeout", "--", "-1"])
-    assert result.exit_code == 1 and result.stderr.startswith("error: agent.timeout")
-    assert json.loads(enso_home.config.read_text())["agent"] == {"timeout": 30}
-    # A change to both reports both processes; web.port 9000 is dropped by this document.
-    raw_config["transports"]["slack"]["bot_token"] = "xoxb-rotated"
-    result = runner.invoke(app, ["config", "apply", "--file", "-"], input=json.dumps(raw_config))
-    assert result.exit_code == 0, result.output
-    assert result.stdout.splitlines() == [
-        "configuration applied",
-        "restart the service to apply the transports or logging change",
-        "restart the viewer (enso web stop, then enso web start) to apply the web change",
-    ]

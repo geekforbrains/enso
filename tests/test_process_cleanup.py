@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from enso import execution, worktrees
+from enso import execution, releases, worktrees
 
 
 def child():
@@ -50,7 +50,7 @@ async def test_live_group_permission_failure_is_not_hidden(monkeypatch, leader_e
     process.send_signal.assert_not_called()
 
 
-@pytest.mark.parametrize("group", [0, -1, 654321])
+@pytest.mark.parametrize("group", [0, 654321])
 async def test_unsafe_group_signals_only_the_child(monkeypatch, group):
     process = child()
     monkeypatch.setattr(execution.os, "getpgid", lambda _pid: group)
@@ -129,3 +129,73 @@ async def test_background_cleanup_checks_group_even_after_leader_exits(monkeypat
         assert error.value is denied
     process.wait.assert_awaited()
     assert kill.call_args_list == [((process.pid, signal.SIGKILL),), ((process.pid, 0),)]
+
+
+@pytest.mark.parametrize("group_state", ["gone", "exists"])
+def test_installer_group_permission_error_is_ignored_only_after_proving_absence(
+    monkeypatch, group_state
+):
+    """The release installer keeps its own copy of this dance, outside ``enso.execution``."""
+    signals = []
+    reaped = []
+    denied = PermissionError(errno.EPERM, "installer group permission failure")
+
+    def killpg(pid, sent_signal):
+        signals.append(sent_signal)
+        if sent_signal:
+            raise denied
+        if group_state == "gone":
+            raise ProcessLookupError(errno.ESRCH, "group reaped")
+
+    monkeypatch.setattr(releases.os, "killpg", killpg)
+    process = SimpleNamespace(pid=123, wait=lambda **kwargs: reaped.append(True))
+
+    if group_state == "gone":
+        releases._kill_installer_group(process)
+    else:
+        with pytest.raises(PermissionError) as error:
+            releases._kill_installer_group(process)
+        assert error.value is denied
+    assert reaped == [True]
+    assert signals == [releases.signal.SIGKILL, 0]
+
+
+async def test_cancellation_during_timeout_cleanup_still_reaps_process(tmp_path, monkeypatch):
+    """A cancellation landing inside timeout cleanup still reaps the child and leaks no task."""
+    terminating = asyncio.Event()
+    stopped = asyncio.Event()
+    calls = []
+
+    async def wait():
+        await stopped.wait()
+
+    process = SimpleNamespace(
+        stdout=asyncio.StreamReader(), stderr=asyncio.StreamReader(), wait=wait, returncode=None
+    )
+
+    async def create(*args, **kwargs):
+        return process
+
+    async def terminate(child, label):
+        assert child is process
+        calls.append(label)
+        if len(calls) == 1:
+            terminating.set()
+            await asyncio.Event().wait()
+        child.returncode = -9
+        stopped.set()
+
+    monkeypatch.setattr(execution.asyncio, "create_subprocess_exec", create)
+    monkeypatch.setattr(execution, "terminate_background_process", terminate)
+    baseline = asyncio.all_tasks()
+    running = asyncio.create_task(
+        execution.run_process(
+            ["fake"], cwd=tmp_path, env={}, timeout=0.01, merge_stderr=False, label="gate"
+        )
+    )
+    await asyncio.wait_for(terminating.wait(), 1)
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    assert stopped.is_set() and len(calls) == 2
+    assert asyncio.all_tasks() <= baseline

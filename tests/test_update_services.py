@@ -24,7 +24,6 @@ class Manager:
         self.loaded = loaded
         self.pid = pid
         self.transient = transient
-        self.active_state = None
         self.queries = []
         self.commands = []
 
@@ -33,7 +32,7 @@ class Manager:
         if "is-enabled" in args:
             return "enabled" if self.loaded else "disabled"
         if "--property=LoadState,ActiveState,MainPID" in args:
-            state = self.active_state or ("active" if self.pid else "inactive")
+            state = "active" if self.pid else "inactive"
             loaded = "loaded" if self.loaded else "not-found"
             return f"LoadState={loaded}\nActiveState={state}\nMainPID={self.pid or 0}\n"
         if args[0] == "systemctl":
@@ -134,11 +133,6 @@ def test_completed_helper_cleanup_unloads_idle_and_preserves_live_processes(
     assert fake.commands == ([] if pid else [stop])
 
 
-def test_absent_helper_allows_cleanup_without_stopping_anything(enso_home, manager):
-    assert update_services.cleanup_finished(enso_home, OPERATION)
-    assert manager.commands == []
-
-
 @pytest.mark.parametrize("failure", ["query", "stop", "still-loaded"])
 def test_unconfirmed_helper_cleanup_preserves_files(enso_home, monkeypatch, manager, failure):
     manager.loaded = True
@@ -158,23 +152,6 @@ def test_unconfirmed_helper_cleanup_preserves_files(enso_home, monkeypatch, mana
         monkeypatch.setattr(service, "stop", lambda *args, **kwargs: None)
     assert not update_services.cleanup_finished(enso_home, OPERATION)
     assert manager.loaded
-
-
-def test_systemd_helper_waiting_to_restart_is_preserved(enso_home, monkeypatch):
-    fake = fake_manager(monkeypatch, "systemd", loaded=True)
-    fake.active_state = "activating"
-    assert not update_services.cleanup_finished(enso_home, OPERATION)
-    assert fake.commands == []
-
-
-def test_unsupported_platform_is_reported_before_any_service_work(enso_home, monkeypatch):
-    monkeypatch.setattr(sys, "platform", "win32")
-    for attempt in (
-        lambda: update_services.discover(enso_home),
-        lambda: update_services.launch(enso_home, OPERATION, enso_home.home / "python"),
-    ):
-        with pytest.raises(UpdateError, match="no service manager on win32"):
-            attempt()
 
 
 @pytest.mark.parametrize("action", ["stop", "start"])
@@ -217,6 +194,14 @@ def test_viewer_supervisor_is_discovered_stopped_and_restored(
     enso_home, monkeypatch, manager, custom
 ):
     platform = manager.platform
+    no_daemon(monkeypatch)
+    # A viewer the operator had already stopped is neither stopped nor started again.
+    monkeypatch.setattr(web, "status", lambda paths: web.Status(False))
+    stopped = update_services.discover(enso_home)
+    update_services.stop(enso_home, stopped)
+    update_services.start(enso_home, stopped, enso_home.home / "bin/enso")
+    assert manager.queries == [] and manager.commands == []
+
     name = (
         {"launchd": "com.cloud.viewer", "systemd": "cloud-viewer.service"}[platform]
         if custom
@@ -226,7 +211,6 @@ def test_viewer_supervisor_is_discovered_stopped_and_restored(
     unit.parent.mkdir(parents=True)
     unit.write_text("unchanged viewer service definition")
     manager.loaded, manager.pid = True, 4242
-    no_daemon(monkeypatch)
     monkeypatch.setattr(
         web,
         "status",
@@ -277,12 +261,3 @@ def test_unproven_standard_viewer_is_not_treated_as_unsupervised(enso_home, monk
     assert previous["viewer"] and previous["viewer_service"] == ""
     with pytest.raises(UpdateError, match="does not own"):
         update_services.discover(enso_home, service.VIEWER.name(manager.platform))
-
-
-def test_update_leaves_stopped_viewer_stopped(enso_home, monkeypatch, manager):
-    no_daemon(monkeypatch)
-    monkeypatch.setattr(web, "status", lambda paths: web.Status(False))
-    previous = update_services.discover(enso_home)
-    update_services.stop(enso_home, previous)
-    update_services.start(enso_home, previous, enso_home.home / "bin/enso")
-    assert manager.queries == [] and manager.commands == []

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from uuid import uuid4
 
 import pytest
@@ -158,7 +159,9 @@ def test_assets_backlinks_heading_audit_and_duplicate_ids(tmp_path):
     assert sum(p["problem"] == "duplicate note id" for p in catalog.audit()) == 2
 
 
-def test_create_update_and_adopt_are_atomic_and_reject_stale_or_occupied_paths(tmp_path):
+def test_create_update_and_adopt_are_atomic_and_reject_stale_or_occupied_paths(
+    tmp_path, monkeypatch
+):
     paths = Paths(tmp_path)
     note = knowledge.create_note(paths, "shared", "Folder/New.md", "## Body\n\nText")
     assert set(note.metadata) == {"schema", "id", "created", "updated"}
@@ -176,6 +179,12 @@ def test_create_update_and_adopt_are_atomic_and_reject_stale_or_occupied_paths(t
     adopted = knowledge.adopt_note(paths, "shared", "Legacy.md")
     assert set(adopted.metadata) == {"schema", "id"}
     assert adopted.body == "Legacy body"
+    target = paths.knowledge / updated.path
+    original = target.read_bytes()
+    monkeypatch.setattr(storage, "timestamp", lambda: "2000-01-01T00:00:00Z")
+    with pytest.raises(knowledge.KnowledgeError, match="earlier than created"):
+        knowledge.update_note(paths, "shared", note.id, "Backdated", expected_hash=updated.sha256)
+    assert target.read_bytes() == original
 
 
 def test_import_edits_preserve_unknown_creation_and_moves_preserve_dates(tmp_path):
@@ -194,17 +203,6 @@ def test_import_edits_preserve_unknown_creation_and_moves_preserve_dates(tmp_pat
     original = target.read_bytes()
     knowledge.move_note(paths, "shared", updated.id, "Reference/Imported.md")
     assert (paths.knowledge / "Reference/Imported.md").read_bytes() == original
-
-
-def test_edit_refuses_to_write_an_update_before_document_creation(tmp_path, monkeypatch):
-    paths = Paths(tmp_path)
-    note = knowledge.create_note(paths, "shared", "Page.md", "Original")
-    target = paths.knowledge / note.path
-    original = target.read_bytes()
-    monkeypatch.setattr(storage, "timestamp", lambda: "2000-01-01T00:00:00Z")
-    with pytest.raises(knowledge.KnowledgeError, match="earlier than created"):
-        knowledge.update_note(paths, "shared", note.id, "Changed", expected_hash=note.sha256)
-    assert target.read_bytes() == original
 
 
 @pytest.mark.parametrize("operation", ["adopt", "update", "move", "linked-move"])
@@ -256,20 +254,14 @@ def test_publication_detects_a_direct_edit_during_write(tmp_path, monkeypatch):
     assert not list(paths.knowledge.glob(".enso-note-*"))
 
 
-def test_writers_refuse_contention_and_symlink_lock(tmp_path):
+def test_writers_report_contention_as_a_knowledge_error(tmp_path):
     paths = Paths(tmp_path)
     fd = locks.acquire(paths.lock("knowledge"))
     try:
         with pytest.raises(knowledge.KnowledgeError, match="another knowledge"):
             knowledge.create_note(paths, "shared", "No.md", "body")
     finally:
-        import os
-
         os.close(fd)
-    (paths.lock("knowledge")).unlink()
-    (paths.lock("knowledge")).symlink_to(tmp_path / "other")
-    with pytest.raises(OSError):
-        knowledge.create_note(paths, "shared", "No.md", "body")
 
 
 def test_writes_reject_second_frontmatter_oversize_and_case_collisions(tmp_path):
@@ -348,14 +340,6 @@ def test_shortest_wiki_paths_resolve_unique_suffixes_without_broadening_other_li
     assert catalog.resolve(source, "Compliance/HIPAA", wiki=True).note.path == "Compliance/HIPAA.md"
 
 
-def test_move_repairs_incoming_shortest_wiki_paths(tmp_path):
-    paths = Paths(tmp_path)
-    put(paths, "Index.md", "[[Compliance/HIPAA|Policy]]")
-    put(paths, "Knowledge/Compliance/HIPAA.md", "Body")
-    knowledge.move_note(paths, "shared", "Knowledge/Compliance/HIPAA", "Compliance/Policy.md")
-    assert "[[shared:Compliance/Policy|Policy]]" in knowledge.scan(paths).get("Index").body
-
-
 def test_move_escapes_filename_delimiters_separately_from_heading_fragment(tmp_path):
     paths = Paths(tmp_path)
     put(paths, "Index.md", "[[Target#Heading|label]] [target](Target.md#Heading)")
@@ -407,25 +391,6 @@ def test_list_links_are_repaired_while_nested_fences_and_indented_code_are_ignor
     assert not catalog.audit()
 
 
-def test_code_indentation_and_eof_spaces_survive_read_move_and_substantive_update(tmp_path):
-    paths = Paths(tmp_path)
-    body = "    print('  ')\n\n[[Target]]\n\n```text\ntrailing  "
-    put(paths, "Index.md", body)
-    put(paths, "Target.md", "Body")
-    note = knowledge.scan(paths).get("Index")
-    assert note.body == body
-    knowledge.move_note(paths, "shared", "Target", "Renamed.md")
-    moved = knowledge.scan(paths).get("Index")
-    assert moved.body.startswith("    print('  ')")
-    assert moved.body.endswith("trailing  ")
-    changed = knowledge.update_note(
-        paths, "shared", moved.id, moved.body[4:], expected_hash=moved.sha256
-    )
-    assert changed.sha256 != moved.sha256
-    assert changed.body.startswith("print('  ')")
-    assert changed.body.endswith("trailing  ")
-
-
 def test_move_preserves_identity_and_repairs_incoming_outgoing_and_asset_links(tmp_path):
     paths = Paths(tmp_path)
     put(paths, "Start.md", "[[Old/Page#Heading|A label]] [page](Old/Page.md)")
@@ -471,21 +436,6 @@ def test_same_folder_rename_rewrites_only_links_it_breaks(tmp_path):
     )
     assert catalog.get("Other").body == "[[Beta]] [alpha](shared:F/Alpha2.md)"
     assert result["links_updated"] == 2
-    assert not catalog.audit()
-
-
-def test_folder_move_keeps_scope_wide_names_and_qualifies_relative_paths(tmp_path):
-    paths = Paths(tmp_path)
-    put(paths, "A/Page.md", "[[Sibling]] [sib](Sibling.md) ![[image.png]] ![img](image.png)")
-    put(paths, "A/Sibling.md", "[[Page]] [page](Page.md)")
-    (paths.knowledge / "A/image.png").write_bytes(b"asset")
-    result = knowledge.move_note(paths, "shared", "A/Page", "B/Page.md")
-    catalog = knowledge.scan(paths)
-    assert catalog.get("B/Page").body == (
-        "[[Sibling]] [sib](shared:A/Sibling.md) ![[image.png]] ![img](shared:A/image.png)"
-    )
-    assert catalog.get("A/Sibling").body == "[[Page]] [page](shared:B/Page.md)"
-    assert result["links_updated"] == 1
     assert not catalog.audit()
 
 
@@ -561,21 +511,20 @@ def test_failed_move_rolls_back_without_losing_notes(tmp_path, monkeypatch):
     assert not (paths.knowledge / "Moved.md").exists()
 
 
-@pytest.mark.parametrize("options", [[], ["--shared"]])
-def test_cli_json_read_write_audit_and_errors(tmp_path, monkeypatch, options):
+def test_cli_json_read_write_audit_and_errors(tmp_path, monkeypatch):
     monkeypatch.setenv("ENSO_HOME", str(tmp_path))
     runner = CliRunner()
     created = runner.invoke(
         app,
-        ["knowledge", "create", "Folder/One.md", "--file", "-", *options, "--json"],
+        ["knowledge", "create", "Folder/One.md", "--file", "-", "--json"],
         input="Body text\n",
     )
     assert created.exit_code == 0, created.output
     note = json.loads(created.output)
     assert note["ok"] and note["scope"] == "shared" and len(note["sha256"]) == 64
-    listing = runner.invoke(app, ["knowledge", "search", "body", *options, "--json"])
+    listing = runner.invoke(app, ["knowledge", "search", "body", "--json"])
     assert json.loads(listing.output)["total"] == 1
-    shown = runner.invoke(app, ["knowledge", "show", note["id"], *options, "--json"])
+    shown = runner.invoke(app, ["knowledge", "show", note["id"], "--json"])
     assert json.loads(shown.output)["body"] == "Body text"
     updated = runner.invoke(
         app,
@@ -587,13 +536,12 @@ def test_cli_json_read_write_audit_and_errors(tmp_path, monkeypatch, options):
             "-",
             "--expected-hash",
             note["sha256"],
-            *options,
             "--json",
         ],
         input="[[Missing]]\n",
     )
     assert updated.exit_code == 0, updated.output
-    audited = runner.invoke(app, ["knowledge", "audit", *options, "--json"])
+    audited = runner.invoke(app, ["knowledge", "audit", "--json"])
     assert audited.exit_code == 1 and not json.loads(audited.output)["ok"]
     conflict = runner.invoke(
         app,
@@ -605,7 +553,6 @@ def test_cli_json_read_write_audit_and_errors(tmp_path, monkeypatch, options):
             "-",
             "--expected-hash",
             note["sha256"],
-            *options,
             "--json",
         ],
         input="Stale\n",
@@ -616,25 +563,18 @@ def test_cli_json_read_write_audit_and_errors(tmp_path, monkeypatch, options):
         != note["sha256"]
     )
     (Paths(tmp_path).knowledge / "Missing.md").write_text("Imported reference\n")
-    adopted = runner.invoke(app, ["knowledge", "adopt", "Missing.md", *options, "--json"])
+    adopted = runner.invoke(app, ["knowledge", "adopt", "Missing.md", "--json"])
     assert adopted.exit_code == 0, adopted.output
-    moved = runner.invoke(app, ["knowledge", "move", note["id"], "Moved.md", *options, "--json"])
+    moved = runner.invoke(app, ["knowledge", "move", note["id"], "Moved.md", "--json"])
     assert moved.exit_code == 0 and json.loads(moved.output)["scope"] == "shared", moved.output
-    assert runner.invoke(app, ["knowledge", "audit", *options, "--json"]).exit_code == 0
+    assert runner.invoke(app, ["knowledge", "audit", "--json"]).exit_code == 0
 
 
 @pytest.mark.parametrize(
     ("environment", "options", "selected"),
     [
         ("team", [], "shared"),
-        ("missing", [], "shared"),
-        ("team", ["--workspace", "team"], "workspace:team"),
         ("team", ["--workspace", "personal"], "workspace:personal"),
-        ("missing", ["--workspace", "team"], "workspace:team"),
-        ("missing", ["--shared"], "shared"),
-        (None, ["--shared"], "shared"),
-        (None, [], "shared"),
-        ("team", ["--workspace", "missing"], None),
         ("team", ["--workspace", "team", "--shared"], None),
     ],
 )

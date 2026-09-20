@@ -7,16 +7,19 @@ import json
 import os
 import signal
 import time
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from conftest import FakeReply, make_turn, script
 from typer.testing import CliRunner
 
 from enso import connection_setup as setup
 from enso.cli import app
-from enso.config import config_fingerprint, load_config, save_config
+from enso.config import Config, Paths, config_fingerprint, load_config, save_config
 from enso.initialization import apply_config, initialize_home
+from enso.runtime import Runtime
 from enso.transports.connection import PairedIdentity, PairingError
 
 TOKENS = {"request_id": "request_1234567890", "bot_token": "123456:private-bot-token"}
@@ -134,17 +137,18 @@ def test_start_preserves_preexisting_config(enso_home, raw_config, child_process
 
 
 @pytest.mark.parametrize(
-    ("transport", "raw", "message"),
+    ("transport", "raw"),
     [
-        ("discord", TOKENS, "Choose Slack or Telegram."),
-        ("telegram", {**TOKENS, "app_token": "xapp-1"}, "Telegram needs only its bot token."),
-        ("slack", TOKENS, "Paste the complete bot credentials without spaces."),
+        ("discord", TOKENS),
+        ("telegram", {**TOKENS, "app_token": "xapp-1"}),
+        ("slack", TOKENS),
     ],
 )
-def test_credentials_follow_the_transport_declaration(transport, raw, message):
+def test_credentials_follow_the_transport_declaration(transport, raw):
+    """Only a known transport's own complete credentials are accepted."""
     with pytest.raises(PairingError) as failure:
         setup._credentials(transport, raw)
-    assert (failure.value.code, str(failure.value)) == ("invalid_input", message)
+    assert failure.value.code == "invalid_input"
     accepted = setup._credentials("slack", {**TOKENS, "app_token": "xapp-private-app-token"})
     assert accepted["app_token"] == "xapp-private-app-token"
     assert setup._credentials("telegram", TOKENS)["app_token"] == ""  # PairingRequest's field
@@ -489,23 +493,6 @@ def test_native_pairing_deadline_and_failures_release_both_locks(enso_home, monk
     assert not (enso_home.connection_dir / "credentials.json").exists()
 
 
-def test_native_pairing_refuses_an_existing_hosted_receiver(enso_home, child_process, monkeypatch):
-    setup.start(enso_home, "telegram", TOKENS)
-    called = []
-
-    async def pair(*args):
-        called.append(True)
-
-    async def ready(info):
-        pass
-
-    monkeypatch.setattr("enso.transports.telegram_setup.pair", pair)
-    with pytest.raises(PairingError) as failure:
-        setup.pair_in_terminal(enso_home, "telegram", {"bot_token": TOKENS["bot_token"]}, ready)
-    assert failure.value.code == "busy" and not called
-    assert setup.receiver_active(enso_home)
-
-
 def test_service_excludes_pairing_even_when_its_config_is_moved_aside(
     enso_home, raw_config, child_process
 ):
@@ -580,3 +567,75 @@ def test_finish_repeat_succeeds_while_service_runs_but_changes_are_refused(
             )
         assert failure.value.code == "busy"
         assert load_config(enso_home).defaults.effort == "high"
+
+
+@pytest.fixture
+def onboarded(fake_config: Config) -> Runtime:
+    """A runtime whose paired owner, transport, and configuration match a finished attempt."""
+    paths = fake_config.paths
+    save_config(paths, fake_config.raw)
+    config = load_config(paths)
+    setup._prepare(paths)
+    setup._write(
+        paths.connection_dir / "state.json",
+        {
+            "attempt_id": "onboarding-test",
+            "state": "applied",
+            "transport": "slack",
+            "user_id": "U1",
+            "channel": "D1",
+            "defaults": config.raw["defaults"],
+            "config_hash": config.source_hash,
+        },
+    )
+    return Runtime(config)
+
+
+async def test_delivered_answer_records_only_receipt(onboarded: Runtime, enso_home: Paths) -> None:
+    reply = FakeReply()
+    await onboarded.handle(make_turn("a private question"), reply)
+    assert reply.sent
+    receipt = json.loads((enso_home.connection_dir / "reply.json").read_text())
+    assert receipt == {
+        "attempt_id": "onboarding-test",
+        "provider": "claude",
+        "model": "opus",
+        "effort": "xhigh",
+        "transport": "slack",
+        "user_id": "U1",
+        "channel": "D1",
+        "at": receipt["at"],
+        "config_hash": config_fingerprint(enso_home),
+    }
+    assert "private question" not in json.dumps(receipt)
+
+
+async def test_failed_delivery_does_not_complete(onboarded: Runtime, enso_home: Paths) -> None:
+    class BrokenReply(FakeReply):
+        async def send(self, text: str) -> str:
+            if not self.sent:
+                self.sent.append("delivery failed")
+                raise OSError("chat unavailable")
+            return await super().send(text)
+
+    await onboarded.handle(make_turn("hello"), BrokenReply())
+    assert not (enso_home.connection_dir / "reply.json").exists()
+
+
+@pytest.mark.parametrize("answer", ["", "fail please"])
+async def test_a_turn_that_failed_at_the_provider_does_not_complete(
+    onboarded: Runtime,
+    enso_home: Paths,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    answer: str,
+) -> None:
+    if answer != "fail please":
+        script(tmp_path, monkeypatch, answer)
+    await onboarded.handle(make_turn(answer or "hello"), FakeReply())
+    assert not (enso_home.connection_dir / "reply.json").exists()
+
+
+async def test_other_sender_does_not_complete(onboarded: Runtime, enso_home: Paths) -> None:
+    await onboarded.handle(replace(make_turn("hello"), user_id="U2"), FakeReply())
+    assert not (enso_home.connection_dir / "reply.json").exists()

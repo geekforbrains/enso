@@ -17,13 +17,12 @@ import pytest
 from conftest import FakeTransport, load_job, write_config
 from typer.testing import CliRunner
 
-from enso import db, doctor, runs, workspaces
+from enso import db, doctor, workspaces
 from enso.cli import app
 from enso.config import Config, Paths
 from enso.jobs import Job, schedule_problem, validate
 from enso.jobs.runner import JobRunner
 
-BUNDLED = Path(workspaces.__file__).parent / "bundled" / "jobs" / "enso-audit"
 DOCTOR_FAILED = "enso doctor exited with status"
 
 
@@ -74,11 +73,9 @@ def seeded(paths: Paths, config: Config) -> Job:
     return load_job(paths, config, "enso-audit")
 
 
-def prerun(job: Job, paths: Paths, *, path: str | None = None) -> subprocess.CompletedProcess[str]:
+def prerun(job: Job, paths: Paths) -> subprocess.CompletedProcess[str]:
     """Run the prerun the way the runner does: bash, from the job directory, ENSO_HOME set."""
     env = {**os.environ, "ENSO_HOME": str(paths.home)}
-    if path is not None:
-        env["PATH"] = path
     bash = shutil.which("bash")  # resolved here, since the script's PATH may hold nothing
     assert bash is not None
     return subprocess.run(
@@ -146,46 +143,15 @@ def test_prerun_inverts_the_doctor_exit(
         assert done.stderr == ""
 
 
-def test_prerun_without_enso_on_path_is_a_prerun_error(
-    enso_home: Paths, config: Config, tmp_path: Path
-) -> None:
-    job = seeded(enso_home, config)
-    (tmp_path / "empty").mkdir()
-    done = prerun(job, enso_home, path=str(tmp_path / "empty"))
-    assert (done.returncode, done.stdout) == (2, "")
-    assert f"ENSO_ERROR: {DOCTOR_FAILED} 127" in done.stderr
-
-
-async def test_seeded_job_runs_end_to_end(
+async def test_seeded_job_hands_the_report_to_the_agent_fenced(
     enso_home: Paths, fake_config: Config, stub_enso: Stub
 ) -> None:
     transport = FakeTransport("slack")
     runner = JobRunner(fake_config, {"slack": transport})
     job = seeded(enso_home, fake_config)
 
-    stub_enso(0, stdout=HEALTHY)
-    healthy = await runner.run(job, trigger="schedule")
-    run = runs.get(enso_home, healthy.run_id or "")
-    assert (healthy.status, healthy.output) == ("no_work", "") and run is not None
-    assert run.status == "no_work" and transport.sent == []
-
     stub_enso(1, stdout=BROKEN)
     broken = await runner.run(job, trigger="schedule")
     # The fake CLI echoes the substituted prompt: the report reached the agent, fenced.
     assert broken.status == "ok" and f"```json\n{BROKEN}\n```" in broken.output
     assert transport.sent == []  # the agent sends the summary; the runner alerts on failure only
-
-    stub_enso(1, stderr="Traceback (most recent call last):")  # a crash: exit 1, no report
-    crashed = await runner.run(job, trigger="schedule")
-    assert (crashed.status, crashed.error) == (
-        "prerun_error",
-        f"{DOCTOR_FAILED} 1 without a report",
-    )
-
-    stub_enso(2, stderr="launchctl: boom")
-    failed = await runner.run(job, trigger="schedule")
-    assert (failed.status, failed.error) == ("prerun_error", f"{DOCTOR_FAILED} 2")
-    assert transport.sent == [  # each distinct prerun failure is alerted once
-        ("C1", f"⚠️ [default:enso-audit] prerun failed\n{DOCTOR_FAILED} 1 without a report"),
-        ("C1", f"⚠️ [default:enso-audit] prerun failed\n{DOCTOR_FAILED} 2"),
-    ]

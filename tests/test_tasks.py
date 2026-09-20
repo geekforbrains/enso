@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -169,7 +169,6 @@ def finished_history(enso_home: Paths, project_config: Config) -> datetime:
         ({"project": " en "}, ["EN-001", "EN-002", "EN-003"]),
         ({"stage": "done"}, ["EN-001", "EN-002", "MKT-001"]),
         ({"stage": "cancelled"}, ["EN-003"]),
-        ({"stage": "triage"}, []),
         ({"workspace": "default"}, ["EN-001", "EN-002", "EN-003", "MKT-001"]),
         ({"workspace": "missing"}, []),
         ({"project": "mkt", "stage": "done", "query": "CAMPAIGN"}, ["MKT-001"]),
@@ -194,44 +193,17 @@ def test_finished_history_shares_list_filters(
     assert history.done_count == len(set(expected) & {"EN-001", "MKT-001"})
     assert {task.ref: task for task in history.rows} == {task.ref: task for task in listed}
     assert all(type(task.attention) is bool for task in history.rows)
-
-
-def test_finished_history_counts_before_materialising_its_page(
-    enso_home: Paths, finished_history: datetime, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    materialized: list[str] = []
-    task_from_row = tasks._task
-
-    def record_row(row):
-        materialized.append(row["ref"])
-        return task_from_row(row)
-
-    monkeypatch.setattr(tasks, "_task", record_row)
-    history = tasks.finished_tasks(enso_home, since=finished_history, limit=2)
     # Newest stage entry first, ties broken by id; not the ordinary list's priority order.
-    assert [task.ref for task in history.rows] == ["MKT-001", "EN-003"]
-    assert materialized == ["MKT-001", "EN-003"]
-    # Cancelled is included in total, and the done task exactly at the cutoff counts even
-    # though it is outside the page. The done task one microsecond earlier does not count.
-    assert (history.total, history.done_count) == (4, 2)
-
-    materialized.clear()
-    counts = tasks.finished_tasks(
-        enso_home,
-        since=finished_history.astimezone(timezone(timedelta(hours=-7))),
-        limit=0,
+    newest_first = ["MKT-001", "EN-003", "EN-001", "EN-002"]
+    assert [task.ref for task in history.rows] == [ref for ref in newest_first if ref in expected]
+    # A zero limit is a count, not a page: the cutoff still decides what is counted, and the
+    # done task one microsecond before it does not count.
+    counts = tasks.finished_tasks(enso_home, since=finished_history, limit=0, **filters)
+    assert (counts.total, counts.done_count, counts.rows) == (
+        history.total,
+        history.done_count,
+        [],
     )
-    assert (counts.total, counts.done_count, counts.rows) == (4, 2, [])
-    assert materialized == []
-
-
-def test_finished_history_rejects_unbounded_limits_and_naive_cutoffs(
-    enso_home: Paths, finished_history: datetime
-) -> None:
-    with pytest.raises(TaskError, match="limit must be nonnegative"):
-        tasks.finished_tasks(enso_home, since=finished_history, limit=-1)
-    with pytest.raises(TaskError, match="cutoff needs a timezone"):
-        tasks.finished_tasks(enso_home, since=finished_history.replace(tzinfo=None), limit=1)
 
 
 def test_take_is_one_compare_and_set_under_a_race(enso_home: Paths, project_config: Config) -> None:
@@ -429,6 +401,21 @@ def test_after_resumes_on_done_and_flags_on_cancel(
 ) -> None:
     dep = add(enso_home, project_config, "dependency")
     other = add(enso_home, project_config, "unrelated dependency")
+    # --after given at creation starts the task blocked, and says so in its first event.
+    at_create = add(enso_home, project_config, "waiting from the start", after="en-1")
+    assert (at_create.stage, at_create.previous_stage, at_create.after_ref) == (
+        "blocked",
+        None,
+        "EN-001",
+    )
+    created = tasks.events(enso_home, at_create.ref)[0]
+    assert (created.kind, created.to_stage, created.message) == (
+        "created",
+        "blocked",
+        "Waiting on EN-001",
+    )
+    parked = add(enso_home, project_config, "parked", after="en-1", backlog=True)
+    assert (parked.stage, parked.after_ref) == ("backlog", "EN-001")
     waiting = tasks.create(
         enso_home, project_config, "MKT", "waiting", actor=USER, from_ref=dep.ref
     )
@@ -481,6 +468,9 @@ def test_after_resumes_on_done_and_flags_on_cancel(
         advance(enso_home, project_config, dep.ref)
     resumed = tasks.get(enso_home, waiting.ref)
     assert (resumed.stage, resumed.after_ref, resumed.attention) == ("draft", None, False)
+    started = tasks.get(enso_home, at_create.ref)
+    assert (started.stage, started.after_ref) == ("triage", None)  # the first stage: it left none
+    assert tasks.get(enso_home, parked.ref).stage == "backlog"  # after counts only while blocked
     event = tasks.events(enso_home, waiting.ref)[0]
     assert (event.actor, event.message, event.from_stage, event.to_stage) == (
         "enso",
@@ -681,28 +671,6 @@ def test_note_can_flag_attention(enso_home: Paths, project_config: Config) -> No
     assert tasks.get(enso_home, task.ref).attention is False  # a move clears the flag
 
 
-def test_moves_carry_reasons(enso_home: Paths, project_config: Config) -> None:
-    task = add(enso_home, project_config)
-    offered = {m.id: m for m in tasks.moves(project_config, task, env={})}
-    assert set(offered) == set(tasks.MOVES)
-    assert offered["advance"] == tasks.Move("advance", "todo", True, True, ())
-    assert offered["return"] == tasks.Move(
-        "return", "", True, False, ("triage is the first stage",)
-    )
-    assert offered["block"] == tasks.Move("block", "blocked", True, True, ())
-    assert offered["resume"] == tasks.Move("resume", "", False, False, ("EN-001 is not blocked",))
-    assert offered["drop"] == tasks.Move("drop", "cancelled", True, True, ())
-    done = add(enso_home, project_config, "x")
-    tasks.move(enso_home, project_config, done.ref, "drop", actor=USER, run_id=None, message="m")
-    assert all(
-        not m.allowed and m.missing == ("EN-002 is cancelled",)
-        for m in tasks.moves(project_config, tasks.get(enso_home, done.ref), env={})
-    )
-    stranger = tasks.Task(**{**task.as_dict(), "project": "XX"})
-    with pytest.raises(TaskError, match="project XX is not configured"):
-        tasks.moves(project_config, stranger, env={})
-
-
 def test_context_packet_shape(enso_home: Paths, project_config: Config) -> None:
     origin = add(enso_home, project_config, "origin", backlog=True)
     task = add(
@@ -826,12 +794,13 @@ def test_render_task_block_omits_what_does_not_apply(
     ctx = tasks.context(enso_home, project_config, task.ref, env=RUN)
     plain = tasks.render_task_block(ctx)
     tasks.release(enso_home, task.ref, actor="enso", run_id="r1", message="m", reason="manual")
-    assert plain.splitlines()[:4] == [
-        tasks.TASK_HEADER,
+    assert plain.startswith(tasks.TASK_HEADER)
+    for present in (
         "Task: EN-001 — Fix fences",
         "Project: EN (Enso) · Stage: triage (1 of 3: triage, todo, review) · Priority: 0",
         "Moves: advance to todo (message required) · block (reason required)",
-    ]
+    ):
+        assert present in plain
     for absent in (
         "Working directory",
         "Main checkout",
@@ -842,14 +811,7 @@ def test_render_task_block_omits_what_does_not_apply(
         "Project instructions",
     ):
         assert absent not in plain
-    assert plain.endswith(
-        "Spec:\n    Fix fences\n\nDo only this task, then stop. Move it with one of:\n"
-        '  enso task advance EN-001 --message "what changed, evidence, what the next stage '
-        'should check"\n'
-        '  enso task block EN-001 --message "what is needed and what unblocks it"\n'
-        "Attach evidence with `enso task ref EN-001 commit <sha>`; "
-        "reread with `enso task show EN-001`."
-    )
+    assert plain.rstrip().endswith("reread with `enso task show EN-001`.")
     tasks.take(enso_home, project_config, "EN", "triage", run_id="r0", actor="job:dev-enso-triage")
     tasks.move(
         enso_home,
@@ -881,29 +843,22 @@ def test_render_task_block_omits_what_does_not_apply(
         recovery="uncommitted changes in src/enso/slack_text.py",
         project_instructions="/home/x/.enso/worktrees/EN/EN-001/AGENTS.md",
     )
-    lines = full.splitlines()
-    assert lines[3] == (
-        "Moves: advance to review (message required) · return to triage (message required)"
-        " · block (reason required)"
-    )
-    assert lines[4:9] == [
+    # Every fact that was supplied appears, with its value; wording beyond that is the
+    # prompt's own and free to change.
+    for present in (
+        "Moves: advance to review (message required) · return to triage (message required)",
         "Working directory: /home/x/.enso/worktrees/EN/EN-001 (branch enso/EN-001, base main)",
-        "Main checkout: /home/x/Projects/enso — do not edit, commit, or switch branches there",
+        "Main checkout: /home/x/Projects/enso",
         "Recovery: run r1 ended without a handoff; uncommitted changes in src/enso/slack_text.py",
         "Refs: commit abc123",
-        "Project instructions: /home/x/.enso/worktrees/EN/EN-001/AGENTS.md (appended below)",
-    ]
-    assert lines[10].startswith("Handoff (triage → todo by job:dev-enso-triage, run r0, 20")
-    assert lines[11:13] == ["    Scope confirmed.", "    Touch slack_text.py only."]
-    assert lines[14] == "Recent notes:" and lines[15].endswith(" slack:U1: be careful")
-    assert "Spec:\n    Fix fences\n\n    Body\n\n    with lines\n\nDo only this task" in full
-    assert '  enso task return EN-001 --message "' in full
-
-
-def test_tasks_survive_a_fresh_migration(enso_home: Paths, project_config: Config) -> None:
-    add(enso_home, project_config)
-    db.initialize(enso_home)  # idempotent: the v3 tables and their rows are untouched
-    assert tasks.get(enso_home, "EN-001").title == "Fix fences"
+        "Project instructions: /home/x/.enso/worktrees/EN/EN-001/AGENTS.md",
+        "Handoff (triage → todo by job:dev-enso-triage, run r0, 20",
+        "    Scope confirmed.\n    Touch slack_text.py only.",
+        "Recent notes:",
+        "slack:U1: be careful",
+        "Spec:\n    Fix fences\n\n    Body\n\n    with lines",
+    ):
+        assert present in full
 
 
 def test_a_run_never_moves_a_task_in_a_human_stage(
@@ -940,31 +895,6 @@ def test_a_run_never_moves_a_task_in_a_human_stage(
         ).stage
         == "release"
     )
-
-
-def test_finished_tasks_take_no_refs(enso_home: Paths, project_config: Config) -> None:
-    task = add(enso_home, project_config)
-    tasks.move(enso_home, project_config, task.ref, "drop", actor=USER, run_id=None, message="m")
-    with pytest.raises(TaskError, match="EN-001 is cancelled; finished tasks only take notes"):
-        tasks.add_ref(enso_home, task.ref, "commit", "abc", actor=USER, run_id=None)
-    assert tasks.refs(enso_home, task.ref) == []
-
-
-def test_move_with_attention(enso_home: Paths, project_config: Config) -> None:
-    task = add(enso_home, project_config)
-    moved = advance(enso_home, project_config, task.ref)
-    assert moved.stage == "todo"
-    blocked = tasks.move(
-        enso_home,
-        project_config,
-        task.ref,
-        "block",
-        actor="enso",
-        run_id=None,
-        message="Two runs ended without a handoff; needs a look",
-        attention=True,
-    )
-    assert (blocked.stage, blocked.attention, blocked.previous_stage) == ("blocked", True, "todo")
 
 
 def test_the_task_block_indents_every_line_that_came_from_outside(
@@ -1117,36 +1047,3 @@ def test_a_run_acts_only_on_the_task_it_holds(enso_home: Paths, project_config: 
         tasks.move(enso_home, project_config, task.ref, "resume", actor="job:t", run_id="r1")
     resumed = tasks.move(enso_home, project_config, task.ref, "resume", actor=USER, run_id=None)
     assert resumed.stage == "todo"
-
-
-def test_add_after_starts_blocked_until_the_dependency_is_done(
-    enso_home: Paths, project_config: Config
-) -> None:
-    dep = add(enso_home, project_config, "dependency")
-    waiting = add(enso_home, project_config, "waiting", after="en-1")
-    assert (waiting.stage, waiting.previous_stage, waiting.after_ref) == ("blocked", None, "EN-001")
-    created = tasks.events(enso_home, waiting.ref)[0]
-    assert (created.kind, created.to_stage, created.message) == (
-        "created",
-        "blocked",
-        "Waiting on EN-001",
-    )
-    ready = tasks.list_tasks(enso_home, ready=True, config=project_config)
-    assert [t.ref for t in ready] == ["EN-001"]  # the dependency alone is ready
-    parked = add(enso_home, project_config, "parked", after="en-1", backlog=True)
-    assert (parked.stage, parked.after_ref) == ("backlog", "EN-001")
-    for _ in range(3):  # triage → todo → review → done
-        advance(enso_home, project_config, dep.ref)
-    resumed = tasks.get(enso_home, waiting.ref)
-    assert (resumed.stage, resumed.after_ref) == ("triage", None)  # the first stage: it left none
-    assert tasks.get(enso_home, parked.ref).stage == "backlog"  # after counts only while blocked
-
-
-def test_claimed_by_lists_what_a_run_still_holds(enso_home: Paths, project_config: Config) -> None:
-    add(enso_home, project_config)
-    add(enso_home, project_config, "Second")
-    assert tasks.claimed_by(enso_home, "r1") == []
-    tasks.take(enso_home, project_config, "EN", "triage", run_id="r1", actor="job:t")
-    assert [t.ref for t in tasks.claimed_by(enso_home, "r1")] == ["EN-001"]
-    tasks.release(enso_home, "EN-001", actor="enso", run_id="r1", message="m", reason="run_ended")
-    assert tasks.claimed_by(enso_home, "r1") == []

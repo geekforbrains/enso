@@ -276,29 +276,3 @@ def test_systemd_owner_parser_preserves_spaces_and_percents(enso_home):
     )
     with pytest.raises(service.ServiceError, match="cannot verify"):
         viewer_service.unit_home(state)
-
-
-def test_failed_systemd_uninstall_preserves_definition(enso_home, monkeypatch):
-    unit = service.unit_path("systemd", definition=service.VIEWER)
-    unit.parent.mkdir(parents=True)
-    unit.write_text("unit")
-
-    def failed(args, **kwargs):
-        raise service.ServiceError("permission denied")
-
-    monkeypatch.setattr(service, "_run", failed)
-    with pytest.raises(service.ServiceError, match="permission denied"):
-        service.uninstall("systemd", definition=service.VIEWER)
-    assert unit.read_text() == "unit"
-
-
-def test_launchd_unload_timeout_preserves_definition(enso_home, monkeypatch):
-    unit = service.unit_path("launchd", definition=service.VIEWER)
-    unit.parent.mkdir(parents=True)
-    unit.write_text("original unit")
-    monkeypatch.setattr(service, "_run", lambda *args, **kwargs: None)
-    monkeypatch.setattr(service, "_query", lambda args: "state = running")
-    monkeypatch.setattr(service, "BOOTOUT_WAIT_SECONDS", 0)
-    with pytest.raises(service.ServiceError, match="did not unload"):
-        service.install(enso_home, None, "launchd", definition=service.VIEWER, binary="/enso")
-    assert unit.read_text() == "original unit"

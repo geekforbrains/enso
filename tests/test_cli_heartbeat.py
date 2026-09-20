@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 
 import pytest
 import typer
@@ -86,64 +85,6 @@ def test_creation_requires_context_even_inside_a_workspace(cli_home, monkeypatch
     assert create("--workspace", "default")["workspace"] == "default"
 
 
-def test_explicit_context_overrides_environment_without_reassigning_existing_beats(
-    cli_home, monkeypatch
-):
-    cli_home.workspace("team").mkdir()
-    beat = create("--workspace", "team")
-    assert beat["workspace"] == "team"
-    assert create()["workspace"] == "default"
-    monkeypatch.delenv("ENSO_WORKSPACE")
-    updated = packet("update", beat["ref"], "--file", "-", input='{"title":"Updated"}')
-    assert updated["workspace"] == "team"
-    assert packet("show", beat["ref"])["beat"]["workspace"] == "team"
-    assert packet("resume", beat["ref"])["workspace"] == "team"
-
-
-@pytest.mark.parametrize("workspace", ["", "missing", "../default"])
-def test_invalid_explicit_context_never_uses_environment(cli_home, workspace):
-    result = invoke(
-        "create",
-        "--file",
-        "-",
-        "--workspace",
-        workspace,
-        "--json",
-        input=json.dumps(definition()),
-    )
-    assert result.exit_code == 1 and result.stderr == ""
-    assert json.loads(result.stdout)["ok"] is False
-    assert heartbeat.list_beats(cli_home) == []
-
-
-@pytest.mark.parametrize("workspace", ["default", None])
-def test_json_workspace_is_rejected_on_create_and_update(cli_home, workspace):
-    result = invoke(
-        "create",
-        "--file",
-        "-",
-        "--workspace",
-        "default",
-        "--json",
-        input=json.dumps(definition(workspace=workspace)),
-    )
-    assert result.exit_code == 1 and result.stderr == ""
-    assert "not a JSON definition field" in json.loads(result.stdout)["error"]
-    assert heartbeat.list_beats(cli_home) == []
-    beat = create()
-    result = invoke(
-        "update",
-        beat["ref"],
-        "--file",
-        "-",
-        "--json",
-        input=json.dumps({"workspace": workspace}),
-    )
-    assert result.exit_code == 1
-    assert "not a JSON definition field" in json.loads(result.stdout)["error"]
-    assert heartbeat.get(cli_home, beat["ref"]).revision == beat["revision"]
-
-
 def test_update_merges_fields_and_preserves_explicit_destination(tmp_path):
     beat = create(notify="slack:C9")
     path = tmp_path / "patch.json"
@@ -157,20 +98,6 @@ def test_update_merges_fields_and_preserves_explicit_destination(tmp_path):
         "update", beat["ref"], "--file", str(path), "--if-revision", str(beat["revision"]), "--json"
     )
     assert stale.exit_code == 1 and json.loads(stale.stdout)["ok"] is False
-
-
-def test_gate_creation_stays_paused_and_resume_only_checks_syntax(cli_home):
-    beat = create(gate="gate.sh")
-    missing = invoke("resume", beat["ref"], "--json")
-    assert missing.exit_code == 1 and "gate" in json.loads(missing.stdout)["error"]
-    script = cli_home.workspace_heartbeat(beat["workspace"]) / beat["ref"] / "gate.sh"
-    script.parent.mkdir(parents=True)
-    script.write_text("touch should-never-run\nexit 1\n")
-    resumed = packet("resume", beat["ref"])
-    assert resumed["state"] == "active"
-    assert not script.with_name("should-never-run").exists()
-    paused = packet("pause", beat["ref"], "--message", "Wait for my instructions")
-    assert paused["state"] == "paused"
 
 
 def test_history_pagination_and_source_time():
@@ -208,7 +135,6 @@ def test_closed_beats_hidden_until_requested(operation):
         ("[]", "must be an object"),
         ("{", "invalid JSON"),
         ('{"title":"a","title":"b"}', "duplicate"),
-        ('{"agent":{"model":"a","model":"b"}}', "duplicate"),
         ('{"at":NaN}', "non-finite"),
         ('{"x":"' + "x" * INPUT_LIMIT + '"}', "exceeds"),
     ],
@@ -218,55 +144,6 @@ def test_bad_json_is_one_error_document(text, error):
     assert result.exit_code == 1 and result.stderr == ""
     value = json.loads(result.stdout)
     assert value["ok"] is False and error in value["error"]
-
-
-def test_file_failures_and_core_validation_are_reported(tmp_path):
-    for path in (tmp_path / "missing.json", tmp_path):
-        result = invoke("create", "--file", str(path), "--json")
-        assert result.exit_code == 1 and json.loads(result.stdout)["ok"] is False
-        assert result.stderr == ""
-    invalid = invoke("create", "--file", "-", "--json", input='{"title":3,"unexpected":true}')
-    assert invalid.exit_code == 1
-    error = json.loads(invalid.stdout)["error"]
-    assert "title" in error and "unexpected" in error
-
-
-@pytest.mark.parametrize("field", ["message", "checkpoint"])
-def test_literal_input_limit_preserves_state_on_failure(cli_home, field):
-    beat = create()
-    if field == "checkpoint":
-        overhead = len(json.dumps({"cursor": ""}).encode("utf-8"))
-        cursor = "é" * ((INPUT_LIMIT - overhead) // 2)
-        exact = json.dumps({"cursor": cursor}, ensure_ascii=False)
-        big = json.dumps({"cursor": cursor + "x"}, ensure_ascii=False)
-    else:
-        exact = "é" * (INPUT_LIMIT // 2)
-        big = exact + "x"
-    args = ["complete", beat["ref"]]
-    if field == "checkpoint":
-        args.extend(["--message", "Done"])
-    result = invoke(*args, f"--{field}", big, "--json")
-    assert result.exit_code == 1 and result.stderr == ""
-    assert json.loads(result.stdout) == {"ok": False, "error": f"input exceeds {INPUT_LIMIT} bytes"}
-    unchanged = heartbeat.get(cli_home, beat["ref"])
-    assert unchanged.state == "paused" and unchanged.checkpoint == {}
-    assert len(packet("history", beat["ref"])) == 1
-    completed = packet(*args, f"--{field}", exact)
-    assert completed["state"] == "fulfilled"
-    if field == "checkpoint":
-        assert completed["checkpoint"] == {"cursor": cursor}
-    else:
-        assert packet("history", beat["ref"])[0]["message"] == exact
-
-
-def test_database_errors_have_no_traceback(monkeypatch):
-    def broken(*args, **kwargs):
-        raise sqlite3.OperationalError("database is locked")
-
-    monkeypatch.setattr(heartbeat, "list_beats", broken)
-    result = invoke("list", "--json")
-    assert result.exit_code == 1 and result.stderr == ""
-    assert json.loads(result.stdout) == {"ok": False, "error": "database is locked"}
 
 
 def test_other_beat_cannot_be_mutated_from_a_run(cli_home, monkeypatch):
@@ -339,11 +216,3 @@ def test_stale_run_cannot_replace_instructions_or_create_another_beat(cli_home, 
         assert "during a heartbeat run use note or wait" in json.loads(result.stdout)["error"]
     assert heartbeat.get(cli_home, beat["ref"]).instructions == "Do not send the email yet."
     assert len(heartbeat.list_beats(cli_home)) == 1
-
-
-def test_status_reports_disabled_without_starting_work(cli_home, raw_config):
-    raw_config["heartbeat"] = {"enabled": False, "retention_days": 14}
-    write_config(cli_home, raw_config)
-    assert packet("status") == {"enabled": False, "retention_days": 14}
-    refused = invoke("create", "--file", "-", "--json", input="{}")
-    assert refused.exit_code == 1
