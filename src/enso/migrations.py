@@ -9,15 +9,17 @@ converted before the new release's normal config and database readers run.
 from __future__ import annotations
 
 import os
+import shutil
+import sqlite3
 import stat
 from collections.abc import Callable
-from contextlib import suppress
+from contextlib import closing, suppress
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import frontmatter
-from .config import Paths
-from .knowledge.catalog import Note, read_note, scan_roots
+from . import frontmatter, update_snapshot
+from .config import Paths, valid_workspace_name
+from .knowledge.catalog import Note, scan_roots
 from .knowledge.links import extract_links
 from .maintenance import UpdateError, read_json, write_json
 from .note_storage import discover_roots, publish, read_bytes, split_document
@@ -67,7 +69,7 @@ def _general_linked(paths: Paths) -> tuple[Note, ...]:
         *discover_roots(paths, "knowledge", shared=True)[0],
         *discover_roots(paths, "memory")[0],
     )
-    notes = scan_roots(roots, read_note)[0]
+    notes = scan_roots(roots)[0]
     return tuple(n for n in notes if any(_general(link.target) for link in n.links))
 
 
@@ -139,6 +141,115 @@ def move_shared_knowledge(paths: Paths) -> None:
         os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
 
 
+def _retired_jobs(paths: Paths) -> tuple[str, ...]:
+    workspaces = {"default"}
+    if paths.workspaces.is_dir() and not paths.workspaces.is_symlink():
+        workspaces.update(
+            entry.name for entry in paths.workspaces.iterdir() if valid_workspace_name(entry.name)
+        )
+    return (
+        *(f"workspaces/{name}/jobs/enso-memory" for name in sorted(workspaces)),
+        "workspaces/default/jobs/memory",
+    )
+
+
+def retire_history_paths(paths: Paths) -> tuple[str, ...]:
+    """Snapshot obsolete processing state, leaving all retained note roots alone."""
+    names = ("enso.db", ".bundles.json", "skills/enso-memory", *_retired_jobs(paths))
+    update_snapshot.plan(paths, list(names))  # reject escaping/linked targets before any writes
+    _retired_locks(paths)
+    return names
+
+
+def _retired_locks(paths: Paths) -> tuple[Path, ...]:
+    root = paths.runtime_dir / "locks"
+    locks = (
+        root / "memory.lock",
+        *(
+            root / "jobs" / name.split("/")[1] / (name.split("/")[-1] + ".lock")
+            for name in _retired_jobs(paths)
+        ),
+    )
+    for lock in locks:
+        if any(
+            path.is_symlink() for path in (lock, *lock.parents) if path.is_relative_to(paths.home)
+        ):
+            raise UpdateError(f"{lock} must not be a symbolic link during retirement")
+        if lock.exists() and (not lock.is_file() or lock.stat().st_size):
+            raise UpdateError(f"{lock} must be an empty lock file during retirement")
+    return locks
+
+
+def _retire_history_database(paths: Paths) -> None:
+    if not paths.db.exists():
+        return
+    with closing(sqlite3.connect(paths.db)) as connection, connection:
+        connection.execute("BEGIN IMMEDIATE")
+        application = connection.execute("PRAGMA application_id").fetchone()[0]
+        revision = connection.execute("PRAGMA user_version").fetchone()[0]
+        if application != 0x454E534F or revision not in (1, 2):
+            raise UpdateError("expected an Enso database at schema 1 or 2")
+        if revision == 1:
+            connection.execute(
+                "CREATE TABLE _enso_received_messages ("
+                "transport TEXT NOT NULL, channel TEXT NOT NULL, message_id TEXT NOT NULL, "
+                "PRIMARY KEY (transport, channel, message_id))"
+            )
+            connection.execute(
+                "INSERT INTO _enso_received_messages SELECT transport, channel, message_id "
+                "FROM _enso_captures WHERE kind != 'reply'"
+            )
+            for table in (
+                "_enso_memory_inputs",
+                "_enso_memory_receipts",
+                "_enso_memory_progress",
+                "_enso_memory_batches",
+                "_enso_captures",
+            ):
+                connection.execute(f'DROP TABLE "{table}"')
+            connection.execute("PRAGMA user_version = 2")
+        retired = "job = 'enso-memory' OR (workspace = 'default' AND job = 'memory')"
+        connection.execute(
+            f"DELETE FROM _enso_run_attempts WHERE run_id IN (SELECT id FROM runs WHERE {retired})"
+        )
+        connection.execute(f"DELETE FROM runs WHERE {retired}")
+        connection.execute(f"DELETE FROM job_state WHERE {retired}")
+        connection.execute(
+            "DELETE FROM messages WHERE source LIKE 'job:%:enso-memory' "
+            "OR source = 'job:default:memory'"
+        )
+
+
+def retire_history(paths: Paths) -> None:
+    """Retire the old transcript pipeline and its jobs without deleting Markdown archives."""
+    retire_history_paths(paths)
+    state = read_json(paths.home / ".bundles.json")
+    files = state.get("files", {})
+    if not isinstance(files, dict) or any(not isinstance(name, str) for name in files):
+        raise UpdateError(".bundles.json must contain a mapping of file receipts")
+    _retire_history_database(paths)
+    retired = ("skills/enso-memory", *_retired_jobs(paths))
+    for name in retired:
+        target = paths.home / name
+        if target.is_dir():
+            shutil.rmtree(target)
+        else:
+            target.unlink(missing_ok=True)
+    # Empty locks carry no rollback data; the updater has already stopped every writer.
+    for lock in _retired_locks(paths):
+        lock.unlink(missing_ok=True)
+        if lock.parent != paths.runtime_dir / "locks":
+            with suppress(OSError):
+                lock.parent.rmdir()
+    if state:
+        state["files"] = {
+            name: value
+            for name, value in files.items()
+            if not any(name == root or name.startswith(root + "/") for root in retired)
+        }
+        write_json(paths.home / ".bundles.json", state)
+
+
 # 0.2.0 is revision zero. Keep every later step so installations may skip releases.
 # Lock files hold nothing to restore, so the first step declares no snapshot paths.
 MIGRATIONS: tuple[Migration, ...] = (
@@ -149,6 +260,7 @@ MIGRATIONS: tuple[Migration, ...] = (
         shared_knowledge_paths,
         move_shared_knowledge,
     ),
+    Migration(3, "retire conversation processing state", retire_history_paths, retire_history),
 )
 
 

@@ -5,6 +5,12 @@ All notable changes to Enso are documented here, following
 
 ## [Unreleased]
 
+### Removed
+
+- **Breaking:** Remove conversation capture and workspace memory, including its CLI, viewer,
+  skills, jobs, processing state, and job history. Existing memory directories and notes
+  remain untouched.
+
 ### Changed
 
 - **Breaking:** The bundled `enso-tasks` and `enso-workflow` skills are replaced by the

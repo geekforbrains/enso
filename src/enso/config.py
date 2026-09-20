@@ -187,9 +187,6 @@ class Paths:
     def workspace_knowledge(self, name: str) -> Path:
         return self.workspace(name) / "knowledge"
 
-    def workspace_memory(self, name: str) -> Path:
-        return self.workspace(name) / "memory"
-
     def workspace_jobs(self, name: str) -> Path:
         return self.workspace(name) / "jobs"
 

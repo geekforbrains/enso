@@ -50,7 +50,7 @@ def finish(root: Path) -> None:
 
 def break_workspace(root: Path, enso_home: Paths) -> None:
     """One of everything the audit reports; ``AGENTS.md`` is left missing."""
-    for name in ("memory", "jobs", "projects"):
+    for name in ("jobs", "projects"):
         (root / name).mkdir()
     (root / "CLAUDE.md").write_text("a copy, not a link")
     (root / ".claude" / "skills").mkdir(parents=True)
@@ -66,7 +66,7 @@ def break_workspace(root: Path, enso_home: Paths) -> None:
     (root / ".DS_Store").write_text("")  # OS noise, never reported
 
 
-@pytest.mark.parametrize("entry", ["memory", "jobs", "projects", "heartbeat", ".agents"])
+@pytest.mark.parametrize("entry", ["jobs", "projects", "heartbeat", ".agents"])
 def test_fix_preserves_linked_workspace_paths_without_writing_through_them(
     enso_home,
     tmp_path,
@@ -87,6 +87,22 @@ def test_fix_preserves_linked_workspace_paths_without_writing_through_them(
     assert marker.read_text() == "User-owned content\n"
     assert settings.read_text().endswith("Keep this explanation.\n")
     assert not any(f.check == "unexpected" for f in report.findings)
+
+
+def test_workspace_audit_preserves_existing_user_archives(enso_home, config):
+    workspaces.seed_home(enso_home)
+    root = enso_home.workspace("default")
+    finish(root)
+    archive = root / "memory"
+    archive.mkdir()
+    note = archive / "Keep.md"
+    note.write_text("Retained user notes.\n")
+
+    report = audit.audit(enso_home, fix=True, config=config, user_dirs=USER_DIRS)
+
+    assert report.ok and report.workspaces[0].findings == []
+    assert report.workspaces[0].layout[archive.name] == layout.USER
+    assert note.read_text() == "Retained user notes.\n"
 
 
 def test_fix_never_scaffolds_a_linked_workspace(enso_home, tmp_path):
@@ -621,7 +637,7 @@ def test_shared_holds_only_its_declared_entries(enso_home: Paths, config: Config
     workspaces.seed_home(enso_home)
     finish(enso_home.workspace("default"))
     (enso_home.home / "knowledge").mkdir()
-    (enso_home.shared / "memory").mkdir()
+    (enso_home.shared / "scratch").mkdir()
 
     report = audit.audit(enso_home, fix=True, config=config, user_dirs=USER_DIRS)
 
@@ -629,7 +645,7 @@ def test_shared_holds_only_its_declared_entries(enso_home: Paths, config: Config
         (
             "unexpected",
             "warning",
-            f"memory/ is not part of the layout; move it out of {enso_home.shared} or remove it",
+            f"scratch/ is not part of the layout; move it out of {enso_home.shared} or remove it",
         ),
         (
             "unexpected",
@@ -638,7 +654,7 @@ def test_shared_holds_only_its_declared_entries(enso_home: Paths, config: Config
         ),
     ]
     assert report.ok and report.home.layout["knowledge"] == layout.UNEXPECTED
-    assert (enso_home.home / "knowledge").is_dir() and (enso_home.shared / "memory").is_dir()
+    assert (enso_home.home / "knowledge").is_dir() and (enso_home.shared / "scratch").is_dir()
 
 
 @pytest.mark.parametrize("name", ["runtime", "secrets"])  # one managed root, one the operator's

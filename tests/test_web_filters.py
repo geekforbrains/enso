@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from enso.web import filters, memory, views
+from enso.web import filters, views
 
 
 @pytest.mark.parametrize(
@@ -85,4 +85,3 @@ def test_actor_reads_as_its_origin_and_only_chat_ids_are_replaced(actor, shown):
 def test_crafted_page_numbers_read_as_the_first_page(value):
     """Every list parses ``?page=`` itself; junk, negative or oversized values read page one."""
     assert views._requested_page({"page": value}) == 1
-    assert memory._page(value, 5) == 1

@@ -213,7 +213,6 @@ the last agent stage. Worktrees do not isolate shared services or ports.
 ## Bundled jobs
 
 Maintenance jobs belong to [the default workspace](workspaces.md#ownership-in-020).
-Each workspace also has a [memory job](#workspace-memory-job-in-020).
 
 `enso setup` and `enso config apply` install `enso-audit` and `enso-update` into
 `~/.enso/workspaces/default/jobs/` when their directories are missing. `enso init` prepares the home but does
@@ -292,40 +291,6 @@ The job never upgrades Enso. The operator asks in chat or runs `enso update appl
 ready. Disable it with `enabled: false` to stop nightly checks; manual `enso update check`
 still works. Older homes can install the new job by applying their existing valid config.
 See [Upgrading](install.md#upgrading) and [CLI updates](cli.md#updates).
-
-### Workspace memory job in 0.2.0
-
-Setup and config apply install one harvesting job with the consistent local name
-`enso-memory` in every workspace: `workspaces/<name>/jobs/enso-memory/JOB.md`. Workspace creation
-installs it when configuration is valid; otherwise it reports that job installation is
-deferred until config is applied. Managed bundle refresh also covers all workspaces.
-References are
-`default:enso-memory`, `team:enso-memory`, and so on. It is enabled by default, with
-`schedule: "0 * * * *"` (hourly, at the top of the hour); use the normal scheduler's
-local-time cron rules. Note folders use UTC independently of the scheduler's timezone.
-
-The job follows the normal explicit-agent contract: its initial triple is the owning
-workspace's effective agent at installation, saved in `JOB.md`. Subsequent default-agent
-changes do not rewrite it, and the workspace's provider-argument overrides still apply.
-Existing job directories are preserved. An operator's `memory` job has a separate name
-and does not block installation of `enso-memory`. Operators can edit the bundled job's
-agent or schedule or set `enabled: false` using the ordinary job workflow.
-
-The prerun checks for new unprocessed captures in that workspace and exits 1, producing
-`no_work` without a provider call when there are none. For example, `team:enso-memory` can process
-team discussion while `default:enso-memory` skips a quiet workspace. Manual runs use the same input
-bounds, ownership, and processing receipts. [Memory](memory.md#harvesting-schedule-and-bounds)
-owns the exact batch limits, conversation segments, and recovery rules. Prompts and
-scripts stay small; the CLI and shared code own validation and recovery. Job output and
-notifications do not become conversation captures.
-
-The shell hooks delegate to `enso memory job-hook prerun` and `postrun`. The prerun saves
-one bounded batch for this run and supplies it to the prompt. The agent uses `enso-memory`
-and returns JSON; the postrun checks the pinned batch and publishes validated notes. Invalid
-JSON or source coverage requests a normal bounded follow-up using the same inputs. Failed
-provider turns leave those inputs for a later run. Hooks require an active run of the
-owning `<workspace>:enso-memory` job; they are not standalone harvesting commands. To run a
-manual sweep, use `enso job run team:enso-memory --json` (or the relevant workspace).
 
 ## Prerun scripts
 

@@ -64,10 +64,9 @@ seeding files. Automatic migrations support 0.2.0 onward; older layouts are unsu
    the bot's private chat. Telegram supplies a Start link with a fresh code. The wizard
    discovers your identity and notification target automatically; see [Connections](connections.md).
    Pairing creates an explicit user binding to `default`; it does not grant wildcard access.
-   Setup explains shared memory and channel audience trust before pairing.
-5. Writes `config.json`, seeds the `enso-audit` and `enso-update` jobs in `default` and a
-   `enso-memory` job in each workspace with its effective agent, sends a test message, and
-   offers to install the background service.
+   Setup explains workspace context and channel audience trust before pairing.
+5. Writes `config.json`, seeds the `enso-audit` and `enso-update` jobs in `default`,
+   sends a test message, and offers to install the background service.
 
 The connection acknowledgment and test message verify chat delivery, not provider login.
 If you declined service installation, run `enso serve` yourself. With Enso running, say
@@ -106,7 +105,7 @@ is no force/reset option. Rerun after an interrupted preparation to finish missi
 Git is initialized when its executable is available.
 
 Apply validates a full document before saving it privately and seeds missing bundled jobs
-with the chosen agent, including each workspace's [memory job](jobs.md#workspace-memory-job-in-020).
+with the chosen agent.
 Existing jobs retain their own agent. It does not contact a bot or
 start the service; an initialized home and a valid config are intermediate steps, not proof
 that Enso can reply. Authenticate the provider CLI manually and start Enso when ready.
@@ -160,7 +159,7 @@ when it is read is logged once and the last valid configuration stays in force; 
 ```bash
 enso config check         # config validity and every problem at once
 enso workspace audit      # workspace layout and skill wiring
-enso doctor               # both, plus runtime health and knowledge/memory audits
+enso doctor               # both, plus runtime health and knowledge audits
 ```
 
 The `enso-audit` job that setup installed runs `enso doctor` nightly and reports problems

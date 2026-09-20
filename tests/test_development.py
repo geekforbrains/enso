@@ -65,7 +65,7 @@ def local(enso_home, raw_config, monkeypatch, tmp_path):
 
 def test_refresh_switches_only_runtime_and_launcher_and_repeats_same_version(local):
     paths = local.paths
-    job = paths.workspace_jobs("default") / "enso-memory/JOB.md"
+    job = paths.workspace_jobs("default") / "digest/JOB.md"
     job.parent.mkdir(parents=True)
     job.write_text("customized job stays byte-for-byte intact")
     marker = paths.home / migrations.MARKER

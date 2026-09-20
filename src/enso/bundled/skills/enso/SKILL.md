@@ -29,12 +29,11 @@ Enso's normal runtime state lives under one directory, `~/.enso` (or `$ENSO_HOME
 ├── workspaces/<name>/   # one directory per workspace: the agent's cwd and context
 │   ├── WORKSPACE.md     # optional agent and provider-argument overrides
 │   ├── work/           # task files and retained output
-│   ├── memory/         # dated history owned by the workspace
 │   ├── projects/<KEY>/PROJECT.md # project definition and sibling scripts
 │   ├── jobs/<job>/JOB.md # workspace jobs, referenced as <workspace>:<job>
 │   └── heartbeat/<REF>/ # a beat's optional gate.sh and helpers
 ├── secrets/*.env        # KEY=value files exported into the service environment
-├── enso.db             # captures, processing receipts, runs, messages, sessions, tasks, beats, tables
+├── enso.db             # runs, messages, sessions, tasks, beats, tables
 ├── enso.log            # rotating log
 ├── runtime/             # managed releases, current link, installation receipt, update recovery
 └── cache/
@@ -70,7 +69,6 @@ Adding or editing a skill needs no Enso restart. The provider discovers skills t
 | --- | --- |
 | `enso-workspace` | The workspace layout, where files and skills go, bindings, the audit |
 | `enso-knowledge` | Markdown notes in shared knowledge by default; links, imports, and consistent user-defined formatting |
-| `enso-memory` | Earlier conversations, dated experiences, source captures, and deliberate corrections |
 | `enso-browser` | Persistent Chrome profiles, human login, and attaching browser tools |
 | `enso-skills` | Finding and installing official optional skills; authoring manual skills and choosing scope |
 | `enso-security` | Installation trust, provider permissions, credential handling, and untrusted input |
@@ -98,12 +96,11 @@ enso task add|list|show|advance|return|block|resume|release|edit|note|ref|land|s
 enso project list|add
 enso workspace list|create|audit     # see enso-workspace
 enso knowledge roots|list|search|show|audit|create|adopt|update|move  # see enso-knowledge
-enso memory list|search|show|source|create|update|audit|remove  # see enso-memory
 enso skill list [--available]        # installed home skills, or the official catalog
 enso skill show|install <name>       # see enso-skills; only geekforbrains/enso-skills
 enso config show|check|set|unset     # set PATH VALUE or unset PATH edits one key; see reload rules below
 enso models [--all] [--json]         # copy-ready OpenRouter model ids for OpenCode
-enso doctor                          # installation health, including knowledge and memory audits
+enso doctor                          # installation health, including knowledge audits
 enso update check|apply|status|recover [--json]  # see enso-update before requesting an upgrade
 enso logs [-f] [--turn ID] [--job WORKSPACE:JOB]
 ```

@@ -21,7 +21,7 @@ from .layout import LINKS, WORKSPACE_DIRS
 
 # Home-copied files in ``src/enso/bundled/`` keep their relative paths under ``$ENSO_HOME``.
 # The Slack manifest stays packaged for ``enso slack manifest`` but is not home-copied.
-# ``jobs/<name>/`` seeds maintenance jobs in default and memory in every workspace.
+# ``jobs/<name>/`` seeds maintenance jobs in the default workspace.
 # ``bundled/workspace/AGENTS.md`` is the per-workspace template,
 # stamped by ``create_workspace``; a job is stamped with the agent chosen at setup.
 # Managed updates refresh only bundle files matching their recorded baseline.
@@ -32,7 +32,6 @@ BUNDLED_SKILLS = (
     "enso-heartbeat",
     "enso-jobs",
     "enso-knowledge",
-    "enso-memory",
     "enso-projects",
     "enso-security",
     "enso-skills",
@@ -51,7 +50,7 @@ BUNDLED_SKILL_SUPPORT = {
         "references/workflows.md",
     ),
 }
-BUNDLED_JOBS: tuple[str, ...] = ("enso-audit", "enso-update", "enso-memory")
+BUNDLED_JOBS: tuple[str, ...] = ("enso-audit", "enso-update")
 BUNDLED_FILES: tuple[str, ...] = ()
 RESERVED_PREFIX = "enso-"
 
@@ -168,31 +167,23 @@ def seed_home(paths: Paths, *, refresh_skills: bool = False) -> list[str]:
     return done
 
 
-def bundled_jobs(workspace: str) -> tuple[str, ...]:
-    """Maintenance jobs belong to default; every workspace gets its own memory job."""
-    return tuple(name for name in BUNDLED_JOBS if workspace == "default" or name == "enso-memory")
-
-
-def seed_jobs(
-    paths: Paths, agent: Agent, *, workspace: str = "default", memory_agent: Agent | None = None
-) -> list[str]:
+def seed_jobs(paths: Paths, agent: Agent) -> list[str]:
     """Install the bundled jobs that are not there yet, stamped with ``agent``; says what changed.
 
     A job is written once: an existing ``jobs/<name>/`` is the operator's whatever it holds
     (an edited ``JOB.md`` stays, a deleted script is not put back), and no refresh flag
     reaches jobs. ``provider``, ``model``, and ``effort`` come from the default agent chosen
-    at setup; memory alone uses the workspace's effective agent when supplied.
+    at setup. Maintenance jobs belong to the default workspace.
     """
     done: list[str] = []
-    require_workspace(paths, workspace)
-    jobs_root = paths.workspace_jobs(workspace)
+    require_workspace(paths, "default")
+    jobs_root = paths.workspace_jobs("default")
     if jobs_root.is_symlink():
         raise OSError("jobs directory must not be a symbolic link")
-    for name in bundled_jobs(workspace):
-        selected = memory_agent if name == "enso-memory" and memory_agent is not None else agent
+    for name in BUNDLED_JOBS:
         # Templates quote these fields; JSON escaping keeps configured IDs in one scalar.
-        stamps = {key: json.dumps(value)[1:-1] for key, value in asdict(selected).items()}
-        relative = f"workspaces/{workspace}/jobs/{name}"
+        stamps = {key: json.dumps(value)[1:-1] for key, value in asdict(agent).items()}
+        relative = f"workspaces/default/jobs/{name}"
         target = jobs_root / name
         if target.exists() or target.is_symlink():
             continue
@@ -315,9 +306,7 @@ def _retire_bundles(paths: Paths, previous: dict[str, str], shipped: set[str]) -
     return changed
 
 
-def reconcile_bundles(
-    paths: Paths, agent: Agent, *, workspace_agents: Mapping[str, Agent] | None = None
-) -> list[str]:
+def reconcile_bundles(paths: Paths, agent: Agent) -> list[str]:
     """Refresh or retire proven untouched files; retain edits and remembered deletions.
 
     Historical files without a receipt are user-owned. New bundle names are
@@ -333,10 +322,8 @@ def reconcile_bundles(
     contents.update({relative: _bundled(relative) for relative in bundled_skill_files()})
     shipped = set(contents)
     changed: list[str] = []
-    for workspace, name in (
-        (owner, slug) for owner in list_workspaces(paths) for slug in bundled_jobs(owner)
-    ):
-        relative = f"workspaces/{workspace}/jobs/{name}"
+    for name in BUNDLED_JOBS:
+        relative = f"workspaces/default/jobs/{name}"
         entries = tuple(
             entry
             for entry in resources.files("enso").joinpath("bundled", "jobs", name).iterdir()
@@ -345,8 +332,7 @@ def reconcile_bundles(
         # A malformed customized JOB.md must not make its still-shipped files look retired.
         shipped.update(f"{relative}/{entry.name}" for entry in entries)
         job = paths.home / relative / "JOB.md"
-        initial = (workspace_agents or {}).get(workspace, agent) if name == "enso-memory" else agent
-        selected = _installed_agent(job, initial)
+        selected = _installed_agent(job, agent)
         if selected is None:
             continue
         values = asdict(selected)

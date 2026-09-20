@@ -371,13 +371,7 @@ def _validated_write(
                 )
             result["restart_required"] = bool(result["_restart_sections"])
             try:
-                result["changes"] = [
-                    change
-                    for workspace, settings in config.workspaces.items()
-                    for change in workspaces.seed_jobs(
-                        paths, config.defaults, workspace=workspace, memory_agent=settings.agent
-                    )
-                ]
+                result["changes"] = workspaces.seed_jobs(paths, config.defaults)
             except OSError:
                 result["problems"] = [
                     "configuration was saved, but bundled jobs could not be installed; "

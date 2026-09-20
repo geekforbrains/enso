@@ -112,7 +112,7 @@ def _expected(note: Note, expected_hash: str | None) -> str:
 def create_note(paths: Paths, scope: str, relative: str, body: str) -> Note:
     """Create a new note with exactly four managed fields; never overwrite a note."""
     storage.body_only(body)
-    with storage.writer(paths, "knowledge"):
+    with storage.writer(paths):
         catalog = scan(paths)
         root = catalog.root(scope)
         _unoccupied(catalog, scope, relative)
@@ -126,7 +126,7 @@ def adopt_note(
     paths: Paths, scope: str, relative: str, *, expected_hash: str | None = None
 ) -> Note:
     """Normalize one existing copied note; preserve unfamiliar frontmatter in its body."""
-    with storage.writer(paths, "knowledge"):
+    with storage.writer(paths):
         catalog = scan(paths)
         note = catalog.get(relative, scope)
         catalog.require_unique(note)
@@ -143,7 +143,7 @@ def adopt_note(
 def update_note(paths: Paths, scope: str, ref: str, body: str, *, expected_hash: str) -> Note:
     """Replace a managed note's body using its last read hash, preserving identity/creation."""
     storage.body_only(body)
-    with storage.writer(paths, "knowledge"):
+    with storage.writer(paths):
         catalog = scan(paths)
         note = catalog.get(ref, scope)
         catalog.require_unique(note)
@@ -258,7 +258,7 @@ def move_note(
     revision is checked before publication. Failures roll back only untouched writes;
     originals remain in a recovery directory if a concurrent edit prevents rollback.
     """
-    with storage.writer(paths, "knowledge"):
+    with storage.writer(paths):
         catalog = scan(paths)
         moved = catalog.get(ref, scope)
         catalog.require_unique(moved)

@@ -199,7 +199,7 @@ async def test_telegram_user_binding_selects_shared_or_personal_context(transpor
 async def test_removed_binding_drops_deferred_telegram_attachment(transport, monkeypatch):
     runtime = _runtime(transport)
 
-    async def defer(conversation, reply, text, prepare, *, capture=None):
+    async def defer(conversation, reply, text, prepare, *, message_id=None):
         runtime.config = replace(runtime.config, bindings={})
         assert await prepare() is None
 

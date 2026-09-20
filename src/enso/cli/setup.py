@@ -126,10 +126,9 @@ def setup_wizard() -> None:
         typer.echo(line)
     credentials = _credentials(TRANSPORTS[transport])
     typer.echo(
-        "Pairing grants your account access and selects the default workspace. People sharing "
-        "a workspace share its memory; a personal workspace is not confidential from other "
-        "agents in this installation. Binding a channel trusts all its human participants "
-        "and captures their eligible live messages."
+        "Pairing grants your account access and selects the default workspace. A personal "
+        "workspace is not confidential from other agents in this installation. Binding a "
+        "channel trusts all its human participants."
     )
     owner = _pair(paths, TRANSPORTS[transport], credentials)
     raw = {

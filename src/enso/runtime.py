@@ -17,7 +17,6 @@ from typing import Any
 
 from . import connection_setup, db, messages, outbound, routing
 from . import log as logctx
-from .capture_runtime import CaptureWriter
 from .config import Agent, Config, LiveConfig
 from .execution import terminate_process_tree
 from .formatting import format_elapsed, format_error, preview, split_text, status_text
@@ -148,9 +147,8 @@ class _Queued:
 @dataclass
 class _Deferred:
     reply: Reply
-    text: str
     prepare: Callable[[], Awaitable[tuple[Turn, Reply] | None]]
-    capture: CaptureWriter | None = None
+    admission: asyncio.Task[bool] | None = None
 
 
 @dataclass
@@ -270,28 +268,27 @@ class Runtime:
         text: str,
         prepare: Callable[[], Awaitable[tuple[Turn, Reply] | None]],
         *,
-        capture: CaptureWriter | None = None,
+        message_id: tuple[str, str, str] | None = None,
     ) -> None:
         """Reserve FIFO position before asynchronously preparing an inbound turn."""
         from .maintenance import paused
 
         if paused(self.paths):
-            if capture is not None:
-                await capture.finish("dropped")
             await reply.send(
                 "Enso is preparing an update. Please send this again when it is ready."
             )
             return
-        item = _Deferred(reply=reply, text=text, prepare=prepare, capture=capture)
+        item = _Deferred(reply=reply, prepare=prepare)
         state = self._ingress.get(conversation)
         lock = self._locks.get(conversation)
         busy = state is not None or (lock is not None and lock.locked())
         position = self.queued(conversation) + 1
         if busy and position > MAX_QUEUE:
-            if capture is not None:
-                await capture.finish("dropped")
             await reply.send(f"Queue full ({MAX_QUEUE}). Try again once the current work finishes.")
             return
+
+        if message_id is not None:
+            item.admission = asyncio.create_task(self._admit_message(*message_id))
 
         if state is None:
             state = _IngressState(current=item)
@@ -303,10 +300,25 @@ class Runtime:
             state.pending.append(item)
 
         if busy:
-            if capture is not None and not await capture.ready():
+            if item.admission is not None and not await asyncio.shield(item.admission):
                 return
             log.info("reserved #%d for %s", position, conversation)
             await reply.send(f"Queued (#{position}): {preview(text)}")
+
+    async def _admit_message(self, transport: str, channel: str, message_id: str) -> bool:
+        """Persist only a delivery identity so replayed events cannot repeat provider work."""
+        try:
+            return await asyncio.to_thread(
+                db.admit_message, self.paths, transport, channel, message_id
+            )
+        except Exception:
+            log.warning(
+                "could not record received message (transport=%s channel=%s message=%s)",
+                transport,
+                channel,
+                message_id,
+            )
+            return True
 
     async def _run_ingress(self, conversation: str, state: _IngressState) -> None:
         """Prepare reserved messages in arrival order and hand them to the provider FIFO."""
@@ -316,14 +328,13 @@ class Runtime:
                 try:
                     prepared = (
                         await item.prepare()
-                        if item.capture is None or await item.capture.ready()
+                        if item.admission is None or await asyncio.shield(item.admission)
                         else None
                     )
                     # The preparation is now the active handoff, not a queued reservation.
                     state.current = None
                     if prepared is not None:
                         turn, reply = prepared
-                        turn = replace(turn, capture=item.capture or turn.capture)
                         actual = routing.conversation_key(
                             turn.transport, turn.channel, turn.thread, is_dm=turn.is_dm
                         )
@@ -332,16 +343,8 @@ class Runtime:
                                 f"prepared conversation changed from {conversation} to {actual}"
                             )
                         await self._submit(turn, reply, announce=False)
-                    elif item.capture is not None:
-                        await item.capture.finish("dropped")
-                except asyncio.CancelledError:
-                    if item.capture is not None:
-                        await item.capture.finish("cancelled")
-                    raise
                 except Exception as exc:
                     state.current = None
-                    if item.capture is not None:
-                        await item.capture.finish("failed")
                     log.exception("could not prepare turn for %s", conversation)
                     await self._report_prepare_failure(conversation, item.reply, exc)
 
@@ -349,9 +352,6 @@ class Runtime:
         finally:
             if self._ingress.get(conversation) is state:
                 del self._ingress[conversation]
-            for pending in state.pending:
-                if pending.capture is not None:
-                    await pending.capture.finish("dropped")
 
     @staticmethod
     async def _report_prepare_failure(conversation: str, reply: Reply, exc: Exception) -> None:
@@ -395,7 +395,7 @@ class Runtime:
             async def prepared() -> tuple[Turn, Reply]:
                 return turn, reply
 
-            await self.defer(conversation, reply, turn.text, prepared, capture=turn.capture)
+            await self.defer(conversation, reply, turn.text, prepared)
             return None
         return await self._submit(turn, reply, announce=True)
 
@@ -405,8 +405,6 @@ class Runtime:
         config = await asyncio.to_thread(self._live.current)
         workspace = self._workspace_of(turn, config)
         if workspace is None:
-            if turn.capture is not None:
-                await turn.capture.finish("dropped")
             # The binding went away while the message was being prepared; the sender
             # gets the same notice a queued message gets.
             await reply.send(routing.UNBOUND_NOTICE)
@@ -419,8 +417,6 @@ class Runtime:
         if lock.locked():
             queue = self._queues.setdefault(conversation, deque())
             if announce and len(queue) >= MAX_QUEUE:
-                if turn.capture is not None:
-                    await turn.capture.finish("dropped")
                 await reply.send(
                     f"Queue full ({MAX_QUEUE}). Try again once the current work finishes."
                 )
@@ -514,9 +510,7 @@ class Runtime:
         dropped = self.queued(conversation)
         ingress_task: asyncio.Task[None] | None = None
         stopped_preparing = False
-        dropped_captures: list[CaptureWriter] = []
         if ingress is not None:
-            dropped_captures.extend(item.capture for item in ingress.pending if item.capture)
             ingress.pending.clear()
             if ingress.task is not None and ingress.task is not current:
                 stopped_preparing = not ingress.task.done()
@@ -527,7 +521,6 @@ class Runtime:
 
         queue = self._queues.get(conversation)
         if queue:
-            dropped_captures.extend(item.turn.capture for item in queue if item.turn.capture)
             queue.clear()
         running = self._running.get(conversation)
 
@@ -545,9 +538,6 @@ class Runtime:
 
         if ingress_task is not None:
             await asyncio.gather(ingress_task, return_exceptions=True)
-
-        for capture in dropped_captures:
-            await capture.finish("dropped")
 
         parts = []
         if running is None:
@@ -612,15 +602,11 @@ class Runtime:
             try:
                 await task
             except asyncio.CancelledError:
-                if turn.capture is not None:
-                    await turn.capture.finish("cancelled")
                 current = asyncio.current_task()
                 if current is not None and current.cancelling():
                     raise
                 log.info("turn stopped")
             finally:
-                if turn.capture is not None:
-                    await turn.capture.finish()
                 if self._running.get(conversation) is running:
                     del self._running[conversation]
 
@@ -687,13 +673,7 @@ class Runtime:
         key = routing.binding_key(
             turn.transport, turn.channel, is_dm=turn.is_dm, user_id=turn.user_id
         )
-        workspace = turn.workspace
-        if turn.capture is not None and turn.capture.message is not None:
-            owner = turn.capture.message.workspace
-            if workspace and workspace != owner:
-                return None
-            workspace = owner
-        return routing.workspace_for(config, key, workspace=workspace)
+        return routing.workspace_for(config, key, workspace=turn.workspace)
 
     async def _run_turn_inner(
         self, conversation: str, turn: Turn, reply: Reply, running: Running
@@ -704,8 +684,6 @@ class Runtime:
         config = await asyncio.to_thread(self._live.current)
         workspace = self._workspace_of(turn, config)
         if workspace is None:
-            if turn.capture is not None:
-                await turn.capture.finish("dropped")
             await reply.send(routing.UNBOUND_NOTICE)
             return
         running.agent = self.current_agent(conversation, workspace, config)
@@ -727,9 +705,6 @@ class Runtime:
             # Admitted while a clear was in flight: let it finish before reading the session.
             await clearing
         agent, config = running.agent, running.config
-        capture = turn.capture or CaptureWriter(self.paths)
-        capture.rejected = reply.delivery_rejected
-        capture.sender_id, capture.sender_name = reply.sender_id, reply.sender_name
         provider = self._provider(config, agent.provider)
         background = await asyncio.to_thread(
             messages.take_background,
@@ -776,7 +751,6 @@ class Runtime:
                 )
             await self._stop_ticker(ticker, stop)
             if timed_out:
-                await capture.finish("timed_out")
                 log.warning("turn timed out after %ss", config.agent_timeout)
                 await self._finish_status(
                     reply, status_id, self._timeout_notice(config.agent_timeout)
@@ -792,19 +766,12 @@ class Runtime:
                 running.elapsed,
             )
             if collected.error:
-                await capture.finish("failed")
                 await reply.send(format_error(collected.error[:4000]))
             elif not response_ok and text == outbound.FAILURE_NOTICE:
-                await capture.finish("failed")
                 await reply.send(text)
             elif rich is not None or text.strip():
-                await capture.begin(
-                    reply.representation(text, rich), "completed" if response_ok else "failed"
-                )
-                await reply.deliver(text, rich, capture)
-                await capture.finish()
+                await reply.deliver(text, rich)
             else:
-                await capture.finish("empty")
                 await reply.send("(No response)")
             if response_ok:
                 try:
@@ -824,7 +791,6 @@ class Runtime:
             await self._finish_status(reply, status_id, "Stopped.")
             raise
         except Exception as exc:
-            await capture.finish("failed")
             await self._stop_ticker(ticker, stop)
             log.exception("turn failed")
             await self._finish_status(reply, status_id, None)

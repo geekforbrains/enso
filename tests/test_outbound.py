@@ -67,7 +67,11 @@ def test_plain_text_is_not_an_envelope() -> None:
         ("```enso-message\n{oops\n```", "not valid JSON"),
         (envelope([TABLE]).replace("42", str(10**400)), "row 2 cell 2 must be a non-blank"),
         (envelope([TABLE]).replace("42", "1" * 5000), "not valid JSON (a value is too large)"),
-        ("```enso-message\n" + "[" * 100_000 + "\n```", "not valid JSON (a value is too large)"),
+        pytest.param(
+            "```enso-message\n" + "[" * 100_000 + "\n```",
+            "not valid JSON",
+            id="unfinished-nested-arrays",
+        ),
     ],
 )
 def test_rejects_with_a_reason(text: str, reason: str) -> None:

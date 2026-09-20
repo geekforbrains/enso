@@ -38,7 +38,6 @@ from .connect import connect_app
 from .heartbeat import heartbeat_app
 from .jobs import job_app, runs_app
 from .knowledge import knowledge_app
-from .memory import memory_app
 from .messaging import message_app, telegram_app
 from .projects import project_app
 from .setup import setup_wizard
@@ -77,7 +76,6 @@ app.add_typer(web_app, name="web")
 app.add_typer(update_app, name="update")
 app.add_typer(skill_app, name="skill")
 app.add_typer(knowledge_app, name="knowledge")
-app.add_typer(memory_app, name="memory")
 # Named explicitly: after a re-exec this module runs as __main__.
 log = logging.getLogger("enso.cli")
 
@@ -261,13 +259,6 @@ def _serve_home(paths: Paths, debug: bool) -> None:
         fail([str(exc)])  # nothing has started yet, so nothing has to be unwound
     if pruned:
         log.info("pruned %d idle sessions", pruned)
-    from .. import captures
-
-    try:
-        if interrupted := captures.recover(paths):
-            log.info("closed %d interrupted captures", interrupted)
-    except Exception:
-        log.warning("capture recovery failed; conversation handling will continue")
     transports = build_transports(config)
     if not transports:
         fail(["no transport is configured (or its extra is not installed)"])
@@ -705,15 +696,9 @@ def workspace_create(name: str) -> None:
     paths = Paths.from_env()
     try:
         root = workspaces.create_workspace(paths, name)
-        config, _, _ = check_config(paths)
-        changes = workspaces.seed_jobs(paths, config.defaults, workspace=name) if config else []
     except (ValueError, OSError) as exc:
         fail([str(exc)])
     typer.echo(f"created {root}")
-    for change in changes:
-        typer.echo(change)
-    if config is None:
-        typer.echo("memory job awaits valid configuration; config apply will install it", err=True)
     typer.echo(f'bind a conversation to it in {paths.config}: "bindings": {{"slack:C…": "{name}"}}')
 
 

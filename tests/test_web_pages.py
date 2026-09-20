@@ -14,7 +14,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from conftest import load_job, write_config, write_job
 
-from enso import db, doctor, memory, runs, service, workspaces
+from enso import db, doctor, knowledge, runs, service, workspaces
 from enso.config import Config, Paths, load_config
 from enso.web import Bind, files, views
 from enso.web.server import create_app
@@ -138,7 +138,6 @@ async def test_no_link_nests_inside_another_link(client: TestClient, home: Home)
         "/runs?view=all",
         "/tasks",
         "/knowledge",
-        "/memory",
         "/heartbeats",
         "/workspaces",
         "/skills",
@@ -178,8 +177,8 @@ async def test_health_reports_every_section_database_and_log(
     client: TestClient, home: Home
 ) -> None:
     home.paths.log.write_text("".join(f"line {i}\n" for i in range(250)))
-    note = memory.create_note(
-        home.paths, "default", "Recall.md", "[Missing source](Missing.md)", occurred=None
+    note = knowledge.create_note(
+        home.paths, "shared", "Reference.md", "[Missing source](Missing.md)"
     )
     body = await page(client, "/health")
     for name in doctor.SECTIONS:
@@ -218,10 +217,10 @@ async def test_health_reports_every_section_database_and_log(
     installed = section(body, "service")
     assert "<dd>no</dd>" in installed and '<dd><span class="muted">none</span></dd>' in installed
     assert "True" not in body and "False" not in body
-    notes = section(body, "memory")
-    assert str(home.paths.workspace_memory("default") / note.path) in notes
-    assert "missing link" in notes and "enso memory audit" in notes
-    assert "1 notes, 1 findings" in notes
+    notes = section(body, "knowledge")
+    assert str(home.paths.knowledge / note.path) in notes
+    assert "missing link" in notes and "enso knowledge audit" in notes
+    assert "3 notes, 5 findings" in notes
 
 
 async def test_health_diagnoses_a_broken_config_and_database(

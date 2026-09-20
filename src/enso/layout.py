@@ -50,7 +50,7 @@ class Entry:
 # The documented workspace layout (docs/workspaces.md § Layout). Link targets are relative
 # to the link's own directory; the provider CLIs find the skill links by walking up from
 # the workspace to the Git root.
-WORKSPACE_DIRS = ("skills", "memory", "jobs", "projects", "work", "uploads")
+WORKSPACE_DIRS = ("skills", "jobs", "projects", "work", "uploads")
 LINKS = (
     ("CLAUDE.md", "AGENTS.md"),
     (".claude/skills", "../skills"),
@@ -64,7 +64,7 @@ WORKSPACE: tuple[Entry, ...] = (
     Entry(".agents", REQUIRED, "the Codex, Antigravity, and OpenCode skill link"),
     Entry("skills", REQUIRED, "skills only this workspace needs"),
     Entry("knowledge", USER, "legacy workspace reference material"),
-    Entry("memory", REQUIRED, "dated Markdown memories"),
+    Entry("memory", USER, "retained user files"),
     Entry("jobs", REQUIRED, "scheduled and stage jobs"),
     Entry("projects", REQUIRED, "project definitions and scripts"),
     Entry("drafts", USER, "legacy work product using the original folder name"),
@@ -88,7 +88,7 @@ HOME: tuple[Entry, ...] = (
     Entry("workspaces", REQUIRED, "one directory per workspace"),
     Entry("config.json", MANAGED, "the configuration", private=True),
     Entry("config.example.json", MANAGED, "the editable configuration template"),
-    Entry("enso.db", MANAGED, "captures, runs, tasks, and beats"),
+    Entry("enso.db", MANAGED, "runs, tasks, and beats"),
     Entry("enso.db-wal", MANAGED, "SQLite's write-ahead log"),
     Entry("enso.db-shm", MANAGED, "SQLite's shared-memory index"),
     Entry("enso.log", MANAGED, "the service log"),

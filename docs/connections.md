@@ -5,9 +5,8 @@ Hosted setup can use the same receivers through `enso connect`. Neither flow log
 provider account or starts a provider during pairing. Provider subscription login remains
 manual; see [Install](install.md).
 When configuring a connection, explain that the explicit binding grants access and selects
-context: people sharing a workspace share its maintained memory, and a personal DM does not
-make its workspace confidential. Before binding a channel, explain the audience and capture
-rules below. Native setup includes this explanation before pairing.
+context; a personal DM does not make its workspace confidential. Before binding a channel,
+explain the audience rules below. Native setup includes this explanation before pairing.
 
 ## Access in 0.2.0
 
@@ -15,7 +14,7 @@ A binding both grants access to the installation and selects an existing Enso wo
 The key uses platform-issued channel or user IDs from authenticated
 transport events. Display names and identities claimed in message text never grant access.
 Transport authentication and connection identity checks still apply.
-Admission is decided before attachment download, provider work, or capture.
+Admission is decided before attachment download or provider work.
 
 | Conversation | Required binding | Who can use Enso there |
 | --- | --- | --- |
@@ -23,11 +22,9 @@ Admission is decided before attachment download, provider work, or capture.
 | Slack one-to-one DM | Sender's user ID | That explicitly bound person |
 | Telegram private chat | Sender's user ID | That explicitly bound person |
 
-Binding a channel trusts its audience to use the installation's capabilities and
-[captures eligible live human messages](memory.md#conversation-capture) there. That audience
+Binding a channel trusts its audience to use the installation's capabilities. That audience
 includes later additions, guests, and external Slack Connect participants. Channel membership does not grant DM access.
-`mention_required` and `thread_mention_required` control replies; they do not change access
-or [capture eligibility](memory.md#conversation-capture).
+`mention_required` and `thread_mention_required` control replies; they do not change access.
 
 There is no wildcard DM access, automatic personal workspace, fallback for an unknown
 sender, or separate user/role permission system. Telegram stays private-chat-only;
@@ -39,7 +36,7 @@ An unbound Slack channel receives one short canned notice when the bot is mentio
 unbound Slack DM or Telegram private chat receives it on any human message. Otherwise an
 unbound channel stays silent. The fixed notice is "This conversation is not bound to an
 available workspace." It contains no private configuration details and requires no provider
-call, attachment download, or capture. A binding naming a missing workspace logs a diagnostic
+call or attachment download. A binding naming a missing workspace logs a diagnostic
 and sends the same notice, without selecting another workspace. This admission check also
 applies to chat commands and repeats before deferred attachment preparation.
 
@@ -47,11 +44,15 @@ Bindings are read for incoming messages. A queued turn retains the workspace sel
 arrival; removing its binding withdraws access before it starts. Its original workspace
 and the currently bound workspace must both still exist. Rebinding does not move
 past records or resume a session in a different workspace. Removing a binding preserves
-past captures and maintained memory.
+existing records and workspace content.
+
+Before preparing a normal chat turn, Enso records its transport, channel, and message ID
+in the home database. Repeated events with the same identity are ignored, including after
+a service restart. A database failure is logged and leaves ordinary message handling running.
 
 Only trusted configuration or operator-initiated pairing creates a binding. Preserve the
 short-lived challenge and acknowledgment described below. Pairing messages never become
-agent turns or memory captures; an unknown sender cannot authorize their own binding by
+agent turns; an unknown sender cannot authorize their own binding by
 asking Enso. Telegram pairing writes the explicit user binding and notification target.
 
 Several bindings can select one workspace; each named workspace must already exist:
@@ -60,7 +61,7 @@ Several bindings can select one workspace; each named workspace must already exi
 | --- | --- |
 | One person's `telegram:123456` and `slack:dm:U0123` both bind to `default` | One personal workspace, separate transport conversations |
 | `slack:C0123` binds to `product`; `slack:C0456` binds to `support` | Two team channels with their own workspace context in one installation |
-| Two people's DM bindings both select `team` | Shared maintained memory, separate conversations and provider sessions |
+| Two people's DM bindings both select `team` | Shared workspace context, separate conversations and provider sessions |
 | Those DM bindings select `alex` and `sam` respectively | Separate personal context and ownership within the same trusted installation |
 
 Personal workspaces do not promise confidentiality from other agents in the installation.

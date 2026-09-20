@@ -24,7 +24,6 @@ Paths below show the default home; use `ENSO_HOME` instead of `~/.enso` when it 
     ├── WORKSPACE.md           # optional agent triple and provider arguments
     ├── CLAUDE.md -> AGENTS.md
     ├── skills/               # skills unique to this workspace
-    ├── memory/               # dated Markdown memory, maintained with enso memory
     ├── jobs/                 # scheduled and stage jobs
     ├── projects/             # workspace project definitions
     ├── work/                 # task files and generated or editable output
@@ -41,9 +40,6 @@ Load `enso-knowledge` to find, write, import, organize, or link durable notes, o
 formatting. New notes go in shared knowledge by default. The skill owns the note workflow and
 common formatting rules; the viewer discovers knowledge roots automatically and stays
 read-only.
-Knowledge is current reference; dated conversations and experiences belong in `memory/`.
-For earlier work, load `enso-memory`, search with `enso memory search`, and read relevant
-notes and sources before answering. People sharing this workspace share its maintained memory.
 
 ## Commands
 
@@ -59,11 +55,10 @@ enso config check                # validates bindings against existing directori
 ## Bind conversations and jobs
 
 Bindings grant access as well as selecting context. Binding a channel trusts all its human
-participants, including guests and later additions, and captures eligible live discussion.
-Binding a DM trusts that person; people sharing its workspace share maintained memory,
-without a confidentiality boundary. Only trusted configuration or operator-initiated pairing
-may add bindings. Unknown senders cannot authorize themselves; an unbound conversation gets
-only the fixed notice, with no provider work, attachment download, or capture. In an unbound
+participants, including guests and later additions. Binding a DM trusts that person;
+workspace selection does not create a confidentiality boundary. Only trusted configuration
+or operator-initiated pairing may add bindings. Unknown senders cannot authorize themselves; an unbound conversation gets
+only the fixed notice, with no provider work or attachment download. In an unbound
 channel, only mentioning the bot triggers that notice. See the [connection rules](https://github.com/geekforbrains/enso/blob/develop/docs/connections.md#access-in-020).
 
 Bindings live in `~/.enso/config.json`. Keys are `slack:C…` (a channel), `slack:dm:U…` or `slack:dm:W…` (a user's DM; `W…` is an Enterprise Grid org-wide user id), or `telegram:<user id>`; values are workspace names. Workspace overrides live in the optional `WORKSPACE.md`, not in `config.json`:

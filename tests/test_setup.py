@@ -45,11 +45,7 @@ def test_seed_jobs_stamps_the_agent_and_writes_once(enso_home: Paths) -> None:
     assert done == [
         f"wrote {enso_home.workspace_jobs('default') / job / name}"
         for job in workspaces.BUNDLED_JOBS
-        for name in (
-            ("JOB.md", "postrun.sh", "prerun.sh")
-            if job == "enso-memory"
-            else ("JOB.md", "prerun.sh")
-        )
+        for name in ("JOB.md", "prerun.sh")
     ]
     text = (job_dir / "JOB.md").read_text()
     assert 'provider: "claude"\nmodel: "opus"\neffort: "high"\n' in text
@@ -112,7 +108,7 @@ def test_ensure_layout_creates_and_repoints_but_never_removes(enso_home: Paths) 
     done = workspaces.ensure_layout(root)
 
     verbs = [line.split(" ", 1)[0] for line in done]
-    assert verbs == ["created"] * 6 + ["linked", "repointed"]
+    assert verbs == ["created"] * 5 + ["linked", "repointed"]
     assert all((root / name).is_dir() for name in workspaces.WORKSPACE_DIRS)
     assert (root / "drafts" / "post.md").read_text() == "keep me"
     assert os.readlink(root / "CLAUDE.md") == "AGENTS.md"
@@ -136,7 +132,7 @@ def test_setup_wizard_slack_path(enso_home: Paths, monkeypatch: pytest.MonkeyPat
     result = CliRunner().invoke(app, ["setup"], input="\n".join(answers) + "\n")
     assert result.exit_code == 0, result.output
     assert "Your chat is connected." in result.output
-    assert "People sharing a workspace share its memory" in result.output
+    assert "A personal workspace is not confidential from other agents" in result.output
     assert "Binding a channel trusts all its human participants" in result.output
     assert "Your Slack user id" not in result.output
     assert "enso slack manifest" in result.output

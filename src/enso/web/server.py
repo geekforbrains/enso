@@ -25,7 +25,7 @@ from aiohttp import web
 
 from .. import __version__
 from ..config import Paths
-from . import Bind, PidFile, WebError, filters, knowledge, memory, views
+from . import Bind, PidFile, WebError, filters, knowledge, views
 from . import tasks as taskviews
 
 log = logging.getLogger("enso.web")
@@ -56,7 +56,6 @@ NAV = (
     ("Heartbeats", "/heartbeats"),
     ("Runs", "/runs"),
     ("Knowledge", "/knowledge"),
-    ("Memory", "/memory"),
     ("Jobs", "/jobs"),
     ("Workspaces", "/workspaces"),
     ("Health", "/health"),
@@ -308,43 +307,6 @@ async def knowledge_asset(request: web.Request) -> web.StreamResponse:
     return web.Response(body=body, content_type=content_type, headers=headers)
 
 
-async def memory_list(request: web.Request) -> web.StreamResponse:
-    query = {
-        key: request.query.get(key, "") for key in ("workspace", "view", "q", "transport", "page")
-    }
-    model = await _model(lambda: memory.listing_model(request.app[PATHS], query))
-    if model is None:
-        return not_found(request, "No such workspace.")
-    return render(request, "memory.html", model)
-
-
-async def memory_note(request: web.Request) -> web.StreamResponse:
-    workspace = request.match_info.get("workspace") or request.query.get("workspace", "")
-    model = await _model(
-        lambda: memory.note_model(
-            request.app[PATHS],
-            workspace,
-            note_id=request.match_info.get("id", ""),
-            path=request.query.get("path", ""),
-        )
-    )
-    if model is None:
-        return not_found(request, "No memory matches this workspace and location.")
-    return render(request, "memory_note.html", model)
-
-
-async def memory_capture(request: web.Request) -> web.StreamResponse:
-    raw = request.match_info["id"]
-    if not raw.isdecimal() or len(raw) > 18:
-        return not_found(request, "No capture matches that id.")
-    model = await _model(
-        lambda: memory.capture_model(request.app[PATHS], request.match_info["workspace"], int(raw))
-    )
-    if model is None:
-        return not_found(request, "No capture matches that workspace and id.")
-    return render(request, "memory_capture.html", model)
-
-
 async def skills(request: web.Request) -> web.StreamResponse:
     paths = request.app[PATHS]
     selected = request.query.get("workspace") or None
@@ -452,10 +414,6 @@ ROUTES: tuple[tuple[str, Handler], ...] = (
     ("/knowledge/notes/{id}", knowledge_note),
     ("/knowledge/file", knowledge_note),
     ("/knowledge/asset", knowledge_asset),
-    ("/memory", memory_list),
-    ("/memory/notes/{workspace}/{id}", memory_note),
-    ("/memory/file", memory_note),
-    ("/memory/captures/{workspace}/{id}", memory_capture),
     ("/skills", skills),
     ("/skills/{name}", skill),
     ("/jobs", jobs),

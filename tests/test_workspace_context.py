@@ -229,7 +229,7 @@ def test_context_precedence_requires_an_existing_workspace_and_never_infers_cwd(
     with pytest.raises(ValueError, match="missing"):
         resolve_workspace(enso_home)
     with pytest.raises(ValueError):
-        enso_home.workspace_memory("../team")
+        enso_home.workspace_knowledge("../team")
 
 
 def test_linked_workspace_has_no_second_identity(enso_home, raw_config, tmp_path):

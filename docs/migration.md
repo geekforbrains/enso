@@ -65,7 +65,7 @@ Declare every path a step can change, including files whose references it rewrit
 move, include **both the source and destination**, even if the destination does not exist yet.
 If a step creates parent directories, declare the highest new parent it creates. For example,
 moving `knowledge` into a new `shared/knowledge` declares `knowledge` and `shared`, plus each
-workspace knowledge or memory root holding links the step rewrites. Declare the containing
+workspace content root holding links the step rewrites. Declare the containing
 directory rather than each user file: a snapshot takes at most 4096 paths, none ending in
 `.lock`. The updater validates the paths and snapshots their original contents or absence
 before any migration runs.

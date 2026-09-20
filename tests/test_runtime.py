@@ -53,6 +53,100 @@ class RichReply(FakeReply):
         return "r"
 
 
+async def drain_ingress(runtime: Runtime) -> None:
+    while tasks := [
+        *(state.task for state in runtime._ingress.values() if state.task),
+        *runtime._drains.values(),
+    ]:
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=5)
+
+
+async def test_slow_message_admission_preserves_fifo_and_replays_never_prepare(
+    runtime: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entered, release = threading.Event(), threading.Event()
+    admit = db.admit_message
+    prepared: list[str] = []
+    handled: list[str] = []
+
+    def delayed(paths, transport, channel, message_id):
+        if message_id == "1":
+            entered.set()
+            assert release.wait(timeout=5)
+        return admit(paths, transport, channel, message_id)
+
+    async def run(conversation, turn, reply):
+        handled.append(turn.text)
+
+    async def enqueue(target, text, ident):
+        reply = FakeReply()
+
+        async def prepare():
+            prepared.append(text)
+            return replace(make_turn(text), message_id=ident, workspace="default"), reply
+
+        await target.defer("slack:D1", reply, text, prepare, message_id=("slack", "D1", ident))
+
+    monkeypatch.setattr(db, "admit_message", delayed)
+    monkeypatch.setattr(runtime, "_run_turn", run)
+    try:
+        await enqueue(runtime, "first", "1")
+        assert await asyncio.to_thread(entered.wait, 2)
+        await enqueue(runtime, "second", "2")
+        assert prepared == []
+    finally:
+        release.set()
+    await drain_ingress(runtime)
+    assert prepared == handled == ["first", "second"]
+
+    restarted = Runtime(runtime.config)
+    monkeypatch.setattr(restarted, "_run_turn", run)
+    await enqueue(restarted, "replayed with different text", "1")
+    await drain_ingress(restarted)
+    assert prepared == handled == ["first", "second"]
+
+
+async def test_message_admission_failure_does_not_block_chat_or_log_private_content(
+    runtime: Runtime, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def fail(*args):
+        raise OSError("PRIVATE request body and xoxb-secret")
+
+    reply = FakeReply()
+
+    async def prepare():
+        return make_turn("hello"), reply
+
+    monkeypatch.setattr(db, "admit_message", fail)
+    with caplog.at_level(logging.WARNING):
+        await runtime.defer("slack:D1", reply, "hello", prepare, message_id=("slack", "D1", "1"))
+        await drain_ingress(runtime)
+    assert len(reply.sent) == 1 and reply.sent[0].endswith("\n\nhello")
+    warnings = [
+        record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING
+    ]
+    assert len(warnings) == 1
+    assert "PRIVATE" not in warnings[0] and "secret" not in warnings[0]
+
+
+@pytest.mark.parametrize("error", [ValueError("rejected"), TimeoutError("unknown")])
+async def test_failed_reply_part_does_not_resend_successful_parts(
+    runtime: Runtime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    class PartialReply(FakeReply):
+        limit = 5
+
+        async def send(self, text):
+            if text == "world":
+                raise error
+            return await super().send(text)
+
+    script(tmp_path, monkeypatch, "hello\nworld")
+    reply = PartialReply()
+    await runtime.handle(make_turn("hello"), reply)
+    assert reply.sent.count("hello") == 1 and "world" not in reply.sent
+
+
 async def test_session_is_created_then_resumed(runtime: Runtime, enso_home: Paths) -> None:
     first, second = FakeReply(), FakeReply()
     await runtime.handle(make_turn("hello"), first)

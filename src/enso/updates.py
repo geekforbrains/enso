@@ -553,14 +553,7 @@ def prepare_home(paths: Paths) -> None:
         if paths.config.exists():
             config = load_config(paths)
             db.initialize(paths)
-            workspaces.reconcile_bundles(
-                paths,
-                config.defaults,
-                workspace_agents={
-                    name: settings.agent or config.defaults
-                    for name, settings in config.workspaces.items()
-                },
-            )
+            workspaces.reconcile_bundles(paths, config.defaults)
 
 
 def _finish(paths: Paths, state: dict[str, Any], status: str, **fields: Any) -> None:

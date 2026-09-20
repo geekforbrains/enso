@@ -96,11 +96,10 @@ Deliberately minimal. A new workspace gets this:
 ## Files
 
 - `$ENSO_HOME/shared/knowledge/` — current facts and reference material shared across workspaces; load `enso-knowledge` and use `enso knowledge` to find or maintain it
-- `memory/` — dated conversations and experiences; load `enso-memory`, search with `enso memory search`, and inspect sources before recalling earlier work
 - `work/` — task files and generated or editable output, grouped by task
 - `uploads/` — chat attachments, written by Enso
 
-Knowledge commands use shared knowledge by default. Keep work in its established repository or destination when one exists; otherwise use `work/`. Memory belongs to this workspace. People sharing it share maintained memory; separate workspaces do not promise confidentiality within this installation.
+Knowledge commands use shared knowledge by default. Keep work in its established repository or destination when one exists; otherwise use `work/`. Separate workspaces do not promise confidentiality within this installation.
 ```
 
 Fill in the blanks and delete what does not apply. `enso workspace audit` warns while the
@@ -199,7 +198,6 @@ Enso installs these into `~/.enso/skills/`:
 | `enso-heartbeat` | Finite future actions and temporary watches, script gates, event history, action receipts, and completion |
 | `enso-jobs` | Creating, testing, and troubleshooting scheduled and stage jobs and their prerun and postrun scripts |
 | `enso-knowledge` | Finding and maintaining Markdown notes (in shared knowledge by default), links, imports, and user-defined formatting |
-| `enso-memory` | Recalling, recording, and correcting dated workspace memory, and writing useful summaries of captured conversations |
 | `enso-security` | Installation trust, provider permissions, credential handling, and untrusted input |
 | `enso-skills` | Finding official optional skills and writing or refining a skill manually |
 | `enso-slack` | Looking people and channels up, reading history, sending, tables and charts |
@@ -214,9 +212,6 @@ Each one says how Enso sets its subject up, then how the agent uses it. `enso in
 A bundled maintenance job is installed in `workspaces/default/jobs/` and stamped with
 the default agent during setup or config apply; those commands
 leave an existing job directory alone, including missing scripts.
-Each workspace also gets its own [memory job](jobs.md#workspace-memory-job-in-020), stamped
-with its effective agent. Customize memory writing preferences in `enso-memory/SKILL.md`;
-source validation and crash recovery remain enforced by the CLI.
 
 Managed upgrades use `.bundles.json`, which records hashes when Enso seeds files. A bundled
 home instruction, skill, job file, or Slack manifest refreshes only when its current bytes

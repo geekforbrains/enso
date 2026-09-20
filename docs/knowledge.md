@@ -4,25 +4,17 @@ Knowledge is a collection of ordinary Markdown files maintained through conversa
 Enso. The [web viewer](web.md) provides read-only folder browsing, search, and linked note
 reading. Files remain usable outside Enso; the viewer is not an editor or the source of truth.
 
-## Knowledge and memory in 0.2.0
+## Finding and maintaining knowledge
 
-Knowledge holds current maintained facts and useful reference material.
-[Memory](memory.md) holds dated conversations and experiences in the workspace
-where they happened. Both remain ordinary Markdown and are authoritative for their maintained
-content; operational records, including source message captures, live in the home database.
+Knowledge holds current maintained facts and useful reference material. Agents use the
+knowledge CLI and `enso-knowledge` skill, starting with relevant folders in shared knowledge.
+Broaden a lookup deliberately when needed; selecting a workspace organizes context rather
+than enforcing confidentiality. [Workspaces](workspaces.md#context-selection-in-020) owns
+selection.
 
-When a user asks for a current fact or reference, agents use the knowledge CLI and
-`enso-knowledge` skill, starting with relevant folders in shared knowledge. Questions about
-earlier discussions, decisions, promises, and follow-ups use the memory CLI and bundled
-`enso-memory` skill. Broaden a lookup deliberately when needed; selecting a workspace
-organizes context rather than enforcing confidentiality.
-[Workspaces](workspaces.md#context-selection-in-020) owns selection.
-
-For example, the currently agreed support hours belong in a maintained knowledge note.
-The conversation on September 16 that proposed changing those hours belongs in the team's
-dated memory. Promote a confirmed lasting fact into its owning knowledge note deliberately,
-with source context; do not copy every memory into knowledge. Removing that memory later
-does not automatically remove a fact already promoted into knowledge.
+Keep a confirmed fact in its owning knowledge note with source context beside it. For
+example, the currently agreed support hours belong in one maintained note that other
+notes link to.
 
 ## Locations and context
 
@@ -32,7 +24,7 @@ does not automatically remove a fact already promoted into knowledge.
 
 Until home revision 2, shared knowledge lived at `$ENSO_HOME/knowledge/` and was addressed
 as `general`. [Upgrading](install.md#upgrading) moves it and rewrites `general:` link
-targets to `shared:` in every knowledge and memory note. It changes nothing in the home
+targets to `shared:` in notes. It changes nothing in the home
 while the old root sits beside a non-empty `shared/knowledge/` or a `.knowledge-move-*`
 [recovery](#writing-adoption-and-recovery) directory remains: a managed update fails after
 stopping services and restores the previous release, and `scripts/dev-migrate` reports it
@@ -81,7 +73,7 @@ consolidation; [Customizing](customizing.md#the-bundled-skills) explains what up
 
 ## The note format
 
-Knowledge notes use `enso.note/v1`; memory has its own [schema](memory.md#the-note-format).
+Knowledge notes use `enso.note/v1`.
 
 Every managed note begins with YAML frontmatter:
 
@@ -109,7 +101,7 @@ Timestamps use ISO 8601 with a timezone; Enso writes UTC ending in `Z`. An impor
 filesystem timestamp does not prove when its contents were created or updated, so unknown
 dates stay absent. `updated` cannot precede `created`. A move that does not change the body
 does not change its update time. Neither does a format migration, such as home revision 2
-rewriting `general:` links to `shared:` in knowledge and memory notes: it is not a content
+rewriting `general:` links to `shared:` in notes: it is not a content
 update.
 
 For example, an imported reference with no known dates has only

@@ -44,7 +44,7 @@ def test_workspace_create_and_list(enso_home: Paths, raw_config: dict) -> None:
     assert os.readlink(root / "CLAUDE.md") == "AGENTS.md"
     assert sorted(entry.name for entry in root.iterdir()) == [
         ".agents", ".claude", "AGENTS.md", "CLAUDE.md", "jobs",
-        "memory", "projects", "skills", "uploads", "work",
+        "projects", "skills", "uploads", "work",
     ]  # fmt: skip
     assert all((root / name).is_dir() for name in workspaces.WORKSPACE_DIRS)
     for link in (root / ".claude" / "skills", root / ".agents" / "skills"):
@@ -56,8 +56,8 @@ def test_workspace_create_and_list(enso_home: Paths, raw_config: dict) -> None:
     assert result.exit_code == 0
     assert [line.split() for line in result.stdout.splitlines()] == [
         ["WORKSPACE", "BINDINGS", "JOBS", "AUDIT"],
-        ["default", "slack:C1,", "slack:dm:U1", "-", "9", "errors"],
-        ["meteor", "-", "meteor:enso-memory", "1", "warning"],
+        ["default", "slack:C1,", "slack:dm:U1", "-", "8", "errors"],
+        ["meteor", "-", "-", "2", "warnings"],
     ]
     assert result.stderr.startswith("home: ")  # not seeded either
 
@@ -72,7 +72,7 @@ def test_workspace_audit_command(enso_home: Paths, raw_config: dict) -> None:
     broken = runner.invoke(app, ["workspace", "audit"])
     lines = broken.stdout.splitlines()
     assert broken.exit_code == 1 and lines[0] == f"home {enso_home.home}: ok"
-    assert lines[1:3] == ["default: 8 errors", "  bindings: slack:C1, slack:dm:U1"]
+    assert lines[1:3] == ["default: 7 errors", "  bindings: slack:C1, slack:dm:U1"]
     assert lines[3] == "  error: skills/ is missing (repairable with --fix)"
     assert runner.invoke(app, ["workspace", "audit", "meteor"]).exit_code == 1  # no such workspace
 
@@ -91,9 +91,9 @@ def test_workspace_audit_command(enso_home: Paths, raw_config: dict) -> None:
     (root / "uploads" / "x" / "f").write_bytes(b"x" * 2048)
     warned = runner.invoke(app, ["workspace", "audit", "lonely"])
     assert warned.exit_code == 0 and warned.stdout.splitlines()[1:] == [
-        "lonely: 1 warning",
-        "  jobs: lonely:enso-memory",
+        "lonely: 2 warnings",
         "  warning: AGENTS.md is still the untouched template; say what the workspace is for",
+        "  warning: nothing is bound to this workspace and no job names it",
     ]
     assert "  uploads: 2.0 KB" in runner.invoke(app, ["workspace", "audit", "default"]).stdout
     listed = json.loads(runner.invoke(app, ["workspace", "audit", "--json"]).stdout)

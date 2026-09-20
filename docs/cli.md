@@ -45,7 +45,7 @@ enso providers [--json]             bundled provider, model, and effort choices
 enso slack manifest                 packaged app manifest, JSON on stdout
 enso connect start|status|cancel|finish  private owner pairing; see Connections for arguments
 enso models [--all] [--json]       look up OpenRouter models OpenCode can run
-enso doctor [--json] [--attention]  config, home, workspaces, providers, transports, service, viewer_service, jobs, heartbeat, knowledge, memory
+enso doctor [--json] [--attention]  config, home, workspaces, providers, transports, service, viewer_service, jobs, heartbeat, knowledge
 enso update check|apply|status|recover  managed release checks and recovery; see Updates
 ```
 
@@ -58,12 +58,11 @@ health. `viewer_service` reports its unit, home, and process ownership; an unins
 viewer service is healthy, while one installed for this home but not serving it is an
 error. A unit for another home is reported separately without a health error.
 The heartbeat check reads saved state without running gates or migrating the database.
-The knowledge and memory sections compose the existing note audits across their roots,
-including metadata, identity, timestamps, placement, links, and memory capture sources.
-They report note/finding counts and at most ten findings per section, with each finding's
-message limited to 500 characters. Use `enso knowledge audit --workspace NAME` (or `--shared`)
-and `enso memory audit --workspace NAME` for complete scoped findings. Reads reuse the
-existing file parse caches; doctor never rewrites notes or creates a note database.
+The knowledge section composes the existing note audits across their roots, including
+metadata, identity, timestamps, and links. It reports note/finding counts and at most ten
+findings, with each finding's message limited to 500 characters. Use
+`enso knowledge audit --workspace NAME` (or `--shared`) for complete scoped findings. Reads
+reuse the existing file parse caches; doctor never rewrites notes or creates a note database.
 These checks establish structural validity, not factual truth or the most useful workspace
 for a note. Invalid roots are reported without following links.
 An error-level finding is a health problem and makes
@@ -328,7 +327,7 @@ it never deletes. The command exits 1 while any error remains; warnings alone ex
 ### Workspace context in 0.2.0
 
 Job and Heartbeat creation, message sends, operational lists, and task, project, and workflow
-commands and memory use the shared resolver.
+commands use the shared resolver.
 Workspace-scoped commands use `ENSO_WORKSPACE`,
 inherited from the Enso chat agent, job, or Heartbeat run calling them. Optional `--workspace` overrides it
 for that operation. The [context contract](workspaces.md#context-selection-in-020) owns
@@ -410,132 +409,6 @@ create/adopt/update return `{ok: true, ...note}`. `move` returns
 Moves preserve note identity and rewrite only the resolved links the move would change or
 break, in the moved note and in others; they refuse ambiguous inbound targets, stale
 contents, and existing destinations.
-
-## Memory
-
-The memory CLI finds and maintains dated workspace history. Start in the
-[selected workspace](#workspace-context-in-020); `--workspace` overrides `ENSO_WORKSPACE`.
-There is no shared memory root or all-workspace search. Missing context and invalid
-selections error. The bundled `enso-memory` skill guides recall and automated harvesting;
-[Memory](memory.md) owns the note schema, corrections, capture, and retention.
-
-```text
-enso memory list [--workspace NAME] [--limit N] [--offset N] [--json]
-enso memory search QUERY [--workspace NAME] [--limit N] [--offset N] [--json]
-enso memory show REF [--workspace NAME] [--json]
-enso memory create NAME.md --occurred VALUE --file FILE|- [--workspace NAME] [--json]
-enso memory update REF --file FILE|- --expected-hash SHA [--occurred VALUE] [--workspace NAME] [--json]
-enso memory audit [--workspace NAME] [--json]
-```
-
-`REF` is a UUID or an exact `.md` path relative to the selected memory root. UUIDs remain
-stable across moves but do not override workspace selection. `create` accepts one filename,
-chooses its folder from the required occurrence, assigns a UUID, and sets document dates.
-`VALUE` is a quoted date or timezone-aware timestamp, or `unknown`; manual notes use
-`sources: []` and describe other provenance in their body. Commands require neither
-transport configuration nor an initialized database.
-Nonempty source lists are validated against the capture database: missing or differently
-owned captures prevent managed updates, preserving the original sources.
-
-```bash
-enso memory create launch-proposal.md --workspace team --occurred 2026-09-16 --file proposal.md
-enso memory show 2026/09/16/launch-proposal.md --workspace team --json
-enso memory update 2026/09/16/launch-proposal.md --workspace team --file corrected.md --expected-hash HASH
-enso memory search "launch proposal" --workspace team --json
-enso memory audit --workspace team --json
-```
-
-Updates preserve identity, sources, occurrence, and known creation time, require the last
-read's exact-byte SHA256, and change `updated` only for substantive edits. `--occurred`
-explicitly corrects the event time; a changed day requires deliberate file relocation and
-link maintenance first, following the [editing contract](memory.md#manual-maintenance).
-Human edits and imports are discovered directly without database registration. Resetting a
-provider session does not remove memory or captures.
-
-Listing/search defaults to 50 results, with `--limit` from 1 to 500 and nonnegative
-`--offset`. Every whitespace-separated query term must match the filename/path or body,
-case insensitively. Sort order is newest known occurrence first, unknown/invalid last,
-then path for ties; filtering precedes pagination.
-
-JSON list/search results contain `{workspace, total, offset, limit, notes, problems}`.
-Each note contains `{workspace, path, title, id, metadata, sha256, problems}`; `show` adds
-`body`, and successful writes add `ok: true`. `metadata` exposes supported properties;
-unsupported import metadata remains in the original file with findings. `audit` returns
-`{ok, workspace, notes, problems}`, with a note count and `{scope, path, problem}` findings
-using the internal root identifier `workspace:<name>`. Findings exit 1; a clean audit exits 0.
-
-Harvesting and source inspection use JSON on stdout:
-
-```text
-enso memory source CAPTURE_ID [--workspace NAME]
-enso memory batch [--workspace NAME] [--ready]
-enso memory publish --file FILE|- [--workspace NAME]
-enso memory job-hook prerun|postrun
-```
-
-`source` returns the selected workspace's capture with its sender, time, text, attachments,
-kind, parent, generation/handling outcome, delivery parts, and truncation notice. An ID from
-another workspace is not found. `batch` recovers pending publication before emitting
-`{workspace, batch, sources, guidance, segments}`. Segments preserve conversation/thread
-boundaries and identify incomplete context. No-work batches have empty `sources` and
-`segments`; with `--ready`, no work emits nothing and exits 1, while an error exits 2.
-This lets job preruns distinguish quiet workspaces from failed recovery.
-
-`publish` accepts at most 256 KiB of UTF-8 JSON with exactly these fields:
-
-```json
-{
-  "batch": "identity returned by memory batch",
-  "sources": [1201, 1202],
-  "notes": [{
-    "name": "launch-proposal.md",
-    "body": "The team proposed September 25; testing must finish before confirmation.",
-    "sources": [1201]
-  }],
-  "no_memory": [1202]
-}
-```
-
-Copy the batch identity and ordered IDs from the batch read. Each input must be cited or
-explicitly assigned to `no_memory`. A note name is one `.md` filename, at most 218 UTF-8
-bytes; Enso appends a stable UUID and supplies its date folder and validated metadata.
-Successful publication returns `{ok: true, receipt, sources, notes}`, with each note's ID
-and path. Invalid or stale results exit 1 with `{ok: false, error}` and never overwrite
-existing notes. [Memory](memory.md#validating-and-publishing-a-pass) owns reconciliation
-and the distinction between source validation and factual accuracy.
-
-`job-hook` is the bundled job's adapter, requiring its active `ENSO_RUN_ID` and
-`ENSO_WORKSPACE`. The prerun pins a batch and exits 1 without output when quiet; errors
-exit 2. Postrun checks stdin only after `ENSO_RUN_STATUS=ok`; a correctable result requests
-a follow-up with exit 10, while storage/recovery errors exit 2. The run's input budget stays
-fixed through follow-ups. Use `enso job run WORKSPACE:enso-memory --json` for a manual sweep.
-
-Remove one selected note, with a preview by default:
-
-```text
-enso memory remove REF [--workspace NAME] [--yes]
-```
-
-`REF` is one UUID or an exact `.md` path relative to the selected workspace's memory root.
-`ENSO_WORKSPACE` supplies context unless `--workspace` overrides it; absent context or
-ambiguous identity errors. With no `--yes`, the command previews the selected note and
-deletes nothing. With `--yes`, it reports the exact note before deleting it. There is no
-bulk removal, wildcard selection, or capture deletion.
-
-The report names the workspace, path, ID, source references, and any metadata problems.
-Deletion rechecks that exact file revision; a change after the report is an error. If an
-unfinished publication receipt names the note, removal stops until `enso memory batch`
-has reconciled it. Neither preview nor removal advances processing or deletes capture data.
-
-```bash
-enso memory remove 2026/09/16/launch-date-proposal.md --workspace team
-enso memory remove 2026/09/16/launch-date-proposal.md --workspace team --yes
-```
-
-Inspect the first command's preview before issuing the second. Source captures and their
-processing state remain intact, so a subsequent ordinary sweep does not recreate the note
-from already-processed inputs. [Retention and removal](memory.md#retention-and-removal)
-owns the effects on later memories, knowledge, backups, and history.
 
 ## Skills
 

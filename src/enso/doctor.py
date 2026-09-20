@@ -18,7 +18,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import audit, db, heartbeat, knowledge, memory, service, web
+from . import audit, db, heartbeat, knowledge, service, web
 from .config import Config, Paths, check_config
 from .formatting import preview
 from .jobs import load_jobs
@@ -36,7 +36,6 @@ SECTIONS = (
     "jobs",
     "heartbeat",
     "knowledge",
-    "memory",
 )
 SKIPPED = "skipped"
 # Appended to a finding the workspace audit can repair; the enso-audit prompt quotes it, so
@@ -130,17 +129,16 @@ def run(paths: Paths) -> Report:
         _viewer_service(paths),
         _jobs(paths, config),
         _heartbeat(paths, config),
-        _notes(paths, "knowledge"),
-        _notes(paths, "memory"),
+        _knowledge(paths),
     ]
     return Report(paths.home, sections)
 
 
-def _notes(paths: Paths, kind: str) -> Section:
+def _knowledge(paths: Paths) -> Section:
     """Bound the health summary while leaving detailed findings to scoped audit commands."""
-    section = Section(kind)
+    section = Section("knowledge")
     try:
-        catalog = knowledge.scan(paths) if kind == "knowledge" else memory.scan(paths)
+        catalog = knowledge.scan(paths)
         findings = catalog.audit()
         section.note = f"{len(catalog.notes)} notes, {len(findings)} findings"
         section.details = {
@@ -153,14 +151,11 @@ def _notes(paths: Paths, kind: str) -> Section:
             path = str(catalog.root(scope).path / relative) if scope else str(paths.home)
             section.problems.append(f"{path}: {preview(finding['problem'], width=500)}")
         if findings:
-            selectors = (
-                "--workspace NAME or --shared" if kind == "knowledge" else "--workspace NAME"
-            )
-            section.note += f"; details: enso {kind} audit {selectors}"
+            section.note += "; details: enso knowledge audit --workspace NAME or --shared"
         if len(findings) > 10:
             section.problems.append(f"{len(findings) - 10} more findings; use the scoped audit")
     except (OSError, ValueError, knowledge.KnowledgeError) as exc:
-        section.problems.append(f"could not read {kind} at {paths.home}: {exc}")
+        section.problems.append(f"could not read knowledge at {paths.home}: {exc}")
     return section
 
 

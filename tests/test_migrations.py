@@ -8,7 +8,7 @@ import sqlite3
 
 import pytest
 
-from enso import knowledge, migrations, update_snapshot
+from enso import db, knowledge, migrations, update_snapshot
 from enso.maintenance import UpdateError, write_json
 
 
@@ -369,3 +369,211 @@ def test_shared_knowledge_declared_paths_restore_the_old_layout(enso_home, tmp_p
     update_snapshot.restore(enso_home, operation)
     assert not enso_home.shared.exists()
     assert all(path.read_bytes() == text.encode() for path, text in written.items())
+
+
+# The retired portion of schema 1; every other table has the current layout.
+HISTORY_SCHEMA = """
+-- Captures are permanent history; reply identity is its addressed parent, not a send ID.
+CREATE TABLE _enso_captures (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  transport TEXT NOT NULL, workspace TEXT NOT NULL, conversation TEXT NOT NULL,
+  channel TEXT NOT NULL, thread TEXT, message_id TEXT,
+  sender_id TEXT NOT NULL, sender_name TEXT NOT NULL, occurred_at TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('addressed', 'ambient', 'reply')),
+  parent_id INTEGER UNIQUE,
+  text TEXT NOT NULL, truncated INTEGER NOT NULL CHECK (truncated IN (0, 1)),
+  attachments TEXT NOT NULL DEFAULT '[]',
+  outcome TEXT NOT NULL CHECK (outcome IN
+    ('pending', 'completed', 'failed', 'cancelled', 'timed_out', 'dropped', 'empty',
+     'interrupted')),
+  delivery TEXT NOT NULL CHECK (delivery IN
+    ('unattempted', 'sending', 'complete', 'partial', 'failed', 'uncertain')),
+  parts TEXT NOT NULL DEFAULT '[]',
+  finalized INTEGER NOT NULL CHECK (finalized IN (0, 1)),
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  CHECK ((kind = 'reply' AND parent_id IS NOT NULL AND message_id IS NULL)
+    OR (kind != 'reply' AND parent_id IS NULL AND message_id IS NOT NULL)),
+  UNIQUE (transport, channel, message_id)
+);
+CREATE INDEX _enso_captures_workspace ON _enso_captures (workspace, id);
+CREATE INDEX _enso_captures_conversation
+  ON _enso_captures (workspace, conversation, id);
+
+-- A receipt reserves its sources before Markdown publication. Completion is separate.
+CREATE TABLE _enso_memory_receipts (
+  id TEXT PRIMARY KEY, workspace TEXT NOT NULL, outputs TEXT NOT NULL,
+  completed_at TEXT, created_at TEXT NOT NULL
+);
+CREATE TABLE _enso_memory_inputs (
+  capture_id INTEGER PRIMARY KEY, receipt_id TEXT NOT NULL
+);
+CREATE INDEX _enso_memory_inputs_receipt ON _enso_memory_inputs (receipt_id);
+CREATE TABLE _enso_memory_progress (
+  workspace TEXT PRIMARY KEY, capture_id INTEGER NOT NULL
+);
+-- One current job batch per workspace; follow-ups keep the same source budget.
+CREATE TABLE _enso_memory_batches (
+  workspace TEXT PRIMARY KEY, run_id TEXT NOT NULL, sources TEXT NOT NULL
+);
+"""
+
+
+@pytest.fixture
+def prior_home(enso_home):
+    db.initialize(enso_home)
+    write_json(enso_home.home / migrations.MARKER, {"revision": 2})
+    with sqlite3.connect(enso_home.db) as connection:
+        connection.executescript("DROP TABLE _enso_received_messages;" + HISTORY_SCHEMA)
+        connection.execute("PRAGMA user_version = 1")
+        connection.execute(
+            "INSERT INTO _enso_captures (transport, workspace, conversation, channel, "
+            "message_id, sender_id, sender_name, occurred_at, kind, text, truncated, "
+            "outcome, delivery, finalized, created_at, updated_at) VALUES "
+            "('slack', 'default', 'slack:D1', 'D1', '1.0', 'U1', 'User', '2026-09-20', "
+            "'addressed', 'private transcript', 0, 'completed', 'unattempted', 1, 'now', 'now')"
+        )
+        connection.execute("CREATE TABLE user_data (value TEXT)")
+        connection.execute("INSERT INTO user_data VALUES ('keep this')")
+        for number, (workspace, job) in enumerate(
+            (("default", "memory"), ("team", "enso-memory"), ("team", "digest"))
+        ):
+            connection.execute(
+                "INSERT INTO runs (id, job, workspace, provider, model, effort, trigger, "
+                "started_at, status) VALUES (?, ?, ?, 'codex', 'model', 'low', "
+                "'schedule', 'now', 'ok')",
+                (str(number), job, workspace),
+            )
+            connection.execute(
+                "INSERT INTO _enso_run_attempts (run_id, number, status, output, error, "
+                "postrun_output, postrun_error) VALUES (?, 0, 'ok', '', '', '', '')",
+                (str(number),),
+            )
+            connection.execute(
+                "INSERT INTO job_state (workspace, job) VALUES (?, ?)", (workspace, job)
+            )
+            connection.execute(
+                "INSERT INTO messages (created_at, workspace, transport, target, text, "
+                "source, status) VALUES ('now', ?, 'slack', 'D1', 'alert', ?, 'sent')",
+                ("other", f"job:{workspace}:{job}"),
+            )
+    for name in (
+        "skills/enso-memory/SKILL.md",
+        "workspaces/team/jobs/enso-memory/JOB.md",
+        "workspaces/default/jobs/memory/batches/old.json",
+        "workspaces/team/jobs/digest/JOB.md",
+        "workspaces/team/memory/Keep.md",
+        "shared/knowledge/Memory/2026-09-20.md",
+    ):
+        target = enso_home.home / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("user content stays unless its job was retired")
+    for parts in (("memory",), ("jobs", "default", "memory"), ("jobs", "team", "enso-memory")):
+        enso_home.lock(*parts).touch()
+    enso_home.lock("jobs", "team", "digest").touch()
+    write_json(
+        enso_home.home / ".bundles.json",
+        {
+            "files": {
+                "skills/enso-memory/SKILL.md": "edited",
+                "workspaces/team/jobs/enso-memory/JOB.md": "edited",
+                "skills/enso-jobs/SKILL.md": "preserved",
+            }
+        },
+    )
+    return enso_home
+
+
+def test_upgrade_retires_processing_state_and_jobs_but_preserves_notes(prior_home):
+    paths = prior_home
+    kept = [
+        paths.home / name
+        for name in (
+            "workspaces/team/memory/Keep.md",
+            "shared/knowledge/Memory/2026-09-20.md",
+            "workspaces/team/jobs/digest/JOB.md",
+        )
+    ]
+    before = {path: path.read_bytes() for path in kept}
+    assert all("memory/Keep.md" not in name for name in migrations.plan(paths))
+    migrations.apply(paths)
+    migrations.apply(paths)
+    assert migrations.read_revision(paths) == 3
+    assert {path: path.read_bytes() for path in kept} == before
+    assert not (paths.skills / "enso-memory").exists()
+    assert not (paths.workspace_jobs("team") / "enso-memory").exists()
+    assert not (paths.workspace_jobs("default") / "memory").exists()
+    assert not (paths.runtime_dir / "locks/memory.lock").exists()
+    assert not (paths.runtime_dir / "locks/jobs/default/memory.lock").exists()
+    assert not (paths.runtime_dir / "locks/jobs/team/enso-memory.lock").exists()
+    assert (paths.runtime_dir / "locks/jobs/team/digest.lock").exists()
+    assert json.loads((paths.home / ".bundles.json").read_text()) == {
+        "files": {"skills/enso-jobs/SKILL.md": "preserved"}
+    }
+    with db.reader(paths) as connection:
+        names = {row[0] for row in connection.execute("SELECT name FROM sqlite_master")}
+        assert not any(name.startswith(("_enso_memory", "_enso_captures")) for name in names)
+        assert connection.execute("SELECT value FROM user_data").fetchone()[0] == "keep this"
+        for table in ("runs", "job_state"):
+            assert [
+                tuple(row) for row in connection.execute(f"SELECT workspace, job FROM {table}")
+            ] == [("team", "digest")]
+        assert [row[0] for row in connection.execute("SELECT run_id FROM _enso_run_attempts")] == [
+            "2"
+        ]
+        assert [row[0] for row in connection.execute("SELECT source FROM messages")] == [
+            "job:team:digest"
+        ]
+    assert not db.admit_message(paths, "slack", "D1", "1.0")
+    assert db.admit_message(paths, "slack", "D1", "2.0")
+
+
+def test_retirement_snapshot_recovers_database_jobs_and_receipts(prior_home, tmp_path):
+    paths = prior_home
+    directory = tmp_path / "operation"
+    directory.mkdir()
+    names = update_snapshot.plan(
+        paths, [*migrations.plan(paths), migrations.MARKER, "enso.db-wal", "enso.db-shm"]
+    )
+    update_snapshot.capture(paths, directory, names)
+    migrations.apply(paths)
+    update_snapshot.restore(paths, directory)
+    assert migrations.read_revision(paths) == 2
+    assert (paths.skills / "enso-memory/SKILL.md").is_file()
+    assert (paths.workspace_jobs("default") / "memory/batches/old.json").is_file()
+    with sqlite3.connect(paths.db) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert (
+            connection.execute("SELECT text FROM _enso_captures").fetchone()[0]
+            == "private transcript"
+        )
+        assert connection.execute("SELECT count(*) FROM runs").fetchone()[0] == 3
+    migrations.apply(paths)
+    assert migrations.read_revision(paths) == 3
+
+
+def test_retirement_refuses_escaping_paths_before_database_changes(prior_home, tmp_path):
+    paths = prior_home
+    target = paths.skills / "enso-memory"
+    target.rename(tmp_path / "outside")
+    target.symlink_to(tmp_path / "outside", target_is_directory=True)
+    with pytest.raises(UpdateError, match="symbolic link"):
+        migrations.apply(paths)
+    with sqlite3.connect(paths.db) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+    assert (tmp_path / "outside/SKILL.md").is_file()
+    assert migrations.read_revision(paths) == 2
+
+
+def test_retirement_retries_after_filesystem_failure(prior_home, monkeypatch):
+    remove = migrations.shutil.rmtree
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            migrations.shutil, "rmtree", lambda path: (_ for _ in ()).throw(OSError("busy"))
+        )
+        with pytest.raises(UpdateError, match="busy"):
+            migrations.apply(prior_home)
+    assert migrations.read_revision(prior_home) == 2
+    assert migrations.shutil.rmtree is remove
+    migrations.apply(prior_home)
+    assert migrations.read_revision(prior_home) == 3
+    assert not (prior_home.skills / "enso-memory").exists()

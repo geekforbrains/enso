@@ -6,11 +6,8 @@ import contextlib
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
-from functools import partial
 from typing import TYPE_CHECKING
 
-from .. import outbound
-from ..capture_runtime import CaptureWriter
 from ..formatting import chunk_text
 from ..outbound import OutboundMessage
 
@@ -39,7 +36,6 @@ class Turn:
     # The workspace the message was bound to when it arrived, where the transport prepared
     # its uploads; the runtime resolves the binding itself when this is empty.
     workspace: str = ""
-    capture: CaptureWriter | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "files", tuple(self.files))
@@ -48,8 +44,6 @@ class Turn:
 class Reply(ABC):
     """How the runtime talks back for one turn."""
 
-    sender_id: str = ""
-    sender_name: str = "Enso"
     limit: int = 4000
     # True when send_rich renders enso-message blocks natively; the runtime then
     # offers the agent the rich-format contract.
@@ -63,30 +57,14 @@ class Reply(ABC):
         """Send an ``enso-message`` envelope; transports without blocks send its fallback."""
         return await self.send(message.fallback_text)
 
-    def text_parts(self, text: str) -> list[str]:
-        return [part for part in chunk_text(text, self.limit) if part.strip()]
-
-    def representation(self, text: str, message: OutboundMessage | None = None) -> str:
+    async def deliver(self, text: str, message: OutboundMessage | None = None) -> None:
+        """Send a final response, splitting ordinary text to the transport's limit."""
         if message is not None:
-            return outbound.markdown(message) if self.rich_format else message.fallback_text
-        return "\n\n".join(self.text_parts(text))
-
-    def delivery_rejected(self, error: Exception) -> bool:
-        """True only when the transport knows the send was rejected, not merely unacknowledged."""
-        return False
-
-    async def deliver(
-        self,
-        text: str,
-        message: OutboundMessage | None,
-        capture: CaptureWriter,
-    ) -> None:
-        """Send final content through capture's per-part acknowledgment contract."""
-        if message is not None:
-            await capture.send(self.representation(text, message), lambda: self.send_rich(message))
+            await self.send_rich(message)
         else:
-            for chunk in self.text_parts(text):
-                await capture.send(chunk, partial(self.send, chunk))
+            for chunk in chunk_text(text, self.limit):
+                if chunk.strip():
+                    await self.send(chunk)
 
     @abstractmethod
     async def send_file(self, path: str, caption: str = "") -> str: ...

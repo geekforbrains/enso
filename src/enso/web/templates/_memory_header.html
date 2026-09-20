@@ -1,8 +1,0 @@
-{% import "_macros.html" as m %}
-{% call m.phead(now) %}Memory{% endcall %}
-<div class="memory-summary" aria-label="Memory overview">
-  <span><b>{{ capture_count }}</b> captures</span>
-  <span><b>{{ unprocessed_count }}</b> unprocessed</span>
-  <span><b>{{ memory_count }}</b> memories</span>
-  <span>Memory job: {{ job_state }}</span>
-</div>

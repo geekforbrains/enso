@@ -156,7 +156,7 @@ def test_init_never_marks_an_existing_unmarked_home_current(enso_home):
         ".claude",
         "shared/knowledge",
         "workspaces/default/.agents/skills",
-        "workspaces/default/memory",
+        "workspaces/default/uploads",
     ],
 )
 def test_init_reports_and_preserves_path_conflicts(enso_home, relative):
@@ -172,7 +172,7 @@ def test_init_reports_and_preserves_path_conflicts(enso_home, relative):
 
 @pytest.mark.parametrize(
     "directory",
-    ["skills", "shared", "workspaces/default/memory", "workspaces/default/WORKSPACE.md"],
+    ["skills", "shared", "workspaces/default/uploads", "workspaces/default/WORKSPACE.md"],
 )
 def test_init_rejects_symlink_escape_without_writing_outside_home(enso_home, tmp_path, directory):
     outside = tmp_path / "outside"

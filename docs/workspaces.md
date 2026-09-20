@@ -11,8 +11,7 @@ rather than assembled by hand.
 
 ## Layout
 
-Jobs, Heartbeat scripts, Markdown memory, live captures, and memory harvesting use their
-owning workspace, as detailed in the [ownership layout](#ownership-in-020).
+Jobs and Heartbeat scripts use their owning workspace, as detailed in the [ownership layout](#ownership-in-020).
 
 ```text
 ~/.enso/workspaces/<name>/
@@ -20,7 +19,6 @@ owning workspace, as detailed in the [ownership layout](#ownership-in-020).
 ├── WORKSPACE.md       # optional agent triple and provider arguments
 ├── CLAUDE.md          # symlink -> AGENTS.md
 ├── skills/            # skills unique to this workspace
-├── memory/            # dated Markdown memories
 ├── jobs/              # scheduled and stage jobs
 ├── projects/          # workspace project definitions and scripts
 ├── heartbeat/<REF>/   # optional; a beat's gate.sh and helpers
@@ -35,7 +33,6 @@ owning workspace, as detailed in the [ownership layout](#ownership-in-020).
 | Directory | What belongs there |
 | --- | --- |
 | `jobs/` | Scheduled and stage jobs, identified as `<workspace>:<job>`. |
-| `memory/` | Dated Markdown conversations and experiences, maintained with `enso memory`. |
 | `projects/` | Project definitions and scripts, each under `<KEY>/`; see [Tasks](tasks.md#projects-and-stages). |
 | `heartbeat/` | Optional root, created only when workspace gate scripts are used. |
 | `WORKSPACE.md` | Optional settings; [Configuration](configuration.md#workspacemd-in-020) owns its format and reload behavior. |
@@ -47,7 +44,7 @@ owning workspace, as detailed in the [ownership layout](#ownership-in-020).
 Names are lowercase kebab-case (`meteor`, `blog-research`), at most 64 characters. The name
 is the directory name, and there is no other valid location. The workspace and its
 `workspaces/` container must be real directories; a symbolic link cannot give a workspace
-a second identity. The scaffold creates `memory/`, `jobs/`, `projects/`, `work/`, `uploads/`,
+a second identity. The scaffold creates `jobs/`, `projects/`, `work/`, `uploads/`,
 and `skills/`. Durable notes live in the home's `shared/knowledge/`. The empty skills
 directory keeps the provider discovery links valid even before you add a workspace skill.
 It creates neither `WORKSPACE.md` nor `heartbeat/`; adding either later requires no restart.
@@ -62,7 +59,7 @@ To consolidate an older installation, move notes through
 links. Before removing empty workspace knowledge roots or renaming `drafts/`, update local
 instructions, jobs, scripts, and references that use their paths. Knowledge commands now
 default to shared; scripts that still use workspace notes must pass `--workspace NAME`.
-Keep repositories, source attachments, memory, and operating records in their existing homes.
+Keep repositories, source attachments and operating records in their existing homes.
 
 `knowledge/`, `drafts/`, and `work/` are optional content roots. Audits validate those that
 exist, but neither report missing optional roots nor recreate them with `--fix`. The viewer
@@ -83,7 +80,7 @@ The home itself holds the workspaces and what they share:
 ├── .gitignore         # optional: yours, for the Git root Enso creates but never commits to
 ├── workspaces/<name>/ # one directory per workspace, as above
 ├── cache/, runtime/   # Enso's own operating state
-├── enso.db, enso.log  # captures, runs, tasks and beats, and the service log
+├── enso.db, enso.log  # runs, tasks and beats, and the service log
 └── .claude/skills, .agents/skills
                        # symlinks -> ../skills, as in a workspace
 ```
@@ -100,9 +97,9 @@ source of truth, generated links everywhere else. Keep `AGENTS.md` short — wha
 workspace is for, what ambiguous terms mean, and any rule that must be visible on every
 single turn. Detail belongs in `$ENSO_HOME/shared/knowledge/`, referenced by path. See
 [Customizing](customizing.md).
-The template directs current reference requests to `enso-knowledge` and `enso knowledge`,
-and earlier events to `enso-memory` and `enso memory`. Workspace memory is shared context,
-including when several separate DM bindings select it; it is not a confidentiality boundary.
+The template directs reference requests to `enso-knowledge` and `enso knowledge`.
+Workspace context is shared when several separate DM bindings select it;
+it is not a confidentiality boundary.
 
 `enso init` prepares this layout for `default`, filling missing instructions and links
 without changing existing files. It reports conflicting files, directories, and links
@@ -126,7 +123,6 @@ $ENSO_HOME/
 └── workspaces/<name>/
     ├── AGENTS.md                 # purpose and working conventions for the agent
     ├── WORKSPACE.md              # optional agent triple and provider arguments
-    ├── memory/                   # dated conversations and experiences
     ├── jobs/<job>/
     │   ├── JOB.md
     │   ├── prerun.sh             # optional
@@ -150,12 +146,12 @@ Enso's restriction mode is removed without silently changing provider arguments.
 | --- | --- | --- |
 | Installation settings and bindings | Home `config.json` | Installation |
 | Shared guidance, knowledge, and skills | Home `AGENTS.md`, `shared/knowledge/`, and `skills/` | Installation |
-| Workspace guidance, memory, work files, uploads, and skills | Files in the workspace | Containing workspace |
+| Workspace guidance, work files, uploads, and skills | Files in the workspace | Containing workspace |
 | Workspace agent and provider arguments | `WORKSPACE.md` | Containing workspace |
 | Jobs and their supporting scripts | `jobs/<job>/` in the workspace | Containing workspace |
 | Project definitions and scripts | `projects/<KEY>/` in the workspace | Containing workspace |
 | Heartbeat gate scripts and helpers | `heartbeat/` in the workspace | The follow-up's recorded workspace |
-| Captures, sessions, tasks, runs, follow-ups, and outbox records | One home `enso.db` | Workspace recorded or unambiguously linked in the record |
+| Sessions, tasks, runs, follow-ups, and outbox records | One home `enso.db` | Workspace recorded or unambiguously linked in the record |
 | Registered user tables | The same home `enso.db` | Installation |
 | Service, scheduling, updates, health, and concurrency-group locks | Host runtime and home operational state | Installation |
 
@@ -178,9 +174,7 @@ Fresh setup keeps the name `default` and places installation-maintenance jobs th
 `workspaces/default/jobs/enso-update/JOB.md`, referenced as `default:enso-audit` and
 `default:enso-update`. `default` is an ordinary workspace. Workspace-scoped commands require
 explicit or inherited context; [update notifications](cli.md#updates) use `default` when
-neither is supplied. Each workspace also owns its own
-[memory harvesting job](jobs.md#workspace-memory-job-in-020), including `default:enso-memory`
-and `team:enso-memory`; those jobs process only their containing workspace.
+neither is supplied.
 
 ## Context selection in 0.2.0
 
@@ -189,9 +183,9 @@ through preparation and queueing. Removing
 its binding or losing its workspace drops it before execution; the
 [connection access contract](connections.md#access-in-020) owns admission and notices. The
 shared resolver is used by task, project, workflow, job creation, Heartbeat creation,
-message sends, operational list commands, and memory. Knowledge defaults to shared and
+message sends, and operational list commands. Knowledge defaults to shared and
 uses workspace selection only with an explicit `--workspace NAME`; it ignores
-`ENSO_WORKSPACE`. Memory belongs only to a workspace.
+`ENSO_WORKSPACE`.
 [CLI](cli.md#workspace-context-in-020) owns command syntax. Enso sets `ENSO_WORKSPACE`
 for its chat agents, jobs, and Heartbeat runs, and CLI calls they launch inherit it.
 Workspace-scoped CLI operations default to that value; an optional
@@ -215,8 +209,7 @@ selection is a deliberate context choice, available within the installation's tr
 it introduces no admin role or privilege boundary. Installation-wide operations keep their
 installation scope. Relevant lists and searches start in the selected workspace, with
 intentional broader lookup available where supported. [CLI](cli.md#workspace-context-in-020)
-shows examples; [Knowledge](knowledge.md#knowledge-and-memory-in-020) and [Memory](memory.md)
-own recall and maintenance guidance.
+shows examples; [Knowledge](knowledge.md) owns note discovery and maintenance guidance.
 
 ## Uploads
 

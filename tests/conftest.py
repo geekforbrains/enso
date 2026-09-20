@@ -9,7 +9,6 @@ import os
 import subprocess
 import sys
 from collections.abc import Awaitable, Callable, Iterable
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -115,15 +114,11 @@ class ImmediateIngress:
     def current_agent(self, conversation, workspace):
         return resolve_agent(self.config, workspace)
 
-    async def defer(self, conversation, queue_reply, raw_text, prepare, *, capture=None):
-        if capture is not None and not await capture.ready():
-            return
+    async def defer(self, conversation, queue_reply, raw_text, prepare, *, message_id=None):
         prepared = await prepare()
         if prepared is not None:
             turn, reply = prepared
-            await self.submit(replace(turn, capture=capture), reply)
-        elif capture is not None:
-            await capture.finish("dropped")
+            await self.submit(turn, reply)
 
     async def handle(self, turn, reply):
         await self.submit(turn, reply)

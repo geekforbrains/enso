@@ -24,19 +24,7 @@ Product behaviour belongs in its owning page under `docs/`, starting with
   chunking, and transport-specific Markdown rendering. Chat and CLI callers import text
   helpers here; this module does not load runtime, routing, or database code.
 - `src/enso/note_storage.py` — shared bounded file reads, safe paths, timestamp validation,
-  writer locks, and atomic publication for knowledge and memory.
-- `src/enso/captures.py` — normalized conversation history, reply delivery checkpoints, and
-  processing receipts in the home database; Markdown remains the maintained memory.
-  `capture_runtime.py` owns best-effort live writes. Transports supply `captures.Message`
-  after admission/command exclusion, start a `CaptureWriter`, and pass it through `defer`
-  before awaiting preparation. Ambient input only awaits its capture. The runtime awaits
-  admission before preparation and skips duplicates; every pending reservation starts its
-  own durable write, so slow preparation does not postpone capture of queued messages.
-  `Reply.deliver` checkpoints every final send and fallback through the writer; transports
-  identify definite rejections separately from unknown network outcomes.
-- `src/enso/memory.py` — workspace-only dated Markdown, occurrence/placement validation,
-  source metadata, relative links, and manual corrections. `harvesting.py` owns bounded
-  capture selection, generated-result validation, publication, and receipt reconciliation.
+  writer locks, and atomic publication for knowledge.
 - `src/enso/knowledge/` — Markdown discovery, core metadata, link resolution, and note writes.
   The CLI and read-only knowledge viewer share this model;
   user-editable writing style belongs to the bundled `enso-knowledge` skill.
@@ -138,14 +126,13 @@ fake transport clients, and local provider executables:
 
 | Boundary | Evidence |
 | --- | --- |
-| Live addressed/ambient input → capture → checked memory job → fresh-session recall → deliberate knowledge promotion | `test_bundled_memory.py` runs the shipped hooks, rejects an escaping output path, repairs in the same session, reads the original ambient source through the CLI, and verifies a later quiet pass makes no provider call. |
-| Admission and trusted pairing | `test_slack.py`, `test_telegram.py`, `test_capture_runtime.py`, and `test_connection_transports.py` cover the binding matrix, a channel participant's rejected DM, excluded commands/bots/edits, attachment rejection before download, and fresh operator-initiated pairing challenges. |
-| Simultaneous workspace ownership | `test_capture_runtime.py` keeps queued captures with their owner while another workspace finishes; `test_runner.py` schedules same-named jobs with separate follow-up sessions, history, locks and restart recovery; `test_workflow_jobs.py` accepts simultaneous task handoffs in their owning projects. `test_heartbeat_runner.py` retains follow-up ownership and action receipts after restart. |
-| Invalid or interrupted writes | `test_memory.py`, `test_harvesting.py`, `test_knowledge_core.py`, and `test_capture_runtime.py` exercise malformed notes, unsafe paths, byte limits, stale edits, concurrent writers, partial delivery and interrupted publication without replaying completed inputs. |
+| Admission and trusted pairing | `test_slack.py`, `test_telegram.py`, and `test_connection_transports.py` cover the binding matrix, a channel participant's rejected DM, excluded commands/bots/edits, attachment rejection before download, and fresh operator-initiated pairing challenges. |
+| Simultaneous workspace ownership | `test_runtime.py` keeps queued turns with their owner while another workspace finishes; `test_runner.py` schedules same-named jobs with separate follow-up sessions, history, locks and restart recovery; `test_workflow_jobs.py` accepts simultaneous task handoffs in their owning projects. `test_heartbeat_runner.py` retains follow-up ownership and action receipts after restart. |
+| Invalid or interrupted writes | `test_knowledge_core.py` and `test_knowledge_import.py` exercise malformed notes, unsafe paths, byte limits, stale edits, concurrent writers, and interrupted note moves. |
 
 These checks establish routing, persistence and CLI contracts. Scripted summaries and answers
 do not demonstrate model judgment, factual accuracy, or resistance to every prompt injection;
-the shipped guidance treats captured instructions as evidence. Workspace ownership is not
+the shipped guidance treats read content as data. Workspace ownership is not
 security isolation. Transport authentication against real accounts and native service managers
 remain separate acceptance checks described in [Upgrade tests](upgrade-testing.md).
 
@@ -170,7 +157,7 @@ printf '[pytest]\nasyncio_mode = auto\n' > "$ENSO_WHEEL_CHECK/pytest.ini"
   python -m pytest -q -k 'not test_docs_link_only_to_pages_git_will_commit' \
     tests/test_initialization.py tests/test_setup.py tests/test_connection_setup.py \
     tests/test_connection_transports.py tests/test_bundled_*.py \
-    tests/test_capture_runtime.py tests/test_runner.py tests/test_workflow_jobs.py \
+    tests/test_runtime.py tests/test_runner.py tests/test_workflow_jobs.py \
     tests/test_heartbeat_runner.py
 )
 ```
@@ -343,8 +330,8 @@ exclusive home-access lock as updates, sync locked dependencies, restart previou
 services, and verify readiness before reopening work. Stopped services remain stopped.
 
 **A normal refresh does not initialize, migrate, reseed, or refresh bundled content.**
-Configuration, jobs, skills, projects, knowledge, and memory files stay as installed.
-For example, changing the shipped memory schedule does not rewrite the local `JOB.md`.
+Configuration, jobs, skills, projects, and knowledge files stay as installed.
+For example, changing a shipped job schedule does not rewrite the local `JOB.md`.
 Runtime control files, logs, and ordinary application activity continue to change normally.
 Do not run `setup`, `init`, config apply, or bundle reconciliation to refresh source code.
 An invalid existing configuration stops the preflight; fix only the specific authorized

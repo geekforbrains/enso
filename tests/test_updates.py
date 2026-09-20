@@ -472,20 +472,20 @@ def test_selection_refuses_external_directory_and_external_symlink(managed, tmp_
     assert (managed.paths.runtime_dir / "current").resolve() == managed.old
 
 
-def test_rollback_restores_all_workspace_jobs_without_replacing_memories(managed):
+def test_rollback_restores_all_workspace_jobs_without_replacing_user_files(managed):
     state = queue(managed)
     paths = managed.paths
     for name in ("team", "research"):
         paths.workspace(name).mkdir(parents=True)
-    job = paths.workspace_jobs("team") / "memory/JOB.md"
+    job = paths.workspace_jobs("team") / "digest/JOB.md"
     job.parent.mkdir(parents=True)
     job.write_text("customized job")
-    note = paths.workspace_memory("team") / "Keep.md"
+    note = (paths.workspace("team") / "work") / "Keep.md"
     note.parent.mkdir()
     note.write_text("original note")
     updates._snapshot(paths, state)
     job.write_text("changed during preparation")
-    fresh = paths.workspace_jobs("research") / "memory/JOB.md"
+    fresh = paths.workspace_jobs("research") / "digest/JOB.md"
     fresh.parent.mkdir(parents=True)
     fresh.write_text("new bundled job")
     note.write_text("human correction")

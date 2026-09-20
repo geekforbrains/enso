@@ -6,7 +6,6 @@ import hashlib
 import os
 import posixpath
 import re
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import lru_cache
@@ -125,14 +124,14 @@ def read_note(root: Root, relative: str, signature: tuple[int, ...]) -> Note:
 def scan(paths: Paths) -> Catalog:
     """Stat all files, reuse unchanged parsed notes, and report independent read problems."""
     roots, problems = note_roots(paths, "knowledge", shared=True)
-    notes, read_problems, assets = scan_roots(roots, read_note)
+    notes, read_problems, assets = scan_roots(roots)
     return Catalog(roots, notes, problems + read_problems, assets)
 
 
 def scan_roots(
-    roots: tuple[Root, ...], reader: Callable[[Root, str, tuple[int, ...]], Note]
+    roots: tuple[Root, ...],
 ) -> tuple[tuple[Note, ...], tuple[str, ...], dict[str, tuple[str, ...]]]:
-    """Discover portable notes/assets with each format's own parser and metadata rules."""
+    """Discover knowledge notes and assets with their metadata findings."""
     notes: list[Note] = []
     assets: dict[str, tuple[str, ...]] = {}
     problems: list[str] = []
@@ -170,7 +169,7 @@ def scan_roots(
                 try:
                     info = path.stat()
                     signature = (info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-                    notes.append(reader(root, relative, signature))
+                    notes.append(read_note(root, relative, signature))
                 except (OSError, UnicodeError, KnowledgeError) as exc:
                     problems.append(
                         f"{root.scope}: {path}: cannot read note ({type(exc).__name__})"

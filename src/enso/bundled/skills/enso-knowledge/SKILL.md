@@ -7,9 +7,8 @@ description: Find, create, update, organize, or import durable Markdown notes in
 
 Enso keeps knowledge in ordinary Markdown files. The viewer browses and links those files
 read-only; the agent writes them through the CLI. Use this skill for durable notes and
-reference material. Dated conversations and experiences belong in workspace memory, not
-knowledge; `enso-memory` and the memory CLI handle historical recall. Promote a confirmed
-lasting fact into its owning knowledge note deliberately, keeping source context beside it.
+reference material. Keep confirmed facts in their owning knowledge notes, with source
+context beside them.
 Work product belongs in `work/` or its established destination; promote useful results into
 knowledge once they should outlast the conversation. Workspace setup and bindings belong
 to `enso-workspace`; structured records belong to `enso-tables`.
@@ -54,7 +53,7 @@ display conventions. That one file and [scripts/lint.py](scripts/lint.py) define
 for every knowledge root.
 
 1. Find the existing owning note before creating another.
-   Keep current truth clear and link relevant memory instead of copying dated discussions.
+   Keep current truth clear and link relevant sources instead of copying them.
    Put sources beside the claims they support, including dates where freshness matters. Do
    not add speculative fields or boilerplate sections.
 2. Prepare the Markdown body in a temporary file, then use `create` or `update`. These

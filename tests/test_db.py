@@ -37,7 +37,7 @@ def test_sessions_round_trip_and_prune(enso_home: Paths) -> None:
 def test_fresh_database_is_created_at_current_schema_version(enso_home: Paths) -> None:
     db.initialize(enso_home)
     with db.transaction(enso_home) as con:
-        assert con.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION == 1
+        assert con.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION == 2
         for table in ("sessions", "messages"):
             columns = {row["name"]: row for row in con.execute(f"PRAGMA table_info({table})")}
             assert columns["workspace"]["notnull"] == 1

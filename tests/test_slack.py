@@ -168,7 +168,7 @@ async def test_removed_binding_drops_deferred_slack_attachment(admission_transpo
     transport = admission_transport
     runtime = transport.runtime
 
-    async def defer(conversation, reply, text, prepare, *, capture=None):
+    async def defer(conversation, reply, text, prepare, *, message_id=None):
         runtime.config = replace(runtime.config, bindings={})
         assert await prepare() is None
 
@@ -374,7 +374,7 @@ async def test_attachment_and_followup_reach_runtime_in_arrival_order(
     monkeypatch.setattr(runtime, "_run_turn", run_turn)
     monkeypatch.setattr(transport, "thread_context", no_context)
 
-    async def blocking_download(files: list[dict], workspace: str, *, capture=None) -> list[str]:
+    async def blocking_download(files: list[dict], workspace: str) -> list[str]:
         assert files == [{"id": "F1", "name": "notes.txt"}]
         assert workspace == "default"
         download_started.set()
@@ -510,7 +510,7 @@ async def test_stop_cancels_blocked_preparation_and_flushes_followups(
     async def run_turn(conversation: str, turn: Turn, reply: Reply) -> None:
         handled.append(turn.text)
 
-    async def blocking_download(files: list[dict], workspace: str, *, capture=None) -> list[str]:
+    async def blocking_download(files: list[dict], workspace: str) -> list[str]:
         assert files == [{"id": "F2", "name": "notes.txt"}]
         assert workspace == "default"
         download_started.set()
