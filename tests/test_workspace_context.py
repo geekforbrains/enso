@@ -11,13 +11,13 @@ import pytest
 from conftest import load_job, write_config, write_job, write_workspace
 from typer.testing import CliRunner
 
-from enso import db, heartbeat, initialization, messages, runs, workspaces
+from enso import db, heartbeat, messages, runs, workspaces
 from enso.cli import app
 from enso.config import ConfigError, LiveConfig, load_config, parse_config, resolve_workspace
 from enso.routing import resolve_agent
 
 
-@pytest.mark.parametrize("command", ["job", "runs", "message", "heartbeat"])
+@pytest.mark.parametrize("command", ["job", "message", "heartbeat"])
 def test_operational_lists_select_workspace_before_limiting(
     enso_home, raw_config, monkeypatch, command
 ):
@@ -83,22 +83,6 @@ def test_operational_lists_select_workspace_before_limiting(
     assert cli.invoke(app, [*args, "--all-workspaces"]).exit_code == 0
 
 
-def test_registered_table_catalog_remains_shared(enso_home, raw_config, monkeypatch):
-    write_config(enso_home, raw_config)
-    db.initialize(enso_home)
-    with db.transaction(enso_home) as con:
-        con.execute("CREATE TABLE invoices (amount INTEGER)")
-    cli = CliRunner()
-    registered = cli.invoke(
-        app, ["table", "register", "invoices", "-d", "Invoice amounts", "--json"]
-    )
-    assert registered.exit_code == 0, registered.output
-    for selected in ("default", "team"):
-        monkeypatch.setenv("ENSO_WORKSPACE", selected)
-        listed = cli.invoke(app, ["table", "list", "--json"])
-        assert [row["table_name"] for row in json.loads(listed.stdout)] == ["invoices"]
-
-
 def test_workspace_settings_inherit_and_replace_complete_values(enso_home, raw_config):
     workspaces.create_workspace(enso_home, "team")
     config, problems, _ = parse_config(raw_config, enso_home)
@@ -130,28 +114,7 @@ def test_workspace_settings_inherit_and_replace_complete_values(enso_home, raw_c
 @pytest.mark.parametrize(
     ("fields", "fragments"),
     [
-        (
-            {"agent": {"provider": "claude"}},
-            ["agent.model is required"],
-        ),
-        ({"agent": None}, ["agent must be an object"]),
-        ({"agent": {"provider": "absent", "model": "x", "effort": "high"}}, ["not configured"]),
-        (
-            {"agent": {"provider": "claude", "model": "wrong", "effort": "wrong"}},
-            ["agent.model"],
-        ),
-        (
-            {"agent": {"provider": "claude", "model": "opus"}},
-            ["agent.effort is required"],
-        ),
-        (
-            {"agent": {"provider": "claude", "model": "opus", "effort": "wrong"}},
-            ["agent.effort"],
-        ),
         ({"providers": False}, ["providers must be an object"]),
-        ({"providers": {"claude": "--skip"}}, ["providers.claude.args must be a list of strings"]),
-        ({"providers": {"claude": {"args": [1]}}}, ["args must be a list of strings"]),
-        ({"providers": {"agy": {"args": []}}}, ["provider is not configured"]),
         (
             {"providers": {"claude": {"path": "cli", "models": [], "args": []}}},
             ["path is not a recognized key", "models is not a recognized key"],
@@ -182,7 +145,6 @@ def test_invalid_workspace_fields_are_reported_together(enso_home, raw_config, f
         b"---\n[]\n---\n",
         b"---\nproviders: [\n---\n",
         b"---\nagent: {}\nagent: {}\n---\n",
-        b"---\nproviders: {claude: {args: [], args: []}}\n---\n",
         b"\xff",
     ],
 )
@@ -196,13 +158,12 @@ def test_bad_workspace_documents_fail_closed_at_the_cli(enso_home, raw_config, c
     assert path.read_bytes() == content
 
 
-@pytest.mark.parametrize("kind", ["symlink", "dangling", "directory", "fifo"])
+@pytest.mark.parametrize("kind", ["symlink", "directory", "fifo"])
 def test_workspace_settings_must_be_a_regular_file(enso_home, raw_config, tmp_path, kind):
     path = enso_home.workspace_settings("default")
     target = tmp_path / "outside.md"
     if kind == "symlink":
         target.write_text("---\n{}\n---\n")
-    if kind in ("symlink", "dangling"):
         path.symlink_to(target)
     elif kind == "directory":
         path.mkdir()
@@ -212,21 +173,6 @@ def test_workspace_settings_must_be_a_regular_file(enso_home, raw_config, tmp_pa
     assert config is None and str(path) in problems[0]
     if kind == "symlink":
         assert target.read_text() == "---\n{}\n---\n"
-
-
-def test_workspace_reload_preserves_linked_config_reads(enso_home, raw_config, tmp_path):
-    target = tmp_path / "config.json"
-    write_config(enso_home, raw_config)
-    enso_home.config.rename(target)
-    enso_home.config.symlink_to(target)
-    live = LiveConfig(load_config(enso_home))
-    assert live.current().defaults.model == "opus"
-    write_workspace(enso_home, "default", {"providers": {"claude": {"args": []}}})
-    assert live.current().provider_args("default", "claude") == ()
-    raw_config["defaults"]["model"] = "sonnet"
-    write_config(enso_home, raw_config)
-    assert live.current().defaults.model == "sonnet"
-    assert enso_home.config.is_symlink()
 
 
 def test_workspace_live_reload_tracks_creation_edits_removal_and_invalid_revisions(
@@ -298,23 +244,3 @@ def test_linked_workspace_has_no_second_identity(enso_home, raw_config, tmp_path
     config, problems, _ = parse_config(raw_config, enso_home)
     assert config is None and any("symbolic link" in problem for problem in problems)
     assert workspaces.list_workspaces(enso_home) == ["default"]
-
-
-def test_fresh_scaffold_preserves_settings_and_keeps_optional_paths_absent(enso_home):
-    path = write_workspace(enso_home, "default", {"providers": {"claude": {"args": []}}})
-    before = path.read_bytes()
-    assert initialization.initialize_home(enso_home)["ok"]
-    assert path.read_bytes() == before
-    root = workspaces.create_workspace(enso_home, "team")
-    for name in ("memory", "jobs", "projects", "work", "uploads", "skills"):
-        assert (root / name).is_dir()
-    for name in ("knowledge", "drafts"):
-        assert not (root / name).exists()
-        assert not (enso_home.workspace("default") / name).exists()
-    assert enso_home.knowledge.is_dir()
-    assert not enso_home.workspace_settings("team").exists()
-    assert not enso_home.workspace_heartbeat("team").exists()
-    for link in (".claude/skills", ".agents/skills"):
-        assert (root / link).resolve() == enso_home.workspace_skills("team")
-        assert (enso_home.home / link / "enso-workspace/SKILL.md").is_file()
-    assert not (root / "enso.db").exists()

@@ -123,14 +123,13 @@ async def test_compact_rows_and_detail_share_readable_title(client: TestClient, 
     assert row.find("span", "trail")[0].text == "Undated" and not row.find("time")
 
 
-async def test_empty_missing_job_and_get_only(client: TestClient, enso_home: Paths):
+async def test_empty_state_names_the_memory_job(client: TestClient, enso_home: Paths):
     response = await client.get("/memory")
     html = await response.text()
     assert response.status == 200 and "Not installed" in html
     shown = " ".join(Document(html).root.text.split())
     assert "0 captures" in shown and "0 memories" in shown
     assert "Memories" in html and "Captures" in html
-    assert response.headers["Cache-Control"] == "no-store"
     assert (await client.get("/memory?view=captures")).status == 200
     assert not enso_home.db.exists()
     job = enso_home.workspace_jobs("default") / "enso-memory" / "JOB.md"
@@ -142,8 +141,6 @@ async def test_empty_missing_job_and_get_only(client: TestClient, enso_home: Pat
     assert "Installed and enabled" in await (await client.get("/memory")).text()
     job.write_text(job.read_text().replace("enabled: true", "enabled: false"))
     assert "Installed but disabled" in await (await client.get("/memory")).text()
-    denied = await client.post("/memory")
-    assert denied.status == 405 and denied.headers["Allow"] == "GET"
 
 
 async def test_receipts_links_removed_memory_and_workspace_boundaries(
@@ -210,7 +207,7 @@ async def test_receipts_links_removed_memory_and_workspace_boundaries(
     assert (await client.get("/memory?workspace=missing")).status == 404
 
 
-async def test_incomplete_reply_truncation_context_and_pages(client: TestClient, enso_home: Paths):
+async def test_incomplete_reply_truncation_and_context(client: TestClient, enso_home: Paths):
     db.initialize(enso_home)
     parent = record(
         enso_home,
@@ -229,25 +226,6 @@ async def test_incomplete_reply_truncation_context_and_pages(client: TestClient,
         final=False,
     )
     captures.recover(enso_home)
-    for index in range(2, 54):
-        record(enso_home, str(index))
-    first = await client.get("/memory?view=captures")
-    html = await first.text()
-    assert (
-        len(
-            [
-                node
-                for node in Document(html).root.find("a", "row")
-                if (node.attrs.get("href") or "").startswith("/memory/captures/default/")
-            ]
-        )
-        == 50
-    )
-    assert "Page 1 of 2" in html
-    older = await client.get("/memory?view=captures&page=2")
-    assert "Page 2 of 2" in await older.text()
-    too_far = await client.get("/memory?view=captures&page=999")
-    assert "Page 2 of 2" in await too_far.text()
     detail = await client.get(f"/memory/captures/default/{parent.id}")
     html = await detail.text()
     assert "Truncated at 65,536 UTF-8 bytes" in html

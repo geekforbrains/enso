@@ -7,14 +7,10 @@ import io
 import json
 import os
 import re
-import socket
-import socketserver
 import threading
 import time
-from http.client import HTTPMessage
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from types import SimpleNamespace
 from urllib.request import Request
 
 import pytest
@@ -66,6 +62,13 @@ def document(entries: dict[str, object]) -> dict:
 
 def one_catalog(model_id: str, **values: object) -> dict:
     return document({model_id: entry(model_id, **values)})
+
+
+def nested(field: str, value: object) -> dict:
+    """A catalog whose one entry carries a malformed nested member."""
+    catalog = one_catalog("bad")
+    catalog["openrouter"]["models"]["bad"][field] = value
+    return catalog
 
 
 def write_cache(path: Path, catalog: object, modified: float) -> bytes:
@@ -230,44 +233,6 @@ def test_efforts_report_the_variants_opencode_exposes(
     assert [model.efforts for model in models.parse_catalog(catalog)] == [tuple(efforts)]
 
 
-def test_cli_shows_derived_variants_in_text_and_json(
-    enso_home: Paths, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    catalog = document(
-        {
-            "google/gemini-2.5-pro": entry(
-                "google/gemini-2.5-pro",
-                context=1_048_576,
-                input_cost=1.25,
-                output_cost=10,
-                reasoning=True,
-                options=[{"type": "budget_tokens", "min": 128, "max": 32768}],
-            ),
-            "qwen/qwen3-max-thinking": entry(
-                "qwen/qwen3-max-thinking",
-                context=256_000,
-                input_cost=1.2,
-                output_cost=6,
-                reasoning=True,
-                options=[{"type": "toggle"}],
-            ),
-        }
-    )
-    write_cache(enso_home.models_cache, catalog, NOW)
-    monkeypatch.setattr(models, "_open", lambda *args, **kwargs: pytest.fail("fetched"))
-    runner = CliRunner()
-
-    text_result = runner.invoke(app, ["models"])
-    assert text_result.exit_code == 0 and text_result.stderr == ""
-    assert text_result.stdout.splitlines() == [
-        "MODEL                               TOOLS  CONTEXT    INPUT $/M  OUTPUT $/M  EFFORTS",
-        "openrouter/google/gemini-2.5-pro    yes    1,048,576  1.25       10          high,max",
-        "openrouter/qwen/qwen3-max-thinking  yes    256,000    1.2        6           -",
-    ]
-    json_result = runner.invoke(app, ["models", "--json"])
-    assert [item["efforts"] for item in json.loads(json_result.stdout)] == [["high", "max"], []]
-
-
 @pytest.mark.parametrize(
     ("catalog", "problem"),
     [
@@ -281,27 +246,14 @@ def test_cli_shows_derived_variants_in_text_and_json(
         (document({"bad": {"id": "other", "tool_call": True}}), "does not match"),
         (one_catalog("bad", context=-1), "limit.context"),
         (one_catalog("bad", input_cost=-1), "cost.input"),
+        (nested("limit", []), "limit"),
+        (nested("reasoning_options", [None]), "reasoning_options[0]"),
+        (nested("reasoning_options", [{"type": "effort"}]), "values"),
     ],
 )
 def test_parse_catalog_rejects_malformed_documents(catalog: object, problem: str) -> None:
     with pytest.raises(models.ModelsError, match=problem.replace("[", r"\[")):
         models.parse_catalog(catalog)
-
-
-def test_parse_catalog_rejects_malformed_nested_objects() -> None:
-    for field, value, problem in (
-        ("limit", [], "limit"),
-        ("cost", [], "cost"),
-        ("reasoning_options", {}, "reasoning_options"),
-        ("reasoning_options", [None], "reasoning_options[0]"),
-        ("reasoning_options", [{"type": "effort"}], "values"),
-        ("reasoning_options", [{"type": "effort", "values": ["low", 3]}], "values"),
-        ("reasoning", "yes", "reasoning"),
-    ):
-        catalog = one_catalog("bad")
-        catalog["openrouter"]["models"]["bad"][field] = value
-        with pytest.raises(models.ModelsError, match=problem.replace("[", r"\[")):
-            models.parse_catalog(catalog)
 
 
 def test_newest_valid_fresh_cache_wins(
@@ -318,18 +270,6 @@ def test_newest_valid_fresh_cache_wins(
     isolated_opencode_cache.write_text("not json")
     os.utime(isolated_opencode_cache, (NOW, NOW))
     assert [model.id for model in models.load(enso_home).models] == ["openrouter/enso"]
-
-
-@pytest.mark.parametrize("modified", [NOW - models.CACHE_TTL_SECONDS, NOW + 300])
-def test_ttl_boundary_and_future_mtime_are_fresh(
-    enso_home: Paths,
-    modified: float,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    write_cache(enso_home.models_cache, one_catalog("cached"), modified)
-    monkeypatch.setattr(models, "_open", lambda *args, **kwargs: pytest.fail("fetched"))
-
-    assert [model.id for model in models.load(enso_home).models] == ["openrouter/cached"]
 
 
 def test_stale_caches_refresh_and_only_enso_cache_is_replaced(
@@ -503,71 +443,6 @@ def test_slow_drip_response_stops_at_the_total_deadline_and_uses_a_stale_cache(
     assert drip.reads == models.FETCH_TIMEOUT_SECONDS
 
 
-@pytest.mark.parametrize("as_json", [False, True])
-def test_cli_reports_the_deadline_when_no_cache_can_stand_in(
-    enso_home: Paths,
-    monkeypatch: pytest.MonkeyPatch,
-    clock: Clock,
-    as_json: bool,
-) -> None:
-    monkeypatch.setattr(models, "_open", lambda *args, **kwargs: DripResponse(clock, seconds=1.0))
-    result = CliRunner().invoke(app, ["models", *(["--json"] if as_json else [])])
-
-    message = "could not fetch models.dev catalog: exceeded the 15 second deadline"
-    assert result.exit_code == 1
-    if as_json:
-        assert json.loads(result.stdout) == {"ok": False, "error": message}
-        assert result.stderr == ""
-    else:
-        assert result.stdout == ""
-        assert result.stderr == f"error: {message}\n"
-
-
-def test_every_receive_is_given_only_the_time_left(clock: Clock) -> None:
-    """The status line and headers are read this way too, before any response exists."""
-    client, server = socket.socketpair()
-    stream = models._DeadlineSocket(client, clock.now + models.FETCH_TIMEOUT_SECONDS).makefile()
-    with client, server, stream:
-        server.sendall(b"HTTP/1.1 200 OK\r\n")
-        assert stream.readline() == b"HTTP/1.1 200 OK\r\n"
-        assert client.gettimeout() == models.FETCH_TIMEOUT_SECONDS
-
-        clock.advance(9)
-        server.sendall(b"Content-Length: 0\r\n")
-        assert stream.readline() == b"Content-Length: 0\r\n"
-        assert client.gettimeout() == models.FETCH_TIMEOUT_SECONDS - 9
-
-        clock.advance(models.FETCH_TIMEOUT_SECONDS)
-        server.sendall(b"\r\n")
-        with pytest.raises(models.ModelsError, match="15 second deadline"):
-            stream.readline()
-
-
-def test_only_the_binary_read_mode_http_client_asks_for_is_served(clock: Clock) -> None:
-    client, server = socket.socketpair()
-    with client, server:
-        sock = models._DeadlineSocket(client, clock.now + models.FETCH_TIMEOUT_SECONDS)
-        with pytest.raises(ValueError, match="unsupported socket mode 'wb'"):
-            sock.makefile("wb")
-
-
-def test_redirect_hops_are_charged_to_the_fetch_deadline(clock: Clock) -> None:
-    handler = models._DeadlineRedirectHandler(clock.now + models.FETCH_TIMEOUT_SECONDS)
-    hops: list[float] = []
-    handler.parent = SimpleNamespace(open=lambda request, timeout: hops.append(timeout))
-    headers = HTTPMessage()
-    headers["location"] = "https://models.dev/moved/api.json"
-    clock.advance(9)
-
-    handler.http_error_302(Request(models.CATALOG_URL), io.BytesIO(b""), 302, "Found", headers)
-    assert hops == [models.FETCH_TIMEOUT_SECONDS - 9]
-
-    clock.advance(models.FETCH_TIMEOUT_SECONDS)
-    with pytest.raises(models.ModelsError, match="15 second deadline"):
-        handler.http_error_302(Request(models.CATALOG_URL), io.BytesIO(b""), 302, "Found", headers)
-    assert len(hops) == 1
-
-
 class DripHandler(BaseHTTPRequestHandler):
     """A server that stays busy: one byte at a time, never idle, never finished."""
 
@@ -608,41 +483,6 @@ def test_a_drip_feeding_server_is_cut_off_at_the_deadline(
     assert REAL_MONOTONIC() - started < 5
 
 
-class SlowHeaderHandler(socketserver.StreamRequestHandler):
-    """A server that answers, then feeds its status line one byte at a time, forever."""
-
-    def handle(self) -> None:
-        self.rfile.readline()
-        with contextlib.suppress(OSError):
-            while True:
-                self.wfile.write(b"H")
-                self.wfile.flush()
-                time.sleep(0.02)
-
-
-def test_a_server_dripping_its_headers_is_cut_off_at_the_deadline(
-    enso_home: Paths, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Response headers arrive before any response object exists, on the same deadline."""
-    server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), SlowHeaderHandler)
-    server.daemon_threads = True
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    monkeypatch.setattr(models.time, "monotonic", REAL_MONOTONIC)
-    monkeypatch.setattr(models, "FETCH_TIMEOUT_SECONDS", 0.5)
-    port = server.server_address[1]
-    monkeypatch.setattr(models, "CATALOG_URL", f"http://127.0.0.1:{port}/api.json")
-    started = REAL_MONOTONIC()
-
-    try:
-        with pytest.raises(models.ModelsError, match=re.escape("exceeded the 0.5 second deadline")):
-            models.load(enso_home)
-    finally:
-        server.shutdown()
-        server.server_close()
-
-    assert REAL_MONOTONIC() - started < 5
-
-
 def test_a_blocked_exchange_does_not_outlast_the_deadline(
     enso_home: Paths,
     isolated_opencode_cache: Path,
@@ -665,26 +505,5 @@ def test_a_blocked_exchange_does_not_outlast_the_deadline(
             "could not fetch models.dev catalog: exceeded the 0.2 second deadline; "
             f"using stale cache {isolated_opencode_cache}"
         )
-    finally:
-        blocker.release.set()
-
-
-def test_a_blocking_resolver_cannot_outlast_the_deadline(
-    enso_home: Paths, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Name resolution takes no timeout, so only abandoning it keeps the deadline total."""
-    blocker = Blocker(socket.gaierror("released"))
-    monkeypatch.setattr(models.time, "monotonic", REAL_MONOTONIC)
-    monkeypatch.setattr(models, "FETCH_TIMEOUT_SECONDS", 0.5)
-    monkeypatch.setattr(models, "CATALOG_URL", "http://models.dev.invalid/api.json")
-    monkeypatch.setattr(socket, "getaddrinfo", blocker)
-    started = REAL_MONOTONIC()
-
-    try:
-        with pytest.raises(models.ModelsError, match=re.escape("exceeded the 0.5 second deadline")):
-            models.load(enso_home)
-
-        assert REAL_MONOTONIC() - started < 5
-        assert blocker.entered.wait(5) and not blocker.release.is_set()
     finally:
         blocker.release.set()

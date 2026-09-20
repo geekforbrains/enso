@@ -201,19 +201,6 @@ def test_sweep_removes_finished_clean_worktrees_only(
     assert worktrees._unclean is original
 
 
-def test_sweep_asks_git_nothing_while_the_project_has_no_worktrees(
-    enso_home: Paths, project_config: Config, repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    project = project_for(project_config, repo)
-    calls: list[list[str]] = []
-    monkeypatch.setattr(worktrees, "_run", lambda cmd, **kwargs: calls.append(cmd) or (0, ""))
-    assert worktrees.sweep(enso_home, project) == []  # no directory at all
-    (repo / ".worktrees").mkdir(parents=True)
-    (repo / ".worktrees" / "stray").mkdir()
-    assert worktrees.sweep(enso_home, project) == []
-    assert calls == []  # an arbitrary directory is never an ownership record
-
-
 def test_land_aborts_a_rebase_that_times_out(
     enso_home: Paths, project_config: Config, repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

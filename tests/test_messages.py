@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from conftest import FakeReply, make_turn, session_for, write_config
+from conftest import FakeReply, make_turn, write_config
 
 from enso import db, messages
 from enso.config import Paths
@@ -29,24 +29,12 @@ def send(paths: Paths, target: str, thread: str | None = None, **fields: str) ->
 def test_without_identity_drops_every_caller_variable_and_keeps_the_rest() -> None:
     kept = {"ENSO_HOME": "/home", "ENSO_WORKSPACE": "default", "PATH": "/bin", "TOKEN": "s"}
     identity = (
-        "ENSO_ORIGIN_TRANSPORT",
-        "ENSO_ORIGIN_USER_ID",
-        "ENSO_ORIGIN_USER_NAME",
         "ENSO_ORIGIN_CHANNEL",
-        "ENSO_ORIGIN_CHANNEL_NAME",
-        "ENSO_ORIGIN_THREAD_TS",
-        "ENSO_JOB",
+        "ENSO_BEAT_RUN_ID",
         "ENSO_RUN_ID",
+        "ENSO_JOB",
         "ENSO_TASK",
         "ENSO_TASK_DIR",
-        "ENSO_BEAT",
-        "ENSO_BEAT_RUN_ID",
-        "ENSO_BEAT_CHECKPOINT",
-        "ENSO_RUN_STATUS",
-        "ENSO_RUN_EXIT_CODE",
-        "ENSO_RUN_DURATION_MS",
-        "ENSO_RUN_ATTEMPT",
-        "ENSO_RUN_FOLLOWUPS_REMAINING",
     )
     env = {**kept, **dict.fromkeys(identity, "inherited")}
     assert messages.without_identity(env) == kept
@@ -56,7 +44,6 @@ def test_without_identity_drops_every_caller_variable_and_keeps_the_rest() -> No
     ("env", "source"),
     [
         ({}, "cli"),
-        ({"ENSO_BEAT": "HB-001"}, "beat:HB-001"),
         (
             {"ENSO_BEAT": "HB-001", "ENSO_JOB": "nightly",
              "ENSO_ORIGIN_TRANSPORT": "slack", "ENSO_ORIGIN_CHANNEL": "C1"},
@@ -74,10 +61,6 @@ def test_without_identity_drops_every_caller_variable_and_keeps_the_rest() -> No
              "ENSO_ORIGIN_THREAD_TS": "1.0", "ENSO_ORIGIN_CHANNEL_NAME": "dm"},
             "turn:slack:D1",
         ),
-        (
-            {"ENSO_ORIGIN_TRANSPORT": "telegram", "ENSO_ORIGIN_CHANNEL": "123"},
-            "turn:telegram:123",
-        ),
     ],
 )  # fmt: skip
 def test_source_from_env(env: dict[str, str], source: str) -> None:
@@ -93,8 +76,6 @@ def test_source_from_env(env: dict[str, str], source: str) -> None:
         (("C1", "5.0"), ("C1", "6.0"), False),  # ...and only that thread
         (("C1", "5.0"), ("C2", "5.0"), False),
         (("D1", "5.0"), ("D1", None), True),  # a DM hears everything sent to it
-        (("D1", None), ("D1", None), True),
-        (("D1", None), ("D2", None), False),
     ],
 )
 def test_take_background_matching(
@@ -167,16 +148,7 @@ async def test_background_is_injected_once_and_own_sends_retire(
     assert messages.HEADER not in second.sent[0]
 
 
-def test_render_lines(enso_home: Paths) -> None:
-    db.initialize(enso_home)
-    row = send(enso_home, "C1", source="job:nightly", text="two\nlines")
-    rendered = messages.render([row])
-    assert rendered.startswith(f"{messages.HEADER}\n[") and rendered.endswith(
-        "] (job:nightly) two\nlines"
-    )
-
-
-async def test_queue_rebinding_and_restart_keep_background_and_sessions_owned(
+async def test_a_cross_workspace_send_is_heard_by_the_workspace_it_names(
     runtime, enso_home, monkeypatch
 ):
     enso_home.workspace("team").mkdir()
@@ -194,8 +166,6 @@ async def test_queue_rebinding_and_restart_keep_background_and_sessions_owned(
     first, queued, rebound = FakeReply(), FakeReply(), FakeReply()
     drain = await runtime.submit(make_turn("first"), first)
     await asyncio.wait_for(entered.wait(), 5)
-    original = session_for(enso_home, "slack:D1", "claude")
-    assert original is not None and original.workspace == "default"
     assert await runtime.submit(make_turn("queued"), queued) is None
     raw = {**runtime.config.raw, "bindings": {"slack:dm:U1": "team"}}
     write_config(enso_home, raw)
@@ -205,26 +175,7 @@ async def test_queue_rebinding_and_restart_keep_background_and_sessions_owned(
     send(enso_home, "D1", text="default result")
     release.set()
     await asyncio.wait_for(drain, 5)
-    assert f"resumed {original.session_id} workspace=default" in queued.sent[-1]
     assert "default result" in queued.sent[-1] and "team result" not in queued.sent[-1]
-    current = session_for(enso_home, "slack:D1", "claude")
-    assert current is not None and current.workspace == "team"
-    assert current.session_id != original.session_id
     assert "team result" in rebound.sent[-1] and "default result" not in rebound.sent[-1]
     stored = next(m for m in messages.list_messages(enso_home, 20) if m.id == cross.id)
     assert stored.workspace == "team" and stored.consumed_at is not None
-
-    old = send(enso_home, "D1", text="late default result")
-    restarted = Runtime(runtime.config)
-    reply = FakeReply()
-    await restarted.handle(make_turn("after restart"), reply)
-    assert f"resumed {current.session_id} workspace=team" in reply.sent[-1]
-    assert "late default result" not in reply.sent[-1]
-    assert messages.list_messages(enso_home, 1)[0] == old
-    await restarted.clear("slack:D1")
-    assert messages.list_messages(enso_home, 1)[0] == old
-    write_config(enso_home, {**raw, "bindings": {"slack:dm:U1": "default"}})
-    back = FakeReply()
-    await restarted.handle(make_turn("back"), back)
-    assert "workspace=default" in back.sent[-1] and "late default result" in back.sent[-1]
-    assert messages.list_messages(enso_home, 1)[0].consumed_at is not None

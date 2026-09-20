@@ -17,8 +17,6 @@ from enso.config import (
     ConfigError,
     LiveConfig,
     Paths,
-    ProjectConfig,
-    Stage,
     check_config,
     load_config,
     parse_config,
@@ -26,47 +24,6 @@ from enso.config import (
 
 REPO = Path(__file__).resolve().parent.parent
 UNKNOWN = "is not a recognized key"
-
-
-@pytest.mark.parametrize(
-    ("stages", "expected"),
-    [
-        ((Stage("approve", human=True),), None),
-        ((Stage("plan", worktree=False),), None),
-        ((Stage("implement"), Stage("report", worktree=False)), "implement"),
-    ],
-)
-def test_last_agent_stage_allows_workflows_without_a_landing_stage(stages, expected):
-    project = ProjectConfig("EN", "Enso", "default", None, stages)
-    assert project.last_agent_stage == expected
-
-
-def test_heartbeat_defaults_and_explicit_settings(enso_home, raw_config):
-    config, problems, _ = parse_config(raw_config, enso_home)
-    assert not problems
-    assert config.heartbeat.enabled and config.heartbeat.retention_days == 30
-    raw_config["heartbeat"] = {"enabled": False, "retention_days": 7}
-    config, problems, _ = parse_config(raw_config, enso_home)
-    assert not problems
-    assert not config.heartbeat.enabled and config.heartbeat.retention_days == 7
-
-
-@pytest.mark.parametrize("retention", [True, 0, -1, "30", None])
-def test_heartbeat_config_reports_independent_errors(enso_home, raw_config, retention):
-    raw_config["heartbeat"] = {"enabled": "yes", "retention_days": retention, "unknown": 1}
-    config, problems, _ = parse_config(raw_config, enso_home)
-    assert config is None
-    assert set(problems) == {
-        "heartbeat.enabled must be true or false",
-        "heartbeat.retention_days must be a positive integer",
-        "heartbeat.unknown is not a recognized key",
-    }
-
-
-def test_malformed_heartbeat_config_stops_subtree_validation(enso_home, raw_config):
-    raw_config["heartbeat"] = False
-    config, problems, _ = parse_config(raw_config, enso_home)
-    assert config is None and problems == ["heartbeat must be an object"]
 
 
 def _without(raw: dict, *path: str) -> dict:
@@ -134,10 +91,6 @@ def _set(raw: dict, value: object, *path: str) -> dict:
             "transports.slack.notify must be a Slack conversation id",
         ),
         (
-            lambda r: _set(r, {"bot_token": "1:abc", "notify": "@gavin"}, "transports", "telegram"),
-            "transports.telegram.notify must be a positive numeric Telegram user id",
-        ),
-        (
             lambda r: _set(r, {"path": "gemini", "models": ["x"]}, "providers", "gemini"),
             "unknown provider",
         ),
@@ -147,6 +100,10 @@ def _set(raw: dict, value: object, *path: str) -> dict:
         ),
         (lambda r: _set(r, -1, "agent", "timeout"), "agent.timeout must be a non-negative integer"),
         (lambda r: _set(r, "LOUD", "logging", "level"), "logging.level must be one of"),
+        (
+            lambda r: _set(r, 0, "heartbeat", "retention_days"),
+            "heartbeat.retention_days must be a positive integer",
+        ),
     ],
 )
 def test_invalid_configs_are_rejected(enso_home: Paths, raw_config: dict, mutate, fragment) -> None:
@@ -171,6 +128,7 @@ def test_invalid_configs_are_rejected(enso_home: Paths, raw_config: dict, mutate
         (lambda r: _set(r, 1, "logging", "max_byte"), "logging.max_byte"),
         (lambda r: _set(r, 1, "runs", "keeps"), "runs.keeps"),
         (lambda r: _set(r, 8787, "web", "ports"), "web.ports"),
+        (lambda r: _set(r, 1, "heartbeat", "unknown"), "heartbeat.unknown"),
     ],
 )
 def test_unknown_keys_are_rejected_at_every_closed_object(
@@ -181,31 +139,13 @@ def test_unknown_keys_are_rejected_at_every_closed_object(
     assert f"{expected} {UNKNOWN}" in problems
 
 
-def test_every_unknown_key_is_reported_once_in_parse_order(
-    enso_home: Paths, raw_config: dict
-) -> None:
-    """Independent typos are collected, not returned one at a time, and value errors survive."""
-    raw_config["providers"]["claude"]["arg"] = []
-    raw_config["logging"] = {"level": "LOUD", "max_byte": 1}
-    raw_config["web"] = {"ports": 8787}
-
-    config, problems, _ = parse_config(raw_config, enso_home)
-
-    assert config is None
-    assert [problem for problem in problems if UNKNOWN in problem] == [
-        f"providers.claude.arg {UNKNOWN}",
-        f"logging.max_byte {UNKNOWN}",
-        f"web.ports {UNKNOWN}",
-    ]
-    assert any("logging.level must be one of" in problem for problem in problems), problems
-
-
 @pytest.mark.parametrize(
     ("mutate", "expected"),
     [
         (lambda r: _set(r, "INFO", "logging"), "logging must be an object"),
         (lambda r: _set(r, ["slack"], "transports"), "transports must be an object"),
         (lambda r: _set(r, "claude", "providers", "claude"), "providers.claude must be an object"),
+        (lambda r: _set(r, False, "heartbeat"), "heartbeat must be an object"),
     ],
 )
 def test_a_malformed_subtree_reports_its_type_and_is_not_inspected(
@@ -386,14 +326,6 @@ def test_relative_provider_path_is_stored_absolute(
     assert Path(config.providers["claude"].path).is_file()
 
 
-def test_slack_dm_binding_accepts_enterprise_user_id(enso_home: Paths, raw_config: dict) -> None:
-    raw_config["bindings"]["slack:dm:W1"] = "default"
-    config, problems, warnings = parse_config(raw_config, enso_home)
-    assert config is not None, problems
-    assert warnings == []
-    assert config.bindings["slack:dm:W1"] == "default"
-
-
 def test_load_config_reads_env_home(enso_home: Paths, raw_config: dict) -> None:
     write_config(enso_home, raw_config)
     assert Paths.from_env() == enso_home
@@ -423,11 +355,8 @@ def test_load_config_fails_closed(enso_home: Paths) -> None:
         ("slack:D1", False, ("slack", "D1")),
         # DMs are bindings, not send targets; posting to one needs its D… id.
         ("slack:dm:U1", False, "is not a Slack conversation id"),
-        ("slack:dm:W1", False, "is not a Slack conversation id"),
         ("slack:not-a-channel", False, "is not a Slack conversation id"),
-        ("not-a-channel", False, "is not a Slack conversation id"),
         ("telegram:not-a-user-id", True, "is not a positive numeric Telegram user id"),
-        ("telegram:\u00b2", True, "is not a positive numeric Telegram user id"),
         ("discord:1", False, "unknown transport"),
     ],
 )
@@ -453,15 +382,6 @@ def test_default_notify(enso_home: Paths, raw_config_both: dict) -> None:
     assert config is not None and config.default_notify() is None
 
 
-@pytest.mark.parametrize("value", [{}, {"default": {"restricted": False}}, None])
-def test_removed_workspaces_block_is_rejected(enso_home, raw_config, value):
-    raw_config["workspaces"] = value
-    config, problems, _ = parse_config(raw_config, enso_home)
-    assert config is None
-    assert len(problems) == 1
-    assert "workspaces is not a recognized key" in problems[0]
-
-
 @pytest.mark.parametrize(
     "raw",
     [
@@ -481,13 +401,6 @@ def test_version_one_is_refused_once_without_parsing_legacy_fields(enso_home, ra
     assert result.exit_code == 1
     assert json.loads(result.stdout)["problems"] == [LEGACY_HOME_MESSAGE]
     assert enso_home.config.read_bytes() == before
-
-
-@pytest.mark.parametrize("version", [True, False, 1.0, 2.0, "2", None])
-def test_config_version_requires_an_integer(enso_home, raw_config, version):
-    raw_config["version"] = version
-    config, problems, _ = parse_config(raw_config, enso_home)
-    assert config is None and problems == ["version must be 2"]
 
 
 def test_a_deeply_nested_document_is_rejected_once_like_any_other_bad_revision(

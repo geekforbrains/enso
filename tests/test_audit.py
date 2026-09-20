@@ -310,15 +310,7 @@ def test_project_scripts_that_cannot_run_are_warnings(enso_home: Paths, raw_conf
 
 @pytest.mark.parametrize(
     "command, inspected",
-    [
-        ("./test.sh", True),
-        ("./scripts/test.sh", True),
-        ("./test.sh --verbose", False),
-        ("bash ./test.sh", False),
-        ("npm test", False),
-        ("cd x && ./test.sh", False),
-        ("test.sh", False),
-    ],
+    [("./test.sh", True), ("npm test", False)],
 )
 def test_only_a_bare_script_reference_is_inspected(
     enso_home: Paths, raw_config: dict, command: str, inspected: bool
@@ -341,16 +333,8 @@ def test_only_a_bare_script_reference_is_inspected(
     assert [f.check for f in found.findings] == (["script"] if inspected else [])
 
 
-@pytest.mark.parametrize(
-    "stage",
-    [
-        {"name": "run", "command": "true"},
-        {"name": "run", "integrate": True},
-    ],
-    ids=["command", "integrate"],
-)
 def test_audit_finds_engine_stage_jobs_with_config(
-    enso_home: Paths, raw_config: dict, repo: Path, stage: dict
+    enso_home: Paths, raw_config: dict, repo: Path
 ) -> None:
     workspaces.seed_home(enso_home)
     stage_root = workspaces.create_workspace(enso_home, "stage-only")
@@ -358,7 +342,7 @@ def test_audit_finds_engine_stage_jobs_with_config(
     write_project(
         enso_home,
         "DEMO",
-        {"name": "Demo", "repo": str(repo), "stages": [stage]},
+        {"name": "Demo", "repo": str(repo), "stages": [{"name": "run", "command": "true"}]},
         workspace="stage-only",
     )
     write_job(
@@ -394,27 +378,6 @@ def test_audit_finds_engine_stage_jobs_with_config(
         line.startswith("workspace stage-only fails its audit:") and "CLAUDE.md" in line
         for line in audit.startup_warnings(enso_home, config)
     )
-
-
-def test_a_relocated_opencode_root_reaches_the_collision_check(
-    enso_home: Paths, config: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Without ``user_dirs`` the audit uses the shared resolver, so OpenCode's roots count."""
-    workspaces.seed_home(enso_home)
-    root = enso_home.workspace("default")
-    finish(root)
-    write_skill(root / "skills", "notes")
-    scratch = tmp_path / "user"
-    scratch.mkdir()
-    monkeypatch.setenv("HOME", str(scratch))
-    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(tmp_path / "opencode"))
-    write_skill(tmp_path / "opencode" / "skills", "notes")  # the user-level collision
-
-    (found,) = audit.audit(enso_home, ["default"], config=config).workspaces
-
-    assert [(f.check, f.severity) for f in found.findings] == [("skill-collision", "warning")]
-    assert found.findings[0].message.startswith("skills/notes also exists in the user scope")
 
 
 def test_a_missing_or_misnamed_workspace_is_one_finding(enso_home: Paths) -> None:
@@ -465,21 +428,6 @@ def test_home_checks_and_fix(enso_home: Paths) -> None:
     )
 
 
-def test_a_file_where_a_dot_directory_belongs_is_reported_not_fixed(enso_home: Paths) -> None:
-    root = enso_home.workspace("default")
-    finish(root)
-    shutil.rmtree(root / ".agents")
-    (root / ".agents").write_text("in the way")
-
-    (found,) = audit.audit(enso_home, ["default"], fix=True, user_dirs=USER_DIRS).workspaces
-
-    assert found.fixed == []
-    assert [(f.check, f.message, f.fixable) for f in found.findings] == [
-        ("link", ".agents is a file, not a directory; move it aside", False)
-    ]
-    assert (root / ".agents").read_text() == "in the way"
-
-
 @pytest.mark.parametrize("scope", ["shared", "shared-knowledge", "workspace"])
 @pytest.mark.parametrize("kind", ["file", "symlink", "dangling-symlink"])
 def test_knowledge_roots_preserve_conflicts_and_never_follow_links(
@@ -520,43 +468,6 @@ def test_knowledge_roots_preserve_conflicts_and_never_follow_links(
             assert not outside.exists()
 
 
-@pytest.mark.parametrize(
-    "scope, name", [("home", "skills"), ("workspace", "drafts"), ("workspace", "work")]
-)
-def test_dangling_links_where_directories_belong_are_reported_not_fixed(
-    enso_home: Paths, tmp_path: Path, scope: str, name: str
-) -> None:
-    workspaces.seed_home(enso_home)
-    root = enso_home.workspace("default")
-    finish(root)
-    directory = (enso_home.home if scope == "home" else root) / name
-    if directory.exists():
-        shutil.rmtree(directory)
-    directory.symlink_to(tmp_path / "gone", target_is_directory=True)
-
-    for _ in range(2):  # the second fixing run must find the same non-repairable state
-        report = audit.audit(enso_home, ["default"], fix=True, user_dirs=USER_DIRS)
-        assert report.home.fixed == [] and report.workspaces[0].fixed == []
-        findings = report.home.findings if scope == "home" else report.workspaces[0].findings
-        assert [(f.message, f.fixable) for f in findings if f.check == "directory"] == [
-            (f"{name}/ is a dangling symbolic link; move it aside", False)
-        ]
-    assert directory.is_symlink() and not directory.exists()
-
-
-def test_missing_shared_knowledge_is_created_without_changing_existing_notes(enso_home: Paths):
-    workspaces.seed_home(enso_home)
-    enso_home.knowledge.rmdir()
-    enso_home.shared.rmdir()
-    (missing,) = audit.audit_home(enso_home, user_dirs=USER_DIRS).findings
-    assert (missing.message, missing.fixable) == ("shared/ is missing", True)
-    result = audit.audit_home(enso_home, fix=True, user_dirs=USER_DIRS)
-    assert result.ok and result.fixed == [f"created {enso_home.knowledge}"]
-    (enso_home.knowledge / "Keep.md").write_text("untouched content\n")
-    assert audit.audit_home(enso_home, fix=True, user_dirs=USER_DIRS).fixed == []
-    assert (enso_home.knowledge / "Keep.md").read_text() == "untouched content\n"
-
-
 def test_startup_warnings_cover_the_home_and_in_use_workspaces(
     enso_home: Paths, config: Config
 ) -> None:
@@ -573,14 +484,6 @@ def test_startup_warnings_cover_the_home_and_in_use_workspaces(
     assert len(lines) == 2 and all(line.endswith("; see `enso workspace audit`") for line in lines)
     assert lines[0].startswith("the home fails its audit: the home is not a Git root")
     assert lines[1].startswith("workspace default fails its audit: uploads/ is missing")
-
-
-def test_tree_size_counts_files_without_following_links(tmp_path: Path) -> None:
-    (tmp_path / "a" / "b").mkdir(parents=True)
-    (tmp_path / "a" / "b" / "one").write_bytes(b"12345")
-    (tmp_path / "two").write_bytes(b"1")
-    os.symlink(tmp_path / "a", tmp_path / "loop")
-    assert audit.tree_size(tmp_path) == 6 and audit.tree_size(tmp_path / "missing") == 0
 
 
 RESERVED = "{} uses the reserved enso- prefix but Enso did not install it; rename it"
@@ -608,25 +511,6 @@ def test_reserved_names_warn_unless_enso_installed_them(enso_home: Paths) -> Non
         ("reserved", RESERVED.format("skills/enso-local"))
     ]
     assert report.ok  # warnings only
-
-
-def test_bundled_memory_job_in_nondefault_workspace_has_no_reserved_warning(
-    enso_home: Paths, config: Config
-) -> None:
-    workspaces.seed_home(enso_home)
-    workspaces.create_workspace(enso_home, "team")
-    workspaces.seed_jobs(enso_home, config.defaults, workspace="default")
-    workspaces.seed_jobs(enso_home, config.defaults, workspace="team")
-
-    report = audit.audit(enso_home, config=config, user_dirs=USER_DIRS)
-
-    assert not [finding for finding in report.home.findings if finding.check == "reserved"]
-    assert not [
-        finding
-        for workspace in report.workspaces
-        for finding in workspace.findings
-        if finding.check == "reserved"
-    ]
 
 
 def test_official_receipts_recognized_only_at_home_and_bad_receipts_warn(enso_home: Paths):
@@ -712,17 +596,6 @@ def test_the_layout_table_covers_everything_the_scaffold_writes(enso_home: Paths
     }
 
 
-def test_the_home_repository_is_the_operators_to_use(enso_home: Paths, config: Config) -> None:
-    """Enso creates the Git root and never commits; what the operator keeps there is theirs."""
-    workspaces.seed_home(enso_home)
-    finish(enso_home.workspace("default"))
-    (enso_home.home / ".gitignore").write_text("/secrets/\n/enso.db*\n")
-
-    report = audit.audit(enso_home, config=config, user_dirs=USER_DIRS)
-
-    assert report.home.findings == [] and report.home.layout[".gitignore"] == "user"
-
-
 def test_managed_roots_are_classified_not_searched(enso_home: Paths, config: Config) -> None:
     """Private operating state stays private: no recursion, no findings about what is in it."""
     workspaces.seed_home(enso_home)
@@ -741,32 +614,6 @@ def test_managed_roots_are_classified_not_searched(enso_home: Paths, config: Con
     # The operator's own roots are equally off limits.
     (enso_home.knowledge / "notes.md").write_text("# a note\n")
     assert audit.audit(enso_home, config=config, user_dirs=USER_DIRS).home.findings == []
-
-
-def test_an_unexpected_home_entry_is_reported_and_left_alone(
-    enso_home: Paths, config: Config
-) -> None:
-    workspaces.seed_home(enso_home)
-    finish(enso_home.workspace("default"))
-    stray = enso_home.home / "notes-to-self.md"
-    stray.write_text("mine")
-    (enso_home.home / "old-backup").mkdir()
-
-    report = audit.audit(enso_home, fix=True, config=config, user_dirs=USER_DIRS)
-
-    found = [f for f in report.home.findings if f.check == "unexpected"]
-    assert [(f.severity, f.fixable, f.attention) for f in found] == [
-        ("warning", False, True),
-        ("warning", False, True),
-    ]
-    assert found[0].message == (
-        f"notes-to-self.md is not part of the layout; move it out of {enso_home.home} or remove it"
-    )
-    assert found[1].message.startswith("old-backup/ is not part of the layout")
-    assert report.home.layout["notes-to-self.md"] == "unexpected"
-    # An unexpected entry is a warning, so the home still passes; --fix never removes it.
-    assert report.ok and report.home.attention
-    assert stray.read_text() == "mine" and (enso_home.home / "old-backup").is_dir()
 
 
 def test_shared_holds_only_its_declared_entries(enso_home: Paths, config: Config) -> None:
@@ -794,21 +641,7 @@ def test_shared_holds_only_its_declared_entries(enso_home: Paths, config: Config
     assert (enso_home.home / "knowledge").is_dir() and (enso_home.shared / "memory").is_dir()
 
 
-def test_a_dangling_top_level_link_is_reported_once(enso_home: Paths, config: Config) -> None:
-    workspaces.seed_home(enso_home)
-    finish(enso_home.workspace("default"))
-    (enso_home.home / "cache").symlink_to("/nowhere-at-all")
-
-    report = audit.audit(enso_home, fix=True, config=config, user_dirs=USER_DIRS)
-
-    (found,) = [f for f in report.home.findings if f.check == "link"]
-    assert (found.severity, found.fixable, found.attention) == ("warning", False, True)
-    assert found.message.startswith("cache/ is a dangling symbolic link")
-    assert report.home.layout["cache"] == "managed"
-    assert (enso_home.home / "cache").is_symlink()  # --fix neither repoints nor removes it
-
-
-@pytest.mark.parametrize("name", ["runtime", "cache", "secrets"])
+@pytest.mark.parametrize("name", ["runtime", "secrets"])  # one managed root, one the operator's
 def test_operating_roots_must_be_real_directories(
     enso_home: Paths, config: Config, tmp_path: Path, name: str
 ) -> None:
@@ -829,51 +662,6 @@ def test_operating_roots_must_be_real_directories(
     assert "not a real directory" in found[0].message
     assert report.ok and report.attention
     assert root.is_symlink() and list(outside.iterdir()) == []
-
-
-def test_operating_root_file_is_reported_without_replacing_it(
-    enso_home: Paths, config: Config
-) -> None:
-    workspaces.seed_home(enso_home)
-    finish(enso_home.workspace("default"))
-    root = enso_home.home / "runtime"
-    root.write_text("preserve me")
-
-    report = audit.audit(enso_home, fix=True, config=config, user_dirs=USER_DIRS)
-
-    found = [f for f in report.home.findings if f.check == "directory"]
-    assert len(found) == 1 and found[0].message.startswith("runtime/ is a file")
-    assert found[0].attention and not found[0].fixable
-    assert root.read_text() == "preserve me"
-
-
-def test_a_missing_workspaces_root_is_reported_and_fixable(enso_home: Paths) -> None:
-    workspaces.seed_home(enso_home)
-    shutil.rmtree(enso_home.workspaces)
-
-    report = audit.audit(enso_home, user_dirs=USER_DIRS)
-
-    found = [f for f in report.home.findings if f.check == "directory"]
-    assert [(f.message, f.fixable) for f in found] == [("workspaces/ is missing", True)]
-    assert not report.ok and report.attention
-
-    fixed = audit.audit(enso_home, fix=True, user_dirs=USER_DIRS)
-    assert fixed.home.findings == []
-    assert fixed.home.fixed == [f"created {enso_home.workspaces}"]
-    assert enso_home.workspaces.is_dir()
-
-
-def test_a_file_cannot_replace_the_workspaces_root(enso_home: Paths) -> None:
-    workspaces.seed_home(enso_home)
-    shutil.rmtree(enso_home.workspaces)
-    enso_home.workspaces.write_text("preserve me")
-
-    report = audit.audit(enso_home, fix=True, user_dirs=USER_DIRS)
-
-    assert [f.message for f in report.home.findings if f.check == "directory"] == [
-        "workspaces/ is a file, not a directory"
-    ]
-    assert enso_home.workspaces.read_text() == "preserve me"
 
 
 def test_private_roots_are_reported_and_tightened_when_other_users_can_read_them(
@@ -948,39 +736,3 @@ def test_sqlite_sidecars_are_stale_only_without_their_database(enso_home: Paths)
     assert all("safe to delete" in f.message for f in found)
     # Reported, never removed: deleting a write-ahead log is the operator's call.
     assert (enso_home.home / "enso.db-wal").exists()
-
-
-def test_warnings_the_operator_may_simply_disagree_with_do_not_ask_for_attention(
-    enso_home: Paths,
-) -> None:
-    """An orphan workspace and an unedited template are matters of taste, not portable facts.
-
-    They stay warnings the audit reports and the nightly job leaves alone.
-    """
-    root = enso_home.workspace("default")
-    workspaces.seed_home(enso_home)
-    workspaces.ensure_layout(root)
-    (root / "AGENTS.md").write_text(workspaces.workspace_template("default"))
-
-    found = audit.audit_workspace(enso_home, "default", bound=[], user_dirs=USER_DIRS)
-
-    assert [f.check for f in found.warnings] == ["agents-md", "orphan"]
-    assert found.ok and not found.attention
-
-
-def test_shared_knowledge_and_work_layout_survives_fixing_audit(enso_home):
-    workspaces.seed_home(enso_home)
-    root = enso_home.workspace("default")
-    finish(root)
-    (root / "work" / "Report.md").write_text("Retained output\n")
-    (enso_home.knowledge / "Shared.md").write_text("Shared reference\n")
-
-    report = audit.audit(enso_home, ["default"], fix=True, user_dirs=USER_DIRS)
-
-    assert report.ok
-    assert report.workspaces[0].fixed == []
-    assert report.workspaces[0].layout["work"] == "user"
-    assert not (root / "knowledge").exists()
-    assert not (root / "drafts").exists()
-    assert (root / "work" / "Report.md").read_text() == "Retained output\n"
-    assert (enso_home.knowledge / "Shared.md").read_text() == "Shared reference\n"

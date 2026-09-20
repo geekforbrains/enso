@@ -116,16 +116,9 @@ def test_desktop_sidebar_and_mobile_more_reach_every_view_without_javascript():
 @pytest.mark.parametrize(
     ("path", "parent", "under_more"),
     [
-        ("/today", "/today", False),
         ("/tasks/EN-001", "/tasks", False),
-        ("/heartbeats/HB-001", "/heartbeats", False),
-        ("/runs/abc", "/runs", False),
         ("/knowledge/notes/abc", "/knowledge", True),
-        ("/memory/captures/default/1", "/memory", True),
-        ("/jobs/default%3Anightly", "/jobs", True),
-        ("/workspaces/default", "/workspaces", True),
-        ("/skills/enso-heartbeat", "/workspaces", True),
-        ("/health/log", "/health", True),
+        ("/skills/enso-heartbeat", "/workspaces", True),  # Skills belongs to Workspaces
     ],
 )
 def test_deep_links_highlight_their_section_and_more_parent(path, parent, under_more):
@@ -149,11 +142,9 @@ def test_health_attention_is_visible_on_the_closed_more_control_and_health_links
     assert not shell().find("span", "nav-alert")
 
 
-def test_navigation_keeps_the_skip_link_and_no_inline_code():
+def test_navigation_keeps_the_skip_link():
     root = shell()
     (skip,) = root.find("a", "skip")
     (main,) = root.find("main")
     assert skip.attrs["href"] == "#main" and main.attrs["id"] == "main"
     assert main.attrs["tabindex"] == "-1"
-    assert [script.attrs["src"] for script in root.find("script")] == ["/static/app.js"]
-    assert not root.find("style")

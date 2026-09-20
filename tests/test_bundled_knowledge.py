@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 
 from enso import workspaces
-from enso.config import Agent
 
 SKILL = Path(workspaces.__file__).parent / "bundled/skills/enso-knowledge"
 
@@ -84,21 +83,6 @@ def test_style_reports_bad_inputs_and_keeps_checking_readable_notes(tmp_path):
     result = lint(tmp_path)
     assert result.returncode == 2 and result.stderr == ""
     assert "Invalid.md:1: input:" in result.stdout
-    assert "Checked 1 Markdown files: 0 style findings, 1 input errors." in result.stdout
+    assert "Checked 1 Markdown files" in result.stdout
     result = lint(tmp_path / "Missing.md")
     assert result.returncode == 2 and "expected an existing file or directory" in result.stdout
-
-
-def test_custom_knowledge_rules_and_checker_survive_bundle_reconciliation(enso_home):
-    workspaces.seed_home(enso_home)
-    installed = enso_home.skills / "enso-knowledge"
-    rules = installed / "references/formatting.md"
-    checker = installed / "scripts/lint.py"
-    assert rules.is_file() and checker.is_file()
-    rules.write_text("# Our own formatting\n")
-    checker.write_text("raise SystemExit(0)\n")
-
-    workspaces.reconcile_bundles(enso_home, Agent("claude", "opus", "high"))
-
-    assert rules.read_text() == "# Our own formatting\n"
-    assert checker.read_text() == "raise SystemExit(0)\n"

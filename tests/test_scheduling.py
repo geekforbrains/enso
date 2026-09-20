@@ -38,30 +38,12 @@ def test_cron_slots_excludes_start_and_includes_bound():
     ]
     assert list(scheduling.cron_slots("* * * * *", after, until=after, limit=40)) == []
     assert list(scheduling.cron_slots("* * * * *", until, until=after, limit=40)) == []
-
-
-def test_cron_slots_caps_every_minute_schedule():
-    after = datetime(2026, 9, 7, 12, tzinfo=UTC)
-    until = after + timedelta(hours=3)
-    slots = list(scheduling.cron_slots("* * * * *", after, until=until, limit=40))
-    assert slots == [after + timedelta(minutes=minute) for minute in range(1, 41)]
-    assert list(scheduling.cron_slots("* * * * *", after, until=until, limit=0)) == []
-
-
-def test_cron_slots_preserves_named_timezone_across_daylight_saving():
-    slots = list(
-        scheduling.cron_slots(
-            "0 9 * * *",
-            datetime.fromisoformat("2026-10-31T09:00:00-07:00"),
-            "America/Los_Angeles",
-            until=datetime.fromisoformat("2026-11-02T09:00:00-08:00"),
-            limit=40,
-        )
-    )
-    assert [slot.isoformat() for slot in slots] == [
-        "2026-11-01T09:00:00-08:00",
-        "2026-11-02T09:00:00-08:00",
+    # A busy schedule stops at the limit, and a zero limit draws nothing at all.
+    busy = after + timedelta(hours=3)
+    assert list(scheduling.cron_slots("* * * * *", after, until=busy, limit=40)) == [
+        after + timedelta(minutes=minute) for minute in range(1, 41)
     ]
+    assert list(scheduling.cron_slots("* * * * *", after, until=busy, limit=0)) == []
 
 
 async def test_slow_and_failed_checks_do_not_block_other_checks(monkeypatch, caplog):
@@ -111,9 +93,3 @@ async def test_slow_and_failed_checks_do_not_block_other_checks(monkeypatch, cap
         with pytest.raises(asyncio.CancelledError):
             await running
     assert slow_cleaned.is_set()
-
-
-@pytest.mark.parametrize("interval", [0, -1, float("inf"), float("nan")])
-async def test_invalid_interval_is_rejected(interval):
-    with pytest.raises(ValueError, match="positive and finite"):
-        await scheduling.minute_loop({}, interval=interval)

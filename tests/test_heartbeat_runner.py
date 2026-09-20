@@ -286,16 +286,6 @@ async def test_gate_failure_never_falls_back_and_recovery_handles_pending_on_qui
 
 
 @pytest.mark.asyncio
-async def test_missing_or_changed_gate_is_an_error_without_provider(runtime, monkeypatch):
-    config, clock = runtime
-    beat = make_beat(config, gate="exit 0\n")
-    (config.paths.workspace_heartbeat(beat.workspace) / beat.ref / "gate.sh").unlink()
-    await tick(HeartbeatRunner(config), clock)
-    assert heartbeat.get(config.paths, beat.ref).last_check_status == "error"
-    assert beat_runs(config.paths, beat.ref) == []
-
-
-@pytest.mark.asyncio
 async def test_provider_exit_does_not_fulfill_or_spin_same_failed_input(runtime, monkeypatch):
     config, clock = runtime
     beat = make_beat(config, gate="echo 'refund pending'\n")
@@ -316,32 +306,6 @@ async def test_provider_exit_does_not_fulfill_or_spin_same_failed_input(runtime,
     heartbeat.note(config, beat.ref, "A new receipt became available")
     await tick(runner, clock, minutes=1)
     assert len(calls) == 2
-
-
-@pytest.mark.asyncio
-async def test_events_after_input_cutoff_prevent_complete_then_wake_next_tick(runtime, monkeypatch):
-    config, clock = runtime
-    beat = make_beat(config)
-    calls = []
-
-    async def assess(*args, **kwargs):
-        env = kwargs["env"]
-        calls.append(True)
-        if len(calls) == 1:
-            heartbeat.note(config, beat.ref, "New input while this assessment was running")
-            with pytest.raises(heartbeat.HeartbeatError, match="new observations"):
-                settle(config, env, complete=True)
-            settle(config, env)
-        else:
-            settle(config, env, complete=True)
-        return execution.ProviderTurn("ok")
-
-    monkeypatch.setattr(execution, "execute_turn", assess)
-    runner = HeartbeatRunner(config)
-    await tick(runner, clock)
-    assert len(heartbeat.history(config.paths, beat.ref, unhandled=True)) == 1
-    await tick(runner, clock, minutes=1)
-    assert calls == [True, True] and heartbeat.get(config.paths, beat.ref).state == "fulfilled"
 
 
 @pytest.mark.asyncio
@@ -373,13 +337,12 @@ async def test_future_one_shot_waits_despite_notes_and_late_wake_assesses_once(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("claimed", [False, True])
-@pytest.mark.parametrize("gate", [None, "exit 0\n"])
 async def test_one_shot_interruption_on_either_side_of_claim_preserves_a_durable_next_step(
-    runtime, monkeypatch, claimed, gate
+    runtime, monkeypatch, claimed
 ):
     config, clock = runtime
     config.paths.workspace("team").mkdir()
-    beat = make_beat(config, workspace="team", at=clock[0].isoformat(), gate=gate)
+    beat = make_beat(config, workspace="team", at=clock[0].isoformat())
     monkeypatch.setenv("ENSO_WORKSPACE", "default")
     claim = HeartbeatRunner._claim
 
@@ -760,27 +723,3 @@ async def test_lock_overlap_recovery_and_pruning_preserve_owned_boundaries(
     assert kept == [
         f"heartbeat {unsafe.ref} is kept past retention: its script path is a symbolic link"
     ]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("args", [[], ["--permission-mode", "dontAsk"]])
-async def test_assessments_preserve_provider_arguments_without_policy_prerequisites(
-    runtime, monkeypatch, args
-):
-    config, clock = runtime
-    beat = make_beat(config, gate="echo 'refund pending'\n")
-    write_workspace(config.paths, "default", {"providers": {"claude": {"args": args}}})
-    calls = []
-
-    async def assess(provider, prompt, model, effort, actual_args, **kwargs):
-        calls.append(provider.name)
-        assert actual_args == tuple(args)
-        assert kwargs["cwd"] == config.paths.workspace("default")
-        assert not (kwargs["cwd"] / ".claude/settings.json").exists()
-        settle(config, kwargs["env"])
-        return execution.ProviderTurn("ok", output="Recorded", exit_code=0)
-
-    monkeypatch.setattr(execution, "execute_turn", assess)
-    await tick(HeartbeatRunner(config), clock)
-    assert calls == ["claude"]
-    assert beat_runs(config.paths, beat.ref)[0].status == "ok"

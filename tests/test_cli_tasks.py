@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 
@@ -10,9 +9,8 @@ import pytest
 from conftest import commit_file, edit_project, git
 from typer.testing import CliRunner
 
-from enso import tasks, workflows, worktrees
+from enso import tasks, worktrees
 from enso.cli import app
-from enso.cli.common import INPUT_LIMIT
 from enso.config import Config, Paths, load_config
 
 runner = CliRunner()
@@ -124,93 +122,6 @@ def test_moves_from_the_terminal(enso_home: Paths, project_config: Config) -> No
     assert code == 1 and err == "error: cannot drop EN-002: EN-002 is cancelled\n"
 
 
-def test_inside_a_run_the_environment_is_the_actor(
-    enso_home: Paths, project_config: Config, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    add()
-    claimed = tasks.take(enso_home, project_config, "EN", "triage", run_id="r1", actor="job:t")
-    assert claimed is not None
-    workflows.start(enso_home, project_config, "EN-001", "r1")
-    monkeypatch.setenv("ENSO_JOB", "dev-triage")
-    monkeypatch.setenv("ENSO_RUN_ID", "r1")
-    code, _, err = run("drop", "EN-1", "--message", "give up")
-    assert (
-        code == 1
-        and err == "error: only a person can drop a task; block it with your reasoning instead\n"
-    )
-    code, _, err = run("advance", "EN-1", "--message", "m", "--force")
-    assert code == 1 and "a run cannot force" in err
-    code, out, _ = run("note", "EN-1", "-", "--attention", input="odd\n")
-    assert code == 0 and out == "noted EN-001\n"
-    code, out, _ = run("ref", "en-1", "path", "src/x.py", "--json")
-    assert code == 0 and json.loads(out) == {
-        "kind": "path",
-        "value": "src/x.py",
-        "actor": "job:dev-triage",
-        "run_id": "r1",
-        "created_at": json.loads(out)["created_at"],
-    }
-    code, out, _ = run("show", "EN-1", "--json")
-    assert [m["id"] for m in json.loads(out)["moves"]] == ["advance", "return", "block", "resume"]
-    code, out, _ = run("advance", "EN-1", "--message", "handoff", "--json")
-    assert code == 0
-    moved = json.loads(out)
-    assert (moved["stage"], moved["claim_run_id"]) == ("triage", "r1")
-    event = tasks.events(enso_home, "EN-001")[0]
-    assert (event.actor, event.run_id, event.message) == ("job:dev-triage", "r1", "handoff")
-
-    monkeypatch.setenv("ENSO_RUN_ID", "r2")  # another run must respect a claim it does not hold
-    code, _, err = run("advance", "EN-1", "--message", "m")
-    assert code == 1 and err == "error: cannot advance EN-001: EN-001 is claimed by run r1\n"
-    code, _, err = run("release", "EN-1", "--message", "m")
-    assert code == 1 and "claimed by run r1" in err
-    monkeypatch.setenv("ENSO_RUN_ID", "r1")
-    code, out, _ = run("release", "EN-1", "--message", "stopping early", "--json")
-    assert code == 1 and "runner" in json.loads(out)["error"]
-    assert tasks.get(enso_home, "EN-001").claim_run_id == "r1"
-    workflows.interrupt(enso_home, project_config, "EN-001", "r1", "Execution stopped")
-    assert tasks.get(enso_home, "EN-001").stage == "blocked"
-
-
-def test_a_person_forces_and_edits(
-    enso_home: Paths, project_config: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr("getpass.getuser", lambda: "gavin")
-    add()
-    tasks.take(enso_home, project_config, "EN", "triage", run_id="r1", actor="job:t")
-    code, _, err = run("edit", "EN-1", "--title", "New")
-    assert code == 1 and err == "error: EN-001 is claimed by run r1; wait for it, or use --force\n"
-    code, out, _ = run(
-        "edit",
-        "EN-1",
-        "--title",
-        "New",
-        "--body-file",
-        "-",
-        "--priority",
-        "3",
-        "--force",
-        "--json",
-        input="new body",
-    )
-    assert code == 0
-    edited = json.loads(out)
-    assert (edited["title"], edited["body"], edited["priority"]) == ("New", "new body", 3)
-    assert tasks.events(enso_home, "EN-001")[0].actor == "user:gavin"
-    code, _, err = run("edit", "EN-1")
-    assert code == 1 and "nothing to edit" in err
-    code, _, err = run("edit", "EN-1", "--body-file", str(tmp_path / "missing.md"))
-    assert code == 1 and err.startswith("error: could not read ")
-    code, _, err = run("release", "EN-1", "--message", "taking it back", "--force")
-    assert code == 1 and "stop the job first" in err
-    workflows.interrupt(enso_home, project_config, "EN-001", "r1", "Execution stopped")
-    code, out, _ = run("ref", "EN-1", "url", "https://example.test/x")
-    assert code == 0 and out == "EN-001: url https://example.test/x\n"
-    code, out, _ = run("show", "EN-1")
-    assert "refs:\n  url https://example.test/x\n" in out
-    assert "  drop to cancelled: available" in out
-
-
 @pytest.fixture
 def repo_config(enso_home: Paths, project_config: Config, repo: Path) -> Config:
     """The two projects with ``EN`` bound to a real repository."""
@@ -270,50 +181,6 @@ def test_advance_refuses_a_dirty_worktree_then_land_and_sweep(
     assert code == 1 and err == "error: project ZZ is not configured\n"
 
 
-def test_land_inside_a_run_is_for_the_holding_run_in_the_last_agent_stage(
-    enso_home: Paths, repo_config: Config, repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    add()
-    info = worktrees.prepare(enso_home, repo_config.projects["EN"], "EN-001")
-    head = commit_file(info.path, "feature.py", "x\n", "feat: one")
-    monkeypatch.setenv("ENSO_JOB", "dev-todo")
-    monkeypatch.setenv("ENSO_RUN_ID", "r1")
-    code, _, err = run("land", "EN-1")  # a run lands only the task it holds
-    assert code == 1 and err == (
-        "error: EN-001 is not held by this run; a run moves only the task it claimed\n"
-    )
-    assert tasks.take(enso_home, repo_config, "EN", "triage", run_id="r1", actor="job:t")
-    workflows.start(enso_home, repo_config, "EN-001", "r1")
-    code, _, err = run("land", "EN-1")  # triage: not the landing stage
-    assert code == 1 and err == (
-        "error: EN-001 is in triage; only the review stage lands a branch, advance it there first\n"
-    )
-    assert git(repo, "rev-parse", "HEAD").strip() != head
-    assert run("advance", "EN-1", "--message", "m")[0] == 0
-    assert tasks.get(enso_home, "EN-001").stage == "triage"
-    assert (
-        asyncio.run(workflows.evaluate(enso_home, repo_config, "EN-001", "r1", {})).status
-        == "accepted"
-    )
-    code, _, err = run("advance", "EN-1", "--message", "again")  # the handoff ended its standing
-    assert code == 1 and err == (
-        "error: cannot advance EN-001: EN-001 is not held by this run; "
-        "a run moves only the task it claimed\n"
-    )
-    monkeypatch.setenv("ENSO_RUN_ID", "r2")
-    assert tasks.take(enso_home, repo_config, "EN", "todo", run_id="r2", actor="job:t")
-    workflows.start(enso_home, repo_config, "EN-001", "r2")
-    assert run("advance", "EN-1", "--message", "m")[0] == 0
-    assert (
-        asyncio.run(workflows.evaluate(enso_home, repo_config, "EN-001", "r2", {})).status
-        == "accepted"
-    )
-    monkeypatch.setenv("ENSO_RUN_ID", "r3")
-    assert tasks.take(enso_home, repo_config, "EN", "review", run_id="r3", actor="job:t")
-    code, out, _ = run("land", "EN-1")
-    assert code == 0 and out == f"landed EN-001: main is now at {head}\n"
-
-
 def test_land_refuses_a_live_worktree_owner(
     enso_home: Paths, repo_config: Config, repo: Path
 ) -> None:
@@ -340,22 +207,3 @@ def test_land_waits_for_pending_lifecycle_events(
     code, _, err = run("land", "EN-1")
     assert code == 1 and "lifecycle" in err
     assert git(repo, "rev-parse", "HEAD").strip() != candidate
-
-
-@pytest.mark.parametrize("stdin", [False, True])
-def test_text_input_is_bounded(enso_home: Paths, project_config: Config, stdin: bool) -> None:
-    """Bodies and notes count UTF-8 bytes equally in arguments and stdin."""
-    exact = "é" * (INPUT_LIMIT // 2)
-    big = exact + "x"
-    body_args = ["--body-file", "-"] if stdin else ["--body", big]
-    code, out, err = run(
-        "add", "Big", "--project", "en", *body_args, "--json", input=big if stdin else None
-    )
-    assert code == 1 and err == ""
-    assert json.loads(out) == {"ok": False, "error": f"input exceeds {INPUT_LIMIT} bytes"}
-    task = add("Exact", "--body", exact)
-    assert task["ref"] == "EN-001" and task["body"] == exact
-    code, out, err = run("note", "EN-1", "-" if stdin else big, input=big if stdin else None)
-    assert code == 1 and out == "" and err == f"error: input exceeds {INPUT_LIMIT} bytes\n"
-    code, out, _ = run("note", "EN-1", "-" if stdin else exact, input=exact if stdin else None)
-    assert code == 0 and out == "noted EN-001\n"

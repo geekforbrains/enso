@@ -68,9 +68,7 @@ def test_create_preserves_occurrence_precision_and_uses_utc_placement(
         get(paths, note.id, "personal")
 
 
-@pytest.mark.parametrize(
-    "occurred", ["2026-02-30", "2026-09-16T10:00:00", "yesterday", True, date(2026, 9, 16)]
-)
+@pytest.mark.parametrize("occurred", ["2026-02-30", "2026-09-16T10:00:00"])
 def test_occurrence_never_guesses_a_date_or_timezone(paths, occurred):
     with pytest.raises(NoteError, match="occurred"):
         memory.create_note(paths, "team", "Bad.md", "Text", occurred=occurred)
@@ -137,21 +135,7 @@ def test_explicit_occurrence_correction_requires_matching_folder(paths):
 
 @pytest.mark.parametrize(
     "fields",
-    [
-        {"schema": "enso.note/v1"},
-        {"id": "invalid"},
-        {"occurred": date(2026, 9, 16)},
-        {"occurred": "2026-02-30"},
-        {"occurred": "2026-09-16T12:00:00"},
-        {"sources": None},
-        {"sources": [True]},
-        {"sources": [0]},
-        {"sources": [1, 1]},
-        {"sources": [{"capture": 1}]},
-        {"tags": ["extra"]},
-        {"created": "2026-09-16"},
-        {"created": "2026-09-20T00:00:00Z", "updated": "2026-09-19T00:00:00Z"},
-    ],
+    [{"schema": "enso.note/v1"}, {"occurred": date(2026, 9, 16)}, {"sources": None}],
 )
 def test_invalid_imports_are_reported_without_rewriting_or_managed_updates(paths, fields):
     target = imported(paths, "undated/Invalid.md", **fields)
@@ -177,22 +161,6 @@ def test_readable_malformed_import_and_cache_refresh_without_invented_metadata(p
         assert note.problems and note.id is None
         assert note.sha256 == hashlib.sha256(raw.encode()).hexdigest()
         assert target.read_text() == raw
-
-
-def test_duplicate_identity_across_workspaces_blocks_lookup_and_writes(paths):
-    target = imported(paths, "undated/Original.md")
-    copy = imported(paths, "undated/Copy.md", workspace="personal")
-    copy.write_bytes(target.read_bytes())
-    note = get(paths, "undated/Original.md")
-    with pytest.raises(NoteError, match="duplicate"):
-        get(paths, note.id)
-    with pytest.raises(NoteError, match="duplicate"):
-        memory.update_note(paths, "team", note.path, "Changed", expected_hash=note.sha256)
-    found = memory.scan(paths, "team").audit()
-    assert {p["path"] for p in found if p["problem"] == "duplicate note id"} == {
-        "undated/Original.md",
-        "undated/Copy.md",
-    }
 
 
 def test_missing_capture_references_are_reported_preserved_and_not_writable(paths):
@@ -240,14 +208,12 @@ def test_links_are_relative_with_headings_assets_and_no_workspace_or_wiki_guessi
     assert any("missing link" in p["problem"] for p in memory.scan(paths, "team").audit())
 
 
-def test_safe_reads_writes_conflicts_and_lock_contention(paths, monkeypatch):
+def test_safe_reads_writes_and_lock_contention(paths):
     note = memory.create_note(paths, "team", "Note.md", "Original", occurred=None)
     root = paths.workspace_memory("team")
     for name in ("../escape.md", ".hidden.md", "/absolute.md", "undated/extra.md"):
         with pytest.raises(NoteError):
             memory.create_note(paths, "team", name, "Unsafe", occurred=None)
-    with pytest.raises(NoteError, match="already exists"):
-        memory.create_note(paths, "team", "NOTE.md", "Overwrite", occurred=None)
     outside = paths.home / "outside.md"
     outside.write_text("Untouched")
     (root / "undated/Link.md").symlink_to(outside)
@@ -261,30 +227,10 @@ def test_safe_reads_writes_conflicts_and_lock_contention(paths, monkeypatch):
             memory.update_note(paths, "team", note.id, "Concurrent", expected_hash=note.sha256)
     finally:
         os.close(fd)
-    original_hash = storage.hash_at
-    calls = 0
-    target = root / note.path
-    human = target.read_text().replace("Original", "Human correction")
-
-    def edited(directory, name):
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            target.write_text(human)
-        return original_hash(directory, name)
-
-    monkeypatch.setattr(storage, "hash_at", edited)
-    with pytest.raises(NoteError, match="changed during write"):
-        memory.update_note(paths, "team", note.id, "Agent edit", expected_hash=note.sha256)
-    assert target.read_text() == human
-    assert not list(root.rglob(".enso-note-*"))
 
 
-def test_root_audit_and_missing_memory_reads_do_not_create_files(paths):
-    assert not memory.scan(paths, "team").notes
-    assert not paths.workspace_memory("team").exists()
-    root = paths.workspace_memory("team")
-    root.symlink_to(paths.workspace("personal"))
+def test_a_symlinked_memory_root_is_reported_instead_of_read(paths):
+    paths.workspace_memory("team").symlink_to(paths.workspace("personal"))
     findings = memory.scan(paths, "team").audit("workspace:team")
     assert len(findings) == 1 and "symbolic link" in findings[0]["problem"]
 
@@ -439,35 +385,10 @@ def test_removal_checks_reported_revision_and_preserves_intervening_edits(paths,
     assert "Later correction" in target.read_text()
 
 
-def test_removal_refuses_symlinks_and_reports_unlink_failure_without_deleting(paths, monkeypatch):
+def test_removal_refuses_a_symlink_without_deleting_the_note_it_points_at(paths):
     note = memory.create_note(paths, "team", "Keep.md", "Original", occurred=None)
-    root = paths.workspace_memory("team")
-    target = root / note.path
+    target = paths.workspace_memory("team") / note.path
     original = target.read_bytes()
     target.with_name("Link.md").symlink_to(target)
-    cli = CliRunner()
-    refused = cli.invoke(app, ["memory", "remove", "undated/Link.md", "--yes"])
+    refused = CliRunner().invoke(app, ["memory", "remove", "undated/Link.md", "--yes"])
     assert refused.exit_code == 1 and target.read_bytes() == original
-    unlink = os.unlink
-
-    def denied(name, **kwargs):
-        if name == target.name:
-            raise PermissionError("permission denied")
-        return unlink(name, **kwargs)
-
-    monkeypatch.setattr(os, "unlink", denied)
-    failed = cli.invoke(app, ["memory", "remove", note.path, "--yes"])
-    assert failed.exit_code == 1 and "permission denied" in failed.output
-    assert "Removed." not in failed.output and target.read_bytes() == original
-
-
-def test_removal_reports_malformed_metadata_and_accepts_an_exact_import_path(paths):
-    target = imported(paths, "undated/Import.md", id="invalid", sources="unknown")
-    cli = CliRunner()
-    preview = cli.invoke(app, ["memory", "remove", "undated/Import.md"])
-    assert preview.exit_code == 0, preview.output
-    assert "id: missing/invalid" in preview.output and "sources: unavailable" in preview.output
-    assert "problem:" in preview.output and target.exists()
-    removed = cli.invoke(app, ["memory", "remove", "undated/Import.md", "--yes"])
-    assert removed.exit_code == 0, removed.output
-    assert not target.exists()

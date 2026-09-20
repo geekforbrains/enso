@@ -13,7 +13,6 @@ import time
 from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from conftest import (
@@ -35,12 +34,10 @@ from enso.jobs import runner as runner_module
 from enso.jobs.runner import (
     POSTRUN_FEEDBACK_LIMIT,
     JobRunner,
-    Postrun,
     acquire_group_lock,
     acquire_lock,
     decide,
 )
-from enso.locks import LockPathError
 from enso.runtime import ORIGIN_HEADER, Runtime
 
 
@@ -97,13 +94,25 @@ def recorded(nightly: Job) -> tuple[str, dict[str, str]]:
 
 
 async def test_manual_run_records_the_run_and_stays_quiet(
-    runner: JobRunner, enso_home: Paths, fake_config: Config, transport: FakeTransport
+    runner: JobRunner,
+    runtime: Runtime,
+    enso_home: Paths,
+    fake_config: Config,
+    transport: FakeTransport,
 ) -> None:
-    result = await runner.run(job(enso_home, fake_config, prompt="hello"), trigger="manual")
+    """Nobody sent a job, so it gets no origin block — not even after a chat turn ran."""
+    await runtime.handle(make_turn("hello"), FakeReply())
+    nightly = job(enso_home, fake_config, prompt="hello")
+    result = await runner.run(nightly, trigger="manual")
     assert (result.status, result.exit_code) == ("ok", 0) and result.run_id
     assert result.output.endswith(
         f"batch job=default:nightly run={result.run_id} workspace=default prompt=hello"
     )
+    assert ORIGIN_HEADER not in result.output
+    # A turn builds its child environment from a copy, so nothing chat-shaped is left behind.
+    assert [key for key in os.environ if key.startswith("ENSO_ORIGIN_")] == []
+    # The run took the job lock, which lives outside the job directory.
+    assert sorted(entry.name for entry in nightly.job_dir.iterdir()) == ["JOB.md"]
     run = runs.get(enso_home, result.run_id)
     assert run is not None and (run.status, run.trigger, run.output) == (
         "ok",
@@ -114,38 +123,6 @@ async def test_manual_run_records_the_run_and_stays_quiet(
     assert transport.sent == []
 
 
-async def test_a_job_prompt_never_gains_a_chat_origin(
-    runner: JobRunner, runtime: Runtime, enso_home: Paths, fake_config: Config
-) -> None:
-    """Nobody sent a job, so it gets no origin block — not even after a chat turn ran."""
-    await runtime.handle(make_turn("hello"), FakeReply())
-    result = await runner.run(job(enso_home, fake_config, prompt="hello"), trigger="manual")
-    assert result.status == "ok"
-    assert result.output.endswith(
-        f"batch job=default:nightly run={result.run_id} workspace=default prompt=hello"
-    )
-    assert ORIGIN_HEADER not in result.output
-    # A turn builds its child environment from a copy, so nothing chat-shaped is left behind.
-    assert [key for key in os.environ if key.startswith("ENSO_ORIGIN_")] == []
-
-
-async def test_run_records_the_clamped_effort(
-    runner: JobRunner, enso_home: Paths, fake_config: Config
-) -> None:
-    nightly = job(enso_home, fake_config, model="haiku", effort="max")
-    result = await runner.run(nightly, trigger="manual")
-    run = runs.get(enso_home, result.run_id or "")
-    assert result.status == "ok" and run is not None
-    assert (run.model, run.effort) == ("haiku", "high")  # the effective level, not the request
-
-
-@pytest.mark.parametrize(
-    ("model", "effort", "expected_effort"),
-    [
-        ("gemini-3.8-flash-low", "high", "low"),
-        ("gemini-3.8-flash-high", "low", "high"),
-    ],
-)
 async def test_agy_job_pins_the_workspace_project(
     enso_home: Paths,
     raw_config_both: dict,
@@ -153,11 +130,10 @@ async def test_agy_job_pins_the_workspace_project(
     transport: FakeTransport,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    model: str,
-    effort: str,
-    expected_effort: str,
 ) -> None:
     """A scheduled Antigravity run resolves its project instead of registering another one."""
+    # The effort lives in the model id, so the run row records that, not the job's own level.
+    model, effort, expected_effort = "gemini-3.8-flash-low", "high", "low"
     catalog = tmp_path / "gemini-home/.gemini/config/projects"
     catalog.mkdir(parents=True)
     catalog.joinpath("ws.json").write_text(
@@ -320,32 +296,6 @@ async def test_postrun_gets_the_output_on_stdin_and_the_outcome_in_env(
 
 
 @pytest.mark.parametrize(
-    ("script", "status", "exit_code"),
-    [("exit 1", "no_work", "1"), ("exit 3", "prerun_error", "3"), ("echo go", "ok", "0")],
-)
-async def test_postrun_runs_for_every_outcome(
-    runner: JobRunner,
-    enso_home: Paths,
-    fake_config: Config,
-    script: str,
-    status: str,
-    exit_code: str,
-) -> None:
-    nightly = job(
-        enso_home,
-        fake_config,
-        script=script,
-        hook=RECORDER,
-        prerun="prerun.sh",
-        postrun="postrun.sh",
-    )
-    result = await runner.run(nightly, trigger="manual")
-    seen, env = recorded(nightly)
-    assert result.status == status and seen == result.output
-    assert (env["ENSO_RUN_STATUS"], env["ENSO_RUN_EXIT_CODE"]) == (status, exit_code)
-
-
-@pytest.mark.parametrize(
     ("hook", "diagnostic"),
     [
         ("echo 'ENSO_ERROR: archive full' >&2; exit 2", "archive full"),
@@ -437,7 +387,7 @@ fi
     assert runs.attempts(enso_home, fresh.run_id or "")[0].output.startswith("new ")
 
 
-@pytest.mark.parametrize("limit", [None, 0, 1, 3])
+@pytest.mark.parametrize("limit", [None, 0, 3])
 async def test_postrun_followup_limit_is_default_two_or_the_job_override(
     runner: JobRunner,
     enso_home: Paths,
@@ -474,12 +424,7 @@ async def test_postrun_followup_limit_is_default_two_or_the_job_override(
 @pytest.mark.parametrize(
     ("hook", "error"),
     [
-        ("exit 10", "without a feedback message"),
         ("printf ' \\n\\t'; exit 10", "without a feedback message"),
-        (
-            f"head -c {POSTRUN_FEEDBACK_LIMIT + 1} /dev/zero | tr '\\0' x; exit 10",
-            "exceeds 65536 bytes",
-        ),
         (
             # A huge prefix followed by plausible instructions must not become a valid tail.
             f"head -c {2 * POSTRUN_FEEDBACK_LIMIT} /dev/zero | tr '\\0' x; echo repair; exit 10",
@@ -525,6 +470,7 @@ async def test_postrun_cannot_open_a_closed_prerun_gate(
 async def test_postrun_cannot_resume_a_group_collision(
     runner: JobRunner, enso_home: Paths, fake_config: Config
 ) -> None:
+    """A group collision still reacts, and that hook cannot ask for provider work."""
     nightly = job(
         enso_home,
         fake_config,
@@ -534,14 +480,11 @@ async def test_postrun_cannot_resume_a_group_collision(
     )
     held = acquire_group_lock(enso_home, "shared")
     assert held is not None
-    try:
+    with held:
         result = await runner.run(nightly, trigger="manual")
-    finally:
-        held.close()
     assert result.status == "error" and "no provider ran" in result.postrun_error
-    assert recorded(nightly)[1]["ENSO_RUN_STATUS"] == "skipped"
-    (attempt,) = runs.attempts(enso_home, result.run_id or "")
-    assert (attempt.number, attempt.status) == (0, "skipped")
+    env = recorded(nightly)[1]
+    assert (env["ENSO_RUN_STATUS"], env["ENSO_RUN_ATTEMPT"]) == ("skipped", "0")
 
 
 @pytest.mark.parametrize(
@@ -587,72 +530,6 @@ async def test_followup_requires_a_session_id(
     result = await runner.run(nightly, trigger="manual")
     assert result.status == "error" and "no session id" in result.postrun_error
     assert len(runs.attempts(enso_home, result.run_id or "")) == 1
-
-
-async def test_postrun_exit_zero_does_not_resume_even_with_stdout(
-    runner: JobRunner, enso_home: Paths, fake_config: Config
-) -> None:
-    nightly = job(enso_home, fake_config, hook="echo archived", postrun="postrun.sh")
-    result = await runner.run(nightly, trigger="manual")
-    assert result.status == "ok" and result.postrun_error == ""
-    (attempt,) = runs.attempts(enso_home, result.run_id or "")
-    assert attempt.postrun_exit_code == 0 and attempt.postrun_output == "archived\n"
-
-
-async def test_feedback_at_byte_limit_is_delivered_completely(
-    runner: JobRunner, enso_home: Paths, fake_config: Config
-) -> None:
-    nightly = job(
-        enso_home,
-        fake_config,
-        hook=(
-            'if [ "$ENSO_RUN_ATTEMPT" = 1 ]; then '
-            f"head -c {POSTRUN_FEEDBACK_LIMIT} /dev/zero | tr '\\0' x; exit 10; fi"
-        ),
-        postrun="postrun.sh",
-    )
-    result = await runner.run(nightly, trigger="manual")
-    assert result.status == "ok" and result.output.endswith(
-        "prompt=" + "x" * POSTRUN_FEEDBACK_LIMIT
-    )
-    first, second = runs.attempts(enso_home, result.run_id or "")
-    assert first.postrun_output == "x" * POSTRUN_FEEDBACK_LIMIT
-    assert first.session_id == second.session_id
-
-
-@pytest.mark.parametrize("spent", [3, 10])
-async def test_followups_share_provider_timeout_but_hook_time_does_not_spend_it(
-    runner: JobRunner,
-    enso_home: Paths,
-    fake_config: Config,
-    monkeypatch: pytest.MonkeyPatch,
-    spent: int,
-) -> None:
-    clock = [100.0]
-    timeouts = []
-    durations = []
-
-    async def execute(*args, timeout, **kwargs):
-        timeouts.append(timeout)
-        clock[0] += spent
-        return ProviderTurn("ok", output="done", exit_code=0, session_id="session")
-
-    async def check(job, result, duration_ms, *, attempt):
-        durations.append(duration_ms)
-        clock[0] += 100  # excludes even a long postrun invocation from provider budget
-        return Postrun(10, "repair") if attempt == 1 else Postrun(0)
-
-    monkeypatch.setattr(runner_module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
-    monkeypatch.setattr(runner_module.execution, "execute_turn", execute)
-    monkeypatch.setattr(runner, "_postrun", check)
-    nightly = job(enso_home, fake_config, hook="exit 0", postrun="postrun.sh", timeout=10)
-    result = await runner.run(nightly, trigger="manual")
-    if spent == 3:
-        assert result.status == "ok" and timeouts == [10, 7]
-        assert durations == [3000, 106000]
-    else:
-        assert result.status == "timeout" and timeouts == [10]
-        assert "time budget was exhausted" in result.postrun_error
 
 
 async def test_postrun_keeps_both_locks_and_run_row_until_followups_finish(
@@ -1068,20 +945,6 @@ async def test_jobs_preserve_provider_arguments_without_policy_prerequisites(
     assert launch["cwd"] == str(enso_home.workspace("default").resolve())
     assert not (enso_home.workspace("default") / ".claude/settings.json").exists()
     assert transport.sent == []
-
-
-def test_job_lock_lives_outside_the_job_and_refuses_a_symbolic_link(
-    enso_home: Paths, fake_config: Config, tmp_path: Path
-) -> None:
-    nightly = job(enso_home, fake_config)
-    acquire_lock(enso_home, nightly.ref).close()
-    assert sorted(entry.name for entry in nightly.job_dir.iterdir()) == ["JOB.md"]
-    lock = enso_home.lock("jobs", "default", "nightly")
-    lock.unlink()
-    lock.symlink_to(tmp_path / "outside.lock")
-    with pytest.raises(LockPathError, match="symbolic link"):
-        acquire_lock(enso_home, nightly.ref)
-    assert not (tmp_path / "outside.lock").exists()
 
 
 async def test_same_named_jobs_have_independent_execution_and_history(

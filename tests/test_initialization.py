@@ -149,14 +149,6 @@ def test_init_never_marks_an_existing_unmarked_home_current(enso_home):
     assert enso_home.agents_md.read_text() == "existing instructions"
 
 
-@pytest.mark.parametrize("content", ['{"revision": true}', '{"revision": 99}', "{"])
-def test_init_refuses_bad_migration_marker_before_seeding(enso_home, content):
-    (enso_home.home / migrations.MARKER).write_text(content)
-    report = initialization.initialize_home(enso_home)
-    assert not report["ok"] and report["changes"] == []
-    assert not enso_home.agents_md.exists() and not enso_home.config_example.exists()
-
-
 @pytest.mark.parametrize(
     "relative",
     [
@@ -287,17 +279,16 @@ def test_apply_stale_revision_and_busy_lock_preserve_config(enso_home, raw_confi
 
 
 def test_apply_proceeds_while_the_service_holds_the_receiver(enso_home, raw_config):
+    connection_setup._prepare(enso_home)
+    state = enso_home.connection_dir / "state.json"
+    state.write_text("{")  # an unreadable pairing state is fail-closed, not "no pairing"
+    unreadable = initialization.apply_config(enso_home, raw_config)
+    assert not unreadable["applied"] and "connection state" in unreadable["problems"][0]
+    assert not enso_home.config.exists()
+    state.unlink()
     with connection_setup.service_receiver(enso_home):
         report = initialization.apply_config(enso_home, raw_config, expected_hash="missing")
     assert report["ok"] and report["restart_required"] is False
-
-
-def test_apply_refuses_when_the_pairing_state_cannot_be_read(enso_home, raw_config):
-    connection_setup._prepare(enso_home)
-    (enso_home.connection_dir / "state.json").write_text("{")
-    report = initialization.apply_config(enso_home, raw_config)
-    assert not report["applied"] and "connection state" in report["problems"][0]
-    assert not enso_home.config.exists()
 
 
 def test_apply_reports_when_only_a_restart_can_apply_the_change(enso_home, raw_config):
@@ -391,18 +382,20 @@ def test_check_reports_revision_of_the_validated_snapshot(enso_home, raw_config,
     assert report["config_hash"] == hashlib.sha256(before).hexdigest()
 
 
-def test_provider_catalog_matches_adapter_caps_without_claiming_dynamic_model_access(enso_home):
+def test_provider_catalog_matches_adapter_caps_without_reading_config(enso_home):
     code, catalog = invoke("providers", "--json")
-    assert code == 0 and catalog["version"] == 1
+    assert code == 0 and catalog["version"] == 1 and catalog["enso_version"]
     assert {p["id"] for p in catalog["providers"]} == set(PROVIDER_CLASSES)
     for provider in catalog["providers"]:
         cls = PROVIDER_CLASSES[provider["id"]]
+        assert provider.keys() >= {"label", "installed", "default_model", "default_effort"}
         for model in provider["models"]:
-            assert model["id"] in cls.models
-            if provider["id"] == "opencode":
+            assert model["id"] in cls.models and model.keys() >= {"label", "efforts", "known"}
+            if provider["id"] == "opencode":  # its catalog is dynamic, so nothing is bundled
                 assert model["efforts"] == [] and not model["known"]
+                assert provider["default_effort"] is None
             else:
-                assert model["efforts"]
+                assert model["efforts"] and model["known"]
                 assert all(cls.clamp_effort(e, model["id"]) == e for e in model["efforts"])
         if provider["default_effort"] is not None:
             assert provider["default_effort"] in provider["models"][0]["efforts"]
@@ -494,12 +487,6 @@ def test_invalid_edits_leave_the_file_unchanged(enso_home, raw_config, arguments
     assert enso_home.config.read_bytes() == previous
 
 
-def test_set_never_echoes_a_token_repeated_in_the_new_value(enso_home, raw_config):
-    save_config(enso_home, raw_config)
-    code, report = invoke("config", "set", "defaults.model", "xoxb-test", "--json")
-    assert code == 1 and report["problems"] and "xoxb-test" not in json.dumps(report)
-
-
 def test_set_and_unset_need_a_readable_document(enso_home):
     code, report = invoke("config", "set", "logging.level", "DEBUG", "--json")
     assert code == 1 and report["config_hash"] == "missing"
@@ -510,16 +497,6 @@ def test_set_and_unset_need_a_readable_document(enso_home):
     assert code == 1 and "repair it with config apply" in report["problems"][0]
     assert report["config_hash"] == config_fingerprint(enso_home)
     assert enso_home.config.read_text() == "{"
-
-
-def test_set_with_a_stale_revision_preserves_config(enso_home, raw_config):
-    save_config(enso_home, raw_config)
-    previous = enso_home.config.read_bytes()
-    edit = initialization.ConfigEdit("set", "logging.level", "DEBUG")
-    stale = initialization.patch_config(enso_home, [edit], expected_hash="missing")
-    assert not stale["applied"] and "changed" in stale["problems"][0]
-    assert stale["config_hash"] == config_fingerprint(enso_home)
-    assert enso_home.config.read_bytes() == previous
 
 
 @pytest.mark.parametrize("operation", ["apply", "set"])

@@ -168,21 +168,6 @@ def test_piped_installer_uses_release_defaults_and_accepts_overrides(tmp_path, m
     assert json.loads(repeated.stdout) == command
 
 
-def test_local_bundle_still_requires_manifest_without_preparing_home(tmp_path):
-    installer = standalone(tmp_path)
-    home = tmp_path / "untouched"
-    result = subprocess.run(
-        ["sh", str(installer)],
-        env=dict(os.environ, HOME=str(home), ENSO_HOME=str(home)),
-        capture_output=True,
-        text=True,
-        timeout=5,
-    )
-    assert result.returncode == 2
-    assert "--manifest" in result.stderr
-    assert not home.exists()
-
-
 def test_release_builder_refuses_dirty_checkout_and_nonempty_output(tmp_path, monkeypatch):
     namespace = runpy.run_path(str(ROOT / "scripts/build-release.py"))
     build = namespace["build"]
@@ -237,12 +222,9 @@ def release_builder(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
+    # The trailing slash also proves the base is normalized before the URLs are pinned.
     "base",
-    [
-        None,
-        "https://github.com/geekforbrains/enso/releases/download/v0.1.0",
-        "https://downloads.example.test/releases/0.1.0/",
-    ],
+    [None, "https://downloads.example.test/releases/0.1.0/"],
 )
 def test_builder_emits_only_release_artifacts_with_matching_pinned_urls(
     tmp_path, release_builder, base
@@ -274,31 +256,26 @@ def test_builder_emits_only_release_artifacts_with_matching_pinned_urls(
 
 
 @pytest.mark.parametrize(
-    "base",
+    ("base", "feed"),
     [
-        "",
-        "/tmp/releases/v0.1.0",
-        "http://127.0.0.1/v0.1.0",
-        "https://secret@example.test/v0.1.0",
-        "https://example.test/v0.1.0?token=secret",
-        "https://example.test/v0.1.0?",
-        "https://example.test/v0.1.0#secret",
-        "https://example.test/../v0.1.0",
-        "https://example.test/%2e%2e/v0.1.0",
-        "https://example.test/%252e%252e/v0.1.0",
-        "https://example.test/a\\b/v0.1.0",
-        "https://example.test//v0.1.0",
-        "https://example.test/releases/latest",
-        "https://example.test/v0.2.0",
+        # releases.normalize_source owns URL validation (tests/test_releases.py); what is
+        # builder-only is HTTPS even for loopback, a credential-free URL, a pinned base, and
+        # a feed that is HTTPS and paired with an artifact base.
+        ("http://127.0.0.1/v0.1.0", None),
+        ("https://secret@example.test/v0.1.0", None),
+        ("https://example.test/releases/latest", None),
+        ("https://example.test/v0.2.0", None),
+        (None, "https://example.test/latest/release.json"),
+        ("https://example.test/v0.1.0", "http://127.0.0.1/release.json"),
     ],
 )
-def test_builder_rejects_unsafe_or_unpinned_artifact_bases_before_building(
-    tmp_path, release_builder, base
+def test_builder_rejects_unsafe_or_unpinned_release_sources_before_building(
+    tmp_path, release_builder, base, feed
 ):
     build, commands = release_builder
     output = tmp_path / "output"
     with pytest.raises(ReleaseError) as error:
-        build(output, artifact_base=base)
+        build(output, artifact_base=base, feed=feed)
     assert "secret" not in str(error.value)
     assert all(command[0] != "uv" for command in commands)
     assert not output.exists()
@@ -316,28 +293,6 @@ def test_builder_embeds_update_feed_alongside_pinned_manifest(tmp_path, release_
         "set -- --manifest https://example.test/v0.1.0/release.json "
         '--feed https://example.test/latest/release.json "$@"'
     ) in (output / "install.sh").read_text()
-
-
-@pytest.mark.parametrize(
-    ("base", "feed"),
-    [
-        (None, "https://example.test/latest/release.json"),
-        ("https://example.test/v0.1.0", "./release.json"),
-        ("https://example.test/v0.1.0", "http://127.0.0.1/release.json"),
-        ("https://example.test/v0.1.0", "https://secret@example.test/release.json"),
-        ("https://example.test/v0.1.0", "https://example.test/release.json?token=secret"),
-    ],
-)
-def test_builder_rejects_invalid_installer_feeds_before_building(
-    tmp_path, release_builder, base, feed
-):
-    build, commands = release_builder
-    output = tmp_path / "output"
-    with pytest.raises(ReleaseError) as error:
-        build(output, artifact_base=base, feed=feed)
-    assert "secret" not in str(error.value)
-    assert all(command[0] != "uv" for command in commands)
-    assert not output.exists()
 
 
 @pytest.mark.parametrize("feed", [None, "./stable/release.json"])

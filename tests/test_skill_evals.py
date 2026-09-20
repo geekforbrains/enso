@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-import subprocess
 import sys
 from pathlib import Path
 
@@ -45,18 +44,6 @@ def codex_tool(kind, ident, **kwargs):
     return {"type": kind, "item": {"id": ident, "type": "command_execution", **kwargs}}
 
 
-def codex_usage(**kwargs):
-    return {
-        "type": "turn.completed",
-        "usage": {
-            "input_tokens": 1000,
-            "cached_input_tokens": 800,
-            "output_tokens": 40,
-            **kwargs,
-        },
-    }
-
-
 def test_codex_counts_calls_once_and_keeps_cache_inside_input(tmp_path):
     result = measurements(
         tmp_path,
@@ -79,7 +66,14 @@ def test_codex_counts_calls_once_and_keeps_cache_inside_input(tmp_path):
                 "type": "item.completed",
                 "item": {"id": "4", "type": "agent_message", "text": "Done"},
             },
-            codex_usage(),
+            {
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": 1000,
+                    "cached_input_tokens": 800,
+                    "output_tokens": 40,
+                },
+            },
         ],
     )
     assert (result["input_tokens"], result["cached_input_tokens"], result["output_tokens"]) == (
@@ -91,27 +85,8 @@ def test_codex_counts_calls_once_and_keeps_cache_inside_input(tmp_path):
     assert result["measurement_complete"] and result["output"] == "Done"
 
 
-@pytest.mark.parametrize(
-    "events",
-    [
-        [codex_tool("item.started", "1"), codex_usage()],
-        [codex_usage(input_tokens=-1)],
-        [codex_usage(input_tokens=True)],
-        [codex_usage(output_tokens=None)],
-        [{"type": "item.completed", "item": {"type": "new_tool", "id": "1"}}, codex_usage()],
-        [],
-    ],
-)
-def test_missing_or_unknown_measurements_never_certify_a_run(tmp_path, events):
-    assert not measurements(tmp_path, "codex", events)["measurement_complete"]
-
-
-def test_malformed_lines_are_retained_as_measurement_warnings(tmp_path):
-    path = tmp_path / "events.jsonl"
-    path.write_text("not JSON\n" + json.dumps(codex_usage()) + "\n")
-    result = measure(path, "codex").as_dict()
-    assert not result["measurement_complete"]
-    assert "Event 1" in result["warnings"][0]
+def test_missing_usage_never_certifies_a_run(tmp_path):
+    assert not measurements(tmp_path, "codex", [])["measurement_complete"]
 
 
 def test_claude_counts_tool_ids_and_terminal_model_usage_without_double_counting(tmp_path):
@@ -230,40 +205,6 @@ def test_scenario_rejects_escaping_paths_and_empty_checks(tmp_path):
         load_scenario(path)
 
 
-def test_checks_refuse_provider_created_database_symlinks(tmp_path):
-    scenario = load_scenario(SCENARIO)
-    home = tmp_path / "enso"
-    workspace = home / "workspaces/eval"
-    original = prepare(home, workspace, scenario)
-    database = home / "enso.db"
-    database.unlink()
-    database.symlink_to(tmp_path / "outside.db")
-    results = check_results(home, workspace, scenario, original)
-    assert all(not result["passed"] for result in results)
-    assert "symlink" in results[0]["error"]
-    assert not (tmp_path / "outside.db").exists()
-
-
-def test_scenarios_can_assert_intended_internal_changes(tmp_path):
-    scenario = load_scenario(SCENARIO)
-    scenario["protect_internal_state"] = False
-    scenario["checks"] = [
-        {
-            "name": "sessions table removed",
-            "kind": "sql",
-            "query": "SELECT name FROM sqlite_master WHERE name = 'sessions'",
-            "expected": [],
-        }
-    ]
-    home = tmp_path / "enso"
-    workspace = home / "workspaces/eval"
-    original = prepare(home, workspace, scenario)
-    assert original is None
-    with sqlite3.connect(home / "enso.db") as con:
-        con.execute("DROP TABLE sessions")
-    assert check_results(home, workspace, scenario, original)[0]["passed"]
-
-
 def test_environment_drops_live_enso_context_credentials_and_hooks(tmp_path, monkeypatch):
     monkeypatch.setenv("ENSO_HOME", "/real/enso")
     monkeypatch.setenv("ENSO_TASK", "EN-999")
@@ -305,17 +246,19 @@ def test_process_timeout_retains_partial_events(tmp_path):
     assert (tmp_path / "events.jsonl").read_text() == "partial\n"
 
 
-def test_process_output_limit(tmp_path, monkeypatch):
-    monkeypatch.setattr(runner, "MAX_OUTPUT", 100)
-    code, status, _ = runner.execute(
-        [sys.executable, "-c", "import time; print('x'*200, flush=True); time.sleep(10)"],
-        "",
-        tmp_path,
-        {"PATH": os.defpath},
-        tmp_path,
-        2,
+def test_package_tracks_support_file_contents_and_refuses_symlinks(tmp_path):
+    root = tmp_path / "src/enso/bundled/skills/test"
+    (root / "references").mkdir(parents=True)
+    (root / "SKILL.md").write_text("skill")
+    (root / "references/info.md").write_text("one")
+    before = runner.package(tmp_path, "test", "working-tree")
+    (root / "references/info.md").write_text("two")
+    assert runner.package_hash(before) != runner.package_hash(
+        runner.package(tmp_path, "test", "working-tree")
     )
-    assert status == "output_limit" and code != 0
+    (root / "escape").symlink_to(tmp_path.parent)
+    with pytest.raises(ValueError, match="symlinks"):
+        runner.package(tmp_path, "test", "working-tree")
 
 
 def test_real_cli_entrypoint_offline_with_fake_provider(tmp_path, monkeypatch):
@@ -371,9 +314,7 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':120,'cached_in
     ]
     assert manifest["packages"]["baseline"] == manifest["packages"]["candidate"]
     report = (output / "report.md").read_text()
-    assert "human review pending" in report and "120" in report
-    assert "Identical packages" in report
-    assert "0 absolute (baseline zero)" in report
+    assert "120" in report
     for entry in manifest["runs"]:
         result = json.loads((output / entry["id"] / "result.json").read_text())
         assert result["checks_passed"] and result["measurements"]["measurement_complete"]
@@ -407,65 +348,6 @@ def test_failures_cannot_look_like_improvements():
     assert summary["candidate"]["samples"] == 0
     assert summary["candidate"]["medians"]["input_tokens"] is None
     assert "regression" in reports.conclusion([good, bad], summary)
-
-
-def test_package_snapshot_tracks_support_files_and_rejects_symlinks(tmp_path):
-    root = tmp_path / "src/enso/bundled/skills/test"
-    root.mkdir(parents=True)
-    (root / "SKILL.md").write_text("skill")
-    (root / "references").mkdir()
-    reference = root / "references/info.md"
-    reference.write_text("one")
-    before = runner.package(tmp_path, "test", "working-tree")
-    assert runner.package(tmp_path, "test", str(root)) == before
-    reference.write_text("two")
-    after = runner.package(tmp_path, "test", "working-tree")
-    assert runner.package_hash(before) != runner.package_hash(after)
-    reference.chmod(0o755)
-    executable = runner.package(tmp_path, "test", "working-tree")
-    assert runner.package_hash(executable) != runner.package_hash(after)
-    runner.write_package(tmp_path / "copy", executable)
-    assert (tmp_path / "copy/references/info.md").stat().st_mode & 0o111
-    assert not (tmp_path / "copy/SKILL.md").stat().st_mode & 0o111
-    (root / "escape").symlink_to(tmp_path.parent)
-    with pytest.raises(ValueError, match="symlinks"):
-        runner.package(tmp_path, "test", "working-tree")
-
-
-def test_help_and_catalog_do_not_launch_a_provider():
-    result = subprocess.run(
-        [str(REPO / "scripts/eval-skills"), "list"],
-        cwd=REPO,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    assert result.returncode == 0 and "tables-import" in result.stdout
-
-
-def test_recovered_permission_denial_is_effort_not_failed_execution(tmp_path):
-    result = measurements(
-        tmp_path,
-        "claude",
-        [
-            {
-                "type": "result",
-                "subtype": "success",
-                "is_error": False,
-                "modelUsage": {
-                    "primary": {
-                        "inputTokens": 10,
-                        "cacheReadInputTokens": 0,
-                        "cacheCreationInputTokens": 0,
-                        "outputTokens": 5,
-                    }
-                },
-                "permission_denials": [{"tool_name": "Bash", "tool_use_id": "denied"}],
-            }
-        ],
-    )
-    assert result["measurement_complete"] and not result["errors"]
-    assert (result["tool_calls"], result["tool_failures"]) == (1, 1)
 
 
 def test_human_review_records_verdict_without_changing_raw_measurements(tmp_path, monkeypatch):

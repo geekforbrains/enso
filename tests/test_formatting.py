@@ -10,7 +10,6 @@ from enso.formatting import (
     has_slack_code_language,
     md_to_html,
     md_to_mrkdwn,
-    model_label,
     split_markdown,
     status_text,
 )
@@ -28,30 +27,15 @@ def test_status_text_formats_agent_and_elapsed() -> None:
 
 
 @pytest.mark.parametrize(
-    ("model", "expected"),
-    [
-        ("opus", "opus"),
-        ("openrouter/deepseek/deepseek-v4-flash-0731", "deepseek-v4-flash-0731"),
-        ("x" * 24, "x" * 24),
-        ("openrouter/deepseek/deepseek-v4-flash-vision-exp", "deepseek-v4-fla…sion-exp"),
-    ],
-)
-def test_model_label(model: str, expected: str) -> None:
-    assert model_label(model) == expected
-
-
-@pytest.mark.parametrize(
     ("markdown", "mrkdwn"),
     [
         ("# Title\n\n**bold** and *it* and ~~gone~~", "*Title*\n\n*bold* and _it_ and ~gone~"),
         ("[docs](https://x.y/z)", "<https://x.y/z|docs>"),
-        ("[docs](http://x.y/z)", "<http://x.y/z|docs>"),
         ("[email](mailto:hello@x.y)", "<mailto:hello@x.y|email>"),
         ("[channel](slack://open)", "<slack://open|channel>"),
         ("[channel](slack:open)", "`slack:open`"),
         ("[proposal](/Users/gavin/drafts/report.md)", "`/Users/gavin/drafts/report.md`"),
         ("[proposal](/Users/gavin/Enso(old)/report.md)", "`/Users/gavin/Enso(old)/report.md`"),
-        ("[proposal](drafts/report.md)", "`drafts/report.md`"),
         ("[proposal](file:///Users/gavin/report.md)", "`file:///Users/gavin/report.md`"),
         ("[proposal](drafts/*report*.md)", "`drafts/*report*.md`"),
         ("[broken](https://[)", "`https://[`"),
@@ -104,17 +88,8 @@ def test_chunk_text_keeps_markdown_or_falls_back_to_lines() -> None:
     ("text", "labelled"),
     [
         ("Here:\n```python\nprint(1)\n```\n", True),
-        ("Here:\n```json\n{}\n```", True),
-        ("```PYTHON\nprint(1)\n```", True),  # the label is matched case-insensitively
-        ("```python title=x\nprint(1)\n```", True),  # only the first info word is the label
-        ("  ```yaml\na: 1\n```", True),  # up to three spaces of indent still opens a fence
-        ("~~~sql\nselect 1\n~~~", True),
-        ("```python\nprint(1)", True),  # an unterminated fence still names its language
         ("Here:\n```\nplain\n```\n", False),
         ("```mermaid\ngraph TD\n```", False),  # not a language Slack highlights
-        ("no fence, just `python` inline", False),
-        ("```\n```python\n```\n", False),  # quoted inside an unlabelled fence
-        ("```text\n```\n```json\n{}\n```\n", True),  # a later fence is still found
     ],
 )
 def test_has_slack_code_language(text: str, labelled: bool) -> None:

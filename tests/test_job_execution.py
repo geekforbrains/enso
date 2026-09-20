@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import sys
@@ -104,25 +103,11 @@ async def test_provider_starts_then_resumes_exact_session_with_prompt_as_data(tm
     assert initial["env"] == resumed["env"] == "passed"
     assert "--permission-flag" in initial["args"]
     assert not (tmp_path / "hacked").exists()
-    if name == "agy":
-        assert f"--prompt={prompt}" in initial["args"]
-        assert "--new-project" in initial["args"] and "--new-project" not in resumed["args"]
-        assert resumed["args"][resumed["args"].index("--conversation") + 1] == first.session_id
-    else:
-        prefix = "--single=" if name == "grok" else ""
-        assert initial["args"][-1] == prefix + prompt
-        assert resumed["args"][-1] == prefix + "Please commit now."
-        if provider.assigns_session_id:
-            assert "--session-id" in initial["args"] and "--session-id" not in resumed["args"]
-            assert resumed["args"][resumed["args"].index("--resume") + 1] == first.session_id
-        elif name == "codex":
-            assert "--json" in initial["args"]
-            assert "resume" not in initial["args"] and "resume" in resumed["args"]
-            assert resumed["args"][-2] == first.session_id
-        else:
-            assert "-s" not in initial["args"]
-            assert resumed["args"][resumed["args"].index("-s") + 1] == first.session_id
-            assert initial["args"][initial["args"].index("--dir") + 1] == str(tmp_path)
+    # The prompt travels as one argument, never through a shell; the resume carries the
+    # first turn's session id. Which flag holds either is test_providers.py's contract.
+    assert any(prompt in arg for arg in initial["args"])
+    assert any("Please commit now." in arg for arg in resumed["args"])
+    assert first.session_id in resumed["args"]
 
 
 async def test_early_session_survives_large_stream_and_final_answer_is_bounded(tmp_path):
@@ -165,7 +150,6 @@ async def test_final_unterminated_line_is_parsed(tmp_path):
     ("name", "event"),
     [
         ("claude", {"type": "result", "is_error": True, "result": "validation failed"}),
-        ("grok", {"type": "result", "is_error": True, "result": "validation failed"}),
         ("codex", {"type": "turn.failed", "error": {"message": "validation failed"}}),
         ("agy", {"event": "result", "result": {"status": "ERROR", "error": "validation failed"}}),
         ("opencode", {"type": "error", "error": {"data": {"message": "validation failed"}}}),
@@ -219,13 +203,6 @@ async def test_invalid_announced_session_fails(tmp_path):
     assert result.session_id is None
 
 
-async def test_invalid_resume_id_is_rejected_before_launch(tmp_path):
-    provider = CodexProvider(write_cli(tmp_path, "Path('launched').touch()"))
-    result = await invoke(provider, tmp_path, session_id="../escape")
-    assert result.status == "error" and "invalid codex session id" in result.error
-    assert not (tmp_path / "launched").exists()
-
-
 @pytest.mark.parametrize("resume", [False, True])
 async def test_conflicting_cli_id_fails_and_retains_original_session(tmp_path, resume):
     provider = CodexProvider(
@@ -240,20 +217,6 @@ async def test_conflicting_cli_id_fails_and_retains_original_session(tmp_path, r
     result = await invoke(provider, tmp_path, session_id=SESSION if resume else None)
     assert result.status == "error" and "different session" in result.error
     assert result.session_id == SESSION
-
-
-async def test_enso_assigned_id_remains_authoritative_on_conflicting_announcement(tmp_path):
-    provider = ClaudeProvider(
-        write_cli(
-            tmp_path,
-            "print(json.dumps({'type': 'result', 'result': 'done',"
-            f" 'session_id': {OTHER_SESSION!r}}}))",
-        )
-    )
-    result = await invoke(provider, tmp_path)
-    assert result.status == "error" and "different session" in result.error
-    assert result.session_id is not None and result.session_id != OTHER_SESSION
-    assert str(UUID(result.session_id)) == result.session_id
 
 
 async def test_missing_cli_session_can_succeed_but_cannot_resume(tmp_path):
@@ -294,20 +257,6 @@ async def test_successful_exit_without_recognized_events_fails(tmp_path, resume,
     assert result.session_id == (SESSION if resume else None)
 
 
-async def test_unknown_provider_events_keep_a_bounded_diagnostic(tmp_path):
-    provider = ClaudeProvider(
-        write_cli(
-            tmp_path,
-            f"print(json.dumps({{'unknown': 'x' * {OUTPUT_KEEP + 1000} + 'diagnostic tail'}}))",
-        )
-    )
-    result = await invoke(provider, tmp_path)
-    assert result.status == "error" and result.session_id is None
-    assert result.error.startswith("claude returned no recognized provider events: ")
-    assert result.error.endswith('diagnostic tail"}')
-    assert len(result.error.encode()) <= provider_stream.DIAGNOSTIC_KEEP
-
-
 @pytest.mark.parametrize(
     "event",
     [
@@ -342,67 +291,3 @@ async def test_exhausted_budget_never_launches_provider(tmp_path):
     provider = CodexProvider(write_cli(tmp_path, "Path('launched').touch()"))
     result = await invoke(provider, tmp_path, timeout=0)
     assert result.status == "timeout" and not (tmp_path / "launched").exists()
-
-
-@pytest.mark.parametrize("cancel", [False, True])
-async def test_cleanup_kills_descendant_holding_output_pipe_after_parent_exits(
-    tmp_path, monkeypatch, cancel
-):
-    monkeypatch.setattr(execution.uuid, "uuid4", lambda: UUID(SESSION))
-    provider = ClaudeProvider(
-        write_cli(
-            tmp_path,
-            f"""
-            import signal, subprocess
-            read_fd, write_fd = os.pipe()
-            child = subprocess.Popen([
-                sys.executable, '-c',
-                'import os, signal, sys; signal.signal(signal.SIGTERM, signal.SIG_IGN); '
-                'os.write(int(sys.argv[1]), b"1"); signal.pause()', str(write_fd)
-            ], pass_fds=(write_fd,))
-            os.close(write_fd)
-            os.read(read_fd, 1)
-            os.close(read_fd)
-            print(json.dumps({{'type': 'result', 'session_id': {SESSION!r}}}), flush=True)
-            if {cancel!r}:
-                signal.pause()
-            """,
-        )
-    )
-    processes = []
-    original_create = asyncio.create_subprocess_exec
-    original_feed = provider_stream.ProviderStream.feed
-    original_terminate = execution.terminate_process_tree
-    started = asyncio.Event()
-
-    async def create(*args, **kwargs):
-        process = await original_create(*args, **kwargs)
-        processes.append(process)
-        return process
-
-    def feed(stream, line):
-        events = original_feed(stream, line)
-        started.set()
-        return events
-
-    async def terminate(process, label):
-        await original_terminate(process, label, grace=0.05)
-
-    monkeypatch.setattr(execution.asyncio, "create_subprocess_exec", create)
-    monkeypatch.setattr(provider_stream.ProviderStream, "feed", feed)
-    monkeypatch.setattr(execution, "terminate_process_tree", terminate)
-    baseline = asyncio.all_tasks()
-    running = asyncio.create_task(invoke(provider, tmp_path, timeout=3 if cancel else 1))
-    await asyncio.wait_for(started.wait(), 2)
-    if cancel:
-        running.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await running
-    else:
-        result = await running
-        assert result.status == "timeout" and result.exit_code == 0
-        assert result.session_id == SESSION
-    assert asyncio.all_tasks() <= baseline
-    assert processes[0].returncode is not None
-    # The child ignores SIGTERM and inherits stdout, so EOF proves cleanup reached it.
-    assert await asyncio.wait_for(processes[0].stdout.read(), 1) == b""

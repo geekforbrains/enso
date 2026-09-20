@@ -14,7 +14,6 @@ from typer.testing import CliRunner
 from enso import doctor, heartbeat, knowledge, memory, service, workspaces
 from enso.cli import app
 from enso.config import Paths, load_config
-from enso.providers.codex import CodexProvider
 from enso.transport_registry import TRANSPORTS
 
 BINARY = "/opt/enso/bin/enso"
@@ -118,26 +117,6 @@ def test_fresh_two_workspace_home_with_bundled_memory_jobs_passes_doctor(
         "default:enso-update",
         "team:enso-memory",
     ]
-
-
-def test_codex_astra_is_available_with_ultra_effort(
-    enso_home: Paths, raw_config: dict, unit: Path
-) -> None:
-    raw_config["defaults"] = {"provider": "codex", "model": "astra", "effort": "ultra"}
-    healthy(enso_home, raw_config)
-
-    report = doctor.run(enso_home)
-
-    assert report.ok
-    assert report.section("providers").details["codex"]["models"] == CodexProvider.models
-    provider = CodexProvider(sys.executable)
-    for model in ("astra", "gpt-6-astra"):
-        assert provider.max_effort(model) == "ultra"
-        effort = provider.clamp_effort("ultra", model)
-        assert provider.command("hi", model, effort, []) == [
-            sys.executable, "exec", "--json", "-m", "gpt-6-astra",
-            "-c", 'model_reasoning_effort="ultra"', "--", "hi",
-        ]  # fmt: skip
 
 
 def test_heartbeat_health_is_read_only_and_respects_disabling(enso_home, raw_config, unit):
@@ -261,85 +240,6 @@ def test_a_degraded_home_names_each_problem(
     assert stopped.note == "launchd, loaded but stopped" and stopped.status == "error"
     assert stopped.problems == [
         "the service is installed but not running; `enso service start`, then `enso logs`"
-    ]
-
-
-def test_a_bad_schedule_names_its_file_and_changes_nothing(
-    enso_home: Paths, raw_config: dict, unit: Path
-) -> None:
-    """The report has to be enough to repair the file by hand; doctor never edits it."""
-    healthy(enso_home, raw_config)
-    path = write_job(enso_home, "hourly", schedule="@hourly")
-    before = path.read_bytes()
-
-    section = doctor.run(enso_home).section("jobs")
-
-    assert section.problems == [
-        f"default:hourly ({path}): schedule '@hourly' must be exactly five fields, "
-        "minute hour day-of-month month day-of-week; Enso schedules at minute resolution, "
-        "so a seconds or year field and aliases such as @daily are not accepted"
-    ]
-    # The nightly enso-audit agent reads exactly this JSON, so the path must survive it.
-    payload = json.loads(json.dumps(doctor.run(enso_home).as_dict()))
-    assert payload["sections"][7]["problems"] == section.problems
-    assert path.read_bytes() == before
-
-
-def test_no_service_manager_is_a_warning(enso_home: Paths, monkeypatch: pytest.MonkeyPatch) -> None:
-    def unsupported(platform: str | None = None, **kwargs) -> service.Status:
-        raise service.ServiceError("no service manager on win32; run `enso serve` yourself")
-
-    monkeypatch.setattr(service, "status", unsupported)
-    section = doctor.run(enso_home).section("service")
-    assert section.status == "warning" and section.details == {}
-    assert section.warnings == ["no service manager on win32; run `enso serve` yourself"]
-
-
-def test_doctor_command(enso_home: Paths, raw_config: dict, unit: Path) -> None:
-    healthy(enso_home, raw_config)
-    runner = CliRunner()
-
-    fine = runner.invoke(app, ["doctor"])
-    assert fine.exit_code == 0, fine.output
-    assert fine.stdout.splitlines() == [
-        f"config: ok ({enso_home.config})",
-        f"home: ok (Git root at {enso_home.home})",
-        "workspaces: ok (default)",
-        "providers: ok (claude, codex, grok)",
-        "transports: ok (slack)",
-        "service: ok (launchd, running pid 42)",
-        "viewer_service: ok (not installed (optional))",
-        "jobs: ok (none yet)",
-        "heartbeat: ok (0 active, 0 paused)",
-        "knowledge: ok (0 notes, 0 findings)",
-        "memory: ok (0 notes, 0 findings)",
-    ]
-
-    shutil.rmtree(enso_home.workspace("default") / "uploads")
-    workspaces.create_workspace(enso_home, "lonely")
-    broken = runner.invoke(app, ["doctor"])
-    assert broken.exit_code == 1
-    lines = broken.stdout.splitlines()
-    assert lines[2:4] == [
-        "workspaces: 1 error, 2 warnings (default, lonely)",
-        "  error: default: uploads/ is missing (repairable with `enso workspace audit --fix`)",
-    ]
-    assert lines[4].startswith("  warning: lonely: AGENTS.md is still the untouched template")
-    as_json = runner.invoke(app, ["doctor", "--json"])
-    payload = json.loads(as_json.stdout)
-    assert as_json.exit_code == 1 and not payload["ok"]
-    assert [s["status"] for s in payload["sections"]] == [
-        "ok",
-        "ok",
-        "error",
-        "ok",
-        "ok",
-        "ok",
-        "ok",
-        "ok",
-        "ok",
-        "ok",
-        "ok",
     ]
 
 

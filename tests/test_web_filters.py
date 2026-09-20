@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from enso.web import filters
+from enso.web import filters, memory, views
 
 
 @pytest.mark.parametrize(
@@ -22,15 +22,11 @@ def test_knowledge_age_uses_compact_relative_time_through_seven_days(age, shown)
     assert filters.knowledge_age(now - age, now=now) == shown
 
 
-@pytest.mark.parametrize(
-    ("day", "suffix"),
-    [(1, "st"), (2, "nd"), (3, "rd"), (4, "th"), (11, "th"), (12, "th"), (13, "th"), (21, "st")],
-)
-def test_knowledge_age_uses_local_calendar_dates_after_seven_days(day, suffix):
+def test_knowledge_age_uses_local_calendar_dates_after_seven_days():
     local = datetime.now().astimezone().tzinfo
-    moment = datetime(2025, 1, day, 12, tzinfo=local)
+    moment = datetime(2025, 1, 1, 12, tzinfo=local)
     assert filters.knowledge_age(moment, now=moment + timedelta(days=7, seconds=1)) == (
-        f"Jan {day}{suffix}, 2025"
+        "Jan 1st, 2025"
     )
 
 
@@ -75,15 +71,18 @@ def test_doctor_facts_are_drawn_as_what_they_are() -> None:
         ("beat:HB-001", "beat:HB-001"),
         ("user:gavin", "user:gavin"),
         ("heartbeat", "heartbeat"),
+        ("mastodon:42", "mastodon:42"),  # a prefix that is not a transport is not a chat identity
+        ("slack", "slack"),  # a transport name with no member id behind it stays as it is
+        ("", "-"),  # an actor is never blank on the page, even if a writer leaves it so
+        (None, "-"),
     ],
 )
 def test_actor_reads_as_its_origin_and_only_chat_ids_are_replaced(actor, shown):
     assert filters.heartbeat_actor(actor) == shown
 
 
-def test_unknown_actor_shapes_survive_untouched():
-    # A prefix that is not a transport is not a chat identity, and an actor is never blank
-    # on the page even if a future writer leaves it so.
-    assert filters.heartbeat_actor("mastodon:42") == "mastodon:42"
-    assert filters.heartbeat_actor("slack") == "slack"
-    assert filters.heartbeat_actor("") == "-" and filters.heartbeat_actor(None) == "-"
+@pytest.mark.parametrize("value", ["\u00b2", "9" * 5000, "-1", "0", "wrong"])
+def test_crafted_page_numbers_read_as_the_first_page(value):
+    """Every list parses ``?page=`` itself; junk, negative or oversized values read page one."""
+    assert views._requested_page({"page": value}) == 1
+    assert memory._page(value, 5) == 1

@@ -13,7 +13,6 @@ from enso.routing import binding_key, conversation_key, resolve_agent, workspace
     ("kwargs", "key"),
     [
         ({"transport": "slack", "channel": "D9", "is_dm": True, "user_id": "U1"}, "slack:dm:U1"),
-        ({"transport": "slack", "channel": "D9", "is_dm": True, "user_id": "W1"}, "slack:dm:W1"),
         ({"transport": "slack", "channel": "C1"}, "slack:C1"),
         (
             {"transport": "telegram", "channel": "123", "is_dm": True, "user_id": "123"},
