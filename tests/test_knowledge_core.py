@@ -52,6 +52,28 @@ def test_discovery_nested_paths_cache_and_hidden_boundaries(tmp_path):
             knowledge.read_bytes(catalog.root("shared"), bad)
 
 
+def test_large_scan_reuses_notes_and_discards_old_versions(tmp_path):
+    paths = Paths(tmp_path)
+    paths.knowledge.mkdir(parents=True)
+    # One past the old LRU capacity: a second sequential scan used to evict every hit.
+    for index in range(16_385):
+        (paths.knowledge / f"Note {index:05d}.md").write_text("Initial")
+    first = knowledge.scan(paths)
+    again = knowledge.scan(paths)
+    assert all(a is b for a, b in zip(first.notes, again.notes, strict=True))
+
+    changed = paths.knowledge / first.notes[0].path
+    changed.write_text("Updated")  # same length; timestamps must still invalidate it
+    (paths.knowledge / first.notes[1].path).unlink()
+    (paths.knowledge / first.notes[2].path).rename(paths.knowledge / "Moved.md")
+    current = knowledge.scan(paths)
+    assert current.get(first.notes[0].path).body == "Updated"
+    assert current.get("Moved").body == "Initial"
+    assert all(note.path != first.notes[1].path for note in current.notes)
+    assert current.get(first.notes[-1].path) is first.notes[-1]
+    assert len(current.notes) == len(first.notes) - 1
+
+
 def test_new_home_is_empty_and_reads_do_not_create_directories(tmp_path):
     paths = Paths(tmp_path / "absent")
     catalog = knowledge.scan(paths)

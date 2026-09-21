@@ -30,7 +30,8 @@ All notable changes to Enso are documented here, following
 - Secrets follows the viewer's row spacing and section styles, with labelled trash controls
   and native browser delete confirmation; a styled confirmation remains without JavaScript.
   Add secret is the default tab, with listing and deletion in a separate Secrets tab that
-  shows the saved count.
+  shows the saved count. Saved names filter instantly, successful writes show confirmation,
+  and failed additions retain the name while clearing the value.
 - **Breaking:** The bundled `enso-tasks` and `enso-workflow` skills are replaced by the
   concise `enso-projects` skill, with separate project, task, and workflow references.
 - New installations and workspaces use `work/` for task files and retained output, with
@@ -44,8 +45,17 @@ All notable changes to Enso are documented here, following
   for retained output and hides absent optional content roots.
 - Knowledge's **Folders** tab is now **Browse**, and its home lists shared folders and
   notes directly instead of a **Shared** entry; retained workspace roots remain under
-  **Workspaces**. Every note list, including folders, search, and backlinks, is newest
-  updated first. Browse search lists matching folder names before matching notes.
+  **Workspaces**. Browsing and backlinks are newest updated first. Search ranks title/path
+  matches ahead of body matches and tolerates typos in name/path words. Browse search lists
+  matching folder names before matching notes.
+
+### Fixed
+
+- Large knowledge collections reuse unchanged parsed notes without the old 16,384-entry
+  cache repeatedly evicting the entire working set. Refresh still detects direct file edits,
+  moves, and deletions, without a database index.
+- Disable page transitions when scripting is unavailable so no-JavaScript navigation and
+  form confirmations remain usable.
 
 ## [0.3.0] - 2026-09-18
 

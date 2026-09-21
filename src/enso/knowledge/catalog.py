@@ -8,8 +8,8 @@ import posixpath
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from functools import lru_cache
 from pathlib import Path, PurePosixPath
+from threading import Lock
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
@@ -57,6 +57,14 @@ class Note:
         return self.root.scope
 
 
+type _NoteCache = dict[tuple[Root, str], tuple[tuple[int, ...], Note]]
+
+# Keep only the current version of files from the last scan. An entry-count LRU thrashes
+# when a sequential scan exceeds its capacity, reparsing every unchanged file on every visit.
+_cache: _NoteCache = {}
+_scan_lock = Lock()
+
+
 @dataclass(frozen=True)
 class Resolution:
     """The deterministic destination of one link, with ambiguity left unresolved."""
@@ -90,9 +98,8 @@ def discover_roots(paths: Paths) -> tuple[Root, ...]:
     return note_roots(paths, "knowledge", shared=True)[0]
 
 
-@lru_cache(maxsize=16384)
 def read_note(root: Root, relative: str, signature: tuple[int, ...]) -> Note:
-    """Parse one Markdown file's core metadata, body, and links, cached by file identity."""
+    """Parse one Markdown file's core metadata, body, and links."""
     data = read_bytes(root, relative, limit=MAX_NOTE_BYTES)
     text = data.decode("utf-8")
     document, problem = frontmatter.parse(text)
@@ -131,7 +138,20 @@ def scan(paths: Paths) -> Catalog:
 def scan_roots(
     roots: tuple[Root, ...],
 ) -> tuple[tuple[Note, ...], tuple[str, ...], dict[str, tuple[str, ...]]]:
-    """Discover knowledge notes and assets with their metadata findings."""
+    """Rescan metadata, reuse unchanged notes, and discard old versions and removed files."""
+    global _cache
+    # Web requests scan in worker threads. Serialize snapshot replacement so an older
+    # scan cannot overwrite a newer cache, or parse the same unchanged files in parallel.
+    with _scan_lock:
+        current: _NoteCache = {}
+        result = _scan_roots(roots, _cache, current)
+        _cache = current
+        return result
+
+
+def _scan_roots(
+    roots: tuple[Root, ...], previous: _NoteCache, current: _NoteCache
+) -> tuple[tuple[Note, ...], tuple[str, ...], dict[str, tuple[str, ...]]]:
     notes: list[Note] = []
     assets: dict[str, tuple[str, ...]] = {}
     problems: list[str] = []
@@ -169,7 +189,15 @@ def scan_roots(
                 try:
                     info = path.stat()
                     signature = (info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-                    notes.append(read_note(root, relative, signature))
+                    key = (root, relative)
+                    cached = previous.get(key)
+                    note = (
+                        cached[1]
+                        if cached and cached[0] == signature
+                        else read_note(root, relative, signature)
+                    )
+                    current[key] = (signature, note)
+                    notes.append(note)
                 except (OSError, UnicodeError, KnowledgeError) as exc:
                     problems.append(
                         f"{root.scope}: {path}: cannot read note ({type(exc).__name__})"

@@ -30,8 +30,11 @@ async def form(client):
 async def test_web_create_list_duplicate_delete_without_chat(client, enso_home):
     data = await form(client)
     response = await client.post("/secrets", data=data, allow_redirects=False)
-    assert response.status == 303 and response.headers["Location"] == "/secrets"
+    assert response.status == 303 and response.headers["Location"] == "/secrets?notice=added"
     assert response.headers["Cache-Control"] == "no-store"
+    added = Document(await (await client.get(response.headers["Location"])).text()).root
+    assert added.find("p", "success")[0].text == "Secret added."
+    assert added.find("form", "secret-form")[0].find("input")[1].attrs["value"] == ""
     # Browsers submit every textarea line break as CRLF; the store keeps LF.
     assert secrets.resolve(enso_home, ["TOKEN"])["TOKEN"] == "private-web-value\nsecond\n"
     for response in (
@@ -56,7 +59,10 @@ async def test_web_create_list_duplicate_delete_without_chat(client, enso_home):
     assert cancel.text == "Cancel" and cancel.attrs["href"] == "/secrets?view=saved"
     fields = {field.attrs["name"]: field.attrs["value"] for field in delete_form.find("input")}
     response = await client.post(delete_form.attrs["action"], data=fields, allow_redirects=False)
-    assert response.status == 303 and response.headers["Location"] == "/secrets?view=saved"
+    assert response.status == 303
+    assert response.headers["Location"] == "/secrets?view=saved&notice=deleted"
+    deleted = Document(await (await client.get(response.headers["Location"])).text()).root
+    assert deleted.find("p", "success")[0].text == "Secret deleted."
     assert secrets.names(enso_home) == []
     assert not enso_home.config.exists()  # no configured chat or daemon required
 
@@ -75,11 +81,28 @@ async def test_secret_tabs_keep_creation_first_and_errors_in_their_view(client, 
 
     duplicate = await client.post("/secrets", data=data)
     assert duplicate.status == 400
-    assert Document(await duplicate.text()).root.find("form", "secret-form")
+    duplicate_page = Document(await duplicate.text()).root
+    (add_form,) = duplicate_page.find("form", "secret-form")
+    assert add_form.find("input")[1].attrs["value"] == "TOKEN"
+    assert not add_form.find("textarea")[0].text
+    assert not duplicate_page.find("p", "success")
     missing = await client.post("/secrets/MISSING/delete", data={"_csrf": data["_csrf"]})
     assert missing.status == 400
     page = Document(await missing.text()).root
     assert page.find("form", "row-action") and not page.find("form", "secret-form")
+
+
+async def test_secret_name_is_escaped_on_error_and_notices_are_fixed_text(client):
+    data = await form(client)
+    data["name"] = '"><script>alert(1)</script>'
+    response = await client.post("/secrets?notice=added", data=data)
+    body = await response.text()
+    assert response.status == 400 and "<script>alert(1)</script>" not in body
+    page = Document(body).root
+    assert page.find("form", "secret-form")[0].find("input")[1].attrs["value"] == data["name"]
+    assert "private-web-value" not in body and not page.find("p", "success")
+    response = await client.get("/secrets?notice=arbitrary-text")
+    assert "arbitrary-text" not in await response.text()
 
 
 @pytest.mark.parametrize(

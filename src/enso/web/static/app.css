@@ -10,7 +10,10 @@
 
 @layer reset, tokens, base, layout, components, phone, utilities;
 
-@view-transition { navigation: auto; }
+/* Keep navigation immediate without scripting or when reduced motion is requested. */
+@media (scripting: enabled) and (prefers-reduced-motion: no-preference) {
+  @view-transition { navigation: auto; }
+}
 
 /* -- Tokens ---------------------------------------------------------------- */
 
@@ -235,13 +238,14 @@
   .panel + .panel { margin-top: var(--s-4); }
   .panel .empty, .state.empty { padding: var(--s-5) var(--s-6); color: var(--fg-3); }
   .state.empty { padding-inline: 0; }
-  .state.error, .state.warning {
+  .state.error, .state.warning, .state.success {
     padding: var(--s-5) var(--s-6); margin: 0 0 var(--s-6);
     border-radius: var(--r-lg); border: 1px solid var(--border); color: var(--fg-2);
     strong { color: var(--fg); }
   }
   .state.error { background: var(--error-bg); }
   .state.warning { background: var(--warning-bg); }
+  .state.success { background: color-mix(in oklab, var(--ok-fill) 14%, transparent); }
 
   .verdict {
     display: flex; gap: var(--s-5); align-items: center; margin: 0 0 var(--s-6);

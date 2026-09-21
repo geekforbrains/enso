@@ -474,36 +474,53 @@ async def heartbeat_run(request: web.Request) -> web.StreamResponse:
 
 
 async def secret_list(
-    request: web.Request, *, view: str | None = None, error: str = "", status: int = 200
+    request: web.Request,
+    *,
+    view: str | None = None,
+    name: str = "",
+    error: str = "",
+    status: int = 200,
 ) -> web.StreamResponse:
     view = "saved" if (view or request.query.get("view")) == "saved" else "add"
     try:
         names = await _write_model(request.app[PATHS], lambda: secrets.names(request.app[PATHS]))
     except secrets.SecretError as exc:
         names, error, status = [], str(exc), 400
+    notice = {"added": "Secret added.", "deleted": "Secret deleted."}.get(
+        request.query.get("notice", ""), ""
+    )
     return render(
         request,
         "secrets.html",
-        {"names": names, "view": view, "error": error, "config_problems": []},
+        {
+            "names": names,
+            "view": view,
+            "name": name,
+            "notice": notice if not error else "",
+            "error": error,
+            "config_problems": [],
+        },
         status=status,
     )
 
 
 async def secret_add(request: web.Request) -> web.StreamResponse:
     form = await request.post()
+    name = ""
     try:
         if set(form) != {"name", "value", "_csrf"} or any(len(form.getall(k)) != 1 for k in form):
             raise secrets.SecretError("supply one name and one value")
-        name, value = form["name"], form["value"]
-        if not isinstance(name, str) or not isinstance(value, str):
+        submitted, value = form["name"], form["value"]
+        if not isinstance(submitted, str) or not isinstance(value, str):
             raise secrets.SecretError("supply a text name and value")
+        name = submitted
         # HTML form submission rewrites every textarea line break as CRLF, so the original
         # ending is unknowable here. Store LF; the CLI's --stdin keeps exact bytes.
         text = value.replace("\r\n", "\n")
         await _write_model(request.app[PATHS], lambda: secrets.add(request.app[PATHS], name, text))
     except secrets.SecretError as exc:
-        return await secret_list(request, view="add", error=str(exc), status=400)
-    raise web.HTTPSeeOther("/secrets")
+        return await secret_list(request, view="add", name=name, error=str(exc), status=400)
+    raise web.HTTPSeeOther("/secrets?notice=added")
 
 
 async def secret_delete(request: web.Request) -> web.StreamResponse:
@@ -514,7 +531,7 @@ async def secret_delete(request: web.Request) -> web.StreamResponse:
         )
     except secrets.SecretError as exc:
         return await secret_list(request, view="saved", error=str(exc), status=400)
-    raise web.HTTPSeeOther("/secrets?view=saved")
+    raise web.HTTPSeeOther("/secrets?view=saved&notice=deleted")
 
 
 ROUTES: tuple[tuple[str, str, Handler], ...] = (

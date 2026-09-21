@@ -55,7 +55,11 @@ access permissions or automatically load notes.
 
 The [viewer](web.md#knowledge) owns folder browsing, All notes, search, and pagination.
 Enso caches parsed notes in memory using file identity, size, modification time, and change
-time; the Markdown files remain authoritative and no database migration is needed.
+time. Each scan retains only the current versions of the files it finds, dropping removed
+files and previous versions. The cache follows the current collection rather than evicting
+notes partway through a large scan. File discovery still runs on every visit, so direct
+edits, imports, renames, and deletions appear on refresh. Markdown remains authoritative;
+there is no database index or migration.
 
 ## Where new notes go
 

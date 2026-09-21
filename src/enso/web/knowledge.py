@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import math
 import os
+import re
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
+from difflib import get_close_matches
 from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
@@ -83,8 +85,50 @@ def _stamp(value: Any) -> datetime | None:
 
 
 def _recent_first(notes: Iterable[kb.Note]) -> list[kb.Note]:
-    """Every note list is newest updated first; equal dates stay in path order."""
+    """Browse lists and equally relevant search results use recency, then path."""
     return sorted(sorted(notes, key=lambda note: note.path), key=_updated, reverse=True)
+
+
+def _search_notes(notes: list[kb.Note], query: str) -> list[kb.Note]:
+    """Rank literal names, nearby name words, then literal body matches.
+
+    Compare query words against the distinct filename/path vocabulary once, not against
+    every document body. Short words and numbers stay exact to avoid noisy fuzzy matches.
+    """
+    needle = query.casefold()
+    terms = set(re.findall(r"[^\W_]+", needle))
+    words = [
+        set(re.findall(r"[^\W_]+", note.path.casefold().removesuffix(".md"))) for note in notes
+    ]
+    vocabulary = sorted(
+        {word for tokens in words for word in tokens if len(word) >= 4 and word.isalpha()}
+    )
+    alternatives = [
+        {term, *get_close_matches(term, vocabulary, n=max(1, len(vocabulary)), cutoff=0.8)}
+        if len(term) >= 4 and term.isalpha()
+        else {term}
+        for term in terms
+    ]
+    ranked: list[tuple[int, kb.Note]] = []
+    for note, tokens in zip(notes, words, strict=True):
+        title, path = note.title.casefold(), note.path.casefold()
+        if needle in (title, path, path.removesuffix(".md")):
+            rank = 0
+        elif needle in title or needle in path:
+            rank = 1
+        elif alternatives and all(candidates & tokens for candidates in alternatives):
+            rank = 2
+        elif needle in note.body.casefold():
+            rank = 3
+        else:
+            continue
+        ranked.append((rank, note))
+    return [
+        note
+        for _rank, note in sorted(
+            ranked, key=lambda item: (item[0], -_updated(item[1]).timestamp(), item[1].path)
+        )
+    ]
 
 
 def _note_row(note: kb.Note, query: str = "", *, catalog: kb.Catalog) -> dict[str, Any]:
@@ -228,17 +272,16 @@ def listing_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any] | No
         needle = search.casefold()
         if view == "browse":
             folders = _matching_folders(notes, "" if across else prefix, needle)
-        notes = [
-            note
-            for note in notes
-            if needle in (note.title + " " + note.path + " " + note.body).casefold()
-        ]
+        notes = _search_notes(notes, search)
     elif view == "browse":
         notes = [
             note for note in notes if note.scope == listed and "/" not in note.path[len(prefix) :]
         ]
         folders = _folder_rows(catalog, listed, folder)
-    entries: list[dict[str, Any] | kb.Note] = [*folders, *_recent_first(notes)]
+    entries: list[dict[str, Any] | kb.Note] = [
+        *folders,
+        *(notes if search else _recent_first(notes)),
+    ]
     total = len(entries)
     pages = max(1, math.ceil(total / web.knowledge.page_size))
     raw_page = query.get("page", "1")

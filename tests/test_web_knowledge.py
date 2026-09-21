@@ -300,6 +300,55 @@ def test_every_note_list_is_newest_updated_first_from_the_current_scan(enso_home
     assert model["rows"][0]["title"] == "First"
 
 
+async def test_search_ranks_names_then_typos_then_body_and_keeps_scope(client, enso_home):
+    root = enso_home.knowledge
+    for path, body, date in (
+        ("Deployment.md", "Exact title", "2026-09-10"),
+        ("Deployment checklist.md", "Literal title match", "2026-09-11"),
+        ("Deployments/Guide.md", "Literal path match", "2026-09-12"),
+        ("Deploymant guide.md", "Nearby name", "2026-09-13"),
+        ("Journal.md", "Deployment is mentioned here", "2026-09-20"),
+        ("Unrelated.md", "No match", "2026-09-21"),
+    ):
+        target, _ = note(root, path, body)
+        target.write_text(target.read_text().replace("2026-09-15", date))
+    note(root, "API.md", "Short exact query")
+    note(root, "App.md", "Do not fuzz short words")
+    note(enso_home.workspace("work") / "knowledge", "Deployment.md", "Other scope")
+
+    async def titles(**query):
+        response = await client.get("/knowledge?" + urlencode(query))
+        assert response.status == 200
+        return [row.find("span", "title")[0].text for row in knowledge_rows(await response.text())]
+
+    assert await titles(scope="shared", view="all", q="deployment") == [
+        "Deployment",
+        "Guide",
+        "Deployment checklist",
+        "Deploymant guide",
+        "Journal",
+    ]
+    assert await titles(scope="shared", view="all", q="depLOYmnt") == [
+        "Deploymant guide",
+        "Guide",
+        "Deployment checklist",
+        "Deployment",
+    ]
+    assert await titles(scope="shared", folder="Deployments", q="depLOYmnt") == ["Guide"]
+    assert await titles(scope="shared", view="all", q="guide deploymnt") == [
+        "Deploymant guide",
+        "Guide",
+    ]
+    assert await titles(scope="shared", view="all", q="api") == ["API"]
+    assert await titles(scope="shared", view="all", q="zzzzzz") == []
+    assert await titles(scope="shared", view="all", q="@@@") == []
+    assert (await titles(scope="shared", folder="Deployments", q="depLOYmnt", across="1")).count(
+        "Deployment"
+    ) == 2
+    # Browsing continues to use recency, even when a title would rank ahead in search.
+    assert (await titles(scope="shared", view="all"))[0] == "Unrelated"
+
+
 def test_knowledge_listing_uses_configured_recent_and_page_sizes(enso_home, raw_config):
     raw_config["web"] = {"knowledge": {"recent_limit": 1, "page_size": 1}}
     write_config(enso_home, raw_config)

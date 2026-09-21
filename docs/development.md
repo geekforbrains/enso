@@ -119,6 +119,25 @@ Use fake systems for automated tests. For managed-install upgrades and failure r
 see the [isolated upgrade checks](upgrade-testing.md). Building and validating a publishable
 bundle belongs to [Releases](releasing.md).
 
+### Browser checks
+
+The small Playwright suite exercises the real viewer on loopback with disposable homes,
+synthetic notes and secrets, and temporary browser profiles. It covers form success/errors,
+filter counts, keyboard/native confirmation, desktop and 320px layouts, search navigation,
+filesystem refresh, and the no-JavaScript fallback. Browser dependencies are optional and
+are not installed with Enso:
+
+```bash
+PLAYWRIGHT_BROWSERS_PATH=0 uv run --group browser playwright install --only-shell chromium webkit
+uv run --extra web --group browser pytest tests/browser
+```
+
+The browser binaries live beside Playwright in the checkout's virtual environment, so tests
+can isolate `HOME` without depending on a real browser profile or user cache. Reinstall the
+binaries after updating Playwright or recreating the environment. The normal suite skips
+these tests when the `browser` dependency group is absent; run them explicitly for UI changes.
+Browser screenshots are saved in the tests' temporary directories for visual review.
+
 ### Workspace acceptance coverage
 
 The default suite checks the 0.2.0 workflow in disposable homes using synthetic messages,

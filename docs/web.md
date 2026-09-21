@@ -68,7 +68,8 @@ data — the schedule chart, the run bars, the timeout meter — is an inline SV
 The stylesheet is plain modern CSS: cascade layers in place of specificity games, native
 nesting, `light-dark()` colour tokens so there is one palette rather than a light and a dark
 copy, container queries so a list adapts to the space it is given rather than the viewport,
-and a cross-document view transition so moving between pages does not flash. Cloud and navy
+and a cross-document view transition so moving between pages does not flash. Navigation is
+immediate with scripting disabled or reduced motion enabled. Cloud and navy
 surfaces carry Enso's palette without changing the compact layout. Cyan marks current
 selections and links; pink appears only in text selection. Icons are inline SVG drawn from
 the Lucide set, so they share one stroke weight and take the text colour.
@@ -236,7 +237,8 @@ stays in place.
 
 Verify new action UI in a browser at desktop and phone widths, with long names, keyboard
 focus, confirm/cancel, and JavaScript unavailable. Request tests do not establish layout or
-browser interaction behaviour.
+browser interaction behaviour. Successful writes redirect to a page with a concise status
+message. Validation errors retain non-secret input; secret value fields always return empty.
 
 ## What it shows
 
@@ -383,10 +385,15 @@ metadata, writing conventions, imports, and the agent's maintenance tools.
 
 **Browse** shows immediate subfolders, by name, followed by notes directly in the current
 folder, including folders that have both. Breadcrumbs move up the hierarchy. **All notes**
-lists the current folder and all its descendants. Every note list — Browse, All notes, search
-results, a note's folder context, and **Linked from** — is newest updated first, then by path;
-it uses `updated` metadata and falls back to file modification time when that date is unknown.
-Search matches titles, paths, and note bodies under the current folder. In **Browse**,
+lists the current folder and all its descendants. Browsing lists, a note's folder context,
+and **Linked from** are newest updated first, then by path. Recency uses `updated` metadata
+and falls back to file modification time when that date is unknown.
+Search stays under the current folder and ranks notes by relevance: an exact title or path,
+a literal title/path substring, matching words in the title/path with typo tolerance, then
+a literal phrase in the body. Equally relevant notes are newest updated first, then by path.
+Typo tolerance applies to words of four or more letters; shorter words and numbers receive
+no typo expansion. Multiple query words may match different words in the path, in any order.
+Search is submitted with Enter or **Search**, and its query stays in the URL. In **Browse**,
 folders below the current one whose names match come first, by name, then the matching
 notes; **All notes** lists notes only. The explicit **All knowledge** search option
 broadens to every discovered root. Every list shows at most
@@ -608,6 +615,9 @@ missing or invalid `config.json` gets diagnosed.
 the shared desktop strip and phone segmented control and work without JavaScript. The saved
 total appears in the tab label, for example **Secrets (182)**, on both views. Only the selected
 view is rendered, with the form or list directly below the tabs and no repeated heading.
+The saved list has an instant, case-insensitive name filter, a visible matching count, and
+an empty-result message; `/` focuses its search field. Without JavaScript all saved names
+remain visible.
 Multiline values are supported; browsers submit every textarea line break as CRLF, so the
 form stores LF. Use `enso secret add NAME --stdin` when exact bytes matter. Saved values
 never appear in responses and have no reveal or edit action.
@@ -618,9 +628,10 @@ The page and navigation work on desktop and mobile.
 
 Only `POST /secrets` and `POST /secrets/{name}/delete` write. Successful creation returns to
 Add secret with an empty form, ready for another entry. Deletion and its no-script Cancel
-return to the Secrets list. Failed submissions stay in their action's tab with a safe error;
-the add form always has an empty value field. Both actions use the same store as the
-[CLI](cli.md#secrets), including first-use key creation. No chat
+return to the Secrets list. Successful writes show **Secret added.** or **Secret deleted.**
+after the redirect. Failed submissions stay in their action's tab with a safe error;
+the add form retains the entered name and always has an empty value field. Both actions use
+the same store as the [CLI](cli.md#secrets), including first-use key creation. No chat
 service is required. [Configuration](configuration.md#secrets) owns key backup and restore.
 
 ## Access
