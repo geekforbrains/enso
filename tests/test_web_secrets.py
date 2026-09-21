@@ -5,6 +5,7 @@ import re
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from conftest import write_config
+from test_web_navigation import Document
 
 from enso import maintenance, secrets
 from enso.web import Bind
@@ -33,13 +34,52 @@ async def test_web_create_list_duplicate_delete_without_chat(client, enso_home):
     assert response.headers["Cache-Control"] == "no-store"
     # Browsers submit every textarea line break as CRLF; the store keeps LF.
     assert secrets.resolve(enso_home, ["TOKEN"])["TOKEN"] == "private-web-value\nsecond\n"
-    for response in (await client.get("/secrets"), await client.post("/secrets", data=data)):
+    for response in (
+        await client.get("/secrets?view=saved"),
+        await client.post("/secrets", data=data),
+    ):
         body = await response.text()
         assert "TOKEN" in body and "private-web-value" not in body
         assert 'value="private' not in body and 'name="edit"' not in body
-    response = await client.post("/secrets/TOKEN/delete", data={"_csrf": data["_csrf"]})
-    assert response.status == 200 and secrets.names(enso_home) == []
+    # Before JavaScript runs, deletion still needs an explicit confirmation. Its form
+    # supplies the real route and token; the enhanced trigger must start hidden.
+    page = Document(await (await client.get("/secrets?view=saved")).text()).root
+    (delete_form,) = page.find("form", "row-action")
+    assert "Delete TOKEN?" in delete_form.attrs["data-confirm"]
+    trigger, submit = delete_form.find("button")
+    assert trigger.attrs["aria-label"] == "Delete TOKEN" and "hidden" in trigger.attrs
+    (fallback,) = delete_form.find("details")
+    assert "hidden" not in fallback.attrs and "open" not in fallback.attrs
+    assert "Future commands and jobs requiring it will fail" in fallback.text
+    assert submit.text == "Delete secret" and submit.attrs["type"] == "submit"
+    (cancel,) = fallback.find("a")
+    assert cancel.text == "Cancel" and cancel.attrs["href"] == "/secrets?view=saved"
+    fields = {field.attrs["name"]: field.attrs["value"] for field in delete_form.find("input")}
+    response = await client.post(delete_form.attrs["action"], data=fields, allow_redirects=False)
+    assert response.status == 303 and response.headers["Location"] == "/secrets?view=saved"
+    assert secrets.names(enso_home) == []
     assert not enso_home.config.exists()  # no configured chat or daemon required
+
+
+async def test_secret_tabs_keep_creation_first_and_errors_in_their_view(client, enso_home):
+    data = await form(client)
+    await client.post("/secrets", data=data)
+    for url, active in (("/secrets", "/secrets"), ("/secrets?view=saved", "/secrets?view=saved")):
+        page = Document(await (await client.get(url)).text()).root
+        (tabs,) = page.find("nav", "subtabs")
+        links = tabs.find("a")
+        assert [link.text for link in links] == ["Add secret", "Secrets"]
+        assert [link.attrs["href"] for link in links if "aria-current" in link.attrs] == [active]
+        assert bool(page.find("form", "secret-form")) == (active == "/secrets")
+        assert bool(page.find("form", "row-action")) == (active != "/secrets")
+
+    duplicate = await client.post("/secrets", data=data)
+    assert duplicate.status == 400
+    assert Document(await duplicate.text()).root.find("form", "secret-form")
+    missing = await client.post("/secrets/MISSING/delete", data={"_csrf": data["_csrf"]})
+    assert missing.status == 400
+    page = Document(await missing.text()).root
+    assert page.find("form", "row-action") and not page.find("form", "secret-form")
 
 
 @pytest.mark.parametrize(

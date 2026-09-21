@@ -121,6 +121,18 @@
 
   // -- Forms -------------------------------------------------------------------
 
+  function setupConfirmation(form) {
+    var trigger = form.querySelector("[data-confirm-trigger]");
+    var fallback = form.querySelector("[data-confirm-fallback]");
+    if (!trigger || !fallback) return;
+    form.addEventListener("submit", function (event) {
+      if (!window.confirm(form.getAttribute("data-confirm"))) event.preventDefault();
+    });
+    // Only replace the server-rendered confirmation once its submit guard is attached.
+    fallback.hidden = true;
+    trigger.hidden = false;
+  }
+
   function setupAutosubmit(form) {
     Array.prototype.slice.call(form.querySelectorAll("select[name]")).forEach(function (select) {
       select.addEventListener("change", function () {
@@ -189,6 +201,7 @@
     Array.prototype.slice.call(document.querySelectorAll("[data-filterable]")).forEach(setupFilterable);
     Array.prototype.slice.call(document.querySelectorAll("table[data-sortable]")).forEach(setupSortable);
     Array.prototype.slice.call(document.querySelectorAll("form[data-autosubmit]")).forEach(setupAutosubmit);
+    Array.prototype.slice.call(document.querySelectorAll("form[data-confirm]")).forEach(setupConfirmation);
     Array.prototype.slice.call(document.querySelectorAll("[data-more-menu]")).forEach(setupMoreMenu);
     Array.prototype.slice.call(document.querySelectorAll("[data-hide-when-enhanced]")).forEach(function (element) {
       element.hidden = true;

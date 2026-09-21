@@ -474,16 +474,21 @@ async def heartbeat_run(request: web.Request) -> web.StreamResponse:
 
 
 async def secret_list(
-    request: web.Request, *, error: str = "", status: int = 200
+    request: web.Request, *, view: str | None = None, error: str = "", status: int = 200
 ) -> web.StreamResponse:
-    try:
-        names = await _write_model(request.app[PATHS], lambda: secrets.names(request.app[PATHS]))
-    except secrets.SecretError as exc:
-        names, error, status = [], str(exc), 400
+    view = "saved" if (view or request.query.get("view")) == "saved" else "add"
+    names = []
+    if view == "saved":
+        try:
+            names = await _write_model(
+                request.app[PATHS], lambda: secrets.names(request.app[PATHS])
+            )
+        except secrets.SecretError as exc:
+            error, status = str(exc), 400
     return render(
         request,
         "secrets.html",
-        {"names": names, "error": error, "config_problems": []},
+        {"names": names, "view": view, "error": error, "config_problems": []},
         status=status,
     )
 
@@ -501,7 +506,7 @@ async def secret_add(request: web.Request) -> web.StreamResponse:
         text = value.replace("\r\n", "\n")
         await _write_model(request.app[PATHS], lambda: secrets.add(request.app[PATHS], name, text))
     except secrets.SecretError as exc:
-        return await secret_list(request, error=str(exc), status=400)
+        return await secret_list(request, view="add", error=str(exc), status=400)
     raise web.HTTPSeeOther("/secrets")
 
 
@@ -512,8 +517,8 @@ async def secret_delete(request: web.Request) -> web.StreamResponse:
             lambda: secrets.delete(request.app[PATHS], request.match_info["name"]),
         )
     except secrets.SecretError as exc:
-        return await secret_list(request, error=str(exc), status=400)
-    raise web.HTTPSeeOther("/secrets")
+        return await secret_list(request, view="saved", error=str(exc), status=400)
+    raise web.HTTPSeeOther("/secrets?view=saved")
 
 
 ROUTES: tuple[tuple[str, str, Handler], ...] = (

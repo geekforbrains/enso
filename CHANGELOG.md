@@ -27,6 +27,9 @@ All notable changes to Enso are documented here, following
 
 ### Changed
 
+- Secrets follows the viewer's row spacing and section styles, with labelled trash controls
+  and native browser delete confirmation; a styled confirmation remains without JavaScript.
+  Add secret is the default tab, with listing and deletion in a separate Secrets tab.
 - **Breaking:** The bundled `enso-tasks` and `enso-workflow` skills are replaced by the
   concise `enso-projects` skill, with separate project, task, and workflow references.
 - New installations and workspaces use `work/` for task files and retained output, with

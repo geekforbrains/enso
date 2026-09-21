@@ -694,7 +694,39 @@
     border: 1px solid var(--border); border-radius: var(--r); background: var(--surface-2);
     color: var(--fg); font-weight: 500; cursor: pointer;
     &:hover { background: var(--border); }
+    &.danger { color: var(--error); border-color: var(--error); }
   }
+
+  .icon-button {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 44px; height: 44px; border-radius: var(--r); color: var(--fg-3); cursor: pointer;
+    &:focus-visible { outline-offset: -3px; }
+    &:hover { color: var(--fg); background: var(--surface-2); }
+    &.danger:hover { color: var(--error); background: var(--error-bg); }
+  }
+
+  /* Actions have no destination: keep the name and control on stable axes, including
+     when a no-script confirmation opens beneath them. */
+  .row.action-row {
+    position: relative; grid-template-columns: 16px minmax(0, 1fr) 44px;
+    grid-template-rows: minmax(44px, auto) auto;
+    gap: 0 var(--s-5); padding: 0 var(--s-6); min-height: 44px;
+    .row-symbol { grid-column: 1; grid-row: 1; color: var(--fg-3); }
+    .body { grid-column: 2; grid-row: 1; display: block; padding-block: var(--s-4); overflow-wrap: anywhere; }
+    .row-action { grid-column: 3; grid-row: 1; min-width: 0; align-self: start; }
+    &:has(.action-confirm[open]) {
+      .row-action { grid-column: 2 / -1; grid-row: 2; }
+      .action-confirm > summary { position: absolute; top: 0; right: var(--s-6); }
+    }
+  }
+  .action-confirm {
+    > summary {
+      display: flex; margin-left: auto; list-style: none;
+      &::-webkit-details-marker { display: none; }
+    }
+    .confirmation { padding: 0 0 var(--s-6); overflow-wrap: anywhere; color: var(--fg-2); }
+  }
+  .confirmation-actions { display: flex; justify-content: flex-end; gap: var(--s-4); margin-top: var(--s-5); }
 
   .range { color: var(--fg-3); font-size: var(--text-xs); line-height: var(--lh-xs); margin: 0 0 var(--s-4); }
   .pager {
@@ -911,14 +943,5 @@
     textarea { resize: vertical; font-family: var(--mono); }
     p { margin: 0 0 var(--s-4); font-size: var(--text-sm); }
     .button { justify-self: start; }
-  }
-  .secret-row {
-    display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--s-4);
-    code { overflow-wrap: anywhere; min-width: 0; }
-  }
-  .secret-delete {
-    margin-left: auto;
-    summary { cursor: pointer; color: var(--fg-2); }
-    form { max-width: 24rem; padding-top: var(--s-3); }
   }
 }

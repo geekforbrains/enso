@@ -426,6 +426,10 @@ speculative abstractions, configuration, dependencies, frameworks, or future-pro
 Share logic only when a real repeated use appears. Simplicity does not excuse skipping
 useful tests, security boundaries, or data safety.
 
+Web changes follow [Web viewer](web.md#row-standard) for rows and
+[Forms and actions](web.md#forms-and-actions) for controls, confirmation, and browser checks.
+That page owns the visual standards; extend it when adding a new interaction pattern.
+
 - Core code raises meaningful errors without printing or exiting. CLI, chat, and web
   boundaries translate expected errors into concise responses without tracebacks. A
   `--json` command emits exactly one documented JSON result and the correct exit status.

@@ -60,7 +60,7 @@ still win) so the Health page can show you the problem. Browsing opens `enso.db`
 Secret-store operations use short SQLite transactions independently of the chat service,
 and respect maintenance admission.
 
-Server-rendered HTML, one stylesheet, one small script for filtering and sorting that the
+Server-rendered HTML, one stylesheet, one small script for progressive enhancement that the
 pages work without, no build step, no framework, and nothing loaded from the network. The
 Content-Security-Policy allows no inline styles either, so anything whose shape depends on
 data — the schedule chart, the run bars, the timeout meter — is an inline SVG.
@@ -100,7 +100,7 @@ its named sections above the content:
 | [Runs](#runs) `/runs` | Acted · Failed · All |
 | [Knowledge](#knowledge) `/knowledge` | Browse · All notes |
 | [Workspaces](#workspaces) `/workspaces` | Workspaces · Skills |
-| [Secrets](#secrets) `/secrets` | Saved secrets · Add a secret |
+| [Secrets](#secrets) `/secrets` | Add secret (default) · Secrets |
 | [Health](#health) `/health` | Doctor · Log |
 
 `/` redirects to `/today`. Skills are resolved per workspace, so `/skills` is a section of
@@ -139,7 +139,8 @@ the search field takes the row below.
 
 ## Row standard
 
-Every list in the viewer is built from one CSS grid with four slots, in this order:
+Lists share the `.row` grid, spacing tokens, and panel separators. Event rows have four
+slots, in this order; other row types omit or replace slots to suit their content:
 
 | Slot | Holds |
 | --- | --- |
@@ -148,13 +149,15 @@ Every list in the viewer is built from one CSS grid with four slots, in this ord
 | `body` | a title and one line of supporting facts |
 | `trail` | the right-hand value |
 
-There are three row types, and a list picks one:
+A list picks one row type:
 
 | Type | Class | Shape | Trail holds |
 | --- | --- | --- | --- |
 | event | `.row` | when · state · name · facts · value | a measure, such as a duration |
 | entity | `.row.entity` | state · name · facts · value | the one fact you would sort the list by |
 | finding | `.row.finding` | severity · message | nothing |
+| knowledge | `.row.knowledge-row` | icon · name and location · value | note age or folder count |
+| action | `.row.action-row` | icon · name · action | an explicit control, such as Delete |
 
 The rules that keep them consistent:
 
@@ -185,17 +188,53 @@ The rules that keep them consistent:
   single line takes no bold.
 - **Monospace marks a literal**: a cron expression, a path, a run id, a skill name. A row's
   title is otherwise plain, so a column of names scans as names.
-- **Every row has somewhere to go.** A row that omits detail must link to a page that holds it.
+- **Navigation rows have somewhere to go.** A row that omits detail must link to a page that holds it.
   Stripping a row without giving it a destination does not simplify the information, it deletes
   it: that is why the skills list has a skill page behind it.
-- **Nothing inside a row is a link.** The row is the link. An `<a>` inside an `<a>` makes the
-  parser close the outer one and reparent the rest, which silently takes the row apart; a test
-  walks every page counting anchor depth to keep it that way.
+- **Nothing inside a linked row is another link or control.** The row is the link. An `<a>`
+  inside an `<a>` makes the parser close the outer one and reparent the rest, which silently
+  takes the row apart; a test walks every page counting anchor depth to keep it that way.
 
 On a phone the same row keeps its time, dot, name and trailing value and usually drops the
 detail line. Task details wrap to retain their reference, stage, current phase, and
 project/workspace origin; the claim's run ID is on the task page. Task event messages also
 wrap and stay because they are the substance of the timeline. Lists never need horizontal scrolling.
+
+## Forms and actions
+
+New views reuse the tokens in `static/app.css`, macros in `_macros.html`, and Lucide SVG
+icons in `_icons.html`. Section headings use `.shead`, with counts in `.right`; explanatory
+copy uses `.note` and list counts use `.range`. Keep the existing density, light/dark palette,
+and visible keyboard focus. Form fields retain explicit labels and associated help text.
+When creation is the primary task, put it in the default tab and listing/management in a
+separate tab, using the shared `subtabs` macro and ordinary links. A long list must not push
+the primary form below the fold. Render only the selected view; tabs work without JavaScript.
+
+An action row is a non-link container. Its leading icon describes the item, without inventing
+a status dot, and its trailing form owns the action. Use the Knowledge-style 16px inset and
+12px column gaps, a flexible name column, and a fixed action column. Long names wrap without
+pushing the action off screen. Secret names remain monospace because they are literal
+environment-variable names. Do not switch the shared row to flex and inherit its event-only
+zero left padding.
+
+Use buttons for actions and links for navigation. Icon-only actions use `.icon-button` with
+a 44px target, an accessible name and tooltip identifying both the action and its item
+(for example, `Delete GITHUB_TOKEN`). Delete uses the shared trash icon; chevrons mean
+navigation or disclosure. Destructive controls use `.danger`: quiet at rest for row icons,
+coral on hover, and coral text/border on the explicit confirmation button.
+
+Destructive forms use native `window.confirm()` from the external `app.js`, with the target
+name and consequence in the prompt. Cancelling the prompt sends no request. Keep the protected
+POST form and redirect; no inline event handlers, new framework, or custom modal is needed.
+`data-confirm` carries the prompt. The script attaches the submit guard before showing the
+hidden `data-confirm-trigger` button and hiding `data-confirm-fallback`. Without JavaScript,
+a styled disclosure exposes the warning, explicit submit button, and Cancel link back to the
+list; opening it does not submit. Its content appears below the name while the trash control
+stays in place.
+
+Verify new action UI in a browser at desktop and phone widths, with long names, keyboard
+focus, confirm/cancel, and JavaScript unavailable. Request tests do not establish layout or
+browser interaction behaviour.
 
 ## What it shows
 
@@ -562,17 +601,23 @@ missing or invalid `config.json` gets diagnosed.
 
 ## Secrets
 
-`/secrets` lists saved names and provides a form for a new name and value. Multiline values
-are supported; browsers submit every textarea line break as CRLF, so the form stores LF. Use
-`enso secret add NAME --stdin` when exact bytes matter. Saved values never appear in
-responses and have no reveal or edit action.
-Duplicate creation fails; replace a value by deleting its name and adding it again. Delete
-opens an inline confirmation that works without JavaScript. The page and navigation work
-on desktop and mobile.
+`/secrets` opens **Add secret**, with the name and value form immediately available. The
+**Secrets** tab at `/secrets?view=saved` lists saved names and their delete controls. Tabs use
+the shared desktop strip and phone segmented control and work without JavaScript; only the
+selected view is rendered, and opening Add secret does not read the saved-name list.
+Multiline values are supported; browsers submit every textarea line break as CRLF, so the
+form stores LF. Use `enso secret add NAME --stdin` when exact bytes matter. Saved values
+never appear in responses and have no reveal or edit action.
+Duplicate creation fails; replace a value by deleting its name and adding it again. The
+trash button opens the browser's native confirmation. Without JavaScript, it opens a styled
+inline confirmation with Delete and Cancel. Both follow [Forms and actions](#forms-and-actions).
+The page and navigation work on desktop and mobile.
 
-Only `POST /secrets` and `POST /secrets/{name}/delete` write. Successful forms redirect back
-to `/secrets`; failed submissions show a safe error with an empty value field. Both actions
-use the same store as the [CLI](cli.md#secrets), including first-use key creation. No chat
+Only `POST /secrets` and `POST /secrets/{name}/delete` write. Successful creation returns to
+Add secret with an empty form, ready for another entry. Deletion and its no-script Cancel
+return to the Secrets list. Failed submissions stay in their action's tab with a safe error;
+the add form always has an empty value field. Both actions use the same store as the
+[CLI](cli.md#secrets), including first-use key creation. No chat
 service is required. [Configuration](configuration.md#secrets) owns key backup and restore.
 
 ## Access
