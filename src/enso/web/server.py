@@ -477,14 +477,10 @@ async def secret_list(
     request: web.Request, *, view: str | None = None, error: str = "", status: int = 200
 ) -> web.StreamResponse:
     view = "saved" if (view or request.query.get("view")) == "saved" else "add"
-    names = []
-    if view == "saved":
-        try:
-            names = await _write_model(
-                request.app[PATHS], lambda: secrets.names(request.app[PATHS])
-            )
-        except secrets.SecretError as exc:
-            error, status = str(exc), 400
+    try:
+        names = await _write_model(request.app[PATHS], lambda: secrets.names(request.app[PATHS]))
+    except secrets.SecretError as exc:
+        names, error, status = [], str(exc), 400
     return render(
         request,
         "secrets.html",

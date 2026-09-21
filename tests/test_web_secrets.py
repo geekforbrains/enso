@@ -68,7 +68,7 @@ async def test_secret_tabs_keep_creation_first_and_errors_in_their_view(client, 
         page = Document(await (await client.get(url)).text()).root
         (tabs,) = page.find("nav", "subtabs")
         links = tabs.find("a")
-        assert [link.text for link in links] == ["Add secret", "Secrets"]
+        assert [link.text for link in links] == ["Add secret", "Secrets (1)"]
         assert [link.attrs["href"] for link in links if "aria-current" in link.attrs] == [active]
         assert bool(page.find("form", "secret-form")) == (active == "/secrets")
         assert bool(page.find("form", "row-action")) == (active != "/secrets")

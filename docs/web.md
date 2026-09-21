@@ -209,6 +209,8 @@ and visible keyboard focus. Form fields retain explicit labels and associated he
 When creation is the primary task, put it in the default tab and listing/management in a
 separate tab, using the shared `subtabs` macro and ordinary links. A long list must not push
 the primary form below the fold. Render only the selected view; tabs work without JavaScript.
+Let tabs name their views without repeating those names as section headings. Put a list's
+total in its tab label, such as `Secrets (182)`, visible from either view; zero reads `(0)`.
 
 An action row is a non-link container. Its leading icon describes the item, without inventing
 a status dot, and its trailing form owns the action. Use the Knowledge-style 16px inset and
@@ -603,8 +605,9 @@ missing or invalid `config.json` gets diagnosed.
 
 `/secrets` opens **Add secret**, with the name and value form immediately available. The
 **Secrets** tab at `/secrets?view=saved` lists saved names and their delete controls. Tabs use
-the shared desktop strip and phone segmented control and work without JavaScript; only the
-selected view is rendered, and opening Add secret does not read the saved-name list.
+the shared desktop strip and phone segmented control and work without JavaScript. The saved
+total appears in the tab label, for example **Secrets (182)**, on both views. Only the selected
+view is rendered, with the form or list directly below the tabs and no repeated heading.
 Multiline values are supported; browsers submit every textarea line break as CRLF, so the
 form stores LF. Use `enso secret add NAME --stdin` when exact bytes matter. Saved values
 never appear in responses and have no reveal or edit action.
