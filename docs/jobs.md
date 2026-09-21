@@ -27,6 +27,7 @@ project: EN                   # optional, with stage: the project this job serve
 stage: todo                   # optional, with project: one of its agent stages
 concurrency_group: meteor     # optional: serialize provider work and postrun checks
 enabled: true                 # required
+secrets: [GITHUB_TOKEN]        # optional: names supplied to the whole run
 prerun: prerun.sh             # optional: gate, run with bash from the job directory
 prerun_timeout: 300           # optional, default 120
 postrun: postrun.sh           # optional: check/reaction, run with bash from the job directory
@@ -291,6 +292,32 @@ The job never upgrades Enso. The operator asks in chat or runs `enso update appl
 ready. Disable it with `enabled: false` to stop nightly checks; manual `enso update check`
 still works. Older homes can install the new job by applying their existing valid config.
 See [Upgrading](install.md#upgrading) and [CLI updates](cli.md#updates).
+
+## Secrets
+
+An optional `secrets` list in `JOB.md` names the credentials the run needs:
+
+```yaml
+secrets:
+  - GITHUB_TOKEN
+  - GOOGLE_PASSWORD
+```
+
+Names must be unique and pass the shared [secret-name rules](cli.md#secrets); the list may
+be empty. Resolve all names once, before prerun. A missing name, unavailable key or corrupt
+value records an `error` and starts no gate, agent, command, check or postrun. It is never
+an ordinary gate's `no_work` result.
+
+Prerun, the agent or stage command, workflow checks/repairs, postrun, and every follow-up
+share one in-memory snapshot. Declared secrets override same-name inherited variables for
+that run only. Enso context and process-control variables are protected. A running process
+and later turns in that run retain the original values after deletion/recreation; the next
+run resolves current values. Job definitions and generated prompts contain names only.
+
+Project setup/teardown and deferred lifecycle scripts are independent project operations.
+They can run outside a job or retry later; use `enso secret run` in those commands when they
+need credentials. Chat and Heartbeat agents use that same CLI as needed. Nothing exports
+every saved secret into the service environment.
 
 ## Prerun scripts
 

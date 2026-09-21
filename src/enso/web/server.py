@@ -1,9 +1,7 @@
-"""The aiohttp application: GET-only routes, security headers, templates, and the process.
+"""The web application: explicit routes, shared write protection, templates and process.
 
-One event loop, no workers, no scheduler, no sockets other than the listener. Every page
-model is built in a worker thread by its page module and rendered here. The middleware answers
-anything but ``GET`` with 405 before routing, stamps every response with the security
-headers, and turns failures into the shared error page without a traceback.
+Browsing is read-only. Registered form actions require a same-origin form token and
+participate in home maintenance admission; every response has shared security headers.
 """
 
 from __future__ import annotations
@@ -12,18 +10,19 @@ import asyncio
 import hashlib
 import logging
 import os
+import secrets as tokens
 import signal
 import sys
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from importlib import resources
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import jinja2
 from aiohttp import web
 
-from .. import __version__
+from .. import __version__, maintenance, secrets
 from ..config import Paths
 from . import Bind, PidFile, WebError, filters, knowledge, views
 from . import tasks as taskviews
@@ -58,6 +57,7 @@ NAV = (
     ("Knowledge", "/knowledge"),
     ("Jobs", "/jobs"),
     ("Workspaces", "/workspaces"),
+    ("Secrets", "/secrets"),
     ("Health", "/health"),
 )
 # The phone has four primary links and More; the sidebar exposes every destination.
@@ -73,6 +73,7 @@ PATHS = web.AppKey[Paths]("paths")
 BIND = web.AppKey[Bind | None]("bind")
 ENV = web.AppKey[jinja2.Environment]("env")
 ASSETS = web.AppKey[dict[str, Asset]]("assets")
+CSRF = web.AppKey[str]("csrf")
 
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 
@@ -133,6 +134,7 @@ def render(
         **{"now": datetime.now().astimezone(), "alarm": False, **context},
         request_path=request.path,
         active=_active(request.path),
+        csrf=request.app[CSRF],
     )
     return web.Response(text=html, content_type="text/html", charset="utf-8", status=status)
 
@@ -158,34 +160,64 @@ def _secure(headers: Any) -> None:
         headers["Cache-Control"] = "no-store"
 
 
+async def _check_write(request: web.Request) -> None:
+    """Every registered write is a form action with an unguessable, same-origin token."""
+    origin = request.headers.get("Origin")
+    site = request.headers.get("Sec-Fetch-Site")
+    if site == "cross-site":
+        raise web.HTTPForbidden(reason="Cross-site writes are not allowed")
+    # Safari sends an opaque origin under Referrer-Policy: no-referrer. Only accept
+    # that case with its same-origin browser signal; the form token is still required.
+    if origin is not None and not (origin == "null" and site == "same-origin"):
+        try:
+            source = urlsplit(origin)
+        except ValueError:
+            raise web.HTTPForbidden(reason="Invalid origin") from None
+        if source.scheme not in ("http", "https") or source.netloc.lower() != request.host.lower():
+            raise web.HTTPForbidden(reason="Cross-site writes are not allowed")
+    if request.content_type != "application/x-www-form-urlencoded":
+        raise web.HTTPUnsupportedMediaType(reason="Expected a form submission")
+    form = await request.post()
+    supplied = form.getall("_csrf", [])
+    if (
+        len(supplied) != 1
+        or not isinstance(supplied[0], str)
+        or not tokens.compare_digest(supplied[0].encode(), request.app[CSRF].encode())
+    ):
+        raise web.HTTPForbidden(reason="Refresh the page and submit the form again")
+
+
 @web.middleware
 async def guard(request: web.Request, handler: Handler) -> web.StreamResponse:
-    """GET only, security headers on everything, no traceback ever reaches a browser."""
-    response: web.StreamResponse
-    if request.method != "GET":
+    """Route methods explicitly; protect writes and stamp all responses, including errors."""
+    try:
+        if request.match_info.http_exception is not None:
+            raise request.match_info.http_exception
+        if request.method not in ("GET", "HEAD", "OPTIONS"):
+            await _check_write(request)
+        response = await handler(request)
+    except web.HTTPException as exc:
+        if exc.status < 400:
+            _secure(exc.headers)
+            raise
         response = error_response(
-            request, 405, "Method not allowed", "The viewer is read-only and answers GET only."
+            request,
+            exc.status,
+            "Not found" if exc.status == 404 else exc.reason,
+            "The request could not be completed.",
         )
-        response.headers["Allow"] = "GET"
-    else:
-        try:
-            response = await handler(request)
-        except web.HTTPException as exc:
-            if exc.status < 400:
-                _secure(exc.headers)
-                raise
-            title = "Not found" if exc.status == 404 else exc.reason
-            response = error_response(
-                request, exc.status, title, f"There is nothing at {request.path}."
-            )
-        except Exception:
-            log.exception("%s failed", request.path)
-            response = error_response(
-                request,
-                500,
-                "Something went wrong",
-                f"The request failed; see {request.app[PATHS].web_log}.",
-            )
+        if "Allow" in exc.headers:
+            response.headers["Allow"] = exc.headers["Allow"]
+    except maintenance.UpdateError:
+        response = error_response(request, 503, "Enso is updating", "Try again after it finishes.")
+    except Exception:
+        log.exception("%s failed", request.path)
+        response = error_response(
+            request,
+            500,
+            "Something went wrong",
+            f"The request failed; see {request.app[PATHS].web_log}.",
+        )
     _secure(response.headers)
     return response
 
@@ -196,6 +228,22 @@ async def guard(request: web.Request, handler: Handler) -> web.StreamResponse:
 async def _model[T](work: Callable[[], T]) -> T:
     """Build a page model off the event loop; the reads are bounded but synchronous."""
     return await asyncio.to_thread(work)
+
+
+async def _write_model[T](paths: Paths, work: Callable[[], T]) -> T:
+    """The worker holds admission until the write finishes, even if its HTTP caller leaves."""
+
+    def apply() -> T:
+        access = maintenance.acquire_access(paths) if maintenance.coordinated(paths) else None
+        try:
+            if maintenance.paused(paths):
+                raise maintenance.UpdateError("Enso is updating")
+            return work()
+        finally:
+            if access is not None:
+                os.close(access)
+
+    return await _model(apply)
 
 
 async def index(request: web.Request) -> web.StreamResponse:
@@ -399,40 +447,84 @@ async def heartbeat_run(request: web.Request) -> web.StreamResponse:
     return render(request, "heartbeat_run.html", model)
 
 
-ROUTES: tuple[tuple[str, Handler], ...] = (
-    ("/", index),
-    ("/static/{name}", static),
-    ("/today", today),
-    ("/today/{section}", today),
-    ("/health", health),
-    ("/health/{section}", health),
-    ("/workspaces", workspaces),
-    ("/workspaces/{name}", workspace),
-    ("/workspaces/{name}/files/{root}", workspace_files),
-    ("/workspaces/{name}/files/{root}/{path:.*}", workspace_files),
-    ("/knowledge", knowledge_list),
-    ("/knowledge/notes/{id}", knowledge_note),
-    ("/knowledge/file", knowledge_note),
-    ("/knowledge/asset", knowledge_asset),
-    ("/skills", skills),
-    ("/skills/{name}", skill),
-    ("/jobs", jobs),
-    ("/jobs/{name}", job),
-    ("/jobs/{name}/{section}", job),
-    ("/runs", runs),
-    ("/runs/{id}", run),
-    ("/tasks", tasks),
-    ("/tasks/{ref}", task),
-    ("/heartbeats", heartbeats),
-    ("/heartbeats/runs/{run_id}", heartbeat_run),
-    ("/heartbeats/{ref}", heartbeat),
-    ("/heartbeats/{ref}/{section}", heartbeat),
+async def secret_list(
+    request: web.Request, *, error: str = "", status: int = 200
+) -> web.StreamResponse:
+    try:
+        names = await _write_model(request.app[PATHS], lambda: secrets.names(request.app[PATHS]))
+    except secrets.SecretError as exc:
+        names, error, status = [], str(exc), 400
+    return render(
+        request,
+        "secrets.html",
+        {"names": names, "error": error, "config_problems": []},
+        status=status,
+    )
+
+
+async def secret_add(request: web.Request) -> web.StreamResponse:
+    form = await request.post()
+    try:
+        if set(form) != {"name", "value", "_csrf"} or any(len(form.getall(k)) != 1 for k in form):
+            raise secrets.SecretError("supply one name and one value")
+        name, value = form["name"], form["value"]
+        if not isinstance(name, str) or not isinstance(value, str):
+            raise secrets.SecretError("supply a text name and value")
+        await _write_model(request.app[PATHS], lambda: secrets.add(request.app[PATHS], name, value))
+    except secrets.SecretError as exc:
+        return await secret_list(request, error=str(exc), status=400)
+    raise web.HTTPSeeOther("/secrets")
+
+
+async def secret_delete(request: web.Request) -> web.StreamResponse:
+    try:
+        await _write_model(
+            request.app[PATHS],
+            lambda: secrets.delete(request.app[PATHS], request.match_info["name"]),
+        )
+    except secrets.SecretError as exc:
+        return await secret_list(request, error=str(exc), status=400)
+    raise web.HTTPSeeOther("/secrets")
+
+
+ROUTES: tuple[tuple[str, str, Handler], ...] = (
+    ("GET", "/", index),
+    ("GET", "/static/{name}", static),
+    ("GET", "/today", today),
+    ("GET", "/today/{section}", today),
+    ("GET", "/health", health),
+    ("GET", "/health/{section}", health),
+    ("GET", "/workspaces", workspaces),
+    ("GET", "/workspaces/{name}", workspace),
+    ("GET", "/workspaces/{name}/files/{root}", workspace_files),
+    ("GET", "/workspaces/{name}/files/{root}/{path:.*}", workspace_files),
+    ("GET", "/knowledge", knowledge_list),
+    ("GET", "/knowledge/notes/{id}", knowledge_note),
+    ("GET", "/knowledge/file", knowledge_note),
+    ("GET", "/knowledge/asset", knowledge_asset),
+    ("GET", "/skills", skills),
+    ("GET", "/skills/{name}", skill),
+    ("GET", "/jobs", jobs),
+    ("GET", "/jobs/{name}", job),
+    ("GET", "/jobs/{name}/{section}", job),
+    ("GET", "/runs", runs),
+    ("GET", "/runs/{id}", run),
+    ("GET", "/tasks", tasks),
+    ("GET", "/tasks/{ref}", task),
+    ("GET", "/heartbeats", heartbeats),
+    ("GET", "/heartbeats/runs/{run_id}", heartbeat_run),
+    ("GET", "/heartbeats/{ref}", heartbeat),
+    ("GET", "/heartbeats/{ref}/{section}", heartbeat),
+    ("GET", "/secrets", secret_list),
+    ("POST", "/secrets", secret_add),
+    ("POST", "/secrets/{name}/delete", secret_delete),
 )
 
 
 def create_app(paths: Paths, bind: Bind | None = None) -> web.Application:
     """The viewer over ``paths``; ``bind`` only tells the Health page where it listens."""
-    app = web.Application(middlewares=[guard])
+    app = web.Application(middlewares=[guard], client_max_size=256 * 1024)
+    app[CSRF] = tokens.token_urlsafe(32)
     app[PATHS] = paths
     app[BIND] = bind
     app[ENV] = environment()
@@ -441,8 +533,8 @@ def create_app(paths: Paths, bind: Bind | None = None) -> web.Application:
         body = static_asset(name)
         assets[name] = (body, f'"{hashlib.sha256(body).hexdigest()[:16]}"', content_type)
     app[ASSETS] = assets
-    for path, handler in ROUTES:
-        app.router.add_get(path, handler, allow_head=False)
+    for method, path, handler in ROUTES:
+        app.router.add_route(method, path, handler)
     return app
 
 

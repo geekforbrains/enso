@@ -88,7 +88,7 @@ HOME: tuple[Entry, ...] = (
     Entry("workspaces", REQUIRED, "one directory per workspace"),
     Entry("config.json", MANAGED, "the configuration", private=True),
     Entry("config.example.json", MANAGED, "the editable configuration template"),
-    Entry("enso.db", MANAGED, "runs, tasks, and beats"),
+    Entry("enso.db", MANAGED, "runs, tasks, beats, and encrypted secrets"),
     Entry("enso.db-wal", MANAGED, "SQLite's write-ahead log"),
     Entry("enso.db-shm", MANAGED, "SQLite's shared-memory index"),
     Entry("enso.log", MANAGED, "the service log"),
@@ -109,13 +109,6 @@ HOME: tuple[Entry, ...] = (
     Entry("slack", USER, "legacy Slack app files"),
     Entry(".bundles.json", MANAGED, "the record of what Enso installed"),
     Entry(".migrations.json", MANAGED, "the last completed home migration", private=True),
-    Entry(
-        "secrets",
-        USER,
-        "*.env files loaded into the service environment",
-        private=True,
-        real_directory=True,
-    ),
     # Enso runs ``git init`` here and never commits, but the repository it made is the
     # operator's to use, and a repository's ignore file belongs beside it.
     Entry(".gitignore", USER, "what the operator keeps out of the home's own history"),

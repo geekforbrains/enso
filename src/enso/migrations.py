@@ -250,6 +250,28 @@ def retire_history(paths: Paths) -> None:
         write_json(paths.home / ".bundles.json", state)
 
 
+def add_secret_store(paths: Paths) -> None:
+    """Add encrypted storage without importing or touching old operator files."""
+    if not paths.db.exists():
+        return
+    with closing(sqlite3.connect(paths.db)) as connection, connection:
+        connection.execute("BEGIN IMMEDIATE")
+        application = connection.execute("PRAGMA application_id").fetchone()[0]
+        revision = connection.execute("PRAGMA user_version").fetchone()[0]
+        if application != 0x454E534F or revision not in (2, 3):
+            raise UpdateError("expected an Enso database at schema 2 or 3")
+        if revision == 3:
+            return
+        connection.execute(
+            "CREATE TABLE _enso_secret_store ("
+            "id INTEGER PRIMARY KEY CHECK (id = 1), verifier BLOB NOT NULL)"
+        )
+        connection.execute(
+            "CREATE TABLE _enso_secrets (name TEXT PRIMARY KEY, ciphertext BLOB NOT NULL)"
+        )
+        connection.execute("PRAGMA user_version = 3")
+
+
 # 0.2.0 is revision zero. Keep every later step so installations may skip releases.
 # Lock files hold nothing to restore, so the first step declares no snapshot paths.
 MIGRATIONS: tuple[Migration, ...] = (
@@ -261,6 +283,7 @@ MIGRATIONS: tuple[Migration, ...] = (
         move_shared_knowledge,
     ),
     Migration(3, "retire conversation processing state", retire_history_paths, retire_history),
+    Migration(4, "add encrypted secret storage", lambda paths: ("enso.db",), add_secret_store),
 )
 
 

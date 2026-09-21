@@ -1,4 +1,4 @@
-"""The read-only web viewer's process lifecycle: pidfile, ``start``, ``stop``, ``status``.
+"""The web viewer's process lifecycle: pidfile, ``start``, ``stop``, ``status``.
 
 The viewer is one aiohttp process started as ``python -m enso.web``, separate from
 ``enso serve`` so it can run while the service is stopped. This module is what the CLI

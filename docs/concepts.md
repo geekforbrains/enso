@@ -49,7 +49,8 @@ and [context selection](workspaces.md#context-selection-in-020).
 | **Skill** | Instructions the agent can load, resolved across three scopes |
 | **Table** | A registered SQLite table in `enso.db` holding your structured data |
 | **Message** | An out-of-band send, recorded so the next turn hears about it |
-| **Viewer** | The optional read-only web UI over all of the above |
+| **Secret** | A named encrypted value supplied to jobs or commands; its key stays outside the home |
+| **Viewer** | The optional browsing UI, with secret creation and deletion |
 
 ## Home
 
@@ -68,8 +69,7 @@ Enso's runtime state lives under one directory:
 ├── .claude/skills       # symlink -> ../skills, discovered by the provider CLIs
 ├── .agents/skills       # symlink -> ../skills
 ├── workspaces/<name>/   # one directory per workspace
-├── secrets/*.env        # KEY=value files exported into the service environment
-├── enso.db             # runs, messages, sessions, jobs, tasks, beats, user tables
+├── enso.db             # runs, messages, sessions, jobs, tasks, beats, secrets, user tables
 ├── .migrations.json    # last completed home migration revision
 ├── enso.log            # rotating log
 ├── web.log, web.pid     # the web viewer's output and lock, while it runs
@@ -298,6 +298,14 @@ Optional skills carry their installation receipt inside their directory and do n
 with the application. [Customizing](customizing.md#official-optional-skills) owns that flow;
 [Browser](browser.md) owns persistent profile setup and its private home data.
 
+## Secret
+
+Secrets are named, encrypted values in `enso.db`, with a separate master key outside the
+home. Manage them through the web UI or CLI. Jobs declare the names they need once; agents
+can give commands selected secrets with `enso secret run`. The installation is one trust
+boundary, and this does not add per-agent permissions. See
+[Configuration](configuration.md#secrets), [CLI](cli.md#secrets), and [Jobs](jobs.md#secrets).
+
 ## Message
 
 Anything Enso sends outside the normal reply — a job alert, a `enso message send` from a
@@ -433,7 +441,8 @@ reads.
 2. A job whose cron slot has passed fires, unless it is disabled, has problems, is already
    running, or missed its slot by more than its grace period with `catch_up` disabled.
 3. It takes the per-job lock. An overlapping trigger is skipped, never queued.
-4. A run row opens as `running`.
+4. A run row opens as `running`, and any declared secrets resolve into one environment
+   snapshot. A resolution failure records `error` before any process starts.
 5. The **prerun** runs from the job directory. Exit 0 opens the gate and its stdout is
    substituted into the prompt; exit 1 means no work; anything else is a failure.
 6. If the job names a `concurrency_group`, it tries that group's lock after the prerun
@@ -497,5 +506,5 @@ paths; worktrees and environment actor variables are not an OS sandbox.
 - **Not a sandbox.** Permissions belong to the provider CLI. Enso passes your flags through.
 - **Not a publishing or editing application.** Knowledge stays in Markdown files, maintained
   through the agent and CLI. The viewer browses notes read-only; there is no web editor.
-- **Not a control plane.** The web viewer is read-only by design; the board moves from
-  chat and the CLI.
+- **Not a general control plane.** The web UI manages secrets; the task board and other
+  operations remain in chat and the CLI.

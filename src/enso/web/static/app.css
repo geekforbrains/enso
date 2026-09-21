@@ -899,3 +899,26 @@
     .knowledge-document .markdown { padding: var(--s-6); }
   }
 }
+
+
+@layer components {
+  .secret-form {
+    display: grid; gap: var(--s-3); max-width: 38rem;
+    input, textarea {
+      width: 100%; min-width: 0; padding: var(--s-4); border: 1px solid var(--border);
+      border-radius: var(--r); background: var(--surface); color: var(--fg); font: inherit;
+    }
+    textarea { resize: vertical; font-family: var(--mono); }
+    p { margin: 0 0 var(--s-4); font-size: var(--text-sm); }
+    .button { justify-self: start; }
+  }
+  .secret-row {
+    display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--s-4);
+    code { overflow-wrap: anywhere; min-width: 0; }
+  }
+  .secret-delete {
+    margin-left: auto;
+    summary { cursor: pointer; color: var(--fg-2); }
+    form { max-width: 24rem; padding-top: var(--s-3); }
+  }
+}

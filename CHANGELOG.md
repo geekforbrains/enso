@@ -5,8 +5,18 @@ All notable changes to Enso are documented here, following
 
 ## [Unreleased]
 
+### Added
+
+- Encrypted secrets with desktop/mobile web forms and `enso secret` management, retrieval,
+  and command injection. Jobs can declare one list of secret names for their full run.
+  The master key stays outside the Enso home and unlocks automatically after restarts.
+  Home revision 4 adds database storage while preserving unrelated data.
+
 ### Removed
 
+- **Breaking:** Stop creating and loading `secrets/*.env`. Existing files are left untouched;
+  manually create encrypted secrets and add job declarations or command wrappers. No secret
+  import or migration is performed.
 - **Breaking:** Remove conversation capture and workspace memory, including its CLI, viewer,
   skills, jobs, processing state, and job history. Existing memory directories and notes
   remain untouched.

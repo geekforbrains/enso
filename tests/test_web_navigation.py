@@ -85,6 +85,7 @@ def test_desktop_sidebar_and_mobile_more_reach_every_view_without_javascript():
         "/knowledge",
         "/jobs",
         "/workspaces",
+        "/secrets",
         "/health",
     ]
     (mobile,) = root.find("nav", "tabs")
@@ -105,6 +106,7 @@ def test_desktop_sidebar_and_mobile_more_reach_every_view_without_javascript():
         "/knowledge",
         "/jobs",
         "/workspaces",
+        "/secrets",
         "/health",
     ]
     # Native summary and plain links supply every operation before the script enhances focus.

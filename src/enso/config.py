@@ -171,11 +171,6 @@ class Paths:
     def agents_md(self) -> Path:
         return self.home / "AGENTS.md"
 
-    @property
-    def secrets(self) -> Path:
-        """``*.env`` files loaded into the service environment at start."""
-        return self.home / "secrets"
-
     def workspace(self, name: str) -> Path:
         if not valid_workspace_name(name):
             raise ValueError("workspace names are lowercase kebab-case, at most 64 characters")
@@ -410,6 +405,7 @@ class Config:
     logging: LoggingConfig
     runs: RunsConfig
     web: WebConfig
+    secret_key: Path
     projects: dict[str, ProjectConfig] = field(default_factory=dict)
     heartbeat: HeartbeatConfig = field(default_factory=HeartbeatConfig)
     source_hash: str | None = None
@@ -522,6 +518,7 @@ ROOT_KEYS = (
     "runs",
     "web",
     "heartbeat",
+    "secrets",
 )
 PROJECT_KEYS = (
     "name",
@@ -547,6 +544,7 @@ SETTINGS_KEYS = {
     "runs": ("keep", "max_age_days"),
     "web": ("host", "port", "knowledge"),
     "heartbeat": ("enabled", "retention_days"),
+    "secrets": ("key_file",),
 }
 # JSON member names are arbitrary text. An ordinary one prints as itself; anything else is
 # JSON-escaped so a newline or a bidirectional control character in config.json cannot forge
@@ -1106,6 +1104,32 @@ def _parse_heartbeat(raw: dict, problems: list[str]) -> HeartbeatConfig:
     return HeartbeatConfig(enabled=enabled, retention_days=retention)
 
 
+def _parse_secret_key(raw: dict, paths: Paths, problems: list[str]) -> Path:
+    default = Path.home() / ".config/enso/master.key"
+    value = raw.get("key_file", str(default))
+    if not isinstance(value, str) or "\x00" in value or not Path(value).is_absolute():
+        problems.append("secrets.key_file must be an absolute path outside the Enso home")
+        return default
+    key = Path(value)
+    if key.resolve().is_relative_to(paths.home.resolve()):
+        problems.append("secrets.key_file must be outside the Enso home")
+    return key
+
+
+def secret_key_file(paths: Paths) -> Path:
+    """Read only secret settings, even before chat is configured or started."""
+    raw = read_raw_config(paths) if paths.config.exists() else {}
+    settings = raw.get("secrets", {})
+    problems: list[str] = []
+    if not isinstance(settings, dict):
+        raise ConfigError(["secrets must be an object"])
+    _unknown_keys(settings, SETTINGS_KEYS["secrets"], "secrets", problems)
+    key = _parse_secret_key(settings, paths, problems)
+    if problems:
+        raise ConfigError(problems)
+    return key
+
+
 def parse_config(raw: object, paths: Paths) -> tuple[Config | None, list[str], list[str]]:
     """Validate a raw config document; returns (config, problems, warnings)."""
     problems: list[str] = []
@@ -1178,6 +1202,7 @@ def parse_config(raw: object, paths: Paths) -> tuple[Config | None, list[str], l
     )
     web = _parse_web(web_raw, problems)
     heartbeat = _parse_heartbeat(settings["heartbeat"], problems)
+    secret_key = _parse_secret_key(settings["secrets"], paths, problems)
 
     if problems or defaults is None:
         return None, problems, warnings
@@ -1196,6 +1221,7 @@ def parse_config(raw: object, paths: Paths) -> tuple[Config | None, list[str], l
         web=web,
         projects=projects,
         heartbeat=heartbeat,
+        secret_key=secret_key,
     )
     return config, problems, warnings
 

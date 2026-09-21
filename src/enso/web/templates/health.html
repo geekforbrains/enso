@@ -101,7 +101,7 @@
       <dt>Listening</dt><dd>{% if viewer.url %}<code>{{ viewer.url }}</code>{% else %}-{% endif %} <span class="muted">(pid {{ viewer.pid }})</span></dd>
       <dt>Access</dt>
       <dd>{% if viewer.loopback %}loopback only{% else %}{{ m.tag('warning', 'exposed') }} bound to <code>{{ viewer.host }}</code>, which other machines may reach; the viewer has no authentication{% endif %}</dd>
-      <dt>Mode</dt><dd>read-only; every page reads current state when it loads and changes nothing</dd>
+      <dt>Mode</dt><dd>browse current state; create and delete secrets in Secrets</dd>
     </dl>
   </div>
 </section>

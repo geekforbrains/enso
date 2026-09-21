@@ -657,7 +657,7 @@ def test_shared_holds_only_its_declared_entries(enso_home: Paths, config: Config
     assert (enso_home.home / "knowledge").is_dir() and (enso_home.shared / "scratch").is_dir()
 
 
-@pytest.mark.parametrize("name", ["runtime", "secrets"])  # one managed root, one the operator's
+@pytest.mark.parametrize("name", ["runtime", "cache"])
 def test_operating_roots_must_be_real_directories(
     enso_home: Paths, config: Config, tmp_path: Path, name: str
 ) -> None:
@@ -687,9 +687,9 @@ def test_private_roots_are_reported_and_tightened_when_other_users_can_read_them
     finish(enso_home.workspace("default"))
     write_config(enso_home, raw_config)
     enso_home.config.chmod(0o644)
-    enso_home.secrets.mkdir()
-    enso_home.secrets.chmod(0o755)
-    (enso_home.secrets / "slack.env").write_text("TOKEN=xoxb-real\n")
+    enso_home.runtime_dir.mkdir(exist_ok=True)
+    enso_home.runtime_dir.chmod(0o755)
+    (enso_home.runtime_dir / "keep").write_text("preserve\n")
 
     report = audit.audit(enso_home, user_dirs=USER_DIRS)
 
@@ -700,7 +700,7 @@ def test_private_roots_are_reported_and_tightened_when_other_users_can_read_them
     ]
     assert str(enso_home.config) in found[0].message and "0644" in found[0].message
     assert "0600" in found[0].message and "readable by other users" in found[0].message
-    assert str(enso_home.secrets) in found[1].message and "0700" in found[1].message
+    assert str(enso_home.runtime_dir) in found[1].message and "0700" in found[1].message
     assert report.ok and report.home.attention  # untidy, not unhealthy
 
     fixed = audit.audit(enso_home, fix=True, user_dirs=USER_DIRS)
@@ -708,8 +708,8 @@ def test_private_roots_are_reported_and_tightened_when_other_users_can_read_them
     assert [f for f in fixed.home.findings if f.check == "permissions"] == []
     assert [line.split(" ", 1)[0] for line in fixed.home.fixed] == ["restricted", "restricted"]
     assert stat.S_IMODE(enso_home.config.stat().st_mode) == 0o600
-    assert stat.S_IMODE(enso_home.secrets.stat().st_mode) == 0o700
-    assert (enso_home.secrets / "slack.env").read_text() == "TOKEN=xoxb-real\n"
+    assert stat.S_IMODE(enso_home.runtime_dir.stat().st_mode) == 0o700
+    assert (enso_home.runtime_dir / "keep").read_text() == "preserve\n"
     # Already-private roots are left exactly as they are, not widened to the wanted mode.
     enso_home.config.chmod(0o400)
     again = audit.audit(enso_home, fix=True, user_dirs=USER_DIRS)

@@ -113,7 +113,7 @@ not prepend its contents to the prompt. Anything longer than a screen belongs in
 Pricing rules are in `$ENSO_HOME/shared/knowledge/pricing.md`. Read it before quoting a number.
 ```
 
-The agent reads the relevant files when needed, and the read-only viewer lets you browse
+The agent reads the relevant files when needed, and the viewer lets you browse
 them. A filing rule written here can override the shared default;
 see [Knowledge](knowledge.md#where-new-notes-go).
 
@@ -310,6 +310,6 @@ Everything that is not instructions or skills is configuration:
 | Which chat locations use which workspace | `bindings` in [`config.json`](configuration.md) |
 | Which agent a workspace or job uses | `defaults`, workspace `WORKSPACE.md`, `JOB.md` |
 | Provider permissions | [Provider-native controls](configuration.md#provider-permissions-and-installation-trust) and `providers.<name>.args` |
-| Environment for providers and scripts | `~/.enso/secrets/*.env` |
+| Credentials for agents and jobs | [Encrypted secrets](configuration.md#secrets), supplied through the CLI or job declarations |
 | Scheduled work | [`JOB.md`](jobs.md) plus its prerun and postrun scripts |
 | Projects and their stages | `enso workflow init` and workspace [`PROJECT.md`](configuration.md#projects); acceptance checks in stage definitions, agent instructions in the bound job's `JOB.md` |

@@ -196,12 +196,14 @@ def test_run_summaries_never_carry_output(enso_home: Paths, config: Config) -> N
 # HEAD and OPTIONS are the two a framework answers by itself; POST stands for the rest.
 @pytest.mark.parametrize("method", ["HEAD", "POST", "OPTIONS"])
 @pytest.mark.parametrize("path", ["/health", "/static/app.css", "/", "/nope"])
-async def test_only_get_is_answered(client: TestClient, method: str, path: str) -> None:
+async def test_browsing_routes_only_answer_get(client: TestClient, method: str, path: str) -> None:
     response = await client.request(method, path, allow_redirects=False)
-    assert response.status == 405 and response.headers["Allow"] == "GET"
+    assert response.status == (404 if path == "/nope" else 405)
+    if path != "/nope":
+        assert response.headers["Allow"] == "GET"
     assert response.headers["Content-Security-Policy"] == CSP
-    if method != "HEAD":
-        assert "Method not allowed" in await response.text()
+    if method != "HEAD" and path != "/nope":
+        assert "Method Not Allowed" in await response.text()
 
 
 async def test_security_headers_on_every_response(client: TestClient) -> None:

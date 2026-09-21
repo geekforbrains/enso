@@ -98,6 +98,7 @@
       {% endif %}
       <dt>Enabled</dt><dd>{{ 'yes' if job.enabled else 'no' }}</dd>
       <dt>Timeout</dt><dd>{{ job.timeout }}s</dd>
+      <dt>Secrets</dt><dd>{% if job.secrets %}{% for name in job.secrets %}<code>{{ name }}</code>{% if not loop.last %}, {% endif %}{% endfor %}{% else %}<span class="muted">none</span>{% endif %}</dd>
       <dt>Prerun</dt><dd>{% if job.prerun %}<code>{{ job.prerun }}</code> ({{ job.prerun_timeout }}s timeout){% else %}<span class="muted">none</span>{% endif %}</dd>
       <dt>Follow-up limit</dt><dd>{{ job.max_followups }}</dd>
       <dt>Postrun</dt><dd>{% if job.postrun %}<code>{{ job.postrun }}</code> ({{ job.postrun_timeout }}s timeout){% else %}<span class="muted">none</span>{% endif %}</dd>

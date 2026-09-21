@@ -26,6 +26,12 @@ the qualified reference, and job and concurrency-group locks live in `runtime/lo
 
 Names beginning `enso-` are reserved for jobs Enso installs; `enso workspace audit` warns about one it did not. The bundled jobs are `default:enso-audit`, which reports nightly health problems and fixes nothing, and `default:enso-update`, which checks for releases and notifies without invoking a model or installing updates.
 
+Store credentials through `enso secret` or the web UI, then declare their names in
+`JOB.md` using `secrets: [NAME]`. The gate, agent/stage command, checks, postrun and follow-ups
+receive one resolved set of values for the whole run. Missing credentials fail before any
+process starts. Keep values out of job files and prompts. Independent project hooks use
+`enso secret run --secret NAME -- COMMAND`; the `enso` skill covers direct agent access.
+
 ## Workflow
 
 1. `enso job list` to see jobs in `ENSO_WORKSPACE`; select another with `--workspace NAME` or use `--all-workspaces` for the installation. Run lists use the same scope. `enso config show` lists providers and models, and `enso config check` validates configuration.
@@ -50,6 +56,7 @@ project: EN                   # optional, with stage: a stage job for that proje
 stage: todo                   # optional, with project: one of its agent stages
 concurrency_group: project-x  # optional: serialize provider work and postrun checks
 enabled: true                 # required
+secrets: [GITHUB_TOKEN]        # optional: names supplied to the whole run
 prerun: prerun.sh             # optional: gate, run with bash from the job directory
 prerun_timeout: 300           # optional, default 120
 postrun: postrun.sh           # optional: check/reaction, run with bash from the job directory

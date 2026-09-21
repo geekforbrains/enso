@@ -105,7 +105,6 @@ def _layout_problems(paths: Paths) -> list[str]:
         paths.workspaces,
         default,
         paths.cache,
-        paths.secrets,
         paths.skills,
         paths.knowledge,
         *(default / name for name in layout.WORKSPACE_DIRS),
@@ -206,7 +205,6 @@ def initialize_home(paths: Paths) -> dict[str, Any]:
             for directory in (
                 paths.workspaces,
                 paths.cache,
-                paths.secrets,
                 paths.workspace("default"),
             ):
                 if not directory.exists():

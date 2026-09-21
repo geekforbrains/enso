@@ -790,3 +790,28 @@ def test_job_create_and_run_from_the_terminal_for_a_stage(
     payload = json.loads(ran.stdout)
     assert (payload["ok"], payload["status"], payload["task"]) == (False, "error", "EN-001")
     assert tasks.TASK_HEADER in payload["output"]
+
+
+async def test_stage_command_and_checks_share_declared_secrets(enso_home, raw_config):
+    from enso import secrets
+
+    secrets.add(enso_home, "BUILD_TOKEN", "synthetic-build")
+    config = workflow_config(
+        enso_home,
+        raw_config,
+        [
+            {
+                "name": "work",
+                "command": 'test "$BUILD_TOKEN" = synthetic-build',
+                "checks": [
+                    {"name": "credential", "command": 'test "$BUILD_TOKEN" = synthetic-build'}
+                ],
+            }
+        ],
+    )
+    task = tasks.create(enso_home, config, "EN", "Build with a token", actor="user:test")
+    result = await JobRunner(config).run(
+        stage_job(enso_home, config, secrets=["BUILD_TOKEN"]), trigger="manual"
+    )
+    assert result.status == "ok", result.error
+    assert tasks.get(enso_home, task.ref).stage == "done"

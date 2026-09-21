@@ -1,4 +1,4 @@
-"""``enso web``: the read-only viewer and its optional user service."""
+"""``enso web``: the viewer and its optional user service."""
 
 from __future__ import annotations
 
@@ -13,9 +13,7 @@ from ..config import Paths, valid_port
 from ..web import service as viewer_service
 from .common import fail
 
-web_app = typer.Typer(
-    no_args_is_help=True, help="The read-only web viewer, a separate process from `serve`."
-)
+web_app = typer.Typer(no_args_is_help=True, help="The web viewer, a separate process from `serve`.")
 
 
 @contextmanager

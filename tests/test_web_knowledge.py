@@ -1,4 +1,4 @@
-"""Knowledge browsing, note navigation and asset safety through the GET-only viewer."""
+"""Knowledge browsing, note navigation and asset safety through the read-only knowledge views."""
 
 from __future__ import annotations
 

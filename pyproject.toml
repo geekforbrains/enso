@@ -16,6 +16,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
+    "cryptography>=46",
     "typer>=0.12",
     "rich>=13.0",
     "croniter>=1.0",
