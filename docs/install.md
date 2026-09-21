@@ -154,6 +154,18 @@ so a change there needs `enso web stop`, then `enso web start`. A file that is i
 when it is read is logged once and the last valid configuration stays in force; see
 [Applying configuration](configuration.md#applying-configuration).
 
+## Add secrets
+
+Start the [web UI](web.md#running-it), open **Secrets**, and add any credentials your agents
+or jobs need. The first creation prepares encrypted database storage and an external key;
+back up that key separately. Add a `secrets` list to a job or use `enso secret run` from an
+agent or script. See [key setup and backup/restore](configuration.md#secrets) and
+[CLI usage](cli.md#secrets).
+
+Upgrading adds database storage without changing unrelated home data. The retired
+`secrets/*.env` files are not loaded or imported; manually recreate the secrets and job
+declarations you need. The old files remain untouched.
+
 ## Verify
 
 ```bash
@@ -175,7 +187,7 @@ enso web stop             # stop the process and its supervisor until the next s
 enso web uninstall        # stop it and remove automatic startup; keep the home and logs
 ```
 
-The read-only [web viewer](web.md) runs independently of the agent service and shows the
+The [web viewer](web.md) runs independently of the agent service and shows the
 same doctor report on its Health page even when `config.json` is broken. A standalone
 `start` lasts until shutdown. `install` writes `~/Library/LaunchAgents/com.enso.web.plist`
 on macOS or `~/.config/systemd/user/enso-web.service` on Linux, starts it immediately, and

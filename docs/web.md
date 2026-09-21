@@ -1,13 +1,13 @@
 # Web viewer
 
-An optional, read-only web UI. It answers the questions you cannot answer from a chat
+An optional web UI. It answers the questions you cannot answer from a chat
 window: what can this agent actually see, what is it configured to do, and what happened
 last time it ran.
 
-**Read-only is a design decision, not a phase.** The viewer serves `GET` and nothing else.
-It cannot start a job, edit a file, change config, or send a message. It has no authentication,
-so keep it on localhost or behind authenticated private access: read-only pages still expose
-private prompts, files, and run output. See [Access](#access).
+Browsing is read-only. The **Secrets** section also creates and deletes encrypted secrets;
+other views have no write actions. The UI has no authentication, so keep it on localhost or
+behind authenticated private access: pages expose private prompts, files, and run output,
+and access to the UI permits secret management. See [Access](#access).
 
 ## Running it
 
@@ -56,9 +56,9 @@ named pipes, with an error instead of following the link or waiting for the pipe
 For standalone and foreground starts, `--host` and `--port` win over `web.host` and
 `web.port` in `config.json`. A missing or invalid `config.json` does not stop the viewer:
 it falls back to `127.0.0.1:8787` (flags
-still win) so the Health page can show you the problem. It writes nothing but the pidfile
-and its log, and it opens `enso.db` read-only, so nothing a page does can change Enso's
-state or block the service.
+still win) so the Health page can show you the problem. Browsing opens `enso.db` read-only.
+Secret-store operations use short SQLite transactions independently of the chat service,
+and respect maintenance admission.
 
 Server-rendered HTML, one stylesheet, one small script for filtering and sorting that the
 pages work without, no build step, no framework, and nothing loaded from the network. The
@@ -100,6 +100,7 @@ its named sections above the content:
 | [Runs](#runs) `/runs` | Acted · Failed · All |
 | [Knowledge](#knowledge) `/knowledge` | Browse · All notes |
 | [Workspaces](#workspaces) `/workspaces` | Workspaces · Skills |
+| [Secrets](#secrets) `/secrets` | Saved secrets · Add a secret |
 | [Health](#health) `/health` | Doctor · Log |
 
 `/` redirects to `/today`. Skills are resolved per workspace, so `/skills` is a section of
@@ -114,8 +115,8 @@ rows would have been.
 
 At 820px and below, the sidebar becomes a bottom bar with exactly five items: **Today,
 Tasks, Heartbeats, Runs, More**. More opens a compact popup containing Knowledge, Jobs,
-Workspaces, and Health. It stays highlighted while one of those views is open, and carries the Health
-attention indicator even while the popup is closed. The bar respects the phone's safe area
+Workspaces, Secrets, and Health. It stays highlighted while one of those views is open,
+and carries the Health attention indicator even while the popup is closed. The bar respects the phone's safe area
 and stays within the viewport at 320px wide.
 
 On an iPhone, Share → Add to Home Screen installs the viewer as an app named Enso, with the
@@ -555,20 +556,48 @@ rows above it.
 Plus the database footprint
 (`enso.db` with its `-wal` and `-shm` companions), whether it is readable at a schema this
 Enso knows, and the viewer itself: its version, the home it reads, where it is bound, and
-that it is read-only. The last 200 lines of `enso.log` are the
+its browsing and secret-management capabilities. The last 200 lines of `enso.log` are the
 Log section at `/health/log`. This page works when nothing else does: it is where a
 missing or invalid `config.json` gets diagnosed.
 
+## Secrets
+
+`/secrets` lists saved names and provides a form for a new name and value. Multiline values
+are supported; browsers submit every textarea line break as CRLF, so the form stores LF. Use
+`enso secret add NAME --stdin` when exact bytes matter. Saved values never appear in
+responses and have no reveal or edit action.
+Duplicate creation fails; replace a value by deleting its name and adding it again. Delete
+opens an inline confirmation that works without JavaScript. The page and navigation work
+on desktop and mobile.
+
+Only `POST /secrets` and `POST /secrets/{name}/delete` write. Successful forms redirect back
+to `/secrets`; failed submissions show a safe error with an empty value field. Both actions
+use the same store as the [CLI](cli.md#secrets), including first-use key creation. No chat
+service is required. [Configuration](configuration.md#secrets) owns key backup and restore.
+
 ## Access
 
-The viewer binds `127.0.0.1` by default and has no authentication, because it assumes it is
-only reachable from the machine it runs on. It answers `GET` and nothing else: every other
-method, `HEAD` included, gets a 405. The only forms are read-only `GET` filters. Every
-response carries a Content Security Policy that allows nothing but the viewer's own
-stylesheet, script, icons, manifest, and safely served local knowledge images, and pages are
-never cached.
+The viewer binds `127.0.0.1` by default and has no authentication. It answers only to
+`localhost`, address literals, its bind host, and the names in
+[`web.hosts`](configuration.md#web); any other `Host` gets a 421 before routing. Without
+this, a DNS name an attacker re-points at the listener would be same-origin with every page,
+able to read them and their form token. Each route explicitly
+registers its accepted methods; unsupported methods return 405, and missing routes return
+404. Browsing routes support GET only. Registered writes share a middleware policy:
+URL-encoded forms require an unguessable form token, cross-site browser requests and
+mismatched Origin/Host are rejected, and every response retains the security headers.
+Safari's opaque Origin under the no-referrer policy also requires its same-origin fetch
+signal and a valid token. A server restart invalidates open forms; refresh the page before submitting again.
+Write workers hold home admission until completion, including when a browser disconnects,
+so an update cannot overlap a secret mutation.
+
+Every response carries a Content Security Policy allowing only the viewer's own stylesheet,
+script, icons, manifest and safely served local knowledge images. Pages and form responses
+use `Cache-Control: no-store`; submitted secret values never appear in error pages.
 
 `--host` will bind elsewhere, and you should not use it on an untrusted network. Everything
 the viewer displays — job prompts, run output, workspace files — is content you would not
-want to publish. If you want it on your phone, put it behind a private tunnel or a reverse
-proxy that handles authentication, and leave Enso bound to localhost behind it.
+want to publish. For phone access, use a private tunnel or an authenticating reverse proxy,
+and leave Enso bound to localhost behind it. Preserve the public Host header through a
+proxy so browser origins match, add that name to `web.hosts`, and restart the viewer.
+Write protection is not an Enso login system.

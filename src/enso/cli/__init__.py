@@ -40,6 +40,7 @@ from .jobs import job_app, runs_app
 from .knowledge import knowledge_app
 from .messaging import message_app, telegram_app
 from .projects import project_app
+from .secrets import secret_app
 from .setup import setup_wizard
 from .skills import skill_app
 from .slack import slack_app
@@ -59,6 +60,7 @@ service_app = typer.Typer(
 )
 app.command("setup")(setup_wizard)
 app.add_typer(config_app, name="config")
+app.add_typer(secret_app, name="secret")
 app.add_typer(workflow_app, name="workflow")
 app.add_typer(connect_app, name="connect")
 app.add_typer(workspace_app, name="workspace")
@@ -211,24 +213,6 @@ async def _watch_update(
             paths.daemon_state.unlink(missing_ok=True)
 
 
-def load_secret_env(paths: Paths) -> list[str]:
-    """Export ``secrets/*.env`` (``KEY=value`` lines) that the environment lacks; returns the keys.
-
-    launchd starts the service with almost no environment, and provider CLIs and prerun
-    scripts read things like keyring passwords from it.
-    """
-    loaded: list[str] = []
-    for env_file in sorted(paths.secrets.glob("*.env")):
-        for line in env_file.read_text("utf-8").splitlines():
-            key, sep, value = line.strip().removeprefix("export ").partition("=")
-            key = key.strip()
-            if not sep or not key or key.startswith("#") or key in os.environ:
-                continue
-            os.environ[key] = value.strip().strip("'\"")
-            loaded.append(key)
-    return loaded
-
-
 @app.command()
 def serve(debug: bool = typer.Option(False, "--debug", help="Log prompts and raw events.")) -> None:
     """Run every configured transport."""
@@ -249,9 +233,6 @@ def _serve_home(paths: Paths, debug: bool) -> None:
     logsetup.setup(paths, config.logging, debug=debug)
     for line in audit.startup_warnings(paths, config):
         log.warning(line)  # a malformed workspace is not a reason to stop serving
-    loaded = load_secret_env(paths)
-    if loaded:
-        log.info("loaded %s from %s", ", ".join(loaded), paths.secrets)
     try:
         db.initialize(paths)
         pruned = db.prune_sessions(paths)

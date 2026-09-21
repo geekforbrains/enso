@@ -32,8 +32,7 @@ Enso's normal runtime state lives under one directory, `~/.enso` (or `$ENSO_HOME
 │   ├── projects/<KEY>/PROJECT.md # project definition and sibling scripts
 │   ├── jobs/<job>/JOB.md # workspace jobs, referenced as <workspace>:<job>
 │   └── heartbeat/<REF>/ # a beat's optional gate.sh and helpers
-├── secrets/*.env        # KEY=value files exported into the service environment
-├── enso.db             # runs, messages, sessions, tasks, beats, tables
+├── enso.db             # runs, messages, sessions, tasks, beats, secrets, tables
 ├── enso.log            # rotating log
 ├── runtime/             # managed releases, current link, installation receipt, update recovery
 └── cache/
@@ -92,6 +91,8 @@ enso table list|register|schema      # see enso-tables
 enso job list|show|run|create        # see enso-jobs
 enso heartbeat status|create|list|show|history|update|pause|resume|wait|complete  # see enso-heartbeat
 enso runs list|show
+enso secret list|add|delete|get       # encrypted credentials; list shows names only
+enso secret run --secret NAME -- COMMAND  # supply credentials without reading them
 enso task add|list|show|advance|return|block|resume|release|edit|note|ref|land|sweep   # see enso-projects
 enso project list|add
 enso workspace list|create|audit     # see enso-workspace
@@ -104,6 +105,15 @@ enso doctor                          # installation health, including knowledge 
 enso update check|apply|status|recover [--json]  # see enso-update before requesting an upgrade
 enso logs [-f] [--turn ID] [--job WORKSPACE:JOB]
 ```
+
+For credentials, use `enso secret list` to discover names and prefer
+`enso secret run --secret NAME -- COMMAND` when only the command needs the value. Repeat
+`--secret` for multiple names. Use `enso secret get NAME` only when the task requires reading
+the value itself; never copy it into prompts, notes or diagnostics. Jobs declare names in
+`JOB.md` with `secrets: [NAME]` and receive them automatically for the run. Operators can add
+secrets in the web UI or with `enso secret add NAME` (hidden prompt or `--stdin`). Existing
+names require delete/create to replace. Missing credentials need operator setup; there is
+no environment-file loader. See [Secrets](https://github.com/geekforbrains/enso/blob/main/docs/configuration.md#secrets).
 
 Message sends and job, run, message, Heartbeat, task, and project lists default to
 `ENSO_WORKSPACE`; use `--workspace NAME` to select another existing workspace. Missing

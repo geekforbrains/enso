@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
-from .. import frontmatter
+from .. import frontmatter, secrets
 from ..config import Config, Paths, require_workspace, split_job_ref, valid_workspace_name
 from ..providers import PROVIDER_CLASSES
 from ..scheduling import CRON_FIELDS as CRON_FIELDS
@@ -32,6 +32,7 @@ FIELDS: dict[str, str] = {
     "stage": TEXT,
     "concurrency_group": TEXT,
     "enabled": FLAG,
+    "secrets": "names",
     "prerun": TEXT,
     "prerun_timeout": INTEGER,
     "postrun": TEXT,
@@ -49,6 +50,7 @@ _TYPE_PROBLEMS = {
     INTEGER: "must be a positive integer",
     NONNEGATIVE: "must be a nonnegative integer",
     FLAG: "must be true or false",
+    "names": "must be a list of unique, unreserved secret names",
 }
 DEFAULT_TIMEOUT = 900
 DEFAULT_PRERUN_TIMEOUT = 120
@@ -72,6 +74,7 @@ class Job:
     workspace: str
     enabled: bool
     prompt: str
+    secrets: tuple[str, ...] = ()
     project: str | None = None  # with ``stage``: the task board stage this job serves
     stage: str | None = None
     concurrency_group: str | None = None  # serialize provider execution and postrun checks
@@ -120,6 +123,15 @@ def _holds(kind: str, value: object) -> bool:
     A bool is an ``int`` in Python and would otherwise pass as a timeout, and a quoted
     number stays the string it was written as rather than being coerced back.
     """
+    if kind == "names":
+        if not isinstance(value, list) or any(not isinstance(name, str) for name in value):
+            return False
+        try:
+            for name in value:
+                secrets.validate_name(name)
+        except secrets.SecretError:
+            return False
+        return len(set(value)) == len(value)
     if kind == TEXT:
         return isinstance(value, str) and bool(value.strip())
     if kind in (INTEGER, NONNEGATIVE):
@@ -200,6 +212,8 @@ def parse_job(path: Path, config: Config | None = None) -> tuple[Job | None, lis
     if not schema_holds:
         return None, problems
     given = {key: fields[key] for key in FIELDS if key in fields}
+    if "secrets" in given:
+        given["secrets"] = tuple(given["secrets"])
     given.setdefault("schedule", None)  # a stage job may leave it out
     if command_stage:
         given.setdefault("provider", "command")

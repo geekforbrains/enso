@@ -477,6 +477,42 @@ or `uncertain`, with a receipt when available. Reusing a succeeded or unresolved
 refused; reconcile uncertain outcomes before retrying. Actor and run identity come from
 Enso's environment, never from the JSON definition or CLI flags.
 
+## Secrets
+
+```bash
+enso secret list                         # names only
+enso secret add GITHUB_TOKEN              # hidden interactive prompt
+enso secret add GITHUB_TOKEN --stdin      # exact UTF-8 stdin, including trailing newlines
+enso secret delete GITHUB_TOKEN
+enso secret get GITHUB_TOKEN              # exact value, no added newline
+enso secret reset [--yes]                # delete every secret and the key binding
+enso secret run --secret GITHUB_TOKEN -- gh issue list --repo owner/repo
+enso secret run --secret FIRST_TOKEN --secret SECOND_TOKEN -- ./command.sh
+```
+
+Management works without the chat service. Add rejects duplicate names; delete/create
+replaces a value. `get` deliberately exposes one value on stdout. Prefer `run` when the
+agent only needs to give a command credentials: it resolves all requested names before
+launching, overlays their values in the child environment, and preserves the command's
+exit status and signals. It does not modify the parent shell or print values itself.
+Missing names, key problems and decryption failures exit nonzero without starting a command.
+Use `--` before the command so its options are passed through unchanged.
+
+`reset` is the explicit recovery from a lost master key, which otherwise blocks `list`, `add`,
+and `delete`. It warns, asks for confirmation on a terminal, and requires `--yes` elsewhere.
+It permanently deletes every saved secret and never touches the key file; see
+[lost keys](configuration.md#backup-and-restore).
+
+`ENSO_*`, `LD_*`, `DYLD_*`, and these process-control names are reserved: `PATH`, `HOME`,
+`SHELL`, `ENV`, `BASH_ENV`, `IFS`, `CDPATH`, `SHELLOPTS`, `BASHOPTS`, `PYTHONPATH`,
+`PYTHONHOME`, `PYTHONSTARTUP`, `PYTHONINSPECT`, `VIRTUAL_ENV`, `NODE_OPTIONS`, and
+`NODE_PATH`. The same validation applies
+to creation, CLI injection, and job declarations.
+
+[Configuration](configuration.md#secrets) owns key setup, encryption, backup/restore,
+and manual replacement of the retired environment-file setup.
+[Jobs](jobs.md#secrets) owns automatic injection through `JOB.md`.
+
 ## Jobs and runs
 
 Jobs use `<workspace>:<job>` references, such as `team:digest`, throughout commands, runs,

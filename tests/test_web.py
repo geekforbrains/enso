@@ -54,6 +54,9 @@ async def client(enso_home: Paths) -> AsyncIterator[TestClient]:
 # -- Config ---------------------------------------------------------------------
 
 
+HOSTS_PROBLEM = "web.hosts must be a list of host names without a scheme, port, or path"
+
+
 def test_web_config_defaults_values_and_problems(enso_home: Paths, raw_config: dict) -> None:
     config, problems, _ = parse_config(raw_config, enso_home)
     assert config is not None and config.web == WebConfig("127.0.0.1", 8787)
@@ -61,6 +64,10 @@ def test_web_config_defaults_values_and_problems(enso_home: Paths, raw_config: d
     raw_config["web"] = {"host": "0.0.0.0", "port": 9000}
     config, problems, _ = parse_config(raw_config, enso_home)
     assert config is not None and config.web == WebConfig("0.0.0.0", 9000)
+
+    raw_config["web"] = {"hosts": ["Enso.Tailnet.ts.net"]}
+    config, problems, _ = parse_config(raw_config, enso_home)
+    assert config is not None and config.web.hosts == ("enso.tailnet.ts.net",)
 
     raw_config["web"] = {"knowledge": {"recent_limit": 7, "page_size": 25}}
     config, problems, _ = parse_config(raw_config, enso_home)
@@ -80,6 +87,10 @@ def test_web_config_defaults_values_and_problems(enso_home: Paths, raw_config: d
         ({"knowledge": {"page_size": 0}}, "web.knowledge.page_size must be a positive integer"),
         ({"knowledge": {"page_size": True}}, "web.knowledge.page_size must be a positive integer"),
         ({"knowledge": []}, "web.knowledge must be an object"),
+        ({"hosts": "enso.ts.net"}, HOSTS_PROBLEM),
+        ({"hosts": ["https://enso.ts.net"]}, HOSTS_PROBLEM),
+        ({"hosts": ["enso.ts.net:443"]}, HOSTS_PROBLEM),
+        ({"hosts": [7]}, HOSTS_PROBLEM),
     ):
         raw_config["web"] = bad
         config, problems, _ = parse_config(raw_config, enso_home)
@@ -196,12 +207,14 @@ def test_run_summaries_never_carry_output(enso_home: Paths, config: Config) -> N
 # HEAD and OPTIONS are the two a framework answers by itself; POST stands for the rest.
 @pytest.mark.parametrize("method", ["HEAD", "POST", "OPTIONS"])
 @pytest.mark.parametrize("path", ["/health", "/static/app.css", "/", "/nope"])
-async def test_only_get_is_answered(client: TestClient, method: str, path: str) -> None:
+async def test_browsing_routes_only_answer_get(client: TestClient, method: str, path: str) -> None:
     response = await client.request(method, path, allow_redirects=False)
-    assert response.status == 405 and response.headers["Allow"] == "GET"
+    assert response.status == (404 if path == "/nope" else 405)
+    if path != "/nope":
+        assert response.headers["Allow"] == "GET"
     assert response.headers["Content-Security-Policy"] == CSP
-    if method != "HEAD":
-        assert "Method not allowed" in await response.text()
+    if method != "HEAD" and path != "/nope":
+        assert "Method Not Allowed" in await response.text()
 
 
 async def test_security_headers_on_every_response(client: TestClient) -> None:
@@ -333,7 +346,7 @@ def test_background_lifecycle(enso_home: Paths) -> None:
         assert json.loads(enso_home.web_pid.read_text())["pid"] == status.pid
         assert web.start(enso_home, port=port).startswith(f"already running pid {status.pid}")
         with socket.create_connection(("127.0.0.1", port), timeout=2) as sock:
-            sock.sendall(b"GET /health HTTP/1.0\r\nHost: x\r\n\r\n")
+            sock.sendall(b"GET /health HTTP/1.0\r\nHost: localhost\r\n\r\n")
             reply = b""
             while chunk := sock.recv(65536):
                 reply += chunk

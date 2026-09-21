@@ -27,6 +27,7 @@ project: EN                   # optional, with stage: the project this job serve
 stage: todo                   # optional, with project: one of its agent stages
 concurrency_group: meteor     # optional: serialize provider work and postrun checks
 enabled: true                 # required
+secrets: [GITHUB_TOKEN]        # optional: names supplied to the whole run
 prerun: prerun.sh             # optional: gate, run with bash from the job directory
 prerun_timeout: 300           # optional, default 120
 postrun: postrun.sh           # optional: check/reaction, run with bash from the job directory
@@ -292,6 +293,34 @@ ready. Disable it with `enabled: false` to stop nightly checks; manual `enso upd
 still works. Older homes can install the new job by applying their existing valid config.
 See [Upgrading](install.md#upgrading) and [CLI updates](cli.md#updates).
 
+## Secrets
+
+An optional `secrets` list in `JOB.md` names the credentials the run needs:
+
+```yaml
+secrets:
+  - GITHUB_TOKEN
+  - GOOGLE_PASSWORD
+```
+
+Names must be unique and pass the shared [secret-name rules](cli.md#secrets); the list may
+be empty. Resolve all names once, before prerun. A missing name, unavailable key or corrupt
+value records an `error` and starts no gate, agent, command, check or postrun. It is never
+an ordinary gate's `no_work` result. Like a failing prerun, the same failure alerts once per
+24 hours however often the job retries, and the next run that resolves its secrets and passes
+its prerun sends one `✅ [<workspace>:<job>] secrets recovered`.
+
+Prerun, the agent or stage command, workflow checks/repairs, postrun, and every follow-up
+share one in-memory snapshot. Declared secrets override same-name inherited variables for
+that run only. Enso context and process-control variables are protected. A running process
+and later turns in that run retain the original values after deletion/recreation; the next
+run resolves current values. Job definitions and generated prompts contain names only.
+
+Project setup/teardown and deferred lifecycle scripts are independent project operations.
+They can run outside a job or retry later; use `enso secret run` in those commands when they
+need credentials. Chat and Heartbeat agents use that same CLI as needed. Nothing exports
+every saved secret into the service environment.
+
 ## Prerun scripts
 
 Prerun and postrun scripts execute with the service account's access, outside the
@@ -467,6 +496,7 @@ the run a failure. Prompts and scripts can send messages themselves with
 - provider exit `N`: `⚠️ [<workspace>:<job> (exit N)]` plus the output tail
 - timeout: `⚠️ [<workspace>:<job>] timed out after Ns` plus the tail
 - prerun failure: `⚠️ [<workspace>:<job>] prerun failed` plus the diagnostic
+- unresolved secrets: `⚠️ [<workspace>:<job>] secrets unavailable` plus the diagnostic
 - postrun failure: `⚠️ [<workspace>:<job>] postrun failed` plus the diagnostic
 
 ## Run history

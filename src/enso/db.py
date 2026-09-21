@@ -9,9 +9,8 @@ reads and then writes has to upgrade a snapshot another writer may have moved on
 under WAL fails at once with ``SQLITE_BUSY`` and never waits on the busy timeout. Enso has one
 writer and its transactions last microseconds, so serialising them costs nothing worth
 measuring. ``reader`` opens the file read-only (SQLite's ``mode=ro`` plus ``PRAGMA query_only``)
-and never creates or migrates anything: it is the web viewer's only route to the database, so a
-request cannot change Enso state even by accident, and a WAL reader never blocks
-``enso serve``.
+and never creates or migrates anything. Ordinary browsing uses this route; secret-store
+operations use transactions. A WAL reader never blocks ``enso serve``.
 """
 
 from __future__ import annotations
@@ -26,10 +25,14 @@ from urllib.parse import quote
 
 from .config import LEGACY_HOME_MESSAGE, Paths, split_job_ref
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 APPLICATION_ID = 0x454E534F  # ENSO: distinguishes the new schema line from 0.1.x.
 
 _SCHEMA = """
+CREATE TABLE _enso_secret_store (
+  id INTEGER PRIMARY KEY CHECK (id = 1), verifier BLOB NOT NULL);
+CREATE TABLE _enso_secrets (name TEXT PRIMARY KEY, ciphertext BLOB NOT NULL);
+
 CREATE TABLE runs (
   id TEXT PRIMARY KEY, job TEXT NOT NULL, workspace TEXT NOT NULL,
   provider TEXT NOT NULL, model TEXT NOT NULL, effort TEXT NOT NULL,
@@ -461,7 +464,7 @@ class JobState:
     workspace: str
     job: str
     last_run: str | None = None  # local ISO timestamp of the last scheduled dispatch
-    failure_fingerprint: str | None = None  # the prerun failure last alerted on
+    failure_fingerprint: str | None = None  # the prerun or secrets failure last alerted on
     failure_alerted_at: str | None = None
 
 

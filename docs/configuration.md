@@ -248,7 +248,7 @@ which accepts strict JSON.
   "logging": { "level": "INFO", "max_bytes": 10485760, "backups": 5 },
   "runs":    { "keep": 500, "max_age_days": 30 },
   "heartbeat": { "enabled": true, "retention_days": 30 },
-  "web":     { "host": "127.0.0.1", "port": 8787,
+  "web":     { "host": "127.0.0.1", "port": 8787, "hosts": [],
                  "knowledge": { "recent_limit": 5, "page_size": 50 } }
 }
 ```
@@ -525,13 +525,57 @@ copy semantics and safe cleanup are defined in [Tasks](tasks.md#worktrees).
 
 ## Secrets
 
-The service starts with almost no environment. Put `KEY=value` lines (an `export ` prefix is
-fine) in `~/.enso/secrets/*.env` and `enso serve` exports them before anything starts; a
-variable already in the environment wins.
+Secrets are installation-wide named values, managed in the web **Secrets** page or through
+[`enso secret`](cli.md#secrets). Names match `[A-Z][A-Z0-9_]*`; duplicate creation fails.
+Values are UTF-8 text, including empty values, whitespace and multiline text, up to 64 KiB.
+The CLI's `--stdin` stores exact bytes; the web form stores line breaks as LF because browsers
+submit every textarea line break as CRLF.
+NUL is rejected because process environments cannot contain it. Replacement uses delete/create.
 
-Keyring passwords and service-account tokens that provider CLIs or job scripts read belong
-here. These files are read by every agent Enso runs — treat the directory as one trust
-boundary, not several.
+Values are encrypted with authenticated encryption before reaching `enso.db` or its WAL.
+Names are visible metadata. The versioned ciphertext binds each value to its name, and a
+permanent encrypted verifier detects a missing or incorrect key even after all secrets
+have been deleted. Encryption uses the maintained `cryptography` Fernet implementation.
+The store does not insert values into prompts, logs, or web responses. A command given a
+secret can still print or transmit it; command output retained in run history is ordinary
+run data, separate from encrypted secret storage.
+
+The default key is `~/.config/enso/master.key`, outside the Enso home. An optional setting
+selects a different absolute path, also outside the home:
+
+```json
+"secrets": {"key_file": "/absolute/private-directory/master.key"}
+```
+
+The first secret created through either interface generates the key when it is absent.
+Its directory must be owned by the Enso account with mode `0700`; the key must be a regular
+file owned by that account with mode `0600`. Existing keys are never replaced. Once the
+store is initialized, a missing or wrong key fails clearly; restore the original key.
+The key is read automatically as needed, so service restarts and supported login/boot startup
+require no vault unlock. Configuration holds only the key's path.
+
+### Backup and restore
+
+A backup of `enso.db` contains encrypted secret records; those values cannot be recovered
+without the external master key. Back up that key separately and privately. Use a SQLite
+backup operation for a running database, or stop its writers and checkpoint it before copying;
+copying only the main file while writes are active can omit committed WAL data.
+
+To restore on another machine, restore the Enso home/database and the same key separately.
+Set `secrets.key_file` if its location changed, and give the new service account ownership
+with the permissions above. The CLI and web UI can access the store without starting chat.
+Losing the key loses access to the stored values. Enso never replaces a missing key on its
+own, so an initialized store then refuses listing, creation, and deletion. The explicit way
+past it is `enso secret reset`: after a warning and confirmation it permanently deletes
+every saved secret and the key binding, leaving the key file untouched. The next creation
+reuses a key that exists or generates one. Recreate the secrets afterwards.
+
+### Upgrading from environment files
+
+Enso no longer creates, reads, or imports `secrets/*.env`. Existing files remain untouched
+and are no longer part of the managed home layout. Manually create the secrets you need,
+add names to jobs, and update other scripts to use `enso secret run`. There is no secret
+migration or automatic conversion. The database schema upgrade preserves unrelated data.
 
 ## Web
 
@@ -541,8 +585,14 @@ defaults to 5 and is a non-negative integer; it limits the recently updated note
 Knowledge home. `web.knowledge.page_size` defaults to 50 and is a positive integer; it limits
 each page of Knowledge listings. When `config.json` is missing or invalid the viewer still
 starts, on `127.0.0.1:8787` unless flags say otherwise, because its Health page is where you
-read the problem. The viewer is read-only and has no authentication, so leave `host` at
+read the problem. The web UI permits secret creation/deletion and has no authentication, so leave `host` at
 `127.0.0.1` unless something else is handling access. See [Web viewer](web.md).
+
+`web.hosts` lists the extra names a private tunnel or reverse proxy presents in the `Host`
+header, such as `["enso.example.ts.net"]`: host names only, without a scheme, port, or path.
+It defaults to empty and is read when the viewer starts. Requests for any other name are
+refused; [Access](web.md#access) explains why. A missing or invalid config serves only
+`localhost`, address literals, and the bind host.
 
 ## Heartbeat
 

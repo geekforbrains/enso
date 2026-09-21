@@ -76,7 +76,6 @@ The home itself holds the workspaces and what they share:
 ├── config.json        # the configuration; readable only by you
 ├── skills/            # installed and hand-written skills
 ├── shared/knowledge/  # reference shared across workspaces
-├── secrets/           # *.env files loaded into the service environment
 ├── .gitignore         # optional: yours, for the Git root Enso creates but never commits to
 ├── workspaces/<name>/ # one directory per workspace, as above
 ├── cache/, runtime/   # Enso's own operating state
@@ -344,8 +343,8 @@ The audit checks, each finding carrying the check id shown:
 | The workspace is bound, or named by a job | `orphan` | warning | Reports only |
 | A project command that is one `./script` beside `PROJECT.md` finds it present and executable | `script` | warning | Reports only |
 | Unexpected entries at the home's or a workspace's top level, in `shared/`, or under `workspaces/` | `unexpected` | warning | Reports only |
-| A dangling optional link, or a link or file in place of a real `runtime/`, `cache/`, or `secrets/` directory | `link`, `directory` | warning | Reports only |
-| `config.json`, `runtime/`, and `secrets/` have no group or other access | `permissions` | warning | Removes group and other access; preserves owner access |
+| A dangling optional link, or a link or file in place of a real `runtime/` or `cache/` directory | `link`, `directory` | warning | Reports only |
+| `config.json` and `runtime/` have no group or other access | `permissions` | warning | Removes group and other access; preserves owner access |
 | SQLite sidecars left behind by a removed `enso.db` | `stale` | warning | Reports only |
 | `uploads/` size | — | — | Reported as a number |
 
@@ -365,21 +364,21 @@ Each present entry is reported in one of five categories:
 | --- | --- | --- |
 | `required` | Enso's, and missing it is an error | `AGENTS.md`, `skills/`, `shared/`, `workspaces/`, `.git` |
 | `managed` | Enso's, written when needed | `enso.db`, `cache/`, `runtime/`, `.bundles.json` |
-| `user` | Enso may create the root; what is inside is yours | `secrets/`, `.gitignore`, `WORKSPACE.md`, a workspace `heartbeat/` |
+| `user` | Enso may create the root; what is inside is yours | `.gitignore`, `WORKSPACE.md`, a workspace `heartbeat/` |
 | `extension` | A provider or tool's own file, preserved and never read | `.codex/`, `.grok/`, `opencode.json` |
 | `unexpected` | Nothing in the table claims this name | whatever you left there |
 
 Only a root's own top-level names and the entries of `shared/` are classified. The audit
 descends no further, so operating state under `runtime/` or `cache/` is never mistaken for
 clutter, and your notes under any `knowledge/` are never inspected by this check.
-`.DS_Store` is ignored in every root. When present, `runtime/`, `cache/`, and `secrets/`
+`.DS_Store` is ignored in every root. When present, `runtime/` and `cache/`
 must be real directories; the audit reports a file or symlink in their place and leaves it
 untouched.
 
 `permissions` covers only the paths whose security contract is Enso's: the configuration it
-writes, the private state it creates, and the `secrets/` directory whose `*.env` files reach
-the service environment. It says nothing about the rest of your files, and it is the one
-finding `--fix` repairs by changing a mode — removing group and other bits while preserving
+writes and the private state it creates. The external secret key is validated by the
+[secret store](configuration.md#secrets). It says nothing about the rest of your files, and
+it is the one finding `--fix` repairs by changing a mode — removing group and other bits while preserving
 the existing owner bits, and never following a symbolic link. A root that is already private
 is left exactly as it is.
 
@@ -443,7 +442,7 @@ their walk at the nearest Git root, so a repository inside a workspace hides the
     "path": "/Users/you/.enso",
     "status": "ok",
     "attention": false,
-    "layout": {"AGENTS.md": "required", "runtime": "managed", "secrets": "user"},
+    "layout": {"AGENTS.md": "required", "runtime": "managed", ".gitignore": "user"},
     "findings": [],
     "fixed": []
   },

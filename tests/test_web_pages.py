@@ -354,7 +354,7 @@ async def test_file_browser_rejects_every_escape(
     default = home.paths.workspace("default")
     outside = tmp_path / "outside"
     outside.mkdir()
-    (outside / "secret.txt").write_text("secret\n")
+    (outside / "secret.txt").write_text("outside-private-content\n")
     os.symlink(home.paths.config, default / "knowledge" / "leak")
     os.symlink(outside, default / "knowledge" / "hole")
     os.symlink(default / "knowledge" / "plain.txt", default / "knowledge" / "inside")
@@ -377,7 +377,7 @@ async def test_file_browser_rejects_every_escape(
         "/workspaces/default/files/knowledge/%00",
     ):
         body = await page(client, path, 404)
-        assert "secret" not in body and "xoxb" not in body, path
+        assert "outside-private-content" not in body and "xoxb" not in body, path
     listing = await page(client, "/workspaces/default/files/knowledge/")
     assert "symlink" in listing and "leak" in listing  # visible, since the agent sees it
     inside = await page(client, "/workspaces/default/files/knowledge/inside")

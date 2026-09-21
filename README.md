@@ -17,7 +17,7 @@ or VPSs, with their own credentials and chat connections. See the
 
 Plan a weekend away. Turn rough notes into a plan. Keep an eye on a release. Enso
 can work on a schedule and follow up after the conversation ends. Work lives in
-ordinary files on your machine, and a read-only web viewer shows what's happening,
+ordinary files on your machine, and a web viewer shows what's happening,
 what's coming up, and what needs your attention.
 
 ![Enso's Today view with schedules and activity in light and dark themes](assets/readme/viewer-today.png)
@@ -27,7 +27,7 @@ what's coming up, and what needs your attention.
 - **Give it context.** Give each workspace a purpose and working rules, so Enso
   has the background when you pick things up again.
 - **Build your knowledge.** Maintain linked Markdown notes with Enso in one shared
-  knowledge directory, and browse them in the read-only viewer with search and backlinks.
+  knowledge directory, and browse them in the viewer with search and backlinks.
 - **Keep projects moving.** Turn conversations into tasks, carry work through
   simple stages, and follow the progress and evidence in the viewer. Development
   workflows can use separate Git worktrees and required tests or lint checks;

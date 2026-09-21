@@ -44,7 +44,7 @@ VIEWER = Definition(
     "com.enso.web",
     "enso-web.service",
     ("web", "start", "--foreground"),
-    "Enso - read-only web viewer",
+    "Enso - web viewer",
     "web",
 )
 

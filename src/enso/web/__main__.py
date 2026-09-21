@@ -15,7 +15,7 @@ from . import INSTALL_HINT, missing_extra, resolve_bind
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="python -m enso.web", description="Serve Enso's read-only web viewer."
+        prog="python -m enso.web", description="Serve Enso's web viewer."
     )
     parser.add_argument("--host", help="Bind address; default from config.json, else 127.0.0.1.")
     parser.add_argument("--port", type=int, help="TCP port; default from config.json, else 8787.")

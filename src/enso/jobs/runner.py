@@ -11,7 +11,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import IO, Literal
 
-from .. import db, execution, messages, routing, runs, scheduling, tasks, workflows
+from .. import db, execution, messages, routing, runs, scheduling, secrets, tasks, workflows
 from .. import log as logctx
 from ..config import (
     Config,
@@ -129,7 +129,7 @@ class JobRunner:
         self.transports = transports or {}
         self._running: dict[str, asyncio.Task[RunResult]] = {}
         self._problems: dict[str, list[str]] = {}
-        self._run_env: dict[str, dict[str, str]] = {}  # per-run additions, by run id
+        self._run_env: dict[str, dict[str, str]] = {}  # environment snapshots, never persisted
         self._sweep_failures: dict[str, str] = {}
         self._sweep_locks: dict[str, asyncio.Lock] = {}  # one sweep per project at a time
 
@@ -307,7 +307,6 @@ class JobRunner:
                 lock.close()
 
     async def _run_locked(self, job: Job, trigger: str, config: Config) -> RunResult:
-        notify = trigger in ("schedule", "ready")
         # Clamped once here so the run row and the provider command cannot disagree.
         effort = (
             job.effort
@@ -330,7 +329,14 @@ class JobRunner:
         started = time.monotonic()
         resource_locks: list[IO[str]] = []
         stage: taskflow.StageRun | None = None
+        prerun: Prerun | None = None
         try:
+            self._run_env[run_id] = {
+                **os.environ,
+                **await asyncio.to_thread(
+                    secrets.resolve, self.paths, job.secrets, key_file=config.secret_key
+                ),
+            }
             prerun = await self._prerun(job, run_id)
             if prerun.outcome == "error":
                 result = RunResult(
@@ -364,6 +370,10 @@ class JobRunner:
                 await workflows.drain_events(self.paths, config)
                 stage = taskflow.end_ownership(stage)
             await asyncio.to_thread(self._finish, result, config)
+        except secrets.SecretError as exc:
+            result = RunResult("error", run_id, error=str(exc))
+            await asyncio.to_thread(self._finish, result, config)
+            log.warning("run=%s could not resolve secrets: %s", run_id, exc)
         except BaseException as exc:
             # A stop (cancellation) or a bug must not leave the row ``running`` forever:
             # runs.prune keeps such rows, so nothing else would ever close it.
@@ -397,8 +407,7 @@ class JobRunner:
             result.exit_code,
             len(result.output),
         )
-        if notify:
-            await self._alert(job, prerun, result, config=config)
+        await self._alert(job, prerun, result, trigger=trigger, config=config)
         return result
 
     async def _acquire_resources(self, job: Job, config: Config) -> tuple[list[IO[str]], str]:
@@ -460,7 +469,7 @@ class JobRunner:
             return stage, RunResult(
                 "no_work" if stage.deferred else "error", run_id, error=stage.error
             )
-        self._run_env[run_id] = stage.env
+        self._run_env[run_id].update(stage.env)
         return stage, None
 
     async def _turns(
@@ -665,12 +674,11 @@ class JobRunner:
 
     def _env(self, job: Job, run_id: str) -> dict[str, str]:
         return {
-            **os.environ,
+            **self._run_env[run_id],
             "ENSO_JOB": job.ref,
             "ENSO_RUN_ID": run_id,
             "ENSO_WORKSPACE": job.workspace,
             "ENSO_HOME": str(self.paths.home),
-            **self._run_env.get(run_id, {}),  # ENSO_TASK and ENSO_TASK_DIR on a stage run
         }
 
     async def _prerun(self, job: Job, run_id: str) -> Prerun:
@@ -918,12 +926,23 @@ class JobRunner:
 
     # -- Alerts --
 
-    async def _alert(self, job: Job, prerun: Prerun, result: RunResult, *, config: Config) -> None:
+    async def _alert(
+        self, job: Job, prerun: Prerun | None, result: RunResult, *, trigger: str, config: Config
+    ) -> None:
+        if trigger not in ("schedule", "ready"):
+            return
+        if prerun is None:
+            # Secrets never resolved, so nothing started. A waiting stage task retries this
+            # every tick; alert like a failing gate rather than once per attempt.
+            await self._alert_once(job, "secrets", result.error, result.error, config=config)
+            return
         if result.status == "prerun_error":
             diagnostic = prerun.diagnostic
             if result.postrun_error:
                 diagnostic += f"\nPostrun: {result.postrun_error}"
-            await self._alert_prerun(job, replace(prerun, diagnostic=diagnostic), config=config)
+            await self._alert_once(
+                job, "prerun", diagnostic, f"{prerun.exit_code}\0{diagnostic}", config=config
+            )
             return
         await self._recovered(job, config=config)
         if result.status == "timeout":
@@ -941,11 +960,20 @@ class JobRunner:
                 )
                 await self._send(job, f"⚠️ [{job.ref} ({label})]", body, config=config)
 
-    async def _alert_prerun(self, job: Job, prerun: Prerun, *, config: Config) -> None:
-        """Alert once per distinct prerun failure, again after a day of the same one."""
-        fingerprint = hashlib.sha256(
-            f"{prerun.exit_code}\0{prerun.diagnostic}".encode()
-        ).hexdigest()
+    async def _alert_once(
+        self,
+        job: Job,
+        kind: Literal["prerun", "secrets"],
+        diagnostic: str,
+        identity: str,
+        *,
+        config: Config,
+    ) -> None:
+        """Alert once per distinct failure before the agent, again after a day of the same one."""
+        fingerprint = hashlib.sha256(identity.encode()).hexdigest()
+        if kind == "secrets":
+            fingerprint = f"secrets:{fingerprint}"  # names the recovery; prerun stays bare hex
+        what = "prerun failed" if kind == "prerun" else "secrets unavailable"
         state = await asyncio.to_thread(db.job_state, self.paths, job.ref)
         alerted = _parse_stamp(state.failure_alerted_at)
         if (
@@ -953,17 +981,18 @@ class JobRunner:
             and alerted is not None
             and datetime.now(alerted.tzinfo) - alerted < timedelta(seconds=FAILURE_RENOTIFY_SECONDS)
         ):
-            log.info("same prerun failure already alerted; suppressed")
+            log.info("same %s failure already alerted; suppressed", kind)
             return
-        if await self._send(job, f"⚠️ [{job.ref}] prerun failed", prerun.diagnostic, config=config):
+        if await self._send(job, f"⚠️ [{job.ref}] {what}", diagnostic, config=config):
             await asyncio.to_thread(db.set_failure, self.paths, job.ref, fingerprint, db.now())
 
     async def _recovered(self, job: Job, *, config: Config) -> None:
-        """One notice when a prerun works again after an alerted failure."""
+        """One notice when secrets resolve and the prerun works again after an alerted failure."""
         state = await asyncio.to_thread(db.job_state, self.paths, job.ref)
         if state.failure_fingerprint is None:
             return
-        if await self._send(job, f"✅ [{job.ref}] prerun recovered", config=config):
+        kind = "secrets" if state.failure_fingerprint.startswith("secrets:") else "prerun"
+        if await self._send(job, f"✅ [{job.ref}] {kind} recovered", config=config):
             await asyncio.to_thread(db.set_failure, self.paths, job.ref, None, None)
 
     async def _send(self, job: Job, headline: str, body: str = "", *, config: Config) -> bool:

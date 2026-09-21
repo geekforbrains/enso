@@ -424,6 +424,8 @@ def prior_home(enso_home):
     write_json(enso_home.home / migrations.MARKER, {"revision": 2})
     with sqlite3.connect(enso_home.db) as connection:
         connection.executescript("DROP TABLE _enso_received_messages;" + HISTORY_SCHEMA)
+        connection.execute("DROP TABLE _enso_secrets")
+        connection.execute("DROP TABLE _enso_secret_store")
         connection.execute("PRAGMA user_version = 1")
         connection.execute(
             "INSERT INTO _enso_captures (transport, workspace, conversation, channel, "
@@ -497,7 +499,7 @@ def test_upgrade_retires_processing_state_and_jobs_but_preserves_notes(prior_hom
     assert all("memory/Keep.md" not in name for name in migrations.plan(paths))
     migrations.apply(paths)
     migrations.apply(paths)
-    assert migrations.read_revision(paths) == 3
+    assert migrations.read_revision(paths) == migrations.latest_revision()
     assert {path: path.read_bytes() for path in kept} == before
     assert not (paths.skills / "enso-memory").exists()
     assert not (paths.workspace_jobs("team") / "enso-memory").exists()
@@ -548,7 +550,7 @@ def test_retirement_snapshot_recovers_database_jobs_and_receipts(prior_home, tmp
         )
         assert connection.execute("SELECT count(*) FROM runs").fetchone()[0] == 3
     migrations.apply(paths)
-    assert migrations.read_revision(paths) == 3
+    assert migrations.read_revision(paths) == migrations.latest_revision()
 
 
 def test_retirement_refuses_escaping_paths_before_database_changes(prior_home, tmp_path):
@@ -575,5 +577,5 @@ def test_retirement_retries_after_filesystem_failure(prior_home, monkeypatch):
     assert migrations.read_revision(prior_home) == 2
     assert migrations.shutil.rmtree is remove
     migrations.apply(prior_home)
-    assert migrations.read_revision(prior_home) == 3
+    assert migrations.read_revision(prior_home) == migrations.latest_revision()
     assert not (prior_home.skills / "enso-memory").exists()
