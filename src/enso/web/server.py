@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import logging
 import os
 import secrets as tokens
@@ -23,7 +24,7 @@ import jinja2
 from aiohttp import web
 
 from .. import __version__, maintenance, secrets
-from ..config import Paths
+from ..config import Paths, check_config
 from . import Bind, PidFile, WebError, filters, knowledge, views
 from . import tasks as taskviews
 
@@ -74,6 +75,7 @@ BIND = web.AppKey[Bind | None]("bind")
 ENV = web.AppKey[jinja2.Environment]("env")
 ASSETS = web.AppKey[dict[str, Asset]]("assets")
 CSRF = web.AppKey[str]("csrf")
+HOSTS = web.AppKey[frozenset[str]]("hosts")
 
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 
@@ -160,6 +162,25 @@ def _secure(headers: Any) -> None:
         headers["Cache-Control"] = "no-store"
 
 
+def _known_host(request: web.Request) -> bool:
+    """Whether the Host header names this viewer, so a rebound DNS name is never an origin.
+
+    An attacker's domain re-pointed at this listener would otherwise be same-origin with
+    every page, form token included. An address literal cannot be rebound.
+    """
+    try:
+        name = urlsplit(f"//{request.host}").hostname or ""
+    except ValueError:
+        return False
+    if name == "localhost" or name in request.app[HOSTS]:
+        return True
+    try:
+        ipaddress.ip_address(name)
+    except ValueError:
+        return False
+    return True
+
+
 async def _check_write(request: web.Request) -> None:
     """Every registered write is a form action with an unguessable, same-origin token."""
     origin = request.headers.get("Origin")
@@ -191,6 +212,9 @@ async def _check_write(request: web.Request) -> None:
 async def guard(request: web.Request, handler: Handler) -> web.StreamResponse:
     """Route methods explicitly; protect writes and stamp all responses, including errors."""
     try:
+        if not _known_host(request):
+            log.warning("refused a request for unknown host %r", request.host)
+            raise web.HTTPMisdirectedRequest(reason="Unknown host")  # before routing or tokens
         if request.match_info.http_exception is not None:
             raise request.match_info.http_exception
         if request.method not in ("GET", "HEAD", "OPTIONS"):
@@ -204,7 +228,9 @@ async def guard(request: web.Request, handler: Handler) -> web.StreamResponse:
             request,
             exc.status,
             "Not found" if exc.status == 404 else exc.reason,
-            "The request could not be completed.",
+            "Add this host name to web.hosts in config.json, then restart the viewer."
+            if exc.status == 421
+            else "The request could not be completed.",
         )
         if "Allow" in exc.headers:
             response.headers["Allow"] = exc.headers["Allow"]
@@ -470,7 +496,10 @@ async def secret_add(request: web.Request) -> web.StreamResponse:
         name, value = form["name"], form["value"]
         if not isinstance(name, str) or not isinstance(value, str):
             raise secrets.SecretError("supply a text name and value")
-        await _write_model(request.app[PATHS], lambda: secrets.add(request.app[PATHS], name, value))
+        # HTML form submission rewrites every textarea line break as CRLF, so the original
+        # ending is unknowable here. Store LF; the CLI's --stdin keeps exact bytes.
+        text = value.replace("\r\n", "\n")
+        await _write_model(request.app[PATHS], lambda: secrets.add(request.app[PATHS], name, text))
     except secrets.SecretError as exc:
         return await secret_list(request, error=str(exc), status=400)
     raise web.HTTPSeeOther("/secrets")
@@ -527,6 +556,11 @@ def create_app(paths: Paths, bind: Bind | None = None) -> web.Application:
     app[CSRF] = tokens.token_urlsafe(32)
     app[PATHS] = paths
     app[BIND] = bind
+    config, _problems, _warnings = check_config(paths)
+    names = set(config.web.hosts) if config is not None else set()
+    if bind is not None:
+        names.add(bind.host.lower())
+    app[HOSTS] = frozenset(names)
     app[ENV] = environment()
     assets: dict[str, Asset] = {}
     for name, content_type in STATIC_TYPES.items():

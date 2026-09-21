@@ -59,6 +59,28 @@ def delete(name: str) -> None:
 
 
 @secret_app.command()
+def reset(
+    yes: bool = typer.Option(False, "--yes", help="Delete without the confirmation prompt."),
+) -> None:
+    """Permanently delete every secret and the key binding; the way past a lost master key."""
+    if not yes:
+        typer.echo(
+            "This permanently deletes every saved secret. Values cannot be recovered, and jobs "
+            "or commands that need them fail until they are added again. The master key file "
+            "is left untouched.",
+            err=True,
+        )
+        if not sys.stdin.isatty():
+            fail(["pass --yes to reset without a prompt"])
+        typer.confirm("Delete all secrets?", abort=True)
+    try:
+        count = secrets.reset(Paths.from_env())
+    except secrets.SecretError as exc:
+        fail([str(exc)])
+    typer.echo(f"Deleted {count} secret{'' if count == 1 else 's'}; the store is uninitialized.")
+
+
+@secret_app.command()
 def get(name: str) -> None:
     """Write the exact value to stdout, without adding a newline."""
     try:

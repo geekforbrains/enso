@@ -195,6 +195,21 @@ def delete(paths: Paths, name: str) -> None:
                 raise SecretError(f"secret not found: {name}")
 
 
+def reset(paths: Paths) -> int:
+    """Forget every secret and the key binding without needing the key; returns the count.
+
+    This is the explicit way past a lost key. The key file is never touched: the next
+    creation reuses one that exists and generates one only when none does.
+    """
+    with _errors():
+        if not paths.db.exists():
+            return 0
+        with db.transaction(paths) as con:
+            count = con.execute("DELETE FROM _enso_secrets").rowcount
+            con.execute("DELETE FROM _enso_secret_store")
+            return count
+
+
 def resolve(paths: Paths, names: Sequence[str], *, key_file: Path | None = None) -> dict[str, str]:
     """Resolve a complete selection from one SQLite snapshot, without changing the parent env."""
     for name in names:

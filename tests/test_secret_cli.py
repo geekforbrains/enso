@@ -44,6 +44,28 @@ def test_cli_hidden_prompt(enso_home, monkeypatch):
     assert secrets.resolve(enso_home, ["TOKEN"]) == {"TOKEN": "hidden-value"}
 
 
+def test_reset_is_the_explicit_way_past_a_lost_key(enso_home, monkeypatch, tmp_path):
+    key = tmp_path / "keys" / "master.key"
+    enso_home.config.write_text(f'{{"secrets": {{"key_file": "{key}"}}}}')
+    secrets.add(enso_home, "TOKEN", "lost-value")
+    key.unlink()
+    for args in (["list"], ["add", "TOKEN", "--stdin"], ["delete", "TOKEN"]):
+        assert cli(*args, input=b"x").returncode == 1  # never a silent replacement key
+    refused = cli("reset", input=b"y\n")  # a pipe is not a confirmation
+    assert refused.returncode == 1 and b"--yes" in refused.stderr and not key.exists()
+
+    monkeypatch.setattr("typer.testing._NamedTextIOWrapper.isatty", lambda _: True)
+    declined = CliRunner().invoke(app, ["secret", "reset"], input="n\n")
+    assert declined.exit_code == 1 and "permanently deletes" in declined.output
+    confirmed = CliRunner().invoke(app, ["secret", "reset"], input="y\n")
+    assert confirmed.exit_code == 0 and "Deleted 1 secret;" in confirmed.output
+
+    assert secrets.names(enso_home) == [] and not key.exists()
+    secrets.add(enso_home, "TOKEN", "new-value")  # a fresh store generates its own key
+    assert secrets.resolve(enso_home, ["TOKEN"]) == {"TOKEN": "new-value"}
+    assert cli("reset", "--yes").stdout == b"Deleted 1 secret; the store is uninitialized.\n"
+
+
 @pytest.mark.parametrize("outcome", [0, 23, "signal"])
 def test_run_injects_multiple_names_and_preserves_exit(enso_home, monkeypatch, outcome):
     secrets.add(enso_home, "FIRST_TOKEN", "first-private")

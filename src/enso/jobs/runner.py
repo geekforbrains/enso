@@ -931,15 +931,20 @@ class JobRunner:
     ) -> None:
         if trigger not in ("schedule", "ready"):
             return
+        if prerun is None:
+            # Secrets never resolved, so nothing started. A waiting stage task retries this
+            # every tick; alert like a failing gate rather than once per attempt.
+            await self._alert_once(job, "secrets", result.error, result.error, config=config)
+            return
         if result.status == "prerun_error":
-            assert prerun is not None
             diagnostic = prerun.diagnostic
             if result.postrun_error:
                 diagnostic += f"\nPostrun: {result.postrun_error}"
-            await self._alert_prerun(job, replace(prerun, diagnostic=diagnostic), config=config)
+            await self._alert_once(
+                job, "prerun", diagnostic, f"{prerun.exit_code}\0{diagnostic}", config=config
+            )
             return
-        if prerun is not None:
-            await self._recovered(job, config=config)
+        await self._recovered(job, config=config)
         if result.status == "timeout":
             body = "\n".join(part for part in (result.postrun_error, result.output) if part)
             await self._send(job, f"⚠️ [{job.ref}] {result.error}", body, config=config)
@@ -955,11 +960,20 @@ class JobRunner:
                 )
                 await self._send(job, f"⚠️ [{job.ref} ({label})]", body, config=config)
 
-    async def _alert_prerun(self, job: Job, prerun: Prerun, *, config: Config) -> None:
-        """Alert once per distinct prerun failure, again after a day of the same one."""
-        fingerprint = hashlib.sha256(
-            f"{prerun.exit_code}\0{prerun.diagnostic}".encode()
-        ).hexdigest()
+    async def _alert_once(
+        self,
+        job: Job,
+        kind: Literal["prerun", "secrets"],
+        diagnostic: str,
+        identity: str,
+        *,
+        config: Config,
+    ) -> None:
+        """Alert once per distinct failure before the agent, again after a day of the same one."""
+        fingerprint = hashlib.sha256(identity.encode()).hexdigest()
+        if kind == "secrets":
+            fingerprint = f"secrets:{fingerprint}"  # names the recovery; prerun stays bare hex
+        what = "prerun failed" if kind == "prerun" else "secrets unavailable"
         state = await asyncio.to_thread(db.job_state, self.paths, job.ref)
         alerted = _parse_stamp(state.failure_alerted_at)
         if (
@@ -967,17 +981,18 @@ class JobRunner:
             and alerted is not None
             and datetime.now(alerted.tzinfo) - alerted < timedelta(seconds=FAILURE_RENOTIFY_SECONDS)
         ):
-            log.info("same prerun failure already alerted; suppressed")
+            log.info("same %s failure already alerted; suppressed", kind)
             return
-        if await self._send(job, f"⚠️ [{job.ref}] prerun failed", prerun.diagnostic, config=config):
+        if await self._send(job, f"⚠️ [{job.ref}] {what}", diagnostic, config=config):
             await asyncio.to_thread(db.set_failure, self.paths, job.ref, fingerprint, db.now())
 
     async def _recovered(self, job: Job, *, config: Config) -> None:
-        """One notice when a prerun works again after an alerted failure."""
+        """One notice when secrets resolve and the prerun works again after an alerted failure."""
         state = await asyncio.to_thread(db.job_state, self.paths, job.ref)
         if state.failure_fingerprint is None:
             return
-        if await self._send(job, f"✅ [{job.ref}] prerun recovered", config=config):
+        kind = "secrets" if state.failure_fingerprint.startswith("secrets:") else "prerun"
+        if await self._send(job, f"✅ [{job.ref}] {kind} recovered", config=config):
             await asyncio.to_thread(db.set_failure, self.paths, job.ref, None, None)
 
     async def _send(self, job: Job, headline: str, body: str = "", *, config: Config) -> bool:

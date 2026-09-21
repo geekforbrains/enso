@@ -485,6 +485,7 @@ enso secret add GITHUB_TOKEN              # hidden interactive prompt
 enso secret add GITHUB_TOKEN --stdin      # exact UTF-8 stdin, including trailing newlines
 enso secret delete GITHUB_TOKEN
 enso secret get GITHUB_TOKEN              # exact value, no added newline
+enso secret reset [--yes]                # delete every secret and the key binding
 enso secret run --secret GITHUB_TOKEN -- gh issue list --repo owner/repo
 enso secret run --secret FIRST_TOKEN --secret SECOND_TOKEN -- ./command.sh
 ```
@@ -496,6 +497,11 @@ launching, overlays their values in the child environment, and preserves the com
 exit status and signals. It does not modify the parent shell or print values itself.
 Missing names, key problems and decryption failures exit nonzero without starting a command.
 Use `--` before the command so its options are passed through unchanged.
+
+`reset` is the explicit recovery from a lost master key, which otherwise blocks `list`, `add`,
+and `delete`. It warns, asks for confirmation on a terminal, and requires `--yes` elsewhere.
+It permanently deletes every saved secret and never touches the key file; see
+[lost keys](configuration.md#backup-and-restore).
 
 `ENSO_*`, `LD_*`, `DYLD_*`, and these process-control names are reserved: `PATH`, `HOME`,
 `SHELL`, `ENV`, `BASH_ENV`, `IFS`, `CDPATH`, `SHELLOPTS`, `BASHOPTS`, `PYTHONPATH`,

@@ -464,7 +464,7 @@ class JobState:
     workspace: str
     job: str
     last_run: str | None = None  # local ISO timestamp of the last scheduled dispatch
-    failure_fingerprint: str | None = None  # the prerun failure last alerted on
+    failure_fingerprint: str | None = None  # the prerun or secrets failure last alerted on
     failure_alerted_at: str | None = None
 
 

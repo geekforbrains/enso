@@ -103,21 +103,22 @@ async def test_concurrent_runs_keep_their_own_snapshot(enso_home, fake_config, m
     assert runner._run_env == {}
 
 
-async def test_secret_failure_is_reported_without_claiming_gate_recovery(enso_home, fake_config):
+async def test_secret_failure_alerts_once_then_reports_its_own_recovery(enso_home, fake_config):
     secrets.add(enso_home, "PRESENT", "value")
     write_job(enso_home, secrets=["PRESENT", "MISSING"])
     job = load_job(enso_home, fake_config)
-    with db.transaction(enso_home) as con:
-        con.execute(
-            "INSERT INTO job_state (workspace, job, failure_fingerprint, failure_alerted_at) "
-            "VALUES ('default', 'nightly', 'previous-gate-error', ?)",
-            (db.now(),),
-        )
+    db.set_failure(enso_home, job.ref, "previous-gate-error", db.now())
     transport = FakeTransport("slack")
-    result = await JobRunner(fake_config, {"slack": transport}).run(job, trigger="schedule")
-    assert result.status == "error"
-    assert db.job_state(enso_home, job.ref).failure_fingerprint == "previous-gate-error"
-    assert len(transport.sent) == 1
+    runner = JobRunner(fake_config, {"slack": transport})
+    for _ in range(3):  # a waiting stage task retries every tick
+        assert (await runner.run(job, trigger="schedule")).status == "error"
+    assert [text for _, text in transport.sent] == [
+        "⚠️ [default:nightly] secrets unavailable\nsecret not found: MISSING"
+    ]
+    secrets.add(enso_home, "MISSING", "restored")
+    assert (await runner.run(job, trigger="schedule")).status == "ok"
+    assert transport.sent[-1][1] == "✅ [default:nightly] secrets recovered"
+    assert db.job_state(enso_home, job.ref).failure_fingerprint is None
 
 
 @pytest.mark.parametrize("failure", ["missing", "wrong_key"])

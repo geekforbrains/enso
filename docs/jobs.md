@@ -306,7 +306,9 @@ secrets:
 Names must be unique and pass the shared [secret-name rules](cli.md#secrets); the list may
 be empty. Resolve all names once, before prerun. A missing name, unavailable key or corrupt
 value records an `error` and starts no gate, agent, command, check or postrun. It is never
-an ordinary gate's `no_work` result.
+an ordinary gate's `no_work` result. Like a failing prerun, the same failure alerts once per
+24 hours however often the job retries, and the next run that resolves its secrets and passes
+its prerun sends one `✅ [<workspace>:<job>] secrets recovered`.
 
 Prerun, the agent or stage command, workflow checks/repairs, postrun, and every follow-up
 share one in-memory snapshot. Declared secrets override same-name inherited variables for
@@ -494,6 +496,7 @@ the run a failure. Prompts and scripts can send messages themselves with
 - provider exit `N`: `⚠️ [<workspace>:<job> (exit N)]` plus the output tail
 - timeout: `⚠️ [<workspace>:<job>] timed out after Ns` plus the tail
 - prerun failure: `⚠️ [<workspace>:<job>] prerun failed` plus the diagnostic
+- unresolved secrets: `⚠️ [<workspace>:<job>] secrets unavailable` plus the diagnostic
 - postrun failure: `⚠️ [<workspace>:<job>] postrun failed` plus the diagnostic
 
 ## Run history

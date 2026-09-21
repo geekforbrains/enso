@@ -4,8 +4,10 @@ import re
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
+from conftest import write_config
 
 from enso import maintenance, secrets
+from enso.web import Bind
 from enso.web.server import create_app
 
 
@@ -29,7 +31,8 @@ async def test_web_create_list_duplicate_delete_without_chat(client, enso_home):
     response = await client.post("/secrets", data=data, allow_redirects=False)
     assert response.status == 303 and response.headers["Location"] == "/secrets"
     assert response.headers["Cache-Control"] == "no-store"
-    assert secrets.resolve(enso_home, ["TOKEN"])["TOKEN"] == data["value"]
+    # Browsers submit every textarea line break as CRLF; the store keeps LF.
+    assert secrets.resolve(enso_home, ["TOKEN"])["TOKEN"] == "private-web-value\nsecond\n"
     for response in (await client.get("/secrets"), await client.post("/secrets", data=data)):
         body = await response.text()
         assert "TOKEN" in body and "private-web-value" not in body
@@ -61,6 +64,31 @@ async def test_form_writes_reject_cross_site_or_missing_token(client, enso_home,
     assert response.status == 403
     assert "private-web-value" not in await response.text()
     assert secrets.names(enso_home) == []
+
+
+async def test_rebound_host_reads_no_token_and_cannot_write(client, enso_home):
+    data = await form(client)
+    rebound = {"Host": "attacker.example:8787"}
+    response = await client.get("/secrets", headers=rebound)
+    assert response.status == 421 and data["_csrf"] not in await response.text()
+    assert "web.hosts" in await response.text()
+    assert response.headers["Cache-Control"] == "no-store"
+    headers = {**rebound, "Origin": "http://attacker.example:8787", "Sec-Fetch-Site": "same-origin"}
+    assert (await client.post("/secrets", data=data, headers=headers)).status == 421
+    assert (await client.get("/static/app.css", headers=rebound)).status == 421
+    assert secrets.names(enso_home) == []
+
+
+async def test_loopback_bound_and_configured_hosts_are_served(enso_home, raw_config):
+    raw_config["web"] = {"hosts": ["Enso.Tailnet.ts.net"]}
+    write_config(enso_home, raw_config)
+    app = create_app(enso_home, Bind("viewer.internal", 8787))
+    async with TestClient(TestServer(app)) as client:
+        for host in ("localhost:9", "[::1]:8787", "enso.tailnet.ts.net", "VIEWER.internal:1"):
+            response = await client.get("/secrets", headers={"Host": host})
+            assert response.status == 200, host
+        response = await client.get("/secrets", headers={"Host": "other.ts.net"})
+        assert response.status == 421
 
 
 async def test_same_origin_write_and_delete_protection(client, enso_home):

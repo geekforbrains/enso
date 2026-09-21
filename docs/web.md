@@ -563,7 +563,9 @@ missing or invalid `config.json` gets diagnosed.
 ## Secrets
 
 `/secrets` lists saved names and provides a form for a new name and value. Multiline values
-are supported. Saved values never appear in responses and have no reveal or edit action.
+are supported; browsers submit every textarea line break as CRLF, so the form stores LF. Use
+`enso secret add NAME --stdin` when exact bytes matter. Saved values never appear in
+responses and have no reveal or edit action.
 Duplicate creation fails; replace a value by deleting its name and adding it again. Delete
 opens an inline confirmation that works without JavaScript. The page and navigation work
 on desktop and mobile.
@@ -575,7 +577,11 @@ service is required. [Configuration](configuration.md#secrets) owns key backup a
 
 ## Access
 
-The viewer binds `127.0.0.1` by default and has no authentication. Each route explicitly
+The viewer binds `127.0.0.1` by default and has no authentication. It answers only to
+`localhost`, address literals, its bind host, and the names in
+[`web.hosts`](configuration.md#web); any other `Host` gets a 421 before routing. Without
+this, a DNS name an attacker re-points at the listener would be same-origin with every page,
+able to read them and their form token. Each route explicitly
 registers its accepted methods; unsupported methods return 405, and missing routes return
 404. Browsing routes support GET only. Registered writes share a middleware policy:
 URL-encoded forms require an unguessable form token, cross-site browser requests and
@@ -593,4 +599,5 @@ use `Cache-Control: no-store`; submitted secret values never appear in error pag
 the viewer displays — job prompts, run output, workspace files — is content you would not
 want to publish. For phone access, use a private tunnel or an authenticating reverse proxy,
 and leave Enso bound to localhost behind it. Preserve the public Host header through a
-proxy so browser origins match. Write protection is not an Enso login system.
+proxy so browser origins match, add that name to `web.hosts`, and restart the viewer.
+Write protection is not an Enso login system.

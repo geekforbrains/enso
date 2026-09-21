@@ -287,6 +287,7 @@ class WebConfig:
     host: str = DEFAULT_WEB_HOST
     port: int = DEFAULT_WEB_PORT
     knowledge: WebKnowledgeConfig = field(default_factory=WebKnowledgeConfig)
+    hosts: tuple[str, ...] = ()  # names a proxy or tunnel presents in the Host header
 
 
 @dataclass(frozen=True)
@@ -542,7 +543,7 @@ SETTINGS_KEYS = {
     "agent": ("timeout",),
     "logging": ("level", "max_bytes", "backups"),
     "runs": ("keep", "max_age_days"),
-    "web": ("host", "port", "knowledge"),
+    "web": ("host", "port", "knowledge", "hosts"),
     "heartbeat": ("enabled", "retention_days"),
     "secrets": ("key_file",),
 }
@@ -1059,6 +1060,9 @@ def valid_port(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 65535
 
 
+_HOST_NAME = re.compile(r"[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?")
+
+
 def _parse_web(raw: dict, problems: list[str]) -> WebConfig:
     host = raw.get("host", DEFAULT_WEB_HOST)
     if not isinstance(host, str) or not host.strip():
@@ -1085,10 +1089,17 @@ def _parse_web(raw: dict, problems: list[str]) -> WebConfig:
     if isinstance(page_size, bool) or not isinstance(page_size, int) or page_size < 1:
         problems.append("web.knowledge.page_size must be a positive integer")
         page_size = DEFAULT_WEB_KNOWLEDGE_PAGE_SIZE
+    hosts = raw.get("hosts", [])
+    if not isinstance(hosts, list) or not all(
+        isinstance(name, str) and _HOST_NAME.fullmatch(name) for name in hosts
+    ):
+        problems.append("web.hosts must be a list of host names without a scheme, port, or path")
+        hosts = []
     return WebConfig(
         host=host.strip(),
         port=port,
         knowledge=WebKnowledgeConfig(recent_limit=recent_limit, page_size=page_size),
+        hosts=tuple(name.lower() for name in hosts),
     )
 
 
