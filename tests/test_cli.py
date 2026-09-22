@@ -722,6 +722,45 @@ def test_message_send_destination(
     assert (row["target"], row["thread"], row["source"]) == (*expected, source)
 
 
+def test_message_send_ignores_an_unrelated_binding_to_a_missing_workspace(
+    enso_home: Paths, raw_config: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from enso.cli import messaging
+
+    enso_home.workspace("alpha").mkdir()
+    raw_config["bindings"] = {"slack:C1": "alpha", "slack:C2": "beta"}
+    write_config(enso_home, raw_config)
+    sender = FakeTransport()
+    monkeypatch.setattr(messaging, "_sender", lambda *args, **kwargs: sender)
+
+    runner = CliRunner()
+    sent = runner.invoke(
+        app,
+        [
+            "message",
+            "send",
+            "note",
+            "--workspace",
+            "alpha",
+            "--to",
+            "slack:C1",
+            "--json",
+        ],
+    )
+
+    assert sent.exit_code == 0, sent.output
+    assert sender.sent == [("C1", "note")]
+    [recorded] = messages.list_messages(enso_home, 10)
+    assert (recorded.workspace, recorded.target, recorded.status) == ("alpha", "C1", "sent")
+
+    checked = runner.invoke(app, ["config", "check", "--json"])
+    assert checked.exit_code == 1
+    report = json.loads(checked.stdout)
+    assert report["problems"] == [
+        f"bindings.slack:C2: workspace directory {enso_home.workspace('beta')} missing"
+    ]
+
+
 def test_message_send_without_destination_fails(
     enso_home: Paths, raw_config: dict, slack: FakeSlack
 ) -> None:
@@ -736,11 +775,12 @@ def test_message_send_without_destination_fails(
     "command",
     [["message", "send"], ["telegram", "attach"], ["slack", "upload", "-c", "C1"]],
 )
-def test_native_sends_require_context_and_allow_workspace_override(
+def test_native_sends_ignore_stale_bindings_require_context_and_allow_workspace_override(
     enso_home, raw_config_both, monkeypatch, tmp_path, command
 ):
     from enso.cli import messaging, slack
 
+    raw_config_both["bindings"]["slack:C2"] = "retired"
     write_config(enso_home, raw_config_both)
     enso_home.workspace("team").mkdir()
     sender = FakeTransport()

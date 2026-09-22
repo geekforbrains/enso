@@ -51,6 +51,8 @@ All notable changes to Enso are documented here, following
 
 ### Fixed
 
+- Outbound message sends for a valid workspace no longer fail because an unrelated binding
+  names a missing workspace directory; `enso config check` still reports it.
 - Exit for supervisor recovery when the scheduler or daemon-state publisher fails instead of
   leaving transports alive with jobs, Heartbeat, or readiness reporting silently stopped.
 - Stage-job postrun scripts receive the actual provider turn in `ENSO_RUN_ATTEMPT` after a

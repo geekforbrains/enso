@@ -31,8 +31,11 @@ The [workspace layout](workspaces.md#ownership-in-020) owns paths, project scrip
 Bindings are the sole chat access rule, including Telegram; `allowed_users` is removed.
 The [connection access contract](connections.md#access-in-020) owns the audience trusted by
 a binding, the canned unbound notice, and trusted pairing. Missing bound workspaces are
-errors, with no fallback. [Workspace context](workspaces.md#context-selection-in-020) owns
-CLI selection through `ENSO_WORKSPACE` and optional `--workspace`.
+errors, with no fallback for incoming messages. Outbound sends validate their selected owner
+and destination independently, so an unrelated binding to a missing workspace does not block
+them.
+[Workspace context](workspaces.md#context-selection-in-020) owns CLI selection through
+`ENSO_WORKSPACE` and optional `--workspace`.
 
 The config schema is `version: 2`, Enso's
 workspace restriction mode is removed, and workspace settings load from `WORKSPACE.md`.
@@ -288,7 +291,10 @@ independently of access.
 [Applying configuration](#while-the-service-runs) describes live binding reads.
 
 The named workspace directory must exist. `config check` treats a binding pointing at a
-missing directory as a problem.
+missing directory as a problem. Outbound message commands omit that stale binding from their
+operational snapshot because bindings neither authorize nor select their destination; the
+selected send workspace must still exist. Incoming messages at the stale binding remain
+unavailable as described in [Connections](connections.md#access-in-020).
 
 ## Defaults, workspaces, and agents
 

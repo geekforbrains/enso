@@ -806,6 +806,8 @@ def _parse_bindings(
     configured: set[str],
     problems: list[str],
     warnings: list[str],
+    *,
+    allow_unavailable: bool = False,
 ) -> dict[str, str]:
     bindings: dict[str, str] = {}
     if raw is None:
@@ -823,7 +825,8 @@ def _parse_bindings(
         try:
             require_workspace(paths, workspace)
         except ValueError as exc:
-            problems.append(f"bindings.{key}: {exc}")
+            if not allow_unavailable:
+                problems.append(f"bindings.{key}: {exc}")
             continue
         if key.split(":", 1)[0] not in configured:
             warnings.append(f"bindings.{key}: transport {key.split(':', 1)[0]} is not configured")
@@ -1141,8 +1144,10 @@ def secret_key_file(paths: Paths) -> Path:
     return key
 
 
-def parse_config(raw: object, paths: Paths) -> tuple[Config | None, list[str], list[str]]:
-    """Validate a raw config document; returns (config, problems, warnings)."""
+def parse_config(
+    raw: object, paths: Paths, *, allow_unavailable_bindings: bool = False
+) -> tuple[Config | None, list[str], list[str]]:
+    """Validate a raw config document; optionally omit unavailable bindings from the result."""
     problems: list[str] = []
     warnings: list[str] = []
     if not isinstance(raw, dict):
@@ -1179,7 +1184,14 @@ def parse_config(raw: object, paths: Paths) -> tuple[Config | None, list[str], l
     providers = _parse_providers(raw.get("providers"), problems, warnings, unknown)
     defaults = parse_agent(raw.get("defaults"), "defaults", providers, problems, unknown)
     workspaces = _load_workspaces(paths, providers, problems)
-    bindings = _parse_bindings(raw.get("bindings"), paths, configured, problems, warnings)
+    bindings = _parse_bindings(
+        raw.get("bindings"),
+        paths,
+        configured,
+        problems,
+        warnings,
+        allow_unavailable=allow_unavailable_bindings,
+    )
     projects = _load_projects(paths, workspaces, problems)
 
     settings: dict[str, dict] = {}
@@ -1281,21 +1293,42 @@ def safe_diagnostics(raw: object, messages: list[str]) -> list[str]:
     return clean
 
 
-def check_config(paths: Paths) -> tuple[Config | None, list[str], list[str]]:
-    """Read and validate without raising; for ``enso config check``."""
+def _check_config(
+    paths: Paths, *, allow_unavailable_bindings: bool = False
+) -> tuple[Config | None, list[str], list[str]]:
     try:
         raw, fingerprint = _config_snapshot(paths)
     except ConfigError as exc:
         return None, list(exc.problems), []
-    config, problems, warnings = parse_config(raw, paths)
+    config, problems, warnings = parse_config(
+        raw, paths, allow_unavailable_bindings=allow_unavailable_bindings
+    )
     if config is not None:
         config = replace(config, source_hash=fingerprint)
     return config, safe_diagnostics(raw, problems), safe_diagnostics(raw, warnings)
 
 
+def check_config(paths: Paths) -> tuple[Config | None, list[str], list[str]]:
+    """Read and validate without raising; for ``enso config check``."""
+    return _check_config(paths)
+
+
 def load_config(paths: Paths) -> Config:
     """Read and validate config.json; fail closed on any problem."""
     config, problems, _warnings = check_config(paths)
+    if config is None:
+        raise ConfigError(problems)
+    return config
+
+
+def load_outbound_config(paths: Paths) -> Config:
+    """Load settings for a send, omitting bindings whose workspace is unavailable.
+
+    Outbound destinations and owners are selected independently of chat admission. All
+    other configuration remains strict, and ``check_config`` continues to report every
+    unavailable binding.
+    """
+    config, problems, _warnings = _check_config(paths, allow_unavailable_bindings=True)
     if config is None:
         raise ConfigError(problems)
     return config

@@ -25,6 +25,7 @@ from .common import (
     echo_json,
     fail,
     load,
+    load_for_send,
     parse_duration,
     read_input,
     report,
@@ -69,6 +70,10 @@ def _open(paths: Paths, *, as_json: bool) -> SlackTransport:
     return transport(load(paths, as_json=as_json), as_json=as_json)
 
 
+def _open_for_send(paths: Paths, *, as_json: bool) -> SlackTransport:
+    return transport(load_for_send(paths, as_json=as_json), as_json=as_json)
+
+
 def _envelope(content: str) -> OutboundMessage:
     """An ``enso-message`` file holds either the fenced form or the bare JSON."""
     if FENCE not in content:
@@ -94,7 +99,7 @@ def slack_send(
 ) -> None:
     """Post Markdown text, or a table/chart envelope with --rich."""
     paths = Paths.from_env()
-    slack = _open(paths, as_json=as_json)
+    slack = _open_for_send(paths, as_json=as_json)
     envelope = None
     if rich is not None:
         if text is not None or file is not None:
@@ -136,7 +141,7 @@ def slack_upload(
 ) -> None:
     """Upload a file, optionally with a caption."""
     paths = Paths.from_env()
-    slack = _open(paths, as_json=as_json)
+    slack = _open_for_send(paths, as_json=as_json)
     if not file.is_file():
         fail([f"{file} is not a file"], as_json=as_json)
     result = run(

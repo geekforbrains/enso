@@ -614,6 +614,10 @@ or move the calling job, beat, or chat. To send context for another workspace to
 chat, supply both `--workspace` and `--to` (or Slack's `--channel`). Runner-generated job
 and Heartbeat alerts use their recorded owner's workspace.
 
+Native sends and uploads do not use bindings to authorize or select a destination. A binding
+that names a missing workspace remains a `config check` problem but does not block a send
+owned by another existing workspace; all other configuration validation still applies.
+
 Native sends and uploads require a stable `--action-key` inside a heartbeat run, and reject
 that flag outside one. They reserve the action before connecting and record the result and
 receipt automatically; do not also reserve it with `heartbeat action`. Repeated succeeded,

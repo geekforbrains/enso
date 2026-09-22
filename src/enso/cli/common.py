@@ -9,7 +9,7 @@ import os
 import re
 import sqlite3
 import sys
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -18,7 +18,14 @@ from typing import Any, NoReturn
 import typer
 
 from .. import db, heartbeat, messages
-from ..config import Config, ConfigError, Paths, load_config, resolve_workspace
+from ..config import (
+    Config,
+    ConfigError,
+    Paths,
+    load_config,
+    load_outbound_config,
+    resolve_workspace,
+)
 from ..formatting import format_elapsed
 from ..outbound import OutboundMessage
 from ..transports import Transport
@@ -54,10 +61,9 @@ def fail(problems: list[str], *, as_json: bool = False) -> NoReturn:
     raise typer.Exit(1)
 
 
-def load(paths: Paths, *, as_json: bool = False) -> Config:
-    """A validated config with the database ready, or exit 1 listing the problems."""
+def _load(paths: Paths, loader: Callable[[Paths], Config], *, as_json: bool = False) -> Config:
     try:
-        config = load_config(paths)
+        config = loader(paths)
     except ConfigError as exc:
         fail(exc.problems, as_json=as_json)
     try:
@@ -65,6 +71,16 @@ def load(paths: Paths, *, as_json: bool = False) -> Config:
     except (db.UnsupportedDatabaseError, OSError, sqlite3.Error) as exc:
         fail([str(exc)], as_json=as_json)
     return config
+
+
+def load(paths: Paths, *, as_json: bool = False) -> Config:
+    """A validated config with the database ready, or exit 1 listing the problems."""
+    return _load(paths, load_config, as_json=as_json)
+
+
+def load_for_send(paths: Paths, *, as_json: bool = False) -> Config:
+    """Outbound settings and database, without unrelated unavailable bindings."""
+    return _load(paths, load_outbound_config, as_json=as_json)
 
 
 def workspace_scope(
@@ -105,7 +121,7 @@ def _reserve_beat(paths: Paths, key: str | None, description: str) -> _BeatActio
         raise heartbeat.HeartbeatError("a heartbeat run must identify ENSO_BEAT")
     if not key or not key.strip():
         raise heartbeat.HeartbeatError("sends during a heartbeat run require --action-key")
-    config = load_config(paths)
+    config = load_outbound_config(paths)
     event = heartbeat.begin_action(
         config, ref, key, description, actor=f"beat:{ref}", run_id=run_id
     )
@@ -133,7 +149,7 @@ def _resolve_beat(action: _BeatAction, status: str, receipt: str, error: str = "
 
 def _check_beat(action: _BeatAction) -> None:
     """Connections may yield; recheck current config and authority at the effect boundary."""
-    config = load_config(action.config.paths)
+    config = load_outbound_config(action.config.paths)
     heartbeat.assert_run_active(config, action.ref, action.run_id)
 
 

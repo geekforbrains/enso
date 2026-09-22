@@ -24,6 +24,7 @@ from .common import (
     echo_json,
     fail,
     load,
+    load_for_send,
     report,
     run,
     seconds,
@@ -118,7 +119,7 @@ def message_send(
 ) -> None:
     """Send text; it also reaches the next turn there as background context."""
     paths = Paths.from_env()
-    config = load(paths, as_json=as_json)
+    config = load_for_send(paths, as_json=as_json)
     content = body(text, file, as_json=as_json)
     transport, target, thread = _resolve(config, to, transport=None, as_json=as_json)
     result = run(
@@ -147,7 +148,7 @@ def message_attach(
 ) -> None:
     """Send a file with an optional caption."""
     paths = Paths.from_env()
-    config = load(paths, as_json=as_json)
+    config = load_for_send(paths, as_json=as_json)
     _check_file(file, as_json=as_json)
     transport, target, thread = _resolve(config, to, transport=None, as_json=as_json)
     result = run(
@@ -218,7 +219,7 @@ def telegram_send(
 ) -> None:
     """Send text to a Telegram chat."""
     paths = Paths.from_env()
-    config = load(paths, as_json=as_json)
+    config = load_for_send(paths, as_json=as_json)
     content = body(text, file, as_json=as_json)
     transport, target, _ = _resolve(config, to, transport="telegram", as_json=as_json)
     report(
@@ -249,7 +250,7 @@ def telegram_attach(
 ) -> None:
     """Send a file to a Telegram chat."""
     paths = Paths.from_env()
-    config = load(paths, as_json=as_json)
+    config = load_for_send(paths, as_json=as_json)
     _check_file(file, as_json=as_json)
     transport, target, _ = _resolve(config, to, transport="telegram", as_json=as_json)
     result = run(
