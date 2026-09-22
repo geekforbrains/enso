@@ -152,12 +152,22 @@ def restart_command(
 # -- Unit files -----------------------------------------------------------------
 
 
-def enso_binary() -> str:
-    """The ``enso`` the service runs: the one on PATH, else this interpreter's."""
-    found = shutil.which("enso") or str(Path(sys.prefix) / "bin" / "enso")
+def enso_binary(paths: Paths | None = None) -> str:
+    """Find Enso, preferring a home's stable launcher when the home is supplied.
+
+    Keep the launcher path intact: resolving it into an environment would pin saved
+    registrations to a release that a later update can retire.
+    """
+    found = None
+    if paths is not None:
+        from . import development, updates
+
+        receipt = updates.installed(paths)
+        found = str(Path(receipt["bin_dir"]) / "enso") if receipt else development.launcher(paths)
+    found = found or shutil.which("enso") or str(Path(sys.prefix) / "bin" / "enso")
     if not Path(found).is_file():
-        raise ServiceError("cannot find the enso executable; install it with `uv tool install`")
-    return found
+        raise ServiceError("cannot find the enso launcher; use the Enso release installer")
+    return str(Path(found).absolute())
 
 
 def _provider_directory(path: str) -> str | None:

@@ -34,7 +34,9 @@ from .. import locks
 from ..config import Paths, WebConfig, check_config
 
 EXTRA_MODULES = ("aiohttp", "jinja2", "markdown_it")
-INSTALL_HINT = "install the web extra: `uv tool install -e './enso[web]'`"
+INSTALL_HINT = (
+    "the release must include the web extra; for a checkout run `uv sync --all-extras --locked`"
+)
 START_TIMEOUT = 10.0  # for the child to bind and claim the pidfile
 STOP_TIMEOUT = 15.0  # for SIGTERM to finish an orderly shutdown
 KILL_TIMEOUT = 2.0

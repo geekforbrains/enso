@@ -7,6 +7,8 @@ All notable changes to Enso are documented here, following
 
 ### Added
 
+- `enso browser create|list|status|open|stop|mcp` runs the packaged browser implementation
+  under Enso's own environment, through the same CLI for releases and local development.
 - Encrypted secrets with desktop/mobile web forms and `enso secret` management, retrieval,
   and command injection. Jobs can declare one list of secret names for their full run.
   The master key stays outside the Enso home and unlocks automatically after restarts.
@@ -18,6 +20,9 @@ All notable changes to Enso are documented here, following
 
 ### Removed
 
+- **Breaking:** Retire the bundled `enso-browser/scripts/browser.py` entry point. Replace
+  old provider registrations with `enso browser mcp [profile] --print-config` and reconnect;
+  profiles, tabs, and logins are preserved. Managed updates remove only untouched old helpers.
 - **Breaking:** Stop creating and loading `secrets/*.env`. Existing files are left untouched;
   manually create encrypted secrets and add job declarations or command wrappers. No secret
   import or migration is performed.

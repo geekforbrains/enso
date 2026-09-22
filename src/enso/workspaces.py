@@ -42,7 +42,7 @@ BUNDLED_SKILLS = (
 )
 # Explicitly list support files too: a local __pycache__ must never become a bundle.
 BUNDLED_SKILL_SUPPORT = {
-    "enso-browser": ("scripts/browser.py", "references/setup.md"),
+    "enso-browser": ("references/setup.md",),
     "enso-knowledge": ("references/formatting.md", "scripts/lint.py"),
     "enso-projects": (
         "references/projects.md",
@@ -97,40 +97,18 @@ def write_missing(target: Path, text: str) -> bool:
     return True
 
 
-def _seed(
-    paths: Paths,
-    relative: str,
-    done: list[str],
-    *,
-    refresh: bool = False,
-    stamp: Mapping[str, str] | None = None,
-) -> None:
-    """Copy one bundled file to the same path under the home when it is missing.
-
-    With ``refresh`` a differing copy is rewritten and the old one kept beside it as
-    ``<name>.bak``. Otherwise an existing file is the operator's and is never touched.
-    ``stamp`` fills the file's ``{{key}}`` placeholders first.
-    """
+def _seed(paths: Paths, relative: str, done: list[str]) -> None:
+    """Copy a missing bundled file; upgrades use receipt-based reconciliation."""
     target = paths.home / relative
     if any(
         part.is_symlink() for part in (target, *target.parents) if part.is_relative_to(paths.home)
     ):
         return  # Seeding new helpers must not follow an operator's directory link.
-    text = _bundled(relative)
-    if stamp:
-        text = _stamp(text, stamp)
-    if target.exists() and (not refresh or target.read_text("utf-8") == text):
-        return
     if target.exists():
-        backup = target.with_name(target.name + ".bak")
-        shutil.copy2(target, backup)
-        done.append(f"kept the old {target} as {backup.name}")
-    if not refresh:
-        if not write_missing(target, text):
-            return
-    else:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, "utf-8")
+        return
+    text = _bundled(relative)
+    if not write_missing(target, text):
+        return
     done.append(f"wrote {target}")
     _record_bundle(paths, relative, text)
 
@@ -149,12 +127,11 @@ def workspace_template(name: str) -> str:
     return _stamp(_bundled("workspace/AGENTS.md"), {"workspace_name": name})
 
 
-def seed_home(paths: Paths, *, refresh_skills: bool = False) -> list[str]:
+def seed_home(paths: Paths) -> list[str]:
     """Seed AGENTS.md, the bundled skills, the links, and a Git root; says what changed.
 
-    AGENTS.md is the operator's once it exists. Skills are written when missing, and
-    rewritten with ``refresh_skills`` (a differing copy is kept as ``SKILL.md.bak``). Jobs
-    are ``seed_jobs``'s: they need the agent chosen at setup, and no refresh reaches them.
+    Existing content is preserved. Jobs are ``seed_jobs``'s: they need the agent chosen
+    at setup. Managed updates reconcile bundles separately using recorded baselines.
     """
     done: list[str] = []
     paths.home.mkdir(parents=True, exist_ok=True)
@@ -162,7 +139,7 @@ def seed_home(paths: Paths, *, refresh_skills: bool = False) -> list[str]:
     for relative in BUNDLED_FILES:
         _seed(paths, relative, done)
     for relative in bundled_skill_files():
-        _seed(paths, relative, done, refresh=refresh_skills)
+        _seed(paths, relative, done)
     done.extend(ensure_home(paths.home))
     return done
 

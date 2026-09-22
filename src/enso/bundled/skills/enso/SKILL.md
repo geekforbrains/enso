@@ -87,6 +87,7 @@ enso message send "text"             # to the conversation that asked, else the 
 enso message attach FILE [CAPTION]
 enso slack …                         # see enso-slack
 enso telegram send|attach …
+enso browser create|list|status|open|stop|mcp  # see enso-browser
 enso table list|register|schema      # see enso-tables
 enso job list|show|run|create        # see enso-jobs
 enso heartbeat status|create|list|show|history|update|pause|resume|wait|complete  # see enso-heartbeat
@@ -114,6 +115,11 @@ the value itself; never copy it into prompts, notes or diagnostics. Jobs declare
 secrets in the web UI or with `enso secret add NAME` (hidden prompt or `--stdin`). Existing
 names require delete/create to replace. Missing credentials need operator setup; there is
 no environment-file loader. See [Secrets](https://github.com/geekforbrains/enso/blob/main/docs/configuration.md#secrets).
+
+Use the CLI for Enso-owned operations. Jobs and skill scripts run other tools directly,
+with their own runtime and dependencies; do not depend on Enso's internal Python path or
+import private `enso.*` modules. Installed releases and the live development instance share
+the same `enso` command.
 
 Message sends and job, run, message, Heartbeat, task, and project lists default to
 `ENSO_WORKSPACE`; use `--workspace NAME` to select another existing workspace. Missing

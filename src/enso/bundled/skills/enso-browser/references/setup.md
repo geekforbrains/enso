@@ -17,23 +17,20 @@ system and user Applications locations. For a nonstandard Chrome install, set
 `ENSO_BROWSER_CHROME` to the absolute executable path; the printed MCP proposal carries
 it into the registration environment. Enso's background service must find `node` on its `PATH`.
 
-Inspect the target directory before installing. Resolve the helper and Enso's Python as
-described in `SKILL.md` (the commands below use the managed install). With the user's
+Inspect the target directory before installing. With the user's
 browser-setup request covering dependency installation, run this explicit pinned install;
 never substitute
 `@latest`, `npx` with an implicit download, or a global npm install:
 
 ```bash
 enso_home="${ENSO_HOME:-$HOME/.enso}"
-enso_python="$enso_home/runtime/current/bin/python"
-enso_browser="$enso_home/skills/enso-browser/scripts/browser.py"
-"$enso_python" "$enso_browser" create
+enso browser create
 PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install \
   --prefix "$enso_home/browser/tooling" --save-exact --ignore-scripts \
   --no-audit --no-fund @playwright/mcp@0.0.80
 ```
 
-Run the helper first and stop if it fails: it creates private directories and refuses
+Run `enso browser create` first and stop if it fails: it creates private directories and refuses
 symlinks in browser/profile/output/state/tooling paths before npm can write there.
 Use the shell runner's timeout for the network step (for example, 120 seconds), inspect
 its result, and stop on failure. The helper itself never downloads anything and requires
@@ -53,20 +50,17 @@ uses one. See [Chrome's remote debugging guidance](https://developer.chrome.com/
 
 ## Connect the default profile
 
-Choose the Python that runs Enso and this installed skill's path. For managed installs:
+Generate the registration from the Enso installation that owns this home:
 
 ```bash
-enso_home="${ENSO_HOME:-$HOME/.enso}"
-enso_python="$enso_home/runtime/current/bin/python"
-enso_browser="$enso_home/skills/enso-browser/scripts/browser.py"
-"$enso_python" "$enso_browser" mcp --print-config
+enso browser mcp --print-config
 ```
 
 This prints a standard MCP JSON registration named `enso-browser-default` with an
-absolute Python command, helper path, profile argument, and `ENSO_HOME`. For an
-unmanaged/source install, invoke the helper with its environment's Python; the proposal
-uses that Python when no managed runtime exists. Printing the proposal starts no Chrome
-and does not create a profile or change any files.
+absolute `enso` command, `browser mcp` arguments, profile, and `ENSO_HOME`. Managed releases
+and the local development instance use their stable launcher, which survives updates and
+development refreshes. A standalone checkout uses the `enso` on `PATH` or in its environment.
+Printing the proposal starts no Chrome and does not create a profile or change any files.
 
 Add only the intended profile to the provider/workspace used for this browser work,
 preserving its existing MCP servers. Providers can eagerly start every registered MCP
@@ -92,7 +86,7 @@ change. The helper's proposal itself is always read-only.
 The registered command is equivalent to:
 
 ```bash
-"$enso_python" "$enso_browser" mcp default
+enso browser mcp default
 ```
 
 That command speaks MCP over stdin/stdout. Do not run it as a normal diagnostic and
@@ -125,8 +119,8 @@ Choose a separate profile for a different account or concurrent work. Reuse the 
 dependencies and the same helper:
 
 ```bash
-"$enso_python" "$enso_browser" create work
-"$enso_python" "$enso_browser" mcp work --print-config
+enso browser create work
+enso browser mcp work --print-config
 ```
 
 This prints the `enso-browser-work` registration. Add it only to the provider/workspace
@@ -135,7 +129,7 @@ above. Creation and registration do not open Chrome. To open it explicitly for h
 login before an agent browses:
 
 ```bash
-"$enso_python" "$enso_browser" open work --url https://example.com
+enso browser open work --url https://example.com
 ```
 
 Record the intended profile in that workspace's `AGENTS.md` when useful; the profile
@@ -146,8 +140,10 @@ isolate MCP clients. Serialize browser tasks within one shared selection.
 
 ## Existing installations
 
-The registered `mcp [profile]` command is unchanged. Existing registrations, saved
-profiles, and logins remain usable after updating Enso; do not recreate profiles to get
-lazy startup. Managed updates refresh unchanged bundled skill files while preserving
-edited or historical copies. If a customized helper or instruction file was preserved,
-review and merge the updated bundled version before expecting the new behaviour.
+Registrations that launch `skills/enso-browser/scripts/browser.py` must be replaced once
+with the output of `enso browser mcp [profile] --print-config`, then the provider reconnected.
+Preserve each registration's profile, custom home, Chrome override, and provider-specific
+settings. Saved profiles, tabs, and logins stay in place; do not recreate them.
+The implementation now ships in the Python package and updates with Enso's code. Managed
+updates retire an untouched old helper and refresh untouched instructions, preserving edits
+and historical copies. Merge customized instructions manually to use the public CLI.

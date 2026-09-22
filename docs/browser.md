@@ -7,9 +7,9 @@ Microsoft Playwright MCP server when browser work begins. Starting the MCP serve
 discovering its tools does not start Chrome. MCP is the protocol a provider uses to
 expose browser tools to the agent.
 
-The skill and its helper ship with Enso. Chrome, Node.js, the pinned MCP package, and the
+The skill and `enso browser` commands ship with Enso. Chrome, Node.js, the pinned MCP package, and the
 provider's MCP registration are optional setup, not part of `enso init` or `enso setup`.
-Other Enso features need none of them. This first helper supports macOS and Linux with a
+Other Enso features need none of them. Browser automation supports macOS and Linux with a
 graphical desktop; it does not offer a headless or Cloud login workflow.
 
 ## Setup and profiles
@@ -20,22 +20,21 @@ existing Chrome and an explicit local installation of `@playwright/mcp@0.0.80` u
 home; no global install, implicit package download, or provider configuration write is
 performed by the helper. Changing the pin requires reviewing and testing the new package.
 
-With a managed Enso install, after completing the optional dependency setup:
+After completing the optional dependency setup, use the same commands on an installed release
+or the local development instance:
 
 ```bash
-enso_home="${ENSO_HOME:-$HOME/.enso}"
-enso_python="$enso_home/runtime/current/bin/python"
-enso_browser="$enso_home/skills/enso-browser/scripts/browser.py"
-"$enso_python" "$enso_browser" create
-"$enso_python" "$enso_browser" mcp --print-config
-"$enso_python" "$enso_browser" open --url https://example.com
-"$enso_python" "$enso_browser" status
-"$enso_python" "$enso_browser" list
+enso browser create
+enso browser mcp --print-config
+enso browser open --url https://example.com
+enso browser status
+enso browser list
 ```
 
-For a source checkout, use `uv run python` with the helper's source path. Do not assume
-`python` from an unrelated environment can import Enso. `mcp --print-config` prints an
-absolute command, arguments, and environment without starting Chrome or editing files;
+The `enso` launcher selects its Python environment. From a checkout, use `uv run enso browser`.
+`mcp --print-config` prints an absolute `enso` command, `browser mcp` arguments, and environment
+without starting Chrome or editing files. Managed releases and the local development instance
+use the stable launcher, so the registration survives code updates;
 adapt that proposal to the selected provider's documented MCP configuration and reconnect
 the provider. The running `mcp` command speaks protocol on stdin/stdout, not human-readable
 diagnostics. Dependencies must already be installed.
@@ -45,10 +44,10 @@ lowercase letters, digits, and single hyphens, up to 48 characters. Create a sep
 profile for another account or concurrent work:
 
 ```bash
-"$enso_python" "$enso_browser" create work
-"$enso_python" "$enso_browser" mcp work --print-config
-"$enso_python" "$enso_browser" open work --url https://example.com
-"$enso_python" "$enso_browser" stop work
+enso browser create work
+enso browser mcp work --print-config
+enso browser open work --url https://example.com
+enso browser stop work
 ```
 
 Each profile needs its own provider registration. Workspace `AGENTS.md` may say which
@@ -69,17 +68,23 @@ starts or reuses its Chrome; `mcp` waits until a browser tool needs a connection
 starts or reuses the same verified Chrome. Both preserve tabs. `open --url` opens a new
 tab; it does not navigate an existing form. `create`, `list`, `status`,
 `mcp --print-config`, MCP initialization, and tool discovery do not launch Chrome.
-Standalone helper commands return JSON. Expected command or MCP startup failures produce
+Browser commands return JSON. Expected command or MCP startup failures produce
 a diagnostic on stderr and exit 1; invalid syntax exits 2. If Chrome startup fails during
 a browser tool, that tool's connection fails and stderr explains why. MCP remains
 available for a later retry after the cause is resolved.
 
-Fresh homes receive this helper through normal Enso setup. Managed upgrades refresh
-unchanged bundled files while preserving edited or historical copies, following
-[the bundled-file rules](customizing.md#the-bundled-skills). Existing profile data,
-logins, and registrations remain usable; no profile recreation or registration change
-is needed. If an upgrade preserves a customized browser helper or instruction file,
-review and merge the updated bundled version to adopt this behaviour.
+The implementation is part of the Enso package, so upgrading Enso or refreshing the development
+checkout updates the browser code. It works without home initialization, active configuration,
+or a database. Its long-lived MCP connection does not hold the updater's home-access lock.
+Managed upgrades refresh untouched skill instructions according to
+[the bundled-file rules](customizing.md#the-bundled-skills).
+
+Registrations that invoke the old `skills/enso-browser/scripts/browser.py` need a one-time
+replacement using `enso browser mcp [profile] --print-config`. Preserve the selected profile,
+home, Chrome override, and provider-specific settings, then reconnect the provider. Managed
+updates remove the old helper only if untouched; edited and historical copies are preserved
+but no longer updated. Existing profiles, tabs, and logins remain usable. Review and merge
+customized instructions to use `enso browser`.
 
 ## Human login and lifecycle
 

@@ -15,35 +15,31 @@ Chrome starts only when a browser tool needs it or you explicitly use `open`.
 
 Read [references/setup.md](references/setup.md) when dependencies or browser tools are
 missing, or when connecting an additional profile. Enso bundles these instructions and
-the helper, but does not install Chrome/Node/MCP or edit provider configuration at setup.
+`enso browser`, but does not install Chrome/Node/MCP or edit provider configuration at setup.
 
 ## Profiles and human handoff
 
-Use this skill's `scripts/browser.py` with the Python that runs Enso. In a managed install:
+Use the public `enso browser` commands for both installed releases and local development:
 
 ```bash
-enso_home="${ENSO_HOME:-$HOME/.enso}"
-enso_python="$enso_home/runtime/current/bin/python"
-enso_browser="$enso_home/skills/enso-browser/scripts/browser.py"
-"$enso_python" "$enso_browser" create
-"$enso_python" "$enso_browser" list
-"$enso_python" "$enso_browser" status
-"$enso_python" "$enso_browser" open --url https://example.com
-"$enso_python" "$enso_browser" create work
-"$enso_python" "$enso_browser" open work --url https://example.com
-"$enso_python" "$enso_browser" stop work
+enso browser create
+enso browser list
+enso browser status
+enso browser open --url https://example.com
+enso browser create work
+enso browser open work --url https://example.com
+enso browser stop work
 ```
 
-For a source install, use its activated environment's `python`, or `uv run python`
-from the Enso checkout. Paths follow `ENSO_HOME`; do not replace a custom home with
-`~/.enso`. Resolve the actual helper path before running it; scripts are not standalone
-commands on `PATH`.
+The `enso` launcher selects its own Python environment. Paths follow `ENSO_HOME`; do not
+replace a custom home with `~/.enso`. From a checkout, `uv run enso browser ...` also works.
+No interpreter path or installed skill script is needed.
 
 Names start with a lowercase letter, then use lowercase letters, digits and single
 hyphens, up to 48 characters. Omitting a name means `default`. `create` is idempotent;
 `open` and `mcp` create the chosen profile on first use. `create`, `list`, `status`,
 `mcp --print-config`, MCP initialization, and tool discovery do not start Chrome.
-Standalone helper commands print JSON. Expected command or MCP startup failures print
+Browser commands print JSON. Expected command or MCP startup failures print
 one diagnostic to stderr and exit 1. If Chrome cannot start during a browser tool, that
 tool's connection fails with a stderr diagnostic; MCP stays available for a later retry.
 

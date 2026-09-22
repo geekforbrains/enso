@@ -18,7 +18,7 @@ from enso.config import Agent, Config, Paths, load_config
 from enso.jobs import find_job
 
 
-def test_seed_home_writes_once_and_refreshes_skills_with_a_backup(enso_home: Paths) -> None:
+def test_seed_home_writes_missing_files_and_preserves_edited_skills(enso_home: Paths) -> None:
     done = workspaces.seed_home(enso_home)
     assert enso_home.agents_md.read_text().startswith("# Enso")
     assert os.readlink(enso_home.home / "CLAUDE.md") == "AGENTS.md"
@@ -32,11 +32,8 @@ def test_seed_home_writes_once_and_refreshes_skills_with_a_backup(enso_home: Pat
     assert workspaces.seed_home(enso_home) == []
     skill = enso_home.skills / "enso-slack" / "SKILL.md"
     skill.write_text("edited")
-    assert workspaces.seed_home(enso_home) == []  # never touched without refresh_skills
-    workspaces.seed_home(enso_home, refresh_skills=True)
-    assert (
-        skill.read_text().startswith("---") and skill.with_suffix(".md.bak").read_text() == "edited"
-    )
+    assert workspaces.seed_home(enso_home) == []
+    assert skill.read_text() == "edited"
 
 
 def test_seed_jobs_stamps_the_agent_and_writes_once(enso_home: Paths) -> None:
@@ -56,7 +53,7 @@ def test_seed_jobs_stamps_the_agent_and_writes_once(enso_home: Paths) -> None:
     assert workspaces.seed_jobs(enso_home, Agent("codex", "sol", "low")) == []
     assert "enabled: false" in (job_dir / "JOB.md").read_text()  # the directory is the operator's
     assert not (job_dir / "prerun.sh").exists()  # a deleted script is not put back either
-    workspaces.seed_home(enso_home, refresh_skills=True)  # a skills refresh never reaches jobs
+    workspaces.seed_home(enso_home)  # home seeding never reaches jobs
     assert [path.name for path in job_dir.iterdir()] == ["JOB.md"]
 
 

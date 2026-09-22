@@ -281,7 +281,8 @@ def _transports(config: Config | None) -> Section:
         if configured and not installed:
             section.problems.append(
                 f"{name} is configured but its extra is not installed; "
-                f"reinstall with `uv tool install -e './enso[{name}]'`"
+                f"the release must include the {name} extra; "
+                "for a checkout run `uv sync --all-extras --locked`"
             )
     return section
 

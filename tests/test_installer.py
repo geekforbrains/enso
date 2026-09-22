@@ -33,12 +33,68 @@ def test_wheel_contains_license_and_runtime_assets(tmp_path):
         license_path = next(name for name in names if name.endswith(".dist-info/licenses/LICENSE"))
         assert archive.read(license_path).decode() == (ROOT / "LICENSE").read_text()
         assert {
+            "enso/browser.py",
+            "enso/cli/browser.py",
             "enso/bundled/AGENTS.md",
             "enso/bundled/jobs/enso-update/JOB.md",
             "enso/bundled/skills/enso/SKILL.md",
             "enso/web/static/app.css",
             "enso/web/templates/base.html",
         } <= names
+        assert "enso/bundled/skills/enso-browser/scripts/browser.py" not in names
+
+    # Exercise the public command from an installed wheel, outside the checkout and
+    # without a managed-runtime directory or home-copied helper. Reuse dependencies
+    # from this test environment so this acceptance check never downloads packages.
+    environment = tmp_path / "venv"
+    subprocess.run(
+        [
+            "uv",
+            "--no-config",
+            "pip",
+            "install",
+            "--no-index",
+            "--no-deps",
+            "--python",
+            sys.executable,
+            "--target",
+            str(environment),
+            str(wheels[0]),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"VIRTUAL_ENV", "PYTHONPATH"} and not key.startswith("ENSO_")
+    }
+    env.update(
+        HOME=str(tmp_path),
+        ENSO_HOME=str(tmp_path / "home"),
+        PYTHONPATH=str(environment),
+        PATH=str(environment / "bin") + os.pathsep + os.defpath,
+    )
+    for arguments in (["status"], ["mcp", "--print-config"]):
+        run = subprocess.run(
+            [str(environment / "bin/enso"), "browser", *arguments],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+        result = json.loads(run.stdout)
+        if arguments[0] == "mcp":
+            registration = result["mcpServers"]["enso-browser-default"]
+            assert registration["command"] == str(environment / "bin/enso")
+            assert registration["args"] == ["browser", "mcp", "default"]
+        else:
+            assert result["running"] is False
+    assert not (tmp_path / "home").exists()
 
 
 def standalone(tmp_path, **defaults):

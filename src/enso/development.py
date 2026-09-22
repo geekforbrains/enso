@@ -106,6 +106,17 @@ def _gate(paths: Paths, operation: dict[str, Any], phase: str) -> None:
     )
 
 
+def launcher(paths: Paths) -> str | None:
+    """Return the stable launcher retained by a development installation, when present."""
+    operation = _operation(paths)
+    if not operation:
+        return None
+    binary = operation.get("launcher")
+    if not isinstance(binary, str) or not Path(binary).is_absolute():
+        raise UpdateError("development launcher is missing from its recovery record")
+    return binary
+
+
 def _ungate(paths: Paths, operation: dict[str, Any]) -> None:
     gate = read_json(paths.maintenance)
     if gate and gate.get("operation_id") != operation["id"]:

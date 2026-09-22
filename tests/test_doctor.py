@@ -214,7 +214,8 @@ def test_a_degraded_home_names_each_problem(
     ]
     assert report.section("transports").problems == [
         "telegram is configured but its extra is not installed; "
-        "reinstall with `uv tool install -e './enso[telegram]'`"
+        "the release must include the telegram extra; "
+        "for a checkout run `uv sync --all-extras --locked`"
     ]
     assert report.section("service").status == "warning"
     assert report.section("service").warnings == [

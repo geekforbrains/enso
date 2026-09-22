@@ -478,7 +478,8 @@ def test_without_the_web_extra_only_start_refuses(enso_home: Paths) -> None:
     assert lines[0] == "status 1 not running"
     assert lines[1] == "stop 0 not running"
     assert lines[2].startswith(
-        "start 1 error: the web viewer needs aiohttp, jinja2; install the web extra"
+        "start 1 error: the web viewer needs aiohttp, jinja2; "
+        "the release must include the web extra"
     )
     assert "Traceback" not in result.stdout and lines[3].startswith("list 0")
 
@@ -487,7 +488,7 @@ def test_without_the_web_extra_only_start_refuses(enso_home: Paths) -> None:
          "import runpy; runpy.run_module('enso.web', run_name='__main__')"],
         capture_output=True, text=True, timeout=60,
     )  # fmt: skip
-    assert child.returncode == 1 and "install the web extra" in child.stderr
+    assert child.returncode == 1 and "the release must include the web extra" in child.stderr
     assert "Traceback" not in child.stderr
 
 

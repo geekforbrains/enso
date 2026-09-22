@@ -6,7 +6,6 @@ endpoint are recorded together so stale state never authorizes stopping another 
 
 from __future__ import annotations
 
-import argparse
 import fcntl
 import http.client
 import json
@@ -25,9 +24,10 @@ from dataclasses import asdict, dataclass, replace
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from types import FrameType
-from urllib.parse import quote, urlsplit
+from urllib.parse import urlsplit
 
-from enso.config import Paths
+from . import service
+from .config import Paths
 
 MCP_VERSION = "0.0.80"
 START_TIMEOUT = 15.0
@@ -518,75 +518,24 @@ def run_mcp(profile: Profile) -> int:
 
 
 def registration(profile: Profile) -> dict[str, object]:
-    python = profile.home / "runtime/current/bin/python"
+    """Persist the public launcher so a release switch keeps the registration usable."""
     env = {"ENSO_HOME": str(profile.home)}
     if chrome := os.environ.get("ENSO_BROWSER_CHROME"):
         env["ENSO_BROWSER_CHROME"] = chrome
     return {
         "mcpServers": {
             f"enso-browser-{profile.name}": {
-                "command": str(python) if python.is_file() else sys.executable,
-                "args": [str(Path(__file__).resolve()), "mcp", profile.name],
+                "command": service.enso_binary(Paths(profile.home)),
+                "args": ["browser", "mcp", profile.name],
                 "env": env,
             }
         }
     }
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    subparsers = parser.add_subparsers(dest="action", required=True)
-    for action in ("create", "status", "open", "stop", "mcp"):
-        subparser = subparsers.add_parser(action)
-        subparser.add_argument("profile", nargs="?", default="default")
-        if action == "open":
-            subparser.add_argument("--url", help="open a new tab, keeping existing tabs")
-        if action == "mcp":
-            subparser.add_argument(
-                "--print-config", action="store_true", help="print; change no files"
-            )
-    subparsers.add_parser("list")
-    args = parser.parse_args(argv)
-    try:
-        home = Paths.from_env().home.resolve()
-        if args.action == "list":
-            directory = home / "browser/profiles"
-            _check_path(home, directory)
-            profiles = [] if not directory.exists() else sorted(directory.iterdir())
-            print(
-                json.dumps(
-                    [status(Profile(home, entry.name)) for entry in profiles if entry.is_dir()]
-                )
-            )
-            return 0
-        profile = Profile(home, args.profile)
-        profile.check_paths()
-        if args.action == "open" and args.url:
-            validate_url(args.url)
-        if args.action == "status":
-            print(json.dumps(status(profile)))
-            return 0
-        if args.action == "mcp" and args.print_config:
-            print(json.dumps(registration(profile), indent=2))
-            return 0
-        profile.create()
-        if args.action == "mcp":
-            return run_mcp(profile)
-        with profile_lock(profile):
-            if args.action == "stop":
-                print(json.dumps({"profile": profile.name, "status": stop(profile)}))
-            elif args.action == "open":
-                state = start(profile)
-                if args.url:
-                    request(state.port, f"/json/new?{quote(args.url, safe='')}", method="PUT")
-                print(json.dumps(status(profile)))
-            else:
-                print(json.dumps({"profile": profile.name, "path": str(profile.data)}))
-        return 0
-    except (BrowserError, OSError, subprocess.SubprocessError) as exc:
-        print(f"enso-browser: {exc}", file=sys.stderr)
-        return 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+def profiles(home: Path) -> list[dict[str, object]]:
+    """Inspect existing profiles without initializing a home or opening Chrome."""
+    directory = home / "browser/profiles"
+    _check_path(home, directory)
+    entries = [] if not directory.exists() else sorted(directory.iterdir())
+    return [status(Profile(home, entry.name)) for entry in entries if entry.is_dir()]

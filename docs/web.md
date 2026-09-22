@@ -11,10 +11,11 @@ and access to the UI permits secret management. See [Access](#access).
 
 ## Running it
 
-```bash
-# From the Enso source checkout; keep the transport extras you use.
-uv tool install -e '.[web]'          # or install with [slack,telegram,web]
+The [release installer](install.md#install) includes the `web` extra by default. Developers
+use `uv sync --all-extras --locked` in the checkout and the
+[development launcher](development.md#local-development-loop) for a live instance.
 
+```bash
 enso web start                     # background, on 127.0.0.1:8787
 enso web start --port 9000 --foreground
 enso web install                   # optional user service, starts again after login/reboot
@@ -24,7 +25,7 @@ enso web uninstall                 # stop and remove automatic startup
 ```
 
 The `web` extra brings `aiohttp`, `jinja2`, and `markdown-it-py`. Without it, `status`,
-`stop`, and `uninstall` still work; `start` and `install` print the install command
+`stop`, and `uninstall` still work; `start` and `install` explain the missing extra
 instead of a traceback.
 
 It is a separate process from `enso serve`, deliberately: the viewer can be restarted,

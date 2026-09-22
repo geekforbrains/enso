@@ -11,6 +11,11 @@
 
 ## Install
 
+The managed release installer is the supported production installation on macOS and Linux.
+Developers use a checkout environment through the [development workflow](development.md#local-development-loop),
+with the same stable `enso` launcher for their live instance. Python and environment paths
+are installation details; scripts call Enso-owned operations through the CLI.
+
 Install Enso without cloning the repository:
 
 ```bash
@@ -308,7 +313,8 @@ data recovery and retain independent backups of your home.
 
 This procedure requires a 0.2.0-or-newer home compatible with the selected release.
 
-An editable checkout or `uv tool` install is unmanaged and never changes itself.
+Existing editable or `uv tool` installations are unmanaged and never change themselves.
+Adopt a managed release to use the supported production installation and update path.
 [The local development loop](development.md#local-development-loop) connects a maintainer's
 services to a checkout and refreshes it without replacing home content. For the
 one-time move, stop its daemon and viewer, then run the release installer with `--adopt` and

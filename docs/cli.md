@@ -42,6 +42,7 @@ enso config apply --file FILE|- [--expected-hash HASH] [--json]
 enso config set PATH VALUE [--expected-hash HASH] [--json]
 enso config unset PATH [--expected-hash HASH] [--json]
 enso providers [--json]             bundled provider, model, and effort choices
+enso browser create|list|status|open|stop|mcp  private Chrome profiles and optional browser MCP
 enso slack manifest                 packaged app manifest, JSON on stdout
 enso connect start|status|cancel|finish  private owner pairing; see Connections for arguments
 enso models [--all] [--json]       look up OpenRouter models OpenCode can run
@@ -591,6 +592,22 @@ edit config and stop/start to change a supervised bind. Start/install need the `
 extra; status/stop/uninstall work without it. Viewer lifecycle changes are refused while
 a managed update is pending; retry afterward. See
 [Web viewer](web.md) and [service installation](install.md#the-viewer).
+
+## Browser
+
+```text
+enso browser create|status|stop [PROFILE]
+enso browser list
+enso browser open [PROFILE] [--url URL]
+enso browser mcp [PROFILE] [--print-config]
+```
+
+The profile defaults to `default`. Commands print JSON, except `mcp`, which serves protocol
+traffic on stdin/stdout; `mcp --print-config` prints registration JSON without starting a
+process or editing provider settings. Expected browser failures print a diagnostic on stderr
+and exit 1; invalid syntax exits 2. Chrome, Node.js, and the pinned MCP package are optional
+dependencies. [Browser](browser.md) owns setup, lifecycle, data locations, and the one-time
+registration change from the retired bundled script.
 
 ## Messages
 

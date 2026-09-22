@@ -34,6 +34,7 @@ from ..jobs.runner import JobRunner
 from ..runtime import Runtime
 from ..transport_registry import TRANSPORTS
 from ..transports import Transport
+from .browser import browser_app
 from .common import JSON_FLAG, InputError, columns, echo_json, fail, read_input
 from .connect import connect_app
 from .heartbeat import heartbeat_app
@@ -76,6 +77,7 @@ app.add_typer(slack_app, name="slack")
 app.add_typer(telegram_app, name="telegram")
 app.add_typer(table_app, name="table")
 app.add_typer(web_app, name="web")
+app.add_typer(browser_app, name="browser")
 app.add_typer(update_app, name="update")
 app.add_typer(skill_app, name="skill")
 app.add_typer(knowledge_app, name="knowledge")
@@ -96,7 +98,9 @@ def _root(
 ) -> None:
     """Enso — bridge your chat app to agent CLIs on this machine."""
     paths = Paths.from_env()
-    independent = ctx.invoked_subcommand in {"update", "serve", "logs", "web"}
+    # Browser MCP can outlive a turn; like the viewer it must not pin home access.
+    # Its profile state is independent of configuration, database, and bundle updates.
+    independent = ctx.invoked_subcommand in {"update", "serve", "logs", "web", "browser"}
     try:
         state = maintenance.read_json(paths.update_state)
         gate = maintenance.read_json(paths.maintenance)

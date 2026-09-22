@@ -1,27 +1,27 @@
-"""The optional browser helper uses isolated profiles and never trusts a stale PID or port."""
+"""The browser CLI uses isolated profiles and never trusts a stale PID or port."""
 
 from __future__ import annotations
 
 import json
 import signal
-import sys
-import types
 from concurrent.futures import ThreadPoolExecutor
 from http.client import HTTPConnection
-from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
-SKILL = Path(__file__).parents[1] / "src/enso/bundled/skills/enso-browser"
+from enso import browser as browser_module
+from enso.cli import app
+from enso.maintenance import write_json
+
+
+def invoke(*args):
+    return CliRunner().invoke(app, ["browser", *args])
 
 
 @pytest.fixture
-def browser(monkeypatch):
-    module = types.ModuleType("enso_browser_test")
-    module.__file__ = str(SKILL / "scripts/browser.py")
-    monkeypatch.setitem(sys.modules, module.__name__, module)
-    exec(compile(Path(module.__file__).read_text(), module.__file__, "exec"), module.__dict__)
-    return module
+def browser():
+    return browser_module
 
 
 @pytest.fixture
@@ -47,19 +47,18 @@ def install_fake_mcp(browser, profile):
     return package
 
 
-def test_create_defaults_to_private_profile_without_external_tools(
-    browser, tmp_path, monkeypatch, capsys
-):
+def test_create_defaults_to_private_profile_without_external_tools(browser, tmp_path, monkeypatch):
     home = tmp_path / "new-home"
     monkeypatch.setenv("ENSO_HOME", str(home))
     monkeypatch.setattr(
         browser.subprocess, "Popen", lambda *a, **k: pytest.fail("launched a process")
     )
-    assert browser.main(["create"]) == 0
-    assert json.loads(capsys.readouterr().out)["profile"] == "default"
+    result = invoke("create")
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["profile"] == "default"
     profile = browser.Profile(home)
     (profile.data / "user-content").write_text("keep")
-    assert browser.main(["create"]) == 0
+    assert invoke("create").exit_code == 0
     assert (profile.data / "user-content").read_text() == "keep"
     for path in (profile.root, profile.data, profile.output, profile.state.parent):
         assert path.stat().st_mode & 0o777 == 0o700
@@ -86,23 +85,72 @@ def test_rejects_symlinked_browser_directories(browser, tmp_path):
     assert not list(outside.iterdir())
 
 
-def test_read_only_commands_do_not_initialize_home(browser, tmp_path, monkeypatch, capsys):
+def test_read_only_commands_do_not_initialize_home(browser, tmp_path, monkeypatch):
     home = tmp_path / "new-home"
     monkeypatch.setenv("ENSO_HOME", str(home))
     for command in (["status"], ["list"], ["mcp", "work", "--print-config"]):
-        assert browser.main(command) == 0
-        json.loads(capsys.readouterr().out)
+        result = invoke(*command)
+        assert result.exit_code == 0, result.output
+        json.loads(result.stdout)
     assert not home.exists()
 
 
-def test_registration_carries_exact_home_profile_and_stable_managed_python(browser, profile):
-    python = profile.home / "runtime/current/bin/python"
-    python.parent.mkdir(parents=True)
-    python.touch()
+def test_registration_carries_exact_home_profile_and_stable_launcher(
+    browser, profile, tmp_path, monkeypatch
+):
+    from enso import updates
+
+    launcher = tmp_path / "bin/enso"
+    launcher.parent.mkdir()
+    launcher.touch()
+    monkeypatch.setattr(updates, "installed", lambda paths: {"bin_dir": str(launcher.parent)})
+    monkeypatch.setenv("PATH", "/an/unrelated/environment/bin")
     registration = browser.registration(profile)["mcpServers"]["enso-browser-default"]
-    assert registration["command"] == str(python)
+    assert registration["command"] == str(launcher)
     assert registration["env"] == {"ENSO_HOME": str(profile.home)}
-    assert registration["args"] == [str(SKILL / "scripts/browser.py"), "mcp", "default"]
+    assert registration["args"] == ["browser", "mcp", "default"]
+
+
+def test_registration_keeps_development_launcher_over_activated_venv(
+    browser, profile, tmp_path, monkeypatch
+):
+    launcher = tmp_path / "stable/enso"
+    launcher.parent.mkdir()
+    launcher.touch()
+    operation = "a" * 32
+    runtime = profile.home / "runtime"
+    write_json(runtime / "development.json", {"id": operation, "phase": "ready"})
+    write_json(
+        runtime / "development" / operation / "operation.json",
+        {
+            "id": operation,
+            "phase": "ready",
+            "services": {"daemon": False, "viewer": False},
+            "previous_install": {},
+            "launcher": str(launcher),
+        },
+    )
+    monkeypatch.setenv("PATH", "/an/unrelated/environment/bin")
+    registration = browser.registration(profile)["mcpServers"]["enso-browser-default"]
+    assert registration["command"] == str(launcher)
+
+
+def test_commands_need_no_config_and_do_not_hold_update_access(enso_home):
+    from enso import maintenance
+
+    write_json(enso_home.runtime_dir / "development.json", {})
+    with maintenance.exclusive_access(enso_home, 0):
+        result = invoke("create", "smoke")
+    assert result.exit_code == 0, result.output
+    assert not enso_home.config.exists() and not enso_home.db.exists()
+
+
+def test_cli_help_and_invalid_syntax(tmp_path, monkeypatch):
+    monkeypatch.setenv("ENSO_HOME", str(tmp_path / "absent"))
+    assert "mcp" in invoke("--help").stdout
+    assert invoke("open", "--unknown").exit_code == 2
+    assert invoke("create", "../escape").exit_code == 1
+    assert not (tmp_path / "absent").exists()
 
 
 def test_registration_preserves_chrome_override(browser, profile, monkeypatch):
@@ -121,14 +169,12 @@ def test_registration_preserves_chrome_override(browser, profile, monkeypatch):
         "https://example.com\n--flag",
     ],
 )
-def test_rejects_unsafe_url_without_launch_or_traceback(
-    browser, tmp_path, monkeypatch, capsys, url
-):
+def test_rejects_unsafe_url_without_launch_or_traceback(browser, tmp_path, monkeypatch, url):
     home = tmp_path / "enso"
     monkeypatch.setenv("ENSO_HOME", str(home))
-    assert browser.main(["open", f"--url={url}"]) == 1
-    captured = capsys.readouterr()
-    assert not captured.out and "URL must be" in captured.err and "Traceback" not in captured.err
+    result = invoke("open", f"--url={url}")
+    assert result.exit_code == 1
+    assert not result.stdout and "URL must be" in result.stderr and "Traceback" not in result.stderr
     assert not home.exists()
 
 
@@ -361,18 +407,19 @@ def test_failed_or_cancelled_start_cleans_up_only_its_child(browser, profile, mo
 
 
 def test_mcp_refuses_missing_or_wrong_version_without_download_or_browser(
-    browser, profile, monkeypatch, capsys
+    browser, profile, monkeypatch
 ):
     monkeypatch.setenv("ENSO_HOME", str(profile.home))
     monkeypatch.setattr(browser, "start", lambda *a: pytest.fail("opened Chrome without MCP"))
     monkeypatch.setattr(
         browser.subprocess, "Popen", lambda *a, **k: pytest.fail("downloaded dependencies")
     )
-    assert browser.main(["mcp"]) == 1
-    assert f"@playwright/mcp@{browser.MCP_VERSION}" in capsys.readouterr().err
+    result = invoke("mcp")
+    assert result.exit_code == 1 and not result.stdout
+    assert f"@playwright/mcp@{browser.MCP_VERSION}" in result.stderr
     package = install_fake_mcp(browser, profile)
     (package / "package.json").write_text('{"version": "0.0.1"}')
-    assert browser.main(["mcp"]) == 1
+    assert invoke("mcp").exit_code == 1
 
 
 def discovery_request(server, *, path=None, host=None):
@@ -449,7 +496,7 @@ def test_discovery_failure_is_retryable_and_never_publishes_an_unverified_endpoi
 
 
 def test_open_preserves_tabs_and_encodes_url_in_single_loopback_request(
-    browser, profile, monkeypatch, capsys
+    browser, profile, monkeypatch
 ):
     state = running_state(browser, profile)
     monkeypatch.setenv("ENSO_HOME", str(profile.home))
@@ -457,13 +504,14 @@ def test_open_preserves_tabs_and_encodes_url_in_single_loopback_request(
     monkeypatch.setattr(browser, "status", lambda p: {"profile": p.name, "running": True})
     calls = []
     monkeypatch.setattr(browser, "request", lambda *a, **k: calls.append((a, k)))
-    assert browser.main(["open", "--url", "https://example.com/?one=1&two=2"]) == 0
+    result = invoke("open", "--url", "https://example.com/?one=1&two=2")
+    assert result.exit_code == 0, result.output
     assert calls == [
         (
             (state.port, "/json/new?https%3A%2F%2Fexample.com%2F%3Fone%3D1%26two%3D2"),
             {"method": "PUT"},
         )
     ]
-    assert json.loads(capsys.readouterr().out)["running"]
-    assert browser.main(["open"]) == 0
+    assert json.loads(result.stdout)["running"]
+    assert invoke("open").exit_code == 0
     assert len(calls) == 1

@@ -45,6 +45,8 @@ Product behaviour belongs in its owning page under `docs/`, starting with
 - `src/enso/development.py` — repository-only editable refresh and manual migration
   orchestration behind `scripts/dev-refresh` and `scripts/dev-migrate`. It shares admission,
   service ownership, migration revisions, and snapshots with release updates.
+- `src/enso/browser.py` — optional Chrome lifecycle and MCP attachment. The public interface
+  is `enso browser`; the bundled browser skill contains instructions, not runtime code.
 - `src/enso/web/` — `server.py` owns routes and template wiring; `filters.py` owns
   presentation helpers, Jinja filters, and chart series. `tasks.py` builds task board and
   detail models; `views.py` builds the other pages. Both use `common.py` for configuration,
@@ -84,21 +86,13 @@ These are local, manual checks; no GitHub Actions workflow or Git hook runs them
 `uv lock`, review `uv.lock`, then run the checks. Run relevant targeted tests while working,
 then the complete suite before finishing the change.
 
-For a fresh local installation from this checkout, install the CLI with the locked runtime
-dependencies, then run the first-time setup wizard:
-
-```bash
-uv export --locked --all-extras --no-dev --no-emit-project --no-hashes \
-  --output-file /tmp/enso-local-constraints.txt
-uv tool install --python 3.14 --constraints /tmp/enso-local-constraints.txt \
-  '.[slack,telegram,web]'
-enso setup
-```
-
-This installs an unmanaged copy of the checkout, independent of later source edits. Reinstall
-the tool to pick up a newer commit. Use the local managed-bundle procedure below to test
-the release installation flow, or [adopt a compatible release](install.md#adopt-an-existing-installation)
-before using managed updates.
+The supported user installation is the [managed release installer](install.md#install).
+Development uses the checkout's editable `.venv`, prepared by `uv sync`, and `uv run enso`.
+For a live development instance, start from a managed installation and use the
+[local development loop](#local-development-loop) to point its stable launcher at the checkout.
+Use [a local release bundle](#installing-an-unreleased-snapshot-locally) in a scratch home to
+test the production installation path before publishing. `uv tool install` is not a separate
+supported production workflow; existing tool installations can [adopt a release](install.md#adopt-an-existing-installation).
 
 Manual application checks use a new scratch home by default. Answer **no** when `setup`
 offers to install the background service: its service unit lives outside `ENSO_HOME`, so
@@ -354,6 +348,10 @@ services, and verify readiness before reopening work. Stopped services remain st
 Configuration, jobs, skills, projects, and knowledge files stay as installed.
 For example, changing a shipped job schedule does not rewrite the local `JOB.md`.
 Runtime control files, logs, and ordinary application activity continue to change normally.
+Package-owned capabilities such as `enso browser` use the refreshed code immediately in a
+new process. Test changed bundled instructions in a scratch home; updating customized live
+instructions or old MCP registrations is a separate, explicit operation. Browser registration
+uses the stable launcher in development too; reconnect a running MCP client to load new code.
 Do not run `setup`, `init`, config apply, or bundle reconciliation to refresh source code.
 An invalid existing configuration stops the preflight; fix only the specific authorized
 problem, without replacing the home with checkout defaults.
@@ -470,6 +468,11 @@ That page owns the visual standards; extend it when adding a new interaction pat
   obvious code.
 - Keep optional features optional: the base package and unrelated commands must work
   without their dependencies. Missing features report the exact extra to install.
+
+Expose Enso-owned operations through domain commands such as `enso browser` and `enso message`.
+Jobs and skill scripts run ordinary tools directly and own their Python/Node environments and
+dependencies. They should not import private `enso.*` modules or depend on Enso's interpreter
+path. The CLI is the public interface to Enso's capabilities, not a general process runner.
 
 CLI syntax, documented environment variables, config and job formats, home, workspace,
 and bundled layouts, persisted data, provider and transport adapters, and documented

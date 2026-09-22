@@ -1,4 +1,4 @@
-"""Fresh and updated installs run the shipped browser helper using only local fakes."""
+"""Fresh and updated installs run the browser CLI using only local fakes."""
 
 from __future__ import annotations
 
@@ -17,13 +17,12 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from enso import workspaces
+from enso import maintenance, workspaces
 from enso.config import Agent, Paths
 
 FAKE_BROWSER = Path(__file__).parent / "fixtures/fake_browser.py"
 BROWSER_FILES = (
     "skills/enso-browser/SKILL.md",
-    "skills/enso-browser/scripts/browser.py",
     "skills/enso-browser/references/setup.md",
 )
 
@@ -64,11 +63,11 @@ class InstalledBrowser:
         self.env = env
         self.event_directory = events
         self.cwd = cwd
-        self.helper = self.home / "skills/enso-browser/scripts/browser.py"
+        self.launcher = Path(env["PATH"].split(":")[0]) / "enso"
 
     def run(self, *args, check=True):
         return subprocess.run(
-            [sys.executable, str(self.helper), *args],
+            [str(self.launcher), "browser", *args],
             env=self.env,
             cwd=self.cwd,
             input="",
@@ -173,6 +172,9 @@ def installed_browser(tmp_path, request, monkeypatch):
         executable = executables / name
         executable.write_text(source)
         executable.chmod(0o700)
+    launcher = executables / "enso"
+    launcher.write_text(f"#!{sys.executable}\nfrom enso.cli import main\nmain()\n")
+    launcher.chmod(0o700)
     env = {
         "HOME": str(user_directory),
         "PATH": f"{executables}:/usr/bin:/bin",
@@ -181,9 +183,6 @@ def installed_browser(tmp_path, request, monkeypatch):
     }
     if mode == "custom":
         env["ENSO_HOME"] = str(home)
-        current = home / "runtime/current"
-        current.parent.mkdir(parents=True)
-        current.symlink_to(sys.prefix, target_is_directory=True)
     installed = InstalledBrowser(paths, env, events, tmp_path)
     try:
         yield installed
@@ -217,7 +216,8 @@ def test_fresh_home_registration_is_lazy_and_reuses_first_browser(installed_brow
         assert (installed.home / relative).read_text() == workspaces._bundled(relative)
     assert not (installed.home / "browser").exists()
     registration = installed.registration()
-    assert registration["args"] == [str(installed.helper), "mcp", "default"]
+    assert registration["command"] == str(installed.launcher)
+    assert registration["args"] == ["browser", "mcp", "default"]
     assert registration["env"]["ENSO_HOME"] == str(installed.home)
     assert not (installed.home / "browser").exists()
     assert installed.result("create")["profile"] == "default"
@@ -327,10 +327,33 @@ def test_signal_after_first_use_preserves_ready_browser(installed_browser):
         assert len(installed.events("chrome")) == 1
 
 
+def test_idle_mcp_does_not_block_development_refresh(installed_browser):
+    installed = installed_browser
+    installed.install_mcp()
+    maintenance.write_json(installed.paths.runtime_dir / "development.json", {})
+    registration = {
+        "command": str(installed.launcher),
+        "args": ["browser", "mcp", "default"],
+        "env": {},
+    }
+    with installed.controller(registration) as client:
+        assert client.call("tools/list")["tools"]
+        with maintenance.exclusive_access(installed.paths, 0):
+            assert installed.events("chrome") == []
+
+
 def test_browser_bundle_upgrade_preserves_profiles_and_printed_registration(
     installed_browser, tmp_path, monkeypatch
 ):
     installed = installed_browser
+    # An old, untouched helper is retired by the normal bundle updater. The
+    # registration now uses the CLI and remains valid when this file disappears.
+    old_helper = installed.home / "skills/enso-browser/scripts/browser.py"
+    old_helper.parent.mkdir()
+    old_helper.write_text("# legacy helper\n")
+    workspaces._record_bundle(
+        installed.paths, "skills/enso-browser/scripts/browser.py", old_helper.read_text()
+    )
     installed.result("create", "work")
     installed.install_mcp()
     registration = installed.registration("work")
@@ -351,6 +374,8 @@ def test_browser_bundle_upgrade_preserves_profiles_and_printed_registration(
         source.write_text(source.read_text() + "\n# Next browser release.\n")
     monkeypatch.setattr(workspaces.resources, "files", lambda name: package)
     changed = workspaces.reconcile_bundles(installed.paths, Agent("claude", "opus", "high"))
+    assert "skills/enso-browser/scripts/browser.py" in changed
+    assert not old_helper.exists()
     for relative in BROWSER_FILES:
         assert relative in changed
         assert (installed.home / relative).read_text().endswith("# Next browser release.\n")
