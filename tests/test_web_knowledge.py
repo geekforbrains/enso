@@ -220,6 +220,32 @@ async def test_note_table_wrapper_preserves_scoped_links_and_csp_safe_alignment(
     assert ' style="' not in html and "&lt;table&gt;" in html
 
 
+async def test_note_task_lists_keep_knowledge_links_and_escape_source_controls(client, enso_home):
+    root = enso_home.knowledge
+    _, target_id = note(root, "Target.md", "A linked note.")
+    _, identity = note(
+        root,
+        "Tasks.md",
+        "- [ ] Review **[[Target|linked note]]** and [web](https://example.com)\n"
+        '- [X] Keep <input type="checkbox" checked> escaped\n',
+    )
+    response = await client.get(f"/knowledge/notes/{identity}")
+    assert response.status == 200
+    html = await response.text()
+    article = Document(html).root.find("article", "markdown")[0]
+    labels = article.find("label", "task-list-label")
+    assert len(labels) == len(article.find("input")) == 2
+    assert labels[0].text.strip() == "Review linked note and web"
+    assert [link.attrs["href"] for link in labels[0].find("a")] == [
+        f"/knowledge/notes/{target_id}",
+        "https://example.com",
+    ]
+    assert labels[0].find("strong")[0].text == "linked note"
+    assert ["checked" in checkbox.attrs for checkbox in article.find("input")] == [False, True]
+    assert all("disabled" in checkbox.attrs for checkbox in article.find("input"))
+    assert "&lt;input" in html and "[X]" not in article.text and "[ ]" not in article.text
+
+
 async def test_local_assets_remote_images_and_unsafe_content(client, enso_home):
     root = enso_home.knowledge
     _, identity = note(

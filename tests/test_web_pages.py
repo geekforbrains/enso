@@ -353,6 +353,80 @@ async def test_file_browser_lists_dotfiles_and_renders_safely(
 
 
 @pytest.mark.parametrize("render", [files.render_markdown, files.render_output])
+def test_markdown_task_lists_preserve_structure_and_label_disabled_checkboxes(render):
+    html = str(
+        render(
+            "- [ ] **Plan** [details](https://example.com)\n"
+            "- [x] Done\n"
+            "  - [X] Nested `code`\n"
+            "- Ordinary bullet\n\n"
+            "1. [ ] Ordered\n2. Plain numbered\n\n"
+            "- [ ] Loose task with <b>raw HTML</b>\n\n"
+            "  Continuation paragraph.\n\n"
+            "  [x] Later paragraph stays literal\n"
+        )
+    )
+    root = Document(html).root
+    checkboxes = root.find("input")
+    assert ["checked" in checkbox.attrs for checkbox in checkboxes] == [
+        False,
+        True,
+        True,
+        False,
+        False,
+    ]
+    assert all(
+        checkbox.attrs["type"] == "checkbox" and "disabled" in checkbox.attrs
+        for checkbox in checkboxes
+    )
+    labels = root.find("label", "task-list-label")
+    assert len(labels) == len(checkboxes) == len(root.find("li", "task-list-item"))
+    assert [label.text.strip() for label in labels] == [
+        "Plan details",
+        "Done",
+        "Nested code",
+        "Ordered",
+        "Loose task with <b>raw HTML</b>",
+    ]
+    assert all(label.children[0].tag == "input" for label in labels)
+    assert labels[0].find("strong")[0].text == "Plan"
+    assert labels[0].find("a")[0].attrs["href"] == "https://example.com"
+    assert root.find("ol")[0].find("li", "task-list-item")[0].text.strip() == "Ordered"
+    assert any(item.find("ul") for item in root.find("li", "task-list-item"))
+    assert len(root.find("li")) == len(checkboxes) + 2  # ordinary list items remain ordinary
+    loose = root.find("li", "task-list-item")[-1]
+    assert len(loose.find("p")) == 3 and not loose.find("b")
+    assert "[x] Later paragraph stays literal" in loose.text
+
+
+@pytest.mark.parametrize("render", [files.render_markdown, files.render_output])
+def test_markdown_task_markers_stay_literal_outside_first_list_paragraphs(render):
+    html = str(
+        render(
+            "- \\[x] Escaped\n- [x]joined\n- [!] Other marker\n"
+            "- `[x]` Inline code\n- [ ](https://example.com) Link\n"
+            "- Ordinary item\n\n  [x] Later paragraph\n\n"
+            "[x] Paragraph\n\n> [x] Quote\n\n"
+            "```markdown\n- [x] Fenced\n```\n\n"
+            "    - [x] Indented\n\n"
+            "| Marker | Value |\n| --- | --- |\n| [x] | literal |\n\n"
+            '<input type="checkbox" checked>\n'
+        )
+    )
+    root = Document(html).root
+    assert not root.find("input") and not root.find("li", "task-list-item")
+    assert "[x] Escaped" in root.text and "[x]joined" in root.text
+    assert root.find("a")[0].attrs["href"] == "https://example.com"
+    assert [code.text.strip() for code in root.find("code")] == [
+        "[x]",
+        "- [x] Fenced",
+        "- [x] Indented",
+    ]
+    assert root.find("td")[0].text == "[x]"
+    assert "&lt;input" in html
+
+
+@pytest.mark.parametrize("render", [files.render_markdown, files.render_output])
 def test_markdown_tables_are_scrollable_semantic_and_aligned_without_inline_styles(render):
     html = str(
         render(

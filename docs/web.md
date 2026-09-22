@@ -84,6 +84,9 @@ Tables wider than the reading area scroll horizontally within a focusable region
 shadows indicate more content, and the arrow keys scroll a focused table. Column alignment
 from Markdown is preserved, including compact right-aligned numeric columns. This applies
 to knowledge notes, workspace files, and other rendered Markdown, with or without JavaScript.
+Task-list markers (`[ ]`, `[x]`, and `[X]`) at the start of list items render as disabled
+checkboxes showing their saved state. The viewer cannot toggle them or modify the source;
+links inside task text remain usable.
 
 Preserve the compact layout and cloud/navy palette. Cyan marks links and selections; pink
 is reserved for text selection. Status colours are consistent across themes: mint for

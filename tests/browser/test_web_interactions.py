@@ -335,6 +335,90 @@ async def test_workspace_markdown_tables_scroll_without_page_overflow(
     await context.close()
 
 
+@pytest.fixture
+def task_list_notes(enso_home, raw_config):
+    write_config(enso_home, raw_config)
+    root = enso_home.knowledge
+    root.mkdir(parents=True)
+    identity = str(uuid4())
+    body = """## Review checklist
+
+- [ ] Read the [related note](Related.md).
+- [x] Verify **completed state**.
+- Ordinary bullet with supporting tasks:
+  - [ ] A nested task with a longer description that wraps over several lines on a phone.
+  - [X] Nested completed task with `inline code`.
+
+1. Ordinary numbered item.
+2. [ ] Finish the review.
+3. [x] Record the outcome.
+"""
+    (root / "Checklist.md").write_text(
+        knowledge.normalize_text(f"---\nschema: enso.note/v1\nid: {identity}\n---\n\n{body}")
+    )
+    (root / "Related.md").write_text(knowledge.normalize_text("Related content is reachable."))
+    work = enso_home.workspace("default") / "work"
+    work.mkdir(parents=True)
+    (work / "Checklist.md").write_text(body)
+    (work / "Related.md").write_text("Related content is reachable.")
+    return {
+        "knowledge": f"knowledge/notes/{identity}",
+        "workspace": "workspaces/default/files/work/Checklist.md",
+    }
+
+
+@pytest.mark.parametrize("width", [1280, 320])
+@pytest.mark.parametrize("javascript", [True, False])
+async def test_markdown_task_lists_show_read_only_state(
+    browser, viewer, task_list_notes, width, javascript, tmp_path
+):
+    context = await browser.new_context(
+        viewport={"width": width, "height": 900},
+        java_script_enabled=javascript,
+        color_scheme="dark" if width == 320 else "light",
+        reduced_motion="reduce",
+    )
+    page = await context.new_page()
+    for surface, path in task_list_notes.items():
+        await page.goto(viewer + path)
+        markdown = page.locator(".markdown")
+        checkboxes = markdown.get_by_role("checkbox")
+        await expect(checkboxes).to_have_count(6)
+        await expect(checkboxes.first).to_have_accessible_name("Read the related note.")
+        await expect(checkboxes.nth(1)).to_have_accessible_name("Verify completed state.")
+        expected = [False, True, False, True, False, True]
+        for index, checked in enumerate(expected):
+            checkbox = checkboxes.nth(index)
+            await expect(checkbox).to_be_visible()
+            await expect(checkbox).to_be_disabled()
+            await expect(checkbox).to_be_checked(checked=checked)
+
+        # Click the actual disabled controls; locator.click correctly refuses them.
+        for index in (0, 1):
+            checkbox = checkboxes.nth(index)
+            await checkbox.scroll_into_view_if_needed()
+            bounds = await checkbox.bounding_box()
+            await page.mouse.click(
+                bounds["x"] + bounds["width"] / 2, bounds["y"] + bounds["height"] / 2
+            )
+            await expect(checkbox).to_be_checked(checked=expected[index])
+
+        await expect(markdown).to_contain_text("Verify completed state.")
+        await expect(markdown).to_contain_text("Ordinary bullet with supporting tasks:")
+        await expect(markdown).to_contain_text("Ordinary numbered item.")
+        await expect(markdown.locator("code")).to_have_text("inline code")
+        top_level = await checkboxes.first.bounding_box()
+        nested = await checkboxes.nth(2).bounding_box()
+        assert nested["x"] > top_level["x"]
+        assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        await page.screenshot(
+            path=str(tmp_path / f"{surface}-tasks-{width}-js-{javascript}.png"), full_page=True
+        )
+        await markdown.get_by_role("link", name="related note", exact=True).click()
+        await expect(page.locator(".markdown")).to_contain_text("Related content is reachable.")
+    await context.close()
+
+
 async def test_secret_forms_without_javascript(browser, viewer, enso_home):
     context = await browser.new_context(
         java_script_enabled=False, viewport={"width": 320, "height": 800}

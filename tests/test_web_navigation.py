@@ -57,6 +57,8 @@ class Document(HTMLParser):
             self.stack.append(node)
 
     def handle_endtag(self, tag):
+        if tag in VOID_TAGS:
+            return
         assert self.stack[-1].tag == tag
         self.stack.pop()
 

@@ -645,6 +645,20 @@
     :is(h1, h2, h3, h4):first-child { margin-top: 0; }
     p, ul, ol, blockquote, pre, table { margin: 0 0 1em; }
     ul, ol { padding-left: 1.4em; } ul { list-style: disc; }
+    .task-list-label { display: block; position: relative; padding-inline-start: 1.5em; }
+    .task-list-checkbox {
+      position: absolute; inset-inline-start: 0; top: 0.25em;
+      width: 1em; height: 1em; margin: 0; font: inherit;
+      accent-color: var(--accent); opacity: 1; cursor: default;
+    }
+    /* Replace task bullets, preserving ordinary bullets and ordered-list numbering. */
+    ul > .task-list-item {
+      list-style: none;
+      > .task-list-label, > p > .task-list-label {
+        padding-inline-start: 0;
+        .task-list-checkbox { inset-inline-start: -1.4em; }
+      }
+    }
     pre { padding: var(--s-5); background: var(--surface-2); border-radius: var(--r); overflow: auto; font-size: var(--text-xs); }
     /* The panel clips, so a long path or command in inline code has to wrap rather than
        run off the edge and vanish. A fenced block is exempt: its pre scrolls instead. */

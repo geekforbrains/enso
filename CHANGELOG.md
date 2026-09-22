@@ -14,6 +14,7 @@ All notable changes to Enso are documented here, following
 
 - Markdown tables keep readable columns without splitting ordinary words, preserve column
   alignment, and scroll horizontally with keyboard access when they exceed the reading area.
+- Markdown task lists show disabled checkboxes with their saved checked or unchecked state.
 
 ## [0.4.0] - 2026-09-22
 
