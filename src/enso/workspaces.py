@@ -153,12 +153,11 @@ def seed_home(paths: Paths) -> list[str]:
 
 
 def seed_jobs(paths: Paths, agent: Agent) -> list[str]:
-    """Install the bundled jobs that are not there yet, stamped with ``agent``; says what changed.
+    """Install missing bundled jobs; stamp ``agent`` only where a template requests it.
 
     A job is written once: an existing ``jobs/<name>/`` is the operator's whatever it holds
     (an edited ``JOB.md`` stays, a deleted script is not put back), and no refresh flag
-    reaches jobs. ``provider``, ``model``, and ``effort`` come from the default agent chosen
-    at setup. Maintenance jobs belong to the default workspace.
+    reaches jobs. Maintenance jobs belong to the default workspace.
     """
     done: list[str] = []
     require_workspace(paths, "default")

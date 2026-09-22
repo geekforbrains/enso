@@ -34,7 +34,18 @@ from ..jobs.runner import JobRunner
 from ..runtime import Runtime
 from ..transport_registry import TRANSPORTS
 from ..transports import Transport
-from .common import JSON_FLAG, InputError, columns, echo_json, fail, read_input
+from .common import (
+    JSON_FLAG,
+    WORKSPACE,
+    InputError,
+    columns,
+    deliver,
+    echo_json,
+    fail,
+    load_for_send,
+    read_input,
+    run,
+)
 from .connect import connect_app
 from .heartbeat import heartbeat_app
 from .jobs import job_app, runs_app
@@ -509,18 +520,57 @@ def doctor_command(
     attention: bool = typer.Option(
         False,
         "--attention",
-        help="Exit 1 for anything worth reporting, not only a health problem.",
+        help="Include reportable warnings, not only health problems.",
     ),
+    notify: bool = typer.Option(
+        False, "--notify", help="Send selected findings to the configured notification target."
+    ),
+    quiet: bool = typer.Option(False, "--quiet", help="Suppress normal text output."),
+    workspace: str | None = WORKSPACE,
 ) -> None:
-    """Check installation health and Markdown notes; exit 1 on a problem."""
+    """Check health; --notify succeeds when no report is needed or delivery succeeds."""
     paths = Paths.from_env()
-    report = doctor.run(paths)
+    try:
+        report = doctor.run(paths)
+    except Exception as exc:
+        fail([f"could not complete health audit: {exc}"], as_json=as_json)
+    selected = report.attention if attention else not report.ok
+    notified = False
+    if notify and selected:
+        config = load_for_send(paths, as_json=as_json)
+        target = config.default_notify()
+        if target is None:
+            fail(["no notification target configured"], as_json=as_json)
+        name, channel = target
+        try:
+            transport = TRANSPORTS[name].build(config)
+        except ImportError as exc:
+            fail([str(exc)], as_json=as_json)
+        run(
+            deliver(
+                paths,
+                transport,
+                channel,
+                None,
+                workspace=(
+                    workspace
+                    if workspace is not None
+                    else os.environ.get("ENSO_WORKSPACE") or "default"
+                ),
+                text=doctor.notification_message(report, attention=attention),
+            ),
+            as_json=as_json,
+        )
+        notified = True
     if as_json:
-        echo_json(report.as_dict())
-    else:
+        payload = report.as_dict()
+        if notify:
+            payload["notified"] = notified
+        echo_json(payload)
+    elif not quiet:
         for line in doctor_lines(report):
             typer.echo(line)
-    if report.attention if attention else not report.ok:
+    if selected and not notify:
         raise typer.Exit(1)
 
 

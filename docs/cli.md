@@ -45,7 +45,7 @@ enso providers [--json]             bundled provider, model, and effort choices
 enso slack manifest                 packaged app manifest, JSON on stdout
 enso connect start|status|cancel|finish  private owner pairing; see Connections for arguments
 enso models [--all] [--json]       look up OpenRouter models OpenCode can run
-enso doctor [--json] [--attention]  config, home, workspaces, providers, transports, service, viewer_service, jobs, heartbeat, knowledge
+enso doctor [--json] [--attention] [--notify] [--quiet] [--workspace NAME]
 enso update check|apply|status|recover  managed release checks and recovery; see Updates
 ```
 
@@ -77,9 +77,21 @@ about, problem or not. It exits 1 for every health problem and also for the
 link, credentials other users can read, a stale generated file — which are warnings and
 would otherwise pass silently. Warnings that are matters of taste, such as an orphan
 workspace or an unedited `AGENTS.md` template, do not exit 1. Plain `enso doctor` keeps its
-ordinary meaning either way; the flag changes only the exit code, never the report. The
-[nightly audit job](jobs.md#nightly-health-audit) runs `enso doctor --json --attention` as
-its gate.
+ordinary meaning either way; the flag changes the selection, never the report object.
+
+`--notify` sends selected findings directly to the configured notification target, ignoring
+any calling chat's destination. It selects health problems by default; add `--attention`
+for reportable hygiene warnings. The notice includes at most eight findings of 350 characters
+each, errors first, and a count of omitted findings. Audit and update notices use the same
+Markdown title, status, details, and action format. No LLM or repair runs. Notifications are
+recorded in the outbox, owned by `--workspace`, `ENSO_WORKSPACE`, or `default`, in that order.
+
+With `--notify`, exit 0 means there was nothing to report or the report was delivered;
+inspection or delivery failures exit 1. Without it, diagnostic exit codes are unchanged.
+`--quiet` suppresses normal text output, while errors and requested JSON remain visible.
+Healthy checks send nothing, including when no notification target is configured. Remaining
+findings are reported on every invocation; the [nightly audit job](jobs.md#nightly-health-audit)
+runs `enso doctor --attention --notify --quiet`.
 
 `--json` prints `{"ok", "attention", "home", "sections": [...]}`, one section per line above
 in that order, each
@@ -92,7 +104,9 @@ extras, the service pid, job names, and beat counts and attention references). T
 section's `details.layout` maps each top-level entry present in the home to its
 [layout category](workspaces.md#what-belongs-where). The note
 sections' `details` contain `notes` and `findings` counts and a `roots` object mapping scope
-names to paths; they run even when configuration is invalid.
+names to paths; they run even when configuration is invalid. `--notify` additionally includes
+`notified`, which is true only after successful delivery; the report's `ok` remains the health
+result regardless of the command's notification-mode exit code.
 
 `serve` logs to `~/.enso/enso.log` (rotating) and, when stderr is a terminal, to the
 terminal. `--debug` adds the full prompt and every raw provider event. Each chat turn is

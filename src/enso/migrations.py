@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import frontmatter, update_snapshot
+from .audit_job_migration import audit_job_paths, migrate_audit_jobs
 from .config import Paths, valid_workspace_name
 from .job_migration import job_executor_paths, migrate_job_executors
 from .knowledge.catalog import Note, scan_roots
@@ -288,6 +289,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         5, "make job executors and concurrency explicit", job_executor_paths, migrate_job_executors
     ),
+    Migration(6, "run bundled health audits without an agent", audit_job_paths, migrate_audit_jobs),
 )
 
 

@@ -33,6 +33,7 @@ from . import (
 )
 from .config import Paths, load_config, resolve_workspace, valid_workspace_name
 from .connection_setup import receiver_active, service_receiver
+from .formatting import notification_text
 from .maintenance import (
     UpdateError,
     daemon,
@@ -864,6 +865,29 @@ def _notify_outcome(paths: Paths, state: dict[str, Any]) -> None:
         )
 
 
+def notification_message(result: dict[str, Any]) -> str:
+    """Use the same operator-facing structure as scheduled health reports."""
+    details = [f"Installed: {result['current']}.", f"Latest release: {result['available']}."]
+    if result.get("development"):
+        status = "Unmanaged development install."
+        action = "Adopt a compatible published release when ready."
+    elif result["managed"]:
+        status = "Update available."
+        action = "Run `enso update apply`, or ask me to upgrade when ready."
+    else:
+        status = "Unmanaged install."
+        if _version_key(result["current"]) <= _version_key(result["available"]):
+            action = (
+                "Stop Enso's services, run `enso update install --adopt`, "
+                "then reinstall the service with `enso service install`."
+            )
+        else:
+            action = "Adopt a compatible published release when available."
+    if result.get("release_notes_url"):
+        details.append(f"[Release notes]({result['release_notes_url']}).")
+    return notification_text("Enso update", status, details, action)
+
+
 def notify_available(paths: Paths, result: dict[str, Any], *, workspace: str) -> bool:
     """Announce each release or unmanaged state once, recording successful delivery."""
     if result["managed"] and not result["update_available"]:
@@ -874,9 +898,6 @@ def notify_available(paths: Paths, result: dict[str, Any], *, workspace: str) ->
         notice = {"version": result["available"], "managed": result["managed"]}
         if all(receipt.get(key) == value for key, value in notice.items()):
             return False
-        text = check_message(result)
-        if result.get("release_notes_url"):
-            text += f" Release notes: {result['release_notes_url']}"
-        _send(paths, text, {"workspace": workspace})
+        _send(paths, notification_message(result), {"workspace": workspace})
         write_json(receipt_path, {**notice, "sent_at": time.time()})
         return True

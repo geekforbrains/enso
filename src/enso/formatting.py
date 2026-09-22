@@ -85,6 +85,15 @@ def preview(text: str, width: int = 50) -> str:
     return flat if len(flat) <= width else flat[: width - 1] + "…"
 
 
+def notification_text(title: str, status: str, details: list[str], action: str) -> str:
+    """A common Markdown layout for deterministic operator notifications."""
+    return "\n".join(
+        [f"**{title}**", f"**Status:** {status}", "", "**Details**"]
+        + [f"- {detail}" for detail in details]
+        + ["", f"**Action:** {action}"]
+    )
+
+
 def md_to_html(text: str) -> str:
     """Best-effort Markdown → Telegram HTML conversion.
 

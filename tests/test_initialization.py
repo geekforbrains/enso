@@ -5,10 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from conftest import write_workspace
@@ -149,6 +151,21 @@ def test_init_never_marks_an_existing_unmarked_home_current(enso_home):
     assert not report["ok"] and "enso update apply" in report["problems"][0]
     assert not (enso_home.home / migrations.MARKER).exists()
     assert enso_home.agents_md.read_text() == "existing instructions"
+
+
+@pytest.fixture
+def agent_bundle(tmp_path, monkeypatch):
+    """Exercise agent stamping and atomic multi-file seeding with a synthetic bundle."""
+    package = tmp_path / "package"
+    shutil.copytree(Path(workspaces.__file__).parent / "bundled", package / "bundled")
+    job = package / "bundled" / "jobs" / "enso-audit"
+    (job / "JOB.md").write_text(
+        '---\nname: Example\nschedule: "0 3 * * *"\nagent:\n'
+        '  provider: "{{provider}}"\n  model: "{{model}}"\n  effort: "{{effort}}"\n'
+        "enabled: true\ngate:\n  command: bash prerun.sh\n---\n\nReport {{gate_output}}.\n"
+    )
+    (job / "prerun.sh").write_text("#!/usr/bin/env bash\necho report\n")
+    monkeypatch.setattr(workspaces, "resources", SimpleNamespace(files=lambda name: package))
 
 
 @pytest.mark.parametrize(
@@ -353,7 +370,9 @@ def test_apply_reports_when_only_a_restart_can_apply_the_change(enso_home, raw_c
         "custom{{effort}}model",
     ],
 )
-def test_apply_model_text_cannot_change_bundled_job_frontmatter(enso_home, raw_config, model):
+def test_apply_model_text_cannot_change_bundled_job_frontmatter(
+    enso_home, raw_config, model, agent_bundle
+):
     from enso.jobs import find_job
 
     raw_config["providers"]["claude"]["models"].append(model)
@@ -381,7 +400,7 @@ def test_apply_atomic_write_failure_preserves_old_config(enso_home, raw_config, 
 
 
 def test_apply_job_failure_is_reported_and_retryable_without_partial_job(
-    enso_home, raw_config, monkeypatch
+    enso_home, raw_config, monkeypatch, agent_bundle
 ):
     original = workspaces.write_missing
 

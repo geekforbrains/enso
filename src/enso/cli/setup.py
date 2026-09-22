@@ -152,8 +152,8 @@ def setup_wizard() -> None:
             else f"has nowhere to report until transports.{transport}.notify is set"
         )
         typer.echo(
-            "installed the enso-audit job: a nightly `enso doctor` that stays silent while "
-            f"the home is healthy and {where}; `enso job show default:enso-audit`"
+            "installed the enso-audit job: a nightly `enso doctor` that stays silent when "
+            f"nothing needs attention and {where}; `enso job show default:enso-audit`"
         )
     config = load_config(paths)
     try:

@@ -5,10 +5,20 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from pathlib import Path
 
 import pytest
 
-from enso import db, frontmatter, job_migration, knowledge, migrations, runs, update_snapshot
+from enso import (
+    audit_job_migration,
+    db,
+    frontmatter,
+    job_migration,
+    knowledge,
+    migrations,
+    runs,
+    update_snapshot,
+)
 from enso.maintenance import UpdateError, write_json
 
 
@@ -816,7 +826,7 @@ def test_job_migration_retries_partial_files_and_preserves_bundle_receipts(enso_
     assert "agent" in frontmatter.read(files[0]).fields
     assert "provider" in frontmatter.read(files[1]).fields
     migrations.apply(enso_home)
-    assert migrations.read_revision(enso_home) == 5
+    assert migrations.read_revision(enso_home) == migrations.latest_revision()
     receipts = json.loads((enso_home.home / ".bundles.json").read_text())["files"]
     for file in files:
         assert (
@@ -914,3 +924,259 @@ def test_job_migration_and_bundle_refresh_preserve_custom_release_checks(enso_ho
     name = file.relative_to(enso_home.home).as_posix()
     assert retained[name] == receipts[name]
     assert script.relative_to(enso_home.home).as_posix() not in retained
+
+
+def historical_audit(paths, *, workspace="default", legacy=False, overrides=None):
+    """Frozen revision-5 content, independent of later changes to the shipped audit."""
+    fixture = Path(__file__).parent / "fixtures" / "audit-job-v5"
+    document = frontmatter.read(fixture / "JOB.md")
+    fields = (
+        document.fields
+        | {
+            "agent": {"provider": "claude", "model": "opus", "effort": "high"},
+        }
+        | (overrides or {})
+    )
+    body = document.body
+    script = (fixture / "prerun.sh").read_bytes()
+    if legacy:
+        fields.update(fields.pop("agent"))
+        fields["prerun"] = "prerun.sh"
+        fields.pop("gate")
+        body = body.replace("{{gate_output}}", "{{prerun_output}}")
+        script = script.replace(b"# The gate contract", b"# The prerun contract").replace(
+            b"{{gate_output}}", b"{{prerun_output}}"
+        )
+    file = paths.workspace_jobs(workspace) / "enso-audit" / "JOB.md"
+    file.parent.mkdir(parents=True, exist_ok=True)
+    file.write_text(frontmatter.render(fields, body))
+    (file.parent / "prerun.sh").write_bytes(script)
+    return file
+
+
+def audit_receipts(paths, *files):
+    import hashlib
+
+    state = {
+        "files": {
+            path.relative_to(paths.home).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for file in files
+            for path in (file, file.parent / "prerun.sh")
+        }
+    }
+    write_json(paths.home / ".bundles.json", state)
+    return state
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_audit_command_upgrade_plans_old_layout_and_preserves_operational_settings(
+    enso_home, legacy
+):
+    from enso import workspaces
+    from enso.config import Agent
+
+    overrides = {
+        "enabled": False,
+        "schedule": "15 6 * * 1",
+        "timeout": 300,
+        "misfire_grace_seconds": 60,
+        "notify": "slack:C-AUDITS",
+        "concurrency": {"group": "home-audit", "on_busy": "wait"},
+    }
+    first = historical_audit(enso_home, legacy=legacy, overrides=overrides)
+    second = historical_audit(enso_home, legacy=legacy, workspace="disabled")
+    first.chmod(0o640)
+    audit_receipts(enso_home, first, second)
+    if legacy:
+        old_job_database(enso_home)
+    write_json(enso_home.home / migrations.MARKER, {"revision": 4 if legacy else 5})
+    before = first.read_bytes()
+    declared = migrations.plan(enso_home)
+    assert "workspaces/default/jobs/enso-audit" in declared
+    assert "workspaces/disabled/jobs/enso-audit" in declared
+    assert first.read_bytes() == before
+
+    migrations.apply(enso_home)
+    assert migrations.read_revision(enso_home) == migrations.latest_revision()
+    for file in (first, second):
+        fields = frontmatter.read(file).fields
+        assert fields["command"] == "enso doctor --attention --notify --quiet"
+        assert not {"provider", "agent", "gate", "prerun"} & fields.keys()
+        assert not (file.parent / "prerun.sh").exists()
+    assert first.stat().st_mode & 0o777 == 0o640
+    migrated = first.read_bytes()
+    for _ in range(2):
+        workspaces.reconcile_bundles(enso_home, Agent("claude", "opus", "high"))
+        migrations.MIGRATIONS[5].apply(enso_home)
+    assert first.read_bytes() == migrated
+    assert overrides.items() <= frontmatter.read(first).fields.items()
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("customized", ["prompt", "script", "deleted-script", "gate", "postrun"])
+def test_audit_command_upgrade_and_bundle_refresh_preserve_custom_pairs(
+    enso_home, legacy, customized
+):
+    from enso import workspaces
+    from enso.config import Agent
+
+    file = historical_audit(enso_home, legacy=legacy)
+    script = file.parent / "prerun.sh"
+    audit_receipts(enso_home, file)
+    if customized == "prompt":
+        file.write_text(file.read_text() + "\nKeep the operator's instructions.\n")
+    elif customized == "script":
+        script.write_bytes(script.read_bytes() + b"# Customized health check.\n")
+    elif customized == "deleted-script":
+        script.unlink()
+    else:
+        document = frontmatter.read(file)
+        if customized == "gate":
+            if legacy:
+                document.fields["prerun_timeout"] = 300
+            else:
+                document.fields["gate"]["timeout"] = 300
+        elif legacy:
+            document.fields["postrun"] = "operator.sh"
+        else:
+            document.fields["postrun"] = {"command": "bash operator.sh"}
+        file.write_text(frontmatter.render(document.fields, document.body))
+    if legacy:
+        migrations.MIGRATIONS[4].apply(enso_home)
+    expected_job = file.read_bytes()
+    expected_script = script.read_bytes() if script.exists() else None
+    for _ in range(2):
+        migrations.MIGRATIONS[5].apply(enso_home)
+        workspaces.reconcile_bundles(enso_home, Agent("claude", "opus", "high"))
+    assert file.read_bytes() == expected_job
+    assert (script.read_bytes() if script.exists() else None) == expected_script
+    receipts = json.loads((enso_home.home / ".bundles.json").read_text())["files"]
+    assert file.relative_to(enso_home.home).as_posix() not in receipts
+    assert script.relative_to(enso_home.home).as_posix() not in receipts
+
+
+def test_audit_migration_retains_deleted_definition_and_untracked_operator_files(enso_home):
+    from enso import workspaces
+    from enso.config import Agent
+
+    deleted = historical_audit(enso_home)
+    state = audit_receipts(enso_home, deleted)
+    script = deleted.parent / "prerun.sh"
+    before = script.read_bytes()
+    deleted.unlink()
+    custom = historical_audit(enso_home, workspace="custom")
+    custom.write_text(custom.read_text() + "\nOperator owns this copy.\n")
+    custom_before = custom.read_bytes()
+    migrations.MIGRATIONS[5].apply(enso_home)
+    workspaces.reconcile_bundles(enso_home, Agent("claude", "opus", "high"))
+    assert not deleted.exists()
+    assert script.read_bytes() == before
+    assert custom.read_bytes() == custom_before
+    receipts = json.loads((enso_home.home / ".bundles.json").read_text())["files"]
+    name = deleted.relative_to(enso_home.home).as_posix()
+    assert receipts[name] == state["files"][name]
+
+
+@pytest.mark.parametrize("failure", ["first-file", "second-file", "retirement"])
+def test_audit_command_migration_retries_partial_publication(enso_home, monkeypatch, failure):
+    import hashlib
+
+    from enso import workspaces
+    from enso.config import Agent
+
+    first = historical_audit(enso_home)
+    second = historical_audit(enso_home, workspace="other")
+    audit_receipts(enso_home, first, second)
+    write_json(enso_home.home / migrations.MARKER, {"revision": 5})
+    publish, unlink = audit_job_migration.write_bytes, Path.unlink
+
+    def fail_write(path, content, **kwargs):
+        if path == (first if failure == "first-file" else second):
+            raise OSError("injected publication failure")
+        publish(path, content, **kwargs)
+
+    def fail_unlink(path, **kwargs):
+        if path == first.parent / "prerun.sh":
+            raise OSError("injected retirement failure")
+        unlink(path, **kwargs)
+
+    with monkeypatch.context() as patch:
+        if failure == "retirement":
+            patch.setattr(Path, "unlink", fail_unlink)
+        else:
+            patch.setattr(audit_job_migration, "write_bytes", fail_write)
+        with pytest.raises(UpdateError, match="injected"):
+            migrations.apply(enso_home)
+    assert migrations.read_revision(enso_home) == 5
+    migrations.apply(enso_home)
+    for file in (first, second):
+        assert frontmatter.read(file).fields["command"] == audit_job_migration._COMMAND
+        assert not (file.parent / "prerun.sh").exists()
+    receipts = json.loads((enso_home.home / ".bundles.json").read_text())["files"]
+    for file in (first, second):
+        assert (
+            receipts[file.relative_to(enso_home.home).as_posix()]
+            == hashlib.sha256(file.read_bytes()).hexdigest()
+        )
+    workspaces.reconcile_bundles(enso_home, Agent("claude", "opus", "high"))
+    assert first.read_text() == workspaces._bundled("jobs/enso-audit/JOB.md")
+    before = (enso_home.home / ".bundles.json").read_bytes()
+    migrations.MIGRATIONS[5].apply(enso_home)
+    assert (enso_home.home / ".bundles.json").read_bytes() == before
+
+
+@pytest.mark.parametrize("conflict", ["yaml", "script-link", "job-link", "oversized"])
+def test_audit_migration_preflights_every_workspace_before_any_changes(
+    enso_home, tmp_path, conflict
+):
+    first = historical_audit(enso_home)
+    bad = historical_audit(enso_home, workspace="zzz")
+    state = audit_receipts(enso_home, first, bad)
+    if conflict == "yaml":
+        bad.write_text("---\nname: [\n---\n")
+    elif conflict == "oversized":
+        bad.write_text(bad.read_text() + "x" * (1024 * 1024))
+    else:
+        path = bad if conflict == "job-link" else bad.parent / "prerun.sh"
+        outside = tmp_path / path.name
+        path.rename(outside)
+        path.symlink_to(outside)
+    before = first.read_bytes()
+    step = migrations.MIGRATIONS[5]
+    for operation in (step.paths, step.apply):
+        with pytest.raises(UpdateError):
+            operation(enso_home)
+        assert first.read_bytes() == before
+        assert (first.parent / "prerun.sh").exists()
+        assert json.loads((enso_home.home / ".bundles.json").read_text()) == state
+
+
+def test_audit_migration_snapshot_restores_files_and_bundle_ownership(enso_home, tmp_path):
+    file = historical_audit(enso_home)
+    script = file.parent / "prerun.sh"
+    state = audit_receipts(enso_home, file)
+    before = {path: path.read_bytes() for path in (file, script)}
+    operation = tmp_path / "audit-migration"
+    operation.mkdir()
+    step = migrations.MIGRATIONS[5]
+    names = update_snapshot.plan(enso_home, list(step.paths(enso_home)))
+    update_snapshot.capture(enso_home, operation, names)
+    step.apply(enso_home)
+    update_snapshot.restore(enso_home, operation)
+    assert {path: path.read_bytes() for path in (file, script)} == before
+    assert json.loads((enso_home.home / ".bundles.json").read_text()) == state
+
+
+def test_fresh_home_at_revision_six_seeds_command_audit_without_historical_script(tmp_path):
+    from enso import initialization, workspaces
+    from enso.config import Agent, Paths
+
+    paths = Paths(tmp_path / "fresh-home")
+    assert initialization.initialize_home(paths)["ok"]
+    assert migrations.read_revision(paths) == migrations.latest_revision()
+    assert migrations.MIGRATIONS[5].revision == 6
+    workspaces.seed_jobs(paths, Agent("claude", "opus", "high"))
+    job = paths.workspace_jobs("default") / "enso-audit"
+    assert frontmatter.read(job / "JOB.md").fields["command"] == audit_job_migration._COMMAND
+    assert not (job / "prerun.sh").exists()
+    assert migrations.pending(paths) == ()

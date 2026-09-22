@@ -36,26 +36,23 @@ def test_seed_home_writes_missing_files_and_preserves_edited_skills(enso_home: P
     assert skill.read_text() == "edited"
 
 
-def test_seed_jobs_stamps_the_agent_and_writes_once(enso_home: Paths) -> None:
+def test_seed_jobs_installs_commands_and_writes_once(enso_home: Paths) -> None:
     job_dir = enso_home.workspace_jobs("default") / "enso-audit"
     done = workspaces.seed_jobs(enso_home, Agent("claude", "opus", "high"))
     assert done == [
         f"wrote {enso_home.workspace_jobs('default') / job / name}"
         for job, name in (
             ("enso-audit", "JOB.md"),
-            ("enso-audit", "prerun.sh"),
             ("enso-update", "JOB.md"),
         )
     ]
     text = (job_dir / "JOB.md").read_text()
-    assert 'agent:\n  provider: "claude"\n  model: "opus"\n  effort: "high"\n' in text
-    assert re.findall(r"\{\{\w+\}\}", text) == ["{{gate_output}}"]  # the runner's, kept
+    assert "command: enso doctor --attention --notify --quiet" in text
+    assert "agent:" not in text and "{{" not in text
     assert workspaces.seed_jobs(enso_home, Agent("claude", "opus", "high")) == []
     (job_dir / "JOB.md").write_text(text.replace("enabled: true", "enabled: false"))
-    (job_dir / "prerun.sh").unlink()
     assert workspaces.seed_jobs(enso_home, Agent("codex", "sol", "low")) == []
     assert "enabled: false" in (job_dir / "JOB.md").read_text()  # the directory is the operator's
-    assert not (job_dir / "prerun.sh").exists()  # a deleted script is not put back either
     workspaces.seed_home(enso_home)  # home seeding never reaches jobs
     assert [path.name for path in job_dir.iterdir()] == ["JOB.md"]
 
@@ -163,9 +160,9 @@ def test_setup_wizard_slack_path(enso_home: Paths, monkeypatch: pytest.MonkeyPat
     )
     assert "reports problems to your notify target" in summary
     assert "enso job show default:enso-audit" in summary
-    assert job.agent is not None and job.gate is not None
-    assert (job.agent.provider, job.agent.model, job.agent.effort) == ("claude", "opus", "high")
-    assert job.enabled and job.workspace == "default" and job.gate.command == "bash prerun.sh"
+    assert job.agent is None and job.gate is None
+    assert job.enabled and job.workspace == "default"
+    assert job.command == "enso doctor --attention --notify --quiet"
     assert installs == [enso_home]
     assert CliRunner().invoke(app, ["setup"]).exit_code == 1  # fresh homes only
 

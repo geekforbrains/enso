@@ -20,7 +20,7 @@ from pathlib import Path
 
 from . import audit, db, heartbeat, knowledge, service, web
 from .config import Config, Paths, check_config
-from .formatting import preview
+from .formatting import notification_text, preview
 from .jobs import load_jobs
 from .transport_registry import TRANSPORTS
 from .web import service as viewer_service
@@ -38,8 +38,7 @@ SECTIONS = (
     "knowledge",
 )
 SKIPPED = "skipped"
-# Appended to a finding the workspace audit can repair; the enso-audit prompt quotes it, so
-# the agent can tell the operator which lines `--fix` covers.
+# Keep repair guidance beside each finding in the CLI and scheduled notification.
 FIXABLE_MARK = " (repairable with `enso workspace audit --fix`)"
 
 
@@ -53,8 +52,13 @@ class Section:
     warnings: list[str] = field(default_factory=list)
     details: dict = field(default_factory=dict)  # the facts, for scripts and the viewer
     skipped: bool = False  # could not run until something else is fixed
-    # Some warning here is worth an unprompted report; see ``Report.attention``.
-    attention: bool = False
+    # The exact warning subset selected for notifications; not a separate JSON contract.
+    attention_warnings: list[str] = field(default_factory=list)
+
+    @property
+    def attention(self) -> bool:
+        """Some warning here is worth an unprompted report; see ``Report.attention``."""
+        return bool(self.attention_warnings)
 
     @property
     def status(self) -> str:
@@ -132,6 +136,35 @@ def run(paths: Paths) -> Report:
         _knowledge(paths),
     ]
     return Report(paths.home, sections)
+
+
+def notification_message(report: Report, *, attention: bool = False) -> str:
+    """Bound the selected findings without sending benign warnings or healthy sections."""
+    problems = [
+        f"{section.name}: {problem}" for section in report.sections for problem in section.problems
+    ]
+    warnings = (
+        [
+            f"{section.name}: {warning}"
+            for section in report.sections
+            for warning in section.attention_warnings
+        ]
+        if attention
+        else []
+    )
+    findings = problems + warnings
+    details = [preview(finding, 350) for finding in findings[:8]]
+    if len(findings) > len(details):
+        details.append(f"{len(findings) - len(details)} more findings in the full report.")
+    status = audit.count_summary(len(problems), len(warnings))
+    if not problems:
+        status = f"Healthy; {status}." if warnings else "Healthy."
+    return notification_text(
+        "Enso audit",
+        status,
+        details,
+        "Run `enso doctor --attention` for the full report and repair guidance.",
+    )
 
 
 def _knowledge(paths: Paths) -> Section:
@@ -223,7 +256,9 @@ def _home(paths: Paths, home: audit.HomeAudit) -> Section:
         note=f"Git root at {paths.home}" if git_root else str(paths.home),
         problems=[_finding_text(finding) for finding in home.errors],
         warnings=[_finding_text(finding) for finding in home.warnings],
-        attention=any(finding.attention for finding in home.warnings),
+        attention_warnings=[
+            _finding_text(finding) for finding in home.warnings if finding.attention
+        ],
         details={
             "path": str(paths.home),
             "git_root": git_root,
@@ -245,8 +280,11 @@ def _workspaces(found: list[audit.WorkspaceAudit]) -> Section:
     for workspace in found:
         section.problems.extend(f"{workspace.name}: {_finding_text(f)}" for f in workspace.errors)
         section.warnings.extend(f"{workspace.name}: {_finding_text(f)}" for f in workspace.warnings)
-        if any(finding.attention for finding in workspace.warnings):
-            section.attention = True
+        section.attention_warnings.extend(
+            f"{workspace.name}: {_finding_text(finding)}"
+            for finding in workspace.warnings
+            if finding.attention
+        )
     return section
 
 

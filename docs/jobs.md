@@ -287,59 +287,40 @@ remain yours to customize.
 
 `enso setup` and `enso config apply` install `enso-audit` and `enso-update` into
 `~/.enso/workspaces/default/jobs/` when their directories are missing. `enso init` prepares the home but does
-not install jobs. Existing job directories and their agent choices are preserved.
+not install jobs. Both maintenance jobs run deterministic commands without an agent.
+Existing job directories are preserved.
 
 ### Nightly health audit
 
-`enso-audit` is enabled, runs at `0 3 * * *` local time with `catch_up: true` (a machine
-asleep at 03:00 runs it on wake), works in the `default` workspace, and uses the provider,
-model, and effort in the configuration when it is first installed. Later default-agent
-changes do not rewrite it.
+`enso-audit` is an enabled command job that runs at `0 3 * * *` local time with
+`catch_up: true` (a machine asleep at 03:00 runs it on wake). Its command is
+`enso doctor --attention --notify --quiet`; it has no agent or gate and makes no repairs.
 
-Its gate runs `enso doctor --json --attention` and inverts the doctor's exit code, since
-the two contracts read `0` and `1` the other way round:
+[`--attention`](cli.md#operating) selects every health problem plus the installation-hygiene
+warnings: unexpected entries, irregular links, credentials other users can read, and stale
+generated files. An orphan workspace or unedited `AGENTS.md` template stays quiet. A report
+containing only hygiene warnings explicitly says the installation is healthy.
 
-| Doctor | Gate | Run |
-| --- | --- | --- |
-| exit 0: nothing to report | exit 1 | `no_work`; nothing spent, nothing sent |
-| exit 1 with the report on stdout: something to report | exit 0, the report on stdout | the agent gets the report in `{{gate_output}}` |
-| exit 1 with no report (a crash), or anything else: the doctor itself failed | exit 2 with a `ENSO_ERROR:` line | `gate_error`, alerted |
+The command sends a standard Markdown notice with a title, status, details, and next action.
+It includes at most eight selected findings, each limited to 350 characters, with errors
+first and a count of any remaining findings. Repair guidance stays beside findings when
+it fits; `enso doctor --attention` provides the complete report. The command does not ask
+an LLM to interpret findings or perform repairs.
 
-[`--attention`](cli.md#operating) is what makes the gate wider than health alone: a home
-that is working but untidy — an unexpected entry, an irregular link, credentials other users
-can read, a stale generated file — is reported too, with `"ok": true` in the report saying
-nothing is actually broken. Warnings that are matters of taste, such as an orphan workspace
-or an unedited `AGENTS.md` template, keep the gate shut. A home with none of this stays
-silent exactly as before.
+Reports always go to the configured transport's notification target, including manual runs
+from a chat. The outbox records each send under the job's workspace. A healthy check sends
+nothing and records `ok`; a delivered report also records `ok`. Inspection or delivery
+failures return nonzero and record `error`, allowing the runner's normal failure alert.
+The audit reports remaining problems every night without deduplication or recovery notices.
 
-The agent explains each problem in plain words, says which ones
-`enso workspace audit --fix` would repair (the doctor marks them), and sends the summary
-with `enso message send`. It fixes nothing; the operator decides. A home that stays broken
-or untidy hears about it every night: each of those is a provider run, not a repeated gate
-failure, so nothing suppresses it. Tidying the home, or repairing it with
-`enso workspace audit --fix`, is what stops the reports.
-
-Where the scheduled summary goes: `enso message send` without `--to` uses the transport's
-notify target. A manual run inside a chat turn can inherit that conversation as its
-destination; see [Environment for agents](cli.md#environment-for-agents).
-A `notify` on the job moves only the runner's own alerts (`gate failed` and the
-like), never the agent's send; to deliver the summary elsewhere, add `--to <target>` to the
-`enso message send` line in the prompt. With no notify target at all (the Slack step of
-`enso setup` lets the channel stay blank), the send fails and the summary is only in run
-history; setup says so when it installs the job.
-
-The job is yours to customize. Setup and config apply preserve an existing directory in full,
-including edited prompts or schedules and deleted scripts. Managed upgrades refresh only
-files that still match a recorded bundled baseline; they preserve edits and tracked deletions,
-including removal of the whole bundle. Historical job directories without baselines stay
-untouched. [Customizing](customizing.md#the-bundled-skills) owns these rules. To keep a job off,
-set `enabled: false` in `JOB.md`; a later explicit setup or config apply can reinstall a
-deleted directory. Try the audit with
-`enso job run default:enso-audit`, which prints `no work` on a healthy home; with the service
-installed but stopped the doctor reports that, so expect a summary then. The service's
-`PATH` includes the `enso` binary, so the gate calls plain `enso`; under a unit written
-by hand without it, the run alerts `gate failed` with
-`enso doctor exited with status 127`.
+The job is yours to customize. Setup and config apply preserve an existing directory in full.
+Managed upgrades convert the recognized bundled audit to a command while preserving schedule,
+enabled state and notification overrides. Customized prompts or scripts, including deleted
+scripts, remain agent jobs. Bundle refresh preserves edits and tracked deletions; see
+[Customizing](customizing.md#the-bundled-skills). To keep a job off, set `enabled: false` in
+`JOB.md`; a later explicit setup or config apply can reinstall a deleted directory.
+Try it with `enso job run default:enso-audit`. The service's `PATH` includes the `enso` binary;
+a hand-written unit must do the same.
 
 ### Nightly release check
 
@@ -349,7 +330,8 @@ gate. A completed check records `ok`, including when no newer release needs a no
 
 A check uses the installation's saved release feed, falling back to official GitHub releases.
 A managed install sends one notice per newer stable version to the default notification
-target. An unmanaged install also receives a notice explaining adoption. Notices are recorded
+target using the same title, status, details, and action format as the audit. An unmanaged
+install also receives a notice explaining adoption. Notices are recorded
 only after successful delivery, separately for managed and unmanaged installations.
 Repeated notices, offline checks, and delivery failures remain quiet; failed checks and sends
 are retried on the next scheduled run. A manual

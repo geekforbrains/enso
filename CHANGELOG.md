@@ -7,6 +7,10 @@ All notable changes to Enso are documented here, following
 
 ### Added
 
+- `enso doctor --notify` sends bounded health reports directly to the configured notification
+  target; `--attention` includes selected hygiene warnings and `--quiet` suppresses normal
+  output. The bundled audit now runs without an LLM. Audit and update notifications share
+  a standard title, status, details, and action format.
 - Scheduled command jobs run scripts without an LLM, with the same timeouts, secrets,
   output history and postrun checks as agent jobs. Concurrency groups explicitly choose
   `wait` or `skip`, with fair waiting across processes and optional waiting deadlines.

@@ -93,6 +93,18 @@ Files are replaced atomically, and the enclosing migration snapshot protects rol
 across both files and database changes. Reapplying an interrupted conversion recognizes
 already-converted files. Fresh installs already use the new format.
 
+Home revision **6** separately converts the recognized bundled `enso-audit` into
+`command: enso doctor --attention --notify --quiet`. It recognizes both historical
+job formats when previewing an upgrade that includes revision 5. Conversion requires
+the shipped audit instructions and an unchanged shipped gate script; only that matching
+script is removed. Enabled state, schedule, notification settings, timeout and concurrency
+choices are retained. Customized prompts, scripts, hook behavior and missing scripts keep
+their agent definition. Retained custom pairs are detached from bundled-file ownership so
+a later bundle refresh cannot overwrite the job or retire its still-needed script.
+Deleted definitions stay deleted. The step preflights every workspace, replaces definitions
+atomically, preserves permissions and can resume partial publication. Fresh installations
+seed the command job directly; revision 5 remains unchanged.
+
 ## Declare everything the step changes
 
 `plan(paths)` calls each pending step's `paths` function without changing the home. These

@@ -313,7 +313,7 @@ def test_doctor_reports_invalid_note_roots_without_following_links(
 def test_attention_separates_what_is_worth_reporting_from_what_is_unhealthy(
     enso_home: Paths, raw_config: dict, unit: Path
 ) -> None:
-    """The nightly audit's gate: a tidy-but-healthy home stays quiet, an untidy one does not."""
+    """The nightly audit's selection: a healthy home stays quiet unless it needs tidying."""
     healthy(enso_home, raw_config)
     runner = CliRunner()
 
@@ -350,7 +350,7 @@ def test_attention_separates_what_is_worth_reporting_from_what_is_unhealthy(
 
 
 def test_attention_is_true_for_every_health_problem(enso_home: Paths, raw_config: dict) -> None:
-    """A problem is always worth reporting, so the gate never narrows what it used to pass."""
+    """A health problem is always selected for reporting."""
     healthy(enso_home, raw_config)
     shutil.rmtree(enso_home.workspace("default") / "uploads")
 
@@ -358,3 +358,139 @@ def test_attention_is_true_for_every_health_problem(enso_home: Paths, raw_config
 
     assert not report.ok and report.attention
     assert CliRunner().invoke(app, ["doctor", "--attention"]).exit_code == 1
+
+
+@pytest.fixture
+def notification_transport(monkeypatch):
+    from conftest import FakeTransport
+
+    transport = FakeTransport()
+    monkeypatch.setattr(TRANSPORTS["slack"], "build", lambda config: transport)
+    return transport
+
+
+def test_notify_stays_quiet_for_healthy_and_benign_warnings(
+    enso_home, raw_config, unit, notification_transport
+):
+    healthy(enso_home, raw_config)
+    workspaces.create_workspace(enso_home, "lonely")
+    result = CliRunner().invoke(app, ["doctor", "--attention", "--notify", "--quiet"])
+    assert result.exit_code == 0 and result.output == ""
+    assert notification_transport.sent == [] and not enso_home.db.exists()
+    encoded = CliRunner().invoke(app, ["doctor", "--attention", "--notify", "--quiet", "--json"])
+    payload = json.loads(encoded.stdout)
+    assert encoded.exit_code == 0 and payload["ok"] and not payload["notified"]
+    assert not payload["attention"]
+
+
+def test_notify_selects_exact_attention_warnings_and_repeats_without_an_agent(
+    enso_home, raw_config, unit, notification_transport
+):
+    healthy(enso_home, raw_config)
+    workspaces.create_workspace(enso_home, "lonely")
+    (enso_home.home / "leftover.tar.gz").write_bytes(b"")
+    # Without --attention, warnings remain informational and nothing is sent.
+    ordinary = CliRunner().invoke(app, ["doctor", "--notify", "--quiet"])
+    assert ordinary.exit_code == 0 and notification_transport.sent == []
+    for _ in range(2):
+        result = CliRunner().invoke(app, ["doctor", "--attention", "--notify", "--quiet"])
+        assert result.exit_code == 0 and result.output == ""
+    assert len(notification_transport.sent) == 2
+    target, text = notification_transport.sent[0]
+    assert target == "C1"
+    assert text.startswith("**Enso audit**\n**Status:** Healthy; 1 warning.")
+    assert "leftover.tar.gz" in text and "lonely" not in text
+    assert "**Details**" in text and "**Action:** Run `enso doctor --attention`" in text
+
+
+def test_notify_reports_errors_to_configured_target_and_records_outbox(
+    enso_home, raw_config, unit, notification_transport, monkeypatch
+):
+    from enso import messages
+
+    healthy(enso_home, raw_config)
+    workspaces.create_workspace(enso_home, "team")
+    (enso_home.workspace("team") / "AGENTS.md").write_text("# Team\n")
+    shutil.rmtree(enso_home.workspace("default") / "uploads")
+    monkeypatch.setenv("ENSO_ORIGIN_TRANSPORT", "slack")
+    monkeypatch.setenv("ENSO_ORIGIN_CHANNEL", "Cother")
+    monkeypatch.setenv("ENSO_ORIGIN_THREAD_TS", "1.2")
+    monkeypatch.setenv("ENSO_WORKSPACE", "default")
+    monkeypatch.setenv("ENSO_JOB", "default:enso-audit")
+    result = CliRunner().invoke(
+        app, ["doctor", "--notify", "--quiet", "--json", "--workspace", "team"]
+    )
+    payload = json.loads(result.stdout)
+    assert result.exit_code == 0 and not payload["ok"] and payload["notified"]
+    target, text = notification_transport.sent[0]
+    assert target == "C1" and "**Status:** 1 error" in text
+    assert doctor.FIXABLE_MARK in text
+    message = messages.list_messages(enso_home, 1)[0]
+    assert (message.workspace, message.target, message.thread, message.status) == (
+        "team",
+        "C1",
+        None,
+        "sent",
+    )
+    assert message.source == "job:default:enso-audit" and message.text == text
+
+
+def test_notify_delivery_failure_stays_nonzero_when_quiet_and_retry_is_possible(
+    enso_home, raw_config, unit, notification_transport, monkeypatch
+):
+    from enso import messages
+
+    healthy(enso_home, raw_config)
+    shutil.rmtree(enso_home.workspace("default") / "uploads")
+    original = notification_transport.send
+
+    async def failed(*args, **kwargs):
+        raise RuntimeError("delivery unavailable")
+
+    monkeypatch.setattr(notification_transport, "send", failed)
+    result = CliRunner().invoke(app, ["doctor", "--notify", "--quiet"])
+    assert result.exit_code == 1 and result.stdout == ""
+    assert "delivery unavailable" in result.stderr
+    assert messages.list_messages(enso_home, 1)[0].status == "failed"
+    monkeypatch.setattr(notification_transport, "send", original)
+    retry = CliRunner().invoke(app, ["doctor", "--notify", "--quiet"])
+    assert retry.exit_code == 0 and retry.output == ""
+    assert messages.list_messages(enso_home, 1)[0].status == "sent"
+
+
+def test_notify_requires_a_target_only_when_there_are_findings(enso_home, raw_config, unit):
+    raw_config["transports"]["slack"].pop("notify")
+    healthy(enso_home, raw_config)
+    assert CliRunner().invoke(app, ["doctor", "--notify", "--quiet"]).exit_code == 0
+    shutil.rmtree(enso_home.workspace("default") / "uploads")
+    failed = CliRunner().invoke(app, ["doctor", "--notify", "--quiet"])
+    assert failed.exit_code == 1 and "no notification target configured" in failed.stderr
+
+
+def test_notify_inspection_failure_is_not_a_successful_quiet_check(enso_home, monkeypatch):
+    def failed(paths):
+        raise OSError("could not read home")
+
+    monkeypatch.setattr(doctor, "run", failed)
+    result = CliRunner().invoke(app, ["doctor", "--notify", "--quiet", "--json"])
+    assert result.exit_code == 1
+    assert json.loads(result.stdout) == {
+        "ok": False,
+        "error": "could not complete health audit: could not read home",
+    }
+
+
+def test_notification_bounds_findings_and_shows_errors_before_warnings():
+    report = doctor.Report(
+        Path("/home/.enso"),
+        [
+            doctor.Section("home", attention_warnings=["tidy this"]),
+            doctor.Section("jobs", problems=[f"{index}: " + "x" * 1000 for index in range(12)]),
+        ],
+    )
+    text = doctor.notification_message(report, attention=True)
+    assert "**Status:** 12 errors, 1 warning" in text
+    assert text.count("- jobs:") == 8 and "tidy this" not in text
+    assert "5 more findings in the full report." in text
+    assert len(text) < 3200
+    assert all(len(line) <= 352 for line in text.splitlines() if line.startswith("- jobs:"))

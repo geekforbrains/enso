@@ -826,3 +826,30 @@ def test_new_cli_cannot_mutate_during_exclusive_update(managed, raw_config, tmp_
     assert result.returncode == 1
     assert json.loads(result.stdout)["ok"] is False
     assert not managed.paths.config.exists()
+
+
+@pytest.mark.parametrize(
+    ("managed", "current", "development", "status", "action"),
+    [
+        (True, "0.1.0", False, "Update available.", "`enso update apply`"),
+        (False, "0.1.0", False, "Unmanaged install.", "`enso update install --adopt`"),
+        (False, "0.3.0", False, "Unmanaged install.", "when available"),
+        (False, "0.2.0.dev1", True, "Unmanaged development install.", "when ready"),
+    ],
+)
+def test_release_notification_has_the_standard_operator_template(
+    managed, current, development, status, action
+):
+    text = updates.notification_message(
+        {
+            "managed": managed,
+            "current": current,
+            "available": "0.2.0",
+            "development": development,
+            "release_notes_url": "https://example.test/release/0.2.0",
+        }
+    )
+    assert text.startswith(f"**Enso update**\n**Status:** {status}\n\n**Details**\n")
+    assert f"- Installed: {current}." in text and "- Latest release: 0.2.0." in text
+    assert "[Release notes](https://example.test/release/0.2.0)" in text
+    assert "**Action:**" in text and action in text
