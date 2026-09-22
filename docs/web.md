@@ -79,6 +79,12 @@ prohibits inline styles. CSS uses cascade layers, nesting, `light-dark()` tokens
 queries, and cross-document transitions; transitions are disabled without scripting or with
 reduced motion.
 
+Rendered Markdown tables keep content-sized columns and wrap prose at word boundaries.
+Tables wider than the reading area scroll horizontally within a focusable region; edge
+shadows indicate more content, and the arrow keys scroll a focused table. Column alignment
+from Markdown is preserved, including compact right-aligned numeric columns. This applies
+to knowledge notes, workspace files, and other rendered Markdown, with or without JavaScript.
+
 Preserve the compact layout and cloud/navy palette. Cyan marks links and selections; pink
 is reserved for text selection. Status colours are consistent across themes: mint for
 success, cyan for running, coral for errors, yellow for warnings/timeouts, and lavender for
@@ -247,8 +253,13 @@ then a local calendar date.
 Notes with unique valid IDs open at `/knowledge/notes/<id>`, which survives moves. Other
 notes use scope/path URLs and display metadata findings. Filenames supply titles; frontmatter
 is hidden in the reading view. Dates appear above the body; **View source** shows the complete
-file. Folder context lists up to 20 items with a link to the full folder. **Linked from** shows
-up to 50 incoming notes and the total count.
+file. **In this folder** opens a panel with up to 20 items and a link to the full folder.
+It starts collapsed, giving the note the full reading area. With JavaScript and browser
+storage available, the viewer remembers the choice across notes and reloads in that browser.
+At 1000px and below, the panel opens above the note instead of beside it. The disclosure
+also works without JavaScript, starting collapsed on each page. Paragraphs keep a comfortable
+reading width while tables can use the full document width. **Linked from** shows up to 50
+incoming notes and the total count.
 
 Resolved wiki and Markdown links stay inside the viewer. Ambiguous or missing links are
 marked; a missing heading is marked while its note remains clickable. Stable links, browser

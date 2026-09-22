@@ -5,6 +5,16 @@ All notable changes to Enso are documented here, following
 
 ## [Unreleased]
 
+### Changed
+
+- Knowledge's **In this folder** panel starts collapsed and remembers the browser's choice,
+  leaving more room for reading. On smaller screens it opens above the note.
+
+### Fixed
+
+- Markdown tables keep readable columns without splitting ordinary words, preserve column
+  alignment, and scroll horizontally with keyboard access when they exceed the reading area.
+
 ## [0.4.0] - 2026-09-22
 
 ### Added

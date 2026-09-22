@@ -177,6 +177,24 @@
     });
   }
 
+  // -- Folder context ----------------------------------------------------------
+
+  function setupFolderContext(panel) {
+    var key = "enso.knowledge.folder-open";
+    try {
+      panel.open = localStorage.getItem(key) === "true";
+    } catch (error) {
+      // Native disclosure still works when browser storage is unavailable.
+    }
+    panel.addEventListener("toggle", function () {
+      try {
+        localStorage.setItem(key, String(panel.open));
+      } catch (error) {
+        // Remembering the choice is optional; opening the folder is not.
+      }
+    });
+  }
+
   // -- Keyboard ----------------------------------------------------------------
 
   // `/` puts the cursor in the page's search field, the way it does on GitHub; the hint
@@ -198,6 +216,7 @@
 
   document.addEventListener("DOMContentLoaded", function () {
     setupSearchShortcut();
+    Array.prototype.slice.call(document.querySelectorAll("[data-folder-context]")).forEach(setupFolderContext);
     Array.prototype.slice.call(document.querySelectorAll("[data-filterable]")).forEach(setupFilterable);
     Array.prototype.slice.call(document.querySelectorAll("table[data-sortable]")).forEach(setupSortable);
     Array.prototype.slice.call(document.querySelectorAll("form[data-autosubmit]")).forEach(setupAutosubmit);

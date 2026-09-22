@@ -197,6 +197,29 @@ async def test_ambiguity_metadata_and_legacy_source_are_readable(client, enso_ho
         assert response.status == 200 and "Read note" in await response.text()
 
 
+async def test_note_table_wrapper_preserves_scoped_links_and_csp_safe_alignment(client, enso_home):
+    root = enso_home.knowledge
+    _, target_id = note(root, "Target.md", "A linked note.")
+    _, identity = note(
+        root,
+        "Table.md",
+        "| Note | Count |\n| :--- | ---: |\n| [[Target]] | 12 |\n\n"
+        "<table><tr><td>Raw source</td></tr></table>\n",
+    )
+    response = await client.get(f"/knowledge/notes/{identity}")
+    assert response.status == 200
+    html = await response.text()
+    article = Document(html).root.find("article", "markdown")[0]
+    (region,) = article.find("div", "markdown-table-scroll")
+    assert region.attrs["tabindex"] == "0"
+    assert region.attrs["role"] == "region" and region.attrs["aria-label"] == "Table"
+    assert len(article.find("table")) == 1
+    assert region.find("a")[0].attrs["href"] == f"/knowledge/notes/{target_id}"
+    assert [cell.attrs["class"] for cell in region.find("th")] == ["align-left", "align-right"]
+    assert [cell.attrs["class"] for cell in region.find("td")] == ["align-left", "align-right"]
+    assert ' style="' not in html and "&lt;table&gt;" in html
+
+
 async def test_local_assets_remote_images_and_unsafe_content(client, enso_home):
     root = enso_home.knowledge
     _, identity = note(

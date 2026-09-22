@@ -16,7 +16,6 @@ from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
 
-from markdown_it import MarkdownIt
 from markdown_it.rules_inline import StateInline
 from markdown_it.token import Token
 from markupsafe import Markup, escape
@@ -24,6 +23,7 @@ from markupsafe import Markup, escape
 from .. import knowledge as kb
 from ..config import Paths, WebConfig
 from . import common, files, filters
+from .markdown import renderer
 
 SIDEBAR_SIZE = 20
 BACKLINK_SIZE = 50
@@ -479,8 +479,7 @@ def _rewrite_inline(catalog: kb.Catalog, source: kb.Note, tokens: list[Token]) -
 
 def render_note(catalog: kb.Catalog, note: kb.Note) -> Markup:
     """Render authored Markdown with scoped links; source HTML remains escaped text."""
-    md = MarkdownIt("commonmark", {"html": False, "linkify": False, "typographer": False})
-    md.enable(["table", "strikethrough"])
+    md = renderer()
     md.validateLink = _markdown_link_safe  # type: ignore[method-assign]
     md.inline.ruler.before("image", "knowledge_link", _wiki_rule)
     tokens = md.parse(note.body)

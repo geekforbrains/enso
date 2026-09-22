@@ -1,5 +1,7 @@
 """Optional real-browser checks against a disposable home and loopback viewer."""
 
+from uuid import uuid4
+
 import pytest
 from aiohttp.test_utils import TestServer
 from conftest import load_job, write_config, write_job
@@ -144,6 +146,192 @@ async def test_knowledge_search_navigation_and_refresh(browser, viewer, enso_hom
     await page.get_by_role("button", name="Search", exact=True).click()
     await expect(rows).to_have_count(1)
     await expect(rows.first).to_contain_text("Shipping guide")
+    await context.close()
+
+
+@pytest.fixture
+def table_notes(enso_home, raw_config):
+    """Exercise prose, compact figures, and a register without using private notes."""
+    write_config(enso_home, raw_config)
+    root = enso_home.knowledge
+    root.mkdir(parents=True)
+    pricing_id = str(uuid4())
+    introduction = (
+        "Customer pricing combines annual commitments, usage charges, and renewal terms. "
+        "Compare each plan with its audience before choosing a contract. "
+    ) * 3
+    long_url = "https://contracts.example/" + "contract-archive-" * 16
+    long_code = "CUSTOMER_CONTRACT_REFERENCE_" * 14
+    pricing_rows = (
+        "| Legacy API plans (2022\u201323) | Pro: US$149/month including 1M API calls, "
+        "US$0.00015 per extra call, or purely metered at US$0.00015. Enterprise: "
+        "US$474\u2013499/month minimum including 1M calls, US$0.00025 per extra call. "
+        "| About 20 early accounts, including January, Numeric, Packsmith, Fever Labs, "
+        "World 50, and Rohde & Schwarz. |\n"
+        "| Growth and Enterprise | An annual platform fee plus an annual MAU commitment, "
+        "invoiced in advance, with overage billed monthly. Discounts and waivers are common, "
+        "and some contracts include yearly ramps or a fixed allowance. | All large accounts |\n"
+        "| Self-hosted | Annual licence to run the software in the customer's own environment. "
+        "US$200K/year plus US$0.05 per MAU. | One account |"
+    )
+    register_row = (
+        "| Example customer | Growth and Enterprise | Annual platform and usage "
+        "| September 2027 | Customer operations | Awaiting renewal "
+        f"| [{long_url}]({long_url}) | `{long_code}` |"
+    )
+    body = f"""{introduction}
+
+See [[Related review]].
+
+## Pricing models
+
+| Model | How it charges | Who uses it |
+| --- | --- | --- |
+{pricing_rows}
+
+## Compact figures
+
+| Year | Count | ARR |
+| --- | ---: | ---: |
+| 2025 | 12 | $120K |
+| 2026 | 19 | $240K |
+
+## Contract register
+
+| Customer | Plan | Commitment | Renewal | Owner | Status | Contract | Reference |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+{register_row}
+"""
+    (root / "Pricing review.md").write_text(
+        knowledge.normalize_text(f"---\nschema: enso.note/v1\nid: {pricing_id}\n---\n\n{body}")
+    )
+    (root / "Related review.md").write_text(
+        knowledge.normalize_text("Return to [[Pricing review]].")
+    )
+    work = enso_home.workspace("default") / "work"
+    work.mkdir(parents=True)
+    (work / "tables.md").write_text(body)
+    return f"knowledge/notes/{pricing_id}"
+
+
+@pytest.mark.parametrize("width", [1280, 320])
+@pytest.mark.parametrize("javascript", [True, False])
+async def test_knowledge_tables_and_folder_disclosure(
+    browser, viewer, table_notes, width, javascript, tmp_path
+):
+    context = await browser.new_context(
+        viewport={"width": width, "height": 900},
+        java_script_enabled=javascript,
+        color_scheme="dark" if width == 320 else "light",
+        reduced_motion="reduce",
+    )
+    page = await context.new_page()
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    await page.goto(viewer + table_notes)
+    folder = page.locator("[data-folder-context]")
+    summary = folder.locator("summary")
+    await expect(summary).to_contain_text("In this folder · 2")
+    await expect(folder).not_to_have_attribute("open", "")
+    document = page.locator(".knowledge-document")
+    closed_width = (await document.bounding_box())["width"]
+    tables = page.get_by_role("region", name="Table", exact=True)
+    await expect(tables).to_have_count(3)
+    await expect(tables.first.get_by_role("table")).to_have_count(1)
+    await expect(tables.first.get_by_role("columnheader", name="Model", exact=True)).to_be_visible()
+    if width == 1280:
+        prose = await page.locator(".markdown > p").first.bounding_box()
+        table = await tables.first.bounding_box()
+        assert prose["width"] < table["width"] - 40
+    await page.screenshot(
+        path=str(tmp_path / f"knowledge-closed-{width}-js-{javascript}.png"), full_page=True
+    )
+
+    await summary.focus()
+    await summary.press("Enter")
+    await expect(folder).to_have_attribute("open", "")
+    await expect(summary).to_be_focused()
+    await expect(folder.get_by_role("link", name="Related review", exact=True)).to_be_visible()
+    reading_box = await document.bounding_box()
+    folder_box = await folder.bounding_box()
+    if width == 1280:
+        assert closed_width - reading_box["width"] > 200
+        assert folder_box["x"] >= reading_box["x"] + reading_box["width"]
+    else:
+        assert folder_box["y"] + folder_box["height"] <= reading_box["y"]
+
+    # Assert the rendered words stay intact, rather than checking a particular CSS rule.
+    for row, word in ((0, "Legacy"), (1, "Enterprise")):
+        cell = tables.first.locator("tbody tr").nth(row).locator("td").first
+        rect_count = await cell.evaluate(
+            """(cell, word) => {
+                const text = cell.firstChild;
+                const start = text.textContent.indexOf(word);
+                const range = document.createRange();
+                range.setStart(text, start);
+                range.setEnd(text, start + word.length);
+                return range.getClientRects().length;
+            }""",
+            word,
+        )
+        assert rect_count == 1, f"{word} should not split across lines"
+
+    compact = tables.nth(1)
+    assert await compact.evaluate("element => element.scrollWidth <= element.clientWidth")
+    wide = tables.nth(2)
+    assert await wide.evaluate("element => element.scrollWidth > element.clientWidth")
+    await wide.scroll_into_view_if_needed()
+    await wide.focus()
+    await expect(wide).to_be_focused()
+    # WebKit starts native scrolling after the key has been held briefly.
+    await page.keyboard.down("ArrowRight")
+    try:
+        await expect(wide).not_to_have_js_property("scrollLeft", 0)
+    finally:
+        await page.keyboard.up("ArrowRight")
+    assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    await page.screenshot(
+        path=str(tmp_path / f"knowledge-open-{width}-js-{javascript}.png"), full_page=True
+    )
+    assert not errors
+    await context.close()
+
+
+async def test_knowledge_folder_choice_survives_navigation_and_reload(browser, viewer, table_notes):
+    context = await browser.new_context(reduced_motion="reduce")
+    page = await context.new_page()
+    await page.goto(viewer + table_notes)
+    folder = page.locator("[data-folder-context]")
+    await expect(folder).not_to_have_attribute("open", "")
+    await folder.locator("summary").press("Enter")
+    await expect(folder).to_have_attribute("open", "")
+    await page.locator(".markdown").get_by_role("link", name="Related review", exact=True).click()
+    await expect(page.get_by_role("heading", name="Related review", exact=True)).to_be_visible()
+    await expect(folder).to_have_attribute("open", "")
+    await page.reload()
+    await expect(folder).to_have_attribute("open", "")
+    await folder.locator("summary").press("Space")
+    await expect(folder).not_to_have_attribute("open", "")
+    await page.locator(".markdown").get_by_role("link", name="Pricing review", exact=True).click()
+    await expect(folder).not_to_have_attribute("open", "")
+    await page.reload()
+    await expect(folder).not_to_have_attribute("open", "")
+    await context.close()
+
+
+@pytest.mark.parametrize("width", [1280, 320])
+async def test_workspace_markdown_tables_scroll_without_page_overflow(
+    browser, viewer, table_notes, width, tmp_path
+):
+    context = await browser.new_context(viewport={"width": width, "height": 900})
+    page = await context.new_page()
+    await page.goto(viewer + "workspaces/default/files/work/tables.md")
+    tables = page.get_by_role("region", name="Table", exact=True)
+    await expect(tables).to_have_count(3)
+    await expect(tables.first.get_by_role("table")).to_have_count(1)
+    assert await tables.nth(2).evaluate("element => element.scrollWidth > element.clientWidth")
+    assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    await page.screenshot(path=str(tmp_path / f"workspace-tables-{width}.png"), full_page=True)
     await context.close()
 
 

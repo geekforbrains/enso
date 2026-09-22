@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from conftest import load_job, write_config, write_job
+from test_web_navigation import Document
 
 from enso import db, doctor, knowledge, runs, service, workspaces
 from enso.config import Config, Paths, load_config
@@ -324,6 +325,7 @@ async def test_file_browser_lists_dotfiles_and_renders_safely(
 
     rendered = await page(client, "/workspaces/default/files/knowledge/notes.md")
     assert "<h1>Notes</h1>" in rendered and "<table>" in rendered
+    assert len(Document(rendered).root.find("div", "markdown-table-scroll")) == 1
     assert "<script>alert(1)</script>" not in rendered and "&lt;script&gt;" in rendered
     assert 'href="javascript:' not in rendered
     assert "<img" not in rendered and "evil.example" in rendered  # left as text or a link
@@ -348,6 +350,37 @@ async def test_file_browser_lists_dotfiles_and_renders_safely(
     (home.paths.workspace("default") / "work" / "empty.txt").write_text("")
     assert "The file is empty." in await page(client, "/workspaces/default/files/work/empty.txt")
     assert "This directory is empty." in await page(client, "/workspaces/default/files/uploads/")
+
+
+@pytest.mark.parametrize("render", [files.render_markdown, files.render_output])
+def test_markdown_tables_are_scrollable_semantic_and_aligned_without_inline_styles(render):
+    html = str(
+        render(
+            "| Name | Count | State | Default |\n"
+            "| :--- | ---: | :---: | --- |\n"
+            "| <b>raw</b> | 12 | Ready | [unsafe](javascript:alert(1)) |\n\n"
+            "> | Nested | Table |\n> | --- | --- |\n> | one | two |\n\n"
+            "<table><tr><td>Source HTML</td></tr></table>\n"
+        )
+    )
+    root = Document(html).root
+    regions = root.find("div", "markdown-table-scroll")
+    assert len(regions) == len(root.find("table")) == 2
+    for region in regions:
+        assert region.attrs["tabindex"] == "0"
+        assert region.attrs["role"] == "region" and region.attrs["aria-label"] == "Table"
+        assert [child.tag for child in region.children] == ["table"]
+        assert len(region.find("thead")) == len(region.find("tbody")) == 1
+    for tag in ("th", "td"):
+        assert [cell.attrs.get("class") for cell in regions[0].find(tag)] == [
+            "align-left",
+            "align-right",
+            "align-center",
+            None,
+        ]
+    assert ' style="' not in html
+    assert not root.find("b") and not root.find("a")
+    assert "&lt;b&gt;raw&lt;/b&gt;" in html and "&lt;table&gt;" in html
 
 
 async def test_file_browser_rejects_every_escape(

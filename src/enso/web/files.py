@@ -19,6 +19,7 @@ from markdown_it import MarkdownIt
 from markupsafe import Markup
 
 from ..config import Paths, require_workspace
+from .markdown import renderer
 
 ROOTS = ("knowledge", "work", "drafts", "uploads")
 MAX_FILE_PREVIEW_BYTES = 2 * 1024 * 1024
@@ -210,10 +211,7 @@ def _safe_link(url: str) -> bool:
 
 
 def _renderer(*, breaks: bool) -> MarkdownIt:
-    md = MarkdownIt(
-        "commonmark", {"html": False, "linkify": False, "typographer": False, "breaks": breaks}
-    )
-    md.enable(["table", "strikethrough"])
+    md = renderer(breaks=breaks)
     md.disable("image")  # an image is a remote load the viewer must never trigger
     md.validateLink = _safe_link  # type: ignore[method-assign]
     return md
