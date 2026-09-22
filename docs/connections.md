@@ -8,7 +8,9 @@ When configuring a connection, explain that the explicit binding grants access a
 context; a personal DM does not make its workspace confidential. Before binding a channel,
 explain the audience rules below. Native setup includes this explanation before pairing.
 
-## Access in 0.2.0
+<a id="access-in-020"></a>
+
+## Access
 
 A binding both grants access to the installation and selects an existing Enso workspace.
 The key uses platform-issued channel or user IDs from authenticated
@@ -29,7 +31,6 @@ includes later additions, guests, and external Slack Connect participants. Chann
 There is no wildcard DM access, automatic personal workspace, fallback for an unknown
 sender, or separate user/role permission system. Telegram stays private-chat-only;
 unsupported group conversations and bot-originated messages never enter agent dispatch.
-Telegram's `allowed_users` setting is removed: explicit bindings are the sole access list.
 See [Configuration](configuration.md#bindings) for key syntax and validation.
 
 An unbound Slack channel receives one short canned notice when the bot is mentioned; an
@@ -55,7 +56,8 @@ short-lived challenge and acknowledgment described below. Pairing messages never
 agent turns; an unknown sender cannot authorize their own binding by
 asking Enso. Telegram pairing writes the explicit user binding and notification target.
 
-Several bindings can select one workspace; each named workspace must already exist:
+Several bindings can select one existing workspace. Conversations and provider sessions
+remain separate:
 
 | Example | Result |
 | --- | --- |
@@ -64,9 +66,8 @@ Several bindings can select one workspace; each named workspace must already exi
 | Two people's DM bindings both select `team` | Shared workspace context, separate conversations and provider sessions |
 | Those DM bindings select `alex` and `sam` respectively | Separate personal context and ownership within the same trusted installation |
 
-Personal workspaces do not promise confidentiality from other agents in the installation.
-Teams needing separation use the separate-machine arrangement in the
-[installation trust model](concepts.md#installation-trust-model).
+Workspace context is shared by its bindings. For separate trust boundaries, use separate
+installations as described in the [trust model](concepts.md#installation-trust-model).
 
 ## Pairing
 
@@ -110,11 +111,9 @@ changed credentials or a fresh attempt require a new ID. Only the latest attempt
 A second receiver is refused until the first closes or is cancelled.
 
 `status` and `cancel` without an ID operate on the latest attempt. Supplying a different ID
-fails instead of affecting a newer attempt. The ID is a positional argument, for example
-`enso connect status ATTEMPT_ID --json`, not an `--attempt-id` option.
-Cancellation invalidates the challenge, closes the receiver, and removes temporary
-credentials. An interrupted process is reconciled on the next status read. Cancel never
-removes or changes an applied config.
+fails instead of affecting a newer attempt. Cancellation invalidates the challenge, closes
+the receiver, and removes temporary credentials. An interrupted process is reconciled on
+the next status read. Cancel never removes or changes an applied config.
 
 `finish` accepts exactly `attempt_id`, `defaults` (the `provider`, `model`, `effort` triple),
 and `expected_hash`. The agent must be a bundled model and an effort that its adapter accepts

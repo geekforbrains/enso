@@ -49,64 +49,44 @@ enso doctor [--json] [--attention] [--notify] [--quiet] [--workspace NAME]
 enso update check|apply|status|recover  managed release checks and recovery; see Updates
 ```
 
-`doctor` is one pass with one exit code: `config check`, the [workspace audit](workspaces.md)
-for the home and every workspace, whether each provider path is still an executable,
-whether each configured transport's extra is installed, the service state (installed,
-loaded, running, and its pid, plus a warning when the unit runs a different `enso` than
-the one on `PATH`), the optional viewer service, every `JOB.md`, and current heartbeat
-health. `viewer_service` reports its unit, home, and process ownership; an uninstalled
-viewer service is healthy, while one installed for this home but not serving it is an
-error. A unit for another home is reported separately without a health error.
-The heartbeat check reads saved state without running gates or migrating the database.
-The knowledge section composes the existing note audits across their roots, including
-metadata, identity, timestamps, and links. It reports note/finding counts and at most ten
-findings, with each finding's message limited to 500 characters. Use
-`enso knowledge audit --workspace NAME` (or `--shared`) for complete scoped findings. Reads
-reuse the existing file parse caches; doctor never rewrites notes or creates a note database.
-These checks establish structural validity, not factual truth or the most useful workspace
-for a note. Invalid roots are reported without following links.
-An error-level finding is a health problem and makes
-`doctor` exit 1; warnings alone exit 0. That strict health result does not mean every Enso
-operation is blocked: for example, a workspace layout error fails `doctor`, while `serve`
-logs it and continues when the workspace directory itself still exists. Sections that need
-a valid `config.json` are `skipped` until it is.
+`doctor` checks configuration, home/workspace layout, provider executables, transport extras,
+services, jobs, Heartbeat, and knowledge. Sections needing valid configuration are `skipped`
+until it is available. An uninstalled viewer service is healthy; an installed service for
+this home must be serving it. A service belonging to another home is reported separately.
+Knowledge checks metadata and links, not factual accuracy; use `enso knowledge audit --shared`
+or `--workspace NAME` for the complete findings.
 
-`--attention` answers a wider question than health: is there anything worth telling you
-about, problem or not. It exits 1 for every health problem and also for the
-[installation-hygiene findings](workspaces.md#auditing) — an unexpected entry, an irregular
-link, credentials other users can read, a stale generated file — which are warnings and
-would otherwise pass silently. Warnings that are matters of taste, such as an orphan
-workspace or an unedited `AGENTS.md` template, do not exit 1. Plain `enso doctor` keeps its
-ordinary meaning either way; the flag changes the selection, never the report object.
+| Mode | Exit 0 | Exit 1 |
+| --- | --- | --- |
+| Default | No health errors | Health error or inspection failure |
+| `--attention` | No health errors or reportable hygiene warnings | Health error, hygiene finding, or inspection failure |
+| `--notify` | Nothing selected, or selected findings delivered | Inspection or delivery failure |
 
-`--notify` sends selected findings directly to the configured notification target, ignoring
-any calling chat's destination. It selects health problems by default; add `--attention`
-for reportable hygiene warnings. The notice includes at most eight findings of 350 characters
-each, errors first, and a count of omitted findings. Audit and update notices use the same
-Markdown title, status, details, and action format. No LLM or repair runs. Notifications are
-recorded in the outbox, owned by `--workspace`, `ENSO_WORKSPACE`, or `default`, in that order.
+`--attention` includes [installation hygiene](workspaces.md#auditing), such as unexpected
+entries, irregular links, and unsafe permissions. Benign warnings such as an unedited
+instruction template do not require attention. Diagnostic failures do not necessarily block
+all operations: `serve` can continue with a workspace layout error if its directory exists.
 
-With `--notify`, exit 0 means there was nothing to report or the report was delivered;
-inspection or delivery failures exit 1. Without it, diagnostic exit codes are unchanged.
-`--quiet` suppresses normal text output, while errors and requested JSON remain visible.
-Healthy checks send nothing, including when no notification target is configured. Remaining
-findings are reported on every invocation; the [nightly audit job](jobs.md#nightly-health-audit)
-runs `enso doctor --attention --notify --quiet`.
+`--notify` sends to the configured notification target, ignoring the calling chat's target.
+It selects errors by default, or errors and hygiene warnings with `--attention`. Notices
+contain at most eight findings of 350 characters, errors first, plus an omitted count. No
+agent or repair runs. Outbox ownership uses `--workspace`, then `ENSO_WORKSPACE`, then
+`default`. Healthy checks send nothing and need no notification target. Unresolved findings
+are reported on every invocation. `--quiet` hides normal text; errors and JSON remain visible.
+The [nightly audit](jobs.md#nightly-health-audit) uses `--attention --notify --quiet`.
 
-`--json` prints `{"ok", "attention", "home", "sections": [...]}`, one section per line above
-in that order, each
-`{"name", "status", "note", "problems", "warnings", "attention", "details"}`. `status` is
-`ok`, `warning`, `error`, or `skipped`; `attention` is what `--attention` exits on, true on
-the report when anything is worth reporting and on a section when one of its warnings is;
-`problems` and `warnings` are the messages the text
-output shows; `details` holds the facts (provider paths and whether they resolve, transport
-extras, the service pid, job names, and beat counts and attention references). The `home`
-section's `details.layout` maps each top-level entry present in the home to its
-[layout category](workspaces.md#what-belongs-where). The note
-sections' `details` contain `notes` and `findings` counts and a `roots` object mapping scope
-names to paths; they run even when configuration is invalid. `--notify` additionally includes
-`notified`, which is true only after successful delivery; the report's `ok` remains the health
-result regardless of the command's notification-mode exit code.
+`--json` returns `{ok, attention, home, sections}`. Sections appear in this order:
+`config`, `home`, `workspaces`, `providers`, `transports`, `service`, `viewer_service`,
+`jobs`, `heartbeat`, `knowledge`. Each has
+`{name, status, note, problems, warnings, attention, details}`; `status` is
+`ok`, `warning`, `error`, or `skipped`. Report `ok` remains the health result even when
+notification delivery makes the command exit 0. With `--notify`, `notified` records delivery.
+
+`details` holds section-specific facts. Home `layout` maps entries to
+[layout categories](workspaces.md#what-belongs-where); knowledge contains `notes` and
+`findings` counts and scope-to-path `roots`. Knowledge reports at most ten findings of
+500 characters each and runs even with invalid configuration. These are read-only audits;
+Heartbeat gates do not run and notes are not rewritten.
 
 `serve` logs to `~/.enso/enso.log` (rotating) and, when stderr is a terminal, to the
 terminal. `--debug` adds the full prompt and every raw provider event. Each chat turn is
@@ -115,20 +95,14 @@ filter on; `-f` follows across rotations.
 Logs, debug prompts, run output, and errors may contain private installation data;
 workspace filters organize context and do not restrict database or log access.
 
-`serve`, `setup`, and the job, run-history, task, project, messaging, Slack, Telegram, and
-table commands initialize `enso.db`. They reject a pre-0.2.0 database or a newer database
-schema with an `error:` line and exit 1 before modifying that database or starting a
-transport or job. This also means some CLI
-reads can initialize a missing database. Filesystem-only operations such as `workspace create`
-and service-unit management do not use this guard. `init` and `setup` check for obsolete
-configuration, database, and home-level jobs before seeding files; see
+Commands that use runtime records can initialize a missing database. Unsupported schemas
+are refused before modification or execution; filesystem-only operations do not initialize
+it. `init` and `setup` also check home compatibility before seeding files; see
 [Setup](install.md#setup).
 
-`service install` writes `~/Library/LaunchAgents/com.enso.agent.plist` (macOS) or
-`~/.config/systemd/user/enso.service` (Linux) for the `enso` on `PATH`, with a `PATH`
-capturing Enso's directory, the configured provider directories, Node's directory when
-found, the installing shell's nonempty `PATH` entries, and standard system directories,
-then starts it. See [The service](install.md#the-service) for when to reinstall the unit.
+`service install` writes and starts the OS user unit for the `enso` on `PATH`, capturing
+provider and tool paths from the installing shell. See [The service](install.md#the-service)
+for unit locations and when to reinstall it.
 
 ## Updates
 
@@ -208,7 +182,7 @@ The offline commands in this section work without an active config or transport 
 `connect` is the networked pairing workflow and requires the selected transport's extra.
 `init`, `config apply`, `config set`, `config unset`, and `config check` print exactly one JSON report with `--json`;
 `ok: false` exits 1 and `ok: true` exits 0. Errors never print submitted credentials. Their contract `version` is
-`1`, independent of the package version and the `config.json` schema version, now `2`.
+`1`, independent of the package version and the `config.json` schema version, `2`.
 Version-1 configuration files receive the [migration notice](configuration.md#configuration-ownership-in-020).
 `ENSO_WORKSPACE` does not restrict config edits; validation and write-conflict checks still apply.
 These commands edit only `config.json`. Workspace overrides are edited directly in
@@ -240,7 +214,7 @@ locking, revision checks, retry behavior, and what a running service picks up on
 ```json
 {
   "version": 1,
-  "enso_version": "0.2.0",
+  "enso_version": "0.3.0",
   "providers": [{
     "id": "claude", "label": "Claude Code", "installed": true,
     "default_model": "opus", "default_effort": "high",
@@ -257,11 +231,8 @@ model/variant catalog, so its offline `efforts` is empty, `known` is false and
 `default_effort` is null; use [Models](#models) for that catalog. These choices do not read
 or override operator-specific provider settings in `config.json`.
 
-`enso slack manifest` always prints the packaged manifest JSON, without a wrapper, network
-request, or `--json` flag. It works from an installed wheel without a source checkout.
-Neither `init` nor `setup` copies it into the home. Upgrades retire an unchanged copy
-seeded by an older release; edited or untracked copies are preserved. The command always
-exports the package's current canonical version.
+`enso slack manifest` prints the packaged manifest JSON without a wrapper, network request,
+or `--json` flag. It works from an installed wheel; no home copy is needed.
 The [connection commands](connections.md#hosted-command-contract) add token verification,
 expiring owner pairing, configuration apply, and evidence of a delivered first reply.
 
@@ -271,25 +242,19 @@ expiring owner pairing, configuration apply, and evidence of a delivered first r
 enso models [--all] [--json]
 ```
 
-`models` is a read-only lookup for the models OpenCode can route through OpenRouter. Its
-source of truth is the `openrouter` catalog in <https://models.dev/api.json>; it does not
-combine other models.dev providers or OpenRouter's separate catalog. Each `MODEL` is the
-full, copy-ready OpenCode id, including the `openrouter/` prefix, for use in
-`providers.opencode.models`. By default the command keeps only models with tool calling,
-because a model without it cannot act as an Enso agent; `--all` includes both kinds.
+`models` lists OpenRouter models from <https://models.dev/api.json> for use in
+`providers.opencode.models`. IDs include the `openrouter/` prefix. By default it selects
+models with tool calling; `--all` includes models without it.
 
-Text output has exactly these columns:
+Text output is sorted by `MODEL`:
 
 ```text
 MODEL  TOOLS  CONTEXT  INPUT $/M  OUTPUT $/M  EFFORTS
 ```
 
-Rows are sorted by `MODEL`. `TOOLS` is `yes` or `no`; `CONTEXT` is the integer token limit
-with thousands separators; input and output costs are compact decimal numbers in USD per
-million tokens. An unavailable context or cost is `-`. `EFFORTS` is the model's exact,
-possibly sparse list of the variants OpenCode accepts for it, comma-separated, or `-` when
-it has none. It is not a range: copy one of the listed values exactly.
-[Configuration](configuration.md#opencode) says where that list comes from.
+Costs are USD per million tokens; unavailable context or costs display `-`. `EFFORTS` lists
+exact OpenCode variants, not a range; copy a listed value. See
+[Configuration](configuration.md#opencode).
 
 `--json` prints a top-level array with one object per displayed model. For example (catalog
 values can change):
@@ -306,24 +271,16 @@ values can change):
 ]
 ```
 
-Those are the complete fields, and objects are sorted by `id`. `context`, `cost.input`, and
-`cost.output` are JSON numbers or `null` when the source omits them; `efforts` holds the
-same values in the same order as the text column, empty when the model has no variant.
-Costs retain the same USD-per-million unit as text output.
+Objects are sorted by `id`. Missing context or costs are `null`; `efforts` is empty when
+no variant exists. Costs use the same units as text output.
 
-Enso reuses the newest valid catalog no more than one hour old from either
-`$ENSO_HOME/cache/models.json` or OpenCode's `$XDG_CACHE_HOME/opencode/models.json`
-(`~/.cache/opencode/models.json` when that variable is unset or empty). It only reads the
-OpenCode cache. With no fresh cache it fetches models.dev and updates Enso's cache. That
-refresh gets 15 seconds in total, from name resolution through connecting, redirects,
-response headers and the body, so a slow name server or a slow site can delay the command
-by that much and no more, however slowly it answers.
-If the fetch fails or runs out of time, the newest valid stale cache is used with a warning
-on stderr; without a valid fallback the command fails. A successful fetch whose cache write
-fails is still displayed, also with a warning. It never reads or writes `config.json`, so
-selecting a model remains an explicit operator edit. Warnings stay on stderr, including with
-`--json`; a JSON load failure prints `{"ok": false, "error": "…"}` and exits 1 instead of
-printing an array.
+Enso uses the newest valid cache up to one hour old from `$ENSO_HOME/cache/models.json` or
+OpenCode's `$XDG_CACHE_HOME/opencode/models.json` (default `~/.cache/opencode/models.json`).
+It only reads OpenCode's cache. Otherwise it fetches models.dev with a 15-second total
+deadline and writes Enso's cache. A failed fetch falls back to a valid stale cache with a
+warning; without one it fails. Cache-write failures warn but still display fetched results.
+Warnings go to stderr, including with `--json`; a failed lookup returns the standard JSON
+error object and exits 1. The command never changes configuration.
 
 ## Workspaces
 
@@ -338,38 +295,30 @@ wiring, and whether each workspace is bound or used by a job. `--fix` creates an
 it never deletes. The command exits 1 while any error remains; warnings alone exit 0. See
 [Workspaces](workspaces.md).
 
-### Workspace context in 0.2.0
+<a id="workspace-context-in-020"></a>
 
-Job and Heartbeat creation, message sends, operational lists, and task, project, and workflow
-commands use the shared resolver.
-Workspace-scoped commands use `ENSO_WORKSPACE`,
-inherited from the Enso chat agent, job, or Heartbeat run calling them. Optional `--workspace` overrides it
-for that operation. The [context contract](workspaces.md#context-selection-in-020) owns
-validation and recorded ownership; there is no directory inference or implicit `default`.
-Installation-wide commands retain their installation scope.
-For [updates](#updates), requests and release notifications use `default` as their owner
-when neither `--workspace` nor `ENSO_WORKSPACE` is supplied.
+### Workspace context
 
-For an agent running with `ENSO_WORKSPACE=team`, commands select context as shown below:
+Workspace-scoped commands select `--workspace` first, then `ENSO_WORKSPACE` inherited from
+the calling agent, job, or beat. They do not infer context from the current directory.
+Missing or invalid context errors. The flag selects an operation's context; it does not
+change the caller's environment or transfer existing records. See
+[context selection](workspaces.md#context-selection-in-020).
 
 ```bash
+# From an agent running with ENSO_WORKSPACE=team:
 enso task list                         # team
 enso task list --workspace personal    # deliberate lookup in personal
-enso heartbeat create --file beat.json # save team as the new follow-up's workspace
-enso heartbeat create --file beat.json --workspace personal
-enso job list --all-workspaces         # intentional installation-wide lookup
+enso heartbeat create --file beat.json # save team as the follow-up's owner
+enso job list --all-workspaces         # installation-wide lookup
 enso message send "Report ready" --workspace personal --to slack:C0123456789
 ```
 
-An explicit invalid workspace errors instead of falling back to the environment; absent
-context errors when an operation needs a workspace. `--workspace` does not change the
-caller's environment or transfer an existing record. It introduces no special admin role.
-Command syntax is listed below and in runtime help.
-
-Job, run, message, Heartbeat, task, and project lists accept `--all-workspaces` to ignore
-`ENSO_WORKSPACE` and include the installation. It cannot be combined with `--workspace`.
-Filtering happens before result limits. The viewer, registered-table catalog, workspace
-inventory, and installation health checks retain their installation-wide scope.
+Job, run, message, Heartbeat, task, and project lists accept `--all-workspaces`; it cannot
+be combined with `--workspace`. Filtering precedes result limits. Workspace inventory,
+health, the viewer, and registered tables retain installation-wide scope. Knowledge defaults
+to shared notes. Updates and doctor notifications default to owner `default` when neither
+workspace selector is supplied.
 
 ## Knowledge
 
@@ -399,8 +348,7 @@ paths must end in `.md`. Moves stay in the source root unless `--to-workspace` o
 
 `--folder` includes descendants. Listing/search returns up to 50 notes by default, with
 `--limit` from 1 to 500 and a nonnegative `--offset`. Search matches every whitespace-separated
-term against paths and bodies, case insensitively. There is no `--scope` or all-roots search
-flag: search retained workspace notes deliberately with `--workspace NAME`.
+term against paths and bodies, case insensitively. Search is scoped to the selected root.
 `roots` inventories all roots without requiring context. Root scopes are `shared` and
 `workspace:<name>` in JSON results and cross-root links.
 No command loads transport configuration or initializes the database.
@@ -524,7 +472,7 @@ It permanently deletes every saved secret and never touches the key file; see
 to creation, CLI injection, and job declarations.
 
 [Configuration](configuration.md#secrets) owns key setup, encryption, backup/restore,
-and manual replacement of the retired environment-file setup.
+and key recovery.
 [Jobs](jobs.md#secrets) owns automatic injection through `JOB.md`.
 
 ## Jobs and runs
@@ -576,7 +524,7 @@ Non-agent rows have null provider, model and effort fields. `runs show --json` a
 whose entries carry `number`, `status`, `exit_code`, `output`, `error`, `session_id`,
 `duration_ms`, `postrun_exit_code`, `postrun_output`, and `postrun_error`. Execution attempts
 start at 1; a reaction hook when no executor ran uses attempt 0. Plain `runs show` displays
-these attempts too. History from before attempt recording was added has an empty array.
+these attempts too. Rows without recorded attempts have an empty array.
 
 ## Tasks and projects
 
@@ -729,6 +677,8 @@ Re-registering it updates its description and display name; it does not change t
 
 ## Environment for agents
 
+Lifecycle scripts below include setup, teardown, and after-transition hooks.
+
 | Variable | Set for | Value |
 | --- | --- | --- |
 | `ENSO_HOME` | everything | The home directory |
@@ -737,13 +687,16 @@ Re-registering it updates its description and display name; it does not change t
 | `ENSO_ORIGIN_USER_ID` / `_USER_NAME` | chat turns | Who sent the message |
 | `ENSO_ORIGIN_CHANNEL` / `_CHANNEL_NAME` | chat turns | Where it came from (`dm` for direct messages) |
 | `ENSO_ORIGIN_THREAD_TS` | chat turns | The Slack thread, when there is one |
-| `ENSO_JOB` / `ENSO_RUN_ID` | jobs | The qualified job reference (e.g. `team:digest`) and this run's id |
-| `ENSO_TASK` | stage jobs | The reference of the task claimed for this run, such as `EN-041` |
-| `ENSO_TASK_DIR` | stages using a worktree | The recorded task worktree; the provider's cwd is still the workspace |
-| `ENSO_PROJECT_REPO` | repo stage jobs and lifecycle scripts | The regular repository path for context |
+| `ENSO_JOB` | jobs | Qualified job reference, such as `team:digest` |
+| `ENSO_RUN_ID` | jobs, workflow checks, lifecycle scripts | Job/check run ID; lifecycle scripts use the associated run or an empty value for operator actions |
+| `ENSO_TASK` | stage execution, checks, lifecycle scripts | The reference of the task claimed for this run, such as `EN-041` |
+| `ENSO_TASK_DIR` | worktree stages, checks, lifecycle scripts | Recorded worktree; empty in checks/scripts without one. Providers still start in the workspace. |
+| `ENSO_PROJECT_REPO` | repo stage execution, checks, lifecycle scripts | Regular repository path; empty in checks/scripts without a repo |
+| `ENSO_REPO` / `ENSO_WORKTREE` | setup and teardown | Aliases of `ENSO_PROJECT_REPO` / `ENSO_TASK_DIR` |
+| `ENSO_EVENT` | setup and teardown | `setup` or `teardown` |
 | `ENSO_TRANSACTION_ID` / `ENSO_CANDIDATE` | workflow checks | Transaction and stable candidate being evaluated |
 | `ENSO_EVENT_ID` | lifecycle scripts | Stable event identity; use for idempotency/deduplication |
-| `ENSO_PROJECT` / `ENSO_FROM_STAGE` / `ENSO_TO_STAGE` | lifecycle scripts | Project and accepted transition |
+| `ENSO_PROJECT` / `ENSO_FROM_STAGE` / `ENSO_TO_STAGE` | lifecycle scripts | Project and transition; setup/teardown use the current stage for both stage fields |
 | `ENSO_BRANCH` / `ENSO_BASE` | lifecycle scripts | Recorded task branch and target |
 | `ENSO_ATTEMPT` | workflow checks and lifecycle scripts | Current verification or delivery attempt |
 | `ENSO_LIFECYCLE` | lifecycle scripts | Marks lifecycle execution; recursive task moves are refused |
@@ -751,7 +704,7 @@ Re-registering it updates its description and display name; it does not change t
 | `ENSO_BEAT_RUN_ID` | beat agent runs | This assessment's run ID |
 | `ENSO_BEAT_CHECKPOINT` | beat gates and runs | The saved source checkpoint as a JSON object |
 | `ENSO_RUN_STATUS` / `_EXIT_CODE` / `_DURATION_MS` | postrun only | Current outcome and cumulative elapsed time before this hook; the row is still running |
-| `ENSO_RUN_ATTEMPT` / `_FOLLOWUPS_REMAINING` | postrun only | Current provider turn (0 when none ran) and remaining extra turns |
+| `ENSO_RUN_ATTEMPT` / `_FOLLOWUPS_REMAINING` | postrun only | Current execution attempt (0 when none ran) and remaining agent follow-ups |
 
 Chat-origin variables are empty when unknown. The job runner does not populate or clear
 origin variables: normal scheduled runs have none, while a manual `job run` launched

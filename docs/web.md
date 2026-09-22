@@ -1,667 +1,410 @@
 # Web viewer
 
-An optional web UI. It answers the questions you cannot answer from a chat
-window: what can this agent actually see, what is it configured to do, and what happened
-last time it ran.
-
-Browsing is read-only. The **Secrets** section also creates and deletes encrypted secrets;
-other views have no write actions. The UI has no authentication, so keep it on localhost or
-behind authenticated private access: pages expose private prompts, files, and run output,
-and access to the UI permits secret management. See [Access](#access).
+The optional web UI shows configuration, files, tasks, and execution history. Browsing is
+read-only; **Secrets** also creates and deletes encrypted secrets. There is no authentication.
+Keep it on localhost or behind authenticated private access: pages expose private content,
+and access permits secret management. See [Access](#access).
 
 ## Running it
 
-The [release installer](install.md#install) includes the `web` extra by default. Developers
-use `uv sync --all-extras --locked` in the checkout and the
-[development launcher](development.md#local-development-loop) for a live instance.
+The [release installer](install.md#install) includes the `web` extra. Developers use the
+[development launcher](development.md#local-development-loop).
 
 ```bash
 enso web start                     # background, on 127.0.0.1:8787
 enso web start --port 9000 --foreground
-enso web install                   # optional user service, starts again after login/reboot
+enso web install                   # optional user service
 enso web status
 enso web stop
 enso web uninstall                 # stop and remove automatic startup
 ```
 
-The `web` extra brings `aiohttp`, `jinja2`, and `markdown-it-py`. Without it, `status`,
-`stop`, and `uninstall` still work; `start` and `install` explain the missing extra
-instead of a traceback.
+The viewer runs separately from `enso serve`, reading files and `enso.db` even when the
+agent service is stopped. Browsing opens the database read-only; secret operations use
+short transactions and respect maintenance admission. Without the optional dependencies,
+`status`, `stop`, and `uninstall` still work; `start` and `install` explain the missing extra.
 
-It is a separate process from `enso serve`, deliberately: the viewer can be restarted,
-crashed, or left uninstalled without touching the bridge. It reads `enso.db` and the files
-under `ENSO_HOME` directly, so it shows the truth even when the service is stopped.
+Standalone `start` logs to `~/.enso/web.log`. `install` adds a launchd/systemd user service
+that logs to `~/.enso/launchd-web.log` and restarts after crashes and user logins.
+[Install](install.md#the-viewer) owns service paths, environment capture, and adoption.
+Once installed, `start` and `stop` control that supervisor. `stop` keeps it stopped until
+the next start or user session; `uninstall` removes automatic startup. Neither affects the
+agent service. `--foreground` runs until Ctrl-C.
 
-Without an installed viewer service, `start` runs the viewer in the background in its
-own session with its output in `~/.enso/web.log`, and prints the URL once it answers.
-That process lasts until shutdown. `install` adds an optional launchd/systemd user
-service, with output in `~/.enso/launchd-web.log`, that restarts after crashes and at
-future user logins. See [Install](install.md#the-viewer) for unit paths, reboot/login
-requirements, environment capture, and adoption of existing units.
+For standalone or foreground starts, flags override `web.host` and `web.port`. Invalid or
+missing configuration falls back to `127.0.0.1:8787` so Health can diagnose it. A supervised
+viewer rejects bind flags: change config, then stop and start it.
 
-Once installed for this home, ordinary `start` and `stop` control the viewer's supervisor.
-`stop` keeps it stopped until the next start or user session; `uninstall` also removes
-automatic startup. Both leave the agent service alone. For a supervised viewer, change
-`web.host` or `web.port` in config, then run `stop` and `start`; command-line bind overrides
-are rejected. `--foreground` runs the same viewer directly in your terminal until Ctrl-C,
-and is also the unit's entrypoint. The viewer holds a lock on
-`~/.enso/web.pid` for as long as it lives, which is how `status` tells a live viewer from
-a stale file and how `stop` knows the pid it signals is really the viewer. `start` is a
-no-op while the same viewer is running, `stop` is a no-op while it is not, and `status`
-exits 0 only while it runs, so all three are safe in scripts.
-
-Every command that opens `web.pid` refuses symbolic links and special files, including
-named pipes, with an error instead of following the link or waiting for the pipe.
-`status` and `stop` leave an absent pidfile absent.
-
-For standalone and foreground starts, `--host` and `--port` win over `web.host` and
-`web.port` in `config.json`. A missing or invalid `config.json` does not stop the viewer:
-it falls back to `127.0.0.1:8787` (flags
-still win) so the Health page can show you the problem. Browsing opens `enso.db` read-only.
-Secret-store operations use short SQLite transactions independently of the chat service,
-and respect maintenance admission.
-
-Server-rendered HTML, one stylesheet, one small script for progressive enhancement that the
-pages work without, no build step, no framework, and nothing loaded from the network. The
-Content-Security-Policy allows no inline styles either, so anything whose shape depends on
-data — the schedule chart, the run bars, the timeout meter — is an inline SVG.
-
-The stylesheet is plain modern CSS: cascade layers in place of specificity games, native
-nesting, `light-dark()` colour tokens so there is one palette rather than a light and a dark
-copy, container queries so a list adapts to the space it is given rather than the viewport,
-and a cross-document view transition so moving between pages does not flash. Navigation is
-immediate with scripting disabled or reduced motion enabled. Cloud and navy
-surfaces carry Enso's palette without changing the compact layout. Cyan marks current
-selections and links; pink appears only in text selection. Icons are inline SVG drawn from
-the Lucide set, so they share one stroke weight and take the text colour.
-
-Status meanings stay the same across light and dark themes: mint for healthy or successful,
-cyan for running, coral for errors, sun yellow for warnings and timeouts, and lavender for
-muted states. Dots, chart marks, and legends share the same fills. Deeper shades keep text
-and outlines readable on light surfaces; bright status lamps use navy text. Status-only
-dots expose their existing state as an accessible name and a tooltip, so their meaning is
-available without distinguishing the colours.
-
-This page owns the viewer's visual language; marketing typography, taglines, and extra
-decoration do not replace the viewer's familiar density or interaction patterns.
+The viewer holds `web.pid` locked while running. `start` and `stop` are idempotent, and
+`status` exits 0 only for a running viewer. Pidfile operations reject symbolic links and
+special files; `status` and `stop` do not create an absent file.
 
 ## Layout
 
-Desktop navigation is a left sidebar and nothing else: there is no top bar, and the current
-view is marked by a bar on its left edge. The running Enso version appears at the bottom
-left of the sidebar. Each page opens with its name and the time it was
-rendered, because pages do not refresh themselves, and no page carries a subtitle; a fact
-worth knowing lives in a definition list or on the line that counts the rows. Each view keeps
-its named sections above the content:
+Desktop uses a left sidebar, with the current view marked and the running Enso version at
+the bottom. There is no top bar. Pages show their name and render time, with no subtitle;
+they do not refresh automatically.
 
 | View | Sections |
 | --- | --- |
 | [Today](#today) `/today` | Schedule · Activity · Reliability |
-| [Tasks](#tasks) `/tasks` | project navigation, selected workflow, and one board grouped Blocked · Active · Ready · Backlog · Done |
-| [Heartbeats](#heartbeats) `/heartbeats` | Current · Previous; each beat opens Overview · History · Runs |
-| [Jobs](#jobs) `/jobs` | a job opens to Overview · History |
+| [Tasks](#tasks) `/tasks` | Project navigation, workflow, and grouped board |
+| [Heartbeats](#heartbeats) `/heartbeats` | Current · Previous; each beat has Overview · History · Runs |
+| [Jobs](#jobs) `/jobs` | Each job has Overview · History |
 | [Runs](#runs) `/runs` | Acted · Failed · All |
 | [Knowledge](#knowledge) `/knowledge` | Browse · All notes |
 | [Workspaces](#workspaces) `/workspaces` | Workspaces · Skills |
 | [Secrets](#secrets) `/secrets` | Add secret (default) · Secrets |
 | [Health](#health) `/health` | Doctor · Log |
 
-`/` redirects to `/today`. Skills are resolved per workspace, so `/skills` is a section of
-Workspaces and highlights it.
+`/` redirects to `/today`. `/skills` belongs to Workspaces. Filters sit in one row above
+lists, with descriptive first options such as `Any job`. Search grows to fill the row;
+`/` focuses it. In-place filters update the visible count. Server-filtered lists state
+their scope beside the count. Empty lists show one sentence.
 
-Filters are one row of controls at the top of a list. A control's first option says what it
-filters (`Any job`, `Any status`), so nothing sits above it; the search field grows to fill
-the row and `/` focuses it from anywhere on the page. A list that filters in place shows a
-live count at the end of the row; a list that filters on the server says what the view
-includes on the line that counts its rows. An empty list is one quiet sentence where the
-rows would have been.
+At 820px and below, navigation becomes **Today, Tasks, Heartbeats, Runs, More**. More contains
+the remaining views, highlights its active destination, and carries the Health attention
+indicator. It uses native disclosure; JavaScript adds focus management, Escape, and outside
+click dismissal. Section tabs become segmented controls. Filters wrap, with equal-width
+selects above the search field. The layout respects phone safe areas and works at 320px.
 
-At 820px and below, the sidebar becomes a bottom bar with exactly five items: **Today,
-Tasks, Heartbeats, Runs, More**. More opens a compact popup containing Knowledge, Jobs,
-Workspaces, Secrets, and Health. It stays highlighted while one of those views is open,
-and carries the Health attention indicator even while the popup is closed. The bar respects the phone's safe area
-and stays within the viewport at 320px wide.
+On iPhone, Share → Add to Home Screen installs Enso with its icon and opens Today without
+Safari's address bar. Use the address you intend to keep accessing. Tap the current bottom
+tab to reload. There is no service worker or offline mode.
 
-On an iPhone, Share → Add to Home Screen installs the viewer as an app named Enso, with the
-Enso logo as its icon. It opens full screen on Today, without Safari's address bar, so the
-bottom bar is the whole navigation, and the status bar takes the page's own light or dark
-ground. The files behind that are a web app manifest and the icons under `/static/`, read
-once at install time; there is no service worker and nothing works offline, because a viewer
-that shows the truth must not show a cached copy of it. Pages still do not refresh
-themselves, and there is no address bar to reload from: tap the current tab in the bottom
-bar, which loads the page again. The app opens the address it was installed from, so install
-it from the address you will keep using (see [Access](#access)).
+The viewer uses server-rendered HTML, plain CSS, shared inline Lucide SVG icons, and one
+progressive-enhancement script. No build step or network assets are required, and core
+navigation works without JavaScript. Data-driven charts use SVG because the security policy
+prohibits inline styles. CSS uses cascade layers, nesting, `light-dark()` tokens, container
+queries, and cross-document transitions; transitions are disabled without scripting or with
+reduced motion.
 
-More uses native `<details>` and `<summary>`, so every destination remains reachable without
-JavaScript. With JavaScript, opening moves focus into the popup, Escape closes it and returns
-focus, and clicking or moving focus outside closes it. The section strip becomes a segmented
-control on phones; wide-only content such as the schedule chart is hidden below 820px rather
-than squeezed. Quiet polls still fold with native `<details>`. A filter toolbar wraps there
-too: its dropdowns share their row in equal widths rather than sizing to their labels, and
-the search field takes the row below.
+Preserve the compact layout and cloud/navy palette. Cyan marks links and selections; pink
+is reserved for text selection. Status colours are consistent across themes: mint for
+success, cyan for running, coral for errors, yellow for warnings/timeouts, and lavender for
+muted states. Text and outlines need sufficient contrast; status dots also need an accessible
+name and tooltip. This page owns these visual standards.
 
 ## Row standard
 
-Lists share the `.row` grid, spacing tokens, and panel separators. Event rows have four
-slots, in this order; other row types omit or replace slots to suit their content:
+Lists share the `.row` grid, spacing tokens, and panel separators. Event slots are `when`,
+`pin` (state), `body` (name and facts), and `trail` (value). Other row types adapt those slots:
 
-| Slot | Holds |
-| --- | --- |
-| `when` | a time, on rows that describe a moment |
-| `pin` | the status dot |
-| `body` | a title and one line of supporting facts |
-| `trail` | the right-hand value |
-
-A list picks one row type:
-
-| Type | Class | Shape | Trail holds |
+| Type | Class | Shape | Trail |
 | --- | --- | --- | --- |
-| event | `.row` | when · state · name · facts · value | a measure, such as a duration |
-| entity | `.row.entity` | state · name · facts · value | the one fact you would sort the list by |
-| finding | `.row.finding` | severity · message | nothing |
-| knowledge | `.row.knowledge-row` | icon · name and location · value | note age or folder count |
-| action | `.row.action-row` | icon · name · action | an explicit control, such as Delete |
+| Event | `.row` | Time · state · name · facts · value | A measure, such as duration |
+| Entity | `.row.entity` | State · name · facts · value | The primary sortable fact |
+| Finding | `.row.finding` | Severity · message | None |
+| Knowledge | `.row.knowledge-row` | Icon · name and location · value | Note age or folder count |
+| Action | `.row.action-row` | Icon · name · action | Explicit control |
 
-The rules that keep them consistent:
+- The dot is the only row status indicator. Tags are for additional information, such as
+  workspace finding counts; headings and detail pages may use status tags.
+- Error messages belong on the destination page, except in finding rows.
+- Supporting facts occupy one clipped line. Above 640px of list width, title and facts
+  share a line with aligned title columns; below it, facts sit under the title.
+- Use `.detail.columns` only when every row has the same facts in the same order. Missing
+  facts use a dash. Jobs uses this above 920px; narrower lists let facts size to their text.
+- A list uses one kind of trailing value, right-aligned with tabular figures. Bold identifies
+  a primary value when a second line supports it; single-line values stay plain.
+- Monospace identifies literals: paths, cron expressions, run IDs, and skill names.
+- Navigation rows link to details. Never nest links or controls inside a linked row.
 
-- **The dot is the row's whole state, and the only place it appears.** No status tag repeats
-  what the dot already says. In a list row a tag survives only where it carries something a dot
-  cannot — today that is one place, the finding count on Workspaces. Headings and detail pages
-  still use tags freely; the rule is about rows.
-- **A row never carries an error message.** It says that something is wrong; the page behind it
-  says what. A finding is the exception, because there the message *is* the row.
-- **The detail line is one line** of stable facts you would scan — a schedule, a workspace, a
-  scope. Nothing whose height varies with the data, which is what made failing rows the tallest
-  and ugliest ones on a page; a single long fact such as a skill's description is fine, because
-  it is clipped to the one line. Given room (a list wider than 640px, measured on the list itself,
-  not the window) the title and the facts share one line, the title in a fixed-width column so
-  the facts line up down the list like columns; narrower, the facts drop under the title.
-- **A detail line whose facts are the same in every row can ask to be columns.** Facts otherwise
-  size to their own text, so one row's `0 10 * * *` starts its workspace where the row above it,
-  reading `when work is ready`, has already reached its agent. `.detail.columns` splits the width
-  evenly instead and gives each fact one axis the whole way down, which also fixes the row's chart
-  and trail columns so that every row is dividing the same box. It is opt-in because most detail
-  lines vary in what they hold, and it holds only while every row of that list spends the same
-  slots in the same order, so a row that cannot answer one dashes it rather than dropping it.
-  Today that is Jobs. It needs its own breakpoint, a list wider than 920px rather than 640px,
-  because a third of the width has to hold the widest of the three facts; narrower than that the
-  facts go back to sizing themselves, which spends the width where the text actually is.
-- **The trail holds one kind of value per list**, the same kind in every row of that list, right
-  aligned with tabular figures. Bold marks the primary value and a second line supports it; a
-  single line takes no bold.
-- **Monospace marks a literal**: a cron expression, a path, a run id, a skill name. A row's
-  title is otherwise plain, so a column of names scans as names.
-- **Navigation rows have somewhere to go.** A row that omits detail must link to a page that holds it.
-  Stripping a row without giving it a destination does not simplify the information, it deletes
-  it: that is why the skills list has a skill page behind it.
-- **Nothing inside a linked row is another link or control.** The row is the link. An `<a>`
-  inside an `<a>` makes the parser close the outer one and reparent the rest, which silently
-  takes the row apart; a test walks every page counting anchor depth to keep it that way.
-
-On a phone the same row keeps its time, dot, name and trailing value and usually drops the
-detail line. Task details wrap to retain their reference, stage, current phase, and
-project/workspace origin; the claim's run ID is on the task page. Task event messages also
-wrap and stay because they are the substance of the timeline. Lists never need horizontal scrolling.
+Phone rows retain time, state, name, and value, usually hiding supporting facts. Task rows
+retain and wrap their reference, stage, phase, and origin; task timeline messages also wrap.
+Lists must not require horizontal scrolling.
 
 ## Forms and actions
 
-New views reuse the tokens in `static/app.css`, macros in `_macros.html`, and Lucide SVG
-icons in `_icons.html`. Section headings use `.shead`, with counts in `.right`; explanatory
-copy uses `.note` and list counts use `.range`. Keep the existing density, light/dark palette,
-and visible keyboard focus. Form fields retain explicit labels and associated help text.
-When creation is the primary task, put it in the default tab and listing/management in a
-separate tab, using the shared `subtabs` macro and ordinary links. A long list must not push
-the primary form below the fold. Render only the selected view; tabs work without JavaScript.
-Let tabs name their views without repeating those names as section headings. Put a list's
-total in its tab label, such as `Secrets (182)`, visible from either view; zero reads `(0)`.
+Reuse `static/app.css` tokens, `_macros.html`, and `_icons.html`. Use `.shead` for section
+headings, `.right` for counts, `.note` for explanations, and `.range` for list counts.
+Keep visible keyboard focus, explicit field labels, and associated help text.
 
-An action row is a non-link container. Its leading icon describes the item, without inventing
-a status dot, and its trailing form owns the action. Use the Knowledge-style 16px inset and
-12px column gaps, a flexible name column, and a fixed action column. Long names wrap without
-pushing the action off screen. Secret names remain monospace because they are literal
-environment-variable names. Do not switch the shared row to flex and inherit its event-only
-zero left padding.
+When creation is the primary task, put it in the default tab and management in another,
+using `subtabs` and ordinary links. Render only the selected view; do not repeat tab names
+as headings. Put the saved total in the tab label, including zero, so it remains visible
+from either view. A long list must not push the primary form below the fold.
 
-Use buttons for actions and links for navigation. Icon-only actions use `.icon-button` with
-a 44px target, an accessible name and tooltip identifying both the action and its item
-(for example, `Delete GITHUB_TOKEN`). Delete uses the shared trash icon; chevrons mean
-navigation or disclosure. Destructive controls use `.danger`: quiet at rest for row icons,
-coral on hover, and coral text/border on the explicit confirmation button.
+Action rows are non-link containers with a leading item icon and trailing action form.
+Use the Knowledge-style 16px inset, 12px gaps, a flexible wrapping name, and a fixed action
+column. Keep the grid; event-row padding and a flex layout do not suit these controls.
+Secret names remain monospace.
 
-Destructive forms use native `window.confirm()` from the external `app.js`, with the target
-name and consequence in the prompt. Cancelling the prompt sends no request. Keep the protected
-POST form and redirect; no inline event handlers, new framework, or custom modal is needed.
-`data-confirm` carries the prompt. The script attaches the submit guard before showing the
-hidden `data-confirm-trigger` button and hiding `data-confirm-fallback`. Without JavaScript,
-a styled disclosure exposes the warning, explicit submit button, and Cancel link back to the
-list; opening it does not submit. Its content appears below the name while the trash control
-stays in place.
+Use buttons for actions and links for navigation. Icon buttons use `.icon-button`, a 44px
+target, and an accessible name and tooltip identifying the action and item. Delete uses the
+trash icon and `.danger`; chevrons mean navigation or disclosure. Destructive row icons are
+quiet at rest and coral on hover; explicit confirmation buttons use coral text and borders.
 
-Verify new action UI in a browser at desktop and phone widths, with long names, keyboard
-focus, confirm/cancel, and JavaScript unavailable. Request tests do not establish layout or
-browser interaction behaviour. Successful writes redirect to a page with a concise status
-message. Validation errors retain non-secret input; secret value fields always return empty.
+Destructive forms use `data-confirm` and native `window.confirm()` from `app.js`, naming
+the item and consequence. Cancel sends no request. Attach the submit guard before revealing
+`data-confirm-trigger` and hiding `data-confirm-fallback`. Without JavaScript, a disclosure
+shows the warning, submit button, and Cancel link beneath the name; opening it never submits.
+Keep the protected POST and redirect, with no inline handlers or custom modal.
+
+Successful writes redirect with a concise status message. Validation errors retain non-secret
+input; secret fields always return empty. Verify action UI in a browser at desktop and phone
+widths, with long names, keyboard focus, confirm/cancel, and JavaScript disabled. Request tests
+alone do not verify layout or interaction. See [Browser checks](development.md#browser-checks).
 
 ## What it shows
 
 ### Today
 
-The landing page, and the one that answers "did anything break while I was asleep".
-Schedule opens with four tiles: runs that did work in the last 24 hours with the gated count
-beneath, failures, the next scheduled check, and heartbeats that need your attention. Each
-links to the page that explains it. On a phone, where the chart is hidden, the tiles are the
-page. The tiles and the failure banner under them belong to Schedule alone: Activity and
-Reliability are the detail behind those numbers, so they open straight onto their own list.
-Heartbeats needing attention stays on all three.
+**Schedule** opens with tiles for work in the last 24 hours, failures, the next check, and
+heartbeats needing attention. Each links to its detail. Schedule owns the tiles and failure
+banner; heartbeat attention remains visible in all three sections.
 
-**Schedule** offers 6, 12, or 24 hours back, defaulting to 6, with two hours ahead.
-The range lives in the URL (`/today?range=12`) and follows the Schedule, Activity, and
-Reliability section links; an unsupported value falls back to 6. Both the chart and
-its range control are hidden on phones.
+The schedule chart offers 6, 12, or 24 hours back, defaulting to 6, plus two hours ahead.
+`/today?range=12` keeps the range across sections; unsupported values use 6. Its end is
+rounded to the next hour plus two, so actual lookahead is two to three hours. The chart and
+range control are hidden on phones.
 
-The chart's right edge is pinned to the next top of hour plus two hours, so the real
-lookahead stays between two and three hours. The left edge floats between five and six
-hours back at the default range, and the columns remain whole hours. Labels appear every
-hour at 6, every two hours at 12, and every three hours at 24.
+Jobs get a lane when they have a run or scheduled slot in the window. Runs are positioned
+by start time and duration, with a minimum visible width. A now line separates observed
+runs from tinted future time. Future cron slots are ghosted, capped at 40 per lane; disabled
+jobs and unscheduled stage jobs have none. **Up next** lists the nearest seven scheduled
+jobs and active beat checks. Disabled Heartbeat contributes no upcoming checks.
 
-A current job gets a lane only when it has a run event in that chart window or a scheduled
-slot within it. Each run is placed at the time it started and drawn as wide as it took, with
-a minimum width to keep short runs visible and a line marking now. Everything right of that
-line is scheduled rather than observed, and its ground is tinted to say so; the chart draws
-one hairline per hour and nothing per cell. Future cron slots are ghosted across the forward
-strip, capped at the first 40 per lane; disabled jobs and stage jobs without a cron schedule
-have no ghosts. Below it, Up next combines the next checks for active beats with scheduled
-jobs, showing the nearest seven. Disabled Heartbeat adds no upcoming work. Beats needing
-attention are linked separately.
+Tiles, failures, and **Activity** always look back 24 hours from the current hour,
+independent of chart range. Activity scans the newest 400 retained job and heartbeat runs,
+groups them by hour, and folds consecutive `no_work` and `skipped` outcomes. Busy homes may
+exceed that scan; [Runs](#runs) provides paginated history.
 
-The summary tiles, failure banner, and **Activity** retain their 24-hour lookback from the
-start of the current hour at every chart range, so zooming in cannot hide an overnight
-failure. Activity shows runs from the newest 400 retained job and heartbeat runs,
-newest first and grouped by hour. Consecutive `no_work` and `skipped` outcomes fold into
-one line you can open. Busy homes may have more runs in the time window than this page
-scans; use [Runs](#runs) for the paginated history.
-
-**Reliability** uses a separate scan of up to 400 job runs, then takes up to the newest
-30 for each current job represented in the scan, including runs older than the schedule
-window. Duration bars, run and failure counts, and average durations all use that same
-per-job sample; averages include only runs with a recorded, nonzero duration. A busy home
-may leave fewer than 30 runs for a job in the scan, or none, in which case the job is absent.
+**Reliability** scans up to 400 job runs and uses the newest 30 per current job found in
+that sample. Bars, counts, and average duration use the same sample; averages exclude absent
+or zero durations. The sample can include older runs, contain fewer than 30 per job, or omit
+a job entirely.
 
 ### Tasks
 
-The [board](tasks.md) stays on one page at `/tasks`. Project navigation sits beside it on
-desktop and above it on phones, where the project list scrolls within a compact area. Each
-project shows its name, key, workspace, and unfinished task count. Configured projects remain
-visible with no tasks; tasks whose project definition is missing remain reachable too. **All
-tasks** returns to the board across projects. A workspace filter narrows both the project
-list and board; changing workspace clears the project and task filters.
+The [task board](tasks.md) at `/tasks` shows projects beside the board on desktop and above
+it on phones. Project entries show name, key, workspace, and unfinished count, including
+configured projects with no tasks. Tasks with missing project definitions remain reachable.
+**All tasks** clears the project selection. Workspace selection narrows projects and tasks
+and clears project/task filters.
 
-Selecting a project shows a compact workflow preview above its tasks. Open it for numbered
-stages in order, followed by `done`; choosing a stage keeps the details open. Each step shows
-its execution kind (Agent, Human, Command, or Integration), required check names, an allowed
-return destination, and the number of tasks at its accepted stage. Agent stages have a
-**View instructions** link to each bound job's prompt, including disabled jobs. Clicking
-the stage itself filters the board to that stage. Project and stage links clear task
-search; project links also clear the stage filter. Workflow counts describe the whole project,
-independent of task search, and include all completed history without loading task bodies.
-Backlog, blocked, and cancelled tasks remain in the board outside the forward workflow.
-Missing counts are shown as unavailable, not zero. The project's workspace links to its detail
-page. This is a view of the current configuration; recorded execution evidence belongs to
-each task's Workflow history.
-
-The board puts work needing attention first, then work the agents hold. Every task is in one
-of five groups, in this order, each headed by its name and its count:
+Selecting a project shows its current workflow, with ordered stages, `done`, stage counts,
+return destinations, and links to bound job instructions, including disabled jobs. Counts
+cover the whole project, including completed history, regardless of task search; unavailable
+counts are not shown as zero. Stage links filter the board. Project/stage links clear search,
+and project links also clear the stage filter. Recorded execution evidence belongs to tasks.
 
 | Group | Holds | Order |
 | --- | --- | --- |
-| Blocked | tasks in a human stage, blocked, or flagged for attention; the heading says they need you | oldest in stage first, so the one that has waited longest is on top |
-| Active | claimed tasks; the task page links to the run that holds it | newest claim first |
-| Ready | unclaimed tasks in agent stages | pipeline order: by project, then the project's own stage order |
-| Backlog | backlog tasks, which are not ready for a stage job to claim | oldest in stage first |
-| Done | finished and cancelled tasks | newest first |
+| Blocked | Human stages, blocked tasks, or attention flags | Oldest in stage first |
+| Active | Claimed tasks | Newest claim first |
+| Ready | Unclaimed tasks in executable stages | Project, then stage order |
+| Backlog | Tasks not yet ready for a stage job | Oldest in stage first |
+| Done | Finished and cancelled tasks | Newest first |
 
-A task's state puts it in exactly one group, so nothing is listed twice, and a group with
-nothing in it is left out rather than shown empty.
+Each task appears once; empty groups are omitted. Filters `workspace`, `project`, `stage`,
+and `q` (reference, title, body) apply before the 200-item completed-history cap. The count
+line reports all matching tasks, any display limit, and completions in the last seven days.
+Rows show reference, stage, origin, claim, current transaction phase, and time in stage.
+A selected project omits repeated origin details.
 
-The line above the board counts every matching task, says how many of them are listed when
-the cap bites, gives the number completed in the last seven days, and states the limit of
-200 finished and cancelled tasks. Filters apply before the cap, and finished history is
-counted without loading every task into the page.
+At `/tasks/<ref>`, the task page shows its accepted stage, priority, claim, spec, refs,
+handoff, timeline, and latest transaction notice. Submission, checking, repair, acceptance,
+interruption, blocking, and operator overrides are distinct states. Submitting a handoff
+or passing one check does not advance the displayed stage.
 
-`workspace`, `project`, `stage`, and `q` (matched against the reference, title, and body) narrow
-the whole board, groups and count line together, and an emptied board names the filter that
-emptied it. Workspace filtering also applies to completed history before its limit.
-Rows follow the [entity row standard](#row-standard): the dot is the state (needs you,
-blocked, active, ready, done, cancelled), the title is the name, the detail line is the
-reference, stage, project and workspace, and who holds it; a selected project omits its repeated
-origin from each row. The trail is the time in its stage. While a transaction is active, the
-detail line also names its phase: working, handoff submitted, running required checks, or
-repairing failed checks. The row is the link. The board reads current transaction summaries in one bulk
-query; it does not load every task's check output or timeline.
+**Workflow history** retains each transaction's handoff, candidate revision, spec/workflow
+versions, repair budget, timestamps, and run. Checks and lifecycle scripts show status,
+exit code, duration, attempt, and literal diagnostics; lifecycle events retain retry IDs.
+Missing evidence is never a pass, and provider success does not imply acceptance. Evidence
+survives provider-run pruning without broken links. Manual checks are labelled **Operator
+verification** and have no provider-run link.
 
-A task's own page at `/tasks/<ref>` is its record: the heading carries the reference, the
-title, and the attention flag when it is set. A workflow notice states the latest transaction
-outcome and links to its evidence. The breadcrumb and project name return to the project's
-Tasks view, and its workspace links to the workspace detail page. The panel shows the stage
-as the project's pipeline with the current one marked, the priority, and the claim. The pipeline
-shows the **accepted stage**: submitting a handoff or passing one check does not advance it.
-The notice distinguishes work in progress, submission, checking, repair, acceptance,
-interruption, and blocking. Recorded operator overrides are labelled separately from success.
-
-**Workflow history** is an expandable record of each transaction, newest first. The summary
-names the stage, destination, and Enso's recorded acceptance status. Open it for the submitted
-handoff, candidate revision, spec and workflow versions, repair budget used, timestamps, and
-the linked run. Required checks and lifecycle scripts each show their recorded status, exit
-code, duration, attempt, and captured diagnostic/output; lifecycle scripts also identify the
-event for retry auditing. Script output stays literal and escaped. No check result is inferred
-from an agent's prose or a successful provider exit, and absence of evidence is never labelled
-as a pass. Workflow evidence remains available when retention has pruned the provider run;
-the old run is named without a broken link. Manual check execution is labelled
-**Operator verification** in claims, workflow evidence, and timeline entries, with no
-provider-run link because it never created a provider run.
-
-The worktree panel uses the task's recorded path, branch, target branch, starting revision,
-and retention or cleanup status. It works for locations outside the Enso home and does not
-infer the target from whatever branch the main checkout happens to have open. A failed
-cleanup stays visible with its diagnostic. A bounded read-only Git query counts commits
-ahead of the recorded target; if Git or the worktree is unavailable, the metadata still
-renders and the count says unknown. After recorded cleanup, the panel preserves ownership
-history and omits the live commit count. No worktree record means no panel.
-
-The rest of the page holds the spec rendered with the same safe Markdown renderer as
-workspace files, refs, accepted handoff, and timeline. Timeline rows show the actor, message,
-and surviving run link. Which moves are available is the agent's business and is not shown;
-the viewer moves nothing, because that is chat and the CLI. See [Tasks](tasks.md) for the
-workflow and worktree contracts.
+The worktree panel uses the recorded path, branch, target, starting revision, and cleanup
+status. A bounded Git query counts commits ahead of that target; unavailable counts say
+unknown. Cleanup failures show their diagnostics. Completed cleanup retains ownership
+history and omits the live count. Tasks without a worktree have no panel. All task operations
+remain in chat and the CLI.
 
 ### Knowledge
 
-`/knowledge` reads the home's `shared/knowledge/` and automatically discovers every visible
-workspace `knowledge/` directory. **Browse** starts at the Knowledge home, whose breadcrumb
-is **Index**. The home first shows the most recently updated notes across every root, up to
-`web.knowledge.recent_limit` (5 by default), then the top-level folders and notes of shared
-knowledge directly; shared folder breadcrumbs therefore start at **Index** with no **Shared**
-step. Retained workspace roots, when any exist, follow under **Workspaces** as folders to
-enter. The Markdown files remain the source of truth. See [Knowledge](knowledge.md) for
-metadata, writing conventions, imports, and the agent's maintenance tools.
+`/knowledge` opens shared knowledge directly, with recently updated notes across all roots.
+Retained workspace roots follow under **Workspaces**. [Knowledge](knowledge.md) owns note
+format, links, writing, and imports.
 
-**Browse** shows immediate subfolders, by name, followed by notes directly in the current
-folder, including folders that have both. Breadcrumbs move up the hierarchy. **All notes**
-lists the current folder and all its descendants. Browsing lists, a note's folder context,
-and **Linked from** are newest updated first, then by path. Recency uses `updated` metadata
-and falls back to file modification time when that date is unknown.
-Search stays under the current folder and ranks notes by relevance: an exact title or path,
-a literal title/path substring, matching words in the title/path with typo tolerance, then
-a literal phrase in the body. Equally relevant notes are newest updated first, then by path.
-Typo tolerance applies to words of four or more letters; shorter words and numbers receive
-no typo expansion. Multiple query words may match different words in the path, in any order.
-Search is submitted with Enter or **Search**, and its query stays in the URL. In **Browse**,
-folders below the current one whose names match come first, by name, then the matching
-notes; **All notes** lists notes only. The explicit **All knowledge** search option
-broadens to every discovered root. Every list shows at most
-`web.knowledge.page_size` items per page (50 by default), with its count, range, and ordinary
-Previous/Next links. Thousands of notes never produce a fully expanded tree or an unbounded
-page. Note rows show their location with spaced separators, such as
-`Shared / People / Employees / Name.md`, and seconds, minutes, hours, or days ago through
-seven days, then a local calendar date such as `Jan 1st, 2025`.
+**Browse** shows immediate folders alphabetically, then notes in the current folder.
+**All notes** includes descendants; at Knowledge home it includes every root. Breadcrumbs
+move up. Notes, folder context, and backlinks sort by updated date, then path; unknown update
+dates use file modification time.
 
-A note opens at `/knowledge/notes/<id>`, using its permanent ID so the URL survives moves
-and renames. Notes without a valid or unique ID remain readable through an explicit
-scope-and-path URL and show their metadata findings. The title comes from the filename;
-frontmatter is omitted from the reading view. Created and updated dates appear above the
-body, and **View source** shows the complete file. The note's folder appears beside it on a
-wide screen and below it on a narrow one. **Linked from** shows up to 50 incoming notes and
-the total backlink count. Folder context is capped at 20 items, with a link to the complete
-paginated folder.
+Search submits with Enter or **Search** and stays in the URL. Knowledge home searches every
+root. Within a folder, search covers that folder and descendants; **All knowledge** broadens
+it to every root. Notes rank by exact title/path,
+literal title/path substring, matching path words, then a literal phrase in the body.
+Path words can match in any order; typo tolerance applies only to alphabetic words of at
+least four letters. Ties sort newest first, then by path. Browse search puts matching folders
+first, alphabetically; All notes returns notes only.
 
-Wiki links (`[[Page]]`, `[[Folder/Page|Label]]`, `[[Page#Heading]]`) and ordinary relative
-Markdown links navigate inside the viewer. Cross-scope links explicitly name `shared:`
-or `workspace:<name>:`. Duplicate filenames require a qualified path: ambiguous and missing
-references are visibly marked instead of selecting a destination arbitrarily. Missing
-heading anchors are marked while the destination note remains clickable. Headings get
-Unicode-aware anchors with `-1`, `-2` suffixes for repeats. Browser back/forward and opening
-a link in a new tab work normally; no JavaScript is required.
+Lists use `web.knowledge.page_size` (50 by default), counts, ranges, and Previous/Next links.
+They never expand the entire tree. Rows show location and relative age through seven days,
+then a local calendar date.
 
-Local Markdown images and Obsidian image embeds display PNG, JPEG, GIF, WebP, and AVIF
-assets under the selected knowledge root. Other attachments download; note embeds become
-links to their notes. Remote images never load automatically. Raw HTML is escaped and
-only `http`, `https`, and `mailto` external links are clickable. Asset reads are bounded at
-20 MiB, reject symlinks and hidden/system paths, and never follow a path outside its root.
-SVG and HTML attachments download as binary files, never as active same-origin documents.
+Notes with unique valid IDs open at `/knowledge/notes/<id>`, which survives moves. Other
+notes use scope/path URLs and display metadata findings. Filenames supply titles; frontmatter
+is hidden in the reading view. Dates appear above the body; **View source** shows the complete
+file. Folder context lists up to 20 items with a link to the full folder. **Linked from** shows
+up to 50 incoming notes and the total count.
 
-Each visit scans current file metadata and reuses unchanged parsed notes in process memory;
-refreshing sees additions, moves, and edits. The viewer builds no persistent index, creates
-no missing directories, and never changes Markdown, metadata, or the database. Knowledge
-appears in the desktop sidebar and the phone's **More** menu.
+Resolved wiki and Markdown links stay inside the viewer. Ambiguous or missing links are
+marked; a missing heading is marked while its note remains clickable. Stable links, browser
+history, and new tabs work without JavaScript.
+
+Local PNG, JPEG, GIF, WebP, and AVIF images can display. Other attachments download; note
+embeds become links. Remote images do not load automatically. Raw HTML is escaped, and only
+`http`, `https`, and `mailto` external links are clickable. Attachments are limited to 20 MiB,
+reject hidden/system paths and symlinks, and cannot escape their root. SVG and HTML download
+as binary files, never as active same-origin documents.
+
+Refresh discovers file changes and reuses unchanged parsed notes in memory. The viewer
+creates no persistent index or missing directories and never changes notes or metadata.
 
 ### Workspaces
 
-The list is a workspace name and its [audit](workspaces.md) verdict, so a malformed workspace
-is visible before it surprises you. Its own page starts with its projects: unfinished task
-counts and an ordered workflow preview, with human stages marked. Each project links back
-to its workspace-filtered Tasks view; **All tasks** opens all work for that workspace.
-The page also shows what is bound to it, the jobs that name it, its upload size, and every
-audit finding — which required directories exist, whether `CLAUDE.md` and the skill links
-are correct, whether any skill name collides.
+Workspace rows show their [audit](workspaces.md) verdict. Each detail page shows projects,
+workflow previews, unfinished counts, task links, bindings, jobs, uploads, and audit findings.
 
-A workspace and its parent container must be real directories, matching CLI ownership;
-linked workspaces return 404. Directory summaries do not scan roots that escape the workspace.
-New workspaces show `work/` and `uploads/`. A retained workspace `knowledge/` card opens its
-scope in [Knowledge](#knowledge); retained `drafts/` files also remain browsable. The file
-browser supports all four roots, with text and Markdown rendered in place. This is the
-"what files is the agent reading" view: it shows what is actually on disk in the directories
-the agent has been told to use, dotfiles included. Files over 2 MiB,
-binary files, and anything unreadable show their metadata instead of a body. Markdown is
-rendered with raw HTML escaped, images left as text, and only relative, `http`, `https`,
-and `mailto` links kept, so a file the agent wrote cannot make your browser fetch or run
-anything. Absent optional content roots are omitted from the workspace page. The browser never
-leaves these allowed directories: a path that resolves outside them, including through a
-symlink, is a 404.
+The file browser supports `work/`, `uploads/`, and retained `knowledge/` and `drafts/` roots;
+absent optional roots are omitted. Knowledge cards open their scope in Knowledge. Workspace
+files include dotfiles. Readable text and Markdown render in place; binary, unreadable, or
+larger-than-2-MiB files show metadata. Markdown escapes raw HTML, leaves images as text, and
+keeps only relative, `http`, `https`, and `mailto` links.
+
+Workspaces and their parent container must be real directories. Browsing and summaries cannot
+escape the permitted roots, including through symlinks; rejected paths return 404.
 
 ### Skills
 
-One row per skill — not one per skill per workspace, which produced hundreds of near-identical
-rows — carrying the name and its description, filterable by workspace and status.
+Skills has one row per skill, grouped by workspace (`enso / <name>`), then home (`enso`),
+then external `user` scope. Workspace groups are alphabetical. Rows show names and descriptions;
+headings provide scope. Workspace and status filters narrow the list. Search and status update
+the rendered page, counts, and empty headings without a reload; without JavaScript every row
+in the selected workspace remains visible.
 
-The list is grouped by where a skill comes from, under the same headings the Tasks board uses:
-one group per workspace holding skills of its own, headed `enso / <workspace>` because a
-workspace is a directory inside the Enso home, ordered alphabetically by workspace name, then
-`enso` for the home's own skills, then `user`. The `enso /` part is drawn quieter than the
-workspace name, and nothing outside these headings takes the prefix. A group with nothing in
-it has no heading, and the
-scope is not repeated on the row because the heading above it already says so. The count line
-above the list carries the total and how many are in error or warning. The search field and the
-status filter narrow the rendered page rather than reloading it, so a heading disappears with
-its last visible row and its count follows what is left below it; with JavaScript off every
-group and row is present and the counts are the page's own.
-
-A skill's own page at `/skills/<name>` lists every scope that provides that name, which is
-exactly the shape of a collision, so it reads in one place. `/skills/research`:
-
-| Scope | Path | Status |
-| --- | --- | --- |
-| workspace | `workspaces/blog/skills/research` | active |
-| enso | `~/.enso/skills/research` | collides with the workspace scope (error) |
-
-Each entry carries its path, its description — so you can see what the agent thinks it is for —
-and the workspaces it reaches. A user-scope entry is marked as not managed by Enso.
+`/skills/<name>` shows every scope providing that name, making collisions visible together.
+Entries include path, description, status, and reached workspaces. User-scope entries are
+marked as outside Enso's management. [Customizing](customizing.md#skills) owns installation
+and scope rules.
 
 ### Jobs
 
-The list is a job's directory name, its schedule, workspace and executor, a sparkline of
-recent outcomes, and when it runs next — or why it does not. The three facts are
-[equal columns](#row-standard) on a wide list. The sparkline is a fixed-width box the marks never
-scale inside, so it is anchored at its right edge: the newest run sits on the same axis in every
-row, beside the next-run value, and a short history trails off to the left instead of floating
-away from it. A [stage job](jobs.md#stage-jobs) without a cron line shows `when work is ready` in
-place of a schedule, here and on Today. Its
-own page adds Overview and History: the configuration and the prompt body, rendered with the
-same safe Markdown renderer as workspace files (for a stage job, the project and stage it
-serves, linked to the board filtered to that project and stage, and its effective concurrency
-group and explicit wait/skip policy), gate and postrun commands and timeouts, the agent's
-follow-up limit, a chart of recent outcomes, project capacity and configured stage check
-names, and any `JOB.md` problems keeping it from running. Commands and integration are
-labelled with their executor instead of a model. It does not display hook script
-contents. History shows up to 500 runs of the job; the link to the filtered Runs page provides pagination when
-retention is higher.
+Job rows show directory name, schedule, workspace, executor, recent outcomes, and next run
+or why it will not run. Facts align in equal columns on wide lists; fixed-width sparklines
+align their newest run at the right edge. Stage jobs without cron show `when work is ready`.
+
+**Overview** shows configuration, safely rendered prompt, gate/postrun commands and timeouts,
+follow-up limit, concurrency policy, recent outcomes, and validation problems. Stage jobs also
+show linked project/stage, project capacity, and required check names. Command and integration
+executors show their type instead of a model. Hook script contents are not displayed.
+**History** lists up to 500 job runs and links to paginated [Runs](#runs).
 
 ### Heartbeats
 
-The [Heartbeat](heartbeat.md) page at `/heartbeats` shows current beats, including paused
-ones. Previous shows fulfilled, cancelled, and expired beats until retention removes them.
-The state filter narrows either view. Rows show the title, reference, workspace, and timing;
-the status dot also identifies beats that need attention. When Heartbeat is disabled, its
-saved records remain visible with a clear notice.
+**Current** includes active and paused beats; **Previous** includes fulfilled, cancelled, and
+expired beats until retention removes them. State filters narrow either view. Rows show
+reference, title, workspace, timing, and attention state. Disabling Heartbeat keeps saved
+records visible with a notice.
 
-Each beat opens to Overview, History, and Runs. Overview shows the instructions, completion
-condition, allowed actions, saved agent and destination, timing, latest check, and current
-progress. History pages through meaningful events with their dates, actors, decisions,
-action keys, and receipts. Each event is a row that opens; a row names the actor by its
-origin, so a chat identity such as `slack:U0AETSSDDEF` reads as the platform a person used
-and the recorded value stays in the opened event. Quiet checks stay out of the timeline.
-Runs links to each agent assessment, including its saved instructions, input cutoff,
-outcome, and output.
-Lists and history use pages of 50 under the [Runs](#runs) range rule. Long event content is visibly clipped with a CLI lookup
-for the full record; opening a run shows its retained provider output.
+Each beat has **Overview**, **History**, and **Runs**. Overview shows instructions, completion
+condition, allowed actions, saved agent/destination, timing, latest check, and progress.
+History shows meaningful events with actors, decisions, action keys, and receipts; quiet
+checks remain in the latest-check fields. Runs shows agent assessments, saved instructions,
+input cutoff, outcome, and output.
 
-The viewer cannot pause, edit, fulfill, or otherwise run a beat; those changes happen through
-the agent and CLI. Viewing an incompatible database reports its error without upgrading it.
+Lists and events use 50-item pages and the [Runs](#runs) count/range rule. Long events are
+visibly clipped with a CLI lookup for the full record. The viewer never edits or runs beats,
+and reports incompatible databases without upgrading them.
 
 ### Runs
 
-Run history, newest first. Three views:
+Runs are newest first:
 
 | View | URL | Shows |
 | --- | --- | --- |
-| Acted | `/runs` | everything except `no_work` and `skipped` outcomes; the default |
-| Failed | `/runs?view=failed` | errors, timeouts, gate failures, and interrupted heartbeat assessments |
-| All | `/runs?view=all` | the whole retained history, consecutive `no_work` and `skipped` outcomes folded |
+| Acted | `/runs` | All except `no_work` and `skipped`; the default |
+| Failed | `/runs?view=failed` | Errors, timeouts, gate failures, and interrupted heartbeat assessments |
+| All | `/runs?view=all` | Retained history, with consecutive `no_work` and `skipped` outcomes folded |
 
-Job links and filters use qualified references: `/jobs/team:digest` and
-`/runs?job=team:digest` (the colon may be URL-encoded as `%3A`).
+The source filter selects jobs, heartbeats, or both. Job references are qualified, such as
+`/jobs/team:digest` and `/runs?job=team:digest`. Job/status filters apply to the whole history;
+an explicit status overrides the view. Pages contain up to 500 runs. Lists count first and
+show the range actually read: a failed listing shows `0–0` beside its error, while a failed
+count lists nothing. Lists never read run output. Beat checks without an agent appear only
+in the beat's latest-check fields.
 
-The source filter selects all work, jobs, or heartbeats. `job` and `status` narrow any view
-and still apply to the whole history; an explicit `status` overrides the view. `page` pages
-at 500 (the default job retention). Every paginated list counts first and then lists one
-page: the shown range comes from the rows actually listed, so a failed listing reads `0–0`
-of the counted total beside its error, and a failed count shows its error and lists nothing.
-The list never reads a run's output. Heartbeat checks that did not involve an agent are
-absent; the beat's Overview holds its latest check.
-
-Each job run opens to its full record: status, exit code, duration,
-trigger, the executor and agent when applicable, the session ID, final postrun diagnostic,
-the error, and command or latest provider output, which can be the whole retained megabyte. Output renders as Markdown
-with its line breaks kept, so a transcript's own fences and tables read as themselves, and
-falls back to wrapped monospace above 256 KiB. Errors and postrun errors stay monospaced
-always, because their exact spacing is the information. A heartbeat run's output renders
-the same way, being the same kind of provider transcript. Ordered attempts show command
-execution or each provider turn and its postrun result; attempt 0 represents a reaction
-hook when no executor ran. Older history has no attempts.
-For stage jobs, **Task workflow** shows the transactions belonging to this run using the
-same evidence view as the task page, with a link back to the task's complete audit history.
-Provider completion and stage acceptance are separate facts; the recorded transaction
-status states whether the handoff was accepted.
-The run remains `running` while waiting for a concurrency group, executing, and checking
-postrun. Final duration includes waiting and hook time; the execution timeout allowance
-does not. See [Jobs](jobs.md#postrun-scripts).
+Run details show status, exit code, duration, trigger, executor/agent, session, diagnostics,
+and retained output. Output renders as Markdown with line breaks preserved, falling back to
+wrapped monospace above 256 KiB; errors always remain literal. Ordered attempts show each
+execution and postrun result; attempt 0 is a reaction hook when no executor ran.
+Stage runs include their **Task workflow** evidence and link to the task's complete history.
+Provider completion and stage acceptance remain separate.
 
 | Status | Meaning |
 | --- | --- |
-| `ok` | The executor and any postrun checks finished successfully |
-| `error` | The executor, postrun check, or run failed |
-| `timeout` | The command or provider turns exhausted their execution allowance and were stopped |
-| `no_work` | The gate exited 1, or no task was available to a stage job; the executor never ran |
-| `gate_error` | The gate failed; the executor never ran |
-| `skipped` | Execution was not admitted, for example a busy skip-policy group or expired wait |
-| `running` | Still going, or interrupted before it could close |
-| `cancelled` | A heartbeat assessment stopped before settlement, for example on pause, edit, or shutdown |
+| `ok` | Executor and postrun checks succeeded |
+| `error` | Executor, postrun check, or run failed |
+| `timeout` | Execution exhausted its allowance and was stopped |
+| `no_work` | Gate exited 1 or a stage job found no task; no executor ran |
+| `gate_error` | Gate failed; no executor ran |
+| `skipped` | Not admitted, such as a busy skip-policy group or expired wait |
+| `running` | Waiting, executing, checking, or interrupted before closing |
+| `cancelled` | Heartbeat assessment stopped before settlement |
 
-A timeout is drawn amber rather than red: the run did not fail, it ran out of time, and the
-schedule chart is far easier to read when the two are distinguishable. Both count as failures
-wherever failures are counted.
-
-This is the main reason the viewer exists. A failed run's output is a wall of text that is
-miserable to read in a chat message and fine to read in a browser.
+Timeouts use yellow and errors coral; both count as failures. Final duration includes group
+waiting and hooks, while execution timeout does not. [Jobs](jobs.md#postrun-scripts) owns
+execution and postrun rules.
 
 ### Health
 
-Every section of [`enso doctor`](cli.md): config validity, the home and workspace audits,
-provider paths and whether they resolve, transport extras, agent and optional viewer
-service state, every `JOB.md`, current Heartbeat health, and knowledge audits.
-Note findings include paths, counts, and commands for detailed scoped audits; they check
-structure, not factual truth. Heartbeat checks inspect saved state;
-they do not execute gates or start an assessment.
+Health shows [`enso doctor`](cli.md)'s configuration, home/workspace, provider, transport,
+service, job, Heartbeat, and knowledge findings. Problems come first; each section retains
+its verdict, context, and expandable inspected details. Healthy sections say `No issues
+found`. Knowledge checks validate structure rather than factual truth; Heartbeat checks
+inspect state without executing gates or assessments.
 
-Every section gets the same block, problems first: a heading with its verdict, and a panel of
-what it found. Sections retain their context line even when findings exist, including note
-counts and detailed audit commands. A section with nothing to report says `No issues found` on a green row rather
-than disappearing, so it is clear it was checked; what it checked — which providers, which
-workspaces — is the detail line on that row.
-
-What the check actually read folds shut at the foot of the same panel, beside the verdict it
-explains rather than in one heap of unrelated facts at the bottom of the page. That fold is
-`Section.details` from `enso doctor --json`, drawn as what each value is: a path in code, a
-flag as a word a person would use, a list of names on one line of them, and a per-item map
-such as a provider or a transport as a labelled line with its flags and names quiet
-underneath. Its chevron takes the finding rows' dot column, so the fold lines up with the
-rows above it.
-
-Plus the database footprint
-(`enso.db` with its `-wal` and `-shm` companions), whether it is readable at a schema this
-Enso knows, and the viewer itself: its version, the home it reads, where it is bound, and
-its browsing and secret-management capabilities. The last 200 lines of `enso.log` are the
-Log section at `/health/log`. This page works when nothing else does: it is where a
-missing or invalid `config.json` gets diagnosed.
+It also shows the database footprint and schema readability, viewer version, home, bind
+address, and capabilities. **Log** at `/health/log` shows the last 200 lines of `enso.log`.
+Health remains available with invalid or missing configuration.
 
 ## Secrets
 
-`/secrets` opens **Add secret**, with the name and value form immediately available. The
-**Secrets** tab at `/secrets?view=saved` lists saved names and their delete controls. Tabs use
-the shared desktop strip and phone segmented control and work without JavaScript. The saved
-total appears in the tab label, for example **Secrets (182)**, on both views. Only the selected
-view is rendered, with the form or list directly below the tabs and no repeated heading.
-The saved list has an instant, case-insensitive name filter, a visible matching count, and
-an empty-result message; `/` focuses its search field. Without JavaScript all saved names
-remain visible.
-Multiline values are supported; browsers submit every textarea line break as CRLF, so the
-form stores LF. Use `enso secret add NAME --stdin` when exact bytes matter. Saved values
-never appear in responses and have no reveal or edit action.
-Duplicate creation fails; replace a value by deleting its name and adding it again. The
-trash button opens the browser's native confirmation. Without JavaScript, it opens a styled
-inline confirmation with Delete and Cancel. Both follow [Forms and actions](#forms-and-actions).
-The page and navigation work on desktop and mobile.
+`/secrets` opens **Add secret**. **Secrets** at `/secrets?view=saved` lists saved names and
+delete controls; its tab shows the total from either view. An instant case-insensitive name
+filter shows matching counts; `/` focuses it. Without JavaScript all names remain visible.
 
-Only `POST /secrets` and `POST /secrets/{name}/delete` write. Successful creation returns to
-Add secret with an empty form, ready for another entry. Deletion and its no-script Cancel
-return to the Secrets list. Successful writes show **Secret added.** or **Secret deleted.**
-after the redirect. Failed submissions stay in their action's tab with a safe error;
-the add form retains the entered name and always has an empty value field. Both actions use
-the same store as the [CLI](cli.md#secrets), including first-use key creation. No chat
-service is required. [Configuration](configuration.md#secrets) owns key backup and restore.
+Multiline values are normalized to LF. Use `enso secret add NAME --stdin` for exact bytes.
+Saved values never appear in responses and cannot be revealed or edited. Duplicate creation
+fails; replacement requires deleting the name and adding it again. Deletion uses native
+confirmation, or an inline Delete/Cancel disclosure without JavaScript.
+
+Only `POST /secrets` and `POST /secrets/{name}/delete` write. Creation redirects to an empty
+Add secret form; deletion and Cancel return to the saved list. Success shows **Secret added.**
+or **Secret deleted.** Errors stay in the relevant tab; the add form retains the name but
+clears the value. Both actions use the [CLI](cli.md#secrets)'s store and first-use key creation,
+without requiring the chat service. [Configuration](configuration.md#secrets) owns key backup
+and restore.
 
 ## Access
 
-The viewer binds `127.0.0.1` by default and has no authentication. It answers only to
-`localhost`, address literals, its bind host, and the names in
-[`web.hosts`](configuration.md#web); any other `Host` gets a 421 before routing. Without
-this, a DNS name an attacker re-points at the listener would be same-origin with every page,
-able to read them and their form token. Each route explicitly
-registers its accepted methods; unsupported methods return 405, and missing routes return
-404. Browsing routes support GET only. Registered writes share a middleware policy:
-URL-encoded forms require an unguessable form token, cross-site browser requests and
-mismatched Origin/Host are rejected, and every response retains the security headers.
-Safari's opaque Origin under the no-referrer policy also requires its same-origin fetch
-signal and a valid token. A server restart invalidates open forms; refresh the page before submitting again.
-Write workers hold home admission until completion, including when a browser disconnects,
-so an update cannot overlap a secret mutation.
+The viewer binds `127.0.0.1` by default. It accepts `localhost`, address literals, its bind
+host, and configured [`web.hosts`](configuration.md#web); other Host headers receive 421.
+Routes declare their methods: missing routes return 404, unsupported methods 405, and browsing
+uses GET only.
 
-Every response carries a Content Security Policy allowing only the viewer's own stylesheet,
-script, icons, manifest and safely served local knowledge images. Pages and form responses
-use `Cache-Control: no-store`; submitted secret values never appear in error pages.
+Writes require a same-origin URL-encoded form with an unguessable token. Cross-site requests
+and mismatched Origin/Host are rejected. Safari's opaque Origin also requires its same-origin
+fetch signal and token. Restart invalidates open forms; refresh before submitting. Write
+workers retain maintenance admission even if the browser disconnects.
 
-`--host` will bind elsewhere, and you should not use it on an untrusted network. Everything
-the viewer displays — job prompts, run output, workspace files — is content you would not
-want to publish. For phone access, use a private tunnel or an authenticating reverse proxy,
-and leave Enso bound to localhost behind it. Preserve the public Host header through a
-proxy so browser origins match, add that name to `web.hosts`, and restart the viewer.
-Write protection is not an Enso login system.
+Every response carries security headers and a Content Security Policy restricted to the
+viewer's own assets and safely served images. Pages and form responses use
+`Cache-Control: no-store`; submitted secret values never appear in errors.
+
+For phone access, use a private tunnel or authenticating reverse proxy and leave Enso on
+localhost. Preserve the public Host header, add its name to `web.hosts`, and restart the
+viewer. Binding elsewhere with `--host` does not add authentication. Write protection is
+not a login system.

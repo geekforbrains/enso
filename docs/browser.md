@@ -8,14 +8,16 @@ agent's workflow for choosing an account, human login, and authorized actions.
 
 ## Optional requirements
 
-For browser work, install a supported Node.js LTS release, Google Chrome, and the CLI
-itself. These are user-managed requirements; Enso's installer, `init`, and `setup` do not
-install or configure them. Other Enso features need none of them.
+For browser work, install a supported Node.js LTS release, the CLI, and a supported
+browser (Google Chrome in the examples below). These are user-managed requirements;
+Enso's installer, `init`, and `setup` do not install or configure them. Other Enso features
+need none of them.
 
 Install the CLI with npm and check that it is available:
 
 ```bash
 npm install -g @playwright/cli
+playwright-cli --version
 playwright-cli --help
 ```
 
@@ -34,6 +36,7 @@ fall into a shared global scope. The skill uses `work/browser/` inside the Enso 
 as a stable working directory and creates the marker there:
 
 ```bash
+umask 077
 mkdir -p work/browser/.playwright
 cd work/browser
 playwright-cli list
@@ -54,7 +57,7 @@ form or human handoff.
 
 By default, browser state lasts only while that session is open. Use `open --persistent`
 when login should survive browser closure; reopen with the same directory, session name,
-and persistence option. For an intentionally shared account identity, `open --profile`
+browser, and persistence option. For an intentionally shared account identity, `open --profile`
 can select an explicit, operator-chosen user-data directory. This is the whole directory,
 not Chrome's internal `Default` or `Profile 1` subdirectory. Use an automation directory
 instead of pointing Playwright at the person's everyday Chrome data.

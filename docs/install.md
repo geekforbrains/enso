@@ -8,7 +8,7 @@
   `grok`, `agy`, or `opencode`. Enso drives them; it does not manage their credentials.
 - **A transport**: a Slack app in Socket Mode, or a Telegram bot token.
 - macOS or Linux. The service integration uses launchd or systemd.
-- Optional **browser work** needs Node.js, the official Playwright CLI, and Chrome,
+- Optional **browser work** needs Node.js, the official Playwright CLI, and a supported browser,
   installed by you. See [Browser](browser.md) for setup; these are not Enso dependencies.
 
 ## Install
@@ -117,11 +117,10 @@ A fresh home also receives the [knowledge starter](knowledge.md#starter-collecti
 It is seeded once; repeating initialization preserves edits and deletions, and existing
 homes keep their own collections and conventions.
 
-Apply validates a full document before saving it privately and seeds missing bundled jobs
-with the chosen agent.
-Existing jobs retain their own agent. It does not contact a bot or
-start the service; an initialized home and a valid config are intermediate steps, not proof
-that Enso can reply. Authenticate the provider CLI manually and start Enso when ready.
+Apply validates and privately saves the complete document, then seeds missing bundled
+command jobs in `default`. Existing jobs are preserved. It does not contact a bot or start
+the service; valid configuration alone does not prove Enso can reply. Authenticate the
+provider CLI manually and start Enso when ready.
 See [Configuration](configuration.md#applying-configuration) for conflict handling and
 [CLI](cli.md#onboarding-contracts) for the machine-readable result fields.
 For a guided host that collects tokens and pairs the owner before applying configuration,
@@ -157,15 +156,9 @@ enso logs --job meteor:meteor-forum-watch
 enso logs --turn a1b2c3
 ```
 
-Editing workspace `workspace.json` or project `PROJECT.md` needs no restart.
-Editing `config.json` needs no restart for `bindings`, `defaults`, `providers`, `agent`,
-`runs`, and `heartbeat`: the service reads the file again
-for its next chat turn and scheduler tick, the same way `JOB.md` files are reloaded every
-minute. `transports` and `logging` are read when `enso serve` starts, so a change there
-needs `!restart` in chat or `enso service restart`; `web` is read when the viewer starts,
-so a change there needs `enso web stop`, then `enso web start`. A file that is invalid
-when it is read is logged once and the last valid configuration stays in force; see
-[Applying configuration](configuration.md#applying-configuration).
+Workspace settings, project definitions, jobs, bindings, and agent choices reload without a
+restart. Invalid configuration is logged once and the last valid copy stays active. See
+[Applying configuration](configuration.md#applying-configuration) for reload boundaries.
 
 ## Add secrets
 
@@ -217,7 +210,7 @@ launcher or changing the captured environment.
 
 There is one fixed viewer unit per OS user, even with multiple Enso homes. `install`
 can adopt a standalone viewer or replace a compatible handwritten unit for the same
-home, including the existing `com.enso.web` workaround. It stops that viewer first;
+home. It stops that viewer first;
 there is no need to create a second unit. A unit for another home, an unrecognized
 command, a symlink, or an indirect/overridden command or home is left unchanged with
 an error. Resolve custom unit overrides manually before using these commands.

@@ -1,45 +1,35 @@
 # Knowledge
 
-Knowledge is a collection of ordinary Markdown files maintained through conversation with
-Enso. The [web viewer](web.md) provides read-only folder browsing, search, and linked note
-reading. Files remain usable outside Enso; the viewer is not an editor or the source of truth.
+Knowledge is ordinary Markdown maintained through conversation and the CLI. Files are the
+source of truth and remain usable outside Enso. The [viewer](web.md#knowledge) browses,
+searches, and reads them without editing.
 
 ## Starter collection
 
 A fresh installation starts with `!Inbox/`, `Meta/`, `Memory/`, `People/`, `Projects/`,
 `Areas/`, `Topics/`, `Ideas/`, and `Archive/` under shared knowledge. `Meta/Guide.md` owns
-editable filing and writing conventions; `Meta/Index.md` is the initial navigation entry.
+editable filing and writing conventions; `Meta/Index.md` provides navigation.
 `Meta/Templates/` contains optional Person and Project note shapes. The
 [bundled guide](../src/enso/bundled/shared/knowledge/Meta/Guide.md) supplies the starting
-conventions; users can change the folders, guide, index, and templates through conversation.
-These are ordinary managed notes with fresh identities and creation dates for each install.
-Template bodies are copied without their metadata.
+conventions. These are user-owned notes with fresh IDs and dates. Change them through
+conversation; copy only template bodies, not their metadata.
 
-The starter is installed once during fresh-home initialization. It is user content,
-separate from upgrade-managed skill files: repeated initialization, updates, audits, and
-service startup never restore edited, moved, or deleted starter notes. Existing homes,
-including those with an empty shared knowledge root, are not seeded or reorganized.
-An interrupted fresh initialization retains its intent for retry; if a knowledge root has
-appeared meanwhile, its contents are preserved rather than filled in or replaced.
-Once publication begins, the one-time seed is consumed. An interruption at that point can
-leave the starter absent; retrying never risks recreating notes the user may have removed.
+Initialization installs the starter once. Updates, audits, startup, and repeated
+initialization never restore changed or deleted notes. Existing homes, even with an empty
+knowledge root, are not seeded. Interrupted initialization retries only while no collection
+exists and publication has not begun; a later interruption can leave the optional starter
+absent rather than risk recreating user-deleted notes.
 
-Older homes without a guide use the knowledge skill's formatting fallback and their
-existing filing conventions. Adopting the starter in an existing collection is an explicit
-editing task, not an automatic migration. The folders do not enable a memory writer,
-capture job, or gardener; automation is configured separately.
+Homes without a guide keep their filing conventions and use the skill's formatting fallback.
+Adopting the starter in an existing collection requires an explicit editing task. Folders
+such as `Memory/` are ordinary knowledge; automation is configured separately.
 
 ## Finding and maintaining knowledge
 
-Knowledge holds current maintained facts and useful reference material. Agents use the
-knowledge CLI and `enso-knowledge` skill, starting with relevant folders in shared knowledge.
-Broaden a lookup deliberately when needed; selecting a workspace organizes context rather
-than enforcing confidentiality. [Workspaces](workspaces.md#context-selection-in-020) owns
-selection.
-
-Keep a confirmed fact in its owning knowledge note with source context beside it. For
-example, the currently agreed support hours belong in one maintained note that other
-notes link to.
+Use the knowledge CLI and `enso-knowledge` skill, starting in the relevant shared folders
+and broadening as needed. Maintain each fact in one owning note with its source context;
+other notes link to it. Folders and [workspace selection](workspaces.md#context-selection-in-020)
+organize context without restricting access or automatically loading notes.
 
 ## Locations and context
 
@@ -74,24 +64,16 @@ operations require their root to be selected, just like paths. The viewer's stab
 and cross-root links continue to resolve globally. [CLI](cli.md#knowledge) owns the command
 signatures.
 
-Nested folders may contain both notes and subfolders. Start agents in the relevant branch,
-read selectively, and broaden when needed; folders organize context but do not create
-access permissions or automatically load notes.
-
-The [viewer](web.md#knowledge) owns folder browsing, All notes, search, and pagination.
-Enso caches parsed notes in memory using file identity, size, modification time, and change
-time. Each scan retains only the current versions of the files it finds, dropping removed
-files and previous versions. The cache follows the current collection rather than evicting
-notes partway through a large scan. File discovery still runs on every visit, so direct
-edits, imports, renames, and deletions appear on refresh. Markdown remains authoritative;
-there is no database index or migration.
+Folders can contain notes and subfolders. Each visit discovers current files and caches
+unchanged parsed notes using file identity, size, modification time, and change time.
+Removed files and superseded versions leave the cache. Direct edits, imports, renames, and
+deletions appear on refresh; there is no database index.
 
 ## Where new notes go
 
-New notes go in shared knowledge unless the user gives a different filing rule. This applies
-to interactive turns, jobs, Heartbeat beats, and agents running outside Enso. Find and update
-an existing note where it lives. Each fact keeps one owning note that others link to rather
-than copy; a retained workspace note can still be linked with
+New notes go in shared knowledge unless the user gives a different filing rule, including
+from chat, jobs, Heartbeat, and agents outside Enso. Update existing notes where they live;
+a retained workspace note can be linked with
 `[[workspace:research:Projects/Topic]]`.
 
 The bundled `enso-knowledge` skill and `AGENTS.md` templates carry this default. Existing
@@ -126,30 +108,20 @@ The note's contents.
 | `created` | Set on new notes; optional on imports | Original creation time. |
 | `updated` | Set on new notes and substantive edits; optional on imports | Latest content update, including repaired links. |
 
-Timestamps use ISO 8601 with a timezone; Enso writes UTC ending in `Z`. An imported file's
-filesystem timestamp does not prove when its contents were created or updated, so unknown
-dates stay absent. `updated` cannot precede `created`. A move that does not change the body
-does not change its update time. Neither does a format migration, such as home revision 2
-rewriting `general:` links to `shared:` in notes: it is not a content
-update.
+Timestamps use ISO 8601 with a timezone; Enso writes UTC ending in `Z`. Unknown import dates
+remain absent: neither import time nor file modification time becomes note metadata.
+`updated` cannot precede `created`. A later substantive edit sets `updated` while leaving
+unknown `created` absent. Moves without body changes and format migrations preserve dates.
 
-For example, an imported reference with no known dates has only
-`schema: enso.note/v1` and its preserved or newly assigned `id`. Neither the import date
-nor the source file's modification time becomes `created` or `updated`. A later substantive
-CLI edit sets `updated` to that edit's time while leaving an unknown `created` absent.
+These are the only frontmatter fields. Titles come from filenames without `.md`; paths
+provide context. Sources belong beside the relevant text in the body. Updates, adoption,
+and moves refuse duplicate IDs, including in linked notes needing repair, even with an exact
+path. Repair duplicate identity deliberately first.
 
-These are the only frontmatter fields. There are no types, tags, aliases, summaries, or custom
-property namespaces in v1. Titles come from filenames, with `.md` removed; paths supply folder
-and workspace context. Sources and useful context belong in the body near the relevant text.
-Duplicate IDs are reported and never arbitrarily resolved. Managed updates, adoption,
-and moves (including linked notes they repair) refuse duplicate identity even when given
-an exact path; inspect and repair the duplicate deliberately first.
-
-Legacy notes with absent or invalid metadata remain readable by path. The viewer exposes core
-properties and metadata problems; View source retains the original document. Core auditing is
-read-only and reports independent metadata, identity, link, and heading problems together.
-`enso doctor` summarizes this audit across all knowledge roots; the scoped knowledge audit
-retains the complete findings. Neither check proves factual truth or appropriate filing.
+Notes with absent or invalid metadata remain readable by path, with findings and the original
+source visible. Read-only audits report metadata, identity, link, and heading problems.
+`enso doctor` summarizes every root; scoped knowledge audits provide complete findings.
+Neither verifies factual truth or appropriate filing.
 
 ## Links and attachments
 
@@ -183,10 +155,9 @@ not navigation. CommonMark parsing distinguishes nested list links from actual i
 code indentation and trailing spaces are preserved. Markdown reference-link definitions are
 supported as well.
 
-Clicking a resolved note opens it inside the viewer. Notes with valid unique IDs use stable
-URLs; legacy notes use scope/path URLs. Browser back/forward and open-in-new-tab work normally.
-The note view includes backlinks. External HTTP, HTTPS, and mail links remain external; unsafe
-schemes and paths escaping the knowledge root are refused.
+Resolved notes open inside the viewer, with backlinks and stable URLs for unique valid IDs;
+other notes use scope/path URLs. HTTP, HTTPS, and mail links remain external. Unsafe schemes
+and paths escaping the root are refused.
 
 Keep attachments within a knowledge root and link with ordinary Markdown or Obsidian-style
 `![[image.png]]`. A bare wiki attachment name must also be unique in its scope. Local images
@@ -211,20 +182,18 @@ filesystem moves preserve the ID URL but do not repair Markdown paths.
 
 ## Consistency and user preferences
 
-The bundled `enso-knowledge` skill owns note operations. The shared `Meta/Guide.md`, when
-present, owns editable organization and writing conventions for all knowledge roots;
-`references/formatting.md` under the skill supplies a fallback for older homes without it.
-The skill's `scripts/lint.py` checks mechanical style. [Customizing](customizing.md#knowledge-formatting)
-explains how to change conventions and affected checks together.
+`enso-knowledge` owns note operations; shared `Meta/Guide.md` owns organization and style
+across roots. The skill's `references/formatting.md` is the fallback when no guide exists.
+[Customizing](customizing.md#knowledge-formatting) explains changing conventions and checks.
 
 User preferences govern filing, note shapes, and style; they are not core validation rules.
 Metadata, link identity, and filesystem safety remain enforced by Enso. The viewer never
 runs the style checker or treats fetched note content as agent instructions.
 
-After writing, run the core audit and the editable style checker, fix supported issues, and
-report unresolved source/link problems without inventing their answers. The default style
-checker is read-only, excludes metadata and code, and checks whitespace, blank lines, heading
-spacing, and final newlines. It does not impose a title heading or a maximum line length.
+After writing, run the core audit and the skill's `scripts/lint.py`, fix supported issues,
+and report unresolved source/link problems. The read-only style checker excludes metadata
+and code; it checks whitespace, blank lines, heading spacing, and final newlines without
+requiring a title heading or maximum line length.
 
 ## Writing, adoption, and recovery
 

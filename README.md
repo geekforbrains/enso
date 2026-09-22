@@ -38,13 +38,12 @@ what's coming up, and what needs your attention.
   optional skills from the official catalog.
 
 Enso is powered by Claude Code, Codex, Grok, Antigravity, or OpenCode. Each provider
-CLI manages its own sessions and permissions. Enso passes configured provider arguments
-through and leaves workspace policy files to the provider; it has no workspace restriction
-mode. See [provider permissions](docs/configuration.md#provider-permissions-and-installation-trust).
+CLI manages its own sessions and permissions. Agent executions use an explicit provider,
+model, and effort; recurring command jobs run without an agent. See
+[provider configuration](docs/configuration.md#providers).
 
-The provider, model, and effort are always explicit. A workspace organizes context;
-it is not a security sandbox. The viewer is primarily a window into Enso; its Secrets
-section can add and delete encrypted secrets, but it is not a general control panel.
+The viewer browses work and operational state. Its Secrets section also adds and deletes
+encrypted credentials for agents and jobs.
 
 ![Enso's task board showing example projects in light and dark themes](assets/readme/viewer-tasks.png)
 
@@ -55,7 +54,7 @@ section can add and delete encrypted secrets, but it is not a general control pa
 Enso is in pre-1.0 beta and runs on macOS and Linux. You need an authenticated agent
 CLI and a Slack app or Telegram bot; the release installer supplies Python and uv
 when needed. Optional [browser work](docs/browser.md) uses Node.js, Playwright CLI, and
-Chrome installed separately by you.
+a supported browser installed separately by you.
 
 Install Enso with one command:
 

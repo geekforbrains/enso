@@ -10,43 +10,21 @@ with tokens redacted.
 The required [`default` operator workspace](workspaces.md#operator-workspace) must exist,
 even when no binding selects it. Configuration writes validate this before saving.
 
-## Configuration ownership in 0.2.0
+<a id="configuration-ownership-in-020"></a>
 
-Workspace settings live in `workspace.json`, projects in `PROJECT.md`, and jobs in `JOB.md`.
-`config.json` contains installation settings only.
+## Configuration ownership
 
-| Setting | Owning file in 0.2.0 |
+| Setting | Owning file |
 | --- | --- |
 | Transports, bindings, defaults, providers, and service options | Home `config.json` |
-| Optional workspace agent triple and provider-argument overrides | `workspaces/<name>/workspace.json` |
+| Optional workspace agent and provider arguments | `workspaces/<name>/workspace.json` |
 | Project definition and workflow | `workspaces/<name>/projects/<KEY>/PROJECT.md` |
 | Job definition | `workspaces/<name>/jobs/<job>/JOB.md` |
 
-For example, `workspaces/team/workspace.json` holds `team`'s agent override, while
-`"bindings": { "slack:C0123": "team" }` stays in `config.json`. The `workspaces` and `projects`
-blocks are rejected in `config.json`. `workspace.json` is optional: without it the workspace uses the installation defaults. Its settings are read
-fresh like bindings. The formats are [workspace.json](#workspacejson) and
-[PROJECT.md](#projectmd-in-020) below.
-The [workspace layout](workspaces.md#ownership-in-020) owns paths, project scripts, qualified
-`<workspace>:<job>` references, and installation-wide concurrency groups.
-
-Bindings are the sole chat access rule, including Telegram; `allowed_users` is removed.
-The [connection access contract](connections.md#access-in-020) owns the audience trusted by
-a binding, the canned unbound notice, and trusted pairing. Missing bound workspaces are
-errors, with no fallback for incoming messages. Outbound sends validate their selected owner
-and destination independently, so an unrelated binding to a missing workspace does not block
-them.
-[Workspace context](workspaces.md#context-selection-in-020) owns CLI selection through
-`ENSO_WORKSPACE` and optional `--workspace`.
-
-The config schema is `version: 2`, Enso's
-workspace restriction mode is removed, and workspace settings load from `workspace.json`.
-[Provider permissions](#provider-permissions-and-installation-trust) owns the launch and
-trust contract. Version 1 is refused without parsing its fields, using
-one message: "This Enso home predates 0.2.0; automatic migration is unsupported:" followed by
-the [migration guide's repository URL](migration.md). Managed migrations start at 0.2.0;
-changing the version number alone is not a migration. An old database or home-level
-`jobs/` directory is also refused with that message.
+`config.json` uses schema `version: 2`. Configuration objects accept only documented keys;
+unknown fields are errors. [Migration](migration.md) covers unsupported older homes and
+managed upgrades. [Workspaces](workspaces.md#ownership-in-020) owns resource locations and
+CLI context selection.
 
 ### workspace.json
 
@@ -58,11 +36,10 @@ The optional file contains a JSON object with only these fields:
 | `providers` | Optional map from provider name to an object containing only `args`, a list of strings; replaces that provider's global arguments. |
 
 Omitting `agent` inherits `defaults`. Omitting a provider override inherits its global
-arguments; an explicit `args: []` replaces them with an empty list. The existing provider,
-model, and effort validation rules still apply. Partial triples, unknown fields, provider
-executable paths, model catalogs, bindings, credentials, and `restricted` are not accepted
-here. There is no workspace-name field: the directory supplies it. Agent working guidance
-belongs in `AGENTS.md`; this file contains configuration only, with no comments or prose.
+arguments; an explicit `args: []` replaces them with an empty list. Provider, model, and
+effort must pass the same validation as installation defaults.
+The directory supplies the workspace name. Working guidance belongs in `AGENTS.md`;
+`workspace.json` contains only configuration, without comments or prose.
 
 For example, `workspaces/team/workspace.json` can contain:
 
@@ -92,17 +69,14 @@ It preserves their frontmatter settings as JSON, deletes the Markdown files, and
 their explanatory text. Normal configuration loading rejects leftover `WORKSPACE.md` files
 instead of silently losing their overrides.
 
-### PROJECT.md in 0.2.0
+<a id="projectmd-in-020"></a>
 
-YAML frontmatter contains the [project fields](#projects): `name`, `repo`, `stages`, `base`,
-`worktree_root`, `setup`, `copy`, `max_concurrency`, `hooks`, and `script_timeout`. `name` and `stages` are required; the
-remaining fields retain their existing optionality and defaults. Stage and check objects
-retain the fields, validation, and defaults in that section. There is no additional
-`key`, `workspace`, or schema-version field. Unknown fields are errors.
+### PROJECT.md
 
-The key comes from `projects/<KEY>/` and the workspace from its parent workspace. Keys
-remain unique across the installation; a duplicate is reported with both paths rather
-than selecting one. For example, `workspaces/team/projects/APP/PROJECT.md` can contain:
+YAML frontmatter holds the [project fields](#projects); `name` and `stages` are required.
+The key comes from `projects/<KEY>/` and the workspace from its parent directory. Keys are
+unique across the installation; duplicates report both paths. For example,
+`workspaces/team/projects/APP/PROJECT.md` can contain:
 
 ```yaml
 ---
@@ -121,14 +95,11 @@ hooks:
 ---
 ```
 
-This defines project `APP` in `team`. A non-Git project needs only `name` and, for example,
-`stages: [work]`. Markdown after the frontmatter may describe the project; it is not another
-source of workflow settings. Setup, stage commands, checks, and lifecycle commands start
-in the directory containing `PROJECT.md`. Supporting scripts live there and explicitly
-enter `ENSO_TASK_DIR` when they need the task's code; see
-[Tasks](tasks.md#project-files-and-scripts-in-020) for a complete script example. External
-repositories remain at `repo`, and `worktree_root` and `copy` keep their repository-relative
-meaning. Moving the definition does not move or retarget an existing task's worktree.
+Markdown after the frontmatter may describe the project; it does not configure workflow.
+Commands start beside `PROJECT.md`; scripts explicitly enter `ENSO_TASK_DIR` to work on task
+code. See [Tasks](tasks.md#project-files-and-scripts-in-020) for a script example. `repo`
+names the external repository; `worktree_root` and `copy` remain repository-relative.
+Moving the definition does not move or retarget existing task worktrees.
 
 ## Applying configuration
 
@@ -138,61 +109,58 @@ replacement, with no merging of omitted fields. Validation problems are reported
 and leave the current file unchanged. Successful writes use mode `0600` (owner read/write).
 Transport tokens stay literal in this file; environment placeholders are not expanded.
 
-For an update based on an earlier read, pass `--expected-hash HASH`, using the exact-byte
-SHA256 from `enso config check --json` or the previous apply. Use `missing` to require that
-no config exists. A stale hash or busy writer lock refuses the change. Enso's writers share
-`~/.enso/runtime/locks/config.lock`; do not delete it while Enso commands are running. Programs
-editing config themselves should use the apply command and revision check to participate in
-that protection. A symbolic-link `config.json` is preserved and refused by apply.
+Pass `--expected-hash HASH` with the exact-byte SHA256 from `enso config check --json` or
+the previous apply to prevent overwriting intervening edits. Use `missing` to require an
+absent config. A stale hash, busy writer lock, or symbolic-link `config.json` refuses the
+write. Writers share `$ENSO_HOME/runtime/locks/config.lock`; use apply with revision checks
+for scripted edits, and never delete the lock while Enso commands are running.
 
-Apply installs only missing bundled jobs after a valid default agent is known, using that
-agent for their initial configuration. It preserves any existing job directory, including
-edited jobs or deleted scripts. Each new job appears as a complete directory, so an interrupted
-installation is retryable. If config was saved but job installation failed, JSON reports
+Apply installs missing bundled command jobs in `default`.
+Existing job directories, edits, and deleted scripts are preserved. New jobs appear as
+complete directories, so interrupted installation is retryable. If job installation fails
+after saving config, JSON reports
 `applied: true`, `jobs_complete: false`, and `ok: false`; fix the filesystem problem and
-repeat apply with the returned revision. Apply does not start services or send messages.
-It works while the service is running: the write is atomic, and the next chat turn or
-scheduler tick reads the new document. Apply refuses while a pairing attempt is active,
-hosted or in the `setup` wizard, and when the pairing state cannot be read. During an
-[update](install.md#upgrading) the CLI itself refuses new commands, so a write never lands
-in an update's snapshot.
+repeat apply with the returned revision.
+
+Apply works while the service runs and does not start services or send messages. Active
+pairing, unreadable pairing state, and [update maintenance](install.md#upgrading) block writes.
 
 ### Patching one value
 
-`enso config set PATH VALUE` stores one value in the current `config.json` and
-`enso config unset PATH` removes one key. `PATH` is dotted: each segment is an object key,
-so a provider or binding name is just a segment, and `set` creates
-the objects on the way when they are missing. `VALUE` is JSON; text that is not valid JSON
-is stored as a string, so `enso config set defaults.model opus` and
-`enso config set providers.claude.args '[]'` both do what they look like. Quote a
-string that would parse as JSON, such as `'"123"'`, to keep it a string, and put `--`
-before a value that starts with `-`, after any options. Removing a key that is not set is
-a problem. The patched document takes exactly the path apply does — the same lock,
-revision check, symlink refusal, validation, atomic write, and job installation — and
-reports the same fields, so a result that fails validation leaves the file unchanged. A
-missing or unreadable `config.json` is reported rather than created; apply is the repair
-path. Neither command prints the document or a value.
+`enso config set PATH VALUE` stores one value; `enso config unset PATH` removes one key.
+Each dotted `PATH` segment is an object key. `set` creates missing parent objects, parses
+`VALUE` as JSON, and treats non-JSON text as a string:
+
+```bash
+enso config set defaults.model opus
+enso config set providers.claude.args '[]'
+```
+
+Quote strings that would parse as JSON (`'"123"'`), and put `--` after options before a
+value starting with `-`. Unsetting an absent key fails. Both commands use apply's validation,
+lock, revision check, atomic write, and job installation, and return the same fields without
+printing values. They require a readable existing `config.json`; use apply to create or repair it.
 
 ### While the service runs
 
-`enso serve` checks `config.json`, workspace settings, and project definitions before each chat turn, each job
-scheduler tick, and whenever a transport or chat command resolves a binding. Files are
-parsed again when they change, including creation, replacement, or removal of
-`workspace.json` or `PROJECT.md`. Thus `bindings`, `defaults`, `providers`, `agent`, `runs`,
-`heartbeat`, workspace overrides, and project definitions take effect on the next turn or tick without a
-restart, however the file was written. A turn or
-job run keeps the snapshot it started with; a queued message runs in the workspace it was
-bound to when it arrived, and is dropped with a notice if that binding is removed before it
-runs. `transports` and `logging` are read when `enso serve` starts, so a change there needs
-`!restart` in chat or `enso service restart`; `web` is read when the viewer starts, so a
-change there needs `enso web stop`, then `enso web start`. Apply, set, and unset report any
-of the three as `restart_required: true` in JSON and as a line in text output.
-`restart_required` compares those three sections of the replaced and applied documents; it
-is false on a fresh home and whenever nothing was applied. A provider whose directory is new
-to the service unit also needs `enso service install`; see
-[The service](install.md#the-service).
+`enso serve` reloads changed configuration, workspace settings, and project definitions
+before chat turns, scheduler ticks, and binding resolution. Creation or removal of
+`workspace.json` and `PROJECT.md` is included. Turns and jobs keep their starting snapshot;
+queued messages follow the [connection admission rules](connections.md#access-in-020).
 
-An invalid installation or workspace file is logged once per observed revision, and chat
+Most settings take effect without a restart. Exceptions are:
+
+| Changed setting | Required action |
+| --- | --- |
+| `transports`, `logging` | `enso service restart` or chat `restart` |
+| `web` | `enso web stop`, then `enso web start` |
+| Provider executable in a directory absent from the service PATH | `enso service install`; see [The service](install.md#the-service) |
+
+Apply, set, and unset report changed `transports`, `logging`, or `web` as
+`restart_required: true` in JSON and identify the restart in text. The flag is false on a
+fresh home or when nothing was applied.
+
+An invalid configuration, workspace, or project file is logged once per observed revision, and chat
 turns and jobs keep the last valid combined snapshot until all settings are valid again.
 Removing `workspace.json` is valid and restores inheritance on the next snapshot.
 [Heartbeat](heartbeat.md) is stricter: it stops admitting assessments and cancels running
@@ -201,15 +169,6 @@ ones while the file is invalid.
 `enso init` prepares the home before the first apply; see
 [Non-interactive setup](install.md#non-interactive-setup). CLI JSON contracts are documented in
 [Onboarding contracts](cli.md#onboarding-contracts).
-
-Every object below accepts only the keys documented for it. An unrecognized member — a typo
-such as `logging.max_byte`, or a key from some other tool — is a problem reported by its full
-path alongside the others, never a silently ignored extra that leaves the default in force.
-The names you choose are not members: binding keys, workspace names, and provider names stay
-free-form within their own rules, and only the objects stored under them are closed. `version`
-names the schema itself, so a file declaring anything but integer `2` is reported as an unsupported
-version and its members are left alone rather than measured against version 2. Version 1
-gets only the migration notice above.
 
 ## `config.json`
 
@@ -269,9 +228,8 @@ bind. When you apply the manifest to an existing app with more scopes, revoke it
 first and then reinstall — Slack never removes scopes from a live token, and the reinstall
 drops the bot from its channels, so invite it again.
 
-**Telegram** is private chats only. Each human sender needs an explicit
-`telegram:<user id>` binding. `allowed_users` is rejected with a diagnostic explaining how
-to replace it with bindings; even an empty or null value is invalid.
+**Telegram** supports private chats only. Each human sender needs an explicit
+`telegram:<user id>` binding.
 
 `notify` is where job failure alerts and untargeted `enso message send` calls go. It is a
 conversation id (`C…`, `G…`, or `D…`; use `enso slack open-dm U…` for a person) or a
@@ -320,32 +278,20 @@ Only workspaces with overrides need a `workspace.json`. The directory
 
 ### Provider permissions and installation trust
 
-One installation is one trusted environment for a person or a small team. Workspaces
-organize context and ownership; they do not isolate agents, credentials, or files from
-other workspaces. Teams needing separation run separate installations on separate machines
-or VPSs. [Concepts](concepts.md#installation-trust-model) owns this trust model.
+Workspaces organize context and ownership within one trusted installation; they do not
+isolate agents, credentials, or files. See the [trust model](concepts.md#installation-trust-model).
 
-Enso has no workspace restriction mode. `restricted` is rejected in `workspace.json`,
-including when its value is `false`; the old `workspaces` config block is also rejected.
-Chat, jobs, and Heartbeat start their provider in the workspace directory with the configured arguments. An override replaces
-the global list, including an explicit empty list; removing the old mode does not change
-setup's provider defaults or insert bypass flags into existing argument lists.
+Chat, jobs, and Heartbeat launch providers in their workspace with the configured arguments.
+Workspace arguments replace the global list, including an explicit empty list. Configure
+permissions through the provider's flags or workspace policy files, such as
+`.claude/settings.json`, `.codex/config.toml`, `.grok/config.toml`, or `opencode.json`.
+Enso does not inspect or enforce those files or provider trust settings.
 
-Provider CLIs can still load their own workspace policy files, such as
-`.claude/settings.json`, `.codex/config.toml`, `.grok/config.toml`, and `opencode.json`.
-The provider controls loading, trust requirements, and enforcement. Enso neither requires
-nor inspects these files or provider trust settings, and the workspace audit leaves them
-alone. Configure and verify permissions with the provider itself.
-
-Job commands and gate/postrun scripts, heartbeat gates, command/integration stages, workflow checks,
-and lifecycle scripts run with the service account's access, outside provider policies.
-Transport authentication, pairing, admission checks, input validation, safe file handling,
-subprocess limits, and authorization for external actions remain in force.
-
-`ENSO_WORKSPACE` selects context; it does not gate `enso config apply`, `set`, or `unset`.
-These commands retain validation, conflict detection, locks, and atomic writes. A workspace
-name is not an authenticated identity, and Enso does not protect configuration from direct
-writes by a process with access to it.
+Job commands, gate/postrun scripts, heartbeat gates, workflow checks, and lifecycle scripts
+run with the service account's access, outside provider policies. Transport authentication,
+pairing, input validation, safe file handling, and action authorization still apply.
+`ENSO_WORKSPACE` selects context; it does not restrict configuration writes or authenticate
+an agent. Processes with filesystem access can write configuration directly.
 
 The bundled `enso-security` skill guides agents through these responsibilities. The
 [public security guide](https://ensobot.ai/docs/security/) is maintained separately; this
@@ -395,76 +341,46 @@ resume or clear. Jobs without postrun use plain batch execution and capture no s
 
 ### OpenCode
 
-OpenCode models use their full `<provider>/<model>` ids. For example, the copy-ready id for
-the default OpenRouter model is `openrouter/deepseek/deepseek-v4-flash`, not
-`deepseek/deepseek-v4-flash`. Enso's provider is still named `opencode`; OpenRouter is the
-model's route, not another Enso provider. `providers.opencode.models` may contain any full
-id OpenCode accepts. [`enso models`](cli.md#models) lists full, copy-ready ids from
-models.dev's OpenRouter catalog, restricted by default to models that support tool calls.
-The lookup never edits this list or any other part of `config.json`.
+OpenCode models use full `<provider>/<model>` ids, such as
+`openrouter/deepseek/deepseek-v4-flash`. The Enso provider remains `opencode`.
+`providers.opencode.models` may contain any full id OpenCode accepts.
+[`enso models`](cli.md#models) lists OpenRouter ids and their supported efforts from
+models.dev; it never edits configuration. That command's reference owns catalog caching,
+fallbacks, and output.
 
-For OpenCode, `effort` is the exact model variant passed as `--variant`. Enso accepts
-`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`, but support is model-specific
-and can be a sparse set: choose one shown in that model's `EFFORTS` column from
-`enso models`. Enso passes the value unchanged, and OpenCode may silently ignore a variant
-the model does not support.
+`effort` is passed unchanged as `--variant`. Enso accepts `none`, `minimal`, `low`, `medium`,
+`high`, `xhigh`, and `max`, but model support can be sparse or absent. Choose from the model's
+`EFFORTS` column; OpenCode may silently ignore unsupported variants. The catalog's derivation
+tracks the OpenCode release Enso was tested against.
 
-That column is derived exactly as OpenCode derives its own variants: the model's published
-effort list when models.dev has one, with a null entry spelled `none`; `high` and `max` when
-the model publishes only a thinking-token budget; and OpenCode's per-family default
-otherwise, which for families such as Qwen, Kimi and MiniMax is no variant at all. It tracks
-the OpenCode release Enso is tested against, so upgrading OpenCode can change what a model
-lists.
+The catalog uses a model's published effort list (`null` becomes `none`), `high` and `max`
+for a thinking-token budget, or OpenCode's family defaults otherwise. Some families have
+no selectable variant.
 
-The lookup reuses a catalog for one hour. It considers Enso's `cache/models.json` and
-OpenCode's `$XDG_CACHE_HOME/opencode/models.json` (or `~/.cache/opencode/models.json` when
-that variable is unset or empty), choosing the newest valid fresh copy before fetching
-models.dev. Enso only reads OpenCode's cache; refreshes are written to its own home. A
-failed refresh falls back to the newest valid stale copy with a warning. See the
-[command reference](cli.md#models) for its exact output and JSON schema.
+Setup supplies `--auto`, which approves permissions not explicitly denied by OpenCode's
+configuration. It does not override `deny`. Use OpenCode's permission rules and workspace
+argument overrides to choose the intended behavior.
 
-Setup writes `--auto` in `args`. That flag approves only permissions that OpenCode's own
-configuration has not explicitly denied; it does not override a `deny` rule or make a
-restrictive permission profile unrestricted. Edit the OpenCode permission rules, or use a
-workspace-specific `providers.opencode.args`, when a workspace needs a different boundary.
-
-OpenCode reads a `PWD` it inherits in preference to the directory it was started in, so
-Enso names the workspace explicitly with `--dir` on every run. A service launched from
-somewhere else still works in the selected workspace. Nothing is asked of you.
-
-OpenCode assigns the session id and reports it in its event stream. Enso stores that id for
-the conversation and workspace, then resumes the next interactive turn with `-s`. Each job
-trigger starts a fresh session; postrun follow-ups within that run resume it with `-s`.
-`clear` in chat runs `opencode session delete <id>` from the workspace and forgets Enso's copy.
+Enso always passes `--dir` to select the workspace, avoiding an inherited `PWD`. OpenCode
+assigns session IDs; subsequent turns and job postrun follow-ups resume with `-s`.
+Each job trigger starts fresh. Chat `clear` runs `opencode session delete <id>` from the
+workspace and forgets Enso's copy.
 
 ### Antigravity
 
-Antigravity (`agy`) does not work in the directory it is started in. It works in the folder
-registered for a *project* in `~/.gemini/config/projects/`, and launched without one it
-reads no `AGENTS.md` and finds none of the workspace's skills. So the first launch in a
-workspace passes `--new-project`, which tells Antigravity to register the directory it was
-started in, and every later launch looks that entry up and passes `--project <id>`. Enso
-itself only reads that catalog; Antigravity writes the registration. A lookup that misses
-on a fresh turn registers the workspace again, and a project is adopted only when its first
-folder is the workspace, so a turn can never land in another project's directory. A
-conversation stays pinned to the project it was created in, so a resumed turn carries
-`--conversation <id>` as well — and a resume whose lookup misses registers nothing,
-because the conversation already carries its project.
+Antigravity (`agy`) works in a registered project, not the shell's current directory.
+Enso's first launch passes `--new-project` to register the workspace; later launches use
+`--project <id>` from `~/.gemini/config/projects/`. Enso reads that catalog; `agy` writes it.
+Only a project whose first folder matches the workspace is reused. Resumed conversations
+remain pinned to their original project and never register a replacement.
 
-Antigravity carries the reasoning effort in the model id (`gemini-3.8-flash-high`), and the
-CLI rejects `--effort` alongside such an id and for the `claude-*` models entirely. Enso
-never passes it. For a model id ending in `-low`, `-medium`, or `-high`, Enso reports that
-embedded level in chat and job run metadata, raising or lowering the requested `effort`
-with a log line when it differs. For example, `model: gemini-3.8-flash-high` with
-`effort: low` reports `high`, and a `-low` model with `effort: high` reports `low`.
-The selected model id and command arguments stay unchanged. Models without an effort
-suffix, such as `claude-sonnet-4-6` and `claude-opus-4-6-thinking`, keep the requested
-`low`, `medium`, or `high` value for reporting; it is not sent as a flag to Antigravity.
-`agy models` lists the live catalog and `models` accepts any id from it.
+Antigravity embeds reasoning effort in model ids such as `gemini-3.8-flash-high`; Enso never
+passes `--effort`. A `-low`, `-medium`, or `-high` suffix determines reported effort, with a
+log message if it differs from configuration. Models without a suffix keep the configured
+`low`, `medium`, or `high` for reporting only. `agy models` lists accepted model ids.
 
-Prompts beginning with `/` are read by Antigravity as slash commands. `--disable-slash-commands`
-in `args` stops that, at the cost of skill expansion — which is most of the point of a
-workspace — so it is yours to add, not Enso's.
+Antigravity interprets prompts beginning with `/` as slash commands. Adding
+`--disable-slash-commands` to `args` disables this and skill expansion; Enso does not add it.
 
 ## Projects
 
@@ -499,7 +415,7 @@ that inspect repository code must explicitly enter `ENSO_TASK_DIR`.
 | `worktree_root` | Default `<repo>/.worktrees`; repository-relative, absolute, `~`, or a sibling path |
 | `setup` | Optional bash command run while preparing a new worktree |
 | `copy` | Optional relative repository paths; no absolute paths or `..`; see [copy safety](tasks.md#worktrees) |
-| `max_concurrency` | Positive number of simultaneous project task executions; default 1 |
+| `max_concurrency` | Positive integer limiting simultaneous project task executions; default 1 |
 | `hooks` | Command strings keyed by `after_transition`, `after:STAGE`, or `teardown` |
 | `script_timeout` | Positive seconds per setup/lifecycle script; default 600 |
 
@@ -511,7 +427,7 @@ A string stage is `"work"` or `"approve:human"`. An object stage accepts:
 | `human` | Boolean, default false; waits for operator action |
 | `command` | Nonempty command; the stage runs without a provider |
 | `integrate` | Boolean, default false; the engine owns landing and requires a repo/worktree |
-| `worktree` | Boolean; false keeps work in the Enso workspace, true requires a repo; omitted follows whether the project has a repo |
+| `worktree` | Boolean; true uses a task worktree and requires a repo, false skips it; omitted follows whether the project has a repo |
 | `checks` | Optional list of required check objects; empty means no executable acceptance checks |
 | `max_repairs` | Nonnegative additional repair opportunities, default 2; zero disables repair |
 | `return_to` | Optional earlier stage name; otherwise `return` uses the previous stage |

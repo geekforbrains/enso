@@ -1,13 +1,11 @@
 # Workspaces
 
-A workspace is where an agent works. It is the provider's working directory, the context it
-starts with, and the default home for files that belong to that workspace. It is not a
-sandbox: an explicit task or workspace rule may name another destination.
+A workspace is the provider's working directory and the context for its work. It owns its
+instructions, jobs, projects, and task files. Workspaces share one installation and do not
+isolate files or credentials; see the [trust model](concepts.md#installation-trust-model).
 
-Enso creates the layout below. `enso workspace audit` checks its required infrastructure,
-and `--fix` repairs it while respecting removed optional content folders. The point is that every
-path the agent is told about in `AGENTS.md` actually exists, and that skills are wired up
-rather than assembled by hand.
+`enso workspace create NAME` scaffolds the layout. `enso workspace audit` checks it;
+`--fix` repairs required infrastructure without replacing your content.
 
 ## Layout
 
@@ -30,24 +28,24 @@ Jobs and Heartbeat scripts use their owning workspace, as detailed in the [owner
                        # optional: each CLI's own policy file
 ```
 
-| Directory | What belongs there |
-| --- | --- |
-| `jobs/` | Scheduled and stage jobs, identified as `<workspace>:<job>`. |
-| `projects/` | Project definitions and scripts, each under `<KEY>/`; see [Tasks](tasks.md#projects-and-stages). |
-| `heartbeat/` | Optional root, created only when workspace gate scripts are used. |
-| `workspace.json` | Optional settings; [Configuration](configuration.md#workspacejson) owns its format and reload behavior. |
-| `work/` | Task files and retained output, grouped by task; use an established repository or destination when one exists. |
-| `uploads/` | Chat attachments. Enso writes here; nothing else should. |
-| `skills/` | Skills only this workspace needs. |
-| Policy files | Each CLI's own project-level permission file, in its own format. Optional; Enso neither checks nor enforces it. See [Provider permissions](configuration.md#provider-permissions-and-installation-trust). |
+Names are lowercase kebab-case (`meteor`, `blog-research`), at most 64 characters. The home,
+`workspaces/` container, and workspace must be real directories, not symbolic links.
+Scaffolding creates `skills/`, `jobs/`, `projects/`, `work/`, and `uploads/`, but neither
+`workspace.json` nor `heartbeat/`. Add those when needed; no restart is required.
 
-Names are lowercase kebab-case (`meteor`, `blog-research`), at most 64 characters. The name
-is the directory name, and there is no other valid location. The workspace and its
-`workspaces/` container must be real directories; a symbolic link cannot give a workspace
-a second identity. The scaffold creates `jobs/`, `projects/`, `work/`, `uploads/`,
-and `skills/`. Durable notes live in the home's `shared/knowledge/`. The empty skills
-directory keeps the provider discovery links valid even before you add a workspace skill.
-It creates neither `workspace.json` nor `heartbeat/`; adding either later requires no restart.
+Durable notes go in `$ENSO_HOME/shared/knowledge/`. Keep task files under `work/<task>/`
+unless the task has an established repository or destination. Enso alone writes chat
+attachments under `uploads/`. [Configuration](configuration.md#workspacejson) owns workspace
+settings; provider policy files use the provider's format and enforcement.
+
+The [home layout](concepts.md#home) holds shared instructions, knowledge, skills, and runtime
+state. Write brief workspace guidance in `AGENTS.md`: purpose, terms, approval rules, and
+references to detailed notes. `CLAUDE.md` links to that file. The home instructions and
+shared `Meta/Guide.md` supply the common knowledge workflow; see [Customizing](customizing.md).
+
+`enso init` prepares `default`, filling missing instructions and links while preserving
+existing files and reporting conflicting paths. It is safe to rerun after an interrupted
+scaffold; see [Non-interactive setup](install.md#non-interactive-setup).
 
 ### Consolidating knowledge and work files
 
@@ -67,109 +65,33 @@ shows present content roots. New workspace creation and explicit initialization 
 they never rename, move, or remove existing content. Keep temporary and retained task files
 inside their task's folder rather than adding loose files to the workspace root.
 
-The home itself holds the workspaces and what they share:
+<a id="ownership-in-020"></a>
 
-```text
-~/.enso/
-├── AGENTS.md          # instructions every workspace inherits
-├── CLAUDE.md          # symlink -> AGENTS.md
-├── config.json        # the configuration; readable only by you
-├── skills/            # installed and hand-written skills
-├── shared/knowledge/  # reference shared across workspaces
-├── .gitignore         # optional: yours, for the Git root Enso creates but never commits to
-├── workspaces/<name>/ # one directory per workspace, as above
-├── cache/, runtime/   # Enso's own operating state
-├── enso.db, enso.log  # runs, tasks and beats, and the service log
-└── .claude/skills, .agents/skills
-                       # symlinks -> ../skills, as in a workspace
-```
+## Ownership
 
-`shared/` holds what workspaces share; knowledge is its only entry for now. New notes go
-in `~/.enso/shared/knowledge/` (or `$ENSO_HOME/shared/knowledge/`) by default.
-[Knowledge](knowledge.md) owns placement, the note format, links, searching, and import
-behavior; `enso-knowledge` guides agent maintenance.
+The containing directory owns workspace files. Moving a directory does not transfer existing
+records, sessions, or worktrees; missing or ambiguous ownership is an error.
 
-`AGENTS.md` is the file you write; `CLAUDE.md` is always a symlink to it so both CLI
-families read one document. Skills follow the same rule: `skills/` is the directory you
-write, and the two dot-directories are symlinks to it that the provider CLIs discover. One
-source of truth, generated links everywhere else. Keep `AGENTS.md` short — what the
-workspace is for, what ambiguous terms mean, and any rule that must be visible on every
-single turn. Detail belongs in `$ENSO_HOME/shared/knowledge/`, referenced by path. See
-[Customizing](customizing.md).
-The home instructions direct reference requests to `enso-knowledge` and the editable
-shared `Meta/Guide.md`. Workspace templates start with `## Workspace` and a purpose;
-add specific rules and references only when useful.
-Workspace context is shared when several separate DM bindings select it;
-it is not a confidentiality boundary.
-
-`enso init` prepares this layout for `default`, filling missing instructions and links
-without changing existing files. It reports conflicting files, directories, and links
-instead of replacing them. This also makes an interrupted initial scaffold safe to rerun;
-see [Non-interactive setup](install.md#non-interactive-setup). The ordinary workspace audit
-retains its separately documented repair behavior.
-
-## Ownership in 0.2.0
-
-Workspace-owned files live under their workspace; the containing directory determines
-ownership. Installation settings remain in `config.json`, as described
-in [Configuration](configuration.md#configuration-ownership-in-020).
-
-```text
-$ENSO_HOME/
-├── config.json
-├── AGENTS.md
-├── enso.db
-├── shared/knowledge/             # shared current reference material
-├── skills/                       # shared skills
-└── workspaces/<name>/
-    ├── AGENTS.md                 # purpose and working conventions for the agent
-    ├── workspace.json           # optional agent triple and provider arguments
-    ├── jobs/<job>/
-    │   ├── JOB.md
-    │   ├── run.sh                # optional command script; filenames are chosen by the job
-    │   ├── gate.sh               # optional
-    │   └── postrun.sh            # optional
-    ├── projects/<KEY>/
-    │   ├── PROJECT.md
-    │   └── *.sh                  # optional project scripts
-    ├── heartbeat/                # optional follow-up gate scripts and helpers
-    ├── work/                     # task files and retained output
-    ├── uploads/
-    └── skills/                   # scaffolded; workspace-specific skills are optional
-```
-
-This is the content layout. Instruction links, provider discovery, private configuration,
-locks, logs, caches, and managed runtime support still have the documented homes in
-[Concepts](concepts.md#home) and [Skills](#skills). Provider authentication remains with the
-provider CLI on the machine. A provider's optional workspace policy files remain its own;
-Enso's restriction mode is removed without silently changing provider arguments.
-
-| Resource | Source of truth | Owner |
+| Resource | Source of truth | Scope |
 | --- | --- | --- |
 | Installation settings and bindings | Home `config.json` | Installation |
-| Shared guidance, knowledge, and skills | Home `AGENTS.md`, `shared/knowledge/`, and `skills/` | Installation |
-| Workspace guidance, work files, uploads, and skills | Files in the workspace | Containing workspace |
-| Workspace agent and provider arguments | `workspace.json` | Containing workspace |
-| Jobs and their supporting scripts | `jobs/<job>/` in the workspace | Containing workspace |
-| Project definitions and scripts | `projects/<KEY>/` in the workspace | Containing workspace |
-| Heartbeat gate scripts and helpers | `heartbeat/` in the workspace | The follow-up's recorded workspace |
-| Sessions, tasks, runs, follow-ups, and outbox records | One home `enso.db` | Workspace recorded or unambiguously linked in the record |
-| Registered user tables | The same home `enso.db` | Installation |
-| Service, scheduling, updates, health, and concurrency-group locks | Host runtime and home operational state | Installation |
+| Shared guidance, knowledge, and skills | Home `AGENTS.md`, `shared/knowledge/`, `skills/` | Installation |
+| Workspace guidance, settings, files, and skills | Workspace `AGENTS.md`, `workspace.json`, `work/`, `uploads/`, `skills/` | Workspace |
+| Jobs and scripts | Workspace `jobs/<job>/JOB.md` and adjacent scripts | Workspace |
+| Project definitions and scripts | Workspace `projects/<KEY>/PROJECT.md` and adjacent scripts | Workspace |
+| Heartbeat gates and helpers | Workspace `heartbeat/<REF>/` | Beat's recorded workspace |
+| Sessions, tasks, runs, beats, and outbox | Home `enso.db` | Recorded workspace |
+| Registered user tables | Home `enso.db` | Installation |
+| Service, updates, health, and concurrency-group locks | Home operational state | Installation |
 
-Every job is referenced as `<workspace>:<job>`, including commands, scheduling, history,
-alerts, task-claim actors, `ENSO_JOB`, and viewer routes. For example, `team:digest` and
-`personal:digest` identify separate jobs in their respective workspace directories. A job's
-frontmatter does not repeat its workspace. Per-job and concurrency-group locks both live
-under `runtime/locks/` in the home; groups remain installation-wide, so jobs in different
-workspaces using the same group still serialize.
+Job references are always `<workspace>:<job>`, including in commands, history, alerts,
+`ENSO_JOB`, and viewer routes. `team:digest` and `personal:digest` are separate jobs.
+Per-job locks and installation-wide concurrency-group locks live in `runtime/locks/`;
+jobs in different workspaces using the same group still serialize.
 
-A project's key and workspace come from `projects/<KEY>/PROJECT.md`'s location, rather than
-repeating them as ownership fields. Project scripts live alongside the definition and run
-from that directory. External source repositories can remain at their configured paths.
-Internal records still retain the ownership needed to query and recover work correctly;
-moving a directory must not silently reassign recorded work. Missing or ambiguous ownership
-is an error.
+Project keys are unique across the installation. Scripts run beside `PROJECT.md`; external
+repositories stay at their configured paths. See [Configuration](configuration.md#projects)
+for definitions and [Tasks](tasks.md#project-files-and-scripts-in-020) for script execution.
 
 ### Operator workspace
 
@@ -182,8 +104,8 @@ same rules as every other workspace.
 
 Bundled maintenance jobs start here as `default:enso-audit` and `default:enso-update`.
 Their instructions, settings, and schedules remain editable. Workspace-scoped commands still
-require explicit or inherited context; only [update notifications](cli.md#updates) fall back
-to `default` without it.
+require explicit or inherited context. [Update notifications](cli.md#updates) and
+[doctor notifications](cli.md#operating) fall back to `default` without it.
 
 Do not rename or retire `default`, even if no chat or job uses it. `config check`, `doctor`,
 and the workspace audit report a missing or linked directory as an error; configuration
@@ -192,40 +114,31 @@ writes refuse it before saving. Restore a removed directory from backup, or run
 configuration to install missing bundled jobs. Creating a replacement does not restore old
 content or transfer records. Audit `--fix` does not recreate the workspace.
 
-## Context selection in 0.2.0
+<a id="context-selection-in-020"></a>
 
-A chat binding selects an existing workspace for a turn, which keeps that selection
-through preparation and queueing. Removing
-its binding or losing its workspace drops it before execution; the
-[connection access contract](connections.md#access-in-020) owns admission and notices. The
-shared resolver is used by task, project, workflow, job creation, Heartbeat creation,
-message sends, and operational list commands. Knowledge defaults to shared and
-uses workspace selection only with an explicit `--workspace NAME`; it ignores
-`ENSO_WORKSPACE`.
-[CLI](cli.md#workspace-context-in-020) owns command syntax. Enso sets `ENSO_WORKSPACE`
-for its chat agents, jobs, and Heartbeat runs, and CLI calls they launch inherit it.
-Workspace-scoped CLI operations default to that value; an optional
-`--workspace` explicitly overrides it for that operation. This includes Heartbeat creation,
-which saves the resolved workspace for later scheduling and execution.
+## Context selection
 
-For example, an agent running with `ENSO_WORKSPACE=team` operates on `team` by default.
-Adding `--workspace personal` deliberately selects `personal` for that CLI operation. A
-later command without the flag still uses `team`. These commands do not infer context from their
-current directory or fall back to `default`. Missing context, an invalid selected workspace,
-or ambiguous ownership is an error; an invalid explicit selection never falls back to the
-environment. An operation on an existing record respects that record's stored ownership;
-selecting another context does not transfer it.
+Chat bindings select a workspace. Queued turns keep their original workspace, subject to
+[connection admission checks](connections.md#access-in-020).
 
-Installation-wide [updates](cli.md#updates) can run from a terminal without workspace
-context. Update requests and release notifications select their notification owner from
-`--workspace`, then `ENSO_WORKSPACE`, then `default`; an invalid selection still fails.
+Workspace-scoped CLI commands use `--workspace NAME`, then `ENSO_WORKSPACE`. Enso sets the
+variable for chat agents, jobs, and Heartbeat runs. Commands never infer context from the
+current directory. Missing or invalid context fails; an invalid explicit selection never
+falls back. Operations on existing records retain their recorded ownership.
 
-Environment variables are context hints, not authenticated identities. Cross-workspace
-selection is a deliberate context choice, available within the installation's trust model;
-it introduces no admin role or privilege boundary. Installation-wide operations keep their
-installation scope. Relevant lists and searches start in the selected workspace, with
-intentional broader lookup available where supported. [CLI](cli.md#workspace-context-in-020)
-shows examples; [Knowledge](knowledge.md) owns note discovery and maintenance guidance.
+For example, with `ENSO_WORKSPACE=team`, a command selects `team` unless it passes
+`--workspace personal`. The next command without the flag still uses `team`. This is context
+selection within one trusted installation, not an identity or permission boundary.
+
+These operations have different defaults:
+
+- Knowledge defaults to shared and ignores `ENSO_WORKSPACE`; pass `--workspace NAME` for
+  workspace notes. See [Knowledge](knowledge.md).
+- Installation-wide updates and doctor checks can run without workspace context. Their
+  notifications use `--workspace`, then `ENSO_WORKSPACE`, then `default`; an invalid
+  notification owner fails.
+
+[CLI](cli.md#workspace-context-in-020) owns command syntax and broader list/search options.
 
 ## Uploads
 
@@ -244,94 +157,53 @@ when to clear it out.
 
 ## Skills
 
-Skills resolve across three scopes.
-
-| Scope | Location | Who owns it |
+| Scope | Location | Owner |
 | --- | --- | --- |
-| **Workspace** | `<workspace>/skills/<name>/SKILL.md` | You, for this workspace only |
-| **Enso** | `~/.enso/skills/<name>/SKILL.md` | You, bundled skills, and installed official optional skills |
-| **User** | Your CLI's own user directory, see below | You, entirely outside Enso |
+| Workspace | `<workspace>/skills/<name>/SKILL.md` | You, for this workspace |
+| Enso | `$ENSO_HOME/skills/<name>/SKILL.md` | You and Enso-installed skills |
+| User | The provider CLI's own user directories | You, outside Enso |
 
-Enso ships its core skills into `~/.enso/skills/`; see the
-[bundled skill list](customizing.md#the-bundled-skills). `enso init` and `enso setup` write a
-missing bundled skill and preserve existing copies. Managed upgrades refresh only bundled
-files that match their recorded baseline; edits and tracked deletions are preserved.
-`enso` and the `enso-` prefix are reserved for what Enso installs, skills and jobs alike,
-so the audit warns about a name in that namespace it did not put there. See
-[Customizing](customizing.md#the-bundled-skills) for the owning rules.
+Names must be unique across workspace and Enso scopes; a collision is an audit error, not
+an override. A collision with a user-level skill is a warning. In the first two scopes,
+`SKILL.md` must have a `name` matching its directory. `enso` and `enso-` names are reserved
+for Enso-installed skills and jobs.
 
-Skill names must be unique across the workspace and enso scopes. A workspace does not
-override an enso-wide skill by reusing its name; the audit reports that as an error, because
-the provider CLIs disagree about which copy would win (see the table below). A name that
-collides with one of your user-level skills is a warning.
+[Customizing](customizing.md#the-bundled-skills) owns bundled skills, optional catalog skills,
+and update behavior.
 
 ### How they reach the agent
 
-Every provider CLI discovers project skills by walking from its working directory up to the
-nearest Git root, following symlinks on the way. The working directory is the workspace and
-the Git root is the Enso home (`enso init` and `enso setup` prepare it), so two symlinks
-in each place put both Enso scopes in reach:
+Enso makes its home a Git root and links both skill scopes into the provider discovery paths:
 
 ```text
-~/.enso/.claude/skills                    -> ../skills
-~/.enso/.agents/skills                    -> ../skills
-~/.enso/workspaces/<name>/.claude/skills  -> ../skills
-~/.enso/workspaces/<name>/.agents/skills  -> ../skills
+$ENSO_HOME/.claude/skills                       -> ../skills
+$ENSO_HOME/.agents/skills                       -> ../skills
+$ENSO_HOME/workspaces/<name>/.claude/skills      -> ../skills
+$ENSO_HOME/workspaces/<name>/.agents/skills      -> ../skills
 ```
 
-These links are static. Add or edit a skill in `<workspace>/skills/` or `~/.enso/skills/`
-and the next turn can load it; no Enso restart or link regeneration is needed. The provider
-CLI discovers the files when Enso launches it for a turn. `enso workspace audit --fix`
-creates a missing link and repairs one that points elsewhere.
+Providers discover these links and the home/workspace instructions when launched. Claude
+reads `CLAUDE.md`; the other providers read `AGENTS.md`. A workspace with its own Git root
+can hide home guidance and is an audit error. Keep repositories outside the workspace.
+Edits are available on the next turn, without an Enso restart or link regeneration.
+`enso workspace audit --fix` repairs missing or incorrectly targeted links.
 
-The home-level `AGENTS.md` reaches the agent the same way: Codex, Grok, Antigravity, and
-OpenCode walk up to the Git root for `AGENTS.md`, and Claude Code walks up for `CLAUDE.md`.
-That is why the home must be a Git root, and the audit checks that it still is.
+Antigravity needs a registered project; Enso handles this on first use. OpenCode uses the
+existing `.agents/skills` links without registration. See
+[provider configuration](configuration.md#providers).
 
-What each CLI does, verified on a fresh home on 2026-09-02:
+For audit and viewer listings, Enso scans these user-level skill directories read-only:
 
-| CLI | Version | Reads from a workspace | On a name collision | Lists skills without a model call |
-| --- | --- | --- | --- | --- |
-| Claude Code | 2.1.258 | `.claude/skills/` here and in every parent up to the Git root; `~/.claude/skills/` | Your user-level copy wins. Between workspace and enso: undocumented, one is shown | No. The `skills` field of the `init` event under `--output-format stream-json` costs one model turn |
-| Codex | 0.152.1 | `.agents/skills/` from the Git root down to here; `~/.agents/skills/`, `~/.codex/skills/` | Both are shown, no override | `codex debug prompt-input` |
-| Grok | 1.0.13 | `.grok/`, `.agents/`, and `.claude/` skill directories at every level up to the Git root; `~/.grok/skills/`, `~/.agents/skills/`, `~/.claude/skills/` | Nearest wins: workspace, then enso, then user | `grok inspect --json` |
-| Antigravity | 1.1.24 | `.agents/skills/` from the project folder up to the Git root; `~/.gemini/config/skills/` | The project walk beats your user-level copy. Between workspace and enso: undocumented, one is shown | `agy -p /skills --output-format json`, only inside a registered project |
-| OpenCode | 1.18.26 | `.agents/skills/` and `.claude/skills/` here and in each parent up to the Git root; `skill/` and `skills/` below each of the configuration roots described under the table; `~/.agents/skills/`, `~/.claude/skills/` | Undocumented; one copy is shown | `opencode debug skill` |
+- `~/.claude/skills/`, `~/.agents/skills/`, `~/.codex/skills/`, `~/.grok/skills/`, and
+  `~/.gemini/config/skills/`.
+- OpenCode's `skill/` and `skills/` under `$XDG_CONFIG_HOME/opencode` (default
+  `~/.config/opencode`), plus the same directories under `OPENCODE_CONFIG_DIR` when set.
+  The additional root does not replace the global one; identical resolved roots are scanned once.
 
-Antigravity is the odd one out: its working directory is the folder registered for a
-project in `~/.gemini/config/projects/`, not the shell's cwd. Started without a project it
-discovers nothing — not the skills above, not any `AGENTS.md`. So on the first turn Enso
-launches `agy` with `--new-project`, which registers the workspace, and pins every later
-launch to that project id. Nothing is asked of you, and nothing in the workspace changes; see
-[Configuration](configuration.md#antigravity).
-
-OpenCode needs no registration and no extra workspace link: it reads the existing
-`.agents/skills` links directly. Its native user-level skills are the `skill/` and `skills/`
-directories below each of its configuration roots, and both names below both roots are
-scanned by Enso, alongside the Claude-compatible user directories OpenCode also loads:
-
-| Root | Where it is |
-| --- | --- |
-| Global configuration | `$XDG_CONFIG_HOME/opencode` when that variable is set and non-empty, otherwise `~/.config/opencode` |
-| Additional configuration | The directory `OPENCODE_CONFIG_DIR` names, when it is set and non-empty |
-
-`OPENCODE_CONFIG_DIR` adds a root rather than moving the global one, and it does not move
-OpenCode's global `AGENTS.md`, which stays at the global root. Two roots that resolve to the
-same directory are scanned once.
-
-User-level skills are found by each CLI on its own, and so are your user-level
-instructions (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.gemini/AGENTS.md`, and
-`AGENTS.md` at OpenCode's global root above, so `~/.config/opencode/AGENTS.md` by
-default). They apply inside Enso too. Enso scans the user-level
-skill directories so the audit and the [web viewer](web.md) can show the full skill picture,
-but it does not read user-level instruction files or write either kind of file. If another
-tool manages them, Enso stays out of its way. In a listing a user-level directory counts as
-a skill when it has a `SKILL.md`; Enso does not validate its contents, and a name present in
-more than one of those directories is shown once.
-
-None of the CLIs require the frontmatter `name` to match the directory name; all of them
-use the directory name as the skill's identity. Enso requires the match anyway, so that
-what you see in a listing is the directory you edit.
+A user-level directory counts as a skill when it has `SKILL.md`; Enso does not validate its
+contents and lists duplicate user-level names once. Providers load their own user-level
+instructions independently. Enso neither reads those instruction files nor modifies any
+user-level skills or instructions.
 
 ## Auditing
 
@@ -362,7 +234,7 @@ The audit checks, each finding carrying the check id shown:
 | A project command that is one `./script` beside `PROJECT.md` finds it present and executable | `script` | warning | Reports only |
 | Unexpected entries at the home's or a workspace's top level, in `shared/`, or under `workspaces/` | `unexpected` | warning | Reports only |
 | A dangling optional link, or a link or file in place of a real `runtime/` or `cache/` directory | `link`, `directory` | warning | Reports only |
-| `config.json` and `runtime/` have no group or other access | `permissions` | warning | Removes group and other access; preserves owner access |
+| `config.json`, `.migrations.json`, and `runtime/` have no group or other access | `permissions` | warning | Removes group and other access; preserves owner access |
 | SQLite sidecars left behind by a removed `enso.db` | `stale` | warning | Reports only |
 | `uploads/` size | — | — | Reported as a number |
 
@@ -372,11 +244,8 @@ checks. An audit does not establish provider permissions or prove that access is
 
 ### What belongs where
 
-Tables in `src/enso/layout.py` name every top-level entry the home and a workspace may
-hold, and who owns each. Setup's preflight, the scaffold, and this audit all read them, so a
-new Enso directory is declared once rather than in separate allowlists. A second table names
-what `shared/` may hold, currently only `knowledge/`; anything else there is unexpected.
-Each present entry is reported in one of five categories:
+The layout in [`src/enso/layout.py`](../src/enso/layout.py) is shared by setup, scaffolding,
+and audit. Each present top-level entry has a category:
 
 | Category | Meaning | Examples |
 | --- | --- | --- |
@@ -386,69 +255,32 @@ Each present entry is reported in one of five categories:
 | `extension` | A provider or tool's own file, preserved and never read | `.codex/`, `.grok/`, `opencode.json` |
 | `unexpected` | Nothing in the table claims this name | whatever you left there |
 
-Only a root's own top-level names and the entries of `shared/` are classified. The audit
-descends no further, so operating state under `runtime/` or `cache/` is never mistaken for
-clutter, and your notes under any `knowledge/` are never inspected by this check.
-`.DS_Store` is ignored in every root. When present, `runtime/` and `cache/`
-must be real directories; the audit reports a file or symlink in their place and leaves it
-untouched.
+Layout classification covers top-level home/workspace entries and `shared/`, which accepts
+only `knowledge/`. It does not inspect content below declared roots. `.DS_Store` is ignored;
+provider-created files inside `.claude/` are allowed. Present `runtime/` and `cache/` must
+be real directories. [Knowledge checks](knowledge.md) validate notes separately.
 
-`permissions` covers only the paths whose security contract is Enso's: the configuration it
-writes and the private state it creates. The external secret key is validated by the
-[secret store](configuration.md#secrets). It says nothing about the rest of your files, and
-it is the one finding `--fix` repairs by changing a mode — removing group and other bits while preserving
-the existing owner bits, and never following a symbolic link. A root that is already private
-is left exactly as it is.
+`permissions` covers only the private paths listed above. Repairs remove group/other bits,
+preserve owner bits, and never follow symlinks. The [secret store](configuration.md#secrets)
+validates its external key separately. `stale` identifies only `enso.db-wal` and
+`enso.db-shm` without an `enso.db`; it never deletes them.
 
-`stale` is deliberately narrow: a finding must be certain, not a guess about age. Today that
-is `enso.db-wal` and `enso.db-shm` with no `enso.db` beside them. Nothing deletes them for
-you.
+`script` checks project commands only when they are a single bare `./path`, warning if the
+file is absent or not executable. Other shell expressions are checked when they execute.
 
-`script` inspects a project `setup`, stage `command`, check `command`, or `hooks` entry only
-when it is one bare `./path` and nothing else — the documented wrapper-script shape — and
-warns when that path is missing or not an executable file. Anything else is shell, which
-the audit does not parse; the engine reports such a command at exit 126/127 when it fails
-to run. Nothing writes a script for you.
+`--fix` repairs required directories within existing workspaces, discovery links, the
+home Git root, and private-path permissions. It creates missing `shared/knowledge/` but
+never recreates a missing workspace or optional content root. It does not delete files,
+edit instructions/settings, or replace a real file/directory with a link. Conflicting
+paths remain for the operator to resolve. The report shows findings left after repairs.
 
-`--fix` only ever creates and repairs required directories, discovery links, and the permissions of
-the paths listed under `permissions` above. It never deletes a
-file, edits `AGENTS.md` or `workspace.json`, or changes content inside workspace directories.
-A real file or directory sitting where a link belongs, or a dangling symbolic link sitting where a
-directory belongs, is reported and left for you to move aside. Fixes run first and the
-report shows what remains, so a second `--fix` finds nothing to do.
+The command exits 1 while any error remains, otherwise 0. Without readable configuration,
+it skips orphan/script checks and lists only jobs that can be parsed independently.
+`enso doctor` reports job parsing problems; the layout audit does not.
 
-`shared/knowledge/` is created when missing, with its `shared/` parent, by setup or the
-fixing audit, without changing its contents. A file or symbolic link
-occupying `shared/` or a knowledge root is reported and preserved, including a dangling
-link. A top-level `knowledge/`, left from before shared knowledge
-[moved](knowledge.md#locations-and-context) or recreated by an old script, is reported as
-unexpected and left alone. Note metadata, links, and style use the separate
-[knowledge checks](knowledge.md), not the workspace layout audit.
-
-The command exits 1 while any error remains and 0 otherwise; warnings never fail an
-audit. With a readable configuration, the audit uses its project stages to include jobs
-that Enso runs itself, including standalone command jobs and `command`/`integrate` stages
-whose `JOB.md` omits `agent`. Without a readable configuration, it lists only jobs that
-can be parsed without one and skips the orphan and script checks because bindings, stage
-jobs, and project commands may be unknown. `enso doctor` reports `JOB.md` parsing
-problems; the layout audit does not. An unused workspace is an orphan warning, except for
-the required `default`. An unexpected top-level entry is also a warning: Enso leaves it
-alone. Files the CLIs themselves drop inside `.claude/`, such as Claude Code's
-`.cc-writes/`, are expected and not reported, and neither is `.DS_Store`.
-
-A finding also says whether it is worth reporting on its own, as `attention` in `--json`.
-Layout findings are: they are portable facts about the installation, true for every Enso
-home. An orphan workspace and an unedited `AGENTS.md` template are not, since they are
-matters of taste you may have settled deliberately. Only the first kind wakes the
-[nightly audit job](jobs.md#nightly-health-audit) when nothing is actually broken; every
-error is always worth reporting. Nothing else about the audit changes with this mark.
-
-`--fix` repairs directories inside an existing workspace; it does not recreate an entire
-missing workspace. Use `enso workspace create NAME` to scaffold one.
-
-A workspace with its own `.git` is an error that `--fix` does not touch. The CLIs stop
-their walk at the nearest Git root, so a repository inside a workspace hides the home's
-`AGENTS.md` and skills from the agent. Keep the repository elsewhere.
+A root's `attention` is true for any error or an actionable warning. Orphan workspaces and
+untouched instruction templates are warnings without attention; the
+[nightly health audit](jobs.md#nightly-health-audit) does not alert on those alone.
 
 `--json` prints one object: `ok`, the `home`, and one entry per workspace.
 
@@ -515,30 +347,21 @@ job or project files does not reassign existing records. There is no automated w
 rename or transfer; any reference repair needs a deliberate, case-specific plan. Keep the
 directory while its work or retained history still needs it.
 
-Let running turns, jobs, and beats finish before moving files. Workspace overrides live
-with the directory in `workspace.json`, so there is no configuration override block to remove.
-Run `enso config check` before and after archiving or deleting the directory; deletion
-needs the user's authorization. These changes
-need no Enso restart. Configuration validation catches missing binding and project
-directories, but it does not inspect heartbeat state, so the beat review is a separate step.
+Let running turns, jobs, and beats finish before moving files. Run `enso config check`
+before and after archiving or deleting the directory; deletion needs the user's
+authorization. The check validates bindings and discovered project definitions, but does
+not inspect heartbeat state or transfer stored work. These changes need no Enso restart.
 Enso does not delete a workspace for you.
 
 ## When a workspace is malformed
 
-A bound workspace that fails its audit is a warning at service start, not a fatal error. It
-is logged, the viewer shows it, and turns still run. A missing `uploads/` should not take
-your chat bridge down. The same goes for a workspace a job names, and for the home itself:
-`enso serve` logs one line per failing root, naming the errors, and points at
+Layout audit errors, such as missing `uploads/`, are logged at service start and shown in
+the viewer without stopping chat. `enso serve` names each failing root and points to
 `enso workspace audit`.
 
-Malformed `workspace.json` settings use the separate
+Missing `default` or bound workspace directories are configuration errors and prevent
+startup. Invalid settings use the
 [configuration validation and reload rules](configuration.md#while-the-service-runs).
-
-The other exception is a bound workspace directory that does not exist at all: `config check`
-treats that as a problem and `enso serve` refuses to start. If a bound directory disappears
-while the service is running, the next read of `config.json` fails the same check: the
-service logs that once and keeps the last valid configuration, a turn bound to the missing
-directory is dropped before provider startup, and other conversations and jobs
-continue. A missing directory named only
-by a job is a job validation problem: that job cannot run, while the service and other jobs
-can continue.
+If a bound directory disappears during service operation, Enso retains its last valid
+configuration but drops turns for that directory before provider startup. Other
+conversations can continue.

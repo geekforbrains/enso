@@ -16,10 +16,8 @@ an agent, a schedule, and a notification destination. Its agent is saved at crea
 workspace agent or the configured default, unless the definition supplies a complete
 `provider` / `model` / `effort` triple. Later default-agent changes do not change that beat.
 
-SQLite in `$ENSO_HOME/enso.db` owns definitions and current state. The internal tables
-`_enso_beats`, `_enso_beat_events`, and `_enso_beat_runs` are managed through
-`enso heartbeat`, not registered as user tables or edited with SQL. There is no parallel
-`BEAT.md` or status file. References such as `HB-001` remain unique after pruning.
+Definitions, state, events, and runs live in `$ENSO_HOME/enso.db`, managed through
+`enso heartbeat`. References such as `HB-001` remain unique after pruning.
 
 A beat's script files live under `$ENSO_HOME/workspaces/<workspace>/heartbeat/<ref>/`.
 The optional entry point is `gate.sh`; it can call Python or other helpers beside it.
@@ -27,11 +25,9 @@ The provider runs in the recorded workspace, while the gate runs in the beat's d
 Create the script directory only when adding a gate. Enso rejects linked workspace or
 gate directories and never falls back to scripts in another location.
 
-The saved workspace owns the beat for its lifetime: definition updates cannot transfer it.
-Restarting Enso or changing a binding, the caller's `ENSO_WORKSPACE`, or the default agent
-does not reassign existing definitions, runs, or action receipts. Commands using `HB-001`
-operate on that recorded beat. Per-beat execution locks live with Enso's other locks in
-`$ENSO_HOME/runtime/locks/heartbeat/`, outside the script directories.
+A beat's workspace is fixed for its lifetime, regardless of binding, environment, or
+default-agent changes. Commands using `HB-001` operate on that recorded beat. Execution
+locks live under `$ENSO_HOME/runtime/locks/heartbeat/`.
 
 `enso heartbeat list` uses `--workspace` or `ENSO_WORKSPACE`; `--all-workspaces` explicitly
 includes the installation. `--all` separately includes closed beats. Runner notifications
@@ -40,9 +36,8 @@ has changed.
 
 ## Creation and management
 
-The user asks in ordinary language. The agent loads the bundled `enso-heartbeat` skill and
-creates the arrangement through the CLI. The home-level `AGENTS.md` teaches the distinction
-between finite follow-through and standing jobs; the full skill is loaded when needed.
+Ask in ordinary language; the agent uses the bundled `enso-heartbeat` skill and
+[Heartbeat CLI](cli.md#heartbeat) to manage the beat.
 
 Definitions and updates are JSON objects read from `--file FILE`; `--file -` reads stdin.
 Every command accepts `--json`. A failed command emits one `{"ok": false, "error": "…"}`
@@ -85,7 +80,7 @@ will check or act and when it will stop.
 A definition names exactly one time source:
 
 - `at`: an ISO timestamp with an explicit UTC offset, for one future action.
-- `schedule`: a five-field cron expression and an IANA `timezone`, for repeated checks.
+- `schedule`: a five-field cron expression with an IANA `timezone` (default `UTC`), for repeated checks.
 
 A named timezone keeps a recurring wall-clock time across offset changes. The shared
 scheduler works at minute resolution. A missing spring time moves forward by the clock gap;
@@ -180,23 +175,19 @@ Heartbeat is enabled by default. `retention_days` must be a positive integer and
 heartbeat with an equivalent job. The daemon rereads this setting while it runs and stops
 active heartbeat work when it is disabled.
 
-Only closed beats are eligible for automatic pruning. Retention starts at closure, not
-creation. After it, the daemon removes what the beat owns in a fixed order: the script
-directory, then the record with its events and runs. Because the record goes last, a pass
-interrupted by a filesystem error or a restart is simply repeated; a missing workspace has no
-scripts to remove. A linked script path is never followed, and that beat is kept. Active and
-paused beats retain their context, and references are never reused. Permanent outputs, such
-as a signed agreement, belong in the user's requested notes or document location.
+Only closed beats are pruned, measured from their closure time. Pruning removes the script
+directory, then the definition, events, and runs; interrupted cleanup can safely retry.
+Linked script paths are never followed and prevent removal. Active and paused beats retain
+their context; references are never reused. Save permanent outputs in the user's requested
+notes or document location.
 
-A closed beat is kept past retention while it holds evidence the user has not received: an
-action still `pending` or `uncertain`, or an undelivered notification for a beat with a saved
-destination. The daemon logs each kept beat with its reason once, and again if the reason
-changes. Record the outcome with `enso heartbeat action-result`, or restore the notification
-route, and the next pass removes the beat. Nothing is pruned while Heartbeat is disabled;
-retention resumes on the first tick after it is enabled again.
+A closed beat is kept while an action is `pending` or `uncertain`, or a saved destination
+has an undelivered notification. Enso logs the retention reason once and when it changes.
+Record the outcome with `enso heartbeat action-result`, or restore the notification route,
+to allow pruning. Disabling Heartbeat also pauses pruning until it is enabled again.
 
 ## Viewer
 
-The existing [web viewer](web.md#heartbeats) shows current and previous beats. Open one to
+The [web viewer](web.md#heartbeats) shows current and previous beats. Open one to
 read its instructions, latest check, audit history, and agent runs. Viewing a beat never
 changes it; ask Enso to manage it from the conversation.

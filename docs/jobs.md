@@ -1,27 +1,20 @@
 # Jobs
 
-Jobs own standing responsibilities, such as nightly backups or handling every new email.
-Use [Heartbeat](heartbeat.md) for one future action or a particular situation followed until
-resolved. Repeated checking can serve a beat; a recurring digest remains a job even with
-an end date. Both systems use the same scheduling and execution infrastructure.
+Jobs handle standing responsibilities such as nightly backups or every new email.
+Use [Heartbeat](heartbeat.md) for one future action or a situation followed until resolved.
 
-A job is `~/.enso/workspaces/<workspace>/jobs/<job>/JOB.md`: YAML frontmatter and Markdown.
-Its workspace and local job name come from its location; its reference is `<workspace>:<job>`,
-such as `meteor:forum-watch`. Different workspaces can each own a job named `digest`. The service checks
-every job once a minute and runs the ones whose cron slot has passed, or, for a
-[stage job](#stage-jobs), whose stage has a task ready.
+A job lives at `~/.enso/workspaces/<workspace>/jobs/<job>/JOB.md`. Its location supplies
+its workspace and name; commands use the full reference, such as `meteor:forum-watch`.
+The service checks jobs once a minute for a due cron slot or a ready [stage](#stage-jobs).
 
-A job chooses an **agent** or a **command**. Agent jobs use the Markdown body as their
-prompt and name their own provider, model and effort; every trigger starts a fresh session.
-Command jobs run a shell command without an LLM, and their optional Markdown body is a
-description. An agent can create either kind. Use a command whenever a script can do the
-whole job; there is no need for a gate that does the work and then reports `no_work`.
+Choose an **agent** for work requiring judgment, or a **command** for a script that can
+finish the work itself. An agent job's Markdown body is its prompt; a command job's body
+is an optional description. Every agent trigger starts a fresh session. Both kinds share
+scheduling, locks, secrets, timeouts, history and alerts.
 
-Both kinds share scheduling, locks, secrets, timeouts, output history and alerts. Reserve
-agent jobs for work requiring judgment; when code can decide whether that judgment is
-needed, use a deterministic gate to avoid idle model runs. A command that cheaply handles
-its own no-work case does not need another gate. Use postrun validation when completion
-can be checked independently; only an agent can receive bounded follow-up messages.
+Use a **gate** to skip execution when there is no work. Use **postrun** to validate or
+react to the result; it can request bounded follow-up turns from an agent. A command that
+handles its own no-work case needs no separate gate.
 
 A complete command job:
 
@@ -74,22 +67,18 @@ misfire_grace_seconds: 300    # optional: how late a slot may still fire (defaul
 The prompt. {{gate_output}} is replaced with the gate's stdout.
 ```
 
-`agent.provider`, `agent.model`, and `agent.effort` are required on agent jobs and validated against
-`config.json`; jobs never inherit the default or workspace agent triple. Workspace
-provider-argument overrides still apply. Effort follows the provider's rules at run time:
-ordered ladders clamp to the model's maximum, Antigravity uses its embedded model effort,
-and OpenCode passes the exact variant through; see [Providers](configuration.md#providers).
-The run row records the normalized effort, including Antigravity's model-embedded level
-even when the job requested less; see [Configuration](configuration.md#antigravity).
-`notify` is `slack:C…`, `telegram:<id>`, or a bare id when only one transport is
-configured; without it, alerts go to the first configured transport with a `notify` target
-(Slack before Telegram). A `schedule` is exactly five cron fields
-(see [Scheduling](#scheduling)). `project` and `stage` come together or not at all: `project`
-must name a discovered [`PROJECT.md`](configuration.md#projects) in the same workspace,
-and `stage` one of that project's executable stages (`approve is a human stage; a job cannot serve it`). With a
-`stage`, `schedule` is optional, and still validated when present. Command and integration
-stages omit both `agent` and `command` and execute their project-defined work without a
-model. A stage job cannot override a project command with a job-level `command`.
+Agent jobs require `agent.provider`, `agent.model`, and `agent.effort`, validated against
+`config.json`. They never inherit a default agent, but workspace provider-argument overrides
+apply. Effort is normalized by the [provider's rules](configuration.md#providers), and the
+run records the effective effort.
+
+`notify` accepts `slack:C…`, `telegram:<id>`, or a bare id when only one transport is
+configured. Without it, alerts use the first configured notification target (Slack before
+Telegram). See [Scheduling](#scheduling) for cron rules.
+
+`project` and `stage` must appear together and name an executable stage in the same workspace.
+A stage job may omit `schedule`. Command and integration stages omit both `agent` and
+`command`: their execution is defined in [`PROJECT.md`](configuration.md#projects).
 
 ## Concurrency groups
 
@@ -123,44 +112,26 @@ acceptance. A skipped run may still invoke its reaction postrun without the grou
 that hook must not mutate the protected resource. A failed reaction can make the run an
 error and send an alert; contention by itself does not alert.
 
-Advisory locks under `runtime/locks/groups/` release when their owner dies. Queue entries
-have reusable per-job leases, so a crashed waiter cannot strand the queue and successive
-runs do not accumulate lock files. Project task capacity is separate: `max_concurrency`
-(default 1) limits task executions, and each task worktree has one owner. A full project
-still skips that attempt; a group's wait policy does not create a project-capacity queue.
+Group locks release when their owner dies, and crashed waiters cannot strand the queue.
+Project `max_concurrency` separately limits task executions (default 1), with one owner per
+worktree. A full project skips the attempt; a group wait does not queue project capacity.
 
 ## The frontmatter
 
-The frontmatter is one YAML mapping and the fields above are all of it. Nothing is guessed
-and nothing is coerced, so a `JOB.md` says exactly one thing or it says nothing:
+Frontmatter must be a YAML mapping with unique, recognized keys. Enso reports independent
+problems together and never runs an invalid job. `job show`, `job list`, `enso doctor`, and
+the [viewer](web.md) name the file and its problems; Enso does not repair job content.
 
-| Rule | What happens otherwise |
-| --- | --- |
-| The block is valid YAML and a `key: value` mapping | reported with the line and column of the fault |
-| Each key appears once | `answers 'name' twice at line 4, column 1` |
-| Every key is one of the fields above | `'retries' is not a recognized field` |
-| `name` and `enabled` are present; `schedule` is present unless this is a stage job | `name is required` |
-| A standalone job declares exactly one of `agent` or `command` | the conflicting or missing executor is reported |
-| Agent fields, hook commands, and group policy are present within their blocks | `concurrency.on_busy is required` |
-| `project` and `stage` are both present or both absent, name a configured project and one of its executable stages | `approve is a human stage; a job cannot serve it` |
-| Text fields are non-empty text | `agent.effort must be non-empty text` |
-| `enabled` and `catch_up` are YAML booleans | `enabled must be true or false` |
-| Timeouts, `concurrency.max_wait`, and `misfire_grace_seconds` are positive YAML integers | `timeout must be a positive integer` |
-| `agent.max_followups` is a nonnegative YAML integer | `agent.max_followups must be a nonnegative integer` |
-| `concurrency.max_wait` appears only with `on_busy: wait` | the incompatible policy is reported |
-| An agent job's prompt body is not empty; a command's description is optional | `the prompt body is empty` |
+- `name` and `enabled` are required; `schedule` is required unless `stage` is set.
+- A standalone job requires exactly one of `agent` or `command`. Agent jobs need a prompt.
+- Text fields must be nonempty strings. `enabled` and `catch_up` must be YAML booleans.
+- Timeouts, `concurrency.max_wait`, and `misfire_grace_seconds` must be positive integers.
+  `agent.max_followups` can also be zero.
+- Nested blocks require the fields shown above. `concurrency.max_wait` is valid only with
+  `on_busy: wait`.
+- `project` and `stage` must name a configured project and one of its non-human stages.
 
-Every one of those a file breaks is reported together, alongside everything `config.json`
-can see about the fields it did get right — an unusable schedule, an unconfigured agent,
-a notify target that resolves to nothing — so one pass fixes the file. A field that is
-absent or the wrong type is reported once and not again as
-whatever depended on it. A present-but-empty field is a problem, not an omission: `effort:`
-with nothing after it is YAML null, and `catch_up: ""` is empty text where a boolean
-belongs. A file with any problem never runs; it stays visible in `job show`, `job list`,
-`enso doctor`, and the [web viewer](web.md), which name the file to edit.
-
-Quoting is how you say "this is text". YAML reads an unquoted value as whatever it looks
-like, so quote anything it would read as something else:
+Quote values that YAML would otherwise treat as syntax or another type:
 
 ```yaml
 name: "Daily: Review"     # an unquoted colon makes the line invalid YAML
@@ -173,10 +144,8 @@ notify: "12345"           # a bare Telegram id is an integer
 timeout: 600              # never quoted: this one really is a number
 ```
 
-A syntax fault names a line and a column and nothing else: the block Enso could not read
-is never quoted back, since a prompt and a notify target are not things to echo into a log
-or a chat message. A field problem names its field, and repeats a value only where the
-value is the thing being rejected, as an unusable schedule is.
+Syntax errors report line and column without echoing the YAML. Field errors name the
+field and, where needed, its rejected value.
 
 ## Workflow
 
@@ -191,27 +160,47 @@ enso job show meteor:meteor-forum-watch         # fields, problems, next and las
 enso job run meteor:meteor-forum-watch          # execute now, only when its effects are intended
 ```
 
-`job create` writes a disabled scaffold under a slug of the name in the selected workspace.
-`--workspace` overrides `ENSO_WORKSPACE`; one must supply an existing workspace. Show, run,
-and run-history filters require the full reference, even when `ENSO_WORKSPACE` is set.
-Job and run lists use the selected workspace; `--all-workspaces` explicitly covers the
-installation. The file cannot repeat `workspace` in its frontmatter; linked job paths are refused.
-Inspect it with `job show`, check shell syntax with `bash -n`, and test scripts with
-fixtures or stub services when real
-effects would be premature. `job run` executes immediately even while disabled and uses both
-job and group locks; it is not a dry run. The runner sends no alerts, but the prompt and
-scripts can send messages or perform other actions. A request for scheduled work does not
-by itself authorize performing those actions during setup. Use a manual run when its
-immediate effects are safe and authorized; otherwise report the live execution left untested.
-Set `enabled: true` after validation and appropriate testing pass; the scheduler picks it up
-on its next tick. `job create` refuses
-an invalid schedule before it writes job files. A `JOB.md` with problems is logged once and
-skipped until fixed, and `job show`, `job list`, `enso doctor` and the
-[web viewer](web.md) all report the same problem; doctor names the file to open. Nothing
-repairs a job for you: Enso cannot know which minute a broken schedule meant, so it never
-rewrites one, and `enso workspace audit --fix` does not touch job content. Names beginning
-`enso-` are reserved for jobs Enso installs; `enso workspace audit` warns about one it
-did not.
+`job create` writes a disabled scaffold under a slug of the name and refuses invalid
+schedules. `--workspace` overrides `ENSO_WORKSPACE`; an existing workspace is required.
+Show, run, and run-history filters require the full job reference. Lists use the selected
+workspace unless `--all-workspaces` is given. Job paths cannot contain symlinks, and the
+frontmatter cannot override workspace ownership.
+
+Inspect the scaffold with `job show`, check shell syntax with `bash -n`, and test scripts
+with fixtures when live effects would be premature. `job run` executes immediately, even
+while disabled, using the job and group locks. It sends no runner alerts, but its scripts
+and prompt can send messages or perform other actions. Run it only when those immediate
+effects are intended; otherwise report live execution as untested. Set `enabled: true`
+after validation and testing; the scheduler picks it up next tick.
+
+Invalid jobs stay skipped until fixed; `workspace audit --fix` never edits their content.
+Names beginning `enso-` are reserved for Enso-installed jobs.
+
+## Execution order
+
+1. The scheduler checks current job definitions for due work; `job run` triggers immediately.
+   Invalid definitions never run. Idle stage polling creates no row.
+2. Enso takes the per-job lock and opens a `running` row. An overlapping trigger creates
+   no row or hook invocation.
+3. Declared secrets resolve once. Failure ends the run before any process starts.
+4. The gate runs once: exit 0 continues, exit 1 records `no_work`, and other failures record
+   `gate_error`.
+5. The optional concurrency group admits, waits, or skips the run. Before execution, Enso
+   rechecks admission and the job definition. Stage jobs then claim a task and prepare any
+   required worktree; the gate has no newly assigned task context.
+6. The command or provider runs. Postrun checks each result and may request bounded turns
+   in a successful agent's session. Stage acceptance follows postrun, running required
+   checks and any allowed repair before committing the transition.
+7. Stage lifecycle events run when ownership permits. Enso settles the claim and closes
+   the row, retaining attempts and diagnostics. Job and acquired group locks span execution,
+   follow-ups and acceptance; cleanup happens after task users finish.
+8. Scheduled and ready-triggered failures send [alerts](#alerts). A new trigger starts a
+   fresh agent session.
+
+Gate closure/failure, group skipping, and executor failure can still run a reaction postrun,
+which cannot request another turn. Secret-resolution failure, cancellation, and unexpected
+runner exceptions bypass further hooks. Cancellation closes the run as `error`; restart
+recovery never replays an interrupted script.
 
 ## Stage jobs
 
@@ -225,23 +214,17 @@ enso job create --name "Enso todo" --provider claude --model opus --effort high 
   --workspace dev --project EN --stage todo
 ```
 
-It gains a second trigger next to cron: work being ready. On each minute tick, for every
-enabled, valid stage job that is not already running:
+An enabled, valid stage job is checked each minute unless already running:
 
-| `schedule` | What happens |
+| `schedule` | Trigger |
 | --- | --- |
-| absent | fires with trigger `ready` when an unclaimed task waits in the stage; otherwise nothing, with no run row and no log line at info level |
-| present | at a cron slot that has passed, fires with trigger `schedule` only when a task waits; otherwise the slot is consumed silently, with no row |
+| absent | `ready`, when an unclaimed task waits in its stage |
+| present | `schedule`, at a due cron slot when a task waits |
 
-So idle polling leaves no rows, and a schedule only restricts when the job may pick work up.
-The readiness check comes before the per-job lock and the gate, so a task that another run
-takes in between leaves this run a `no_work` row with trigger `ready`; that race is the one
-way an idle tick records anything.
-`enso job run` on a stage job is trigger `manual` and records a `no_work` row when nothing is
-ready, so you get an answer; when it claims a task it prints `task: EN-041`, and `--json`
-carries the reference as `task`. `job list` shows `ready (EN/todo)` in the schedule column of
-an unscheduled stage job, and `job show` prints its nested `concurrency` settings and
-no `next_run` for it.
+Idle polling creates no run row. A race where another run takes the waiting task can
+produce `no_work`. Manual runs always record a result, including `no_work` when idle;
+when a task is claimed, text output prints its reference and JSON returns it as `task`.
+`job list` shows `ready (EN/todo)` for an unscheduled stage job; it has no `next_run`.
 
 When it fires, Enso claims the ready task with the highest priority for that run, prepares
 a worktree when that stage needs one, writes the [Task block](tasks.md#the-task-block) and the
@@ -257,29 +240,22 @@ transition only on acceptance. Provider success alone never proves that a task a
 Command and integration stages use the same transaction/evidence path without a provider.
 A failed or interrupted execution preserves its diagnostic and work for recovery.
 [Tasks](tasks.md#claims-and-readiness) owns the claim rules and
-[Concepts](concepts.md#how-a-stage-job-run-flows) the full run order.
+[Concepts](concepts.md#how-a-stage-job-run-flows) an overview.
 
 ### Workflow checks and lifecycle events
 
-Stage `checks` enforce forward acceptance independently of the model. They run after the
-provider stops writing; a repair receives concrete output, uses the same held task, and
-submits a fresh handoff. Stage budgets persist across restarts and scheduler re-entry, so
-another run does not silently buy unlimited attempts. A return goes to an earlier stage
-within its own finite budget. No-check stages remain valid and accept a successfully
-submitted handoff after execution completes. See [Tasks](tasks.md#stage-transactions-and-checks).
+[Stage checks](tasks.md#stage-transactions-and-checks) enforce acceptance after execution
+stops. Repairs and returns have finite budgets that persist across restarts. Stages without
+checks still require a submitted handoff before acceptance.
 
-Project lifecycle hooks react to accepted transitions and worktree cleanup. They are
-persisted events, including manual task moves, with stable IDs and recorded retry deliveries.
-They differ from a job's gate/postrun hooks, which describe that job invocation. Use
-stage checks for lint/tests, and `hooks["after:done"]` for an accepted-completion reaction.
-A failed after-transition hook does not undo the move; it raises attention and preserves
-cleanup resources. Script effects must tolerate at-least-once delivery. See
-[Tasks](tasks.md#lifecycle-scripts).
+[Lifecycle scripts](tasks.md#lifecycle-scripts) react to accepted transitions or worktree
+cleanup. They are persisted separately from job gate/postrun invocations, use stable event
+IDs, and may be delivered more than once. A failed reaction raises attention without undoing
+the move. Use checks for lint/tests and `hooks["after:done"]` for completion reactions.
 
-The run/task ownership lasts through checks and repair, and worktree-using lifecycle events
-prevent reuse or cleanup until delivered. Integration has a separate per-repository landing
-lock and revalidates the target candidate; it is configured explicitly, not inferred from
-the last agent stage. Worktrees do not isolate shared services or ports.
+Task ownership lasts through checks and repair; worktree-using lifecycle events prevent
+reuse or cleanup until delivered. Integration is an explicit stage with its own repository
+lock. Worktrees do not isolate shared services or ports.
 
 ## Bundled jobs
 
@@ -303,17 +279,14 @@ warnings: unexpected entries, irregular links, credentials other users can read,
 generated files. An orphan workspace or unedited `AGENTS.md` template stays quiet. A report
 containing only hygiene warnings explicitly says the installation is healthy.
 
-The command sends a standard Markdown notice with a title, status, details, and next action.
-It includes at most eight selected findings, each limited to 350 characters, with errors
-first and a count of any remaining findings. Repair guidance stays beside findings when
-it fits; `enso doctor --attention` provides the complete report. The command does not ask
-an LLM to interpret findings or perform repairs.
+Reports go to the configured notification target, including manual runs from chat, and
+enter the outbox under the job's workspace. Each notice includes up to eight findings,
+errors first, with a next action and a count of remaining findings. Run
+`enso doctor --attention` for the complete report.
 
-Reports always go to the configured transport's notification target, including manual runs
-from a chat. The outbox records each send under the job's workspace. A healthy check sends
-nothing and records `ok`; a delivered report also records `ok`. Inspection or delivery
-failures return nonzero and record `error`, allowing the runner's normal failure alert.
-The audit reports remaining problems every night without deduplication or recovery notices.
+Healthy checks stay quiet. Both a healthy check and a delivered report record `ok`;
+inspection or delivery failures record `error` and can trigger a runner failure alert.
+Unresolved findings are reported nightly, without deduplication or recovery notices.
 
 The job is yours to customize. Setup and config apply preserve an existing directory in full.
 Managed upgrades convert the recognized bundled audit to a command while preserving schedule,
@@ -342,8 +315,7 @@ chat's origin.
 
 The job never upgrades Enso. The operator asks in chat or runs `enso update apply` when
 ready. Disable it with `enabled: false` to stop nightly checks; manual `enso update check`
-still works. Older homes can install the new job by applying their existing valid config.
-See [Upgrading](install.md#upgrading) and [CLI updates](cli.md#updates).
+still works. See [Upgrading](install.md#upgrading) and [CLI updates](cli.md#updates).
 
 ## Secrets
 
@@ -403,11 +375,8 @@ before replacing `{{gate_output}}`; truncation is logged. Include that placehold
 prompt to pass data: stdout is not automatically appended. Gate runs once per trigger,
 including when postrun later requests follow-ups.
 
-The capture limit is not a guarantee that a provider can accept that much prompt text:
-provider CLIs receive prompts as command-line arguments, which also share the operating
-system's argument/environment size limits. An oversized launch fails with a diagnostic
-to reduce the prompt or gate output. Keep collected context concise, or write large data
-to a file and put its path and the needed reading instructions in the prompt.
+Provider prompts also face operating-system argument/environment limits. Keep gate output
+concise; for large data, return a file path and tell the agent what to read.
 
 | Gate outcome | Run status | Effect |
 | --- | --- | --- |
@@ -452,14 +421,12 @@ check. Feedback is limited to 64 KiB of stdout. Whitespace-only messages are ref
 messages are sent verbatim. Enso refuses oversized messages instead of sending a truncated
 instruction.
 
-A follow-up is immediate, within the same run ID, workspace, provider, model, effort and
-permissions. It receives only the new message; the provider session keeps the original
-prompt, gate data and previous turns. Gate is not repeated. The next scheduled or manual
-trigger starts a fresh session. Enso never silently falls back to a fresh session if it
-cannot resume the current one. Jobs with postrun use structured provider output from their
-first turn to capture and validate the session ID; ordinary jobs without postrun keep batch execution. Agent stage jobs retain a resumable
-session for workflow repair even when they have no postrun script.
-Structured turns follow the shared [session identity rules](configuration.md#session-identity).
+Follow-ups keep the run ID, workspace, provider, model, effort and permissions. Only the
+new message is sent; the provider session retains the prompt, gate data and previous turns.
+Enso never substitutes a fresh session if resumption fails. Jobs with postrun and agent
+stage jobs capture a resumable session from the first turn for follow-ups or workflow
+repair; ordinary jobs without postrun use batch execution. Structured turns follow the
+shared [session identity rules](configuration.md#session-identity).
 
 Postrun also runs once for `no_work`, `gate_error`, group `skipped`, and executor failure
 or timeout, so a script can react to those outcomes. Those calls cannot start a follow-up:
@@ -481,33 +448,10 @@ in the environment; the database row remains `running` until checking finishes:
 | `ENSO_RUN_FOLLOWUPS_REMAINING` | Additional postrun-requested provider turns still allowed |
 | `ENSO_JOB`, `ENSO_WORKSPACE`, `ENSO_HOME` | The same values the gate and provider get |
 
-For example, this check asks the agent to finish committing its work. Set `REPO` to the
-repository the job works on, and have the job prompt describe the expected commit:
-
-```bash
-#!/usr/bin/env bash
-set -uo pipefail
-[[ "$ENSO_RUN_STATUS" == ok ]] || exit 0
-REPO=/path/to/project
-if ! STATE=$(git -C "$REPO" status --porcelain); then
-  echo "ENSO_ERROR: could not inspect the repository" >&2
-  exit 2
-fi
-if [[ -n "$STATE" ]]; then
-  printf '%s\n' \
-    'The repository still has uncommitted changes. Review and commit the work for this job, then finish.'
-  printf '%s\n' "$STATE"
-  exit 10
-fi
-exit 0
-```
-
-A clean working tree checks for remaining changes; it does not prove a particular commit
-was created. If the job requires a specific commit or artifact, check that condition too.
-The script can run more than once. On task workflows, put accepted-completion reactions in
-project lifecycle hooks; successful postrun execution is not stage acceptance. For ordinary cleanup, do the work and exit `0`;
-no extra provider turn runs. Do not recursively call `enso job run` for the same job from
-postrun: its per-job lock is still held.
+Validate the actual expected result: a clean working tree alone does not prove that the
+required commit or artifact exists. Postrun can run repeatedly, so make its effects safe to
+repeat. For cleanup without a follow-up, do the work and exit 0. Do not recursively run the
+same job: its lock remains held. Task completion reactions belong in project lifecycle hooks.
 
 Both hooks run from the job directory. Each postrun invocation has `postrun.timeout` seconds
 before its process group is stopped. `timeout` is the main command's allowance or the
@@ -560,11 +504,8 @@ Cron is exactly five fields, `minute hour day-of-month month day-of-week`: `0 9 
 daily at 09:00, `30 6 * * 1-5` weekdays at 06:30, `*/15 * * * *` every 15 minutes,
 `0 9 * * 1` Mondays.
 
-Five fields is the whole accepted form, because the scheduler only wakes once a minute.
-A sixth seconds or year column would promise a resolution Enso does not have, and an alias
-such as `@daily` hides which minute it means, so both are rejected along with ordinary
-malformed cron and impossible dates such as February 31. A schedule error is contained to
-that job and cannot stop later jobs in the same scheduler pass.
+Extra seconds/year fields, aliases such as `@daily`, malformed cron, and impossible dates
+such as February 31 are rejected. An invalid schedule affects only its own job.
 
 ## Alerts
 

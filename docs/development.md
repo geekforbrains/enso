@@ -8,70 +8,37 @@ Product behaviour belongs in its owning page under `docs/`, starting with
 
 ## Layout
 
-- `src/enso/` — the Python package. Provider behaviour belongs in `providers/`, transport
-  behaviour in `transports/`, command presentation in `cli/`, and persistence in the
-  database modules. `tasks.py` owns task queries, shared filters, and row conversion for
-  CLI, jobs, and web consumers; the viewer owns display grouping and history limits.
-- `src/enso/transport_registry.py` — one `TransportSpec` per transport: the module its
-  extra installs, its target and binding-key forms, the credentials it pairs with and the
-  wizard copy for them, its chat command prefix, and lazy access to the transport class and
-  pairing receiver. Code that runs without a transport's extra (config, doctor, routing,
-  onboarding, the CLI) consults it instead of comparing transport names; a new transport is
-  declared there once. It sits beside `config.py`, not under `transports/`, because the
-  viewer imports `config` and must never load the transports package. The `--json` write
-  receipt is each transport class's `receipt`.
-- `src/enso/formatting.py` — shared text labels, durations, errors, previews, message
-  chunking, and transport-specific Markdown rendering. Chat and CLI callers import text
-  helpers here; this module does not load runtime, routing, or database code.
-- `src/enso/note_storage.py` — shared bounded file reads, safe paths, timestamp validation,
-  writer locks, and atomic publication for knowledge.
-- `src/enso/knowledge/` — Markdown discovery, core metadata, link resolution, and note writes.
-  The CLI and read-only knowledge viewer share this model;
-  user-editable organization and writing style belong to shared `Meta/Guide.md`, with
-  the bundled `enso-knowledge` skill owning procedures and a fallback for older homes.
-- `src/enso/providers/stream.py` — shared structured-output parsing, session identity,
-  bounded pipe reads, and failure diagnostics for chat and background turns. Callers own
-  process lifetimes, response presentation, and persistence; `execution.py` owns shared
-  process cleanup and background execution without importing the chat runtime.
-- `src/enso/layout.py` — one table per root naming every top-level entry an Enso home and a
-  workspace may hold and who owns it. Setup's preflight, the scaffold, and the audit read it,
-  so a new shipped directory is declared once; it imports no other Enso module.
-- `src/enso/locks.py` — the hardened advisory lock open every lock site uses; it imports no
-  other Enso module.
-- `src/enso/releases.py` — release manifests, artifact downloads, and isolated release
-  environments. `scripts/build-release.py` embeds its exact text in the published installer,
-  so it uses only the standard library and imports nothing from the package. It also owns
-  `fetch`, the one bounded, redirect-refusing HTTP read; the skill catalog imports it and
-  keeps its own redirect policy, headers, and error type.
-- `src/enso/development.py` — repository-only editable refresh and manual migration
-  orchestration behind `scripts/dev-refresh` and `scripts/dev-migrate`. It shares admission,
-  service ownership, migration revisions, and snapshots with release updates.
-- `src/enso/web/` — `server.py` owns routes and template wiring; `filters.py` owns
-  presentation helpers, Jinja filters, and chart series. `tasks.py` builds task board and
-  detail models; `views.py` builds the other pages. Both use `common.py` for configuration,
-  project summaries, source errors, and the shared attention indicator. `heartbeat.py` owns
-  bounded heartbeat and mixed-run reads; `files.py` owns safe file browsing and Markdown
-  rendering. Shared helpers do not import page models.
-- `src/enso/bundled/` — packaged content, not development instructions.
-  Home-copied files mirror their home paths; job and workspace templates land in their owning
-  workspace. Home-copied files are listed in
-  [`src/enso/workspaces.py`](../src/enso/workspaces.py). The packaged Slack manifest is a CLI
-  resource, not a home copy. Add new home-copied files in both places; keep their installation
-  and update behaviour covered by tests.
-  The knowledge starter is a separate first-initialization template: its generated notes
-  belong to the user and never enter ordinary bundle reconciliation.
-- `tests/` — automated tests; shared fixtures live in
-  [`tests/conftest.py`](../tests/conftest.py).
-- `docs/` — product documentation and these development/release guides. Each fact has one
-  owning page; other pages summarize and link.
-- `assets/` — repository material for people, such as screenshots and the Slack manifest;
-  not packaged. The Slack example is checked against the canonical bundled manifest.
-- `scripts/` — maintainer tooling, including the release builder.
-- `.dev/prepare` — prepares a fresh checkout using the dependency sync below. Run it inside
-  an isolated checkout used for review; keep it fast and idempotent.
+| Location | Responsibility |
+| --- | --- |
+| `src/enso/providers/`, `transports/`, `cli/` | Provider adapters, transport adapters, and command presentation |
+| `transport_registry.py` | Transport extras, targets, bindings, credentials, pairing, and lazy loading; base commands consult it without importing optional transports |
+| `tasks.py`, database modules | Shared task queries, filters, row conversion, and persistence; the viewer owns display grouping and history limits |
+| `formatting.py` | Text labels, durations, previews, chunking, and Markdown rendering; no runtime, routing, or database imports |
+| `knowledge/`, `note_storage.py` | Shared note model and safe reads/writes; user conventions belong to `Meta/Guide.md` |
+| `providers/stream.py`, `execution.py` | Stream parsing/session identity and shared process cleanup; callers own process lifetimes, presentation, and persistence |
+| `layout.py`, `locks.py` | Home/workspace entries and hardened advisory locks; neither imports another Enso module |
+| `releases.py` | Manifests, downloads, and release environments; standard library only because the builder embeds it in the installer |
+| `development.py` | Editable refresh and manual migrations, sharing admission, ownership, and snapshots with updates |
+| `web/` | `server.py` routes, `filters.py` presentation, `tasks.py`/`views.py` page models, `common.py` shared state, `heartbeat.py` bounded reads, `files.py` safe browsing; shared helpers never import page models |
+| `bundled/` | Shipped home content, workspace/job templates, and CLI resources; not instructions for this checkout |
+| `tests/` | Tests and shared `conftest.py` fixtures |
+| `docs/` | Product and development contracts; one owning page per fact |
+| `assets/` | Repository-only screenshots and examples |
+| `scripts/`, `.dev/prepare` | Maintainer tools and fast, idempotent isolated-checkout setup |
 
-The root `AGENTS.md` is the canonical source-code entrypoint. Its sibling `CLAUDE.md` must
-remain a relative symlink to `AGENTS.md`, never a copy or an import stub.
+Python module paths are under `src/enso/`; the other directories are repository-relative.
+Add transports once in the registry;
+each transport class owns its JSON write receipt. `releases.fetch` provides the shared
+bounded, redirect-refusing HTTP read; the skill catalog owns its redirect policy and errors.
+
+Home-copied bundles mirror their destination paths and are registered in
+[`workspaces.py`](../src/enso/workspaces.py). Add files in both places and test installation
+and update behavior. The Slack manifest is a packaged CLI resource; its repository example
+is checked against it. The knowledge starter seeds user-owned notes only on first
+initialization and never participates in ordinary bundle reconciliation.
+
+Root `AGENTS.md` owns source-checkout instructions. `CLAUDE.md` must remain a relative
+symlink to it.
 
 ## Setup and checks
 
@@ -135,7 +102,7 @@ Browser screenshots are saved in the tests' temporary directories for visual rev
 
 ### Workspace acceptance coverage
 
-The default suite checks the 0.2.0 workflow in disposable homes using synthetic messages,
+The default suite checks workspace routing and execution in disposable homes using synthetic messages,
 fake transport clients, and local provider executables:
 
 | Boundary | Evidence |
