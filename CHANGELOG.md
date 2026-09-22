@@ -7,8 +7,6 @@ All notable changes to Enso are documented here, following
 
 ### Added
 
-- `enso browser create|list|status|open|stop|mcp` runs the packaged browser implementation
-  under Enso's own environment, through the same CLI for releases and local development.
 - Encrypted secrets with desktop/mobile web forms and `enso secret` management, retrieval,
   and command injection. Jobs can declare one list of secret names for their full run.
   The master key stays outside the Enso home and unlocks automatically after restarts.
@@ -20,9 +18,6 @@ All notable changes to Enso are documented here, following
 
 ### Removed
 
-- **Breaking:** Retire the bundled `enso-browser/scripts/browser.py` entry point. Replace
-  old provider registrations with `enso browser mcp [profile] --print-config` and reconnect;
-  profiles, tabs, and logins are preserved. Managed updates remove only untouched old helpers.
 - **Breaking:** Stop creating and loading `secrets/*.env`. Existing files are left untouched;
   manually create encrypted secrets and add job declarations or command wrappers. No secret
   import or migration is performed.
@@ -32,6 +27,9 @@ All notable changes to Enso are documented here, following
 
 ### Changed
 
+- **Breaking:** `enso-browser` uses the official Playwright CLI directly for browser
+  sessions and persistent profiles. Install Node.js, Chrome, and `@playwright/cli` yourself
+  when browser work is needed; Enso no longer provides browser runtime code or configuration.
 - Secrets follows the viewer's row spacing and section styles, with labelled trash controls
   and native browser delete confirmation; a styled confirmation remains without JavaScript.
   Add secret is the default tab, with listing and deletion in a separate Secrets tab that

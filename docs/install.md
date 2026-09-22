@@ -8,6 +8,8 @@
   `grok`, `agy`, or `opencode`. Enso drives them; it does not manage their credentials.
 - **A transport**: a Slack app in Socket Mode, or a Telegram bot token.
 - macOS or Linux. The service integration uses launchd or systemd.
+- Optional **browser work** needs Node.js, the official Playwright CLI, and Chrome,
+  installed by you. See [Browser](browser.md) for setup; these are not Enso dependencies.
 
 ## Install
 

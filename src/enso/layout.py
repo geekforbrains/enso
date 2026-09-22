@@ -104,7 +104,6 @@ HOME: tuple[Entry, ...] = (
         private=True,
         real_directory=True,
     ),
-    Entry("browser", MANAGED, "the enso-browser skill's profiles"),
     # Older homes may keep an edited copy after the packaged manifest stops being seeded.
     Entry("slack", USER, "legacy Slack app files"),
     Entry(".bundles.json", MANAGED, "the record of what Enso installed"),

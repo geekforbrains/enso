@@ -96,8 +96,8 @@ Global skills go in `~/.enso/skills/<skill>/SKILL.md`; workspace-only ones in `<
 Load `enso-skills` for the authoring format and validation, or to discover and install an
 official optional skill from `geekforbrains/enso-skills`. Those installs are Enso-wide and
 carry a source receipt; they never override an existing path. Load `enso-browser` for
-browser profiles. A workspace may name its preferred browser profile in `AGENTS.md`, but
-the profile itself is private data under the home, not content to put in `skills/`.
+Playwright CLI sessions and profiles. A workspace may record its intended session or
+dedicated profile path in `AGENTS.md`; private browser data does not belong in `skills/`.
 
 ## Retiring a workspace
 

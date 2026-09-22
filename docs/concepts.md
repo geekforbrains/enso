@@ -65,7 +65,6 @@ Enso's runtime state lives under one directory:
 ├── CLAUDE.md -> AGENTS.md
 ├── skills/              # enso-wide skills, available in every workspace
 ├── shared/knowledge/    # shared Markdown knowledge, visible across workspaces
-├── browser/             # optional private Chrome profiles, output, state, and tooling
 ├── .claude/skills       # symlink -> ../skills, discovered by the provider CLIs
 ├── .agents/skills       # symlink -> ../skills
 ├── workspaces/<name>/   # one directory per workspace
@@ -296,7 +295,8 @@ skills or instruction files. See [Customizing](customizing.md).
 `enso skill install <name>` use only the official `geekforbrains/enso-skills` catalog.
 Optional skills carry their installation receipt inside their directory and do not update
 with the application. [Customizing](customizing.md#official-optional-skills) owns that flow;
-[Browser](browser.md) owns persistent profile setup and its private home data.
+[Browser](browser.md) owns optional browser requirements and the skill's use of Playwright
+sessions and profiles.
 
 ## Secret
 

@@ -194,7 +194,7 @@ Enso installs these into `~/.enso/skills/`:
 | Skill | Covers |
 | --- | --- |
 | `enso` | The map: what Enso is, the home layout, the skill scopes, the CLI, and where the docs are |
-| `enso-browser` | Persistent Chrome profiles, human login, and attaching browser tools; see [Browser](browser.md) |
+| `enso-browser` | Playwright CLI sessions and profiles, human login, and authorized browser actions; see [Browser](browser.md) |
 | `enso-heartbeat` | Finite future actions and temporary watches, script gates, event history, action receipts, and completion |
 | `enso-jobs` | Creating, testing, and troubleshooting scheduled and stage jobs and their prerun and postrun scripts |
 | `enso-knowledge` | Finding and maintaining Markdown notes (in shared knowledge by default), links, imports, and user-defined formatting |

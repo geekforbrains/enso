@@ -34,7 +34,7 @@ what's coming up, and what needs your attention.
   a single unchecked stage works too.
 - **Let it follow through.** Schedule a morning brief or weekly review. Ask Enso to
   watch for a refund, check on a release, or remind you on Friday.
-- **Make it yours.** Add skills, connect persistent browser profiles, or install
+- **Make it yours.** Add skills, browse with Playwright CLI, or install
   optional skills from the official catalog.
 
 Enso is powered by Claude Code, Codex, Grok, Antigravity, or OpenCode. Each provider
@@ -54,7 +54,8 @@ section can add and delete encrypted secrets, but it is not a general control pa
 
 Enso is in pre-1.0 beta and runs on macOS and Linux. You need an authenticated agent
 CLI and a Slack app or Telegram bot; the release installer supplies Python and uv
-when needed.
+when needed. Optional [browser work](docs/browser.md) uses Node.js, Playwright CLI, and
+Chrome installed separately by you.
 
 Install Enso with one command:
 
@@ -96,7 +97,7 @@ The pages here own technical behavior, configuration contracts, and development 
 - [Jobs](docs/jobs.md), [Heartbeat](docs/heartbeat.md), and [tasks](docs/tasks.md) —
   scheduled work, follow-ups, and project boards.
 - [Customization and skills](docs/customizing.md) and [browser setup](docs/browser.md) —
-  instructions, the official skill catalog, and persistent profiles.
+  instructions, the official skill catalog, and Playwright sessions and profiles.
 - [Web viewer](docs/web.md) and [CLI reference](docs/cli.md) — seeing and operating Enso.
 
 ## Contributing

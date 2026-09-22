@@ -325,7 +325,7 @@ every saved secret into the service environment.
 
 Job scripts run normal tools directly and own their dependencies. Use commands such as
 `uv run --project /path/to/project report.py` for a project's Python environment and
-`enso browser` or `enso message` for Enso-owned operations. Do not depend on Enso's internal
+`enso message` for Enso-owned operations. Do not depend on Enso's internal
 interpreter path or import private `enso.*` modules from a job script.
 
 Prerun and postrun scripts execute with the service account's access, outside the

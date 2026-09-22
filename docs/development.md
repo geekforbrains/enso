@@ -45,8 +45,6 @@ Product behaviour belongs in its owning page under `docs/`, starting with
 - `src/enso/development.py` — repository-only editable refresh and manual migration
   orchestration behind `scripts/dev-refresh` and `scripts/dev-migrate`. It shares admission,
   service ownership, migration revisions, and snapshots with release updates.
-- `src/enso/browser.py` — optional Chrome lifecycle and MCP attachment. The public interface
-  is `enso browser`; the bundled browser skill contains instructions, not runtime code.
 - `src/enso/web/` — `server.py` owns routes and template wiring; `filters.py` owns
   presentation helpers, Jinja filters, and chart series. `tasks.py` builds task board and
   detail models; `views.py` builds the other pages. Both use `common.py` for configuration,
@@ -348,10 +346,8 @@ services, and verify readiness before reopening work. Stopped services remain st
 Configuration, jobs, skills, projects, and knowledge files stay as installed.
 For example, changing a shipped job schedule does not rewrite the local `JOB.md`.
 Runtime control files, logs, and ordinary application activity continue to change normally.
-Package-owned capabilities such as `enso browser` use the refreshed code immediately in a
-new process. Test changed bundled instructions in a scratch home; updating customized live
-instructions or old MCP registrations is a separate, explicit operation. Browser registration
-uses the stable launcher in development too; reconnect a running MCP client to load new code.
+Test changed bundled instructions in a scratch home; updating customized live instructions
+is a separate, explicit operation.
 Do not run `setup`, `init`, config apply, or bundle reconciliation to refresh source code.
 An invalid existing configuration stops the preflight; fix only the specific authorized
 problem, without replacing the home with checkout defaults.
@@ -469,7 +465,7 @@ That page owns the visual standards; extend it when adding a new interaction pat
 - Keep optional features optional: the base package and unrelated commands must work
   without their dependencies. Missing features report the exact extra to install.
 
-Expose Enso-owned operations through domain commands such as `enso browser` and `enso message`.
+Expose Enso-owned operations through domain commands such as `enso knowledge` and `enso message`.
 Jobs and skill scripts run ordinary tools directly and own their Python/Node environments and
 dependencies. They should not import private `enso.*` modules or depend on Enso's interpreter
 path. The CLI is the public interface to Enso's capabilities, not a general process runner.

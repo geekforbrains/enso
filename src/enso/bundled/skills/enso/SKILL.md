@@ -23,7 +23,6 @@ Enso's normal runtime state lives under one directory, `~/.enso` (or `$ENSO_HOME
 ├── CLAUDE.md -> AGENTS.md
 ├── skills/              # enso-wide skills: enso, enso-*, and the user's own
 ├── shared/knowledge/    # shared Markdown knowledge across workspaces
-├── browser/             # private browser profiles, output, state, and optional tooling
 ├── .claude/skills -> ../skills
 ├── .agents/skills -> ../skills
 ├── workspaces/<name>/   # one directory per workspace: the agent's cwd and context
@@ -68,7 +67,7 @@ Adding or editing a skill needs no Enso restart. The provider discovers skills t
 | --- | --- |
 | `enso-workspace` | The workspace layout, where files and skills go, bindings, the audit |
 | `enso-knowledge` | Markdown notes in shared knowledge by default; links, imports, and consistent user-defined formatting |
-| `enso-browser` | Persistent Chrome profiles, human login, and attaching browser tools |
+| `enso-browser` | Playwright CLI sessions, authenticated browsing, and human handoff |
 | `enso-skills` | Finding and installing official optional skills; authoring manual skills and choosing scope |
 | `enso-security` | Installation trust, provider permissions, credential handling, and untrusted input |
 | `enso-heartbeat` | Finite future actions and temporary watches: gates, event history, action receipts, explicit completion |
@@ -87,7 +86,6 @@ enso message send "text"             # to the conversation that asked, else the 
 enso message attach FILE [CAPTION]
 enso slack …                         # see enso-slack
 enso telegram send|attach …
-enso browser create|list|status|open|stop|mcp  # see enso-browser
 enso table list|register|schema      # see enso-tables
 enso job list|show|run|create        # see enso-jobs
 enso heartbeat status|create|list|show|history|update|pause|resume|wait|complete  # see enso-heartbeat
