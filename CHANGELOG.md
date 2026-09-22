@@ -5,8 +5,11 @@ All notable changes to Enso are documented here, following
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-22
+
 ### Added
 
+- The web sidebar shows the running Enso version.
 - Command jobs run recurring scripts without an LLM. Concurrency groups support explicit
   `wait` or `skip` policies, fair waiting, and optional deadlines.
 - Encrypted secrets managed through the web UI or `enso secret`, with explicit injection
@@ -30,8 +33,8 @@ All notable changes to Enso are documented here, following
 - **Breaking:** Knowledge commands default to shared knowledge regardless of
   `ENSO_WORKSPACE`; use `--workspace NAME` for existing workspace notes.
 - **Breaking:** Browser automation uses Playwright CLI instead of the bundled browser
-  helper and MCP connection. Install Node.js, Chrome, and `@playwright/cli` for browser work
-  and update integrations that invoke the old helper.
+  helper and MCP connection. Install Node.js, a supported browser, and `@playwright/cli`;
+  remove old Enso browser MCP registrations and update integrations using the old helper.
 - Leaner home/workspace instructions and focused skills. `enso-config` and `enso-messages`
   replace the generic `enso` skill; `enso-projects` replaces `enso-tasks` and `enso-workflow`.
   Update custom references to those names. Bundle refreshes preserve local edits.
