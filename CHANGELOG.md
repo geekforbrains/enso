@@ -7,6 +7,9 @@ All notable changes to Enso are documented here, following
 
 ### Added
 
+- Fresh installations receive an editable knowledge guide, navigation index, Person and
+  Project templates, and a standard folder layout including `!Inbox/`. Existing homes and
+  changes to seeded notes are preserved; no maintenance automation is enabled.
 - `enso doctor --notify` sends bounded health reports directly to the configured notification
   target; `--attention` includes selected hygiene warnings and `--quiet` suppresses normal
   output. The bundled audit now runs without an LLM. Audit and update notifications share
@@ -34,6 +37,9 @@ All notable changes to Enso are documented here, following
 
 ### Changed
 
+- Shorter home and workspace instructions and focused bundled skills, with command-first
+  job guidance. The generic `enso` skill is replaced by `enso-config` and `enso-messages`;
+  other operations stay with their domain skills. Customized installed files are preserved.
 - **Breaking:** Workspace overrides now use `workspace.json`. Home revision 7 preserves
   existing `WORKSPACE.md` settings as JSON, deletes the old files, and discards their
   unused prose and YAML comments. Workspace instructions remain in `AGENTS.md`.

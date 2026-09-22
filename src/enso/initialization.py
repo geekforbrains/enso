@@ -12,7 +12,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from . import __version__, db, layout, migrations, workspaces
+from . import __version__, db, knowledge_starter, layout, migrations, workspaces
 from .config import (
     CONFIG_VERSION,
     LEGACY_HOME_MESSAGE,
@@ -25,6 +25,7 @@ from .config import (
     safe_diagnostics,
     write_config_locked,
 )
+from .knowledge import KnowledgeError
 from .maintenance import UpdateError, write_json
 from .providers import PROVIDER_CLASSES
 
@@ -105,6 +106,7 @@ def _layout_problems(paths: Paths) -> list[str]:
         paths.workspaces,
         default,
         paths.cache,
+        paths.runtime_dir,
         paths.skills,
         paths.knowledge,
         *(default / name for name in layout.WORKSPACE_DIRS),
@@ -196,9 +198,11 @@ def initialize_home(paths: Paths) -> dict[str, Any]:
             # Record a fresh schema before seeding: an interrupted init must resume as
             # this release's scaffold, rather than appear to be an older installation.
             if is_fresh_home(paths):
+                knowledge_starter.begin(paths)
                 write_json(
                     paths.home / migrations.MARKER, {"revision": migrations.latest_revision()}
                 )
+            changes.extend(knowledge_starter.seed(paths))
             # A private root is created private, not widened and narrowed again: nothing
             # readable should exist inside it between the two calls.
             private = {entry.name for entry in layout.private(layout.HOME)}
@@ -225,7 +229,7 @@ def initialize_home(paths: Paths) -> dict[str, Any]:
         result["ok"] = True
     except ConfigConflictError as exc:
         result["problems"] = exc.problems
-    except UpdateError as exc:
+    except (UpdateError, KnowledgeError) as exc:
         result["problems"] = [str(exc)]
     except OSError, subprocess.SubprocessError:
         result["problems"] = [

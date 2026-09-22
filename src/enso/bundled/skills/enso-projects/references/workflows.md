@@ -1,64 +1,39 @@
-# Workflows
+# Configure or recover a workflow
 
-[Projects](projects.md) covers project ownership, files, and scripts.
+Inspect stages, active tasks, jobs, worktrees, and evidence before changing the flow.
+Confirm actual validation commands. Choose the smallest useful flow: one unchecked `work`
+stage is valid; repositories, checks, reviews, and integration are optional. The development
+preset adds planning, checked implementation, review, and engine-run integration.
 
-## Design
+Put acceptance requirements in stage checks, agent instructions in stage jobs, and reactions
+to accepted transitions in lifecycle hooks. Use `enso-jobs` for job definitions: agent stages
+declare `agent`; command/integration stages omit both `agent` and `command` because
+`PROJECT.md` owns execution. Do not replace missing validation with an always-passing command.
 
-Before changing a workflow, inspect its stages, active tasks, stage jobs, worktrees, and
-recorded evidence. Confirm the repository's real validation commands.
+## Checks and worktrees
 
-Choose the smallest flow that meets the need. A single unchecked `work` stage is complete;
-Git, checks, reviews, and multiple stages are optional. The development preset adds
-planning, checked implementation, review, and engine-run integration. A custom stage may
-be handled by an agent, a person, a command, or integration.
+Checks pass by command success, never by an agent's claim. Evidence is tied to the candidate,
+specification, and workflow; changes invalidate it. Use finite repair/return budgets. When
+rules intentionally change, review and approve the inputs instead of weakening checks.
+Integration rebases, rechecks, and lands the recorded candidate; it never pushes or deploys.
 
-Put executable acceptance requirements in stage checks, agent instructions in the stage
-job, and reactions to accepted moves in lifecycle hooks. Do not invent a command or replace
-a missing check with a command that always succeeds.
+Enable worktrees only where stages need repository files. Choose the target and root
+deliberately: configuration changes do not relocate or retarget existing tasks. Worktrees
+do not isolate ports, databases, or services; use a job concurrency group for shared
+resources. Its lock starts after the gate. Project `max_concurrency` separately limits
+task execution. Preserve retained worktrees/branches when cleanup fails.
 
-Stage `JOB.md` files use the `enso-jobs` format: agent stages declare a nested `agent` block;
-command/integration stages omit both `agent` and `command` because `PROJECT.md` owns their
-execution. Job `gate` and `postrun` blocks name explicit commands and optional timeouts.
+## Lifecycle and recovery
 
-## Checks and integration
+`setup` must tolerate retries in a retained directory. Transition hooks run after acceptance;
+`teardown` runs before cleanup. Failed transition hooks do not undo moves and may repeat;
+deduplicate external effects with `ENSO_EVENT_ID`. Hooks must not recursively move tasks.
 
-A required check passes only when its command exits successfully. A successful agent reply
-is not check evidence. Check results are tied to the task candidate, specification, and
-workflow; changes invalidate stale evidence.
+Before replacing a workflow, stop admissions, drain runs, and inspect task stages, return
+destinations, jobs, scripts, and worktrees. Preserve history, retained work, and disabled
+backups produced by migration.
 
-Use finite repair and return budgets. When validation rules intentionally change, review
-and approve those inputs rather than weakening checks or fabricating a pass. An integration
-stage rebases, rechecks, and lands the recorded candidate against its target; it does not
-push or deploy.
-
-## Worktrees
-
-Enable worktrees only for stages that need repository files. Choose the target branch and
-worktree root deliberately; changing the configuration does not relocate or retarget an
-existing task.
-
-Worktrees isolate files, not ports, processes, credentials, databases, or services. Give
-shared resources a job `concurrency` group with an explicit `on_busy: wait` or `on_busy: skip`;
-there is no default policy. Project `max_concurrency` separately limits task executions.
-The job group protects execution and checks, not its gate, which runs first. Make setup safe
-to retry. Do not remove
-retained task directories or branches to hide a cleanup failure.
-
-## Lifecycle hooks
-
-`setup` prepares a new worktree. Transition hooks run after an accepted move, and `teardown`
-runs before cleanup. A failed transition hook does not undo the move and may be delivered
-again, so external effects must be idempotent or deduplicated with `ENSO_EVENT_ID`. A hook
-must not move the task recursively.
-
-## Migration and recovery
-
-Before replacing a workflow, stop new admissions, drain active runs, and inspect existing
-task stages, return destinations, jobs, scripts, and worktrees. Migration preserves task
-history and retained work while keeping replaced definitions as disabled backups. Do not
-delete those backups or user files as cleanup.
-
-After configuration, run `enso config check`, inspect every generated job, and exercise a
-failure, repair, acceptance, and retained worktree before enabling a broad queue. Use
-`enso workflow show REF --json` for the recorded outcome. `verify`, `retry`, and
-`approve-rules` are explicit operator actions; diagnose the failure before using them.
+Run `enso config check`, inspect generated jobs, and exercise failure, repair, acceptance,
+and retained-worktree behavior before enabling a broad queue. Inspect durable outcomes with
+`enso workflow show REF --json`. `verify`, `retry`, and `approve-rules` are explicit operator
+actions; diagnose the failure before using them.

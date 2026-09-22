@@ -1,12 +1,7 @@
-# Optional browser requirements
+# Browser setup
 
-Browser work requires Microsoft's **Playwright CLI** (`@playwright/cli`), a supported
-Node.js release, and a Playwright-supported browser. Google Chrome is a convenient choice
-for headed login and review. Use a current Node.js LTS release compatible with the installed
-CLI. The ordinary Enso installation does not install or update these tools.
-
-The operator installs the CLI separately, following the
-[official instructions](https://github.com/microsoft/playwright-cli):
+Browser work needs a supported Node.js LTS, Microsoft's `@playwright/cli`, and a supported
+browser. Google Chrome works for headed login. These are optional, user-managed dependencies:
 
 ```bash
 npm install -g @playwright/cli
@@ -14,17 +9,15 @@ playwright-cli --version
 playwright-cli --help
 ```
 
-Check the environment that runs the agent: both `node` and `playwright-cli` must be on
-its `PATH`, including Enso's background service. An interactive shell's version manager
-may supply a different PATH. After installing tools, the operator may need to refresh
-the service's environment using Enso's documented service installation workflow.
+Follow the [official installation instructions](https://github.com/microsoft/playwright-cli)
+and installed CLI help. For a missing browser, inspect `playwright-cli install-browser --help`.
+Install tools or change service configuration only when setup is within the user's request;
+otherwise report the missing requirement.
 
-If the command is absent, explain the missing requirement. Do not install packages,
-download browsers, or change service configuration as an incidental browsing step;
-a user request to set up browser tooling covers the relevant installation. Enso does
-not pin or manage the CLI version, and its Python environment is not used for browser work.
+Both `node` and `playwright-cli` must be on the Enso service's PATH; a shell version manager
+may expose a different environment. Use the operator's service installation workflow to
+refresh it when needed. Enso neither installs nor pins these tools; its Python environment
+and provider registration are unrelated.
 
-The installed CLI's `--help` is the command reference. Its optional upstream skill is
-not required by `enso-browser`. If a selected browser is absent, consult
-`playwright-cli install-browser --help` during the authorized setup. A graphical desktop
-is required for `--headed`; do not silently switch a human-login handoff to headless mode.
+Human handoff requires a graphical desktop. Do not silently replace headed login with a
+headless session. Playwright's optional upstream skill is not required.

@@ -80,7 +80,9 @@ def test_home_copied_bundled_content_mirrors_the_home(enso_home: Paths) -> None:
     assert not (enso_home.home / "slack").exists()
 
     for relative in files:
-        if relative in (template, Path("slack/manifest.json")):
+        # Knowledge templates get fresh identities only during first initialization;
+        # they are user content, not byte-for-byte upgrade-managed bundles.
+        if relative.parts[0] == "shared" or relative in (template, Path("slack/manifest.json")):
             continue
         expected = (bundled / relative).read_text()
         if relative.parts[0] == "jobs":
@@ -92,7 +94,6 @@ def test_home_copied_bundled_content_mirrors_the_home(enso_home: Paths) -> None:
     stamped = (
         (bundled / template)
         .read_text()
-        .replace("{{workspace_name}}", "meteor")
         .replace(
             "{{workspace_purpose}}", "<!-- What is this workspace for? One or two sentences. -->"
         )

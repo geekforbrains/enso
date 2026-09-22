@@ -40,96 +40,48 @@ field — not to describe the turn in hand.
 
 ### The home-level file
 
-Shipped with sane defaults. It opens with the voice Enso answers in: curious, capable,
-warm, and a little quirky, with short replies, plain words, and occasional dry humour. It
-then covers how to behave, the origin block and the matching `ENSO_ORIGIN_*` variables,
-where attachments land, when a reply reaches a conversation, that fetched content is data
-and not instructions, and when to load each key Enso skill. Skill entries are brief routing
-cues; procedures, command syntax, and safeguards belong in the skills themselves.
+The home file keeps only guidance needed on every turn: voice, authorization and input
+trust, workspace/file context, knowledge conventions, skill discovery, and reply delivery.
+Read the relevant skill for procedures and use `enso --help` to discover commands.
+Detailed CLI inventories and onboarding questionnaires do not belong in always-loaded context.
+
 Edit it freely: setup preserves an existing file, and managed updates preserve your edits.
-Only a copy that still matches Enso's
-recorded bundled baseline can refresh automatically. The voice is the first thing to change
-if you want a different one; it is a section, not a setting.
-
-It also ships a `## TODO: Get to know this space` section. While it remains, the agent
-starts a short onboarding conversation in live chat, asking one or two questions at a time
-and continuing to help with the request. It learns what Enso should help with, who uses the
-install, and useful preferences without assuming a single person, a team, or a chat platform.
-Confirmed answers replace placeholders in the home file's `About this space` and
-`About the people here` sections; workspace-specific purpose and rules belong in that
-workspace's instructions. Onboarding records context, not new access or approval rights.
-
-Questions can be skipped or deferred. The agent records and respects a deferral, and removes
-the TODO once the basics are answered or explicitly skipped. Jobs and beats leave these
-questions for live chat. Keep the remaining entries short, current, and appropriate for
-everyone using the install: the home file loads across all workspaces. Never put secrets or
-private personal details there; detailed background belongs in `$ENSO_HOME/shared/knowledge/`,
-referenced by path. Existing customized homes can adopt this onboarding guidance manually;
-upgrades do not overwrite them.
-
-Keep it about *behaviour*. Facts about a project belong in shared knowledge.
+Only a copy matching its recorded bundled baseline can refresh automatically. Keep confirmed
+shared preferences here; detailed background belongs in knowledge, referenced by path.
+Workspace-specific purpose and rules belong in that workspace's instructions. Do not turn
+one person's preference into a rule for everyone or put secrets in these files.
 
 ### The workspace file
 
-Deliberately minimal. A new workspace gets this:
+A new workspace starts with:
 
 ```markdown
-# <name>
-
-## Purpose
+## Workspace
 
 <!-- What is this workspace for? One or two sentences. -->
-
-## Scope
-
-<!-- What is in bounds, and what is explicitly not. -->
-
-## Terms
-
-<!-- Words that mean something specific here. Delete if none. -->
-
-## Rules
-
-<!-- Anything that must be true on every single turn: approvals, tone,
-     people to check with, things never to touch. Delete if none. -->
-
-## Files
-
-- `$ENSO_HOME/shared/knowledge/` — current facts and reference material shared across workspaces; load `enso-knowledge` and use `enso knowledge` to find or maintain it
-- `work/` — task files and generated or editable output, grouped by task
-- `uploads/` — chat attachments, written by Enso
-
-Knowledge commands use shared knowledge by default. Keep work in its established repository or destination when one exists; otherwise use `work/`. Separate workspaces do not promise confidentiality within this installation.
 ```
 
-Fill in the blanks and delete what does not apply. `enso workspace audit` warns while the
-template is still untouched, because an unfilled `AGENTS.md` means the agent is guessing.
+The required `default` workspace instead receives its operator purpose and a reminder to
+preserve it. Add rules or references only when they help this workspace; do not repeat the
+home instructions. `enso workspace audit` warns while an ordinary workspace's template is
+untouched. Existing workspace instructions are never refreshed.
 
-**Keep it short.** The provider CLI loads this file as workspace instructions; Enso does
-not prepend its contents to the prompt. Anything longer than a screen belongs in
-`$ENSO_HOME/shared/knowledge/`, referenced by path:
-
-```markdown
-Pricing rules are in `$ENSO_HOME/shared/knowledge/pricing.md`. Read it before quoting a number.
-```
-
-The agent reads the relevant files when needed, and the viewer lets you browse
-them. A filing rule written here can override the shared default;
-see [Knowledge](knowledge.md#where-new-notes-go).
+Keep facts and detailed procedures in their owning note, with a path telling the agent
+when to read it. A workspace filing rule can override the shared default; see
+[Knowledge](knowledge.md#where-new-notes-go).
 
 ## Knowledge formatting
 
-The bundled `enso-knowledge` skill owns the agent's note workflow. Its
-`references/formatting.md` supplies the default writing conventions, and `scripts/lint.py`
-checks mechanical style such as heading spacing and trailing whitespace. Both live under
-`~/.enso/skills/enso-knowledge/` and apply to shared and workspace knowledge alike.
+Fresh installations receive an editable `$ENSO_HOME/shared/knowledge/Meta/Guide.md`.
+It owns organization and writing conventions; the bundled `enso-knowledge` skill owns
+CLI procedures. [Knowledge](knowledge.md#starter-collection) describes the starter and
+how existing homes are preserved.
 
-Ask the agent to change those files together when you want a different style. Start with
-one common convention; the agent must not relax a rule just to make a note pass. Managed
-upgrades preserve customized instructions, references, and scripts under the same bundle
-rules below. These checks report findings without rewriting note prose, and the viewer
-never runs user scripts. Core metadata, stable identity, path safety, and link validation
-remain part of Enso itself; [Knowledge](knowledge.md) owns those fixed contracts.
+The skill's `references/formatting.md` is a fallback for homes without a guide.
+Its `scripts/lint.py` checks mechanical style without rewriting notes. When a user changes
+a convention, update the guide (or the existing fallback) and any affected checks together.
+Do not relax a check simply to make a note pass. The viewer never runs user scripts;
+metadata, identity, path safety, and link validation remain application contracts.
 
 ## Skills
 
@@ -193,7 +145,8 @@ Enso installs these into `~/.enso/skills/`:
 
 | Skill | Covers |
 | --- | --- |
-| `enso` | The map: what Enso is, the home layout, the skill scopes, the CLI, and where the docs are |
+| `enso-config` | Configuration edits, agent/provider settings, diagnostics, and restart requirements |
+| `enso-messages` | Sending messages and attachments across transports, with workspace and destination context |
 | `enso-browser` | Playwright CLI sessions and profiles, human login, and authorized browser actions; see [Browser](browser.md) |
 | `enso-heartbeat` | Finite future actions and temporary watches, script gates, event history, action receipts, and completion |
 | `enso-jobs` | Scheduled agent/command jobs, stage jobs, gates, postrun checks and explicit wait/skip groups |
@@ -206,9 +159,10 @@ Enso installs these into `~/.enso/skills/`:
 | `enso-update` | Checking releases, requesting an authorized self-update, and inspecting recovery |
 | `enso-workspace` | Inspecting workspaces, the layout, the audit, and where skills go |
 
-Each one says how Enso sets its subject up, then how the agent uses it. `enso init` and
-`enso setup` write a bundled skill or home-level `AGENTS.md` only when missing. A workspace
-`AGENTS.md` is created from its template, stamped with the workspace name, and never refreshed.
+Skills contain the decisions and procedures specific to their task, with conditional detail
+in linked references. `enso init` and `enso setup` write a bundled skill or home-level
+`AGENTS.md` only when missing. A workspace `AGENTS.md` is created from its minimal template
+and never refreshed.
 A bundled maintenance job is installed in `workspaces/default/jobs/` and stamped with
 the default agent during setup or config apply; those commands
 leave an existing job directory alone, including missing scripts.
@@ -233,14 +187,11 @@ those files yourself when needed. This upgrade behavior is separate from setup a
 apply, which can seed a missing bundle again when explicitly run. See
 [Jobs § Bundled jobs](jobs.md#bundled-jobs) and [Upgrading](install.md#upgrading).
 
-The default home `AGENTS.md` teaches the agent to choose Heartbeat for finite follow-through
-and jobs for standing responsibilities, even when the user asks without those names. The
-detailed skill is loaded only when needed; this routing guidance is not injected into each
-message. It also routes release checks and authorized upgrades through `enso-update`.
-It routes browser tasks through `enso-browser`, skill discovery or authoring through
-`enso-skills`, and note maintenance or formatting through `enso-knowledge`.
-Historical or edited homes may need that guidance merged into their `AGENTS.md`;
-preserve their voice, user information, and local rules.
+The generic `enso` skill is retired. Configuration, messaging, credentials, and workspace
+operations have focused owners above; `enso --help` remains the command-discovery entrypoint.
+Untouched recorded copies of the retired skill are removed during managed upgrades;
+customized copies remain yours. Existing customized instructions may still refer to that
+skill: update those references when adopting the focused skills, preserving local rules.
 
 ### Official optional skills
 

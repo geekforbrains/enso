@@ -1,26 +1,3 @@
-# {{workspace_name}}
-
-## Purpose
+## Workspace
 
 {{workspace_purpose}}
-
-## Scope
-
-<!-- What is in bounds, and what is explicitly not. -->
-
-## Terms
-
-<!-- Words that mean something specific here. Delete if none. -->
-
-## Rules
-
-<!-- Anything that must be true on every single turn: approvals, tone,
-     people to check with, things never to touch. Delete if none. -->
-
-## Files
-
-- `$ENSO_HOME/shared/knowledge/` — current facts and reference material shared across workspaces; load `enso-knowledge` and use `enso knowledge` to find or maintain it
-- `work/` — task files and generated or editable output, grouped by task
-- `uploads/` — chat attachments, written by Enso
-
-Knowledge commands use shared knowledge by default. Keep work in its established repository or destination when one exists; otherwise use `work/`. Separate workspaces do not promise confidentiality within this installation.

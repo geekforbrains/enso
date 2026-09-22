@@ -35,12 +35,15 @@ def test_wheel_contains_license_and_runtime_assets(tmp_path):
         assert {
             "enso/bundled/AGENTS.md",
             "enso/bundled/jobs/enso-update/JOB.md",
-            "enso/bundled/skills/enso/SKILL.md",
+            "enso/bundled/skills/enso-config/SKILL.md",
+            "enso/bundled/skills/enso-messages/SKILL.md",
             "enso/bundled/skills/enso-browser/SKILL.md",
             "enso/bundled/skills/enso-browser/references/setup.md",
+            "enso/bundled/shared/knowledge/Meta/Guide.md",
             "enso/web/static/app.css",
             "enso/web/templates/base.html",
         } <= names
+        assert "enso/bundled/skills/enso/SKILL.md" not in names
 
 
 def standalone(tmp_path, **defaults):

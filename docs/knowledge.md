@@ -4,6 +4,31 @@ Knowledge is a collection of ordinary Markdown files maintained through conversa
 Enso. The [web viewer](web.md) provides read-only folder browsing, search, and linked note
 reading. Files remain usable outside Enso; the viewer is not an editor or the source of truth.
 
+## Starter collection
+
+A fresh installation starts with `!Inbox/`, `Meta/`, `Memory/`, `People/`, `Projects/`,
+`Areas/`, `Topics/`, `Ideas/`, and `Archive/` under shared knowledge. `Meta/Guide.md` owns
+editable filing and writing conventions; `Meta/Index.md` is the initial navigation entry.
+`Meta/Templates/` contains optional Person and Project note shapes. The
+[bundled guide](../src/enso/bundled/shared/knowledge/Meta/Guide.md) supplies the starting
+conventions; users can change the folders, guide, index, and templates through conversation.
+These are ordinary managed notes with fresh identities and creation dates for each install.
+Template bodies are copied without their metadata.
+
+The starter is installed once during fresh-home initialization. It is user content,
+separate from upgrade-managed skill files: repeated initialization, updates, audits, and
+service startup never restore edited, moved, or deleted starter notes. Existing homes,
+including those with an empty shared knowledge root, are not seeded or reorganized.
+An interrupted fresh initialization retains its intent for retry; if a knowledge root has
+appeared meanwhile, its contents are preserved rather than filled in or replaced.
+Once publication begins, the one-time seed is consumed. An interruption at that point can
+leave the starter absent; retrying never risks recreating notes the user may have removed.
+
+Older homes without a guide use the knowledge skill's formatting fallback and their
+existing filing conventions. Adopting the starter in an existing collection is an explicit
+editing task, not an automatic migration. The folders do not enable a memory writer,
+capture job, or gardener; automation is configured separately.
+
 ## Finding and maintaining knowledge
 
 Knowledge holds current maintained facts and useful reference material. Agents use the
@@ -186,16 +211,15 @@ filesystem moves preserve the ID URL but do not repair Markdown paths.
 
 ## Consistency and user preferences
 
-The bundled `enso-knowledge` skill explains where notes go and how agents maintain them. Its
-`references/formatting.md` contains the default writing/formatting rules; `scripts/lint.py`
-checks mechanical style. Both land under `$ENSO_HOME/skills/enso-knowledge/` and are preserved
-on upgrades. [Customizing](customizing.md) owns the rules for changing installed skills.
+The bundled `enso-knowledge` skill owns note operations. The shared `Meta/Guide.md`, when
+present, owns editable organization and writing conventions for all knowledge roots;
+`references/formatting.md` under the skill supplies a fallback for older homes without it.
+The skill's `scripts/lint.py` checks mechanical style. [Customizing](customizing.md#knowledge-formatting)
+explains how to change conventions and affected checks together.
 
-Use one style across every knowledge root. Users can request a change in
-conversation; the agent updates the style document and its checker together. Do not relax a
-rule merely to make a note pass. Core fields, link identity, and filesystem safety belong to
-Enso code and cannot be weakened by a custom formatting checker. The viewer never runs that
-checker or treats fetched note content as agent instructions.
+User preferences govern filing, note shapes, and style; they are not core validation rules.
+Metadata, link identity, and filesystem safety remain enforced by Enso. The viewer never
+runs the style checker or treats fetched note content as agent instructions.
 
 After writing, run the core audit and the editable style checker, fix supported issues, and
 report unresolved source/link problems without inventing their answers. The default style

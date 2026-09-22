@@ -17,9 +17,11 @@ Command jobs run a shell command without an LLM, and their optional Markdown bod
 description. An agent can create either kind. Use a command whenever a script can do the
 whole job; there is no need for a gate that does the work and then reports `no_work`.
 
-Both kinds share scheduling, locks, secrets, timeouts, output history and alerts. An optional
-gate decides whether execution is needed. Postrun checks or reacts to the outcome; only an
-agent can receive its bounded follow-up messages.
+Both kinds share scheduling, locks, secrets, timeouts, output history and alerts. Reserve
+agent jobs for work requiring judgment; when code can decide whether that judgment is
+needed, use a deterministic gate to avoid idle model runs. A command that cheaply handles
+its own no-work case does not need another gate. Use postrun validation when completion
+can be checked independently; only an agent can receive bounded follow-up messages.
 
 A complete command job:
 

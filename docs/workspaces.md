@@ -96,7 +96,9 @@ source of truth, generated links everywhere else. Keep `AGENTS.md` short — wha
 workspace is for, what ambiguous terms mean, and any rule that must be visible on every
 single turn. Detail belongs in `$ENSO_HOME/shared/knowledge/`, referenced by path. See
 [Customizing](customizing.md).
-The template directs reference requests to `enso-knowledge` and `enso knowledge`.
+The home instructions direct reference requests to `enso-knowledge` and the editable
+shared `Meta/Guide.md`. Workspace templates start with `## Workspace` and a purpose;
+add specific rules and references only when useful.
 Workspace context is shared when several separate DM bindings select it;
 it is not a confidentiality boundary.
 

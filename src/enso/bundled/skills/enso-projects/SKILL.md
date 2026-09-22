@@ -1,17 +1,17 @@
 ---
 name: enso-projects
-description: Create, organize, manage, or troubleshoot Enso projects, tasks, and workflows.
+description: Create or manage Enso projects and task boards; work a claimed task, design stage workflows, or diagnose failed handoffs and checks.
 ---
 
-# Enso projects
+# Projects and tasks
 
-A **project** groups related tasks and defines how they move through work.
+Use `enso project`, `enso task`, and `enso workflow` with subcommand help for syntax.
+Commands use the selected workspace; `--workspace` overrides it and `--all-workspaces`
+deliberately broadens listings.
 
-A **task** is one tracked unit of work with a specification, stage, priority, history, and
-evidence.
+Read the reference for the current operation:
 
-A **workflow** defines the project's stages and transition rules.
-
-- [Projects](references/projects.md)
-- [Tasks](references/tasks.md)
-- [Workflows](references/workflows.md)
+- [projects.md](references/projects.md) before creating or editing a project definition.
+- [tasks.md](references/tasks.md) when working a Task block or changing the task board.
+- [workflows.md](references/workflows.md) before configuring stages, checks, worktrees,
+  lifecycle hooks, or recovering a failed workflow.

@@ -168,6 +168,8 @@ of truth. Folders help the agent select context, but they do not isolate access.
 New notes go in shared knowledge by default. The agent updates existing notes where they
 live and links across roots instead of copying. See [Knowledge](knowledge.md) for
 filing, metadata, links, imports, and the user-editable formatting convention.
+Fresh homes receive a [starter collection](knowledge.md#starter-collection), including an
+editable `Meta/Guide.md`; existing collections are preserved.
 
 ## Agent
 

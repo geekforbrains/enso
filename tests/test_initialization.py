@@ -113,7 +113,7 @@ def test_init_rerun_preserves_active_config_instructions_jobs_and_skills(enso_ho
     personal = [
         enso_home.agents_md,
         enso_home.config_example,
-        enso_home.skills / "enso" / "SKILL.md",
+        enso_home.skills / "enso-knowledge" / "SKILL.md",
         enso_home.workspace("default") / "AGENTS.md",
         enso_home.workspace_jobs("default") / "enso-audit" / "JOB.md",
         root / "knowledge" / "Note.md",
@@ -191,7 +191,13 @@ def test_init_reports_and_preserves_path_conflicts(enso_home, relative):
 
 @pytest.mark.parametrize(
     "directory",
-    ["skills", "shared", "workspaces/default/uploads", "workspaces/default/workspace.json"],
+    [
+        "skills",
+        "shared",
+        "runtime",
+        "workspaces/default/uploads",
+        "workspaces/default/workspace.json",
+    ],
 )
 def test_init_rejects_symlink_escape_without_writing_outside_home(enso_home, tmp_path, directory):
     outside = tmp_path / "outside"

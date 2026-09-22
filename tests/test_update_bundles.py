@@ -256,3 +256,33 @@ def test_malformed_custom_job_does_not_make_its_shipped_script_retired(bundle_ho
     (root / "JOB.md").write_text("my custom job without agent fields")
     assert workspaces.reconcile_bundles(home.paths, home.agent) == []
     assert (root / "prerun.sh").read_text() == "#!/bin/sh\nprintf old\n"
+
+
+@pytest.mark.parametrize("edited", [False, True])
+def test_generic_skill_retirement_installs_focused_owners_and_preserves_local_context(
+    enso_home, edited
+):
+    """An old home gains focused operations without overwriting customized guidance."""
+    skill = enso_home.skills / "enso/SKILL.md"
+    skill.parent.mkdir(parents=True)
+    baseline = "Old bundled Enso map\n"
+    skill.write_text("My custom Enso guidance\n" if edited else baseline)
+    enso_home.agents_md.write_text("My shared rules\n")
+    workspace_agents = enso_home.workspace("default") / "AGENTS.md"
+    workspace_agents.write_text("My workspace rules\n")
+    write_json(
+        enso_home.home / ".bundles.json",
+        {"files": {"skills/enso/SKILL.md": hashlib.sha256(baseline.encode()).hexdigest()}},
+    )
+
+    workspaces.reconcile_bundles(enso_home, Agent("claude", "opus", "high"))
+
+    if edited:
+        assert skill.read_text() == "My custom Enso guidance\n"
+    else:
+        assert not skill.parent.exists()
+    assert enso_home.agents_md.read_text() == "My shared rules\n"
+    assert workspace_agents.read_text() == "My workspace rules\n"
+    for name in ("enso-config", "enso-messages"):
+        assert (enso_home.skills / name / "SKILL.md").is_file()
+    assert not (enso_home.knowledge / "Meta").exists()

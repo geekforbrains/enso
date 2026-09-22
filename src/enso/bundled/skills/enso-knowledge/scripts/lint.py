@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Check the user's Markdown style; no core validation and no file writes.
 
-Keep these mechanical checks aligned with ../references/formatting.md. This script uses
+Keep these checks aligned with the collection's Meta/Guide.md, or the formatting fallback
+in ../references/formatting.md when no Guide exists. This script uses
 only the standard library so the installed skill can run independently of Enso.
 """
 

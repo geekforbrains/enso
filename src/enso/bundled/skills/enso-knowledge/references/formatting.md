@@ -1,42 +1,19 @@
-# Knowledge formatting
+# Formatting fallback
 
-This is the common writing style for shared and workspace knowledge. Change it when the
-user asks for different conventions, and keep `../scripts/lint.py` consistent with the
-mechanical rules below. Metadata and link validity are checked by `enso knowledge audit`.
+Use this only when the collection has no `Meta/Guide.md`. Preserve established filing and
+the user's existing preferences. New notes default to shared knowledge.
 
-## Writing
+- Use descriptive filenames; the filename supplies the title, so an H1 is optional.
+- Start with useful content. Add sections, lists, and tables only when needed.
+- Keep current facts distinct from proposals and history, with sources beside claims.
+- Link to the owning note instead of duplicating it; qualify ambiguous names.
+- Preserve meaningful layout and wording in imported or historical notes.
 
-- Use descriptive filenames: the filename supplies the viewer's title. An H1 is optional;
-  do not repeat the title just to fill a template. Start with useful content.
-- Use sections only when the content needs them. Prefer short paragraphs and lists; use
-  tables for genuine comparisons. No mandatory summary, tags, status, or source section.
-- Keep current information easy to find. Preserve useful history with dates; distinguish
-  confirmed facts from proposals. Cite sources close to the relevant claims.
-- Link to the owning note instead of copying its contents. Use a path when names collide.
-- Keep code examples in fenced code blocks, with a language when known. Avoid raw HTML
-  when ordinary Markdown expresses the same thing.
-- Retain meaningful layout in imported notes. Do not rephrase prose or restructure folders
-  as a side effect of metadata adoption or mechanical formatting.
+The editable `scripts/lint.py` checks UTF-8/LF text, final newlines, trailing whitespace,
+blank lines around headings, and at most one consecutive blank line. Frontmatter and code
+are excluded; two trailing spaces after text allow a Markdown line break. It imposes no
+title casing, line-length limit, mandatory sections, or H1. It walks visible Markdown,
+skips symlinks, and exits 0 when clean, 1 for style findings, or 2 for input errors.
 
-## Mechanical checks
-
-The default checker reports `path:line: rule: explanation`, without changing files:
-
-| Rule | Convention |
-| --- | --- |
-| `line-endings` | UTF-8 text with LF line endings |
-| `final-newline` | A nonempty note ends in a newline |
-| `trailing-whitespace` | No trailing spaces or tabs outside code; exactly two spaces after text are allowed for an intentional Markdown line break |
-| `blank-lines` | At most one consecutive blank line outside frontmatter and code |
-| `heading-spacing` | A blank line before and after a Markdown heading, except at the start or end of the body |
-
-Frontmatter, fenced code, and indented code are excluded from body style checks. Long lines
-are allowed. No heading hierarchy, H1, filename casing, prose structure, or mandatory
-section is enforced. The checker walks visible Markdown files under the supplied paths,
-skips hidden directories and symbolic links, and exits 0 for clean files, 1 for findings,
-or 2 for an input/read error. Run it on changed notes; importing a collection need not
-rewrite every historical note to satisfy a new style.
-
-```bash
-python3 "$ENSO_HOME/skills/enso-knowledge/scripts/lint.py" "$ENSO_HOME/shared/knowledge/Reference"
-```
+When the user changes mechanical preferences, update this fallback and the checker together.
+Metadata and links remain the core audit's responsibility.

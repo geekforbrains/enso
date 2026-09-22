@@ -1,16 +1,11 @@
-# Projects
+# Project definitions
 
-Use `enso project list` to inspect projects and `enso project add` to create one. A project
-belongs to one workspace, its key is unique across the installation, and a repository is
-optional.
+Inspect with `enso project list`; create with `enso project add`. Keys are unique across
+the installation; each project belongs to one workspace and may omit a repository.
 
-Each project is defined by `projects/<KEY>/PROJECT.md` in its workspace. Before changing
-one, inspect that file, its existing tasks and stage jobs, and any repository instructions.
-Preserve custom instructions and scripts.
+Before editing `$ENSO_HOME/workspaces/<workspace>/projects/<KEY>/PROJECT.md`, inspect its
+tasks, stage jobs, and repository instructions. Preserve custom scripts and instructions.
+Stage jobs belong to the project's workspace.
 
-Project commands and scripts start beside `PROJECT.md`. A script that operates on task code
-must enter `ENSO_TASK_DIR` itself. Make directly invoked scripts executable. Stage jobs
-belong to the same workspace as the project.
-
-Project and task commands use the selected workspace. Use `--workspace` for another one
-and `--all-workspaces` only for a deliberate installation-wide listing.
+Project commands start beside `PROJECT.md`; scripts working on task code must enter
+`ENSO_TASK_DIR` themselves. Invoke scripts explicitly or make them executable.

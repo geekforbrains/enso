@@ -23,15 +23,16 @@ from .layout import LINKS, WORKSPACE_DIRS
 # The Slack manifest stays packaged for ``enso slack manifest`` but is not home-copied.
 # ``jobs/<name>/`` seeds maintenance jobs in the default workspace.
 # ``bundled/workspace/AGENTS.md`` is the per-workspace template,
-# stamped by ``create_workspace``; a job is stamped with the agent chosen at setup.
+# filled by ``create_workspace``; a job is stamped with the agent chosen at setup.
 # Managed updates refresh only bundle files matching their recorded baseline.
 # Bundled job and skill names use the reserved ``enso`` and ``enso-*`` namespace.
 BUNDLED_SKILLS = (
-    "enso",
     "enso-browser",
+    "enso-config",
     "enso-heartbeat",
     "enso-jobs",
     "enso-knowledge",
+    "enso-messages",
     "enso-projects",
     "enso-security",
     "enso-skills",
@@ -43,12 +44,15 @@ BUNDLED_SKILLS = (
 # Explicitly list support files too: a local __pycache__ must never become a bundle.
 BUNDLED_SKILL_SUPPORT = {
     "enso-browser": ("references/setup.md",),
-    "enso-knowledge": ("references/formatting.md", "scripts/lint.py"),
+    "enso-heartbeat": ("references/assessment.md",),
+    "enso-jobs": ("references/execution.md",),
+    "enso-knowledge": ("references/formatting.md", "references/maintenance.md", "scripts/lint.py"),
     "enso-projects": (
         "references/projects.md",
         "references/tasks.md",
         "references/workflows.md",
     ),
+    "enso-slack": ("references/rich-messages.md",),
 }
 BUNDLED_JOBS: tuple[str, ...] = ("enso-audit", "enso-update")
 BUNDLED_FILES: tuple[str, ...] = ()
@@ -123,16 +127,14 @@ def _record_bundle(paths: Paths, relative: str, text: str) -> None:
 
 
 def workspace_template(name: str) -> str:
-    """The workspace ``AGENTS.md`` template stamped with ``name``: what a new workspace gets."""
+    """The minimal instructions for a new workspace, with the operator's purpose filled in."""
     purpose = (
         "Operate this Enso installation across its workspaces and keep installation-wide jobs here."
         "\nThe `default` operator workspace is required; do not rename or remove it."
         if name == "default"
         else "<!-- What is this workspace for? One or two sentences. -->"
     )
-    return _stamp(
-        _bundled("workspace/AGENTS.md"), {"workspace_name": name, "workspace_purpose": purpose}
-    )
+    return _stamp(_bundled("workspace/AGENTS.md"), {"workspace_purpose": purpose})
 
 
 def seed_home(paths: Paths) -> list[str]:

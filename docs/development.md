@@ -27,7 +27,8 @@ Product behaviour belongs in its owning page under `docs/`, starting with
   writer locks, and atomic publication for knowledge.
 - `src/enso/knowledge/` — Markdown discovery, core metadata, link resolution, and note writes.
   The CLI and read-only knowledge viewer share this model;
-  user-editable writing style belongs to the bundled `enso-knowledge` skill.
+  user-editable organization and writing style belong to shared `Meta/Guide.md`, with
+  the bundled `enso-knowledge` skill owning procedures and a fallback for older homes.
 - `src/enso/providers/stream.py` — shared structured-output parsing, session identity,
   bounded pipe reads, and failure diagnostics for chat and background turns. Callers own
   process lifetimes, response presentation, and persistence; `execution.py` owns shared
@@ -57,6 +58,8 @@ Product behaviour belongs in its owning page under `docs/`, starting with
   [`src/enso/workspaces.py`](../src/enso/workspaces.py). The packaged Slack manifest is a CLI
   resource, not a home copy. Add new home-copied files in both places; keep their installation
   and update behaviour covered by tests.
+  The knowledge starter is a separate first-initialization template: its generated notes
+  belong to the user and never enter ordinary bundle reconciliation.
 - `tests/` — automated tests; shared fixtures live in
   [`tests/conftest.py`](../tests/conftest.py).
 - `docs/` — product documentation and these development/release guides. Each fact has one

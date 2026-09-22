@@ -66,6 +66,7 @@ seeding files. Automatic migrations support 0.2.0 onward; older layouts are unsu
 2. Asks for the default agent — provider, model, effort.
 3. Prepares the home and required [`default` operator workspace](workspaces.md#operator-workspace),
    including instructions, skills, links, an editable config example, and an empty Git root.
+   Fresh homes also receive the editable [knowledge starter](knowledge.md#starter-collection).
 4. Connects one transport. For Slack, create the app from the JSON printed by
    `enso slack manifest`; the wizard checks both tokens and asks you to send a fresh code in
    the bot's private chat. Telegram supplies a Start link with a fresh code. The wizard
@@ -111,6 +112,10 @@ authentication, transport extras, a database, or service installation. It writes
 and jobs are preserved. A conflicting file or link is reported so you can resolve it; there
 is no force/reset option. Rerun after an interrupted preparation to finish missing files.
 Git is initialized when its executable is available.
+
+A fresh home also receives the [knowledge starter](knowledge.md#starter-collection).
+It is seeded once; repeating initialization preserves edits and deletions, and existing
+homes keep their own collections and conventions.
 
 Apply validates a full document before saving it privately and seeds missing bundled jobs
 with the chosen agent.

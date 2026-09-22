@@ -290,6 +290,8 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':120,'cached_in
             "run",
             "--skill",
             "enso-tables",
+            "--baseline",
+            "working-tree",  # Same package on both sides, even during uncommitted refinement.
             "--provider",
             "codex",
             "--model",
