@@ -40,7 +40,7 @@ def main() -> None:
         with tempfile.TemporaryDirectory(prefix=identity + "-") as scratch:
             context = Path(scratch)
             # An explicit allowlist keeps .git, homes, credentials and local artifacts out.
-            for name in ("pyproject.toml", "uv.lock", "README.md"):
+            for name in ("pyproject.toml", "uv.lock", "README.md", "LICENSE"):
                 shutil.copy2(source / name, context / name)
             shutil.copytree(
                 source / "src", context / "src", ignore=shutil.ignore_patterns("__pycache__")

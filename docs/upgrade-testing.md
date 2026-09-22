@@ -13,7 +13,7 @@ image. `--keep` preserves both for diagnosis; the script prints their exact name
 The command can take several minutes on its first run.
 
 The build context contains only the package source, package metadata, lockfile,
-README and explicit test fixtures. It excludes Git metadata, local artifacts,
+README, license, and explicit test fixtures. It excludes Git metadata, local artifacts,
 credentials and homes. The running container has no network, bind mounts,
 privileged mode or Linux capabilities. No existing Docker volumes are used.
 Dependency downloads happen during the image build; runtime installations use a

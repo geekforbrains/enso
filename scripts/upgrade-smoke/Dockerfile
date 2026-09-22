@@ -1,6 +1,6 @@
 FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim
 WORKDIR /source
-COPY pyproject.toml uv.lock README.md ./
+COPY pyproject.toml uv.lock README.md LICENSE ./
 COPY src ./src
 COPY scripts ./scripts
 COPY smoke /smoke
