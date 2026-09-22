@@ -7,94 +7,61 @@ All notable changes to Enso are documented here, following
 
 ### Added
 
-- Fresh installations receive an editable knowledge guide, navigation index, Person and
-  Project templates, and a standard folder layout including `!Inbox/`. Existing homes and
-  changes to seeded notes are preserved; no maintenance automation is enabled.
-- `enso doctor --notify` sends bounded health reports directly to the configured notification
-  target; `--attention` includes selected hygiene warnings and `--quiet` suppresses normal
-  output. The bundled audit now runs without an LLM. Audit and update notifications share
-  a standard title, status, details, and action format.
-- Scheduled command jobs run scripts without an LLM, with the same timeouts, secrets,
-  output history and postrun checks as agent jobs. Concurrency groups explicitly choose
-  `wait` or `skip`, with fair waiting across processes and optional waiting deadlines.
-- Encrypted secrets with desktop/mobile web forms and `enso secret` management, retrieval,
-  and command injection. Jobs can declare one list of secret names for their full run.
-  The master key stays outside the Enso home and unlocks automatically after restarts.
-  Home revision 4 adds database storage while preserving unrelated data. `enso secret reset`
-  is the explicit, confirmed way past a lost key.
-- **Breaking:** The web viewer answers only to `localhost`, address literals, its bind host,
-  and names listed in the new `web.hosts` setting, which stops DNS rebinding. Add the name
-  your tunnel or proxy presents, then restart the viewer.
-
-### Removed
-
-- **Breaking:** Stop creating and loading `secrets/*.env`. Existing files are left untouched;
-  manually create encrypted secrets and add job declarations or command wrappers. No secret
-  import or migration is performed.
-- **Breaking:** Remove conversation capture and workspace memory, including its CLI, viewer,
-  skills, jobs, processing state, and job history. Existing memory directories and notes
-  remain untouched.
+- Command jobs run recurring scripts without an LLM. Concurrency groups support explicit
+  `wait` or `skip` policies, fair waiting, and optional deadlines.
+- Encrypted secrets managed through the web UI or `enso secret`, with explicit injection
+  into jobs and commands. The master key stays outside the Enso home; back it up separately.
+- Fresh installations receive an editable knowledge guide, index, note templates, and
+  standard folders including `!Inbox/`. Existing collections and later user changes are
+  preserved; no knowledge automation is enabled.
+- `enso doctor --notify` sends health reports directly. Bundled health audits and release
+  checks now run without an LLM and stay quiet when no attention is needed.
 
 ### Changed
 
-- Shorter home and workspace instructions and focused bundled skills, with command-first
-  job guidance. The generic `enso` skill is replaced by `enso-config` and `enso-messages`;
-  other operations stay with their domain skills. Customized installed files are preserved.
-- **Breaking:** Workspace overrides now use `workspace.json`. Home revision 7 preserves
-  existing `WORKSPACE.md` settings as JSON, deletes the old files, and discards their
-  unused prose and YAML comments. Workspace instructions remain in `AGENTS.md`.
-- **Breaking:** `JOB.md` groups provider settings under `agent`, replaces prerun with
-  `gate`, and uses explicit commands/timeouts for hooks. Home revision 5 migrates existing
-  jobs and run history; old concurrency groups retain `on_busy: skip`. The bundled release
-  check becomes a command job, recording completed checks as `ok`.
-- **Breaking:** `default` is the required operator workspace for installation-wide jobs.
-  Configuration checks, doctor, and audits report it missing even without bindings;
-  configuration writes refuse it before saving. Restore it or run
-  `enso workspace create default` if previously removed. Setup's private-chat binding and
-  notification defaults remain customizable.
-- **Breaking:** `enso-browser` uses the official Playwright CLI directly for browser
-  sessions and persistent profiles. Install Node.js, Chrome, and `@playwright/cli` yourself
-  when browser work is needed; Enso no longer provides browser runtime code or configuration.
-- Secrets follows the viewer's row spacing and section styles, with labelled trash controls
-  and native browser delete confirmation; a styled confirmation remains without JavaScript.
-  Add secret is the default tab, with listing and deletion in a separate Secrets tab that
-  shows the saved count. Saved names filter instantly, successful writes show confirmation,
-  and failed additions retain the name while clearing the value.
-- **Breaking:** The bundled `enso-tasks` and `enso-workflow` skills are replaced by the
-  concise `enso-projects` skill, with separate project, task, and workflow references.
-- New installations and workspaces use `work/` for task files and retained output, with
-  durable notes in `shared/knowledge/`. They no longer create workspace `knowledge/` or
-  `drafts/`; existing content stays where it is.
-- **Breaking:** Knowledge commands now default to shared knowledge and ignore
-  `ENSO_WORKSPACE`. Use `--workspace NAME` for existing workspace notes. Bundled instructions,
-  skills, and examples follow the new default; customized installed files are preserved.
-- Workspace knowledge and drafts folders are optional: a fixing audit preserves their
-  removal after an intentional consolidation. The viewer also supports a `work/` folder
-  for retained output and hides absent optional content roots.
-- Knowledge's **Folders** tab is now **Browse**, and its home lists shared folders and
-  notes directly instead of a **Shared** entry; retained workspace roots remain under
-  **Workspaces**. Browsing and backlinks are newest updated first. Search ranks title/path
-  matches ahead of body matches and tolerates typos in name/path words. Browse search lists
-  matching folder names before matching notes.
+- **Breaking:** Workspace overrides move from `WORKSPACE.md` to `workspace.json`. Upgrades
+  preserve settings but discard Markdown and YAML comments; move any wanted guidance to
+  `AGENTS.md` before upgrading.
+- **Breaking:** `JOB.md` nests provider settings under `agent`, replaces `prerun` with
+  `gate`, and gives hooks explicit commands and timeouts. Upgrades migrate existing jobs;
+  custom generators must use the new format. Existing concurrency groups retain `skip`.
+- **Breaking:** The `default` operator workspace is required. If removed, restore it with
+  `enso workspace create default` before running Enso.
+- **Breaking:** Knowledge commands default to shared knowledge regardless of
+  `ENSO_WORKSPACE`; use `--workspace NAME` for existing workspace notes.
+- **Breaking:** Browser automation uses Playwright CLI instead of the bundled browser
+  helper and MCP connection. Install Node.js, Chrome, and `@playwright/cli` for browser work
+  and update integrations that invoke the old helper.
+- Leaner home/workspace instructions and focused skills. `enso-config` and `enso-messages`
+  replace the generic `enso` skill; `enso-projects` replaces `enso-tasks` and `enso-workflow`.
+  Update custom references to those names. Bundle refreshes preserve local edits.
+- New workspaces use `work/` for output and shared knowledge for durable notes. Existing
+  workspace knowledge and drafts remain supported, and fixing audits respect their removal.
+- Knowledge Browse opens directly on shared content, orders notes by recent updates, and
+  improves search with folder matches first, name-based ranking, and typo tolerance.
+
+### Removed
+
+- **Breaking:** Automatic loading of `secrets/*.env`. Existing files remain untouched;
+  recreate needed values with `enso secret`, declare job secrets, and use `enso secret run`
+  for other commands. Values are not imported automatically.
+- **Breaking:** Conversation capture and workspace memory, including their CLI, viewer,
+  skills, jobs, and processing/run history. Existing Markdown notes remain untouched.
 
 ### Fixed
 
-- Impossible schedules cannot starve other jobs. Command failures still invoke postrun,
-  workflow repairs require a resumable agent session, and interrupted cleanup no longer
-  leaves finished runs holding task claims. Lifecycle delivery no longer delays job dispatch.
-- Outbound message sends for a valid workspace no longer fail because an unrelated binding
-  names a missing workspace directory; `enso config check` still reports it.
-- Exit for supervisor recovery when the scheduler or daemon-state publisher fails instead of
-  leaving transports alive with jobs, Heartbeat, or readiness reporting silently stopped.
-- Stage-job postrun scripts receive the actual provider turn in `ENSO_RUN_ATTEMPT` after a
-  workflow repair, without consuming their separate postrun follow-up allowance.
-- Built wheels include the MIT license text and the default suite verifies their packaged
-  runtime resources.
-- Large knowledge collections reuse unchanged parsed notes without the old 16,384-entry
-  cache repeatedly evicting the entire working set. Refresh still detects direct file edits,
-  moves, and deletions, without a database index.
-- Disable page transitions when scripting is unavailable so no-JavaScript navigation and
-  form confirmations remain usable.
+- Jobs keep dispatching despite impossible schedules or slow lifecycle hooks. Cleanup
+  interruptions no longer leave completed runs holding task claims, and workflow repairs
+  retain correct postrun attempt counts.
+- Scheduler or readiness-reporting failures stop the service for supervisor recovery.
+- Outbound sends no longer fail because an unrelated binding names a missing workspace.
+- Large knowledge collections reuse unchanged notes efficiently while detecting file edits,
+  moves, and deletions. Viewer navigation remains usable without JavaScript.
+
+### Security
+
+- **Breaking:** The viewer rejects unrecognized host names to prevent DNS rebinding. Add
+  tunnel/proxy names to `web.hosts` and restart the viewer.
 
 ## [0.3.0] - 2026-09-18
 
