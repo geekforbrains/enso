@@ -31,7 +31,6 @@ from .execution import kill_process_group
 
 log = logging.getLogger(__name__)
 GIT_TIMEOUT = 120
-SETUP_TIMEOUT = 600
 OUTPUT_KEEP = 64 * 1024
 BRANCH_PREFIX = "enso/"
 _REF_RE = re.compile(r"[A-Z][A-Z0-9]{1,9}-[0-9]{3,9}")

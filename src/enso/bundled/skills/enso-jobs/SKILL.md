@@ -61,7 +61,7 @@ prerun: prerun.sh             # optional: gate, run with bash from the job direc
 prerun_timeout: 300           # optional, default 120
 postrun: postrun.sh           # optional: check/reaction, run with bash from the job directory
 postrun_timeout: 120          # optional, default 120 per invocation
-max_followups: 2              # optional, default 2 extra turns; 0 means check without retry
+max_followups: 2              # optional, default 2 postrun turns; 0 means check without retry
 timeout: 1200                 # optional, default 900
 notify: C0BP5BQF6UF           # optional: runner alerts only; slack:C…, telegram:<id>, or bare id with one transport
 catch_up: false               # optional: run a missed slot late (default false)
@@ -136,8 +136,10 @@ only the latest provider output, and its exit code controls what happens next:
 - **Anything else:** failed check or script. Print a safe `ENSO_ERROR: <summary>` line on
   stderr for the diagnostic, otherwise Enso uses the exit status.
 
-`max_followups` in `JOB.md` defaults to **2 additional provider turns** (three total). Any
-nonnegative integer overrides it; `0` still validates but does not permit another turn.
+`max_followups` in `JOB.md` defaults to **2 additional postrun-requested provider turns**,
+so an ordinary job can run three turns total. Any nonnegative integer overrides it; `0`
+still validates but does not permit another postrun-requested turn. Workflow repair turns
+on a stage job do not consume this allowance, so a stage run can contain more turns.
 Only exit `10` requests follow-up work. A timeout, a missing script, or a script crash is
 an error. An exit-10 request fails if stdout is empty/whitespace-only, exceeds 64 KiB, the
 limit is exhausted, or a usable session is unavailable. Accepted feedback is sent verbatim,
@@ -151,7 +153,7 @@ The environment is:
 | `ENSO_RUN_EXIT_CODE` | Latest provider exit, prerun exit when applicable, or empty |
 | `ENSO_RUN_DURATION_MS` | Total elapsed time before this hook, including earlier hooks |
 | `ENSO_RUN_ATTEMPT` | Current provider turn, starting at 1; 0 when no provider ran |
-| `ENSO_RUN_FOLLOWUPS_REMAINING` | Extra provider turns still allowed |
+| `ENSO_RUN_FOLLOWUPS_REMAINING` | Extra postrun-requested provider turns still allowed |
 | `ENSO_JOB`, `ENSO_RUN_ID`, `ENSO_WORKSPACE`, `ENSO_HOME` | Same values throughout the run |
 | `ENSO_TASK`, `ENSO_TASK_DIR` | Stage jobs only: the claimed task, and its worktree on a repo project |
 

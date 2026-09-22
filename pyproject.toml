@@ -4,6 +4,7 @@ version = "0.3.0"
 description = "A personal AI assistant that runs on your machine, connects to your chat, and keeps work moving."
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.14"
 authors = [{ name = "Gavin Vickery", email = "gavin@geekforbrains.com" }]
 keywords = ["ai", "agent", "telegram", "slack", "claude", "codex", "cli", "enso"]
@@ -79,7 +80,13 @@ known-first-party = ["enso"]
 
 [tool.mypy]
 python_version = "3.14"
-files = ["src/enso"]
+files = [
+    "src/enso",
+    "scripts/build-release.py",
+    "scripts/import-knowledge.py",
+    "scripts/install-release.py",
+    "scripts/smoke-upgrade.py",
+]
 disallow_incomplete_defs = true
 disallow_untyped_defs = true
 strict_equality = true

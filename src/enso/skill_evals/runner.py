@@ -158,7 +158,6 @@ def command(
     model: str,
     effort: str,
     home: Path,
-    workspace: Path,
     scratch: Path,
 ) -> list[str]:
     """Use the installed CLIs' structured modes, native skill discovery and sandboxing."""
@@ -343,7 +342,7 @@ def run_trial(
             (workspace / "AGENTS.md").write_text(instructions)
             (workspace / "CLAUDE.md").write_text(instructions)
             env = environment(scratch, home, provider)
-            args = command(executable, provider, model, effort, home, workspace, scratch)
+            args = command(executable, provider, model, effort, home, scratch)
             save_json(output / "command.json", args)
             (output / "prompt.txt").write_text(scenario["prompt"])
             code, status, elapsed = execute(

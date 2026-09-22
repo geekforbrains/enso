@@ -51,6 +51,12 @@ All notable changes to Enso are documented here, following
 
 ### Fixed
 
+- Exit for supervisor recovery when the scheduler or daemon-state publisher fails instead of
+  leaving transports alive with jobs, Heartbeat, or readiness reporting silently stopped.
+- Stage-job postrun scripts receive the actual provider turn in `ENSO_RUN_ATTEMPT` after a
+  workflow repair, without consuming their separate postrun follow-up allowance.
+- Built wheels include the MIT license text and the default suite verifies their packaged
+  runtime resources.
 - Large knowledge collections reuse unchanged parsed notes without the old 16,384-entry
   cache repeatedly evicting the entire working set. Refresh still detects direct file edits,
   moves, and deletions, without a database index.

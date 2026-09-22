@@ -240,7 +240,7 @@ Recovery: run 8f2c1a3b ended without a handoff; uncommitted changes in src/enso/
 Refs: commit abc123 · path work/notes.md
 Project instructions: /Users/x/Projects/enso/AGENTS.md (appended below)
 
-Handoff (triage → todo by job:dev-enso-triage, run 2c9d…, 2026-09-07 09:00):
+Handoff (triage → todo by job:dev:enso-triage, run 2c9d…, 2026-09-07 09:00):
     Scope confirmed. Touch slack_text.py only. Done when …
 
 Recent notes:
@@ -577,7 +577,7 @@ is rendered from, plus `events`, the full timeline newest first, and `workflow`,
 {"ref": "EN-041", "project": "EN", "workspace": "dev", "project_name": "Enso", "title": "…", "body": "…",
  "stage": "todo", "stages": ["triage", "todo", "review"], "human_stages": [],
  "priority": 0, "attention": false, "after": null, "from": null,
- "claim": {"run_id": "…", "actor": "job:dev-enso-todo", "at": "…"},
+ "claim": {"run_id": "…", "actor": "job:dev:enso-todo", "at": "…"},
  "entered_stage_at": "…", "created_at": "…", "updated_at": "…",
  "moves": [{"id": "advance", "to": "review", "requires_message": true, "allowed": true, "missing": []}],
  "handoff": {"kind": "moved", "actor": "…", "run_id": "…", "from_stage": "triage", "to_stage": "todo", "message": "…", "at": "…"},

@@ -156,6 +156,61 @@ async def test_serve_shares_the_clock_and_stops_both_runners(config, monkeypatch
     assert stopped == {"jobs", "heartbeat"} and transports[0].cleaned_up
 
 
+@pytest.mark.parametrize("failure", ["scheduler", "watcher"])
+async def test_serve_propagates_background_failures_and_cleans_up(
+    config: Config, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    stopped = set()
+
+    class Background:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        async def tick(self, now: object) -> None:
+            pass
+
+        async def stop(self) -> None:
+            stopped.add(self.name)
+
+    async def scheduler(callbacks: dict[str, object]) -> None:
+        if failure == "scheduler":
+            raise RuntimeError("scheduler failed")
+        await asyncio.Event().wait()
+
+    async def watcher(*args: object) -> None:
+        if failure == "watcher":
+            raise RuntimeError("watcher failed")
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("enso.cli.scheduling.minute_loop", scheduler)
+    monkeypatch.setattr("enso.cli._watch_update", watcher)
+    transport = FakeTransport("slack", block=True)
+
+    with pytest.raises(RuntimeError, match=f"{failure} failed"):
+        await _serve(Runtime(config), [transport], Background("jobs"), Background("heartbeat"))
+
+    assert transport.started and transport.cleaned_up
+    assert stopped == {"jobs", "heartbeat"}
+
+
+async def test_serve_rejects_a_transport_that_stops_unexpectedly(
+    config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def block(*args: object) -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("enso.cli.scheduling.minute_loop", block)
+    monkeypatch.setattr("enso.cli._watch_update", block)
+
+    with pytest.raises(RuntimeError, match="transport:slack stopped unexpectedly"):
+        await _serve(
+            Runtime(config),
+            [FakeTransport("slack")],
+            JobRunner(config),
+            HeartbeatRunner(config),
+        )
+
+
 def test_a_newer_database_stops_startup_before_any_transport(
     enso_home: Paths, raw_config: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:

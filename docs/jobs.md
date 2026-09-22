@@ -32,7 +32,7 @@ prerun: prerun.sh             # optional: gate, run with bash from the job direc
 prerun_timeout: 300           # optional, default 120
 postrun: postrun.sh           # optional: check/reaction, run with bash from the job directory
 postrun_timeout: 120          # optional, default 120 per invocation
-max_followups: 2              # optional, default 2; 0 prevents extra provider turns
+max_followups: 2              # optional, default 2; 0 prevents postrun-requested turns
 timeout: 1200                 # optional, default 900
 notify: slack:C0BP5BQF6UF     # optional: where failure alerts go
 catch_up: false               # optional: run a missed slot late (default false)
@@ -366,8 +366,10 @@ cleanup and exit, or check a condition and send a corrective message into the sa
 | exit 10 with nonempty stdout | send stdout as the next message in the same provider session, then run postrun again |
 | any other exit, missing script, launch failure, or timeout | fail the postrun and finish the run |
 
-`max_followups` defaults to **2**, so at most three provider turns occur in one run. Set it
-in `JOB.md` to any nonnegative integer; `0` still runs the check but disallows extra turns.
+`max_followups` defaults to **2**, so an ordinary job can run at most three provider turns.
+Set it in `JOB.md` to any nonnegative integer; `0` still runs the check but disallows extra
+turns. On a stage job, workflow-requested repair turns do not consume this postrun allowance,
+so the run can contain more provider turns.
 Only exit `10` requests more LLM work: a script crash that exits `1` is a failure. An empty
 or oversized follow-up message, an exhausted limit, or an unavailable session fails the
 check. Feedback is limited to 64 KiB of stdout. Whitespace-only messages are refused; other
@@ -400,7 +402,7 @@ in the environment; the database row remains `running` until checking finishes:
 | `ENSO_RUN_EXIT_CODE` | Latest provider exit code; `1` for `no_work`; prerun exit code on a prerun failure when available; otherwise empty |
 | `ENSO_RUN_DURATION_MS` | Elapsed time since the run began, including earlier hooks but excluding this hook |
 | `ENSO_RUN_ATTEMPT` | Provider turn number, starting at 1; 0 when no provider ran |
-| `ENSO_RUN_FOLLOWUPS_REMAINING` | Additional provider turns still allowed |
+| `ENSO_RUN_FOLLOWUPS_REMAINING` | Additional postrun-requested provider turns still allowed |
 | `ENSO_JOB`, `ENSO_WORKSPACE`, `ENSO_HOME` | The same values the prerun and provider get |
 
 For example, this check asks the agent to finish committing its work. Set `REPO` to the

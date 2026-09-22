@@ -309,13 +309,3 @@ def ago(stamp: str) -> str:
 def seconds(stamp: str | None) -> str:
     """A stored microsecond timestamp, trimmed to the second for reading."""
     return datetime.fromisoformat(stamp).isoformat(timespec="seconds") if stamp else "-"
-
-
-def human_bytes(size: int) -> str:
-    """``0 B``, ``12 KB``, ``1.2 MB``: enough precision to decide whether to clean up."""
-    value = float(size)
-    for unit in ("B", "KB", "MB", "GB"):
-        if value < 1024 or unit == "GB":
-            break
-        value /= 1024
-    return f"{int(value)} {unit}" if unit == "B" or value >= 10 else f"{value:.1f} {unit}"

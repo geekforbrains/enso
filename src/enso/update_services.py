@@ -186,7 +186,7 @@ def _helper_state(platform: str, helper: service.Definition) -> str:
     return "idle" if state.get("ActiveState") in {"inactive", "failed"} else "busy"
 
 
-def cleanup_finished(paths: Paths, operation_id: str) -> bool:
+def cleanup_finished(operation_id: str) -> bool:
     """Unload an idle completed helper; return whether its files may now be pruned.
 
     The caller holds the worker lock. Running or restarting helpers and uncertain

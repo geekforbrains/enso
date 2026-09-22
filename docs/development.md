@@ -155,8 +155,10 @@ the shipped guidance treats read content as data. Workspace ownership is not
 security isolation. Transport authentication against real accounts and native service managers
 remain separate acceptance checks described in [Upgrade tests](upgrade-testing.md).
 
-To check the actual wheel and bundled files without importing the source checkout, run from
-the repository root (the package version stays unchanged until release preparation):
+The default suite builds a real wheel and verifies its license and representative bundled
+runtime resources. To exercise selected installed-package behavior without importing the
+source checkout, run from the repository root (the package version stays unchanged until
+release preparation):
 
 ```bash
 ENSO_WHEEL_CHECK=$(mktemp -d /tmp/enso-wheel-check.XXXXXX)

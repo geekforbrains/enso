@@ -28,12 +28,13 @@ from .. import (
 from .. import log as logsetup
 from ..config import Config, ConfigError, Paths, check_config, load_config, valid_workspace_name
 from ..connection_setup import PairingError, service_receiver
+from ..formatting import human_bytes
 from ..heartbeat.runner import HeartbeatRunner
 from ..jobs.runner import JobRunner
 from ..runtime import Runtime
 from ..transport_registry import TRANSPORTS
 from ..transports import Transport
-from .common import JSON_FLAG, InputError, columns, echo_json, fail, human_bytes, read_input
+from .common import JSON_FLAG, InputError, columns, echo_json, fail, read_input
 from .connect import connect_app
 from .heartbeat import heartbeat_app
 from .jobs import job_app, runs_app
@@ -159,21 +160,35 @@ async def _serve(
         scheduling.minute_loop({"jobs": runner.tick, "heartbeat": heartbeat_runner.tick}),
         name="scheduler",
     )
-    watcher = asyncio.create_task(_watch_update(runtime, runner, heartbeat_runner, transports))
+    watcher = asyncio.create_task(
+        _watch_update(runtime, runner, heartbeat_runner, transports), name="daemon-state"
+    )
+    supervised = [*tasks, scheduler, watcher]
     try:
-        await asyncio.gather(*tasks)
+        done, _ = await asyncio.wait(supervised, return_when=asyncio.FIRST_COMPLETED)
+        # Each task is meant to live for the lifetime of the service. Propagate a
+        # failure, including one in scheduling or readiness reporting, so the service
+        # manager can restart Enso instead of leaving a partially working daemon.
+        failed = next(
+            (task for task in done if not task.cancelled() and task.exception() is not None),
+            None,
+        )
+        if failed is not None:
+            await failed
+        stopped = min(done, key=lambda task: task.get_name())
+        if stopped.cancelled():
+            raise RuntimeError(f"{stopped.get_name()} was cancelled unexpectedly")
+        raise RuntimeError(f"{stopped.get_name()} stopped unexpectedly")
     finally:
         # Let every transport finish stopping (Telegram's polling stop talks to the
         # API) before asyncio.run tears the loop down and cancels them a second time.
         # Running jobs are stopped here too, so their run rows close and their process
         # trees die before the loop goes; a cancelled run never alerts, so it does not
         # matter that the transports may already be gone.
-        for task in (*tasks, scheduler, watcher):
+        for task in supervised:
             task.cancel()
         await asyncio.gather(
-            *tasks,
-            scheduler,
-            watcher,
+            *supervised,
             runner.stop(),
             heartbeat_runner.stop(),
             return_exceptions=True,

@@ -437,7 +437,7 @@ def request_apply(
         if previous and (previous["status"] not in TERMINAL or paused(paths)):
             raise UpdateError("an update is pending; inspect update status or run update recover")
         if previous:
-            if not update_services.cleanup_finished(paths, previous["id"]):
+            if not update_services.cleanup_finished(previous["id"]):
                 raise UpdateError("the previous updater is still exiting; retry shortly")
             _cleanup(paths, previous, helper_finished=True)
         release = _release(paths, source)
@@ -794,7 +794,7 @@ def _prune_operations(paths: Paths, state: dict[str, Any]) -> None:
         if old["id"] != directory.name:
             raise UpdateError("operation directory does not match its saved identity")
         if old["status"] in TERMINAL - {"recovery_failed"}:
-            if not update_services.cleanup_finished(paths, old["id"]):
+            if not update_services.cleanup_finished(old["id"]):
                 raise UpdateError("an older update helper has not finished")
             _remove_owned(directory)
 

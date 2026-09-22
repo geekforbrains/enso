@@ -75,7 +75,7 @@ Enso's runtime state lives under one directory:
 ├── web.log, web.pid     # the web viewer's output and lock, while it runs
 ├── launchd-web.log      # stdout/stderr when the optional viewer service runs
 ├── runtime/
-│   ├── locks/           # every lock file: empty, made on demand, never deleted
+│   ├── locks/           # empty advisory lock files, made on demand, never deleted
 │   ├── releases/<version>-<hash>/  # immutable managed Python environments
 │   ├── current -> releases/...    # selected release behind the stable launcher
 │   ├── install.json     # installed package version, feed, extras, integration settings

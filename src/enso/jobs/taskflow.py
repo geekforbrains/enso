@@ -193,9 +193,7 @@ async def begin(
                 asyncio.to_thread(workflows.interrupt, paths, config, task.ref, run_id, message)
             )
             if tasks.get(paths, task.ref).claim_run_id == run_id:
-                await asyncio.shield(
-                    asyncio.to_thread(_release, paths, config, task.ref, run_id, message)
-                )
+                await asyncio.shield(asyncio.to_thread(_release, paths, task.ref, run_id, message))
         except tasks.TaskError as release_exc:
             log.warning("run=%s could not release %s: %s", run_id, task.ref, release_exc)
         raise
@@ -212,7 +210,7 @@ def end_ownership(stage: StageRun) -> StageRun:
     return stage
 
 
-def _release(paths: Paths, config: Config, ref: str, run_id: str, message: str) -> tasks.Task:
+def _release(paths: Paths, ref: str, run_id: str, message: str) -> tasks.Task:
     """Release a stale claim whose stage no longer permits workflow settlement."""
     return tasks.release(
         paths, ref, actor=tasks.ENSO_ACTOR, run_id=run_id, message=message, reason="run_ended"
@@ -230,7 +228,7 @@ def _end(
     task = tasks.get(paths, ref)
     if task.claim_run_id != run_id:
         return task
-    return _release(paths, config, ref, run_id, f"run {run_id} ended ({status}) without a handoff")
+    return _release(paths, ref, run_id, f"run {run_id} ended ({status}) without a handoff")
 
 
 async def end(
@@ -252,7 +250,7 @@ def release_orphans(paths: Paths, config: Config, run_id: str, message: str) -> 
         try:
             workflows.interrupt(paths, config, task.ref, run_id, message)
             if tasks.get(paths, task.ref).claim_run_id == run_id:
-                _release(paths, config, task.ref, run_id, message)
+                _release(paths, task.ref, run_id, message)
         except tasks.TaskError as exc:
             log.warning("run=%s could not release %s: %s", run_id, task.ref, exc)
             continue

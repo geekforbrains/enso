@@ -54,7 +54,7 @@ def submit(paths: Paths, config: Config, env: dict[str, str]) -> None:
         config,
         env["ENSO_TASK"],
         "advance",
-        actor="job:work",
+        actor=f"job:{env['ENSO_JOB']}",
         run_id=env["ENSO_RUN_ID"],
         message="Candidate ready",
     )
@@ -163,6 +163,60 @@ async def test_failed_check_repairs_with_actual_feedback_before_acceptance(
     assert tasks.get(enso_home, task.ref).stage == "done"
 
 
+async def test_workflow_repairs_do_not_consume_postrun_followups(
+    enso_home: Paths, raw_config: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = workflow_config(
+        enso_home,
+        raw_config,
+        [
+            {
+                "name": "work",
+                "checks": [
+                    {
+                        "name": "tests",
+                        "command": "test -f fixed.txt || { echo workflow-repair; exit 1; }",
+                    }
+                ],
+            }
+        ],
+    )
+    task = tasks.create(enso_home, config, "EN", "Repair work", actor="user:test")
+    job = stage_job(enso_home, config, postrun="postrun.sh", max_followups=1)
+    (job.job_dir / "postrun.sh").write_text(
+        """printf '%s:%s\n' "$ENSO_RUN_ATTEMPT" "$ENSO_RUN_FOLLOWUPS_REMAINING" >> postruns.txt
+if [ "$(wc -l < postruns.txt)" -eq 2 ]; then
+    printf postrun-repair
+    exit 10
+fi
+"""
+    )
+    prompts: list[str] = []
+
+    async def turn(*args: object, **kwargs: object) -> ProviderTurn:
+        prompt = str(args[1])
+        prompts.append(prompt)
+        if len(prompts) == 2:
+            assert "workflow-repair" in prompt
+        elif len(prompts) == 3:
+            assert prompt == "postrun-repair"
+            (enso_home.project("default", "EN") / "fixed.txt").touch()
+        env = kwargs["env"]
+        assert isinstance(env, dict)
+        submit(enso_home, config, env)
+        return ProviderTurn("ok", output="success", exit_code=0, session_id="stage-session")
+
+    monkeypatch.setattr(runner_module.execution, "execute_turn", turn)
+    result = await JobRunner(config).run(job, trigger="manual")
+    assert result.status == "ok", result.error
+    assert len(prompts) == 3
+    assert (job.job_dir / "postruns.txt").read_text().splitlines() == ["1:1", "2:1", "3:0"]
+    attempts = runs.attempts(enso_home, result.run_id or "")
+    assert [attempt.number for attempt in attempts] == [1, 2, 3]
+    assert [attempt.postrun_exit_code for attempt in attempts] == [0, 10, 0]
+    assert tasks.get(enso_home, task.ref).stage == "done"
+
+
 async def test_provider_error_after_submission_never_accepts(
     enso_home: Paths, raw_config: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -211,7 +265,7 @@ async def test_explicit_block_keeps_reason_and_writer_until_provider_stops(
             config,
             task.ref,
             "block",
-            actor="job:work",
+            actor=f"job:{env['ENSO_JOB']}",
             run_id=env["ENSO_RUN_ID"],
             message=reason,
         )

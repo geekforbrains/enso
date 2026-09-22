@@ -43,7 +43,8 @@ through and leaves workspace policy files to the provider; it has no workspace r
 mode. See [provider permissions](docs/configuration.md#provider-permissions-and-installation-trust).
 
 The provider, model, and effort are always explicit. A workspace organizes context;
-it is not a security sandbox. The viewer is a window into Enso, not a control panel.
+it is not a security sandbox. The viewer is primarily a window into Enso; its Secrets
+section can add and delete encrypted secrets, but it is not a general control panel.
 
 ![Enso's task board showing example projects in light and dark themes](assets/readme/viewer-tasks.png)
 

@@ -144,6 +144,11 @@ def test_bundled_skills_resolve_without_problems(enso_home: Paths) -> None:
     ]
 
 
+def test_bundled_skills_do_not_link_installed_guidance_to_develop() -> None:
+    bundled = Path(workspaces.__file__).parent / "bundled" / "skills"
+    assert all("/blob/develop/" not in path.read_text() for path in bundled.rglob("*.md"))
+
+
 def test_user_scope_is_lenient_and_deduplicated(enso_home: Paths, tmp_path: Path) -> None:
     claude = tmp_path / ".claude" / "skills"
     agents = tmp_path / ".agents" / "skills"

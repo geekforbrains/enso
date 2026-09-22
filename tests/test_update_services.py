@@ -121,10 +121,10 @@ def test_launch_never_kickstarts_a_live_helper(enso_home, monkeypatch):
 @pytest.mark.parametrize("platform", ["launchd", "systemd"])
 @pytest.mark.parametrize("pid", [None, 123])
 def test_completed_helper_cleanup_unloads_idle_and_preserves_live_processes(
-    enso_home, monkeypatch, platform, pid
+    monkeypatch, platform, pid
 ):
     fake = fake_manager(monkeypatch, platform, loaded=True, pid=pid, transient=True)
-    assert update_services.cleanup_finished(enso_home, OPERATION) is (pid is None)
+    assert update_services.cleanup_finished(OPERATION) is (pid is None)
     stop = (
         ["launchctl", "bootout", HELPER]
         if platform == "launchd"
@@ -134,7 +134,7 @@ def test_completed_helper_cleanup_unloads_idle_and_preserves_live_processes(
 
 
 @pytest.mark.parametrize("failure", ["query", "stop", "still-loaded"])
-def test_unconfirmed_helper_cleanup_preserves_files(enso_home, monkeypatch, manager, failure):
+def test_unconfirmed_helper_cleanup_preserves_files(monkeypatch, manager, failure):
     manager.loaded = True
     if failure == "query":
         monkeypatch.setattr(
@@ -150,7 +150,7 @@ def test_unconfirmed_helper_cleanup_preserves_files(enso_home, monkeypatch, mana
         monkeypatch.setattr(service, "stop", failed)
     else:
         monkeypatch.setattr(service, "stop", lambda *args, **kwargs: None)
-    assert not update_services.cleanup_finished(enso_home, OPERATION)
+    assert not update_services.cleanup_finished(OPERATION)
     assert manager.loaded
 
 

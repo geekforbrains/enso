@@ -661,7 +661,7 @@ class Runtime:
             parts.append(outbound.CONTRACT)
         return "\n\n".join(part for part in parts if part)
 
-    def _env(self, turn: Turn, reply: Reply, workspace: str) -> dict[str, str]:
+    def _env(self, reply: Reply, workspace: str) -> dict[str, str]:
         env = os.environ.copy()
         env.update(reply.origin_env())
         env["ENSO_WORKSPACE"] = workspace
@@ -852,7 +852,7 @@ class Runtime:
         collected = _Response()
         config = running.config
         args = config.provider_args(workspace, provider.name)
-        env = self._env(turn, reply, workspace)
+        env = self._env(reply, workspace)
         cwd = str(self.paths.workspace(workspace))
 
         async def consume() -> None:

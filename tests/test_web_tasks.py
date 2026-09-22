@@ -99,7 +99,7 @@ def board(enso_home: Paths, project_config: Config) -> Board:
     )
     move(active.ref, "advance", "Scope confirmed.\nTouch slack_text.py only.")
     tasks.add_ref(paths, active.ref, "commit", "abc123", actor=USER, run_id=None)
-    taken = tasks.take(paths, config, "EN", "todo", run_id=run_id, actor="job:dev-todo")
+    taken = tasks.take(paths, config, "EN", "todo", run_id=run_id, actor="job:dev:todo")
     assert taken is not None and taken.ref == "EN-001"
     blocked = add("EN", "Needs a decision")
     move(blocked.ref, "block", "Waiting on the API key\nsecond line stays off the row")

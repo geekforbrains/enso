@@ -11,7 +11,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import IO, Literal
 
-from .. import db, execution, messages, routing, runs, scheduling, secrets, tasks, workflows
+from .. import db, execution, messages, routing, runs, secrets, tasks, workflows
 from .. import log as logctx
 from ..config import (
     Config,
@@ -135,12 +135,6 @@ class JobRunner:
 
     def running(self) -> list[str]:
         return sorted(name for name, task in self._running.items() if not task.done())
-
-    # -- Scheduler --
-
-    async def scheduler(self) -> None:
-        """Every minute, on the minute, fire the jobs whose slot has come."""
-        await scheduling.minute_loop({"jobs": self.tick})
 
     async def tick(self, now: datetime) -> None:
         """One scheduler pass: reload JOB.md files and start whatever is due."""
@@ -614,10 +608,15 @@ class JobRunner:
                     job,
                     result,
                     int((time.monotonic() - started) * 1000),
-                    attempt=postrun_followups + 1,
+                    attempt=attempt,
+                    followups_used=postrun_followups,
                 )
                 checked, diagnostic = self._checked_result(
-                    job, result, hook, attempt=postrun_followups + 1
+                    job,
+                    result,
+                    hook,
+                    attempt=attempt,
+                    followups_used=postrun_followups,
                 )
                 await self._record_attempt(
                     result, attempt, hook=replace(hook, error=diagnostic), duration_ms=duration_ms
@@ -777,16 +776,23 @@ class JobRunner:
         )
 
     def _checked_result(
-        self, job: Job, result: RunResult, hook: Postrun, *, attempt: int
+        self,
+        job: Job,
+        result: RunResult,
+        hook: Postrun,
+        *,
+        attempt: int,
+        followups_used: int | None = None,
     ) -> tuple[RunResult, str]:
         """Make hook failures authoritative without disguising an earlier provider failure."""
+        followups_used = max(0, attempt - 1) if followups_used is None else followups_used
         diagnostic = hook.error
         if not diagnostic and hook.exit_code == 10:
             if attempt == 0:
                 diagnostic = "postrun requested a follow-up, but no provider ran"
             elif result.status != "ok":
                 diagnostic = f"postrun cannot request a follow-up after provider {result.status}"
-            elif attempt > job.max_followups:
+            elif followups_used >= job.max_followups:
                 diagnostic = (
                     f"postrun requested a follow-up beyond max_followups={job.max_followups}"
                 )
@@ -875,11 +881,18 @@ class JobRunner:
             attempt += 1
 
     async def _postrun(
-        self, job: Job, result: RunResult, duration_ms: int, *, attempt: int
+        self,
+        job: Job,
+        result: RunResult,
+        duration_ms: int,
+        *,
+        attempt: int,
+        followups_used: int | None = None,
     ) -> Postrun:
         """Hand the latest outcome to a hook; exit 10 requests a complete feedback message."""
         assert job.postrun is not None
         assert result.run_id is not None
+        followups_used = max(0, attempt - 1) if followups_used is None else followups_used
         script = job.job_dir / job.postrun
         if not script.is_file():
             return Postrun(error=f"postrun script not found: {job.postrun}")
@@ -889,7 +902,7 @@ class JobRunner:
             "ENSO_RUN_EXIT_CODE": "" if result.exit_code is None else str(result.exit_code),
             "ENSO_RUN_DURATION_MS": str(duration_ms),
             "ENSO_RUN_ATTEMPT": str(attempt),
-            "ENSO_RUN_FOLLOWUPS_REMAINING": str(max(0, job.max_followups - max(0, attempt - 1))),
+            "ENSO_RUN_FOLLOWUPS_REMAINING": str(max(0, job.max_followups - followups_used)),
         }
         log.info("postrun %s timeout=%ss", job.postrun, job.postrun_timeout)
         try:

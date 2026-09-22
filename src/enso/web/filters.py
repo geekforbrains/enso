@@ -6,6 +6,8 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from ..formatting import format_elapsed as elapsed
+from ..formatting import human_bytes
 from ..transport_registry import TRANSPORTS
 from . import files
 
@@ -27,29 +29,6 @@ MONTH_ABBR = (
     "Nov",
     "Dec",
 )
-
-
-def human_bytes(size: int | None) -> str:
-    """``0 B``, ``12 KB``, ``1.2 MB``: enough precision to decide whether to clean up."""
-    if size is None:
-        return "-"
-    value = float(size)
-    for unit in ("B", "KB", "MB", "GB"):
-        if value < 1024 or unit == "GB":
-            break
-        value /= 1024
-    return f"{int(value)} {unit}" if unit == "B" or value >= 10 else f"{value:.1f} {unit}"
-
-
-def elapsed(seconds: int) -> str:
-    """45s, 2m 05s, 1h 12m."""
-    if seconds < 60:
-        return f"{seconds}s"
-    minutes, secs = divmod(seconds, 60)
-    if minutes < 60:
-        return f"{minutes}m {secs:02d}s"
-    hours, minutes = divmod(minutes, 60)
-    return f"{hours}h {minutes:02d}m"
 
 
 def duration(duration_ms: int | None) -> str:

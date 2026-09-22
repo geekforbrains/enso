@@ -8,6 +8,7 @@ from enso.formatting import (
     chunk_text,
     format_elapsed,
     has_slack_code_language,
+    human_bytes,
     md_to_html,
     md_to_mrkdwn,
     split_markdown,
@@ -24,6 +25,16 @@ def test_status_text_formats_agent_and_elapsed() -> None:
     assert status_text(agent, 12, "Reading foo.py") == (
         "opencode · deepseek-v4-flash-0731 · low · 12s\n↳ Reading foo.py"
     )
+
+
+def test_human_bytes_is_shared_across_cli_and_web_presentation() -> None:
+    assert [human_bytes(size) for size in (None, 0, 1024, 1536, 12 * 1024)] == [
+        "-",
+        "0 B",
+        "1.0 KB",
+        "1.5 KB",
+        "12 KB",
+    ]
 
 
 @pytest.mark.parametrize(

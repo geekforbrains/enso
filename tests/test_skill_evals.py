@@ -219,9 +219,7 @@ def test_environment_drops_live_enso_context_credentials_and_hooks(tmp_path, mon
 
 def test_launches_only_local_clis_with_requested_model_effort_and_scoped_settings(tmp_path):
     for provider in ("codex", "claude"):
-        args = runner.command(
-            provider, provider, "test-model", "high", tmp_path / "home", tmp_path / "ws", tmp_path
-        )
+        args = runner.command(provider, provider, "test-model", "high", tmp_path / "home", tmp_path)
         assert args[0] == provider and args[args.index("--model") + 1] == "test-model"
         assert not any("dangerously" in arg for arg in args)
         if provider == "codex":

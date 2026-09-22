@@ -5,6 +5,7 @@ import os
 import runpy
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,6 +14,31 @@ import pytest
 from enso.releases import DEFAULT_FEED, ReleaseError, download_artifact, load_release
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def test_wheel_contains_license_and_runtime_assets(tmp_path):
+    subprocess.run(
+        ["uv", "build", "--wheel", "--out-dir", str(tmp_path)],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    wheels = list(tmp_path.glob("*.whl"))
+    assert len(wheels) == 1
+
+    with zipfile.ZipFile(wheels[0]) as archive:
+        names = set(archive.namelist())
+        license_path = next(name for name in names if name.endswith(".dist-info/licenses/LICENSE"))
+        assert archive.read(license_path).decode() == (ROOT / "LICENSE").read_text()
+        assert {
+            "enso/bundled/AGENTS.md",
+            "enso/bundled/jobs/enso-update/JOB.md",
+            "enso/bundled/skills/enso/SKILL.md",
+            "enso/web/static/app.css",
+            "enso/web/templates/base.html",
+        } <= names
 
 
 def standalone(tmp_path, **defaults):

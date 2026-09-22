@@ -60,6 +60,18 @@ def format_elapsed(seconds: int) -> str:
     return f"{hours}h {minutes:02d}m"
 
 
+def human_bytes(size: int | None) -> str:
+    """``0 B``, ``12 KB``, ``1.2 MB``: compact storage for CLI and web views."""
+    if size is None:
+        return "-"
+    value = float(size)
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024 or unit == "GB":
+            break
+        value /= 1024
+    return f"{int(value)} {unit}" if unit == "B" or value >= 10 else f"{value:.1f} {unit}"
+
+
 def status_text(agent: ResolvedAgent, elapsed: int, action: str) -> str:
     header = (
         f"{agent.provider} · {model_label(agent.model)} · {agent.effort} · "

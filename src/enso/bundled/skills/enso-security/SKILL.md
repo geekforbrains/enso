@@ -15,7 +15,7 @@ provider logins, data, and chat connections.
 
 Enso has no restricted workspace mode or privileged workspace type. Never add a
 `restricted` setting or promise that a workspace audit establishes a security boundary.
-The [technical contract](https://github.com/geekforbrains/enso/blob/develop/docs/configuration.md#provider-permissions-and-installation-trust)
+The [technical contract](https://github.com/geekforbrains/enso/blob/main/docs/configuration.md#provider-permissions-and-installation-trust)
 owns Enso's behavior; the [public guide](https://ensobot.ai/docs/security/) is maintained
 separately and may describe the older release.
 
